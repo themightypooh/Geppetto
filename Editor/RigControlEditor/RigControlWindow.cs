@@ -256,7 +256,7 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 	{
 		var help = MenuBar.FindOrCreateMenu( "Help" );
 
-		help.AddOption( "Start Wave Tutorial", "school", () =>
+		help.AddOption( "Start Animation Tutorial", "school", () =>
 		{
 			_tutorial.Restart();
 
@@ -266,7 +266,7 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 			DockManager.RaiseDock( "Tutorial" );
 
 			RefreshTutorial();
-		} ).StatusTip = "Walks through building a simple wave animation, one step at a time";
+		} ).StatusTip = "Walks through building a reach-and-flip-a-switch animation, one step at a time";
 
 		help.AddOption( "Dismiss Tutorial", "close", () =>
 		{
