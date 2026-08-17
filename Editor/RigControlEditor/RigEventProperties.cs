@@ -4,7 +4,7 @@ using Sandbox;
 using System;
 using System.Linq;
 
-namespace Marionette.Editor;
+namespace Marionette.Tools;
 
 /// <summary>
 /// The AnimEvents tab - the event list up top ("Add Event" alongside it), the selected event's

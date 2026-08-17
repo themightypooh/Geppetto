@@ -8,7 +8,7 @@ namespace Marionette;
 // plus AnimEvents (prop attach/detach) and morph triggers layered over the same frame range.
 // Replaces the older RigEventsAsset, which only carried events and had nothing to actually pose
 // or play back - this is the real shape of the tool (see RigDocument for the rig/constraint half).
-[AssetType( Name = "Rig Animation", Extension = "riganim", Category = "Midnight AM" )]
+[AssetType( Name = "Rig Animation", Extension = "riganim", Category = "Marionette" )]
 public sealed class RigAnimDocument : GameResource
 {
 	[Property, Group( "Source" )] public Model SourceModel { get; set; }

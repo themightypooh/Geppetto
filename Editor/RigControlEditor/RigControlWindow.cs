@@ -4,7 +4,7 @@ using Sandbox;
 using System;
 using System.Linq;
 
-namespace Marionette.Editor;
+namespace Marionette.Tools;
 
 /// <summary>
 /// The dockable RigControlEditor window - a 3D viewport with per-bone FK gizmos, a per-bone

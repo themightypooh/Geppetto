@@ -7,7 +7,7 @@ namespace Marionette;
 // solves through. Separate from RigAnimDocument (.riganim) because the same rig is shared by
 // every clip authored against it - editing a constraint here should affect every riganim that
 // points at this .ctrlrig, not just the one open at the time.
-[AssetType( Name = "Control Rig", Extension = "ctrlrig", Category = "Midnight AM" )]
+[AssetType( Name = "Control Rig", Extension = "ctrlrig", Category = "Marionette" )]
 public sealed class RigDocument : GameResource
 {
 	[Property, Group( "Source" )] public Model SourceModel { get; set; }

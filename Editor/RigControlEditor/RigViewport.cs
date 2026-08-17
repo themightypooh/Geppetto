@@ -5,7 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace Marionette.Editor;
+namespace Marionette.Tools;
 
 /// <summary>What dragging a bone does. Held E flips to the other one for as long as it's down,
 /// so the common case (rotate) needs no modifier and the occasional one is still one key away.</summary>

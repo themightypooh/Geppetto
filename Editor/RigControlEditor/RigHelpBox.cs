@@ -1,7 +1,7 @@
 using Editor;
 using Sandbox;
 
-namespace Marionette.Editor;
+namespace Marionette.Tools;
 
 /// <summary>
 /// The "Documentation" style collapsible note used throughout the stock Inspector (a chevron, a

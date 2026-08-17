@@ -2,7 +2,7 @@ using Marionette;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace Marionette.Editor;
+namespace Marionette.Tools;
 
 /// <summary>
 /// A full-state snapshot of everything the editor can change: the clip's tracks/events and the

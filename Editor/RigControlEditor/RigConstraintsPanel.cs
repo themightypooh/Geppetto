@@ -4,7 +4,7 @@ using Sandbox;
 using System;
 using System.Linq;
 
-namespace Marionette.Editor;
+namespace Marionette.Tools;
 
 /// <summary>
 /// The Constraints tab - IK and Limit constraints on the RigDocument (.ctrlrig), matching the

@@ -3,7 +3,7 @@ using Sandbox;
 using System;
 using System.Linq;
 
-namespace Marionette.Editor;
+namespace Marionette.Tools;
 
 /// <summary>
 /// A canary for the one engine behaviour the whole tool stands on: that writing a bone transform

@@ -4,7 +4,7 @@ using Marionette;
 using System;
 using System.Linq;
 
-namespace Marionette.Editor;
+namespace Marionette.Tools;
 
 /// <summary>
 /// The BonesObject tab - header fields (Model / Asset Path / Rig Asset Path / Animation Speed)
