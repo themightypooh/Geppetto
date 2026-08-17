@@ -337,10 +337,10 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		UpdateDragModeOption();
 		bar.AddSeparator();
 
-		bar.AddOption( new Option( "Clear Model", "delete_forever", ClearModel )
-		{
-			ToolTip = "Remove the currently loaded model from the viewport"
-		} );
+		// Painted, not a font icon - see RigIconButton. Red because this is the one control up here
+		// that throws something away.
+		bar.AddWidget( new RigIconButton( this, RigIcon.Delete, Theme.Red, "",
+			"Remove the currently loaded model from the viewport", ClearModel ) );
 	}
 
 	private void ToggleAutoKey()
