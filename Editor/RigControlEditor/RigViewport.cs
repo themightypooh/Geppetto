@@ -70,10 +70,42 @@ internal sealed class RigViewport : Widget
 
 	private bool _suppressAutoKey;
 
+	// VIEWMODEL MODE
+	//
+	// First-person arms are not posed in world space - in game they hang off the camera, so the
+	// only framing that tells you whether a pose reads is the one the player actually gets. These
+	// defaults mirror ViewArmsComponent, which parents the arms to the camera object and sets
+	// LocalPosition = (0,0,-8): the camera sits at the origin looking forward and the model hangs
+	// below it. They are the numbers to tune, not laws - the correct offset depends on the FOV and
+	// the model, which is exactly why they're editable while you watch.
+
+	/// <summary>Frames the model as a viewmodel hanging off the camera instead of as a world prop.</summary>
+	public bool ViewmodelMode { get; set; }
+
+	/// <summary>Pins the camera to the player's eye instead of free-flying it. Only meaningful in
+	/// viewmodel mode, and it takes the mouse away from camera control - which is the point.</summary>
+	public bool LockCameraToView { get; set; }
+
+	public Vector3 ViewmodelOffset { get; set; } = new( 0f, 0f, -8f );
+	public Angles ViewmodelRotation { get; set; }
+	public float ViewmodelFov { get; set; } = 90f;
+
+	/// <summary>Hides the per-bone dots. A first-person rig puts a hundred handles between you and
+	/// the two you're actually moving; this is the way out of that.</summary>
+	public bool ShowBoneHandles { get; set; } = true;
+
+	/// <summary>One gizmo on the model root instead of a handle per bone - for placing the whole
+	/// model, which in viewmodel mode is how you set where the arms sit relative to the eye.</summary>
+	public bool MoveWholeModel { get; set; }
+
+	public Action ViewmodelChanged { get; set; }
+
 	public RigViewport( Widget parent ) : base( parent )
 	{
 		MinimumSize = 200;
 		Layout = Layout.Column();
+
+		BuildOverlayBar();
 
 		_canvas = new SceneRenderingWidget( this );
 		_canvas.OnPreFrame += OnPreFrame;
@@ -102,6 +134,122 @@ internal sealed class RigViewport : Widget
 		_gizmoInstance = _canvas.GizmoInstance;
 
 		Layout.Add( _canvas, 1 );
+	}
+
+	private Button _viewButton;
+
+	/// <summary>A single button at the top-right of the viewport, styled like the scene editor's
+	/// own overlay controls, opening a menu of view options. One button rather than a row of
+	/// toggles, because all of this is setup you touch once per session and then forget - it
+	/// shouldn't cost permanent screen space next to the thing you're actually looking at.</summary>
+	private void BuildOverlayBar()
+	{
+		var bar = Layout.AddRow();
+		bar.Margin = new Sandbox.UI.Margin( 6, 4 );
+		bar.AddStretchCell();
+
+		_viewButton = bar.Add( new Button( "", "videocam" )
+		{
+			Clicked = OpenViewMenu,
+			ToolTip = "View options - viewmodel framing, camera lock, and what handles are shown"
+		} );
+	}
+
+	private void OpenViewMenu()
+	{
+		var menu = new Menu( this );
+
+		menu.AddHeading( "First Person" );
+
+		var usingArms = menu.AddOption( "Using Arms (viewmodel)", "back_hand", () =>
+		{
+			ViewmodelMode = !ViewmodelMode;
+
+			// Turning it off hands the camera back, otherwise the view stays pinned with no
+			// visible reason why.
+			if ( !ViewmodelMode )
+				LockCameraToView = false;
+
+			ViewmodelChanged?.Invoke();
+		} );
+
+		usingArms.Checkable = true;
+		usingArms.Checked = ViewmodelMode;
+		usingArms.StatusTip = "Frame the model the way it hangs off the camera in game, rather than as a prop in a world";
+
+		var lockCamera = menu.AddOption( "Lock Camera To Player View", "lock", () =>
+		{
+			LockCameraToView = !LockCameraToView;
+			ViewmodelChanged?.Invoke();
+		} );
+
+		lockCamera.Checkable = true;
+		lockCamera.Checked = LockCameraToView;
+
+		// Gated, as asked: the camera lock is meaningless without something to frame, and an
+		// enabled toggle that silently does nothing is worse than a disabled one.
+		lockCamera.Enabled = ViewmodelMode;
+		lockCamera.StatusTip = ViewmodelMode
+			? "Pin the camera to the player's eye. You lose free camera control while this is on."
+			: "Turn on Using Arms first";
+
+		menu.AddSeparator();
+		menu.AddHeading( "Handles" );
+
+		var wholeModel = menu.AddOption( "Move Whole Model", "open_with", () =>
+		{
+			MoveWholeModel = !MoveWholeModel;
+			ViewmodelChanged?.Invoke();
+		} );
+
+		wholeModel.Checkable = true;
+		wholeModel.Checked = MoveWholeModel;
+		wholeModel.StatusTip = "One gizmo on the model root instead of a handle per bone - for placing the arms relative to the eye";
+
+		var showBones = menu.AddOption( "Show Bone Handles", "scatter_plot", () =>
+		{
+			ShowBoneHandles = !ShowBoneHandles;
+			ViewmodelChanged?.Invoke();
+		} );
+
+		showBones.Checkable = true;
+		showBones.Checked = ShowBoneHandles;
+		showBones.StatusTip = "Hide the per-bone dots when the rig is dense enough that they're in the way";
+
+		menu.AddSeparator();
+		menu.AddOption( "Reset Camera", "restart_alt", () =>
+		{
+			LockCameraToView = false;
+			FrameCamera();
+			ViewmodelChanged?.Invoke();
+		} );
+
+		// OpenAtCursor rather than positioning off the button's rect - the cursor is on the button
+		// when this runs, and it's the call every other menu in the tool already uses.
+		menu.OpenAtCursor();
+	}
+
+	/// <summary>Puts the model where the game puts it: hanging off a camera at the origin. Applied
+	/// every frame rather than once, so dragging the root or editing the offset shows immediately.</summary>
+	private void ApplyViewmodelFraming()
+	{
+		if ( !ViewmodelMode )
+			return;
+
+		if ( _modelObject.IsValid() )
+		{
+			_modelObject.WorldPosition = ViewmodelOffset;
+			_modelObject.WorldRotation = ViewmodelRotation.ToRotation();
+		}
+
+		if ( !LockCameraToView )
+			return;
+
+		// The eye: origin, looking down +X, at the game's field of view. Everything the arms are
+		// judged against is relative to this, so it's the one thing that must not drift.
+		_camera.WorldPosition = Vector3.Zero;
+		_camera.WorldRotation = Rotation.Identity;
+		_camera.FieldOfView = ViewmodelFov;
 	}
 
 	public void SetModel( Model model )
@@ -146,6 +294,11 @@ internal sealed class RigViewport : Widget
 	private void FrameCamera()
 	{
 		if ( !_renderer.IsValid() || _renderer.Model is null )
+			return;
+
+		// Loading a model while the camera is pinned to the eye must not yank it away - the lock
+		// is the more specific intent, so it wins.
+		if ( LockCameraToView )
 			return;
 
 		var bounds = _renderer.Model.Bounds;
@@ -369,15 +522,21 @@ internal sealed class RigViewport : Widget
 	{
 		TickScene();
 		ApplyPixelStyle();
+		ApplyViewmodelFraming();
 
 		_gizmoInstance.Input.IsHovered = IsActiveWindow && _canvas.IsUnderMouse;
 
-		if ( _gizmoInstance.FirstPersonCamera( _camera, _canvas ) )
+		// Free-fly is skipped entirely while the camera is locked - otherwise dragging in the
+		// viewport fights ApplyViewmodelFraming for the camera every frame and the view judders.
+		if ( !LockCameraToView && _gizmoInstance.FirstPersonCamera( _camera, _canvas ) )
 			_gizmoInstance.Input.IsHovered = false;
 
 		_canvas.UpdateGizmoInputs( _gizmoInstance.Input.IsHovered );
 
-		Gizmo.Draw.Grid( 0, Gizmo.GridAxis.XY );
+		// The ground grid is a world-space cue and actively misleading on a viewmodel, where
+		// nothing is standing on anything.
+		if ( !ViewmodelMode )
+			Gizmo.Draw.Grid( 0, Gizmo.GridAxis.XY );
 
 		DrawBoneHandles();
 		DrawSelectedBoneReadout();
@@ -432,6 +591,26 @@ internal sealed class RigViewport : Widget
 		// isn't nested inside this bone's rotated drawing scope.
 		(BoneCollection.Bone Bone, Transform World)? selected = null;
 		string hovered = null;
+
+		// Placing the whole model is its own mode with its own single handle. Bone dots are
+		// suppressed while it's on, so there's exactly one thing on screen to grab - the whole
+		// reason this mode exists.
+		if ( MoveWholeModel )
+		{
+			DragWholeModel();
+			return;
+		}
+
+		if ( !ShowBoneHandles )
+		{
+			// Handles hidden, but the selected bone still gets its control - otherwise turning
+			// dots off would silently take away the ability to pose.
+			if ( SelectedBone is { } stillSelected && FindBoneData( stillSelected ) is { } stillBone
+				&& _renderer.TryGetBoneTransform( stillBone, out var stillWorld ) )
+				DragSelectedBone( stillBone, stillWorld );
+
+			return;
+		}
 
 		// X-ray the skeleton. Most of a rig sits inside the mesh, so depth-tested dots are both
 		// invisible and unclickable - the hitboxes are already depth-biased to the front, so
@@ -501,6 +680,54 @@ internal sealed class RigViewport : Widget
 
 		if ( selected is { } sel )
 			DragSelectedBone( sel.Bone, sel.World );
+	}
+
+	private bool _draggingModel;
+	private Vector3 _modelDragAnchor;
+
+	/// <summary>The whole-model handle. Same frozen-anchor treatment as bone dragging, and for the
+	/// same reason: Gizmo.Control.Position reports the total offset for the drag, so applying it to
+	/// a live position each frame compounds it.</summary>
+	private void DragWholeModel()
+	{
+		if ( !_modelObject.IsValid() )
+			return;
+
+		var basis = _draggingModel ? _modelDragAnchor : _modelObject.WorldPosition;
+
+		using var scope = Gizmo.Scope( "ModelRoot", new Transform( basis ) );
+
+		Gizmo.Draw.IgnoreDepth = true;
+		Gizmo.Draw.Color = Theme.Green;
+		Gizmo.Draw.SolidSphere( 0f, _boneHandleRadius * 0.7f, 8, 8 );
+		Gizmo.Draw.IgnoreDepth = false;
+
+		if ( !Gizmo.Control.Position( "model-move", Vector3.Zero, out var offset ) )
+		{
+			_draggingModel = false;
+			return;
+		}
+
+		if ( !_draggingModel )
+		{
+			_draggingModel = true;
+			_modelDragAnchor = _modelObject.WorldPosition;
+			basis = _modelDragAnchor;
+		}
+
+		var moved = basis + offset;
+
+		// In viewmodel mode the offset IS the authored value - the model's position is derived
+		// from it every frame, so writing the object directly would be overwritten instantly.
+		if ( ViewmodelMode )
+		{
+			ViewmodelOffset = moved;
+			ViewmodelChanged?.Invoke();
+		}
+		else
+		{
+			_modelObject.WorldPosition = moved;
+		}
 	}
 
 	private string _dragBoneName;
