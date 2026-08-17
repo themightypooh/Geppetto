@@ -19,11 +19,7 @@ internal sealed class RigTimeline : Widget
 	private readonly RigTimelineLanes _lanes;
 	private readonly RigTimelineRuler _ruler;
 	private readonly RigTimelineRuler _frameRuler;
-	private readonly FloatSlider _scrollBar;
-
-	/// <summary>Set while the bar is being pointed at the view, so writing its value can't be
-	/// mistaken for the user dragging it.</summary>
-	private bool _syncingScrollBar;
+	private readonly ScrollArea _scroll;
 	private readonly Editor.Label _timeLabel;
 	private readonly Button _playButton;
 	private readonly Button _loopButton;
@@ -138,43 +134,19 @@ internal sealed class RigTimeline : Widget
 		_ruler = new RigTimelineRuler( this, _lanes ) { Scrubbed = ScrubTo, ShowTimecode = true };
 		Layout.Add( _ruler );
 
-		var scroll = Layout.Add( new ScrollArea( this ), 1 );
-		scroll.VerticalScrollbarMode = ScrollbarMode.Auto;
-		scroll.HorizontalScrollbarMode = ScrollbarMode.Off;
-		scroll.Canvas = _lanes;
+		// THE REAL SCROLLBAR. On, not Off - the lanes canvas is now as wide as the whole clip
+		// instead of the viewport, so the ScrollArea has something genuine to scroll and gives us
+		// its own bar with a proportional handle. That handle doubles as a readout of how much
+		// clip there is either side of what you can see, which a slider can never show.
+		_scroll = Layout.Add( new ScrollArea( this ), 1 );
+		_scroll.VerticalScrollbarMode = ScrollbarMode.Auto;
+		_scroll.HorizontalScrollbarMode = ScrollbarMode.Auto;
+		_scroll.Canvas = _lanes;
 
 		// Frame numbers below the tracks, timecode above - the tracks sit between the two units
 		// so neither has to be converted in your head.
 		_frameRuler = new RigTimelineRuler( this, _lanes ) { Scrubbed = ScrubTo, ShowTimecode = false };
 		Layout.Add( _frameRuler );
-
-		// A REAL SCROLLBAR, because shift+wheel is not discoverable.
-		//
-		// Panning and zooming already worked, but nothing on screen said so, and nothing showed
-		// how much clip there was to the right of what you could see. A clip longer than the
-		// window looked identical to a clip that ended at the edge of the window.
-		//
-		// FloatSlider rather than a hand-drawn bar - it's what SpriteEditor's timeline uses for
-		// the same job. The ScrollArea above can't do this: its canvas is the lanes widget, which
-		// is always exactly as wide as the viewport. Horizontal movement is a property of the view
-		// range, not of the widget's size, so it needs its own control.
-		_scrollBar = new FloatSlider( this )
-		{
-			Minimum = 0f,
-			Step = 1f,
-			ToolTip = "Scroll along the clip. Shift+wheel does the same, ctrl+wheel zooms."
-		};
-
-		_scrollBar.OnValueEdited = () =>
-		{
-			if ( _syncingScrollBar )
-				return;
-
-			_lanes.View.Start = _scrollBar.Value;
-			RefreshView();
-		};
-
-		Layout.Add( _scrollBar );
 
 		// ONE view range, three widgets. Each holds the same object rather than its own copy, so
 		// zooming anywhere moves all of them together - a ruler that scrolls independently of the
@@ -185,6 +157,14 @@ internal sealed class RigTimeline : Widget
 		_lanes.ViewChanged = RefreshView;
 		_ruler.ViewChanged = RefreshView;
 		_frameRuler.ViewChanged = RefreshView;
+
+		// All three ask; one place answers. Zoom and shift-wheel from any of them move the same
+		// scrollbar, which is the only thing that decides where the view actually sits.
+		_lanes.ScrollRequested = ScrollTo;
+		_ruler.ScrollRequested = ScrollTo;
+		_frameRuler.ScrollRequested = ScrollTo;
+
+		_lanes.ScrollOffset = CurrentScrollX;
 
 		// EVERY transport control lives here, with the timeline it drives - not split between here
 		// and the window toolbar. Scrubbing, stepping and playing are all things you do while
@@ -288,8 +268,11 @@ internal sealed class RigTimeline : Widget
 
 		// Back to the start of the clip at the standard zoom. Carrying the previous clip's scroll
 		// position over would open a short clip already scrolled past its own end.
-		_lanes.View.Start = 0f;
-		_lanes.View.Frames = MathF.Min( LastFrame, RigTimelineLayout.DefaultVisibleFrames );
+		_lanes.View.PixelsPerFrame = RigTimelineLayout.DefaultPixelsPerFrame;
+		_lanes.View.ScrollX = 0f;
+
+		if ( _scroll?.HorizontalScrollbar is { } bar )
+			bar.Value = 0;
 
 		Refresh();
 	}
@@ -317,29 +300,45 @@ internal sealed class RigTimeline : Widget
 	/// Driven from RefreshView, so wheel-panning moves the bar and dragging the bar moves the
 	/// view. One view range behind both, same as the rulers.
 	/// </summary>
-	private void SyncScrollBar()
+	/// <summary>Moves the ScrollArea, clamped to what it can actually reach. Sizing the canvas
+	/// first matters: a zoom-out that shrinks the canvas has to shrink the scroll range before the
+	/// new offset is clamped against it, or the view sticks past the end of a clip that just got
+	/// narrower.</summary>
+	private void ScrollTo( float x )
 	{
-		if ( _scrollBar is null )
+		SyncScrollBar();
+
+		if ( _scroll?.HorizontalScrollbar is not { } bar )
 			return;
 
-		var view = _lanes.View;
-		var frames = view.Frames > 0f ? view.Frames : MathF.Min( LastFrame, RigTimelineLayout.DefaultVisibleFrames );
-		var travel = MathF.Max( LastFrame - frames, 0f );
+		bar.Value = (int)MathF.Max( x, 0f );
 
-		_syncingScrollBar = true;
+		_lanes.View.ScrollX = bar.Value;
 
-		try
-		{
-			// Never a zero-width range - a slider whose minimum equals its maximum has nowhere to
-			// put its handle.
-			_scrollBar.Maximum = MathF.Max( travel, 1f );
-			_scrollBar.Value = view.Start.Clamp( 0f, travel );
-			_scrollBar.Enabled = travel > 0f;
-		}
-		finally
-		{
-			_syncingScrollBar = false;
-		}
+		RefreshView();
+	}
+
+	/// <summary>The one place that knows where the horizontal scroll actually is. Everything else
+	/// reads it from here rather than reaching into the ScrollArea, so there is a single answer.</summary>
+	private float CurrentScrollX() =>
+		_scroll?.HorizontalScrollbar is { } bar ? bar.Value : 0f;
+
+	private void SyncScrollBar()
+	{
+		if ( _scroll is null || !_lanes.IsValid() )
+			return;
+
+		var layout = new RigTimelineLayout( 0f, _anim?.FrameCount ?? 1, 0, 0f, _lanes.View.PixelsPerFrame );
+
+		// SIZING THE CANVAS IS WHAT CREATES THE SCROLLBAR. A ScrollArea scrolls because its canvas
+		// is bigger than its viewport and for no other reason, so the whole feature comes down to
+		// this one assignment - the bar, its handle size and its range all follow from it.
+		_lanes.MinimumWidth = layout.CanvasWidth;
+
+		// Published for the rulers, which live outside the ScrollArea and are therefore never
+		// moved by it. Read once here rather than by each of them, so all three widgets are
+		// guaranteed to be drawing the same frame of scroll.
+		_lanes.View.ScrollX = CurrentScrollX();
 	}
 
 	public void Refresh()
@@ -474,49 +473,65 @@ internal readonly struct RigTimelineLayout
 	private const float RightPadding = 10f;
 
 	/// <summary>
-	/// How many frames the timeline shows at once before it starts scrolling - three seconds at
-	/// the default 30fps.
+	/// Pixels per frame at rest - a frame is 8px wide until you zoom.
 	///
-	/// THE VIEW IS A WINDOW ONTO THE CLIP, NOT THE WHOLE CLIP SQUEEZED TO FIT. It used to be the
-	/// latter, which is fine at 30 frames and useless at 900: every frame becomes a fraction of a
-	/// pixel wide, keys pile into an unclickable smear, and making a clip longer actively makes it
-	/// harder to work on. A fixed span that scrolls keeps a frame the same size whether the clip
-	/// is one second or thirty, which is how MovieMaker and every other timeline behaves.
+	/// THE TIMELINE IS NOW A WIDE CANVAS THAT SCROLLS, not a window that remaps the clip onto a
+	/// fixed width. The old model made a frame's width depend on the clip's length, so a 900 frame
+	/// clip crushed every frame to a fraction of a pixel and the keys became an unclickable smear -
+	/// making a clip longer actively made it harder to work on.
 	///
-	/// Zooming all the way out still fits the whole clip - see ViewRange.ZoomAt, whose ceiling is
-	/// the clip length. This only changes where you START.
+	/// A constant pixels-per-frame means a frame is the same size whether the clip is one second
+	/// or thirty, and the ScrollArea's own horizontal scrollbar handles moving along it - a real
+	/// scrollbar with a proportional handle, which is also a readout of how much clip there is.
 	/// </summary>
-	public const float DefaultVisibleFrames = 90f;
+	public const float DefaultPixelsPerFrame = 8f;
+
+	/// <summary>Zoom limits. The floor keeps a 900 frame clip inside a sane canvas width; the
+	/// ceiling stops a single frame filling the screen.</summary>
+	public const float MinPixelsPerFrame = 0.4f;
+
+	public const float MaxPixelsPerFrame = 80f;
 
 	private readonly float _width;
 	private readonly int _rows;
 
 	public float LastFrame { get; }
 
-	/// <summary>First frame drawn at the left edge of the lane area.</summary>
-	public float ViewStart { get; }
+	/// <summary>Width of one frame. Zoom changes this and nothing else.</summary>
+	public float PixelsPerFrame { get; }
 
-	/// <summary>How many frames span the lane area. Smaller means zoomed in.</summary>
-	public float ViewFrames { get; }
+	/// <summary>
+	/// How far the ScrollArea has scrolled, and the thing that makes one FrameToX serve two
+	/// coordinate spaces.
+	///
+	/// The lanes widget IS the ScrollArea's canvas, so its local coordinates are already scrolled -
+	/// it builds a layout with ScrollX 0 and gets canvas space. The rulers sit outside the
+	/// ScrollArea and don't move, so they build a layout with the real offset and get viewport
+	/// space. Same maths, same call, both correct.
+	/// </summary>
+	public float ScrollX { get; }
 
-	public RigTimelineLayout( float width, int frameCount, int rows, float viewStart = 0f, float viewFrames = 0f )
+	public RigTimelineLayout( float width, int frameCount, int rows, float scrollX = 0f, float pixelsPerFrame = 0f )
 	{
 		_width = width;
 		_rows = rows;
 		LastFrame = MathF.Max( frameCount - 1, 1f );
 
-		// Zero means "not set yet" - fall back to the standard window rather than the whole clip,
-		// so a long clip scrolls from the moment it's opened instead of being crushed to fit. A
-		// clip shorter than the window still shows all of it, because there's nothing to scroll.
-		ViewFrames = viewFrames > 0f ? viewFrames : MathF.Min( LastFrame, DefaultVisibleFrames );
-		ViewStart = viewStart;
+		PixelsPerFrame = (pixelsPerFrame > 0f ? pixelsPerFrame : DefaultPixelsPerFrame)
+			.Clamp( MinPixelsPerFrame, MaxPixelsPerFrame );
+
+		ScrollX = scrollX;
 	}
+
+	/// <summary>How wide the lanes widget has to be for the whole clip to exist inside the
+	/// ScrollArea. This is what gives the scrollbar something to scroll.</summary>
+	public float CanvasWidth => Gutter + (LastFrame + 1f) * PixelsPerFrame + RightPadding;
 
 	public Rect LaneArea => new( Gutter, 0f, MathF.Max( _width - Gutter - RightPadding, 1f ), _rows * RowHeight );
 
-	public float FrameToX( float frame ) => LaneArea.Left + (frame - ViewStart) / ViewFrames * LaneArea.Width;
+	public float FrameToX( float frame ) => Gutter + frame * PixelsPerFrame - ScrollX;
 
-	public float XToFrame( float x ) => (ViewStart + (x - LaneArea.Left) / LaneArea.Width * ViewFrames).Clamp( 0f, LastFrame );
+	public float XToFrame( float x ) => ((x + ScrollX - Gutter) / PixelsPerFrame).Clamp( 0f, LastFrame );
 
 	public Rect RowRect( int index ) => new( 0f, index * RowHeight, MathF.Max( _width, Gutter ), RowHeight );
 
@@ -543,24 +558,28 @@ internal readonly struct RigTimelineLayout
 	/// pass what they actually need.</summary>
 	public IEnumerable<float> RulerFrames( float minLabelWidth = 38f )
 	{
-		var perFrame = LaneArea.Width / ViewFrames;
 		var step = RulerSteps[^1];
 
 		foreach ( var candidate in RulerSteps )
 		{
-			if ( candidate * perFrame < minLabelWidth )
+			if ( candidate * PixelsPerFrame < minLabelWidth )
 				continue;
 
 			step = candidate;
 			break;
 		}
 
-		// Start at the first division at or before the left edge, so labels stay on the same
-		// frame numbers as you scroll rather than sliding around under the cursor.
-		var first = MathF.Floor( ViewStart / step ) * step;
-		var last = MathF.Min( ViewStart + ViewFrames, LastFrame );
+		// Only the frames actually on screen. Derived from the scroll offset and this widget's
+		// width rather than from a view range, so it works the same for the rulers (which scroll
+		// by offset) and the canvas (which is scrolled for them, and passes ScrollX 0 with its
+		// full width - yielding every division across the whole canvas, which is what it wants).
+		var firstVisible = (ScrollX - Gutter) / PixelsPerFrame;
+		var lastVisible = (ScrollX + _width - Gutter) / PixelsPerFrame;
 
-		for ( var frame = MathF.Max( first, 0f ); frame <= last; frame += step )
+		var first = MathF.Max( MathF.Floor( firstVisible / step ) * step, 0f );
+		var last = MathF.Min( lastVisible, LastFrame );
+
+		for ( var frame = first; frame <= last; frame += step )
 			yield return frame;
 	}
 
@@ -596,56 +615,60 @@ internal sealed class RigTimelineLanes : Widget
 	/// what's on screen. Held here rather than in each widget because a ruler that scrolls
 	/// independently of the lanes it labels is worse than no ruler.
 	/// </summary>
+	/// <summary>
+	/// The shared zoom level. Scroll position is NOT here any more - it belongs to the ScrollArea,
+	/// which owns the scrollbar and is the only thing that should be deciding where the view sits.
+	///
+	/// Still a shared object rather than a value per widget, for the original reason: the rulers
+	/// and the lanes must never disagree about scale, and the cheapest guarantee of that is their
+	/// holding the same instance.
+	/// </summary>
 	public sealed class ViewRange
 	{
-		public float Start;
-		public float Frames;
+		public float PixelsPerFrame = RigTimelineLayout.DefaultPixelsPerFrame;
 
-		/// <summary>Zoom about a fixed frame - the one under the cursor - so the thing you're
-		/// pointing at stays under the pointer instead of sliding away as you zoom.</summary>
-		public void ZoomAt( float anchorFrame, float factor, float lastFrame )
+		/// <summary>Where the horizontal scroll currently is, in canvas pixels. Written by the
+		/// timeline from the ScrollArea each frame so the rulers can offset by it.</summary>
+		public float ScrollX;
+
+		/// <summary>
+		/// Zoom about a fixed frame - the one under the cursor - and report how far the scroll has
+		/// to move to keep that frame under the pointer.
+		///
+		/// Returns the new scroll offset rather than applying it, because the scroll belongs to
+		/// the ScrollArea and this type has no business reaching into a widget.
+		/// </summary>
+		public float ZoomAt( float anchorFrame, float anchorViewportX, float factor )
 		{
-			var fit = MathF.Max( lastFrame, 1f );
+			PixelsPerFrame = (PixelsPerFrame * factor)
+				.Clamp( RigTimelineLayout.MinPixelsPerFrame, RigTimelineLayout.MaxPixelsPerFrame );
 
-			// Same fallback as the layout's, or the first scroll of the wheel would jump: the view
-			// would be drawn at the default window while zoom measured from the whole clip.
-			var current = Frames > 0f ? Frames : MathF.Min( fit, RigTimelineLayout.DefaultVisibleFrames );
-
-			// Floor of 2 frames stops zoom from collapsing to a division by zero; the ceiling is
-			// the whole clip, since there's nothing beyond it worth looking at.
-			var next = (current * factor).Clamp( 2f, fit );
-			var ratio = (anchorFrame - Start) / current;
-
-			Start = anchorFrame - ratio * next;
-			Frames = next;
-
-			Clamp( fit );
-		}
-
-		public void PanBy( float frames, float lastFrame )
-		{
-			Start += frames;
-			Clamp( MathF.Max( lastFrame, 1f ) );
-		}
-
-		private void Clamp( float fit )
-		{
-			if ( Frames >= fit )
-			{
-				// Fully zoomed out - pin to the start so the clip can't drift off-centre.
-				Frames = fit;
-				Start = 0f;
-				return;
-			}
-
-			Start = Start.Clamp( 0f, fit - Frames );
+			// The anchor frame's new position in canvas space, minus where on screen it has to
+			// stay, IS the scroll offset. anchorViewportX must be measured from the ScrollArea's
+			// left edge - the lanes widget has to subtract the current scroll first, since its own
+			// coordinates are canvas ones.
+			return MathF.Max( RigTimelineLayout.Gutter + anchorFrame * PixelsPerFrame - anchorViewportX, 0f );
 		}
 	}
 
 	public ViewRange View { get; set; } = new();
 
+	/// <summary>Canvas space: this widget IS the ScrollArea's canvas, so it is already translated
+	/// and must not subtract the offset again. Its own width is the full canvas width.</summary>
 	private RigTimelineLayout Geometry => new( Width, (Anim?.FrameCount ?? 1), Anim?.BoneTracks.Count ?? 0,
-		View.Start, View.Frames );
+		0f, View.PixelsPerFrame );
+
+	/// <summary>
+	/// The divider and the gutter's right edge, IN CANVAS SPACE.
+	///
+	/// Both are pinned to the screen, so in this widget's coordinates they slide right as you
+	/// scroll. Everything that asks "is this behind the name column" has to ask against these
+	/// rather than the raw constants - the constants are screen positions, and this widget does
+	/// not draw in screen positions.
+	/// </summary>
+	private float DividerCanvasX => View.ScrollX + RigTimelineLayout.DividerX;
+
+	private float GutterCanvasX => View.ScrollX + RigTimelineLayout.Gutter;
 
 	/// <summary>
 	/// Ctrl+wheel zooms about the cursor, Shift+wheel pans. Plain wheel is deliberately left to
@@ -661,9 +684,15 @@ internal sealed class RigTimelineLanes : Widget
 
 		if ( e.HasCtrl )
 		{
-			// 1.15 per notch: fine enough to land on a span deliberately, coarse enough that
+			// 1.15 per notch: fine enough to land on a zoom deliberately, coarse enough that
 			// crossing a long clip doesn't take a dozen scrolls.
-			View.ZoomAt( layout.XToFrame( _lastMousePos.x ), e.Delta > 0 ? 1f / 1.15f : 1.15f, layout.LastFrame );
+			//
+			// _lastMousePos is in CANVAS space here - this widget is the scrolled canvas - so the
+			// scroll has to come back off it to get the on-screen position the anchor must hold.
+			var anchorFrame = layout.XToFrame( _lastMousePos.x );
+			var anchorViewportX = _lastMousePos.x - View.ScrollX;
+
+			ScrollRequested?.Invoke( View.ZoomAt( anchorFrame, anchorViewportX, e.Delta > 0 ? 1f / 1.15f : 1.15f ) );
 
 			ViewChanged?.Invoke();
 			e.Accept();
@@ -672,9 +701,11 @@ internal sealed class RigTimelineLanes : Widget
 
 		if ( e.HasShift )
 		{
-			// Pan by a fifth of the visible span per notch - proportional, so it feels the same
-			// whether you're looking at ten frames or a thousand.
-			View.PanBy( (e.Delta > 0 ? -0.2f : 0.2f) * layout.ViewFrames, layout.LastFrame );
+			// Pan by a fifth of a screen per notch. The ScrollArea owns the position now, so this
+			// asks for a new offset rather than moving a view range of its own.
+			var page = MathF.Max( Width * 0.2f, 32f );
+
+			ScrollRequested?.Invoke( MathF.Max( View.ScrollX + (e.Delta > 0 ? -page : page), 0f ) );
 
 			ViewChanged?.Invoke();
 			e.Accept();
@@ -684,12 +715,41 @@ internal sealed class RigTimelineLanes : Widget
 		base.OnMouseWheel( e );
 	}
 
+	/// <summary>Asks the timeline to move the ScrollArea. Raised rather than done here, because
+	/// the ScrollArea is the canvas's parent and a canvas scrolling itself is how you get a widget
+	/// fighting its own container.</summary>
+	public Action<float> ScrollRequested { get; set; }
+
 	private Vector2 _lastMousePos;
 
 	public Action ViewChanged { get; set; }
 
+	/// <summary>
+	/// Reads the live horizontal scroll off the ScrollArea.
+	///
+	/// PULLED AT PAINT TIME, NOT PUSHED ON CHANGE, because dragging the scrollbar raises nothing
+	/// we can subscribe to - the ScrollArea simply moves its canvas and repaints it. Without this
+	/// the pinned name column would keep using a stale offset and slide away precisely when you
+	/// scrolled by hand, which is the one case the pinning exists for.
+	/// </summary>
+	public Func<float> ScrollOffset { get; set; }
+
+	private float _paintedScrollX = float.NaN;
+
 	protected override void OnPaint()
 	{
+		if ( ScrollOffset is not null )
+			View.ScrollX = ScrollOffset();
+
+		// The rulers live outside the ScrollArea, so nothing moves or repaints them when it
+		// scrolls. This widget does get repainted, so it's the only thing in a position to notice
+		// and tell them. Guarded on an actual change, or a repaint would schedule a repaint.
+		if ( View.ScrollX != _paintedScrollX )
+		{
+			_paintedScrollX = View.ScrollX;
+			ViewChanged?.Invoke();
+		}
+
 		var layout = Geometry;
 
 		Paint.Antialiasing = true;
@@ -736,14 +796,37 @@ internal sealed class RigTimelineLanes : Widget
 		{
 			Paint.SetBrush( Theme.Yellow.WithAlpha( 0.12f ) );
 			Paint.DrawRect( row );
+		}
+
+		// THE NAME COLUMN IS PINNED, and this offset is how.
+		//
+		// This widget is the ScrollArea's canvas, so scrolling right moves ALL of it left -
+		// including the names, which would slide off the edge and leave you looking at unlabelled
+		// rows. Drawing the column at the current scroll offset cancels that exactly, so it holds
+		// still on screen while the tracks move underneath it.
+		//
+		// The alternative was splitting the names into their own widget outside the ScrollArea,
+		// which fixes horizontal at the cost of breaking vertical: it would then need its own
+		// scroll kept in step with the tracks' one, and two scrolls that must agree is a worse
+		// problem than one offset.
+		var pinned = View.ScrollX;
+
+		Paint.ClearPen();
+		Paint.SetBrush( Theme.WidgetBackground );
+		Paint.DrawRect( new Rect( pinned, row.Top, RigTimelineLayout.Gutter, row.Height ) );
+
+		if ( isSelected )
+		{
+			Paint.SetBrush( Theme.Yellow.WithAlpha( 0.12f ) );
+			Paint.DrawRect( new Rect( pinned, row.Top, RigTimelineLayout.Gutter, row.Height ) );
 
 			Paint.SetBrush( Theme.Yellow );
-			Paint.DrawRect( new Rect( 0f, row.Top, 2f, row.Height ) );
+			Paint.DrawRect( new Rect( pinned, row.Top, 2f, row.Height ) );
 		}
 
 		Paint.SetDefaultFont( 7, isSelected ? 600 : 400 );
 		Paint.SetPen( isSelected ? Theme.Yellow : Theme.TextControl.WithAlpha( 0.9f ) );
-		Paint.DrawText( new Rect( 8f, row.Top, RigTimelineLayout.Gutter - 16f, row.Height ),
+		Paint.DrawText( new Rect( pinned + 8f, row.Top, RigTimelineLayout.Gutter - 16f, row.Height ),
 			track.BoneName, TextFlag.LeftCenter );
 	}
 
@@ -757,7 +840,7 @@ internal sealed class RigTimelineLanes : Widget
 	/// among the keyframes.</summary>
 	private BoneTrack HitBoneRow( Vector2 position )
 	{
-		if ( position.x >= RigTimelineLayout.Gutter || Anim is null )
+		if ( position.x >= GutterCanvasX || Anim is null )
 			return null;
 
 		var index = Geometry.HitRow( position );
@@ -785,7 +868,7 @@ internal sealed class RigTimelineLanes : Widget
 		{
 			var captured = mode;
 
-			setAll.AddOption( mode.ToString(), null, () =>
+			setAll.AddOption( Label( mode ), null, () =>
 			{
 				foreach ( var key in track.Keyframes )
 					key.Interpolation = captured;
@@ -830,8 +913,8 @@ internal sealed class RigTimelineLanes : Widget
 	{
 		Paint.SetPen( Theme.TextControl.WithAlpha( 0.2f ) );
 		Paint.DrawLine(
-			new Vector2( RigTimelineLayout.DividerX, 0f ),
-			new Vector2( RigTimelineLayout.DividerX, Height ) );
+			new Vector2( DividerCanvasX, 0f ),
+			new Vector2( DividerCanvasX, Height ) );
 	}
 
 	private void PaintGrid( RigTimelineLayout layout )
@@ -844,7 +927,7 @@ internal sealed class RigTimelineLanes : Widget
 
 			// Same rule as the ruler's labels - the grid stops at the divider rather than ruling
 			// lines through the bone names.
-			if ( x < RigTimelineLayout.DividerX )
+			if ( x < DividerCanvasX )
 				continue;
 
 			Paint.DrawLine( new Vector2( x, 0f ), new Vector2( x, Height ) );
@@ -879,14 +962,18 @@ internal sealed class RigTimelineLanes : Widget
 			var to = layout.FrameToX( ordered[i + 1].Frame );
 
 			// Wholly off the left - nothing to draw.
-			if ( to < RigTimelineLayout.DividerX )
+			if ( to < DividerCanvasX )
 				continue;
 
 			var key = ordered[i];
 
+			// Eased segments share the green family - they are the same idea at different
+			// strengths, and the curve drawn on the segment already says which half is eased.
 			var color = key.Interpolation switch
 			{
 				KeyInterpolation.Smooth => Theme.Green.WithAlpha( 0.7f ),
+				KeyInterpolation.EaseIn => Theme.Green.WithAlpha( 0.5f ),
+				KeyInterpolation.EaseOut => Theme.Green.WithAlpha( 0.5f ),
 				KeyInterpolation.Linear => Theme.Blue.WithAlpha( 0.7f ),
 				_ => Theme.TextControl.WithAlpha( 0.4f )
 			};
@@ -897,7 +984,7 @@ internal sealed class RigTimelineLanes : Widget
 			{
 				// Flat hold, then a vertical riser at the moment it snaps. The hold starts at the
 				// divider when the key itself is off to the left.
-				Paint.DrawLine( new Vector2( MathF.Max( from, RigTimelineLayout.DividerX ), y ), new Vector2( to, y ) );
+				Paint.DrawLine( new Vector2( MathF.Max( from, DividerCanvasX ), y ), new Vector2( to, y ) );
 				Paint.DrawLine( new Vector2( to, y - 5f ), new Vector2( to, y + 5f ) );
 				continue;
 			}
@@ -920,14 +1007,14 @@ internal sealed class RigTimelineLanes : Widget
 				// Samples left of the divider are carried forward without being drawn, so the
 				// curve starts exactly at the divider instead of either poking into the names or
 				// beginning a few samples late with a visible notch.
-				if ( point.x < RigTimelineLayout.DividerX )
+				if ( point.x < DividerCanvasX )
 				{
 					previous = point;
 					continue;
 				}
 
-				Paint.DrawLine( previous.x < RigTimelineLayout.DividerX
-					? new Vector2( RigTimelineLayout.DividerX, previous.y )
+				Paint.DrawLine( previous.x < DividerCanvasX
+					? new Vector2( DividerCanvasX, previous.y )
 					: previous, point );
 
 				previous = point;
@@ -940,7 +1027,7 @@ internal sealed class RigTimelineLanes : Widget
 
 			// A key scrolled off the left edge would be drawn on top of the bone name, where it
 			// looks like it belongs to the name column rather than to the track.
-			if ( center.x < RigTimelineLayout.DividerX )
+			if ( center.x < DividerCanvasX )
 				continue;
 
 			var isSelected = _selected is { } sel && sel.Track == track && sel.Key == key;
@@ -972,6 +1059,15 @@ internal sealed class RigTimelineLanes : Widget
 	/// at a time. Encoding it in the silhouette makes the timing of a whole clip readable in a
 	/// glance, and it survives colourblindness and a dark screen in a way a colour swap wouldn't.
 	/// </summary>
+	/// <summary>Menu label for an interpolation mode. ToString() gives "EaseIn", which reads as a
+	/// code identifier that leaked into the UI.</summary>
+	private static string Label( KeyInterpolation mode ) => mode switch
+	{
+		KeyInterpolation.EaseIn => "Ease In",
+		KeyInterpolation.EaseOut => "Ease Out",
+		_ => mode.ToString()
+	};
+
 	private static void PaintKeyShape( Vector2 center, float radius, KeyInterpolation interpolation )
 	{
 		switch ( interpolation )
@@ -1006,7 +1102,7 @@ internal sealed class RigTimelineLanes : Widget
 
 		// Scrolled off the left, the playhead would otherwise be drawn straight down the bone
 		// names - see the divider rule in PaintGutterDivider.
-		if ( x < RigTimelineLayout.DividerX )
+		if ( x < DividerCanvasX )
 			return;
 
 		Paint.SetPen( Theme.Primary.WithAlpha( 0.8f ), 1f );
@@ -1028,7 +1124,7 @@ internal sealed class RigTimelineLanes : Widget
 			// they must not be clickable there either. Without this, the bone-name strip contains
 			// invisible hitboxes that select and drag keys you can't see - and since the click
 			// also scrubs, the playhead jumps somewhere unrelated at the same time.
-			if ( rect.Center.x < RigTimelineLayout.DividerX )
+			if ( rect.Center.x < DividerCanvasX )
 				continue;
 
 			if ( rect.IsInside( position ) )
@@ -1197,13 +1293,15 @@ internal sealed class RigTimelineLanes : Widget
 
 		foreach ( var mode in Enum.GetValues<KeyInterpolation>() )
 		{
-			var option = interpolation.AddOption( mode.ToString(), null, () => SetInterpolation( mode ) );
+			var option = interpolation.AddOption( Label( mode ), null, () => SetInterpolation( mode ) );
 			option.Checkable = true;
 			option.Checked = sel.Key.Interpolation == mode;
 			option.StatusTip = mode switch
 			{
 				KeyInterpolation.Smooth => "Ease out of this key and into the next - the default for body motion",
 				KeyInterpolation.Linear => "Constant speed, no easing - for mechanical motion",
+				KeyInterpolation.EaseIn => "Start slow, arrive at full speed - the wind-up half of an action",
+				KeyInterpolation.EaseOut => "Leave fast, settle slowly - what makes a movement land with weight",
 				_ => "Hold this pose until the next key, then snap"
 			};
 		}
@@ -1433,7 +1531,11 @@ internal sealed class RigTimelineRuler : Widget
 	/// is on screen.</summary>
 	public RigTimelineLanes.ViewRange View { get; set; } = new();
 
-	private RigTimelineLayout Geometry => new( _lanes.Width, FrameCount, 0, View.Start, View.Frames );
+	/// <summary>VIEWPORT space: this widget sits outside the ScrollArea and never moves, so it has
+	/// to subtract the scroll itself. Its own width, not the canvas's - it only draws what fits on
+	/// screen. That one difference from the lanes' Geometry is the whole of how the two coordinate
+	/// spaces are kept apart.</summary>
+	private RigTimelineLayout Geometry => new( Width, FrameCount, 0, View.ScrollX, View.PixelsPerFrame );
 
 	/// <summary>Zoom and pan work from the rulers too - they're the natural place to reach for it,
 	/// and having it only work over the lanes would be an arbitrary dead zone.</summary>
@@ -1443,7 +1545,11 @@ internal sealed class RigTimelineRuler : Widget
 
 		if ( e.HasCtrl )
 		{
-			View.ZoomAt( layout.XToFrame( _lastMouseX ), e.Delta > 0 ? 1f / 1.15f : 1.15f, layout.LastFrame );
+			// _lastMouseX is already viewport space here, so unlike the lanes there is nothing to
+			// convert - it goes to both arguments' worth of meaning directly.
+			ScrollRequested?.Invoke( View.ZoomAt( layout.XToFrame( _lastMouseX ), _lastMouseX,
+				e.Delta > 0 ? 1f / 1.15f : 1.15f ) );
+
 			ViewChanged?.Invoke();
 			e.Accept();
 			return;
@@ -1451,7 +1557,10 @@ internal sealed class RigTimelineRuler : Widget
 
 		if ( e.HasShift )
 		{
-			View.PanBy( (e.Delta > 0 ? -0.2f : 0.2f) * layout.ViewFrames, layout.LastFrame );
+			var page = MathF.Max( Width * 0.2f, 32f );
+
+			ScrollRequested?.Invoke( MathF.Max( View.ScrollX + (e.Delta > 0 ? -page : page), 0f ) );
+
 			ViewChanged?.Invoke();
 			e.Accept();
 			return;
@@ -1459,6 +1568,8 @@ internal sealed class RigTimelineRuler : Widget
 
 		base.OnMouseWheel( e );
 	}
+
+	public Action<float> ScrollRequested { get; set; }
 
 	private float _lastMouseX;
 
@@ -1536,6 +1647,13 @@ internal sealed class RigTimelineRuler : Widget
 	private void PaintPlayhead( RigTimelineLayout layout )
 	{
 		var x = layout.FrameToX( Playhead );
+
+		// The flag is drawn from its centre and is 8px wide, so it starts spilling into the name
+		// column half a flag before its frame reaches the divider - hence the half-width margin
+		// rather than a plain x < DividerX. The lanes' playhead has the same rule; this one was
+		// missed because it's a different widget drawing a different shape for the same thing.
+		if ( x + 4f < RigTimelineLayout.DividerX )
+			return;
 
 		Paint.ClearPen();
 		Paint.SetBrush( Theme.Yellow );

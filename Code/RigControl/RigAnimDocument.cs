@@ -1,4 +1,5 @@
 using Sandbox;
+using Sandbox.Utility;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -204,6 +205,13 @@ public sealed class BoneTrack
 /// good the poses either side of it are. It's the most common reason hand-keyed animation looks
 /// amateur, and it isn't fixable by posing harder.
 /// </summary>
+/// <summary>
+/// How a keyframe's outgoing segment is timed.
+///
+/// NEW VALUES ARE APPENDED, NEVER INSERTED. These serialize into .riganim by ordinal, so putting
+/// EaseIn between Smooth and Linear would silently turn every existing Linear key into an EaseIn
+/// one - a corruption with no error and no obvious symptom beyond "my clip feels different".
+/// </summary>
 public enum KeyInterpolation
 {
 	/// <summary>Ease out of this key and into the next. The sane default for body motion.</summary>
@@ -215,7 +223,17 @@ public enum KeyInterpolation
 
 	/// <summary>Hold this pose until the next key, then snap. For pops, blinks, and anything that
 	/// should read as instant.</summary>
-	Stepped
+	Stepped,
+
+	/// <summary>Start slow, arrive at full speed. The wind-up half of an action - a limb loading
+	/// before it fires.</summary>
+	[Title( "Ease In" )]
+	EaseIn,
+
+	/// <summary>Leave at full speed, settle slowly. The half you want arriving at a pose, and the
+	/// one that makes a movement look like it has weight rather than being switched off.</summary>
+	[Title( "Ease Out" )]
+	EaseOut
 }
 
 public sealed class BoneKeyframe
@@ -226,11 +244,24 @@ public sealed class BoneKeyframe
 	/// <summary>Governs the segment LEAVING this key, not arriving at it.</summary>
 	[Property] public KeyInterpolation Interpolation { get; set; } = KeyInterpolation.Smooth;
 
-	/// <summary>Remap a 0..1 position within this key's outgoing segment.</summary>
+	/// <summary>
+	/// Remap a 0..1 position within this key's outgoing segment.
+	///
+	/// THE CURVES COME FROM Sandbox.Utility.Easing, not from here. This used to hand-roll its own
+	/// smoothstep, which is a curve the engine already ships - and shipping only one eased mode
+	/// meant there was no way to ask for ease-in without ease-out, which is the distinction an
+	/// animator reaches for most: a limb loads slowly and arrives fast on the way out, and the
+	/// reverse on the way in.
+	///
+	/// MovieMaker maps its own InterpolationMode onto the same functions
+	/// (editor/MovieMaker/Code/Interpolation.cs), so a clip authored here eases the way the rest
+	/// of the editor does.
+	/// </summary>
 	public float Ease( float t ) => Interpolation switch
 	{
-		// Smoothstep: zero velocity at both ends, so the bone accelerates away and settles in.
-		KeyInterpolation.Smooth => t * t * (3f - 2f * t),
+		KeyInterpolation.Smooth => Easing.QuadraticInOut( t ),
+		KeyInterpolation.EaseIn => Easing.QuadraticIn( t ),
+		KeyInterpolation.EaseOut => Easing.QuadraticOut( t ),
 		KeyInterpolation.Stepped => 0f,
 		_ => t
 	};
