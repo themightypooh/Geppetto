@@ -414,8 +414,6 @@ internal sealed class RigViewport : Widget
 		_modelObject = null;
 		_renderer = null;
 		_pixelMaterial = null;
-		_bindPose = null;
-		_captureBindPose = true;
 		Select( null );
 
 		if ( model is null )
@@ -529,44 +527,20 @@ internal sealed class RigViewport : Widget
 		_renderer.SetBoneTransform( bone, world );
 	}
 
-	private Dictionary<string, Transform> _bindPose;
-	private bool _captureBindPose;
-
 	/// <summary>
-	/// The model's untouched parent-space pose, recorded once when it loads.
+	/// The bone's pose with no animation on it, read straight off the model.
 	///
-	/// This is the "no keyframe" value - what a bone should look like when the clip says nothing
-	/// about it. Without a recorded answer the only options are to leave the bone at whatever it
-	/// was last dragged to (which makes undo and scrubbing appear broken) or to wipe overrides
-	/// wholesale (which fights any drag in progress). Both were tried; this is the third option
-	/// and the only one with no hole in it.
+	/// This is the "no keyframe" value - what a bone looks like when the clip says nothing about
+	/// it - and it comes from BoneCollection.Bone.LocalTransform, which is model data and cannot
+	/// be affected by anything the renderer is currently showing.
 	///
-	/// Captured on the first frame after the model loads - bone transforms aren't readable until
-	/// the scene has ticked at least once, and that first tick is before anything can be posed.
+	/// It used to be snapshotted from the live renderer on the first frame after a model loaded,
+	/// and that was subtly, badly wrong: opening a clip that already HAS keyframes applies them
+	/// before that first frame, so the snapshot captured the posed arm and called it the rest
+	/// pose. Undo then restored to a "default" with the forearm already bent, because that WAS
+	/// the recorded default. Reading the model has no such timing to get wrong.
 	/// </summary>
-	private void CaptureBindPoseIfNeeded()
-	{
-		if ( !_captureBindPose || !_renderer.IsValid() || _renderer.Model?.Bones is null )
-			return;
-
-		var captured = new Dictionary<string, Transform>();
-
-		foreach ( var bone in _renderer.Model.Bones.AllBones )
-		{
-			if ( _renderer.TryGetBoneTransformLocal( bone, out var local ) )
-				captured[bone.Name] = local;
-		}
-
-		// Nothing readable yet - try again next frame rather than recording an empty pose.
-		if ( captured.Count == 0 )
-			return;
-
-		_bindPose = captured;
-		_captureBindPose = false;
-	}
-
-	private Transform? BindPoseFor( BoneCollection.Bone bone ) =>
-		_bindPose is not null && _bindPose.TryGetValue( bone.Name, out var local ) ? local : null;
+	private static Transform BindPoseFor( BoneCollection.Bone bone ) => bone.LocalTransform;
 
 	/// <summary>A bone's parent's world transform, falling back to the model's own for roots.</summary>
 	private Transform ParentWorld( BoneCollection.Bone bone ) =>
@@ -709,12 +683,9 @@ internal sealed class RigViewport : Widget
 			if ( bone.Parent is not { } parent || !resolved.TryGetValue( parent.Name, out var parentWorld ) )
 				continue;
 
-			// Its own pose is unchanged - only where its parent is has moved.
-			if ( (_poseLookup?.Invoke( bone.Name ) ?? BindPoseFor( bone )) is not { } local )
-			{
-				resolved[bone.Name] = world;
-				continue;
-			}
+			// Its own pose is unchanged - only where its parent is has moved. There's always an
+			// answer now: a keyframe if the clip has one, the model's bind pose if it doesn't.
+			var local = _poseLookup?.Invoke( bone.Name ) ?? BindPoseFor( bone );
 
 			var clamped = RigConstraintSolver.ClampToLimits( Rig, bone.Name, local );
 			var worldPose = parentWorld.ToWorld( clamped );
@@ -773,11 +744,9 @@ internal sealed class RigViewport : Widget
 					continue;
 				}
 
-				if ( (poseForBone( bone.Name ) ?? BindPoseFor( bone )) is not { } local )
-				{
-					resolved[bone.Name] = world;
-					continue;
-				}
+				// Keyframe if the clip has one, the model's bind pose if it doesn't. Never
+				// undefined, so nothing is left holding a stale override.
+				var local = poseForBone( bone.Name ) ?? BindPoseFor( bone );
 
 				var clamped = RigConstraintSolver.ClampToLimits( Rig, bone.Name, local );
 
@@ -869,7 +838,6 @@ internal sealed class RigViewport : Widget
 	private void OnPreFrame()
 	{
 		TickScene();
-		CaptureBindPoseIfNeeded();
 		ApplyPixelStyle();
 		ApplyViewmodelFraming();
 		ApplyReferenceProps();

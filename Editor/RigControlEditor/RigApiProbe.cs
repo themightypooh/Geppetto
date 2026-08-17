@@ -184,6 +184,21 @@ internal static class RigApiProbe
 		}
 	}
 
+	/// <summary>Does BoneCollection.Bone carry its own bind/reference transform? If so the bind
+	/// pose can be read from the model rather than snapshotted off a renderer that may already
+	/// have been posed.</summary>
+	[ConCmd( "rig_dump_boneinfo" )]
+	public static void DumpBoneInfo()
+	{
+		var members = typeof( BoneCollection.Bone )
+			.GetMembers( System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance )
+			.Select( m => $"{m.MemberType} {m.Name}" )
+			.Distinct()
+			.OrderBy( x => x );
+
+		Log.Info( $"[rigprobe] BoneCollection.Bone: {string.Join( ", ", members )}" );
+	}
+
 	private static float _probeTime;
 
 	private static void Tick( Scene scene )
