@@ -1,0 +1,15 @@
+// First-person arms skin. Flat colour, no texture -- the mesh is deliberately low-poly and
+// flat-shaded (see gen_fp_arms.py), so the material's job is just to be the right skin tone at a
+// plausible roughness, not to carry detail. Colour matches COL_SKIN in the generator script.
+"Layer0"
+{
+	"shader"		"shaders/complex.shader"
+	"g_flModelTintAmount"		"0.000000"
+	"g_vColorTint"		"[0.720000 0.520000 0.420000 0.000000]"
+	"TextureColor"		"materials/default/default_color.tga"
+	"g_flMetalness"		"0.000000"
+	"g_flRoughness"		"0.720000"
+	"TextureNormal"		"materials/default/default_normal.tga"
+	"TextureRoughness"		"materials/default/default_rough.tga"
+	"TextureAmbientOcclusion"		"materials/default/default_ao.tga"
+}

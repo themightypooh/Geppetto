@@ -1,0 +1,15 @@
+// The dark interior of the elbow opening on the first-person arms -- the cut end of the forearm
+// loft, never meant to read as skin. Near-black and rougher than fp_skin so it doesn't catch a
+// highlight and give away that it's a hollow tube. Colour matches COL_CUT in gen_fp_arms.py.
+"Layer0"
+{
+	"shader"		"shaders/complex.shader"
+	"g_flModelTintAmount"		"0.000000"
+	"g_vColorTint"		"[0.200000 0.120000 0.110000 0.000000]"
+	"TextureColor"		"materials/default/default_color.tga"
+	"g_flMetalness"		"0.000000"
+	"g_flRoughness"		"0.880000"
+	"TextureNormal"		"materials/default/default_normal.tga"
+	"TextureRoughness"		"materials/default/default_rough.tga"
+	"TextureAmbientOcclusion"		"materials/default/default_ao.tga"
+}

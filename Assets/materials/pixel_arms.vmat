@@ -1,0 +1,6 @@
+// Pixelated arms material -- see pixel_arms.shader. Applied as a whole-model override on the
+// viewmodel arms renderer by ViewArmsComponent while its Pixelate toggle is on.
+Layer0
+{
+	shader "shaders/pixel_arms.shader"
+}
