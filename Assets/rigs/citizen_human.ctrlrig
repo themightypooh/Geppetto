@@ -1,0 +1,9 @@
+{
+  "SourceModel": "models/citizen/citizen.vmdl",
+  "IkConstraints": [
+    { "Name": "IK 0", "TargetBone": "hand_L", "Weight": 1, "Enabled": true, "ChainLength": 2, "PoleDirection": "0,0,1", "Iterations": 10 }
+  ],
+  "LimitConstraints": [
+    { "Name": "limitrot_hand", "TargetBone": "arm_lower_L", "Weight": 1, "Enabled": false, "MinAngles": "-45.31,-45,90", "MaxAngles": "45,45,45" }
+  ]
+}
