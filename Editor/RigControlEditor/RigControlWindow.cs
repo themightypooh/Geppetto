@@ -82,6 +82,28 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		ResetDirty();
 		ResetBaseline();
 		Show();
+
+		ShowTutorialIfWanted();
+	}
+
+	/// <summary>
+	/// Opens the Tutorial dock on startup unless the reader has opted out.
+	///
+	/// Done HERE rather than only in BuildDefaultLayout, because that method only runs when there
+	/// is no saved layout to restore. Anyone who has opened the tool before has one - and if the
+	/// Tutorial dock was closed in it, the default layout never runs again and nothing ever
+	/// reopens the panel. It simply stops existing, with no way to tell that from it being
+	/// broken. SetDockState works against the restored layout too, so this covers both cases.
+	/// </summary>
+	private void ShowTutorialIfWanted()
+	{
+		if ( !RigTutorial.OpenOnStartup )
+			return;
+
+		DockManager.SetDockState( "Tutorial", true );
+		DockManager.RaiseDock( "Tutorial" );
+
+		RefreshTutorial();
 	}
 
 	public void AssetOpen( Asset asset )

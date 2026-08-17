@@ -8,7 +8,9 @@
   "Resources": null,
   "PackageReferences": [],
   "EditorReferences": null,
-  "Mounts": [],
+  "Mounts": [
+    "halomcc"
+  ],
   "IsStandaloneOnly": false,
   "Metadata": {
     "MaxPlayers": 64,

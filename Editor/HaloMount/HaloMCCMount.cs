@@ -95,6 +95,24 @@ public class HaloMCCMount : BaseGameMount
 	// instance (`this`) rather than a stale one from a previous Mount() call.
 	static List<(string kind, string displayPath, string mapPath, string tagName)> discoveryCache;
 
+	// For HaloMountSpike's diagnostics -- look up the (mapPath, tagName) behind a registered
+	// display path (e.g. "characters/civilian_fem.vmdl") so a failing load can be reproduced
+	// directly, bypassing the engine's resource-loading pipeline which swallows the real
+	// exception detail down to a generic "Exception when loading" with no message/stack.
+	public static (string mapPath, string tagName)? FindDiscoveryEntry( string displayPath )
+	{
+		if ( discoveryCache is null )
+			return null;
+
+		foreach ( var entry in discoveryCache )
+		{
+			if ( entry.displayPath == displayPath )
+				return (entry.mapPath, entry.tagName);
+		}
+
+		return null;
+	}
+
 	List<(ResourceType type, string path, ResourceLoader loader)> DiscoverResources()
 	{
 		discoveryCache ??= ScanAllMaps();

@@ -22,7 +22,20 @@ internal sealed class RigTutorialPanel : Widget
 	private readonly Editor.Label _heading;
 	private readonly Editor.Label _progress;
 
-	public RigTutorial Tutorial { get; set; }
+	private RigTutorial _tutorial;
+
+	/// <summary>Rebuilds on assignment. The constructor's own Rebuild runs before any object
+	/// initializer does, so it always sees a null tutorial and bails - leaving the panel blank
+	/// until something else happened to refresh it.</summary>
+	public RigTutorial Tutorial
+	{
+		get => _tutorial;
+		set
+		{
+			_tutorial = value;
+			Rebuild();
+		}
+	}
 
 	/// <summary>Restart/dismiss come from here as well as the Help menu, so the panel is
 	/// self-sufficient once it's open.</summary>
