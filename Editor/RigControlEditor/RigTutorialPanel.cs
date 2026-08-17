@@ -203,6 +203,12 @@ internal sealed class StepGlyph : Widget
 		FixedHeight = 34;
 	}
 
+	private static Vector2 ArcPoint( Vector2 center, float radius, float degrees )
+	{
+		var radians = degrees * MathF.PI / 180f;
+		return center + new Vector2( MathF.Cos( radians ) * radius, -MathF.Sin( radians ) * radius );
+	}
+
 	protected override void OnPaint()
 	{
 		var color = _done ? Theme.Green : _current ? Theme.Yellow : Theme.TextControl.WithAlpha( 0.35f );
@@ -240,15 +246,31 @@ internal sealed class StepGlyph : Widget
 				Paint.DrawCircle( center + new Vector2( 8, -7 ), 3f );
 				break;
 
-			// An arc with a head on it - rotation, the default drag.
+			// An arc with a head on it - rotation, the default drag. Stepped out of line segments
+			// rather than DrawArc, whose overload I'd guessed at and got wrong; a dozen lines is
+			// indistinguishable at this size and cannot be wrong about an API.
 			case RigTutorial.StepArt.Rotate:
-				Paint.DrawArc( center, 9f, 9f, 40f, 290f );
+			{
+				const int segments = 14;
+				const float sweep = 290f;
+				const float radius = 9f;
+
+				var previous = ArcPoint( center, radius, 40f );
+
+				for ( var i = 1; i <= segments; i++ )
+				{
+					var point = ArcPoint( center, radius, 40f + sweep * i / segments );
+					Paint.DrawLine( previous, point );
+					previous = point;
+				}
+
 				Paint.SetBrush( color );
 				Paint.DrawPolygon(
 					center + new Vector2( 4, -9 ),
 					center + new Vector2( 11, -7 ),
 					center + new Vector2( 5, -2 ) );
 				break;
+			}
 
 			// A key on a track - the timeline lane, in miniature.
 			case RigTutorial.StepArt.Keyframe:
