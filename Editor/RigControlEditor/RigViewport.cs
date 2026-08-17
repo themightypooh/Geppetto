@@ -899,6 +899,13 @@ internal sealed class RigViewport : Widget
 		if ( _referenceProps is null || MoveWholeModel || !ShowBoneHandles )
 			return;
 
+		// The selected prop's control runs AFTER the loop, outside every per-prop scope. Inside
+		// one, the scope carries the prop's own rotation, so the control's world-aligned basis
+		// wouldn't be world-aligned and its delta would come back in rotated space to be added to
+		// a world position - the same mismatch that had bone drags travelling up Z whichever
+		// arrow was grabbed.
+		(int Index, ReferenceProp Prop, Transform World)? selected = null;
+
 		for ( var i = 0; i < _referenceProps.Count && i < _referenceObjects.Count; i++ )
 		{
 			var prop = _referenceProps[i];
@@ -919,14 +926,23 @@ internal sealed class RigViewport : Widget
 
 			if ( isSelected )
 			{
-				DragReferenceProp( i, prop, world );
+				selected = (i, prop, world);
 				continue;
 			}
 
-			// Same rule as bones: no hitbox of ours on the selected one, or it wins the hover test
-			// against the control's own handles and the drag never starts.
+			// THE WHOLE PROP IS THE TARGET, not a dot beside it. Clicking the switch to grab the
+			// switch is the obvious behaviour, and the dot alone was close to unclickable anyway:
+			// _boneHandleRadius is derived from the ARMS model's bounds, so on a first-person rig
+			// it's a fraction of a unit - a handle you have to hunt for.
+			//
+			// Same rule as bones about the selected one: no hitbox of ours on it, or it wins the
+			// hover test against the control's own handles and the drag never starts.
 			Gizmo.Hitbox.DepthBias = 0.01f;
-			Gizmo.Hitbox.Sphere( new Sphere( 0f, _boneHandleRadius ) );
+
+			if ( prop.Model is { } propModel )
+				Gizmo.Hitbox.BBox( propModel.Bounds.Grow( 0.5f ) );
+			else
+				Gizmo.Hitbox.Sphere( new Sphere( 0f, _boneHandleRadius ) );
 
 			if ( !Gizmo.IsHovered )
 				continue;
@@ -942,12 +958,19 @@ internal sealed class RigViewport : Widget
 				Select( null );
 			}
 		}
+
+		if ( selected is { } sel )
+			DragReferenceProp( sel.Index, sel.Prop, sel.World );
 	}
 
 	private void DragReferenceProp( int index, ReferenceProp prop, Transform world )
 	{
 		var dragging = _propDragIndex == index;
 		var start = dragging ? _propDragStart : world;
+
+		// Positioned at the prop but NOT rotated with it, so the arrows stay world-aligned like the
+		// scene editor's in global space, and the delta comes back in the space it's applied in.
+		using var scope = Gizmo.Scope( $"RefPropControl{index}", new Transform( start.Position ) );
 
 		Gizmo.Hitbox.DepthBias = 0.01f;
 
