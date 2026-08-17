@@ -175,16 +175,17 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 	// that DockManager itself knows how to open/close correctly, including re-attaching one
 	// that was fully closed.
 	private RigStatusBar _statusBar;
+	private RigTutorialPanel _tutorialPanel;
 	private readonly RigTutorial _tutorial = new();
 
-	/// <summary>The bar the whole tool explains itself through - hover hint on the left, current
-	/// tutorial step on the right. Added below the docks so it spans the full window.</summary>
+	/// <summary>Hover hints only. The tutorial used to live in here too and was unreadable - see
+	/// RigTutorialPanel.</summary>
 	private void BuildStatusBar()
 	{
 		// Window.StatusBar, not Layout.Add - a DockWindow has no Layout of its own (the dock
 		// manager owns the window's whole client area), so adding to it threw a
 		// NullReferenceException straight out of the constructor.
-		_statusBar = new RigStatusBar( this ) { Tutorial = _tutorial };
+		_statusBar = new RigStatusBar( this );
 		StatusBar = _statusBar;
 
 		RefreshTutorial();
@@ -194,11 +195,8 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 	/// that could have satisfied one.</summary>
 	private void RefreshTutorial()
 	{
-		if ( _statusBar is null )
-			return;
-
 		_tutorial.Evaluate( _anim, _viewport?.SelectedBone );
-		_statusBar.Update();
+		_tutorialPanel?.Rebuild();
 	}
 
 	private void BuildHelpMenu()
@@ -208,13 +206,19 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		help.AddOption( "Start Wave Tutorial", "school", () =>
 		{
 			_tutorial.Restart();
+
+			// Starting it should show it. Restarting a tutorial whose panel is closed, and saying
+			// nothing, is the kind of dead menu item this tool has had enough of.
+			DockManager.SetDockState( "Tutorial", true );
+			DockManager.RaiseDock( "Tutorial" );
+
 			RefreshTutorial();
 		} ).StatusTip = "Walks through building a simple wave animation, one step at a time";
 
 		help.AddOption( "Dismiss Tutorial", "close", () =>
 		{
 			_tutorial.Dismiss();
-			_statusBar?.Update();
+			_tutorialPanel?.Rebuild();
 		} );
 	}
 
@@ -436,6 +440,20 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 			Edited = () => MarkDirty( "Edit Constraint" ),
 		};
 
+		_tutorialPanel = new RigTutorialPanel( this )
+		{
+			Tutorial = _tutorial,
+			Changed = RefreshTutorial,
+
+			// Opening the dock the step is talking about, rather than naming it and hoping.
+			RevealPanel = title =>
+			{
+				DockManager.SetDockState( title, true );
+				DockManager.RaiseDock( title );
+			},
+		};
+
+		DockManager.RegisterDock( new() { Title = "Tutorial", Icon = "school", Area = DockArea.Hidden, CreateAction = () => _tutorialPanel } );
 		DockManager.RegisterDock( new() { Title = "AnimEvents", Icon = "bolt", Area = DockArea.Hidden, CreateAction = () => _events } );
 		DockManager.RegisterDock( new() { Title = "BonesObject", Icon = "polyline", Area = DockArea.Hidden, CreateAction = () => _bones } );
 		DockManager.RegisterDock( new() { Title = "Constraints", Icon = "link", Area = DockArea.Hidden, CreateAction = () => _constraints } );
@@ -444,7 +462,11 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		// Bumped from "RigControlEditor" - the blank-window bug shipped its first broken layout
 		// (nothing opened) under that cookie, and would otherwise keep restoring that empty state
 		// forever instead of ever calling BuildDefaultLayout again.
-		StateCookie = "RigControlEditor5";
+		// Bumped for the Tutorial dock. A saved layout under the old cookie has no Tutorial in it,
+		// and DockWindow only calls BuildDefaultLayout when there's nothing to restore - so
+		// without this, the new panel would silently never appear for anyone who had opened the
+		// tool before.
+		StateCookie = "Marionette1";
 
 		_lastModel = _anim.SourceModel;
 		_viewport.SetModel( _lastModel );
@@ -470,6 +492,12 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		// shipped first); Center stacks a dock as a tab alongside whatever's already there.
 		DockManager.OpenDock( "AnimEvents", DockArea.Center, bonesDock );
 		DockManager.OpenDock( "Constraints", DockArea.Center, bonesDock );
+
+		// Tabbed alongside the others and RAISED, so a first-time user opens the tool with the
+		// tutorial already in front of them. It's the one panel that's useless if nobody notices
+		// it, and it's one click to close forever.
+		DockManager.OpenDock( "Tutorial", DockArea.Center, bonesDock );
+		DockManager.RaiseDock( "Tutorial" );
 
 		var timeline = DockManager.OpenDock( "Timeline", DockArea.Bottom, _centralDock );
 		DockManager.SetSplitterProportions( timeline, 0.65f, 0.35f );

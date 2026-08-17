@@ -110,35 +110,21 @@ internal sealed class RigStatusBar : Editor.StatusBar
 		Paint.SetPen( Theme.WindowBackground );
 		Paint.DrawLine( new Vector2( 0f, 0f ), new Vector2( Width, 0f ) );
 
-		// Font 9, not 7. This bar is the tool's primary explanation surface - if it's too small to
-		// read at a glance it may as well be blank, and 7 was being read as chrome rather than as
-		// something addressed to you.
+		// HOVER HINTS ONLY. The tutorial used to share this strip and was unreadable in it - one
+		// line of text at the bottom of the window, competing with whatever the cursor was over,
+		// in a band the eye reads as chrome. It lives in its own dock now, where it can be looked
+		// at. This bar does the one thing a status bar is good at: saying what's under the cursor.
 		Paint.SetDefaultFont( 9 );
-
-		var step = Tutorial?.CurrentStep;
-		var stepWidth = step is null ? 0f : Width * 0.45f;
 
 		if ( !string.IsNullOrWhiteSpace( Hint ) )
 		{
 			Paint.SetPen( Theme.TextControl );
-			Paint.DrawText( new Rect( 12f, 0f, Width - stepWidth - 24f, Height ), Hint, TextFlag.LeftCenter );
-		}
-		else if ( step is null )
-		{
-			Paint.SetPen( Theme.TextControl.WithAlpha( 0.35f ) );
-			Paint.DrawText( new Rect( 12f, 0f, Width - 24f, Height ), "Ready", TextFlag.LeftCenter );
-		}
-
-		if ( step is null )
+			Paint.DrawText( new Rect( 12f, 0f, Width - 24f, Height ), Hint, TextFlag.LeftCenter );
 			return;
+		}
 
-		var index = Tutorial.CurrentIndex + 1;
-		var total = Tutorial.StepCount;
-
-		Paint.SetDefaultFont( 9, 500 );
-		Paint.SetPen( Theme.Green );
-		Paint.DrawText( new Rect( Width - stepWidth - 12f, 0f, stepWidth, Height ),
-			$"Tutorial {index}/{total}   {step.Instruction}", TextFlag.RightCenter );
+		Paint.SetPen( Theme.TextControl.WithAlpha( 0.35f ) );
+		Paint.DrawText( new Rect( 12f, 0f, Width - 24f, Height ), "Ready", TextFlag.LeftCenter );
 	}
 }
 
@@ -154,9 +140,31 @@ internal sealed class RigStatusBar : Editor.StatusBar
 /// </summary>
 internal sealed class RigTutorial
 {
+	/// <summary>A drawn glyph per step. Painted rather than an image asset so it ships with the
+	/// code, scales with the panel and follows the editor theme - and so the tool has no binary
+	/// art to keep in sync with anything.</summary>
+	public enum StepArt
+	{
+		Model,
+		Bone,
+		Rotate,
+		Keyframe,
+		Play
+	}
+
 	public sealed class Step
 	{
 		public string Instruction { get; init; }
+
+		/// <summary>The why. Instructions tell you what to press; this is the part that means you
+		/// still know what you're doing after the tutorial ends.</summary>
+		public string Detail { get; init; }
+
+		public StepArt Art { get; init; }
+
+		/// <summary>Dock this step is about, so the panel can offer to open it. Answers "where is
+		/// that?", which is the question a written instruction always leaves behind.</summary>
+		public string Panel { get; init; }
 
 		/// <summary>True once the reader has actually done this.</summary>
 		public Func<RigAnimDocument, string, bool> IsDone { get; init; }
@@ -171,36 +179,55 @@ internal sealed class RigTutorial
 			new()
 			{
 				Instruction = "Set Source Model in the BonesObject tab",
+				Detail = "Any skinned model works. If you have nothing in mind, the Citizen is installed with s&box and is rigged.",
+				Art = StepArt.Model,
+				Panel = "BonesObject",
 				IsDone = ( anim, _ ) => anim?.SourceModel is not null
 			},
 			new()
 			{
-				Instruction = "Click a bone in the viewport - try an upper arm",
+				Instruction = "Click a bone dot in the viewport - try an upper arm",
+				Detail = "Bones draw through the mesh, so the ones inside the model are still clickable. Work big bones first: a shoulder carries the elbow and hand with it, so posing a hand and then moving the shoulder throws the hand away.",
+				Art = StepArt.Bone,
 				IsDone = ( _, bone ) => !string.IsNullOrEmpty( bone )
 			},
 			new()
 			{
 				Instruction = "At frame 0, drag the bone to rotate it - this is the arm's rest pose",
+				Detail = "Dragging rotates by default, because joints pivot rather than slide. Hold E if you genuinely need to move one. Rest pose first: it's the shape the wave starts and ends on.",
+				Art = StepArt.Rotate,
 				IsDone = ( anim, _ ) => KeyNear( anim, 0, 2 )
 			},
 			new()
 			{
 				Instruction = "Move the playhead to ~frame 8 and rotate the arm out to one side",
+				Detail = "This is an extreme - one of the two poses the wave swings between. Getting both extremes down before anything else is how animation is built; the in-between takes care of itself.",
+				Art = StepArt.Keyframe,
+				Panel = "Timeline",
 				IsDone = ( anim, _ ) => KeyAfter( anim, 4 )
 			},
 			new()
 			{
-				Instruction = "Now ~frame 16, rotate it across to the other side - that's the wave's second extreme",
+				Instruction = "Now ~frame 16, rotate it across to the other side - the second extreme",
+				Detail = "Two extremes and the shape of the motion exists. Press Play now if you like - it'll be floaty, but you'll see whether the idea reads.",
+				Art = StepArt.Keyframe,
+				Panel = "Timeline",
 				IsDone = ( anim, _ ) => KeyAfter( anim, 12 )
 			},
 			new()
 			{
 				Instruction = "Last, near frame 24, bring it back to about the rest pose so it loops",
+				Detail = "Ending where you started is what lets a clip repeat without a visible jump. Right-click that first key and Copy, then paste it here to land exactly back.",
+				Art = StepArt.Keyframe,
+				Panel = "Timeline",
 				IsDone = ( anim, _ ) => KeyAfter( anim, 20 )
 			},
 			new()
 			{
 				Instruction = "Press Play. Too slow? Drag the keys closer together - waves are fast",
+				Detail = "Most first animations are half the speed they should be. A whole wave usually wants well under a second. Preview at x0.25 from the timeline if you need to see what the timing is really doing.",
+				Art = StepArt.Play,
+				Panel = "Timeline",
 				IsDone = ( _, _ ) => false
 			}
 		};
@@ -221,6 +248,10 @@ internal sealed class RigTutorial
 	public int StepCount => _steps.Count;
 
 	public Step CurrentStep => Active && CurrentIndex < _steps.Count ? _steps[CurrentIndex] : null;
+
+	/// <summary>Any step by index, so the panel can list the whole run rather than only the one
+	/// you're on - seeing what's done and what's left is most of what makes it feel finishable.</summary>
+	public Step StepAt( int index ) => index >= 0 && index < _steps.Count ? _steps[index] : null;
 
 	public void Restart()
 	{
