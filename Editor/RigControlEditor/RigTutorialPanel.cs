@@ -183,6 +183,23 @@ internal sealed class RigTutorialPanel : Widget
 		optOut.AddStretchCell();
 	}
 
+	/// <summary>One action in a step. The marker is its own fixed-width label so wrapped text
+	/// lines up under itself instead of running back under the bullet.</summary>
+	private void AddBullet( string text )
+	{
+		var row = _list.Layout.AddRow();
+		row.Margin = new Sandbox.UI.Margin( 4, 0, 0, 0 );
+		row.Spacing = 8;
+
+		var marker = new Editor.Label( "•" ) { FixedWidth = 10, Color = Theme.Yellow };
+		marker.SetStyles( "font-size: 15px; font-weight: 600;" );
+		row.Add( marker );
+
+		var label = new Editor.Label( text ) { WordWrap = true };
+		label.SetStyles( "font-size: 14px; line-height: 1.35;" );
+		row.Add( label, 1 );
+	}
+
 	/// <summary>A paragraph in the start screen. alpha dims it relative to the body text.</summary>
 	private void AddLine( string text, float size, float alpha )
 	{
@@ -265,17 +282,28 @@ internal sealed class RigTutorialPanel : Widget
 		instruction.SetStyles( "font-weight: 600; font-size: 17px; line-height: 1.3;" );
 		header.Add( instruction, 1 );
 
-		_list.Layout.AddSpacingCell( 4f );
+		_list.Layout.AddSpacingCell( 6f );
+
+		// Actions as bullets, the why as prose underneath. A step is two different things - what
+		// to do and why it matters - and running them together as one paragraph meant the
+		// instructions had to be read to be found. Bullets can be scanned; prose can't.
+		if ( step.Bullets is { Length: > 0 } bullets )
+		{
+			foreach ( var bullet in bullets )
+				AddBullet( bullet );
+
+			_list.Layout.AddSpacingCell( 8f );
+		}
 
 		if ( !string.IsNullOrWhiteSpace( step.Detail ) )
 		{
 			var detail = new Editor.Label( step.Detail )
 			{
 				WordWrap = true,
-				Color = Theme.TextControl.WithAlpha( 0.65f )
+				Color = Theme.TextControl.WithAlpha( 0.6f )
 			};
 
-			detail.SetStyles( "font-size: 14px; line-height: 1.45;" );
+			detail.SetStyles( "font-size: 13px; line-height: 1.45;" );
 			_list.Layout.Add( detail );
 		}
 

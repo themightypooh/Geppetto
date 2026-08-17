@@ -272,6 +272,13 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		view.AddOption( "Open Assets Browser", "folder_open", () => MainAssetBrowser.CreateFloating() );
 		view.AddSeparator();
 
+		// Same label and icon every other editor window uses - ShaderGraph, AnimGraph,
+		// ActionGraph, Sprite, Sound and Rect all have this identical line. Panels are draggable,
+		// so sooner or later everyone lands somewhere they didn't intend and can't remember what
+		// the default was; matching the wording means people already know what to look for.
+		view.AddOption( "Restore To Default", "settings_backup_restore", ResetLayout );
+		view.AddSeparator();
+
 		foreach ( var dock in DockManager.DockTypes )
 		{
 			var option = view.AddOption( dock.Title, dock.Icon );

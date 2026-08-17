@@ -156,8 +156,13 @@ internal sealed class RigTutorial
 	{
 		public string Instruction { get; init; }
 
-		/// <summary>The why. Instructions tell you what to press; this is the part that means you
-		/// still know what you're doing after the tutorial ends.</summary>
+		/// <summary>The actions, one per bullet. Kept separate from the prose because they are
+		/// different things doing different jobs: this is what you DO, and it should be scannable
+		/// in a glance without reading a sentence.</summary>
+		public string[] Bullets { get; init; }
+
+		/// <summary>The why, in one or two lines under the bullets. Instructions tell you what to
+		/// press; this is the part that means you still know what you're doing afterwards.</summary>
 		public string Detail { get; init; }
 
 		public StepArt Art { get; init; }
@@ -179,14 +184,26 @@ internal sealed class RigTutorial
 			new()
 			{
 				Instruction = "To pose a bone, you first have to select it",
-				Detail = "There are three ways, and they all do the same thing: click the bone's dot in the viewport, click its name in the timeline's left column, or click it in the bone tree in the BonesObject tab. The selected bone turns yellow and gets a gizmo you can drag. Select arm_upper_R - the right shoulder - to carry on.",
+				Bullets = new[]
+				{
+					"Click its dot in the viewport",
+					"Or click its name in the timeline's left column",
+					"Or click it in the bone tree in the BonesObject tab"
+				},
+				Detail = "All three do the same thing. The selected bone turns yellow and gets a gizmo you can drag. Select arm_upper_R - the right shoulder - to carry on.",
 				Art = StepArt.Bone,
 				IsDone = ( _, bone ) => !string.IsNullOrEmpty( bone )
 			},
 			new()
 			{
 				Instruction = "To reach for something, you need something to reach for",
-				Detail = "In the BonesObject tab, add a Reference Prop and pick models/lightswitch/lightswitch_plate.vmdl - it ships with Marionette. Place it about arm's length in front of the hand. Posing at a real object beats imagining where one would be.",
+				Bullets = new[]
+				{
+					"In the BonesObject tab, add a Reference Prop",
+					"Pick models/lightswitch/lightswitch_plate.vmdl",
+					"Place it about arm's length in front of the hand"
+				},
+				Detail = "Reference props are shown in the viewport only - never keyed, never exported. Posing at a real object beats imagining where one would be.",
 				Art = StepArt.Model,
 				Panel = "BonesObject",
 				IsDone = ( anim, _ ) => anim?.ReferenceProps?.Any( p => p?.Model is not null ) ?? false
@@ -194,7 +211,12 @@ internal sealed class RigTutorial
 			new()
 			{
 				Instruction = "Every action needs a pose to leave from and come back to",
-				Detail = "At frame 0, press K. That keys the pose the arm already has - no posing needed. You'll copy this exact key to the end of the clip later so the whole thing settles back.",
+				Bullets = new[]
+				{
+					"Go to frame 0",
+					"Press K"
+				},
+				Detail = "That keys the pose the arm already has - no posing needed. You'll copy this exact key to the end of the clip later so the whole thing settles back.",
 				Art = StepArt.Keyframe,
 				Panel = "Timeline",
 				IsDone = ( anim, _ ) => KeyNear( anim, 0, 2 )
@@ -202,28 +224,52 @@ internal sealed class RigTutorial
 			new()
 			{
 				Instruction = "To stop the reach looking mechanical, wind up before it goes",
-				Detail = "Move to frame 6 and rotate arm_upper_R slightly BACK, away from the switch. A few degrees is plenty. This is anticipation - real movement always loads before it fires, and it's the beat most people skip.",
+				Bullets = new[]
+				{
+					"Go to frame 6",
+					"Rotate arm_upper_R slightly BACK, away from the switch",
+					"A few degrees is plenty"
+				},
+				Detail = "This is anticipation - real movement always loads before it fires. It's the beat most people skip.",
 				Art = StepArt.Rotate,
 				IsDone = ( anim, _ ) => KeyAfter( anim, 3 )
 			},
 			new()
 			{
 				Instruction = "Now the reach itself - the pose the whole clip is about",
-				Detail = "At frame 14, swing arm_upper_R forward and up, then straighten arm_lower_R. Shoulder first, elbow second: the elbow hangs off the shoulder, so doing it the other way round undoes your own work.",
+				Bullets = new[]
+				{
+					"Go to frame 14",
+					"Swing arm_upper_R forward and up",
+					"Then straighten arm_lower_R"
+				},
+				Detail = "Shoulder first, elbow second. The elbow hangs off the shoulder, so doing it the other way round undoes your own work - that order holds for every limb you'll ever pose.",
 				Art = StepArt.Rotate,
 				IsDone = ( anim, _ ) => KeyAfter( anim, 10 )
 			},
 			new()
 			{
 				Instruction = "To read as a hand about to press, aim the wrist",
-				Detail = "At frame 17, rotate hand_R until the palm faces the switch and the index finger leads. Until now the hand has just been dragged along by the arm, pointing wherever the elbow left it.",
+				Bullets = new[]
+				{
+					"Go to frame 17",
+					"Rotate hand_R until the palm faces the switch",
+					"The index finger should lead"
+				},
+				Detail = "Until now the hand has just been dragged along by the arm, pointing wherever the elbow left it.",
 				Art = StepArt.Rotate,
 				IsDone = ( anim, _ ) => KeyAfter( anim, 15 )
 			},
 			new()
 			{
 				Instruction = "Contact should land, not ease in",
-				Detail = "At frame 19, curl finger_index_0_R and finger_index_1_R onto the switch. Keep it one or two frames after the reach arrives. Right-click the key and set Interpolation Mode to Stepped if you want it to snap outright.",
+				Bullets = new[]
+				{
+					"Go to frame 19",
+					"Curl finger_index_0_R and finger_index_1_R onto the switch",
+					"Right-click the key, Interpolation Mode, Stepped"
+				},
+				Detail = "Keep it one or two frames after the reach arrives, no more. Stepped makes it snap instead of easing in, which is what a switch press actually does.",
 				Art = StepArt.Keyframe,
 				Panel = "Timeline",
 				IsDone = ( anim, _ ) => KeyAfter( anim, 18 )
@@ -231,14 +277,26 @@ internal sealed class RigTutorial
 			new()
 			{
 				Instruction = "Nothing heavy stops dead, so let the arm overshoot",
-				Detail = "At frame 22, push arm_upper_R two or three degrees PAST the contact pose, then start it back. This is the settle - the other beat people skip, and the reason a limb reads as having weight.",
+				Bullets = new[]
+				{
+					"Go to frame 22",
+					"Push arm_upper_R two or three degrees PAST the contact pose",
+					"Then start it back"
+				},
+				Detail = "This is the settle - the other beat people skip, and the reason a limb reads as having weight.",
 				Art = StepArt.Rotate,
 				IsDone = ( anim, _ ) => KeyAfter( anim, 21 )
 			},
 			new()
 			{
 				Instruction = "Close the loop so the clip can repeat cleanly",
-				Detail = "Right-click your frame 0 key and Copy. Move the playhead to frame 28 and Paste - paste lands at the playhead rather than where it came from, so the arm returns to exactly the pose it started in.",
+				Bullets = new[]
+				{
+					"Right-click your frame 0 key, Copy",
+					"Move the playhead to frame 28",
+					"Right-click, Paste"
+				},
+				Detail = "Paste lands at the playhead rather than where it came from, so the arm returns to exactly the pose it started in.",
 				Art = StepArt.Keyframe,
 				Panel = "Timeline",
 				IsDone = ( anim, _ ) => KeyAfter( anim, 25 )
@@ -246,7 +304,13 @@ internal sealed class RigTutorial
 			new()
 			{
 				Instruction = "The poses are done - now find the timing",
-				Detail = "Press Play. Almost every first animation runs at half the speed it should, so drag the keys closer together and play it again. That comparison teaches more than any amount of re-posing.",
+				Bullets = new[]
+				{
+					"Press Play",
+					"Drag the keys closer together",
+					"Play it again"
+				},
+				Detail = "Almost every first animation runs at half the speed it should. That comparison teaches more than any amount of re-posing.",
 				Art = StepArt.Play,
 				Panel = "Timeline",
 				IsDone = ( _, _ ) => false
