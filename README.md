@@ -21,6 +21,34 @@ Built because there is currently no in-editor way to author character animation 
 - **Prop-attach events** — spawn a model on a bone for a frame range, for anything the character
   needs to be holding partway through a clip.
 
+## Installing
+
+**Copy two folders into your project:**
+
+```
+Code/RigControl/          →  YourProject/Code/RigControl/
+Editor/RigControlEditor/  →  YourProject/Editor/RigControlEditor/
+```
+
+That's it. It's plain C# against the editor API with no dependencies, so it compiles on load and
+**Rig Control Editor** appears in your Tools menu.
+
+<details>
+<summary>Why copying rather than a package reference</summary>
+
+s&box can reference other packages — Project Settings → Packages — and in principle you'd add
+`pooh.marionette` there and be done. As of writing, that screen carries Facepunch's own warning:
+
+> This stuff hasn't been properly end to end tested - please don't expect it to work just yet!
+
+It's also unclear whether a referenced package's `Editor/` code compiles into the consuming
+project's editor assembly at all, which is precisely what an editor tool needs. So: copy the
+folders. It works today, and it's two folders.
+
+Once package references are finished this section gets shorter.
+
+</details>
+
 ## Getting started
 
 Open **Rig Control Editor** from the Tools menu, or double-click a `.riganim` asset.
