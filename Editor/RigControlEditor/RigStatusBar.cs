@@ -178,8 +178,8 @@ internal sealed class RigTutorial
 		{
 			new()
 			{
-				Instruction = "Start with the bone that drives everything else",
-				Detail = "Click the arm_upper_R dot in the viewport - that's the right shoulder. Work outward from it: shoulder, elbow, wrist, finger. To clear the clutter first, right-click camera or weapon_root and pick Hide Bone And Children.",
+				Instruction = "To pose a bone, you first have to select it",
+				Detail = "There are three ways, and they all do the same thing: click the bone's dot in the viewport, click its name in the timeline's left column, or click it in the bone tree in the BonesObject tab. The selected bone turns yellow and gets a gizmo you can drag. Select arm_upper_R - the right shoulder - to carry on.",
 				Art = StepArt.Bone,
 				IsDone = ( _, bone ) => !string.IsNullOrEmpty( bone )
 			},
