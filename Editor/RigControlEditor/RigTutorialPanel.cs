@@ -21,7 +21,7 @@ internal sealed class RigTutorialPanel : Widget
 	/// <summary>The tutorial's name, in one place. It was written out at three separate call
 	/// sites and two of them still said "Build A Wave" long after the content became a switch
 	/// flip - which is exactly what a duplicated string does.</summary>
-	private const string Title = "Flip A Switch";
+	private const string Title = "First Person Animation Tutorial";
 
 	private readonly Widget _list;
 	private readonly Editor.Label _heading;
@@ -111,23 +111,44 @@ internal sealed class RigTutorialPanel : Widget
 	private void BuildStartScreen()
 	{
 		_heading.Text = Title;
-		_progress.Text = $"{Tutorial.StepCount} steps";
 
-		var intro = new Editor.Label(
-			"Build a reach-out-and-flip-a-switch animation on the first-person arms, a step at " +
-			"a time. Each step ticks itself off as you do it, and points at the panel it means.\n\n" +
-			"Almost every action animation is four beats, and this walks through all four:\n\n" +
-			"    REST  -  the pose it starts and ends on\n" +
-			"    ANTICIPATION  -  a small wind-up AWAY from the action\n" +
-			"    EXTREME  -  the action itself, at its furthest point\n" +
-			"    SETTLE  -  drifting slightly past, then back\n\n" +
-			"Anticipation and settle are the two people skip, and they're most of the difference " +
-			"between animation that reads as alive and animation that reads as a machine.\n\n" +
-			"You can start it, skip it, or come back later from the Help menu." )
-		{ WordWrap = true };
+		// No step count here. The mock this was built from doesn't have one, and it's the wrong
+		// first impression anyway - "10 steps" reads as a length to get through.
+		_progress.Text = "";
 
-		intro.SetStyles( "font-size: 15px; line-height: 1.35;" );
-		_list.Layout.Add( intro );
+		// Built from separate labels rather than one string with line breaks in it. Twice now,
+		// escaped newlines have been written into this file as real ones and left string literals
+		// unterminated; separate labels can't do that, and they let each line carry its own
+		// weight and colour.
+		AddLine( "This tutorial is for reaching out and flipping a switch and is meant to be an " +
+			"example to gain animation knowledge from", 15f, 0.95f );
+
+		_list.Layout.AddSpacingCell( 6f );
+
+		AddLine( "Almost every action animation is four beats, and this walks through all four:", 14f, 0.8f );
+
+		_list.Layout.AddSpacingCell( 4f );
+
+		AddBeat( "REST", "the pose it starts and ends on" );
+		AddBeat( "ANTICIPATION", "a small wind-up AWAY from the action" );
+		AddBeat( "EXTREME", "the action itself, at its furthest point" );
+		AddBeat( "SETTLE", "drifting slightly past, then back" );
+
+		_list.Layout.AddSpacingCell( 6f );
+
+		AddLine( "Anticipation and settle are the two people skip, and they're most of the " +
+			"difference between animation that reads as alive and animation that reads as a machine.",
+			14f, 0.8f );
+
+		_list.Layout.AddSpacingCell( 6f );
+
+		// The caveat matters: the tool is general, and the tutorial being first-person shouldn't
+		// leave anyone thinking that's all it does.
+		var note = new Editor.Label( "*Animation with this tool doesn't have to be exclusively for first person*" )
+		{ WordWrap = true, Color = Theme.TextControl.WithAlpha( 0.65f ) };
+
+		note.SetStyles( "font-size: 13px; font-style: italic;" );
+		_list.Layout.Add( note );
 
 		_list.Layout.AddSpacingCell( 8f );
 
@@ -160,6 +181,42 @@ internal sealed class RigTutorialPanel : Widget
 		checkbox.Toggled += () => RigTutorial.OpenOnStartup = !checkbox.Value;
 
 		optOut.AddStretchCell();
+	}
+
+	/// <summary>A paragraph in the start screen. alpha dims it relative to the body text.</summary>
+	private void AddLine( string text, float size, float alpha )
+	{
+		var label = new Editor.Label( text )
+		{
+			WordWrap = true,
+			Color = Theme.TextControl.WithAlpha( alpha )
+		};
+
+		label.SetStyles( $"font-size: {size:0}px; line-height: 1.4;" );
+		_list.Layout.Add( label );
+	}
+
+	/// <summary>One of the four beats: the name in caps and colour, its description alongside.
+	/// A row per beat rather than a block of preformatted text, so the names can be picked out
+	/// at a glance - they're the part worth remembering after the tutorial is over.</summary>
+	private void AddBeat( string name, string description )
+	{
+		var row = _list.Layout.AddRow();
+		row.Margin = new Sandbox.UI.Margin( 12, 0, 0, 0 );
+		row.Spacing = 8;
+
+		var label = new Editor.Label( name ) { Color = Theme.Yellow, FixedWidth = 108 };
+		label.SetStyles( "font-size: 14px; font-weight: 600;" );
+		row.Add( label );
+
+		var body = new Editor.Label( "-  " + description )
+		{
+			WordWrap = true,
+			Color = Theme.TextControl.WithAlpha( 0.8f )
+		};
+
+		body.SetStyles( "font-size: 14px;" );
+		row.Add( body, 1 );
 	}
 
 	/// <summary>

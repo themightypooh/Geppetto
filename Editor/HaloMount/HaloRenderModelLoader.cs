@@ -17,6 +17,11 @@ public class HaloRenderModelLoader( HaloMCCMount host, string mapPath, string ta
 
 	protected override object Load()
 	{
+		// Unambiguous marker so we can tell from the console whether Load() genuinely re-ran
+		// for a given spawn, vs the engine serving something cached from an earlier resolve --
+		// screenshots alone haven't been reliable enough to tell those apart this session.
+		Log.Info( $"[HaloMount] Load() ENTERED for '{TagName}' (instance {GetHashCode()})" );
+
 		var asm = HaloMCCMount.LoadReclaimer();
 		var cacheFactory = asm.GetType( "Reclaimer.Blam.Common.CacheFactory", throwOnError: true );
 

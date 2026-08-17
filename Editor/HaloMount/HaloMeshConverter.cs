@@ -54,11 +54,18 @@ internal static class HaloMeshConverter
 			: Vector2.One;
 
 		// A lot of Halo's more complex render_models (bipeds, anything with more than one
-		// rigid piece) store vertex positions relative to a specific bone's LOCAL space, not
-		// one shared object-space box -- weapons happened to be simple single-bone geometry so
-		// this never mattered before, but skipping it is what caused other models to render
-		// stretched/distorted toward the origin. Mesh.BoneIndex (nullable -- null means smooth-
-		// skinned via per-vertex blend weights, not handled here yet) tells us which bone.
+		// rigid piece) store vertex positions relative to bone-LOCAL space, not one shared
+		// object-space box -- weapons happened to be simple single-bone geometry so this never
+		// mattered before, but skipping it is what caused other models to render stretched/
+		// exploded. Two cases:
+		//   - Mesh.BoneIndex set (rigid, e.g. Grunt's backpack/helmet): the WHOLE mesh is
+		//     relative to that one bone.
+		//   - Mesh.BoneIndex null but VertexBuffer.HasBlendIndices/HasBlendWeights (smooth-
+		//     skinned, e.g. Grunt's arms/head/legs/torso -- confirmed via halomount_diag_load):
+		//     EACH VERTEX blends across up to 4 bones by weight. Originally assumed these were
+		//     already in object-space and left untouched -- confirmed wrong (asset_thumbnail
+		//     showed disconnected floating pieces even after the rigid-mesh fix below), so this
+		//     now does real linear blend skinning for them too.
 		//
 		// Model.GetBoneWorldTransform(i) is NOT a bone-local-to-object-space transform, despite
 		// the name -- for Halo3, every Bone.WorldTransform is precomputed from the tag's
@@ -67,21 +74,25 @@ internal static class HaloMeshConverter
 		// it's the INVERSE bind matrix (object-space -> bone-local-space, the standard thing
 		// skinning math wants). GetBoneWorldTransform returns that precomputed value as-is
 		// whenever it's set, which for Halo3 is always. Applying it directly to a bone-local
-		// vertex sends it somewhere essentially unrelated -- that's the "teleporting" bug.
-		// What we actually want is the forward transform (bone-local -> object-space), which is
-		// just the inverse of that.
-		object boneIndexObj = reclaimerMesh.BoneIndex;
-		SysMatrix4x4? boneWorld = null;
-		if ( boneIndexObj is not null )
+		// vertex sends it somewhere essentially unrelated -- that's the "teleporting" bug. What
+		// we actually want is the forward transform (bone-local -> object-space), the inverse of
+		// that -- precomputed once per bone here rather than per-vertex since blend skinning may
+		// touch every bone from every vertex.
+		int boneCount = (int)reclaimerModel.Bones.Count;
+		var forwardBoneTransforms = new SysMatrix4x4[boneCount];
+		for ( var b = 0; b < boneCount; b++ )
 		{
-			int boneIndex = (byte)boneIndexObj;
-			var inverseBind = (SysMatrix4x4)reclaimerModel.GetBoneWorldTransform( boneIndex );
-
-			if ( SysMatrix4x4.Invert( inverseBind, out var forward ) )
-				boneWorld = forward;
-			else
-				Log.Warning( $"[HaloMount] Bone {boneIndex} transform is not invertible, leaving mesh un-transformed." );
+			var inverseBind = (SysMatrix4x4)reclaimerModel.GetBoneWorldTransform( b );
+			forwardBoneTransforms[b] = SysMatrix4x4.Invert( inverseBind, out var forward ) ? forward : SysMatrix4x4.Identity;
 		}
+
+		object boneIndexObj = reclaimerMesh.BoneIndex;
+		int? rigidBoneIndex = boneIndexObj is not null ? (byte)boneIndexObj : null;
+
+		bool hasBlendIndices = (bool)vertexBuffer.HasBlendIndices;
+		bool hasBlendWeights = (bool)vertexBuffer.HasBlendWeights;
+		dynamic blendIndices = hasBlendIndices ? vertexBuffer.BlendIndexChannels[0] : null;
+		dynamic blendWeights = hasBlendWeights ? vertexBuffer.BlendWeightChannels[0] : null;
 
 		var positionsSb = new Vector3[vertexCount];
 		var normalsSb = new Vector3[vertexCount];
@@ -100,17 +111,53 @@ internal static class HaloMeshConverter
 				normal = new Vector3( (float)n.X, (float)n.Y, (float)n.Z );
 			}
 
-			if ( boneWorld.HasValue )
-			{
-				var realNumerics = new SysVector3( real.x, real.y, real.z );
-				realNumerics = SysVector3.Transform( realNumerics, boneWorld.Value );
-				real = new Vector3( realNumerics.X, realNumerics.Y, realNumerics.Z );
+			var realNumerics = new SysVector3( real.x, real.y, real.z );
+			var normalNumerics = new SysVector3( normal.x, normal.y, normal.z );
 
-				var normalNumerics = new SysVector3( normal.x, normal.y, normal.z );
-				normalNumerics = SysVector3.TransformNormal( normalNumerics, boneWorld.Value );
-				if ( normalNumerics.LengthSquared() > 1e-10f )
-					normal = new Vector3( normalNumerics.X, normalNumerics.Y, normalNumerics.Z ).Normal;
+			if ( rigidBoneIndex.HasValue )
+			{
+				var m = forwardBoneTransforms[rigidBoneIndex.Value];
+				realNumerics = SysVector3.Transform( realNumerics, m );
+				normalNumerics = SysVector3.TransformNormal( normalNumerics, m );
 			}
+			else if ( hasBlendIndices && hasBlendWeights )
+			{
+				dynamic idxVec = blendIndices[i];
+				dynamic wVec = blendWeights[i];
+				float[] idx = [idxVec.X, idxVec.Y, idxVec.Z, idxVec.W];
+				float[] w = [wVec.X, wVec.Y, wVec.Z, wVec.W];
+
+				var blendedPos = SysVector3.Zero;
+				var blendedNormal = SysVector3.Zero;
+				var totalWeight = 0f;
+
+				for ( var k = 0; k < 4; k++ )
+				{
+					if ( w[k] <= 0f )
+						continue;
+
+					var boneIdx = (int)MathF.Round( idx[k] );
+					if ( boneIdx < 0 || boneIdx >= boneCount )
+						continue;
+
+					var m = forwardBoneTransforms[boneIdx];
+					blendedPos += SysVector3.Transform( realNumerics, m ) * w[k];
+					blendedNormal += SysVector3.TransformNormal( normalNumerics, m ) * w[k];
+					totalWeight += w[k];
+				}
+
+				if ( totalWeight > 1e-6f )
+				{
+					realNumerics = blendedPos / totalWeight;
+					normalNumerics = blendedNormal;
+				}
+				// else: no valid bone influences found -- leave un-transformed rather than
+				// silently producing a zero/garbage vertex.
+			}
+
+			real = new Vector3( realNumerics.X, realNumerics.Y, realNumerics.Z );
+			if ( normalNumerics.LengthSquared() > 1e-10f )
+				normal = new Vector3( normalNumerics.X, normalNumerics.Y, normalNumerics.Z ).Normal;
 
 			positionsSb[i] = real * HaloWorldUnitToInches;
 			normalsSb[i] = normal;
