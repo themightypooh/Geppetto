@@ -86,7 +86,10 @@ internal sealed class RigViewport : Widget
 	/// viewmodel mode, and it takes the mouse away from camera control - which is the point.</summary>
 	public bool LockCameraToView { get; set; }
 
-	public Vector3 ViewmodelOffset { get; set; } = new( 0f, 0f, -8f );
+	/// <summary>Zero by default. The model places itself - its camera bone says where the eye
+	/// goes - so nothing needs shifting unless you deliberately want the arms sitting off from
+	/// where the rig thinks they should.</summary>
+	public Vector3 ViewmodelOffset { get; set; }
 	public Angles ViewmodelRotation { get; set; }
 	public float ViewmodelFov { get; set; } = 90f;
 
@@ -377,10 +380,23 @@ internal sealed class RigViewport : Widget
 		if ( !LockCameraToView )
 			return;
 
-		// The eye: origin, looking down +X, at the game's field of view. Everything the arms are
-		// judged against is relative to this, so it's the one thing that must not drift.
-		_camera.WorldPosition = Vector3.Zero;
-		_camera.WorldRotation = Rotation.Identity;
+		// THE EYE COMES FROM THE MODEL'S OWN CAMERA BONE, not from a number.
+		//
+		// Viewmodels carry a bone marking where the player's eye sits - first_person_arms_preview
+		// has one called "camera", at the model's origin. Reading it means the framing is right
+		// for any viewmodel, including ones whose eye isn't at their origin, with nothing to tune.
+		//
+		// This replaced parking the camera at the world origin and shoving the model down by 8
+		// units, a figure lifted from ViewArmsComponent - where it means something quite different,
+		// because there the arms hang off the camera object rather than the camera being placed
+		// against the arms. The result was the eye sitting 8 units above the actual viewpoint and
+		// the arms hidden below the bottom of frame, which reads as the lock doing nothing at all.
+		var eye = FindBoneData( "camera" ) is { } cameraBone && _renderer.TryGetBoneTransform( cameraBone, out var boneWorld )
+			? boneWorld
+			: new Transform( _modelObject.IsValid() ? _modelObject.WorldPosition : Vector3.Zero );
+
+		_camera.WorldPosition = eye.Position;
+		_camera.WorldRotation = eye.Rotation;
 		_camera.FieldOfView = ViewmodelFov;
 	}
 
