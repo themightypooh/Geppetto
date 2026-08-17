@@ -101,6 +101,16 @@ internal sealed class RigTimeline : Widget
 		_frameRuler = new RigTimelineRuler( this, _lanes ) { Scrubbed = ScrubTo, ShowTimecode = false };
 		Layout.Add( _frameRuler );
 
+		// ONE view range, three widgets. Each holds the same object rather than its own copy, so
+		// zooming anywhere moves all of them together - a ruler that scrolls independently of the
+		// lanes it labels is worse than no ruler at all.
+		_ruler.View = _lanes.View;
+		_frameRuler.View = _lanes.View;
+
+		_lanes.ViewChanged = RefreshView;
+		_ruler.ViewChanged = RefreshView;
+		_frameRuler.ViewChanged = RefreshView;
+
 		// EVERY transport control lives here, with the timeline it drives - not split between here
 		// and the window toolbar. Scrubbing, stepping and playing are all things you do while
 		// looking at the timeline; making you travel to the top of the window for half of them and
@@ -201,6 +211,15 @@ internal sealed class RigTimeline : Widget
 		_lanes.Anim = anim;
 		Playhead = 0f;
 		Refresh();
+	}
+
+	/// <summary>Repaint everything that draws against the view window, without touching the
+	/// document - zooming changes what you see, never what's stored.</summary>
+	private void RefreshView()
+	{
+		_lanes.Update();
+		_ruler.Update();
+		_frameRuler.Update();
 	}
 
 	public void Refresh()
@@ -330,18 +349,29 @@ internal readonly struct RigTimelineLayout
 
 	public float LastFrame { get; }
 
-	public RigTimelineLayout( float width, int frameCount, int rows )
+	/// <summary>First frame drawn at the left edge of the lane area.</summary>
+	public float ViewStart { get; }
+
+	/// <summary>How many frames span the lane area. Smaller means zoomed in.</summary>
+	public float ViewFrames { get; }
+
+	public RigTimelineLayout( float width, int frameCount, int rows, float viewStart = 0f, float viewFrames = 0f )
 	{
 		_width = width;
 		_rows = rows;
 		LastFrame = MathF.Max( frameCount - 1, 1f );
+
+		// Zero means "fit the whole clip" - the behaviour before zoom existed, and still the
+		// default for every caller that doesn't care.
+		ViewFrames = viewFrames > 0f ? viewFrames : LastFrame;
+		ViewStart = viewStart;
 	}
 
 	public Rect LaneArea => new( Gutter, 0f, MathF.Max( _width - Gutter - RightPadding, 1f ), _rows * RowHeight );
 
-	public float FrameToX( float frame ) => LaneArea.Left + frame / LastFrame * LaneArea.Width;
+	public float FrameToX( float frame ) => LaneArea.Left + (frame - ViewStart) / ViewFrames * LaneArea.Width;
 
-	public float XToFrame( float x ) => ((x - LaneArea.Left) / LaneArea.Width * LastFrame).Clamp( 0f, LastFrame );
+	public float XToFrame( float x ) => (ViewStart + (x - LaneArea.Left) / LaneArea.Width * ViewFrames).Clamp( 0f, LastFrame );
 
 	public Rect RowRect( int index ) => new( 0f, index * RowHeight, MathF.Max( _width, Gutter ), RowHeight );
 
@@ -368,7 +398,7 @@ internal readonly struct RigTimelineLayout
 	/// pass what they actually need.</summary>
 	public IEnumerable<float> RulerFrames( float minLabelWidth = 38f )
 	{
-		var perFrame = LaneArea.Width / LastFrame;
+		var perFrame = LaneArea.Width / ViewFrames;
 		var step = RulerSteps[^1];
 
 		foreach ( var candidate in RulerSteps )
@@ -380,7 +410,12 @@ internal readonly struct RigTimelineLayout
 			break;
 		}
 
-		for ( var frame = 0f; frame <= LastFrame; frame += step )
+		// Start at the first division at or before the left edge, so labels stay on the same
+		// frame numbers as you scroll rather than sliding around under the cursor.
+		var first = MathF.Floor( ViewStart / step ) * step;
+		var last = MathF.Min( ViewStart + ViewFrames, LastFrame );
+
+		for ( var frame = MathF.Max( first, 0f ); frame <= last; frame += step )
 			yield return frame;
 	}
 
@@ -411,7 +446,99 @@ internal sealed class RigTimelineLanes : Widget
 		MouseTracking = true;
 	}
 
-	private RigTimelineLayout Geometry => new( Width, (Anim?.FrameCount ?? 1), Anim?.BoneTracks.Count ?? 0 );
+	/// <summary>
+	/// The visible frame window, shared by the lanes and both rulers so they can't disagree about
+	/// what's on screen. Held here rather than in each widget because a ruler that scrolls
+	/// independently of the lanes it labels is worse than no ruler.
+	/// </summary>
+	public sealed class ViewRange
+	{
+		public float Start;
+		public float Frames;
+
+		/// <summary>Zoom about a fixed frame - the one under the cursor - so the thing you're
+		/// pointing at stays under the pointer instead of sliding away as you zoom.</summary>
+		public void ZoomAt( float anchorFrame, float factor, float lastFrame )
+		{
+			var fit = MathF.Max( lastFrame, 1f );
+			var current = Frames > 0f ? Frames : fit;
+
+			// Floor of 2 frames stops zoom from collapsing to a division by zero; the ceiling is
+			// the whole clip, since there's nothing beyond it worth looking at.
+			var next = (current * factor).Clamp( 2f, fit );
+			var ratio = (anchorFrame - Start) / current;
+
+			Start = anchorFrame - ratio * next;
+			Frames = next;
+
+			Clamp( fit );
+		}
+
+		public void PanBy( float frames, float lastFrame )
+		{
+			Start += frames;
+			Clamp( MathF.Max( lastFrame, 1f ) );
+		}
+
+		private void Clamp( float fit )
+		{
+			if ( Frames >= fit )
+			{
+				// Fully zoomed out - pin to the start so the clip can't drift off-centre.
+				Frames = fit;
+				Start = 0f;
+				return;
+			}
+
+			Start = Start.Clamp( 0f, fit - Frames );
+		}
+	}
+
+	public ViewRange View { get; set; } = new();
+
+	private RigTimelineLayout Geometry => new( Width, (Anim?.FrameCount ?? 1), Anim?.BoneTracks.Count ?? 0,
+		View.Start, View.Frames );
+
+	/// <summary>
+	/// Ctrl+wheel zooms about the cursor, Shift+wheel pans. Plain wheel is deliberately left to
+	/// the ScrollArea so the bone list still scrolls vertically.
+	///
+	/// Modifiers come off the event (HasCtrl/HasShift) rather than from a global key query, and
+	/// the anchor comes from the last mouse position rather than the wheel event, because
+	/// WheelEvent carries no position - this is the same shape MovieMaker's own timeline uses.
+	/// </summary>
+	protected override void OnMouseWheel( WheelEvent e )
+	{
+		var layout = Geometry;
+
+		if ( e.HasCtrl )
+		{
+			// 1.15 per notch: fine enough to land on a span deliberately, coarse enough that
+			// crossing a long clip doesn't take a dozen scrolls.
+			View.ZoomAt( layout.XToFrame( _lastMousePos.x ), e.Delta > 0 ? 1f / 1.15f : 1.15f, layout.LastFrame );
+
+			ViewChanged?.Invoke();
+			e.Accept();
+			return;
+		}
+
+		if ( e.HasShift )
+		{
+			// Pan by a fifth of the visible span per notch - proportional, so it feels the same
+			// whether you're looking at ten frames or a thousand.
+			View.PanBy( (e.Delta > 0 ? -0.2f : 0.2f) * layout.ViewFrames, layout.LastFrame );
+
+			ViewChanged?.Invoke();
+			e.Accept();
+			return;
+		}
+
+		base.OnMouseWheel( e );
+	}
+
+	private Vector2 _lastMousePos;
+
+	public Action ViewChanged { get; set; }
 
 	protected override void OnPaint()
 	{
@@ -732,6 +859,10 @@ internal sealed class RigTimelineLanes : Widget
 
 	protected override void OnMouseMove( MouseEvent e )
 	{
+		// Kept for the wheel handler - WheelEvent carries no position, so the zoom anchor has to
+		// come from the last place the mouse actually was.
+		_lastMousePos = e.LocalPosition;
+
 		var layout = Geometry;
 
 		if ( !_grabbed || !e.ButtonState.HasFlag( MouseButtons.Left ) )
@@ -1054,6 +1185,10 @@ internal sealed class RigTimelineRuler : Widget
 		_lanes = lanes;
 		FixedHeight = RigTimelineLayout.RulerHeight;
 		Cursor = CursorShape.SizeH;
+
+		// Needed for the wheel zoom anchor: without it OnMouseMove only fires while a button is
+		// held, so the anchor would be stale whenever you simply hover and scroll.
+		MouseTracking = true;
 	}
 
 	/// <summary>Compact, and only as precise as the clip is long.
@@ -1076,7 +1211,40 @@ internal sealed class RigTimelineRuler : Widget
 		return $"{(int)(seconds / 60f)}:{seconds % 60f:00.0}";
 	}
 
-	private RigTimelineLayout Geometry => new( _lanes.Width, FrameCount, 0 );
+	/// <summary>The same instance the lanes hold, so ruler and lanes always agree on what window
+	/// is on screen.</summary>
+	public RigTimelineLanes.ViewRange View { get; set; } = new();
+
+	private RigTimelineLayout Geometry => new( _lanes.Width, FrameCount, 0, View.Start, View.Frames );
+
+	/// <summary>Zoom and pan work from the rulers too - they're the natural place to reach for it,
+	/// and having it only work over the lanes would be an arbitrary dead zone.</summary>
+	protected override void OnMouseWheel( WheelEvent e )
+	{
+		var layout = Geometry;
+
+		if ( e.HasCtrl )
+		{
+			View.ZoomAt( layout.XToFrame( _lastMouseX ), e.Delta > 0 ? 1f / 1.15f : 1.15f, layout.LastFrame );
+			ViewChanged?.Invoke();
+			e.Accept();
+			return;
+		}
+
+		if ( e.HasShift )
+		{
+			View.PanBy( (e.Delta > 0 ? -0.2f : 0.2f) * layout.ViewFrames, layout.LastFrame );
+			ViewChanged?.Invoke();
+			e.Accept();
+			return;
+		}
+
+		base.OnMouseWheel( e );
+	}
+
+	private float _lastMouseX;
+
+	public Action ViewChanged { get; set; }
 
 	protected override void OnPaint()
 	{
@@ -1164,6 +1332,8 @@ internal sealed class RigTimelineRuler : Widget
 
 	protected override void OnMouseMove( MouseEvent e )
 	{
+		_lastMouseX = e.LocalPosition.x;
+
 		if ( !_scrubbing )
 			return;
 
