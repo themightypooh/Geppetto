@@ -398,6 +398,14 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		_viewport.BoneDragStarted += OnBoneDragStarted;
 		_viewport.BoneDragEnded += OnBoneDragEnded;
 
+		// Hiding edits the .ctrlrig, so it's a real document change - dirty, saved, and undoable
+		// like any other. The bones panel rebuilds so its tree can show what's hidden.
+		_viewport.BoneVisibilityChanged += () =>
+		{
+			_bones?.Rebuild();
+			MarkDirty( "Change Bone Visibility" );
+		};
+
 		_centralDock = DockManager.SetCentralWidget( _viewport );
 
 		_timeline = new RigTimeline( this )

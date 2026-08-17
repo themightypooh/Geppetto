@@ -26,6 +26,7 @@ internal sealed class RigSnapshot
 
 	private List<IkConstraint> _ik;
 	private List<LimitConstraint> _limits;
+	private List<string> _hiddenBones;
 	private bool _hasRig;
 
 	public static RigSnapshot Capture( RigAnimDocument anim, RigDocument rig )
@@ -46,6 +47,10 @@ internal sealed class RigSnapshot
 			snap._hasRig = true;
 			snap._ik = rig.IkConstraints.Select( Clone ).ToList();
 			snap._limits = rig.LimitConstraints.Select( Clone ).ToList();
+
+			// Hiding a bone is an undoable edit to the rig, so it has to be in the snapshot -
+			// otherwise Ctrl+Z would restore the constraints and silently leave visibility alone.
+			snap._hiddenBones = new List<string>( rig.HiddenBones );
 		}
 
 		return snap;
@@ -74,6 +79,7 @@ internal sealed class RigSnapshot
 		{
 			rig.IkConstraints = _ik.Select( Clone ).ToList();
 			rig.LimitConstraints = _limits.Select( Clone ).ToList();
+			rig.HiddenBones = new List<string>( _hiddenBones );
 		}
 	}
 

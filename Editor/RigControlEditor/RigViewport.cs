@@ -104,6 +104,113 @@ internal sealed class RigViewport : Widget
 
 	public Action ViewmodelChanged { get; set; }
 
+	/// <summary>Reveals hidden bones without unhiding them - the way back when you've hidden
+	/// something you now need.</summary>
+	public bool ShowHiddenBones { get; set; }
+
+	private string _hoveredBone;
+
+	public bool IsHidden( string bone ) => Rig is not null && Rig.IsBoneHidden( bone );
+
+	/// <summary>Right-click a bone dot to hide it. Hiding a whole chain in one go matters more
+	/// than it sounds: the useless bones on a rig are almost always a whole subtree - a weapon
+	/// root and everything parented under it - and hiding thirty of them one at a time is enough
+	/// friction that nobody bothers.</summary>
+	protected override void OnContextMenu( ContextMenuEvent e )
+	{
+		if ( Rig is null )
+		{
+			RigStatusBar.Show( "Hiding bones needs a Control Rig - set one in the BonesObject tab first" );
+			return;
+		}
+
+		var menu = new Menu( this );
+		var target = _hoveredBone ?? SelectedBone;
+
+		if ( target is not null )
+		{
+			menu.AddHeading( target );
+
+			if ( IsHidden( target ) )
+			{
+				menu.AddOption( "Unhide", "visibility", () => SetHidden( target, false, false ) );
+			}
+			else
+			{
+				menu.AddOption( "Hide Bone", "visibility_off", () => SetHidden( target, true, false ) );
+				menu.AddOption( "Hide Bone And Children", "layers_clear", () => SetHidden( target, true, true ) )
+					.StatusTip = "Hides this bone and everything parented under it";
+			}
+
+			menu.AddSeparator();
+		}
+
+		var showHidden = menu.AddOption( "Show Hidden Bones", "visibility", () =>
+		{
+			ShowHiddenBones = !ShowHiddenBones;
+			ViewmodelChanged?.Invoke();
+		} );
+
+		showHidden.Checkable = true;
+		showHidden.Checked = ShowHiddenBones;
+
+		var unhideAll = menu.AddOption( "Unhide All", "restart_alt", () =>
+		{
+			Rig.HiddenBones.Clear();
+			BoneVisibilityChanged?.Invoke();
+		} );
+
+		unhideAll.Enabled = Rig.HiddenBones.Count > 0;
+		unhideAll.Text = $"Unhide All ({Rig.HiddenBones.Count})";
+
+		menu.OpenAtCursor();
+	}
+
+	public Action BoneVisibilityChanged { get; set; }
+
+	private void SetHidden( string bone, bool hidden, bool includeChildren )
+	{
+		Apply( bone );
+
+		if ( includeChildren )
+		{
+			foreach ( var child in DescendantsOf( bone ) )
+				Apply( child );
+		}
+
+		// Hiding the selected bone would otherwise leave its control floating with nothing under
+		// it - the dot is gone but the gizmo isn't.
+		if ( hidden && !ShowHiddenBones && SelectedBone is { } selected && IsHidden( selected ) )
+			Select( null );
+
+		BoneVisibilityChanged?.Invoke();
+
+		void Apply( string name )
+		{
+			if ( hidden )
+			{
+				if ( !Rig.HiddenBones.Contains( name ) )
+					Rig.HiddenBones.Add( name );
+
+				return;
+			}
+
+			Rig.HiddenBones.Remove( name );
+		}
+	}
+
+	/// <summary>Every bone under this one, at any depth.</summary>
+	private IEnumerable<string> DescendantsOf( string parent )
+	{
+		foreach ( var child in ChildBoneNames( parent ).ToList() )
+		{
+			yield return child;
+
+			foreach ( var deeper in DescendantsOf( child ) )
+				yield return deeper;
+		}
+	}
+
 	/// <summary>Toggled by the rig_debug_drag console command. Off by default; this logs once per
 	/// frame of a drag, which is far too noisy to leave on.</summary>
 	public static bool DebugDrag { get; private set; }
@@ -688,6 +795,12 @@ internal sealed class RigViewport : Widget
 
 		foreach ( var (bone, world) in LiveBones() )
 		{
+			// Hidden bones are skipped HERE and nowhere else - EvaluatePose still drives them and
+			// their keyframes still play. This is the only place hiding is allowed to mean
+			// anything, so it can never cost you animation.
+			if ( IsHidden( bone.Name ) && !ShowHiddenBones )
+				continue;
+
 			using var boneScope = Gizmo.Scope( $"Bone{bone.Index}", world );
 
 			var radius = _boneHandleRadius;
@@ -726,6 +839,9 @@ internal sealed class RigViewport : Widget
 					Select( bone.Name );
 			}
 		}
+
+		// Kept for the right-click menu, which has no gizmo context of its own to hit-test in.
+		_hoveredBone = hovered;
 
 		// Named after the loop so the hint reflects this frame, not last frame's hover.
 		if ( hovered is not null )
@@ -773,7 +889,12 @@ internal sealed class RigViewport : Widget
 
 		if ( !Gizmo.Control.Position( "model-move", Vector3.Zero, out var offset ) )
 		{
-			_draggingModel = false;
+			// Same rule as bones: a frame with no mouse movement is not the end of the drag.
+			// Dropping the anchor there and re-taking it from the moved position is what made
+			// this handle jump as well.
+			if ( !Gizmo.IsLeftMouseDown )
+				_draggingModel = false;
+
 			return;
 		}
 
@@ -801,6 +922,28 @@ internal sealed class RigViewport : Widget
 
 	private string _dragBoneName;
 	private Transform _dragAnchor;
+
+	/// <summary>
+	/// THE DRAG ENDS WHEN THE BUTTON IS RELEASED, not when the control stops reporting.
+	///
+	/// Gizmo.Control.Position/Rotate returns false on any frame its value didn't change - which
+	/// includes frames where the mouse is still held down but hasn't moved. Treating that as the
+	/// end of the drag was the rubberbanding: the anchor was dropped mid-drag and re-taken from
+	/// the already-moved position, while the control went on reporting the TOTAL offset since
+	/// mouse-down, so the very next frame added that whole offset again. Hold still for one frame
+	/// and the bone jumped; keep moving and it behaved. That is exactly the "inconsistent and
+	/// rubberbandy" symptom, and it applies to the model-root handle for the same reason.
+	///
+	/// Safe to read Gizmo.IsLeftMouseDown here: this runs inside an active Gizmo context. Reading
+	/// it from outside one - which EvaluatePose used to do - throws.
+	/// </summary>
+	private void EndDragIfReleased()
+	{
+		if ( Gizmo.IsLeftMouseDown )
+			return;
+
+		EndDrag();
+	}
 
 	private void EndDrag()
 	{
@@ -845,7 +988,7 @@ internal sealed class RigViewport : Widget
 		{
 			if ( !Gizmo.Control.Rotate( "bone-rotate", Rotation.Identity, out var rotation ) )
 			{
-				EndDrag();
+				EndDragIfReleased();
 				return;
 			}
 
@@ -857,7 +1000,7 @@ internal sealed class RigViewport : Widget
 		{
 			if ( !Gizmo.Control.Position( "bone-move", Vector3.Zero, out var offset ) )
 			{
-				EndDrag();
+				EndDragIfReleased();
 				return;
 			}
 

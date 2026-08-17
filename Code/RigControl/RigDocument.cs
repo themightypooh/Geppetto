@@ -14,6 +14,21 @@ public sealed class RigDocument : GameResource
 
 	[Property] public List<IkConstraint> IkConstraints { get; set; } = new();
 	[Property] public List<LimitConstraint> LimitConstraints { get; set; } = new();
+
+	/// <summary>
+	/// Bones hidden from the viewport - rig plumbing like weapon_root or camera helpers that are
+	/// never posed by hand and only crowd the ones that are.
+	///
+	/// PURELY A VIEW FILTER. A hidden bone still evaluates, still keeps its keyframes, and still
+	/// plays back exactly as before - it just stops drawing a handle. Hiding is not deleting, and
+	/// a tool where hiding silently dropped animation would be a trap.
+	///
+	/// Lives on the rig rather than the clip because which bones are worth touching is a property
+	/// of the skeleton, so every clip authored against it wants the same answer.
+	/// </summary>
+	[Property] public List<string> HiddenBones { get; set; } = new();
+
+	public bool IsBoneHidden( string bone ) => HiddenBones.Contains( bone );
 }
 
 public sealed class IkConstraint
