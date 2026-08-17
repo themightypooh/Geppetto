@@ -336,8 +336,7 @@ internal sealed class RigViewport : Widget
 		Layout.Add( _canvas, 1 );
 	}
 
-	private Checkbox _usingArmsToggle;
-	private Checkbox _lockCameraToggle;
+	private Checkbox _firstPersonToggle;
 	private Checkbox _wholeModelToggle;
 	private Checkbox _showBonesToggle;
 	private Checkbox _showTwistToggle;
@@ -362,16 +361,21 @@ internal sealed class RigViewport : Widget
 		bar.Margin = new Sandbox.UI.Margin( 6, 4 );
 		bar.Spacing = 8;
 
-		_usingArmsToggle = new Checkbox( "Using Arms" )
+		// ONE TOGGLE, NOT TWO. "Using Arms" gated "Lock Camera" behind it, which meant two clicks
+		// and a rule to learn for what is really a single question: am I looking through the
+		// player's eyes or not. Turning this on does both.
+		_firstPersonToggle = new Checkbox( "First Person View" )
 		{
-			ToolTip = "Frame the model the way it hangs off the camera in game, rather than as a prop in a world"
+			ToolTip = "Look through the player's eye at the game's field of view. You can still look around - Reset Camera returns you to looking straight ahead."
 		};
-		_usingArmsToggle.Toggled = () => SetViewMode( () => ViewmodelMode = _usingArmsToggle.Value );
-		bar.Add( _usingArmsToggle );
 
-		_lockCameraToggle = new Checkbox( "Lock Camera" );
-		_lockCameraToggle.Toggled = () => SetViewMode( () => LockCameraToView = _lockCameraToggle.Value );
-		bar.Add( _lockCameraToggle );
+		_firstPersonToggle.Toggled = () => SetViewMode( () =>
+		{
+			ViewmodelMode = _firstPersonToggle.Value;
+			LockCameraToView = _firstPersonToggle.Value;
+		} );
+
+		bar.Add( _firstPersonToggle );
 
 		bar.AddSpacingCell( 12 );
 
@@ -407,14 +411,22 @@ internal sealed class RigViewport : Widget
 
 		bar.AddStretchCell();
 
+		// In first person this straightens your head rather than dropping you out of the mode -
+		// otherwise the only way back from having looked around would be to leave and re-enter,
+		// which loses the framing you were judging.
 		bar.Add( new Button( "Reset Camera", "restart_alt" )
 		{
 			Clicked = () => SetViewMode( () =>
 			{
-				LockCameraToView = false;
+				if ( LockCameraToView )
+				{
+					_camera.WorldRotation = Rotation.Identity;
+					return;
+				}
+
 				FrameCamera();
 			} ),
-			ToolTip = "Back to a free camera framing the whole model"
+			ToolTip = "First person: look straight ahead again. Otherwise: frame the whole model."
 		} );
 
 		RefreshViewToggles();
@@ -438,31 +450,22 @@ internal sealed class RigViewport : Widget
 	/// Reset Camera, or Using Arms switching the camera lock off underneath you.</summary>
 	private void RefreshViewToggles()
 	{
-		if ( _refreshingToggles || !_usingArmsToggle.IsValid() )
+		if ( _refreshingToggles || !_firstPersonToggle.IsValid() )
 			return;
 
 		_refreshingToggles = true;
 
 		try
 		{
-			_usingArmsToggle.Value = _viewmodelMode;
-			_lockCameraToggle.Value = _lockCameraToView;
+			_firstPersonToggle.Value = _viewmodelMode;
 			_wholeModelToggle.Value = _moveWholeModel;
 			_showBonesToggle.Value = _showBoneHandles;
 			_showTwistToggle.Value = ShowTwistBones;
 
-			// Nothing to add twist dots to when there are no dots at all - same reasoning as the
-			// Lock Camera gating above.
+			// Nothing to add twist dots to when there are no dots at all.
 			_showTwistToggle.Enabled = _showBoneHandles && !_moveWholeModel;
 
 			_armShaderToggle.Value = PixelStyle;
-
-			// The camera lock does nothing without a viewmodel to frame, and a live control that
-			// silently does nothing is worse than a greyed-out one.
-			_lockCameraToggle.Enabled = _viewmodelMode;
-			_lockCameraToggle.ToolTip = _viewmodelMode
-				? "Pin the camera to the player's eye. You lose free camera control while this is on."
-				: "Turn on Using Arms first";
 
 			// Says why the dots are gone at the moment they go, rather than leaving you to work
 			// out which of the two toggles did it.
@@ -479,6 +482,44 @@ internal sealed class RigViewport : Widget
 
 	/// <summary>Puts the model where the game puts it: hanging off a camera at the origin. Applied
 	/// every frame rather than once, so dragging the root or editing the offset shows immediately.</summary>
+	/// <summary>
+	/// Puts the camera back on the eye after free-fly has had its turn, leaving the rotation
+	/// free-fly gave it.
+	///
+	/// The eye is the model's own `camera` bone where it has one - a viewmodel carries that bone
+	/// precisely to say where the player's head goes, so reading it beats any offset we could
+	/// invent. Falls back to the model's origin.
+	/// </summary>
+	private void PinEyePosition()
+	{
+		if ( !LockCameraToView || !_camera.IsValid() )
+			return;
+
+		_camera.WorldPosition = EyePosition();
+		_camera.FieldOfView = ViewmodelFov;
+	}
+
+	/// <summary>
+	/// THE EYE COMES FROM THE MODEL'S OWN CAMERA BONE, not from a number.
+	///
+	/// Viewmodels carry a bone marking where the player's head goes - first_person_arms_preview
+	/// has one called "camera", at the model's origin. Reading it means the framing is right for
+	/// any viewmodel, including ones whose eye isn't at their origin, with nothing to tune.
+	///
+	/// This replaced parking the camera at the world origin and shoving the model down 8 units, a
+	/// figure lifted from ViewArmsComponent - where it means something quite different, because
+	/// there the arms hang off the camera rather than the camera being placed against the arms.
+	/// The result was an eye 8 units above the real viewpoint with the arms below the bottom of
+	/// frame, which reads as the lock doing nothing at all.
+	/// </summary>
+	private Vector3 EyePosition()
+	{
+		if ( FindBoneData( "camera" ) is { } eye && _renderer.TryGetBoneTransform( eye, out var eyeWorld ) )
+			return eyeWorld.Position;
+
+		return _modelObject.IsValid() ? _modelObject.WorldPosition : Vector3.Zero;
+	}
+
 	private void ApplyViewmodelFraming()
 	{
 		if ( !ViewmodelMode )
@@ -500,27 +541,9 @@ internal sealed class RigViewport : Widget
 			_appliedRotation = ViewmodelRotation;
 		}
 
-		if ( !LockCameraToView )
-			return;
-
-		// THE EYE COMES FROM THE MODEL'S OWN CAMERA BONE, not from a number.
-		//
-		// Viewmodels carry a bone marking where the player's eye sits - first_person_arms_preview
-		// has one called "camera", at the model's origin. Reading it means the framing is right
-		// for any viewmodel, including ones whose eye isn't at their origin, with nothing to tune.
-		//
-		// This replaced parking the camera at the world origin and shoving the model down by 8
-		// units, a figure lifted from ViewArmsComponent - where it means something quite different,
-		// because there the arms hang off the camera object rather than the camera being placed
-		// against the arms. The result was the eye sitting 8 units above the actual viewpoint and
-		// the arms hidden below the bottom of frame, which reads as the lock doing nothing at all.
-		var eye = FindBoneData( "camera" ) is { } cameraBone && _renderer.TryGetBoneTransform( cameraBone, out var boneWorld )
-			? boneWorld
-			: new Transform( _modelObject.IsValid() ? _modelObject.WorldPosition : Vector3.Zero );
-
-		_camera.WorldPosition = eye.Position;
-		_camera.WorldRotation = eye.Rotation;
-		_camera.FieldOfView = ViewmodelFov;
+		// The camera itself is placed in PinEyePosition, which runs AFTER free-fly rather than
+		// before it - writing the camera here as well would overwrite the rotation the moment you
+		// tried to look around, and nothing on screen would explain why the mouse did nothing.
 	}
 
 	public void SetModel( Model model )
@@ -1228,10 +1251,20 @@ internal sealed class RigViewport : Widget
 
 		_gizmoInstance.Input.IsHovered = IsActiveWindow && _canvas.IsUnderMouse;
 
-		// Free-fly is skipped entirely while the camera is locked - otherwise dragging in the
-		// viewport fights ApplyViewmodelFraming for the camera every frame and the view judders.
-		if ( !LockCameraToView && _gizmoInstance.FirstPersonCamera( _camera, _canvas ) )
+		// FREE-FLY RUNS EVEN WHEN LOCKED, and the eye position is re-pinned afterwards.
+		//
+		// It used to be skipped outright, which pinned the view rigidly forward - and this model's
+		// bind pose has the arms hanging at its sides, below and behind the eye, so first person
+		// showed an empty screen with no way to go and look. Turning the lock off to find them and
+		// back on to judge them is exactly the back-and-forth this mode exists to remove.
+		//
+		// Letting the camera rotate but not travel keeps what the lock is actually for: the eye
+		// stays where the player's eye is, so distances and framing remain honest, while you can
+		// still turn your head. Reset Camera returns you to looking straight ahead.
+		if ( _gizmoInstance.FirstPersonCamera( _camera, _canvas ) )
 			_gizmoInstance.Input.IsHovered = false;
+
+		PinEyePosition();
 
 		_canvas.UpdateGizmoInputs( _gizmoInstance.Input.IsHovered );
 
