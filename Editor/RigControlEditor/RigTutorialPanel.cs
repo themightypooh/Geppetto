@@ -78,6 +78,12 @@ internal sealed class RigTutorialPanel : Widget
 		_list = new Widget( this ) { Layout = Layout.Column() };
 		_list.Layout.Margin = new Sandbox.UI.Margin( 12, 4, 12, 12 );
 		_list.Layout.Spacing = 8;
+
+		// Docked along the bottom this panel can be 1500px wide, and a line of text that long is
+		// genuinely hard to read - the eye loses its place on the way back to the left margin.
+		// Capped at a comfortable measure; the rest of the width stays empty on purpose.
+		_list.MaximumWidth = 820;
+
 		scroll.Canvas = _list;
 
 		var buttons = Layout.AddRow();
@@ -319,10 +325,12 @@ internal sealed class RigTutorialPanel : Widget
 			reveal.AddStretchCell();
 		}
 
-		_list.Layout.AddStretchCell();
+		_list.Layout.AddSpacingCell( 12f );
 
-		// Navigation flanking the dots, so where-you-are and how-to-move sit together rather than
-		// the buttons being lost among Restart and Dismiss at the very bottom.
+		// NO stretch cell before this. There used to be one, to pin navigation to the bottom -
+		// which is fine in a tall side dock and awful in a short wide one, where it opened a void
+		// between the text and the controls with nothing in it. Following the content directly
+		// looks deliberate at any dock size.
 		var nav = _list.Layout.AddRow();
 		nav.Spacing = 8;
 		nav.Alignment = TextFlag.Center;
