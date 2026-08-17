@@ -898,24 +898,29 @@ internal sealed class RigViewport : Widget
 	}
 
 	private bool _draggingModel;
+	private Vector3 _modelDragStart;
+	private Vector3 _modelMoveDelta;
 
-	/// <summary>The whole-model handle. Same contract as bone dragging: the live position goes in
-	/// and the new one comes out, which is what PositionTest does.</summary>
+	/// <summary>The whole-model handle. Same contract as bone dragging, and the same as
+	/// PositionEditorTool: zero in, per-frame delta out, accumulated onto the position captured
+	/// when the drag began, with the handle basis passed explicitly.</summary>
 	private void DragWholeModel()
 	{
 		if ( !_modelObject.IsValid() )
 			return;
 
-		var current = _modelObject.WorldPosition;
+		var start = _draggingModel ? _modelDragStart : _modelObject.WorldPosition;
 
-		using var scope = Gizmo.Scope( "ModelRoot", new Transform( current ) );
+		using var scope = Gizmo.Scope( "ModelRoot", new Transform( start ) );
 
 		Gizmo.Draw.IgnoreDepth = true;
 		Gizmo.Draw.Color = Theme.Green;
 		Gizmo.Draw.SolidSphere( 0f, _boneHandleRadius * 0.7f, 8, 8 );
 		Gizmo.Draw.IgnoreDepth = false;
 
-		if ( !Gizmo.Control.Position( "model-move", current, out var moved ) )
+		Gizmo.Hitbox.DepthBias = 0.01f;
+
+		if ( !Gizmo.Control.Position( "model-move", Vector3.Zero, out var delta, Rotation.Identity ) )
 		{
 			if ( !Gizmo.IsLeftMouseDown )
 				_draggingModel = false;
@@ -923,7 +928,17 @@ internal sealed class RigViewport : Widget
 			return;
 		}
 
-		_draggingModel = true;
+		if ( !_draggingModel )
+		{
+			_draggingModel = true;
+			_modelDragStart = _modelObject.WorldPosition;
+			_modelMoveDelta = Vector3.Zero;
+			start = _modelDragStart;
+		}
+
+		_modelMoveDelta += delta;
+
+		var moved = start + _modelMoveDelta;
 
 		// In viewmodel mode the offset IS the authored value - the model's position is derived
 		// from it every frame, so writing the object directly would be overwritten instantly.
@@ -938,10 +953,31 @@ internal sealed class RigViewport : Widget
 		}
 	}
 
-	// Only which bone is being dragged, for the start/end events undo hangs off. There is no
-	// stored anchor any more: the controls are fed live values every frame, so there is no state
-	// to keep in sync and nothing to go stale.
 	private string _dragBoneName;
+
+	// The pose the drag started from, and the accumulated position delta - the same two pieces of
+	// state PositionEditorTool keeps (startPoints and moveDelta). Both are reset when a drag
+	// begins, and the live transform is never fed back into either.
+	private Transform _dragStart;
+	private Vector3 _moveDelta;
+
+	/// <summary>Latches the drag's starting pose on its first frame. Called only after a control
+	/// has reported movement, so a hover never counts as a drag.</summary>
+	private void BeginDrag( BoneCollection.Bone bone, Transform world, ref Transform start )
+	{
+		if ( _dragBoneName == bone.Name )
+			return;
+
+		// Announced before the first write lands, so whatever is listening can record the
+		// pre-drag pose.
+		BoneDragStarted?.Invoke( bone.Name );
+
+		_dragBoneName = bone.Name;
+		_dragStart = world;
+		_moveDelta = Vector3.Zero;
+
+		start = world;
+	}
 
 	/// <summary>
 	/// THE DRAG ENDS WHEN THE BUTTON IS RELEASED, not when the control stops reporting.
@@ -1003,9 +1039,19 @@ internal sealed class RigViewport : Widget
 	{
 		var dragging = _dragBoneName == bone.Name;
 
-		// Scope at the bone, deliberately unrotated, so the arrows stay world-aligned like the
-		// scene editor's gizmo instead of tumbling with the bone.
-		using var scope = Gizmo.Scope( $"BoneControl{bone.Index}", new Transform( world.Position ) );
+		// The start pose is captured on the first frame of the drag and everything is applied to
+		// THAT, exactly as PositionEditorTool applies its accumulated delta to startPoints. The
+		// live transform is never fed back in, so nothing compounds.
+		var start = dragging ? _dragStart : world;
+
+		// Handle basis. Identity means world-aligned arrows, like the scene editor in global
+		// space - and it is passed EXPLICITLY, because Control.Position takes the basis as a
+		// fourth argument and leaving it out is what made every axis drag along the same one.
+		var handleRotation = Rotation.Identity;
+
+		using var scope = Gizmo.Scope( $"BoneControl{bone.Index}", new Transform( start.Position ) );
+
+		Gizmo.Hitbox.DepthBias = 0.01f;
 
 		// E is a hold-to-flip, not a toggle - it borrows the other mode for as long as it's down
 		// and springs back, so you can nudge a bone's position mid-rotation-pass without losing
@@ -1016,36 +1062,36 @@ internal sealed class RigViewport : Widget
 
 		if ( rotating )
 		{
+			// Rotate's value is CUMULATIVE since the grab - RotationEditorTool assigns it rather
+			// than accumulating, and applies it to the start rotation. Position's is per-frame.
+			// The two controls genuinely differ; this is not a typo.
 			if ( !Gizmo.Control.Rotate( "bone-rotate", Rotation.Identity, out var rotation ) )
 			{
 				EndDragIfReleased();
 				return;
 			}
 
-			// Accumulated onto the LIVE rotation, right-multiplied - exactly RotationTest's
-			// "rotation *= delta". This value is one frame's worth, not the whole drag.
-			newWorld = new Transform( world.Position, world.Rotation * rotation, world.Scale );
+			BeginDrag( bone, world, ref start );
+
+			var basis = handleRotation;
+			var applied = basis * rotation * basis.Inverse;
+
+			newWorld = new Transform( start.Position, applied * start.Rotation, start.Scale );
 		}
 		else
 		{
-			// Live position in, new position out - exactly PositionTest. Passing the real value
-			// is what puts the control's maths at the bone instead of at the world origin.
-			if ( !Gizmo.Control.Position( "bone-move", world.Position, out var newPosition ) )
+			if ( !Gizmo.Control.Position( "bone-move", Vector3.Zero, out var delta, handleRotation ) )
 			{
 				EndDragIfReleased();
 				return;
 			}
 
-			newWorld = new Transform( newPosition, world.Rotation, world.Scale );
-		}
+			BeginDrag( bone, world, ref start );
 
-		if ( !dragging )
-		{
-			// Announced before the first write lands, so whatever is listening can record the
-			// pre-drag pose.
-			BoneDragStarted?.Invoke( bone.Name );
+			// Per-frame delta, accumulated - "moveDelta += delta" - then applied to the start.
+			_moveDelta += delta;
 
-			_dragBoneName = bone.Name;
+			newWorld = new Transform( start.Position + _moveDelta, start.Rotation, start.Scale );
 		}
 
 		_draggingBone = true;
