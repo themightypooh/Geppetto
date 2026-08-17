@@ -179,74 +179,74 @@ internal sealed class RigTutorial
 			new()
 			{
 				Instruction = "Click the arm_upper_R dot in the viewport",
-				Detail = "That's the right shoulder, the big bone carrying the whole arm. Work outward from it - shoulder, elbow, wrist, finger - because posing a hand and then moving the shoulder throws the hand pose away. This rig also has bones you will never touch: camera, weapon_root, and the arm_lower_R_twistctrl chain. Right-click one and choose Hide Bone And Children to clear them out.",
+				Detail = "The right shoulder. It carries the whole arm, so it goes first - always work outward: shoulder, elbow, wrist, finger. Right-click camera or weapon_root and pick Hide Bone And Children to clear the clutter.",
 				Art = StepArt.Bone,
 				IsDone = ( _, bone ) => !string.IsNullOrEmpty( bone )
 			},
 			new()
 			{
-				Instruction = "Add a Reference Prop in the BonesObject tab, and give it any small model",
-				Detail = "Animating a reach against empty space is guesswork - you find out it was wrong once it's in game. A reference prop is a static model shown only in the viewport, purely to aim at. Any model works; a crate or a cube stands in for a switch fine. Place it out in front of the hand at about arm's length, then pose TO it rather than imagining where it is. This is the single biggest difference between a reach that lands and one that floats.",
+				Instruction = "Add a Reference Prop and put it where the switch would be",
+				Detail = "BonesObject tab. Any model does - a crate is fine. Arm's length out in front. Now you're reaching at something instead of guessing.",
 				Art = StepArt.Model,
 				Panel = "BonesObject",
 				IsDone = ( anim, _ ) => anim?.ReferenceProps?.Any( p => p?.Model is not null ) ?? false
 			},
 			new()
 			{
-				Instruction = "REST - at frame 0, press K to key the pose it already has",
-				Detail = "Beat 1 of 4. Nothing to pose yet; this plants a keyframe on the arm's resting shape. Every action needs a known pose to leave from and return to, and you will copy this exact key to the end of the clip later so the whole thing settles back.",
+				Instruction = "REST - at frame 0, press K",
+				Detail = "Keys the pose it already has. Every action needs somewhere to leave from and come back to.",
 				Art = StepArt.Keyframe,
 				Panel = "Timeline",
 				IsDone = ( anim, _ ) => KeyNear( anim, 0, 2 )
 			},
 			new()
 			{
-				Instruction = "ANTICIPATION - frame 6, rotate arm_upper_R slightly BACK, away from the switch",
-				Detail = "Beat 2 of 4, and the one beginners skip. Real movement winds up before it goes: a hand that simply starts moving forward reads as a machine. Only a few degrees, and only 5-6 frames. This single change does more for how the animation feels than any amount of fixing the poses.",
+				Instruction = "ANTICIPATION - frame 6, rotate arm_upper_R slightly BACK",
+				Detail = "Wind up before you go. A few degrees is plenty. Skip it and the whole thing reads as a machine.",
 				Art = StepArt.Rotate,
 				IsDone = ( anim, _ ) => KeyAfter( anim, 3 )
 			},
 			new()
 			{
-				Instruction = "EXTREME - frame 14, rotate arm_upper_R forward and up, then arm_lower_R to straighten the elbow",
-				Detail = "Beat 3 of 4, the pose the clip is actually about - the furthest point of the reach. Shoulder first for gross direction, elbow second for extension, in that order: the elbow hangs off the shoulder, so moving the shoulder afterwards undoes your elbow work. Get the two extremes down and the animation already reads before anything in between exists.",
+				Instruction = "EXTREME - frame 14, swing arm_upper_R forward, then straighten arm_lower_R",
+				Detail = "The reach itself. Shoulder first, elbow second - the elbow hangs off the shoulder, so the other order undoes your own work.",
 				Art = StepArt.Rotate,
 				IsDone = ( anim, _ ) => KeyAfter( anim, 10 )
 			},
 			new()
 			{
-				Instruction = "Frame 17, rotate hand_R so the palm faces the switch and the index finger leads",
-				Detail = "Still the extreme, refined. The wrist aims the hand - until now it has been dragged along by the arm, pointing wherever the elbow left it. This is what turns a limb waving near a switch into a hand about to press one.",
+				Instruction = "Frame 17 - rotate hand_R so the index finger leads",
+				Detail = "The wrist aims the hand. This is what turns a flailing limb into a hand about to press something.",
 				Art = StepArt.Rotate,
 				IsDone = ( anim, _ ) => KeyAfter( anim, 15 )
 			},
 			new()
 			{
-				Instruction = "CONTACT - frame 19, curl finger_index_0_R and finger_index_1_R to press",
-				Detail = "One or two frames after the reach lands, never more. A press that eases in looks like the finger is afraid of the switch. Right-click this keyframe and set Interpolation Mode to Stepped if you want it to snap outright - this is exactly what Stepped is for.",
+				Instruction = "CONTACT - frame 19, curl finger_index_0_R and finger_index_1_R",
+				Detail = "One or two frames after the reach lands, no more. Right-click the key and set Stepped if you want it to snap.",
 				Art = StepArt.Keyframe,
 				Panel = "Timeline",
 				IsDone = ( anim, _ ) => KeyAfter( anim, 18 )
 			},
 			new()
 			{
-				Instruction = "SETTLE - frame 22, let the arm drift a little PAST the pose, then start back",
-				Detail = "Beat 4 of 4, the overshoot. Nothing heavy stops dead - it goes slightly too far and rocks back. Skip this and the arm looks bolted to a rail. A couple of degrees past the contact pose is enough; the eye reads it as weight without ever noticing it.",
+				Instruction = "SETTLE - frame 22, let it drift slightly PAST, then start back",
+				Detail = "Nothing heavy stops dead. Two or three degrees past is enough - you feel it more than you see it.",
 				Art = StepArt.Rotate,
 				IsDone = ( anim, _ ) => KeyAfter( anim, 21 )
 			},
 			new()
 			{
-				Instruction = "RETURN - frame 28, bring the arm back to the rest pose",
-				Detail = "Closes the loop. Fastest way is exact rather than approximate: right-click your frame 0 keyframe, Copy, move the playhead here, Paste. Pasting lands at the playhead rather than where it was copied from, which is what makes this work.",
+				Instruction = "RETURN - frame 28, back to the rest pose",
+				Detail = "Right-click your frame 0 key, Copy, then Paste here. Paste lands at the playhead, so it comes back exact.",
 				Art = StepArt.Keyframe,
 				Panel = "Timeline",
 				IsDone = ( anim, _ ) => KeyAfter( anim, 25 )
 			},
 			new()
 			{
-				Instruction = "Press Play, then tighten the timing",
-				Detail = "You now have all four beats: rest, anticipation, extreme, settle. A real reach-and-press is well under a second and most first attempts run at half speed. Preview at x0.25 from the timeline to see what the timing is doing, then drag keys left to compress it. Timing is where an animation stops looking like posed dolls and starts looking alive.",
+				Instruction = "Press Play, then tighten it up",
+				Detail = "Most first animations run at half speed. Drag the keys closer together and play it again - that's the whole lesson.",
 				Art = StepArt.Play,
 				Panel = "Timeline",
 				IsDone = ( _, _ ) => false

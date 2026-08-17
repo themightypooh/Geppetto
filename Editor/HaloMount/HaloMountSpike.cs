@@ -126,12 +126,9 @@ public static class HaloMountSpike
 			foreach ( dynamic tag in cache.TagIndex )
 			{
 				string classCode = tag.ClassCode;
-				if ( classCode != "bipd" )
-					continue;
-
 				string tagName = tag.TagName;
-				if ( tagName.Contains( nameContains, StringComparison.OrdinalIgnoreCase ) )
-					Log.Info( $"[HaloMount] bipd in {Path.GetFileName( mapPath )}: {tagName}" );
+				if ( tagName is not null && tagName.Contains( nameContains, StringComparison.OrdinalIgnoreCase ) )
+					Log.Info( $"[HaloMount] {classCode} in {Path.GetFileName( mapPath )}: {tagName}" );
 			}
 		}
 	}
