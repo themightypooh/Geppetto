@@ -90,6 +90,10 @@ internal sealed class RigViewport : Widget
 	public Angles ViewmodelRotation { get; set; }
 	public float ViewmodelFov { get; set; } = 90f;
 
+	// What ApplyViewmodelFraming last wrote, so it can skip writing an identical value.
+	private Vector3 _appliedOffset = new( float.NaN, float.NaN, float.NaN );
+	private Angles _appliedRotation = new( float.NaN, float.NaN, float.NaN );
+
 	/// <summary>Hides the per-bone dots. A first-person rig puts a hundred handles between you and
 	/// the two you're actually moving; this is the way out of that.</summary>
 	public bool ShowBoneHandles { get; set; } = true;
@@ -99,6 +103,17 @@ internal sealed class RigViewport : Widget
 	public bool MoveWholeModel { get; set; }
 
 	public Action ViewmodelChanged { get; set; }
+
+	/// <summary>Toggled by the rig_debug_drag console command. Off by default; this logs once per
+	/// frame of a drag, which is far too noisy to leave on.</summary>
+	public static bool DebugDrag { get; private set; }
+
+	[ConCmd( "rig_debug_drag" )]
+	public static void SetDebugDrag( int enabled )
+	{
+		DebugDrag = enabled != 0;
+		Log.Info( $"[rigdrag] drag logging {(DebugDrag ? "ON - drag a bone, then paste the log" : "off")}" );
+	}
 
 	public RigViewport( Widget parent ) : base( parent )
 	{
@@ -236,10 +251,20 @@ internal sealed class RigViewport : Widget
 		if ( !ViewmodelMode )
 			return;
 
-		if ( _modelObject.IsValid() )
+		// ONLY WRITTEN WHEN IT ACTUALLY CHANGES. Assigning the renderer's transform every frame
+		// re-drives the whole model, which is a plausible way to lose the bone overrides posing
+		// depends on - and is pointless work regardless, since the value is usually identical to
+		// what's already there.
+		// Compared against what WE last applied, rather than against the object's current
+		// transform - reading a rotation back and comparing it needs an equality test on
+		// quaternions, and Angles is a plain struct that compares exactly.
+		if ( _modelObject.IsValid() && (_appliedOffset != ViewmodelOffset || _appliedRotation != ViewmodelRotation) )
 		{
 			_modelObject.WorldPosition = ViewmodelOffset;
 			_modelObject.WorldRotation = ViewmodelRotation.ToRotation();
+
+			_appliedOffset = ViewmodelOffset;
+			_appliedRotation = ViewmodelRotation;
 		}
 
 		if ( !LockCameraToView )
@@ -852,6 +877,19 @@ internal sealed class RigViewport : Widget
 		}
 
 		_draggingBone = true;
+
+		// rig_debug_drag 1. Answers the one question staring at the code can't: does the write
+		// land and stay, or is something else putting the bone back? "wrote" is what this frame
+		// asked for; "readback" is what the renderer actually had at the START of this frame,
+		// i.e. the result of last frame's write. If readback tracks wrote one frame behind,
+		// posing is fine and the problem is elsewhere. If readback never moves, something is
+		// overwriting it every frame.
+		if ( DebugDrag )
+		{
+			Log.Info( $"[rigdrag] {bone.Name} mode={(rotating ? "rot" : "pos")} " +
+				$"anchor={basis.Position} wrote={newWorld.Position} readback={world.Position} " +
+				$"viewmodel={ViewmodelMode} locked={LockCameraToView}" );
+		}
 
 		// IK first: if this bone is an enabled IK target, dragging it should bend the chain
 		// behind it rather than tear the effector off its parent.
