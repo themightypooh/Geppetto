@@ -1,0 +1,75 @@
+<!-- kv3 encoding:text:version{e21c7f3c-8a33-41c5-9977-a76d3a32aa0d} format:modeldoc30:version{8c2d7a91-9c42-4bf0-883a-5a3b1762d4f1} -->
+{
+	rootNode =
+	{
+		_class = "RootNode"
+		children =
+		[
+			{
+				_class = "MaterialGroupList"
+				children =
+				[
+					{
+						_class = "DefaultMaterialGroup"
+						remaps =
+						[
+							{
+								from = "sw_plate.vmat"
+								to = "materials/lightswitch/sw_plate.vmat"
+							},
+							{
+								from = "sw_body.vmat"
+								to = "materials/lightswitch/sw_body.vmat"
+							},
+							{
+								from = "sw_screw.vmat"
+								to = "materials/lightswitch/sw_screw.vmat"
+							},
+						]
+						use_global_default = false
+						global_default_material = ""
+					},
+				]
+			},
+			{
+				_class = "PhysicsShapeList"
+				children =
+				[
+					{
+						_class = "PhysicsMeshFromRender"
+						parent_bone = ""
+						surface_prop = "plastic"
+						collision_tags = "solid"
+					},
+				]
+			},
+			{
+				_class = "RenderMeshList"
+				children =
+				[
+					{
+						_class = "RenderMeshFile"
+						filename = "models/lightswitch/lightswitch_plate.fbx"
+						import_translation = [ 0.0, 0.0, 0.0 ]
+						// Same export config as door_threshold_gen.py: bake_space_transform
+						// lands the mesh yawed +90, corrected here so the model is right
+						// wherever it gets placed. import_rotation is [pitch, yaw, roll] --
+						// yaw is the MIDDLE slot.
+						// import_scale MUST be 1.0. The 0.393701 in guitar_wall_hanger.vmdl
+						// is compensation for a stale .fbx; copying it costs a 2.54x shortfall.
+						import_rotation = [ 0.0, -90.0, 0.0 ]
+						import_scale = 1.0
+						align_origin_x_type = "None"
+						align_origin_y_type = "None"
+						align_origin_z_type = "None"
+						parent_bone = ""
+					},
+				]
+			},
+		]
+		model_archetype = ""
+		primary_associated_entity = ""
+		anim_graph_name = ""
+		base_model_name = ""
+	}
+}

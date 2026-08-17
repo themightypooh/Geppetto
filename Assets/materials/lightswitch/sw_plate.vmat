@@ -1,0 +1,16 @@
+// Cream faceplate for the sample light switch. Rebuilt on complex.shader rather than copied
+// straight from midnight_am, whose colour materials use a shaders/simple.shader that only exists
+// inside that project's installed packages - copying those verbatim would have shipped a switch
+// with no shader to render it.
+Layer0
+{
+	shader "shaders/complex.shader"
+	g_flModelTintAmount "1.000000"
+	g_vColorTint "[0.900000 0.850000 0.700000 1.000000]"
+	TextureColor "materials/default/default_color.tga"
+	TextureNormal "materials/default/default_normal.tga"
+	TextureRoughness "materials/default/default_rough.tga"
+	TextureAmbientOcclusion "materials/default/default_ao.tga"
+	g_flMetalness "0.000000"
+	g_flRoughness "0.650000"
+}

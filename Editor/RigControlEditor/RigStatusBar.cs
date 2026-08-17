@@ -178,75 +178,75 @@ internal sealed class RigTutorial
 		{
 			new()
 			{
-				Instruction = "Click the arm_upper_R dot in the viewport",
-				Detail = "The right shoulder. It carries the whole arm, so it goes first - always work outward: shoulder, elbow, wrist, finger. Right-click camera or weapon_root and pick Hide Bone And Children to clear the clutter.",
+				Instruction = "Start with the bone that drives everything else",
+				Detail = "Click the arm_upper_R dot in the viewport - that's the right shoulder. Work outward from it: shoulder, elbow, wrist, finger. To clear the clutter first, right-click camera or weapon_root and pick Hide Bone And Children.",
 				Art = StepArt.Bone,
 				IsDone = ( _, bone ) => !string.IsNullOrEmpty( bone )
 			},
 			new()
 			{
-				Instruction = "Add a Reference Prop and put it where the switch would be",
-				Detail = "BonesObject tab. Any model does - a crate is fine. Arm's length out in front. Now you're reaching at something instead of guessing.",
+				Instruction = "To reach for something, you need something to reach for",
+				Detail = "In the BonesObject tab, add a Reference Prop and pick models/lightswitch/lightswitch_plate.vmdl - it ships with Marionette. Place it about arm's length in front of the hand. Posing at a real object beats imagining where one would be.",
 				Art = StepArt.Model,
 				Panel = "BonesObject",
 				IsDone = ( anim, _ ) => anim?.ReferenceProps?.Any( p => p?.Model is not null ) ?? false
 			},
 			new()
 			{
-				Instruction = "REST - at frame 0, press K",
-				Detail = "Keys the pose it already has. Every action needs somewhere to leave from and come back to.",
+				Instruction = "Every action needs a pose to leave from and come back to",
+				Detail = "At frame 0, press K. That keys the pose the arm already has - no posing needed. You'll copy this exact key to the end of the clip later so the whole thing settles back.",
 				Art = StepArt.Keyframe,
 				Panel = "Timeline",
 				IsDone = ( anim, _ ) => KeyNear( anim, 0, 2 )
 			},
 			new()
 			{
-				Instruction = "ANTICIPATION - frame 6, rotate arm_upper_R slightly BACK",
-				Detail = "Wind up before you go. A few degrees is plenty. Skip it and the whole thing reads as a machine.",
+				Instruction = "To stop the reach looking mechanical, wind up before it goes",
+				Detail = "Move to frame 6 and rotate arm_upper_R slightly BACK, away from the switch. A few degrees is plenty. This is anticipation - real movement always loads before it fires, and it's the beat most people skip.",
 				Art = StepArt.Rotate,
 				IsDone = ( anim, _ ) => KeyAfter( anim, 3 )
 			},
 			new()
 			{
-				Instruction = "EXTREME - frame 14, swing arm_upper_R forward, then straighten arm_lower_R",
-				Detail = "The reach itself. Shoulder first, elbow second - the elbow hangs off the shoulder, so the other order undoes your own work.",
+				Instruction = "Now the reach itself - the pose the whole clip is about",
+				Detail = "At frame 14, swing arm_upper_R forward and up, then straighten arm_lower_R. Shoulder first, elbow second: the elbow hangs off the shoulder, so doing it the other way round undoes your own work.",
 				Art = StepArt.Rotate,
 				IsDone = ( anim, _ ) => KeyAfter( anim, 10 )
 			},
 			new()
 			{
-				Instruction = "Frame 17 - rotate hand_R so the index finger leads",
-				Detail = "The wrist aims the hand. This is what turns a flailing limb into a hand about to press something.",
+				Instruction = "To read as a hand about to press, aim the wrist",
+				Detail = "At frame 17, rotate hand_R until the palm faces the switch and the index finger leads. Until now the hand has just been dragged along by the arm, pointing wherever the elbow left it.",
 				Art = StepArt.Rotate,
 				IsDone = ( anim, _ ) => KeyAfter( anim, 15 )
 			},
 			new()
 			{
-				Instruction = "CONTACT - frame 19, curl finger_index_0_R and finger_index_1_R",
-				Detail = "One or two frames after the reach lands, no more. Right-click the key and set Stepped if you want it to snap.",
+				Instruction = "Contact should land, not ease in",
+				Detail = "At frame 19, curl finger_index_0_R and finger_index_1_R onto the switch. Keep it one or two frames after the reach arrives. Right-click the key and set Interpolation Mode to Stepped if you want it to snap outright.",
 				Art = StepArt.Keyframe,
 				Panel = "Timeline",
 				IsDone = ( anim, _ ) => KeyAfter( anim, 18 )
 			},
 			new()
 			{
-				Instruction = "SETTLE - frame 22, let it drift slightly PAST, then start back",
-				Detail = "Nothing heavy stops dead. Two or three degrees past is enough - you feel it more than you see it.",
+				Instruction = "Nothing heavy stops dead, so let the arm overshoot",
+				Detail = "At frame 22, push arm_upper_R two or three degrees PAST the contact pose, then start it back. This is the settle - the other beat people skip, and the reason a limb reads as having weight.",
 				Art = StepArt.Rotate,
 				IsDone = ( anim, _ ) => KeyAfter( anim, 21 )
 			},
 			new()
 			{
-				Instruction = "RETURN - frame 28, back to the rest pose",
-				Detail = "Right-click your frame 0 key, Copy, then Paste here. Paste lands at the playhead, so it comes back exact.",
+				Instruction = "Close the loop so the clip can repeat cleanly",
+				Detail = "Right-click your frame 0 key and Copy. Move the playhead to frame 28 and Paste - paste lands at the playhead rather than where it came from, so the arm returns to exactly the pose it started in.",
 				Art = StepArt.Keyframe,
 				Panel = "Timeline",
 				IsDone = ( anim, _ ) => KeyAfter( anim, 25 )
 			},
 			new()
 			{
-				Instruction = "Press Play, then tighten it up",
-				Detail = "Most first animations run at half speed. Drag the keys closer together and play it again - that's the whole lesson.",
+				Instruction = "The poses are done - now find the timing",
+				Detail = "Press Play. Almost every first animation runs at half the speed it should, so drag the keys closer together and play it again. That comparison teaches more than any amount of re-posing.",
 				Art = StepArt.Play,
 				Panel = "Timeline",
 				IsDone = ( _, _ ) => false
