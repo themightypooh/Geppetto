@@ -259,6 +259,19 @@ internal sealed class RigViewport : Widget
 
 		try
 		{
+			// REBUILD THE POSE FROM THE DOCUMENT, don't layer onto whatever the renderer still
+			// holds. Posing a bone leaves a bone override on the renderer, and the loop below
+			// skips bones that have no keyframe - so without clearing first, a bone keeps the
+			// override from the last time it was dragged even after its keyframes are gone.
+			//
+			// That is what made undo look broken. Undo was restoring the document correctly the
+			// whole time; the viewport just went on displaying the posed bone, because nothing
+			// ever told the renderer to let go of it.
+			//
+			// Skipped mid-drag, where clearing would fight the hand doing the dragging.
+			if ( !_draggingBone && _renderer.IsValid() && _renderer.SceneModel is { } sceneModel )
+				sceneModel.ClearBoneOverrides();
+
 			foreach ( var (bone, world) in LiveBones() )
 			{
 				if ( bone.Name == SelectedBone && _draggingBone )

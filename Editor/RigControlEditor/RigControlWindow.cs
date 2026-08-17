@@ -510,7 +510,10 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		track.SetKeyframe( (int)MathF.Round( _timeline.Playhead ), local );
 
 		_timeline.Refresh();
-		MarkDirty();
+
+		// No undo step here - this fires every frame of a drag, and the whole drag was already
+		// recorded as one step by OnBoneDragStarted.
+		MarkDirtyOnly();
 	}
 
 	private void OnScrub( float frame )
@@ -532,7 +535,6 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 	// undo would restore the thing you were trying to undo.
 	private readonly RigUndoStack _undoStack = new();
 	private RigSnapshot _baseline;
-	private bool _suppressUndo;
 
 	private Option _undoOption;
 	private Option _redoOption;
@@ -549,15 +551,12 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 	{
 		_undoStack.Push( _baseline?.WithLabel( $"Pose {bone}" ) );
 		_baseline = RigSnapshot.Capture( _anim, _rig );
-		_suppressUndo = true;
 		UpdateUndoOptions();
 	}
 
-	private void OnBoneDragEnded()
-	{
-		_suppressUndo = false;
-		ResetBaseline();
-	}
+	/// <summary>The drag's result becomes the new baseline, so the next edit undoes back to the
+	/// posed state rather than to before the drag.</summary>
+	private void OnBoneDragEnded() => ResetBaseline();
 
 	[Shortcut( "editor.undo", "CTRL+Z" )]
 	private void Undo()
@@ -618,15 +617,25 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		}
 	}
 
+	/// <summary>Records an undo step, then marks the document dirty.</summary>
 	private void MarkDirty( string undoLabel = "Edit" )
 	{
-		if ( !_suppressUndo )
-		{
-			_undoStack.Push( _baseline?.WithLabel( undoLabel ) );
-			_baseline = RigSnapshot.Capture( _anim, _rig );
-			UpdateUndoOptions();
-		}
+		_undoStack.Push( _baseline?.WithLabel( undoLabel ) );
+		_baseline = RigSnapshot.Capture( _anim, _rig );
+		UpdateUndoOptions();
 
+		MarkDirtyOnly();
+	}
+
+	/// <summary>Marks dirty WITHOUT recording an undo step - for edits already covered by one.
+	///
+	/// This replaced a _suppressUndo flag that MarkDirty checked. The flag was set when a bone
+	/// drag started and cleared when it ended, and any path where a drag stopped without its end
+	/// firing left it stuck on, silently disabling undo for the rest of the session. A flag whose
+	/// failure mode is "undo quietly stops existing" is the wrong mechanism; whether an edit is
+	/// part of a larger action is known at the call site, so the call site picks.</summary>
+	private void MarkDirtyOnly()
+	{
 		_dirty = true;
 		UpdateTitle();
 
