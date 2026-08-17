@@ -94,6 +94,8 @@ public class HaloRenderModelLoader( HaloMCCMount host, string mapPath, string ta
 				builder = builder.AddMesh( sbMesh );
 		}
 
+		HaloMeshConverter.BuildSkeleton( builder, reclaimerModel );
+
 		return builder.Create();
 	}
 }

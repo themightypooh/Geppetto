@@ -579,8 +579,53 @@ internal sealed class RigViewport : Widget
 	/// RigControlWindow.OnScrub, outside any active Gizmo context, and Gizmo.IsLeftMouseDown
 	/// throws a NullReferenceException unconditionally when read from there. That exception fired
 	/// on every single scrub and every playback tick, silently, the entire time.</summary>
+	/// <summary>The last pose lookup this viewport was given, kept so a drag can re-resolve the
+	/// dragged bone's descendants without the window having to hand it over again.</summary>
+	private Func<string, Transform?> _poseLookup;
+
+	/// <summary>
+	/// Rewrites every bone under <paramref name="root"/> from its own local pose and the parent's
+	/// new world transform.
+	///
+	/// NEEDED BECAUSE EVERY BONE IS PINNED IN WORLD SPACE. EvaluatePose writes a world-space
+	/// override for each bone, and a bone with a world override no longer inherits anything from
+	/// its parent - so rotating a shoulder moved the shoulder and left the arm behind. It worked
+	/// exactly once, before the children had been pinned, which is what made it look intermittent.
+	///
+	/// Parent-space writes would avoid this entirely, but SceneModel.SetParentSpaceBone is
+	/// internal, so world space is the only way in - and the cost of that is having to carry the
+	/// hierarchy ourselves, here.
+	/// </summary>
+	private void PropagateToDescendants( BoneCollection.Bone root, Transform rootWorld )
+	{
+		if ( !_renderer.IsValid() )
+			return;
+
+		var resolved = new Dictionary<string, Transform> { [root.Name] = rootWorld };
+
+		foreach ( var (bone, world) in LiveBones() )
+		{
+			if ( bone.Parent is not { } parent || !resolved.TryGetValue( parent.Name, out var parentWorld ) )
+				continue;
+
+			// Its own pose is unchanged - only where its parent is has moved.
+			if ( (_poseLookup?.Invoke( bone.Name ) ?? BindPoseFor( bone )) is not { } local )
+			{
+				resolved[bone.Name] = world;
+				continue;
+			}
+
+			var clamped = RigConstraintSolver.ClampToLimits( Rig, bone.Name, local );
+			var worldPose = parentWorld.ToWorld( clamped );
+
+			resolved[bone.Name] = worldPose;
+			ApplyWorldTransform( bone, worldPose );
+		}
+	}
+
 	public void EvaluatePose( Func<string, Transform?> poseForBone )
 	{
+		_poseLookup = poseForBone;
 		_suppressAutoKey = true;
 
 		try
@@ -1123,6 +1168,11 @@ internal sealed class RigViewport : Widget
 					blended = Transform.Lerp( currentWorld, chainWorld, weight, true );
 
 				ApplyWorldTransform( chainBone, blended );
+
+				// Same reason as the plain drag: each solved bone has to carry whatever hangs off
+				// it. For an arm IK that's the hand and every finger under the wrist.
+				PropagateToDescendants( chainBone, blended );
+
 				NotifyPosed( chainBone, blended );
 			}
 
@@ -1132,6 +1182,11 @@ internal sealed class RigViewport : Widget
 		newWorld = ApplyLimits( bone, newWorld );
 
 		ApplyWorldTransform( bone, newWorld );
+
+		// Everything below this bone has to be carried with it - see PropagateToDescendants.
+		// Without it, rotating a shoulder rotates only the shoulder.
+		PropagateToDescendants( bone, newWorld );
+
 		NotifyPosed( bone, newWorld );
 	}
 

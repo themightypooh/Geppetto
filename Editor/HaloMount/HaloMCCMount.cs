@@ -95,6 +95,7 @@ public class HaloMCCMount : BaseGameMount
 			var registeredNames = new HashSet<string>( StringComparer.OrdinalIgnoreCase );
 			var weaponCount = 0;
 			var bspCount = 0;
+			var bipedCount = 0;
 
 			foreach ( var mapPath in mapsToScan )
 			{
@@ -119,6 +120,7 @@ public class HaloMCCMount : BaseGameMount
 				var renderModelNames = new HashSet<string>( StringComparer.OrdinalIgnoreCase );
 				var weaponTagNames = new List<string>();
 				var bspTagNames = new List<string>();
+				var bipedTagNames = new List<string>();
 
 				foreach ( dynamic tag in cache.TagIndex )
 				{
@@ -130,6 +132,8 @@ public class HaloMCCMount : BaseGameMount
 						weaponTagNames.Add( tagName );
 					else if ( classCode == "sbsp" )
 						bspTagNames.Add( tagName );
+					else if ( classCode == "bipd" )
+						bipedTagNames.Add( tagName );
 				}
 
 				foreach ( var tagName in weaponTagNames )
@@ -143,6 +147,25 @@ public class HaloMCCMount : BaseGameMount
 
 					context.Add( ResourceType.Model, $"weapons/{shortName}.vmdl", new HaloRenderModelLoader( this, mapPath, tagName ) );
 					weaponCount++;
+				}
+
+				// Bipeds (Grunts, Elites, Spartans, etc) -- same name-matching trick as weapons,
+				// same loader too, since RenderModelTag doesn't care what kind of object
+				// references it. This is what actually carries the skeleton (HaloMeshConverter.
+				// BuildSkeleton) that makes these posable, unlike weapons which only have 0-1
+				// bones.
+				foreach ( var tagName in bipedTagNames )
+				{
+					if ( !renderModelNames.Contains( tagName ) )
+						continue;
+
+					var shortName = tagName.Split( '\\' ).Last();
+					var registerKey = $"biped:{shortName}";
+					if ( !registeredNames.Add( registerKey ) )
+						continue;
+
+					context.Add( ResourceType.Model, $"characters/{shortName}.vmdl", new HaloRenderModelLoader( this, mapPath, tagName ) );
+					bipedCount++;
 				}
 
 				// Multiplayer maps are almost always one scnr + one sbsp sharing a name like
@@ -161,7 +184,7 @@ public class HaloMCCMount : BaseGameMount
 				}
 			}
 
-			Log.Info( $"[HaloMount] Registered {weaponCount} weapon models, {bspCount} level BSPs." );
+			Log.Info( $"[HaloMount] Registered {weaponCount} weapon models, {bspCount} level BSPs, {bipedCount} bipeds." );
 
 			IsMounted = true;
 		}

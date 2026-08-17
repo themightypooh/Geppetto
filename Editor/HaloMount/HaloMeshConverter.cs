@@ -133,6 +133,52 @@ internal static class HaloMeshConverter
 		return results;
 	}
 
+	// Adds Reclaimer's extracted skeleton (Model.Bones) to the builder so a biped like the
+	// Grunt gets a real, named bone hierarchy -- needed for RigControlEditor to pose it at
+	// all. Weapons only have 0-1 bones so this is harmless to call unconditionally.
+	//
+	// UNVERIFIED: written while the editor MCP connection was down, so this hasn't been
+	// tested live yet. Two real assumptions here that need checking once it's back:
+	//   1. ModelBuilder.AddBone(name, position, rotation, parentName) expects PARENT-LOCAL
+	//      transforms, matching Reclaimer's Bone.LocalTransform (as opposed to world-space).
+	//   2. Bones must be added in an order where each parent already exists -- Reclaimer's
+	//      Nodes list is built depth-first from the tag's own node blocks, which should
+	//      already guarantee parents precede children, but that's an assumption, not a
+	//      confirmed invariant.
+	// This does NOT add per-vertex skin weights (BoneIndex/BoneWeights vertex attributes) --
+	// the skeleton will exist and be posable, but the mesh won't yet deform with it. That's
+	// a separate follow-up once there's a way to verify a skinned vertex layout live.
+	public static void BuildSkeleton( ModelBuilder builder, dynamic reclaimerModel )
+	{
+		var names = new List<string>();
+		var parents = new List<int>();
+		var positions = new List<Vector3>();
+		var rotations = new List<Rotation>();
+
+		foreach ( dynamic bone in reclaimerModel.Bones )
+		{
+			string rawName = bone.Name;
+			names.Add( string.IsNullOrWhiteSpace( rawName ) ? $"bone_{names.Count}" : rawName );
+
+			// Explicitly qualified -- no `using System.Numerics;` in this file on purpose, since
+			// that would make its Vector2/Vector3 ambiguous with Sandbox's (same trap as the
+			// Sandbox.Mounting.Directory vs System.IO.Directory issue hit earlier in HaloMCCMount).
+			var localTransform = (System.Numerics.Matrix4x4)bone.LocalTransform;
+			System.Numerics.Matrix4x4.Decompose( localTransform, out _, out var rot, out var translation );
+
+			positions.Add( new Vector3( translation.X, translation.Y, translation.Z ) * HaloWorldUnitToInches );
+			rotations.Add( new Rotation( rot.X, rot.Y, rot.Z, rot.W ) );
+
+			parents.Add( (int)bone.ParentIndex );
+		}
+
+		for ( var i = 0; i < names.Count; i++ )
+		{
+			string parentName = parents[i] >= 0 && parents[i] < names.Count ? names[parents[i]] : null;
+			builder.AddBone( names[i], positions[i], rotations[i], parentName );
+		}
+	}
+
 	// Standard per-triangle tangent accumulation (Lengyel's method) from position + UV deltas,
 	// then Gram-Schmidt orthogonalized against each vertex's normal. Needed because a normal
 	// map is meaningless without a tangent-space basis to orient it in -- leaving this at zero
