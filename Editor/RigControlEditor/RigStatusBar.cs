@@ -293,15 +293,52 @@ internal sealed class RigTutorial
 	{
 		Active = true;
 		CurrentIndex = 0;
+		_furthest = 0;
 	}
 
 	public void Dismiss() => Active = false;
 
 	/// <summary>Advance past every step already satisfied. Loops rather than stepping once, so a
 	/// reader who does three things before looking down isn't left three steps behind.</summary>
+	/// <summary>The furthest step reached, so stepping back doesn't immediately snap forward again.
+	/// See Evaluate.</summary>
+	private int _furthest;
+
+	public bool CanGoBack => Active && CurrentIndex > 0;
+
+	public bool CanGoForward => Active && CurrentIndex < _steps.Count;
+
+	/// <summary>Step back one. Auto-advance stays out of the way until you catch up again.</summary>
+	public void Back()
+	{
+		if ( !CanGoBack )
+			return;
+
+		CurrentIndex--;
+	}
+
+	/// <summary>Skip forward without having done the step - some are worth reading and not
+	/// following, and a tutorial that can only be advanced by obeying it is a cage.</summary>
+	public void Forward()
+	{
+		if ( !CanGoForward )
+			return;
+
+		CurrentIndex++;
+		_furthest = Math.Max( _furthest, CurrentIndex );
+	}
+
 	public bool Evaluate( RigAnimDocument anim, string selectedBone )
 	{
 		if ( !Active )
+			return false;
+
+		// DON'T FIGHT A MANUAL REWIND. Steps tick off when their condition holds, and those
+		// conditions stay true once satisfied - a keyframe at frame 6 is still there afterwards.
+		// So stepping back would re-satisfy the step you just left and snap forward again the
+		// same frame, making the Back button look broken. While you're behind the furthest point
+		// reached, auto-advance stops entirely; it picks up again once you're back at the front.
+		if ( CurrentIndex < _furthest )
 			return false;
 
 		var moved = false;
@@ -311,6 +348,8 @@ internal sealed class RigTutorial
 			CurrentIndex++;
 			moved = true;
 		}
+
+		_furthest = Math.Max( _furthest, CurrentIndex );
 
 		return moved;
 	}

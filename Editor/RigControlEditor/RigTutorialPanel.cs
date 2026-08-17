@@ -292,7 +292,32 @@ internal sealed class RigTutorialPanel : Widget
 		}
 
 		_list.Layout.AddStretchCell();
-		_list.Layout.Add( new StepDots( this, Tutorial.StepCount, index ) );
+
+		// Navigation flanking the dots, so where-you-are and how-to-move sit together rather than
+		// the buttons being lost among Restart and Dismiss at the very bottom.
+		var nav = _list.Layout.AddRow();
+		nav.Spacing = 8;
+		nav.Alignment = TextFlag.Center;
+
+		var back = new Button( "", "chevron_left" )
+		{
+			Clicked = () => { Tutorial.Back(); Rebuild(); },
+			ToolTip = "Previous step"
+		};
+
+		back.Enabled = Tutorial.CanGoBack;
+		nav.Add( back );
+
+		nav.Add( new StepDots( this, Tutorial.StepCount, index ), 1 );
+
+		var forward = new Button( "", "chevron_right" )
+		{
+			Clicked = () => { Tutorial.Forward(); Rebuild(); },
+			ToolTip = "Skip ahead without doing this step"
+		};
+
+		forward.Enabled = Tutorial.CanGoForward;
+		nav.Add( forward );
 	}
 
 	/// <summary>The end of the run. Says what was built and what to do with it, rather than just
