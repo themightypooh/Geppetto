@@ -898,44 +898,32 @@ internal sealed class RigViewport : Widget
 	}
 
 	private bool _draggingModel;
-	private Vector3 _modelDragAnchor;
 
-	/// <summary>The whole-model handle. Same frozen-anchor treatment as bone dragging, and for the
-	/// same reason: Gizmo.Control.Position reports the total offset for the drag, so applying it to
-	/// a live position each frame compounds it.</summary>
+	/// <summary>The whole-model handle. Same contract as bone dragging: the live position goes in
+	/// and the new one comes out, which is what PositionTest does.</summary>
 	private void DragWholeModel()
 	{
 		if ( !_modelObject.IsValid() )
 			return;
 
-		var basis = _draggingModel ? _modelDragAnchor : _modelObject.WorldPosition;
+		var current = _modelObject.WorldPosition;
 
-		using var scope = Gizmo.Scope( "ModelRoot", new Transform( basis ) );
+		using var scope = Gizmo.Scope( "ModelRoot", new Transform( current ) );
 
 		Gizmo.Draw.IgnoreDepth = true;
 		Gizmo.Draw.Color = Theme.Green;
 		Gizmo.Draw.SolidSphere( 0f, _boneHandleRadius * 0.7f, 8, 8 );
 		Gizmo.Draw.IgnoreDepth = false;
 
-		if ( !Gizmo.Control.Position( "model-move", Vector3.Zero, out var offset ) )
+		if ( !Gizmo.Control.Position( "model-move", current, out var moved ) )
 		{
-			// Same rule as bones: a frame with no mouse movement is not the end of the drag.
-			// Dropping the anchor there and re-taking it from the moved position is what made
-			// this handle jump as well.
 			if ( !Gizmo.IsLeftMouseDown )
 				_draggingModel = false;
 
 			return;
 		}
 
-		if ( !_draggingModel )
-		{
-			_draggingModel = true;
-			_modelDragAnchor = _modelObject.WorldPosition;
-			basis = _modelDragAnchor;
-		}
-
-		var moved = basis + offset;
+		_draggingModel = true;
 
 		// In viewmodel mode the offset IS the authored value - the model's position is derived
 		// from it every frame, so writing the object directly would be overwritten instantly.
@@ -950,8 +938,10 @@ internal sealed class RigViewport : Widget
 		}
 	}
 
+	// Only which bone is being dragged, for the start/end events undo hangs off. There is no
+	// stored anchor any more: the controls are fed live values every frame, so there is no state
+	// to keep in sync and nothing to go stale.
 	private string _dragBoneName;
-	private Transform _dragAnchor;
 
 	/// <summary>
 	/// THE DRAG ENDS WHEN THE BUTTON IS RELEASED, not when the control stops reporting.
@@ -991,21 +981,31 @@ internal sealed class RigViewport : Widget
 	///
 	/// Gizmo.Control.Position/Rotate are absolute in, absolute out - the out params are named
 	/// newPos/newValue, not deltas. They hand back the value the handle has been dragged *to*,
-	/// measured from whatever basis you fed in, for the whole drag. Feeding them the bone's live
-	/// transform each frame and adding the result to it re-applies the entire drag offset on top
-	/// of the already-moved bone every frame, which compounds - that was the "one pixel of mouse
-	/// movement and the arm swings around" sensitivity.
+	/// THE TWO CONTROLS DO NOT AGREE WITH EACH OTHER, which is the thing to know here. Taken from
+	/// the engine's own shipped examples rather than from the parameter names, which mislead:
 	///
-	/// So the basis is frozen: the bone's transform is captured once when the drag starts and the
-	/// moved result never feeds back into it. The scope is positioned at the bone but deliberately
-	/// unrotated, so the arrows are world-aligned like the scene editor's own gizmo rather than
-	/// tumbling with the bone.</summary>
+	///   Position (WidgetGallery PositionTest) is ABSOLUTE IN, ABSOLUTE OUT. You pass the current
+	///   position and assign what comes back:  Control.Position( n, pos, out var newPos ).
+	///
+	///   Rotate (WidgetGallery RotationTest, and the scene editor's RotationEditorTool) hands back
+	///   a PER-FRAME DELTA that you accumulate:  rotation *= delta.
+	///
+	/// Every sensitivity bug in this function came from getting that wrong. Passing Vector3.Zero
+	/// for position made the control work against the world origin instead of the bone, so a huge
+	/// mouse movement produced a tiny one - "can't move it unless I drag crazy far". Treating the
+	/// rotation delta as cumulative against a frozen anchor threw away all but one frame of it.
+	/// An earlier version had it the other way round and compounded the whole drag every frame.
+	///
+	/// There is no frozen anchor any more: absolute-out feeds from the live value, and delta-out
+	/// accumulates onto it. That is what the engine does, and it is self-correcting rather than
+	/// dependent on state we maintain.</summary>
 	private void DragSelectedBone( BoneCollection.Bone bone, Transform world )
 	{
 		var dragging = _dragBoneName == bone.Name;
-		var basis = dragging ? _dragAnchor : world;
 
-		using var scope = Gizmo.Scope( $"BoneControl{bone.Index}", new Transform( basis.Position ) );
+		// Scope at the bone, deliberately unrotated, so the arrows stay world-aligned like the
+		// scene editor's gizmo instead of tumbling with the bone.
+		using var scope = Gizmo.Scope( $"BoneControl{bone.Index}", new Transform( world.Position ) );
 
 		// E is a hold-to-flip, not a toggle - it borrows the other mode for as long as it's down
 		// and springs back, so you can nudge a bone's position mid-rotation-pass without losing
@@ -1022,21 +1022,21 @@ internal sealed class RigViewport : Widget
 				return;
 			}
 
-			// Left-multiply: the control's value is a world-space rotation about the bone's
-			// own origin, applied on top of the frozen starting orientation.
-			newWorld = new Transform( basis.Position, rotation * basis.Rotation, basis.Scale );
+			// Accumulated onto the LIVE rotation, right-multiplied - exactly RotationTest's
+			// "rotation *= delta". This value is one frame's worth, not the whole drag.
+			newWorld = new Transform( world.Position, world.Rotation * rotation, world.Scale );
 		}
 		else
 		{
-			if ( !Gizmo.Control.Position( "bone-move", Vector3.Zero, out var offset ) )
+			// Live position in, new position out - exactly PositionTest. Passing the real value
+			// is what puts the control's maths at the bone instead of at the world origin.
+			if ( !Gizmo.Control.Position( "bone-move", world.Position, out var newPosition ) )
 			{
 				EndDragIfReleased();
 				return;
 			}
 
-			// Scope is unrotated and unscaled, so its space is world-aligned and this offset can
-			// be added straight onto the world position.
-			newWorld = new Transform( basis.Position + offset, basis.Rotation, basis.Scale );
+			newWorld = new Transform( newPosition, world.Rotation, world.Scale );
 		}
 
 		if ( !dragging )
@@ -1046,7 +1046,6 @@ internal sealed class RigViewport : Widget
 			BoneDragStarted?.Invoke( bone.Name );
 
 			_dragBoneName = bone.Name;
-			_dragAnchor = world;
 		}
 
 		_draggingBone = true;
@@ -1060,7 +1059,7 @@ internal sealed class RigViewport : Widget
 		if ( DebugDrag )
 		{
 			Log.Info( $"[rigdrag] {bone.Name} mode={(rotating ? "rot" : "pos")} " +
-				$"anchor={basis.Position} wrote={newWorld.Position} readback={world.Position} " +
+				$"readback={world.Position} wrote={newWorld.Position} " +
 				$"viewmodel={ViewmodelMode} locked={LockCameraToView}" );
 		}
 
