@@ -20,6 +20,7 @@ internal sealed class RigTimeline : Widget
 	private readonly RigTimelineRuler _ruler;
 	private readonly RigTimelineRuler _frameRuler;
 	private readonly ScrollArea _scroll;
+	private readonly RigBoneColumn _boneColumn;
 	private readonly Editor.Label _timeLabel;
 	private readonly Button _playButton;
 	private readonly Button _loopButton;
@@ -48,7 +49,18 @@ internal sealed class RigTimeline : Widget
 	public string SelectedBone
 	{
 		get => _lanes.SelectedBone;
-		set => _lanes.SelectedBone = value;
+		set
+		{
+			_lanes.SelectedBone = value;
+
+			// The name column marks the selected row too, and it's a separate widget now - so it
+			// has to be told, and told to repaint.
+			if ( _boneColumn is not null )
+			{
+				_boneColumn.SelectedBone = value;
+				_boneColumn.Update();
+			}
+		}
 	}
 
 	public float Playhead
@@ -138,10 +150,23 @@ internal sealed class RigTimeline : Widget
 		// instead of the viewport, so the ScrollArea has something genuine to scroll and gives us
 		// its own bar with a proportional handle. That handle doubles as a readout of how much
 		// clip there is either side of what you can see, which a slider can never show.
-		_scroll = Layout.Add( new ScrollArea( this ), 1 );
+		// The names sit BESIDE the scroll area, not inside it, so the area - and its scrollbar -
+		// starts where the tracks start. See RigBoneColumn.
+		var trackRow = Layout.AddRow();
+
+		_boneColumn = trackRow.Add( new RigBoneColumn( this )
+		{
+			BoneSelected = bone => BoneRowSelected?.Invoke( bone ),
+			ContextMenuRequested = track => _lanes.OpenBoneRowMenuFor( track ),
+		} );
+
+		_scroll = trackRow.Add( new ScrollArea( this ), 1 );
 		_scroll.VerticalScrollbarMode = ScrollbarMode.Auto;
 		_scroll.HorizontalScrollbarMode = ScrollbarMode.Auto;
 		_scroll.Canvas = _lanes;
+
+		// Pulled, not pushed - the ScrollArea raises nothing to hook, and reading it costs nothing.
+		_boneColumn.ScrollY = () => _scroll?.VerticalScrollbar?.Value ?? 0f;
 
 		// Frame numbers below the tracks, timecode above - the tracks sit between the two units
 		// so neither has to be converted in your head.
@@ -343,6 +368,12 @@ internal sealed class RigTimeline : Widget
 
 	public void Refresh()
 	{
+		if ( _boneColumn is not null )
+		{
+			_boneColumn.Anim = _anim;
+			_boneColumn.Update();
+		}
+
 		_lanes.MinimumHeight = RigTimelineLayout.HeightFor( _anim?.BoneTracks.Count ?? 0 );
 		_lanes.Update();
 		_ruler.FrameCount = (int)LastFrame + 1;
@@ -511,10 +542,17 @@ internal readonly struct RigTimelineLayout
 	/// </summary>
 	public float ScrollX { get; }
 
-	public RigTimelineLayout( float width, int frameCount, int rows, float scrollX = 0f, float pixelsPerFrame = 0f )
+	/// <summary>Left inset before frame zero. The rulers span the full window and sit above the
+	/// bone-name column, so they offset by Gutter. The lanes are inside a ScrollArea that now
+	/// STARTS after that column, so for them it's zero - that's what makes the ScrollArea's own
+	/// scrollbar line up with the tracks instead of starting under the names.</summary>
+	public float GutterWidth { get; }
+
+	public RigTimelineLayout( float width, int frameCount, int rows, float scrollX = 0f, float pixelsPerFrame = 0f, float gutter = Gutter )
 	{
 		_width = width;
 		_rows = rows;
+		GutterWidth = gutter;
 		LastFrame = MathF.Max( frameCount - 1, 1f );
 
 		PixelsPerFrame = (pixelsPerFrame > 0f ? pixelsPerFrame : DefaultPixelsPerFrame)
@@ -525,15 +563,15 @@ internal readonly struct RigTimelineLayout
 
 	/// <summary>How wide the lanes widget has to be for the whole clip to exist inside the
 	/// ScrollArea. This is what gives the scrollbar something to scroll.</summary>
-	public float CanvasWidth => Gutter + (LastFrame + 1f) * PixelsPerFrame + RightPadding;
+	public float CanvasWidth => GutterWidth + (LastFrame + 1f) * PixelsPerFrame + RightPadding;
 
-	public Rect LaneArea => new( Gutter, 0f, MathF.Max( _width - Gutter - RightPadding, 1f ), _rows * RowHeight );
+	public Rect LaneArea => new( GutterWidth, 0f, MathF.Max( _width - GutterWidth - RightPadding, 1f ), _rows * RowHeight );
 
-	public float FrameToX( float frame ) => Gutter + frame * PixelsPerFrame - ScrollX;
+	public float FrameToX( float frame ) => GutterWidth + frame * PixelsPerFrame - ScrollX;
 
-	public float XToFrame( float x ) => ((x + ScrollX - Gutter) / PixelsPerFrame).Clamp( 0f, LastFrame );
+	public float XToFrame( float x ) => ((x + ScrollX - GutterWidth) / PixelsPerFrame).Clamp( 0f, LastFrame );
 
-	public Rect RowRect( int index ) => new( 0f, index * RowHeight, MathF.Max( _width, Gutter ), RowHeight );
+	public Rect RowRect( int index ) => new( 0f, index * RowHeight, MathF.Max( _width, 1f ), RowHeight );
 
 	public Rect DiamondRect( int index, float frame )
 	{
@@ -573,8 +611,8 @@ internal readonly struct RigTimelineLayout
 		// width rather than from a view range, so it works the same for the rulers (which scroll
 		// by offset) and the canvas (which is scrolled for them, and passes ScrollX 0 with its
 		// full width - yielding every division across the whole canvas, which is what it wants).
-		var firstVisible = (ScrollX - Gutter) / PixelsPerFrame;
-		var lastVisible = (ScrollX + _width - Gutter) / PixelsPerFrame;
+		var firstVisible = (ScrollX - GutterWidth) / PixelsPerFrame;
+		var lastVisible = (ScrollX + _width - GutterWidth) / PixelsPerFrame;
 
 		var first = MathF.Max( MathF.Floor( firstVisible / step ) * step, 0f );
 		var last = MathF.Min( lastVisible, LastFrame );
@@ -656,7 +694,7 @@ internal sealed class RigTimelineLanes : Widget
 	/// <summary>Canvas space: this widget IS the ScrollArea's canvas, so it is already translated
 	/// and must not subtract the offset again. Its own width is the full canvas width.</summary>
 	private RigTimelineLayout Geometry => new( Width, (Anim?.FrameCount ?? 1), Anim?.BoneTracks.Count ?? 0,
-		0f, View.PixelsPerFrame );
+		0f, View.PixelsPerFrame, 0f );
 
 	/// <summary>
 	/// The divider and the gutter's right edge, IN CANVAS SPACE.
@@ -666,9 +704,15 @@ internal sealed class RigTimelineLanes : Widget
 	/// rather than the raw constants - the constants are screen positions, and this widget does
 	/// not draw in screen positions.
 	/// </summary>
-	private float DividerCanvasX => View.ScrollX + RigTimelineLayout.DividerX;
+	// Zero now that the bone names are their own widget outside the ScrollArea. These used to be
+	// the boundary that keyframes, curves and grid lines were clipped against so they didn't draw
+	// underneath the pinned name column; with nothing overlapping the tracks any more there is
+	// nothing to clip, and leaving them at zero turns every one of those checks into a no-op
+	// rather than needing each call site unpicked.
+	private float DividerCanvasX => 0f;
 
-	private float GutterCanvasX => View.ScrollX + RigTimelineLayout.Gutter;
+	/// <summary>Zero - clicks in the name column are the column widget's business now.</summary>
+	private float GutterCanvasX => 0f;
 
 	/// <summary>
 	/// Ctrl+wheel zooms about the cursor, Shift+wheel pans. Plain wheel is deliberately left to
@@ -759,7 +803,6 @@ internal sealed class RigTimelineLanes : Widget
 
 		// Drawn before the early-out below, so the column edge is there even with nothing keyed -
 		// it's part of the furniture, not a thing that appears once you have tracks.
-		PaintGutterDivider( layout );
 
 		var tracks = Anim?.BoneTracks;
 
@@ -798,36 +841,6 @@ internal sealed class RigTimelineLanes : Widget
 			Paint.DrawRect( row );
 		}
 
-		// THE NAME COLUMN IS PINNED, and this offset is how.
-		//
-		// This widget is the ScrollArea's canvas, so scrolling right moves ALL of it left -
-		// including the names, which would slide off the edge and leave you looking at unlabelled
-		// rows. Drawing the column at the current scroll offset cancels that exactly, so it holds
-		// still on screen while the tracks move underneath it.
-		//
-		// The alternative was splitting the names into their own widget outside the ScrollArea,
-		// which fixes horizontal at the cost of breaking vertical: it would then need its own
-		// scroll kept in step with the tracks' one, and two scrolls that must agree is a worse
-		// problem than one offset.
-		var pinned = View.ScrollX;
-
-		Paint.ClearPen();
-		Paint.SetBrush( Theme.WidgetBackground );
-		Paint.DrawRect( new Rect( pinned, row.Top, RigTimelineLayout.Gutter, row.Height ) );
-
-		if ( isSelected )
-		{
-			Paint.SetBrush( Theme.Yellow.WithAlpha( 0.12f ) );
-			Paint.DrawRect( new Rect( pinned, row.Top, RigTimelineLayout.Gutter, row.Height ) );
-
-			Paint.SetBrush( Theme.Yellow );
-			Paint.DrawRect( new Rect( pinned, row.Top, 2f, row.Height ) );
-		}
-
-		Paint.SetDefaultFont( 7, isSelected ? 600 : 400 );
-		Paint.SetPen( isSelected ? Theme.Yellow : Theme.TextControl.WithAlpha( 0.9f ) );
-		Paint.DrawText( new Rect( pinned + 8f, row.Top, RigTimelineLayout.Gutter - 16f, row.Height ),
-			track.BoneName, TextFlag.LeftCenter );
 	}
 
 	/// <summary>Which bone the viewport has selected, so the matching row can be highlighted.</summary>
@@ -851,6 +864,9 @@ internal sealed class RigTimelineLanes : Widget
 	/// <summary>Right-clicking a bone's name - the track-wide operations, which previously had no
 	/// home at all: the only way to clear a bone was a menu-bar item acting on whatever the
 	/// viewport happened to have selected.</summary>
+	/// <summary>Raised by the bone-name column, which owns those clicks now.</summary>
+	public void OpenBoneRowMenuFor( BoneTrack track ) => OpenBoneRowMenu( track );
+
 	private void OpenBoneRowMenu( BoneTrack track )
 	{
 		var menu = new Menu( this );
@@ -909,14 +925,6 @@ internal sealed class RigTimelineLanes : Widget
 	///
 	/// Deliberately dim. It's a boundary, not information, and it sits behind the keyframes.
 	/// </summary>
-	private void PaintGutterDivider( RigTimelineLayout layout )
-	{
-		Paint.SetPen( Theme.TextControl.WithAlpha( 0.2f ) );
-		Paint.DrawLine(
-			new Vector2( DividerCanvasX, 0f ),
-			new Vector2( DividerCanvasX, Height ) );
-	}
-
 	private void PaintGrid( RigTimelineLayout layout )
 	{
 		Paint.SetPen( Theme.WindowBackground.WithAlpha( 0.5f ) );
@@ -924,11 +932,6 @@ internal sealed class RigTimelineLanes : Widget
 		foreach ( var frame in layout.RulerFrames() )
 		{
 			var x = layout.FrameToX( frame );
-
-			// Same rule as the ruler's labels - the grid stops at the divider rather than ruling
-			// lines through the bone names.
-			if ( x < DividerCanvasX )
-				continue;
 
 			Paint.DrawLine( new Vector2( x, 0f ), new Vector2( x, Height ) );
 		}
