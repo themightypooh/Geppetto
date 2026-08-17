@@ -90,7 +90,7 @@ public class HaloRenderModelLoader( HaloMCCMount host, string mapPath, string ta
 			if ( reclaimerMesh is null )
 				continue;
 
-			foreach ( var sbMesh in HaloMeshConverter.ConvertMesh( reclaimerMesh, ref materialIndex ) )
+			foreach ( var sbMesh in HaloMeshConverter.ConvertMesh( reclaimerModel, reclaimerMesh, ref materialIndex ) )
 				builder = builder.AddMesh( sbMesh );
 		}
 

@@ -96,10 +96,16 @@ internal sealed class RigTutorialPanel : Widget
 		_progress.Text = $"{Tutorial.StepCount} steps";
 
 		var intro = new Editor.Label(
-			"A guided run through making one real animation, a step at a time. Each step ticks " +
-			"itself off as you actually do it, and points you at the panel it's talking about.\n\n" +
-			"Nothing here is required reading - you can start it, skip it, or come back to it " +
-			"later from the Help menu." )
+			"Build a reach-out-and-flip-a-switch animation on the first-person arms, a step at " +
+			"a time. Each step ticks itself off as you do it, and points at the panel it means.\n\n" +
+			"Almost every action animation is four beats, and this walks through all four:\n\n" +
+			"    REST  -  the pose it starts and ends on\n" +
+			"    ANTICIPATION  -  a small wind-up AWAY from the action\n" +
+			"    EXTREME  -  the action itself, at its furthest point\n" +
+			"    SETTLE  -  drifting slightly past, then back\n\n" +
+			"Anticipation and settle are the two people skip, and they're most of the difference " +
+			"between animation that reads as alive and animation that reads as a machine.\n\n" +
+			"You can start it, skip it, or come back later from the Help menu." )
 		{ WordWrap = true };
 
 		intro.SetStyles( "font-size: 15px; line-height: 1.35;" );

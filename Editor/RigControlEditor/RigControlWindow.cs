@@ -41,6 +41,17 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 	// (EditorForAssetType) - the docks have to exist before either path can populate them, so
 	// they're built here with a blank in-memory document rather than inside AssetOpen, the same
 	// shape SpriteEditor's own Window.cs uses.
+	/// <summary>
+	/// The Citizen first-person arms, from the base citizen addon - so it's present for everyone
+	/// rather than being something of mine.
+	///
+	/// A blank document opens with these already loaded. Opening an animation tool to an empty
+	/// black viewport tells you nothing and makes the first move "go find a model", which is the
+	/// least interesting decision in the process. Arms are also what most people are here for:
+	/// first-person animation is the gap in s&box nobody has filled.
+	/// </summary>
+	public const string DefaultModelPath = "models/first_person/first_person_arms_preview.vmdl";
+
 	public RigControlWindow()
 	{
 		DeleteOnClose = true;
@@ -50,7 +61,10 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		Size = new Vector2( 1760, 1040 );
 		SetWindowIcon( "accessibility_new" );
 
-		_anim = new RigAnimDocument();
+		_anim = new RigAnimDocument
+		{
+			SourceModel = Model.Load( DefaultModelPath )
+		};
 
 		BuildMenuBar();
 
@@ -351,7 +365,13 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		void Proceed()
 		{
 			_asset = null;
-			_anim = new RigAnimDocument();
+
+			// Same default as opening the tool: a new clip starts with something to pose.
+			_anim = new RigAnimDocument
+			{
+				SourceModel = Model.Load( DefaultModelPath )
+			};
+
 			_rig = null;
 			_lastModel = null;
 

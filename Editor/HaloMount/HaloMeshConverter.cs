@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using Sandbox;
+using SysVector3 = System.Numerics.Vector3;
+using SysMatrix4x4 = System.Numerics.Matrix4x4;
 
 // Shared geometry/material conversion logic, factored out of HaloRenderModelLoader so
 // HaloBspLoader (level geometry) can reuse it without duplicating -- both RenderModelTag and
@@ -10,7 +12,7 @@ internal static class HaloMeshConverter
 {
 	const float HaloWorldUnitToInches = 120f;
 
-	public static List<Mesh> ConvertMesh( dynamic reclaimerMesh, ref int materialIndex )
+	public static List<Mesh> ConvertMesh( dynamic reclaimerModel, dynamic reclaimerMesh, ref int materialIndex )
 	{
 		var results = new List<Mesh>();
 
@@ -51,6 +53,21 @@ internal static class HaloMeshConverter
 			? new Vector2( (float)uvBounds.XLength, (float)uvBounds.YLength )
 			: Vector2.One;
 
+		// A lot of Halo's more complex render_models (bipeds, anything with more than one
+		// rigid piece) store vertex positions relative to a specific bone's LOCAL space, not
+		// one shared object-space box -- weapons happened to be simple single-bone geometry so
+		// this never mattered before, but skipping it is what caused other models to render
+		// stretched/distorted toward the origin. Mesh.BoneIndex (nullable -- null means smooth-
+		// skinned via per-vertex blend weights, not handled here yet) tells us which bone;
+		// Model.GetBoneWorldTransform walks the parent chain for us.
+		object boneIndexObj = reclaimerMesh.BoneIndex;
+		SysMatrix4x4? boneWorld = null;
+		if ( boneIndexObj is not null )
+		{
+			int boneIndex = (byte)boneIndexObj;
+			boneWorld = (SysMatrix4x4)reclaimerModel.GetBoneWorldTransform( boneIndex );
+		}
+
 		var positionsSb = new Vector3[vertexCount];
 		var normalsSb = new Vector3[vertexCount];
 		var uvsSb = new Vector2[vertexCount];
@@ -60,7 +77,6 @@ internal static class HaloMeshConverter
 			dynamic p = positions[i];
 			var raw = new Vector3( (float)p.X, (float)p.Y, (float)p.Z );
 			var real = posCompressed ? positionMin + raw * positionScale : raw;
-			positionsSb[i] = real * HaloWorldUnitToInches;
 
 			var normal = Vector3.Up;
 			if ( hasNormals )
@@ -68,6 +84,20 @@ internal static class HaloMeshConverter
 				dynamic n = normals[i];
 				normal = new Vector3( (float)n.X, (float)n.Y, (float)n.Z );
 			}
+
+			if ( boneWorld.HasValue )
+			{
+				var realNumerics = new SysVector3( real.x, real.y, real.z );
+				realNumerics = SysVector3.Transform( realNumerics, boneWorld.Value );
+				real = new Vector3( realNumerics.X, realNumerics.Y, realNumerics.Z );
+
+				var normalNumerics = new SysVector3( normal.x, normal.y, normal.z );
+				normalNumerics = SysVector3.TransformNormal( normalNumerics, boneWorld.Value );
+				if ( normalNumerics.LengthSquared() > 1e-10f )
+					normal = new Vector3( normalNumerics.X, normalNumerics.Y, normalNumerics.Z ).Normal;
+			}
+
+			positionsSb[i] = real * HaloWorldUnitToInches;
 			normalsSb[i] = normal;
 
 			var uv = Vector2.Zero;

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Threading;
 using System.Threading.Tasks;
 using Sandbox;
 using Sandbox.Mounting;
@@ -82,109 +83,152 @@ public class HaloMCCMount : BaseGameMount
 			&& !name.Equals( "shared.map", StringComparison.OrdinalIgnoreCase );
 	}
 
+	// MountContext turned out to be a ref-struct-like type -- the compiler refuses to let it
+	// cross into an async method OR be captured by any lambda/closure at all ("Cannot use
+	// parameter 'context' that has ref-like type inside an anonymous method..."), so
+	// Task.Run/ContinueWith backgrounding is a dead end; Mount() has to stay fully synchronous.
+	// The actual fix for the hang: cache the expensive part (opening and tag-scanning ~40 map
+	// files) at the process level, so only the FIRST mount in an editor session pays that cost
+	// -- every remount after that (which happens constantly while iterating on conversion code
+	// via halomount_remount) reuses the cached scan and is near-instant. Cache raw discovery
+	// data, not ResourceLoader instances, so loaders always get built against the CURRENT mount
+	// instance (`this`) rather than a stale one from a previous Mount() call.
+	static List<(string kind, string displayPath, string mapPath, string tagName)> discoveryCache;
+
+	List<(ResourceType type, string path, ResourceLoader loader)> DiscoverResources()
+	{
+		discoveryCache ??= ScanAllMaps();
+
+		var found = new List<(ResourceType, string, ResourceLoader)>();
+		foreach ( var (kind, displayPath, mapPath, tagName) in discoveryCache )
+		{
+			ResourceLoader loader = kind == "bsp"
+				? new HaloBspLoader( this, mapPath, tagName )
+				: new HaloRenderModelLoader( this, mapPath, tagName );
+
+			found.Add( (ResourceType.Model, displayPath, loader) );
+		}
+
+		return found;
+	}
+
+	List<(string kind, string displayPath, string mapPath, string tagName)> ScanAllMaps()
+	{
+		var found = new List<(string, string, string, string)>();
+
+		var asm = LoadReclaimer();
+		var cacheFactory = asm.GetType( "Reclaimer.Blam.Common.CacheFactory", throwOnError: true );
+
+		var mapsToScan = halo3Maps.Where( IsScannable )
+			.Concat( OdstMissionMaps.Select( name => System.IO.Path.Combine( OdstMapsDir, $"{name}.map" ) ) );
+
+		var registeredNames = new HashSet<string>( StringComparer.OrdinalIgnoreCase );
+		var weaponCount = 0;
+		var bspCount = 0;
+		var bipedCount = 0;
+
+		foreach ( var mapPath in mapsToScan )
+		{
+			dynamic cache;
+			try
+			{
+				cache = cacheFactory.InvokeMember(
+					"ReadCacheFile",
+					BindingFlags.InvokeMethod | BindingFlags.Static | BindingFlags.Public,
+					null, null, new object[] { mapPath } );
+			}
+			catch ( Exception ex )
+			{
+				Log.Warning( $"[HaloMount] Skipping unreadable map {mapPath}: {ex.Message}" );
+				continue;
+			}
+
+			// Collect render_model ("mode") tag names present in this map first, so each
+			// weapon ("weap") tag can be matched against one by name -- Halo3 objects keep
+			// every tag for the same thing (weapon, render_model, physics, etc) under one
+			// shared path, e.g. objects\weapons\pistol\needler\needler for both.
+			var renderModelNames = new HashSet<string>( StringComparer.OrdinalIgnoreCase );
+			var weaponTagNames = new List<string>();
+			var bspTagNames = new List<string>();
+			var bipedTagNames = new List<string>();
+
+			foreach ( dynamic tag in cache.TagIndex )
+			{
+				string classCode = tag.ClassCode;
+				string tagName = tag.TagName;
+				if ( classCode == "mode" )
+					renderModelNames.Add( tagName );
+				else if ( classCode == "weap" )
+					weaponTagNames.Add( tagName );
+				else if ( classCode == "sbsp" )
+					bspTagNames.Add( tagName );
+				else if ( classCode == "bipd" )
+					bipedTagNames.Add( tagName );
+			}
+
+			foreach ( var tagName in weaponTagNames )
+			{
+				if ( !renderModelNames.Contains( tagName ) )
+					continue;
+
+				var shortName = tagName.Split( '\\' ).Last();
+				if ( !registeredNames.Add( shortName ) )
+					continue;
+
+				found.Add( ("weapon", $"weapons/{shortName}.vmdl", mapPath, tagName) );
+				weaponCount++;
+			}
+
+			// Bipeds (Grunts, Elites, Spartans, etc) -- same name-matching trick as weapons,
+			// same loader too, since RenderModelTag doesn't care what kind of object
+			// references it. This is what actually carries the skeleton (HaloMeshConverter.
+			// BuildSkeleton) that makes these posable, unlike weapons which only have 0-1
+			// bones.
+			foreach ( var tagName in bipedTagNames )
+			{
+				if ( !renderModelNames.Contains( tagName ) )
+					continue;
+
+				var shortName = tagName.Split( '\\' ).Last();
+				var registerKey = $"biped:{shortName}";
+				if ( !registeredNames.Add( registerKey ) )
+					continue;
+
+				found.Add( ("biped", $"characters/{shortName}.vmdl", mapPath, tagName) );
+				bipedCount++;
+			}
+
+			// Multiplayer maps are almost always one scnr + one sbsp sharing a name like
+			// levels\multi\guardian\guardian -- the map filename (guardian.map) is a cleaner
+			// display name than that path's last segment, which is identical to the second-
+			// to-last for these.
+			foreach ( var tagName in bspTagNames )
+			{
+				var mapShortName = System.IO.Path.GetFileNameWithoutExtension( mapPath );
+				var registerKey = $"bsp:{mapShortName}:{tagName}";
+				if ( !registeredNames.Add( registerKey ) )
+					continue;
+
+				found.Add( ("bsp", $"maps/{mapShortName}.vmdl", mapPath, tagName) );
+				bspCount++;
+			}
+		}
+
+		Log.Info( $"[HaloMount] Scanned: {weaponCount} weapon models, {bspCount} level BSPs, {bipedCount} bipeds." );
+
+		return found;
+	}
+
 	protected override Task Mount( MountContext context )
 	{
 		try
 		{
-			var asm = LoadReclaimer();
-			var cacheFactory = asm.GetType( "Reclaimer.Blam.Common.CacheFactory", throwOnError: true );
+			var toRegister = DiscoverResources();
 
-			var mapsToScan = halo3Maps.Where( IsScannable )
-				.Concat( OdstMissionMaps.Select( name => System.IO.Path.Combine( OdstMapsDir, $"{name}.map" ) ) );
+			foreach ( var (type, path, loader) in toRegister )
+				context.Add( type, path, loader );
 
-			var registeredNames = new HashSet<string>( StringComparer.OrdinalIgnoreCase );
-			var weaponCount = 0;
-			var bspCount = 0;
-			var bipedCount = 0;
-
-			foreach ( var mapPath in mapsToScan )
-			{
-				dynamic cache;
-				try
-				{
-					cache = cacheFactory.InvokeMember(
-						"ReadCacheFile",
-						BindingFlags.InvokeMethod | BindingFlags.Static | BindingFlags.Public,
-						null, null, new object[] { mapPath } );
-				}
-				catch ( Exception ex )
-				{
-					Log.Warning( $"[HaloMount] Skipping unreadable map {mapPath}: {ex.Message}" );
-					continue;
-				}
-
-				// Collect render_model ("mode") tag names present in this map first, so each
-				// weapon ("weap") tag can be matched against one by name -- Halo3 objects keep
-				// every tag for the same thing (weapon, render_model, physics, etc) under one
-				// shared path, e.g. objects\weapons\pistol\needler\needler for both.
-				var renderModelNames = new HashSet<string>( StringComparer.OrdinalIgnoreCase );
-				var weaponTagNames = new List<string>();
-				var bspTagNames = new List<string>();
-				var bipedTagNames = new List<string>();
-
-				foreach ( dynamic tag in cache.TagIndex )
-				{
-					string classCode = tag.ClassCode;
-					string tagName = tag.TagName;
-					if ( classCode == "mode" )
-						renderModelNames.Add( tagName );
-					else if ( classCode == "weap" )
-						weaponTagNames.Add( tagName );
-					else if ( classCode == "sbsp" )
-						bspTagNames.Add( tagName );
-					else if ( classCode == "bipd" )
-						bipedTagNames.Add( tagName );
-				}
-
-				foreach ( var tagName in weaponTagNames )
-				{
-					if ( !renderModelNames.Contains( tagName ) )
-						continue;
-
-					var shortName = tagName.Split( '\\' ).Last();
-					if ( !registeredNames.Add( shortName ) )
-						continue;
-
-					context.Add( ResourceType.Model, $"weapons/{shortName}.vmdl", new HaloRenderModelLoader( this, mapPath, tagName ) );
-					weaponCount++;
-				}
-
-				// Bipeds (Grunts, Elites, Spartans, etc) -- same name-matching trick as weapons,
-				// same loader too, since RenderModelTag doesn't care what kind of object
-				// references it. This is what actually carries the skeleton (HaloMeshConverter.
-				// BuildSkeleton) that makes these posable, unlike weapons which only have 0-1
-				// bones.
-				foreach ( var tagName in bipedTagNames )
-				{
-					if ( !renderModelNames.Contains( tagName ) )
-						continue;
-
-					var shortName = tagName.Split( '\\' ).Last();
-					var registerKey = $"biped:{shortName}";
-					if ( !registeredNames.Add( registerKey ) )
-						continue;
-
-					context.Add( ResourceType.Model, $"characters/{shortName}.vmdl", new HaloRenderModelLoader( this, mapPath, tagName ) );
-					bipedCount++;
-				}
-
-				// Multiplayer maps are almost always one scnr + one sbsp sharing a name like
-				// levels\multi\guardian\guardian -- the map filename (guardian.map) is a cleaner
-				// display name than that path's last segment, which is identical to the second-
-				// to-last for these.
-				foreach ( var tagName in bspTagNames )
-				{
-					var mapShortName = System.IO.Path.GetFileNameWithoutExtension( mapPath );
-					var registerKey = $"bsp:{mapShortName}:{tagName}";
-					if ( !registeredNames.Add( registerKey ) )
-						continue;
-
-					context.Add( ResourceType.Model, $"maps/{mapShortName}.vmdl", new HaloBspLoader( this, mapPath, tagName ) );
-					bspCount++;
-				}
-			}
-
-			Log.Info( $"[HaloMount] Registered {weaponCount} weapon models, {bspCount} level BSPs, {bipedCount} bipeds." );
+			Log.Info( $"[HaloMount] Registered {toRegister.Count} resources." );
 
 			IsMounted = true;
 		}

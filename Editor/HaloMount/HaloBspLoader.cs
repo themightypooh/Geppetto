@@ -97,7 +97,7 @@ public class HaloBspLoader( HaloMCCMount host, string mapPath, string tagName ) 
 			if ( reclaimerMesh is null )
 				continue;
 
-			foreach ( var sbMesh in HaloMeshConverter.ConvertMesh( reclaimerMesh, ref materialIndex ) )
+			foreach ( var sbMesh in HaloMeshConverter.ConvertMesh( reclaimerModel, reclaimerMesh, ref materialIndex ) )
 			{
 				builder = builder.AddMesh( sbMesh );
 				meshesAdded++;
