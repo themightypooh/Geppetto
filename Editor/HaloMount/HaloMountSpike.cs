@@ -237,4 +237,113 @@ public static class HaloMountSpike
 		foreach ( var p in baseGameMountType.GetProperties( flags ) )
 			Log.Info( $"[HaloMount] BaseGameMount prop: {p.PropertyType} {p.Name}" );
 	}
+
+	// Reproduces a resource load directly, outside the engine's resource pipeline (which
+	// swallows the real exception down to a generic "Exception when loading" with no message
+	// or stack trace -- confirmed on characters/civilian_fem.vmdl, which returns null with
+	// nothing useful in the console). Also dumps per-mesh BoneIndex/HasBlendIndices/
+	// HasBlendWeights so we can tell rigid-bone meshes (handled) apart from smooth-skinned
+	// ones (not handled yet -- likely why bipeds render exploded).
+	[ConCmd( "halomount_diag_load" )]
+	public static void DiagnoseLoad( string displayPath )
+	{
+		var entry = HaloMCCMount.FindDiscoveryEntry( displayPath );
+		if ( entry is null )
+		{
+			Log.Error( $"[HaloMount] No cached discovery entry for '{displayPath}' -- has the mount scanned yet (halomount_remount)?" );
+			return;
+		}
+
+		var (mapPath, tagName) = entry.Value;
+		Log.Info( $"[HaloMount] Reproducing load: map={mapPath} tag={tagName}" );
+
+		try
+		{
+			var asm = LoadReclaimer();
+			var cacheFactory = asm.GetType( "Reclaimer.Blam.Common.CacheFactory", throwOnError: true );
+
+			dynamic cache = cacheFactory.InvokeMember(
+				"ReadCacheFile",
+				BindingFlags.InvokeMethod | BindingFlags.Static | BindingFlags.Public,
+				null, null, new object[] { mapPath } );
+
+			object tagItem = null;
+			foreach ( dynamic tag in cache.TagIndex )
+			{
+				string classCode = tag.ClassCode;
+				string name = tag.TagName;
+				if ( classCode == "mode" && name == tagName )
+				{
+					tagItem = tag;
+					break;
+				}
+			}
+
+			if ( tagItem is null )
+			{
+				Log.Error( $"[HaloMount] No render_model tag found for '{tagName}'" );
+				return;
+			}
+
+			var renderModelType = asm.GetType( "Reclaimer.Blam.Halo3.RenderModelTag", throwOnError: true );
+			var readMetadata = tagItem.GetType().GetMethod( "ReadMetadata" ).MakeGenericMethod( renderModelType );
+			dynamic renderModelTag = readMetadata.Invoke( tagItem, null );
+
+			dynamic scene = renderModelTag.GetContent();
+
+			dynamic reclaimerModel = null;
+			foreach ( dynamic model in scene.EnumerateModels() ) { reclaimerModel = model; break; }
+
+			if ( reclaimerModel is null )
+			{
+				Log.Error( "[HaloMount] GetContent() produced no models." );
+				return;
+			}
+
+			Log.Info( $"[HaloMount] Model: {reclaimerModel.Bones.Count} bones, {reclaimerModel.Meshes.Count} meshes" );
+
+			foreach ( dynamic region in reclaimerModel.Regions )
+			{
+				foreach ( dynamic permutation in region.Permutations )
+				{
+					dynamic range = permutation.MeshRange;
+					Log.Info( $"[HaloMount]   region '{region.Name}' permutation '{permutation.Name}' -> meshes [{(int)range.Item1}, {(int)range.Item1 + (int)range.Item2})" );
+				}
+			}
+
+			var meshIndex = 0;
+			foreach ( dynamic mesh in reclaimerModel.Meshes )
+			{
+				meshIndex++;
+				if ( mesh is null )
+				{
+					Log.Info( $"[HaloMount]   mesh {meshIndex}: null" );
+					continue;
+				}
+
+				object boneIndexObj = mesh.BoneIndex;
+				dynamic vb = mesh.VertexBuffer;
+				bool hasBlendIndices = vb is not null && (bool)vb.HasBlendIndices;
+				bool hasBlendWeights = vb is not null && (bool)vb.HasBlendWeights;
+				int vertexCount = vb is null ? 0 : (int)vb.Count;
+
+				Log.Info( $"[HaloMount]   mesh {meshIndex}: BoneIndex={boneIndexObj}, HasBlendIndices={hasBlendIndices}, "
+					+ $"HasBlendWeights={hasBlendWeights}, VertexCount={vertexCount}" );
+
+				try
+				{
+					var materialIndex = 0;
+					HaloMeshConverter.ConvertMesh( reclaimerModel, mesh, ref materialIndex );
+				}
+				catch ( Exception meshEx )
+				{
+					Log.Error( $"[HaloMount]   mesh {meshIndex} FAILED TO CONVERT: {meshEx}" );
+				}
+			}
+		}
+		catch ( Exception ex )
+		{
+			Log.Error( $"[HaloMount] Diagnostic failed: {ex}" );
+		}
+	}
 }

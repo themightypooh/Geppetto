@@ -58,14 +58,29 @@ internal static class HaloMeshConverter
 		// one shared object-space box -- weapons happened to be simple single-bone geometry so
 		// this never mattered before, but skipping it is what caused other models to render
 		// stretched/distorted toward the origin. Mesh.BoneIndex (nullable -- null means smooth-
-		// skinned via per-vertex blend weights, not handled here yet) tells us which bone;
-		// Model.GetBoneWorldTransform walks the parent chain for us.
+		// skinned via per-vertex blend weights, not handled here yet) tells us which bone.
+		//
+		// Model.GetBoneWorldTransform(i) is NOT a bone-local-to-object-space transform, despite
+		// the name -- for Halo3, every Bone.WorldTransform is precomputed from the tag's
+		// InverseTransform/InverseScale fields (RenderModelTag.GetModelContent():
+		// `WorldTransform = Utils.CreateWorldMatrix(n.InverseTransform, n.InverseScale)`), i.e.
+		// it's the INVERSE bind matrix (object-space -> bone-local-space, the standard thing
+		// skinning math wants). GetBoneWorldTransform returns that precomputed value as-is
+		// whenever it's set, which for Halo3 is always. Applying it directly to a bone-local
+		// vertex sends it somewhere essentially unrelated -- that's the "teleporting" bug.
+		// What we actually want is the forward transform (bone-local -> object-space), which is
+		// just the inverse of that.
 		object boneIndexObj = reclaimerMesh.BoneIndex;
 		SysMatrix4x4? boneWorld = null;
 		if ( boneIndexObj is not null )
 		{
 			int boneIndex = (byte)boneIndexObj;
-			boneWorld = (SysMatrix4x4)reclaimerModel.GetBoneWorldTransform( boneIndex );
+			var inverseBind = (SysMatrix4x4)reclaimerModel.GetBoneWorldTransform( boneIndex );
+
+			if ( SysMatrix4x4.Invert( inverseBind, out var forward ) )
+				boneWorld = forward;
+			else
+				Log.Warning( $"[HaloMount] Bone {boneIndex} transform is not invertible, leaving mesh un-transformed." );
 		}
 
 		var positionsSb = new Vector3[vertexCount];

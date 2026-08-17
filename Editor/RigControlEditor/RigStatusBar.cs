@@ -185,6 +185,14 @@ internal sealed class RigTutorial
 			},
 			new()
 			{
+				Instruction = "Add a Reference Prop in the BonesObject tab, and give it any small model",
+				Detail = "Animating a reach against empty space is guesswork - you find out it was wrong once it's in game. A reference prop is a static model shown only in the viewport, purely to aim at. Any model works; a crate or a cube stands in for a switch fine. Place it out in front of the hand at about arm's length, then pose TO it rather than imagining where it is. This is the single biggest difference between a reach that lands and one that floats.",
+				Art = StepArt.Model,
+				Panel = "BonesObject",
+				IsDone = ( anim, _ ) => anim?.ReferenceProps?.Any( p => p?.Model is not null ) ?? false
+			},
+			new()
+			{
 				Instruction = "REST - at frame 0, press K to key the pose it already has",
 				Detail = "Beat 1 of 4. Nothing to pose yet; this plants a keyframe on the arm's resting shape. Every action needs a known pose to leave from and return to, and you will copy this exact key to the end of the clip later so the whole thing settles back.",
 				Art = StepArt.Keyframe,

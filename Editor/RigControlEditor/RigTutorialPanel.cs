@@ -165,6 +165,17 @@ internal sealed class RigTutorialPanel : Widget
 	/// feel finishable rather than endless. Completed steps stay visible for the same reason:
 	/// progress you can see is the thing that makes you do the next one.
 	/// </summary>
+	/// <summary>
+	/// ONE STEP AT A TIME, given the whole panel.
+	///
+	/// The first version listed all nine at once with the current one highlighted. That shows
+	/// progress, but it also puts eight things you are not doing in front of the one you are, and
+	/// the instruction you actually need ends up as one line among many. A tutorial is read
+	/// mid-task, glanced at between drags - it has to answer "what now" in one look.
+	///
+	/// Progress hasn't been thrown away, it's just moved: the counter in the header and the row of
+	/// dots underneath say where you are without competing for the same space.
+	/// </summary>
 	public void Rebuild()
 	{
 		_list.Layout.Clear( true );
@@ -178,79 +189,117 @@ internal sealed class RigTutorialPanel : Widget
 			return;
 		}
 
-		_heading.Text = "Build A Wave";
-		_progress.Text = $"{Math.Min( Tutorial.CurrentIndex + 1, Tutorial.StepCount )} / {Tutorial.StepCount}";
+		_heading.Text = "Flip A Switch";
 
-		for ( var i = 0; i < Tutorial.StepCount; i++ )
+		var index = Math.Min( Tutorial.CurrentIndex, Tutorial.StepCount - 1 );
+		var step = Tutorial.StepAt( index );
+
+		if ( Tutorial.CurrentIndex >= Tutorial.StepCount || step is null )
 		{
-			var step = Tutorial.StepAt( i );
-			if ( step is null )
-				continue;
-
-			var isDone = i < Tutorial.CurrentIndex;
-			var isCurrent = i == Tutorial.CurrentIndex;
-
-			var row = _list.Layout.AddRow();
-			row.Spacing = 10;
-
-			row.Add( new StepGlyph( this, step.Art, isDone, isCurrent ) );
-
-			var column = row.AddColumn( 1 );
-			column.Spacing = 3;
-
-			var text = new Editor.Label( step.Instruction )
-			{
-				WordWrap = true,
-				// Done steps fade back, the current one is the only thing at full contrast, and
-				// steps ahead sit between the two - so the eye lands on the current one first.
-				Color = isDone
-					? Theme.TextControl.WithAlpha( 0.4f )
-					: isCurrent ? Theme.TextControl : Theme.TextControl.WithAlpha( 0.6f )
-			};
-
-			// Sized up deliberately. This panel is read while you work, at a glance, often from
-			// further back than you read code - default label size is too small to be useful for
-			// that, and squinting at instructions defeats the point of having them.
-			text.SetStyles( isCurrent
-				? "font-weight: 600; font-size: 15px;"
-				: "font-size: 15px;" );
-
-			column.Add( text );
-
-			// The why, and the way there - shown only for the step you're on. Every step carrying
-			// its own paragraph turns the panel into the wall of text this replaced.
-			if ( isCurrent )
-			{
-				if ( !string.IsNullOrWhiteSpace( step.Detail ) )
-				{
-					var detail = new Editor.Label( step.Detail )
-					{
-						WordWrap = true,
-						Color = Theme.TextControl.WithAlpha( 0.6f )
-					};
-
-					detail.SetStyles( "font-size: 14px; line-height: 1.35;" );
-					column.Add( detail );
-				}
-
-				if ( !string.IsNullOrWhiteSpace( step.Panel ) )
-				{
-					var reveal = column.AddRow();
-					reveal.Add( new Button( $"Show me the {step.Panel} panel", "my_location" )
-					{
-						Clicked = () => RevealPanel?.Invoke( step.Panel )
-					} );
-					reveal.AddStretchCell();
-				}
-			}
+			_progress.Text = "done";
+			BuildFinishScreen();
+			return;
 		}
 
-		if ( Tutorial.CurrentIndex >= Tutorial.StepCount )
-		{
-			var done = new Editor.Label( "That's a wave. Save it, then try changing the timing - drag the keys closer together and play it back." )
-			{ WordWrap = true, Color = Theme.Green };
+		_progress.Text = $"step {index + 1} of {Tutorial.StepCount}";
 
-			_list.Layout.Add( done );
+		var header = _list.Layout.AddRow();
+		header.Spacing = 12;
+		header.Add( new StepGlyph( this, step.Art, false, true ) );
+
+		var instruction = new Editor.Label( step.Instruction ) { WordWrap = true };
+		instruction.SetStyles( "font-weight: 600; font-size: 17px; line-height: 1.3;" );
+		header.Add( instruction, 1 );
+
+		_list.Layout.AddSpacingCell( 4f );
+
+		if ( !string.IsNullOrWhiteSpace( step.Detail ) )
+		{
+			var detail = new Editor.Label( step.Detail )
+			{
+				WordWrap = true,
+				Color = Theme.TextControl.WithAlpha( 0.65f )
+			};
+
+			detail.SetStyles( "font-size: 14px; line-height: 1.45;" );
+			_list.Layout.Add( detail );
+		}
+
+		if ( !string.IsNullOrWhiteSpace( step.Panel ) )
+		{
+			_list.Layout.AddSpacingCell( 6f );
+
+			var reveal = _list.Layout.AddRow();
+			reveal.Add( new Button( $"Show me the {step.Panel} panel", "my_location" )
+			{
+				Clicked = () => RevealPanel?.Invoke( step.Panel )
+			} );
+			reveal.AddStretchCell();
+		}
+
+		_list.Layout.AddStretchCell();
+		_list.Layout.Add( new StepDots( this, Tutorial.StepCount, index ) );
+	}
+
+	/// <summary>The end of the run. Says what was built and what to do with it, rather than just
+	/// stopping - finishing something should feel like finishing something.</summary>
+	private void BuildFinishScreen()
+	{
+		var done = new Editor.Label(
+			"That's a reach and a press, with all four beats in it. Save it, then try the thing " +
+			"that teaches the most: drag your keys closer together and play it again. Almost " +
+			"every first animation is twice as slow as it should be, and feeling that difference " +
+			"is worth more than any amount of re-posing. The same four beats build every other " +
+			"action you'll animate." )
+		{ WordWrap = true, Color = Theme.Green };
+
+		done.SetStyles( "font-size: 15px; line-height: 1.45;" );
+		_list.Layout.Add( done );
+		_list.Layout.AddStretchCell();
+	}
+}
+
+/// <summary>A row of dots, one per step, filled up to where you are - progress without spending
+/// the panel on eight instructions you aren't following.</summary>
+internal sealed class StepDots : Widget
+{
+	private readonly int _count;
+	private readonly int _current;
+
+	public StepDots( Widget parent, int count, int current ) : base( parent )
+	{
+		_count = count;
+		_current = current;
+
+		FixedHeight = 14;
+	}
+
+	protected override void OnPaint()
+	{
+		if ( _count <= 0 )
+			return;
+
+		Paint.Antialiasing = true;
+		Paint.ClearPen();
+
+		const float spacing = 14f;
+		var totalWidth = (_count - 1) * spacing;
+		var startX = (Width - totalWidth) * 0.5f;
+		var y = LocalRect.Center.y;
+
+		for ( var i = 0; i < _count; i++ )
+		{
+			var center = new Vector2( startX + i * spacing, y );
+
+			if ( i == _current )
+			{
+				Paint.SetBrush( Theme.Yellow );
+				Paint.DrawCircle( center, 8f );
+				continue;
+			}
+
+			Paint.SetBrush( i < _current ? Theme.Green.WithAlpha( 0.7f ) : Theme.TextControl.WithAlpha( 0.25f ) );
+			Paint.DrawCircle( center, 5f );
 		}
 	}
 }

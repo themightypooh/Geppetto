@@ -56,25 +56,30 @@ public class HaloRenderModelLoader( HaloMCCMount host, string mapPath, string ta
 		if ( reclaimerModel is null )
 			throw new Exception( $"render_model tag '{TagName}' produced no models" );
 
-		// Model.Meshes is a flat list covering every region/permutation (alternate variants,
-		// damage states, etc), not just the one default body -- concatenating all of them
-		// produces overlapping garbage. Scope to the first region's first permutation's
-		// MeshRange instead. MeshRange is a named ValueTuple (Index, Count) -- those names are
-		// compiler sugar only, so through `dynamic` the real fields are Item1/Item2.
-		dynamic firstRegion = null;
-		foreach ( dynamic region in reclaimerModel.Regions ) { firstRegion = region; break; }
-
-		dynamic firstPermutation = null;
-		if ( firstRegion is not null )
-			foreach ( dynamic permutation in firstRegion.Permutations ) { firstPermutation = permutation; break; }
-
-		int meshStart = 0;
-		int meshCount = int.MaxValue;
-		if ( firstPermutation is not null )
+		// Model.Meshes is a flat list covering every region/permutation. A simple weapon has
+		// exactly one region (with the "real" body as its first permutation, plus alternate
+		// variants as later permutations -- so within a region, only the first permutation
+		// should be used). A biped like the Grunt spreads its actual body across MULTIPLE
+		// regions instead (arms/backpack/head/helmet/legs/torso, confirmed via
+		// halomount_diag_load -- 6 regions, one mesh each) -- taking only the first region, as
+		// this used to, silently dropped 5 of them ("only arms showing"). The general rule that
+		// covers both cases: take EVERY region's first permutation. MeshRange is a named
+		// ValueTuple (Index, Count) -- those names are compiler sugar only, so through `dynamic`
+		// the real fields are Item1/Item2.
+		var meshIndices = new SortedSet<int>();
+		foreach ( dynamic region in reclaimerModel.Regions )
 		{
+			dynamic firstPermutation = null;
+			foreach ( dynamic permutation in region.Permutations ) { firstPermutation = permutation; break; }
+
+			if ( firstPermutation is null )
+				continue;
+
 			dynamic meshRange = firstPermutation.MeshRange;
-			meshStart = (int)meshRange.Item1;
-			meshCount = (int)meshRange.Item2;
+			int start = (int)meshRange.Item1;
+			int count = (int)meshRange.Item2;
+			for ( var i = start; i < start + count; i++ )
+				meshIndices.Add( i );
 		}
 
 		var builder = Model.Builder.WithName( Path );
@@ -84,8 +89,11 @@ public class HaloRenderModelLoader( HaloMCCMount host, string mapPath, string ta
 			allMeshes.Add( m );
 
 		var materialIndex = 0;
-		for ( var i = meshStart; i < allMeshes.Count && i < meshStart + meshCount; i++ )
+		foreach ( var i in meshIndices )
 		{
+			if ( i < 0 || i >= allMeshes.Count )
+				continue;
+
 			dynamic reclaimerMesh = allMeshes[i];
 			if ( reclaimerMesh is null )
 				continue;
