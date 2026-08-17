@@ -27,3 +27,7 @@ code/Properties/*
 
 # Exported / standalone games
 Exports/
+
+# Halo MCC mount work - unrelated to Marionette, and ships GPL-3.0 binaries.
+# Kept on disk, kept out of the repo.
+Editor/HaloMount/
