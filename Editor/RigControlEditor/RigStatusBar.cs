@@ -241,7 +241,22 @@ internal sealed class RigTutorial
 	private static bool KeyAfter( RigAnimDocument anim, int frame ) =>
 		anim?.BoneTracks.Any( t => t.Keyframes.Any( k => k.Frame >= frame ) ) ?? false;
 
-	public bool Active { get; private set; } = true;
+	/// <summary>
+	/// Whether the tutorial dock opens itself when the tool starts.
+	///
+	/// EditorCookie, so it survives restarts and lives nowhere near a document - which panels you
+	/// like seeing is a property of you, not of the clip you happen to have open. Same mechanism
+	/// the editor's own preview widgets use for their settings.
+	/// </summary>
+	public static bool OpenOnStartup
+	{
+		get => EditorCookie.Get( "marionette.tutorial.openonstartup", true );
+		set => EditorCookie.Set( "marionette.tutorial.openonstartup", value );
+	}
+
+	/// <summary>Starts inactive so the panel shows its start screen first. Nobody should be
+	/// dropped into step one of something they never asked for.</summary>
+	public bool Active { get; private set; }
 
 	public int CurrentIndex { get; private set; }
 

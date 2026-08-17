@@ -44,7 +44,10 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 	public RigControlWindow()
 	{
 		DeleteOnClose = true;
-		Size = new Vector2( 1400, 900 );
+		// Roomier by default. The side panels were pinched enough at 1400 that step text and
+		// property names clipped, and a tool whose first impression is truncated labels reads as
+		// broken before anyone has used it.
+		Size = new Vector2( 1760, 1040 );
 		SetWindowIcon( "accessibility_new" );
 
 		_anim = new RigAnimDocument();
@@ -466,7 +469,10 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		// and DockWindow only calls BuildDefaultLayout when there's nothing to restore - so
 		// without this, the new panel would silently never appear for anyone who had opened the
 		// tool before.
-		StateCookie = "Marionette1";
+		// Bumped again for the wider default split. Splitter proportions live in the saved layout,
+		// so without a new cookie anyone who has already opened the tool keeps the narrow columns
+		// forever and never sees the change.
+		StateCookie = "Marionette2";
 
 		_lastModel = _anim.SourceModel;
 		_viewport.SetModel( _lastModel );
@@ -486,18 +492,26 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 	protected override void BuildDefaultLayout()
 	{
 		var bonesDock = DockManager.OpenDock( "BonesObject", DockArea.Right, _centralDock );
-		DockManager.SetSplitterProportions( bonesDock, 0.72f, 0.28f );
+
+		// 0.62/0.38 rather than 0.72/0.28. The right column holds the tutorial and the property
+		// sheets, all of which are text - and text is what suffers first when a panel is narrow.
+		// The viewport loses a little width and cares far less.
+		DockManager.SetSplitterProportions( bonesDock, 0.62f, 0.38f );
 
 		// Center, not Right - Right would split the space into three columns (the bug that
 		// shipped first); Center stacks a dock as a tab alongside whatever's already there.
 		DockManager.OpenDock( "AnimEvents", DockArea.Center, bonesDock );
 		DockManager.OpenDock( "Constraints", DockArea.Center, bonesDock );
 
-		// Tabbed alongside the others and RAISED, so a first-time user opens the tool with the
-		// tutorial already in front of them. It's the one panel that's useless if nobody notices
-		// it, and it's one click to close forever.
+		// Tabbed alongside the others, and raised only if the reader hasn't opted out. It's the
+		// one panel that's useless if nobody notices it - and equally, the one that becomes an
+		// irritant if it insists after being told no.
 		DockManager.OpenDock( "Tutorial", DockArea.Center, bonesDock );
-		DockManager.RaiseDock( "Tutorial" );
+
+		if ( RigTutorial.OpenOnStartup )
+			DockManager.RaiseDock( "Tutorial" );
+		else
+			DockManager.RaiseDock( "BonesObject" );
 
 		var timeline = DockManager.OpenDock( "Timeline", DockArea.Bottom, _centralDock );
 		DockManager.SetSplitterProportions( timeline, 0.65f, 0.35f );

@@ -46,10 +46,11 @@ internal sealed class RigTutorialPanel : Widget
 		header.Spacing = 8;
 
 		_heading = new Editor.Label( "Build A Wave" );
-		_heading.SetStyles( "font-weight: 600; font-size: 15px;" );
+		_heading.SetStyles( "font-weight: 600; font-size: 20px;" );
 		header.Add( _heading, 1 );
 
 		_progress = new Editor.Label( "" ) { Color = Theme.Green };
+		_progress.SetStyles( "font-size: 15px; font-weight: 500;" );
 		header.Add( _progress );
 
 		var scroll = Layout.Add( new ScrollArea( this ), 1 );
@@ -81,6 +82,63 @@ internal sealed class RigTutorialPanel : Widget
 	}
 
 	/// <summary>
+	/// What you see before starting, and after skipping: what this is, one button to begin, one to
+	/// skip, and the opt-out.
+	///
+	/// The opt-out is deliberately here and not buried in a menu. A panel that opens itself every
+	/// time you launch the tool, with no visible way to stop it, is the thing people resent about
+	/// tutorials - and the resentment attaches to the tool, not the tutorial. One obvious checkbox
+	/// costs nothing and removes the whole objection.
+	/// </summary>
+	private void BuildStartScreen()
+	{
+		_heading.Text = "Build A Wave";
+		_progress.Text = $"{Tutorial.StepCount} steps";
+
+		var intro = new Editor.Label(
+			"A guided run through making one real animation, a step at a time. Each step ticks " +
+			"itself off as you actually do it, and points you at the panel it's talking about.\n\n" +
+			"Nothing here is required reading - you can start it, skip it, or come back to it " +
+			"later from the Help menu." )
+		{ WordWrap = true };
+
+		intro.SetStyles( "font-size: 15px; line-height: 1.35;" );
+		_list.Layout.Add( intro );
+
+		_list.Layout.AddSpacingCell( 8f );
+
+		var buttons = _list.Layout.AddRow();
+		buttons.Spacing = 8;
+
+		buttons.Add( new Button.Primary( "Start Tutorial", "play_arrow" )
+		{
+			Clicked = () => { Tutorial.Restart(); Changed?.Invoke(); Rebuild(); }
+		} );
+
+		buttons.Add( new Button( "Skip", "close" )
+		{
+			Clicked = () => { Tutorial.Dismiss(); Changed?.Invoke(); Rebuild(); }
+		} );
+
+		buttons.AddStretchCell();
+
+		_list.Layout.AddSpacingCell( 4f );
+
+		var optOut = _list.Layout.AddRow();
+		optOut.Spacing = 8;
+		optOut.Alignment = TextFlag.LeftCenter;
+
+		var checkbox = optOut.Add( new Checkbox() );
+		checkbox.Text = "Don't open this on startup again";
+
+		// Inverted: the cookie stores whether to auto-open, the checkbox asks whether to stop.
+		checkbox.Value = !RigTutorial.OpenOnStartup;
+		checkbox.Toggled += () => RigTutorial.OpenOnStartup = !checkbox.Value;
+
+		optOut.AddStretchCell();
+	}
+
+	/// <summary>
 	/// Every step is listed, not just the current one, and each is marked done / current / ahead.
 	///
 	/// Showing one instruction at a time - which is what the status bar did - hides how long the
@@ -97,15 +155,7 @@ internal sealed class RigTutorialPanel : Widget
 
 		if ( !Tutorial.Active )
 		{
-			_heading.Text = "Tutorial";
-			_progress.Text = "";
-
-			_list.Layout.Add( new Editor.Label(
-				"Not running. Restart below, or Help → Start Wave Tutorial.\n\n" +
-				"It walks through building one real animation - a wave - a step at a time, and " +
-				"ticks each step off as you actually do it." )
-			{ WordWrap = true } );
-
+			BuildStartScreen();
 			return;
 		}
 
@@ -139,8 +189,12 @@ internal sealed class RigTutorialPanel : Widget
 					: isCurrent ? Theme.TextControl : Theme.TextControl.WithAlpha( 0.6f )
 			};
 
-			if ( isCurrent )
-				text.SetStyles( "font-weight: 600;" );
+			// Sized up deliberately. This panel is read while you work, at a glance, often from
+			// further back than you read code - default label size is too small to be useful for
+			// that, and squinting at instructions defeats the point of having them.
+			text.SetStyles( isCurrent
+				? "font-weight: 600; font-size: 15px;"
+				: "font-size: 15px;" );
 
 			column.Add( text );
 
@@ -150,11 +204,14 @@ internal sealed class RigTutorialPanel : Widget
 			{
 				if ( !string.IsNullOrWhiteSpace( step.Detail ) )
 				{
-					column.Add( new Editor.Label( step.Detail )
+					var detail = new Editor.Label( step.Detail )
 					{
 						WordWrap = true,
-						Color = Theme.TextControl.WithAlpha( 0.55f )
-					} );
+						Color = Theme.TextControl.WithAlpha( 0.6f )
+					};
+
+					detail.SetStyles( "font-size: 14px; line-height: 1.35;" );
+					column.Add( detail );
 				}
 
 				if ( !string.IsNullOrWhiteSpace( step.Panel ) )
