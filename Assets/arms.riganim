@@ -1,0 +1,11 @@
+{
+  "SourceModel": "models/first_person/first_person_arms_preview.vmdl",
+  "RigAsset": null,
+  "AnimationSpeed": 30,
+  "FrameCount": 30,
+  "BoneTracks": [],
+  "Events": [],
+  "MorphEvents": [],
+  "__references": [],
+  "__version": 0
+}

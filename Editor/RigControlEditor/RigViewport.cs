@@ -600,22 +600,52 @@ internal sealed class RigViewport : Widget
 			// pose and the drag re-applied it the next frame - flickering between two poses.
 			// Clearing was too blunt an instrument. Driving each bone to a known value has neither
 			// hole: nothing is ever undefined, so nothing needs wiping.
+			// THE HIERARCHY IS RESOLVED HERE, not read back off the renderer.
+			//
+			// Keyframes are parent-space and the write API takes world space, so each bone needs
+			// its parent's world transform to convert. Reading that back from the renderer is
+			// wrong: bone writes only land on the next tick, so mid-loop the parent still reports
+			// its PREVIOUS pose. Every child was being placed against a stale parent and the
+			// error compounded down each chain - which is why undo appeared to mangle the model
+			// rather than simply restore the wrong pose.
+			//
+			// It was survivable while this loop only touched keyframed bones, because a stale
+			// parent that isn't itself moving converts correctly. Driving every bone made it
+			// obvious.
+			//
+			// So world transforms are accumulated in a local map as the loop walks down: a bone's
+			// parent is whatever THIS pass computed, not whatever the renderer last drew.
+			var resolved = new Dictionary<string, Transform>();
+
 			foreach ( var (bone, world) in LiveBones() )
 			{
+				// The dragged bone keeps its live transform, and must still be resolvable as a
+				// parent for anything under it.
 				if ( bone.Name == SelectedBone && _draggingBone )
+				{
+					resolved[bone.Name] = world;
 					continue;
+				}
 
 				if ( (poseForBone( bone.Name ) ?? BindPoseFor( bone )) is not { } local )
+				{
+					resolved[bone.Name] = world;
 					continue;
+				}
 
-				// Keyframes are stored parent-space (BoneTrack.Evaluate) - world space is what
-				// ApplyWorldTransform's writes expect (matching TryGetBoneTransform's convention).
-				// Limits are clamped here too, so scrubbing shows the same pose posing produced
-				// rather than only constraining at author time.
-				var parentWorld = ParentWorld( bone );
 				var clamped = RigConstraintSolver.ClampToLimits( Rig, bone.Name, local );
 
-				ApplyWorldTransform( bone, parentWorld.ToWorld( clamped ) );
+				// Skeletons list parents before children, so the parent is normally already
+				// resolved. The readback fallback only covers a rig that doesn't, where a stale
+				// parent is still better than none.
+				var parentWorld = bone.Parent is { } parent
+					? (resolved.TryGetValue( parent.Name, out var computed ) ? computed : ParentWorld( bone ))
+					: _renderer.WorldTransform;
+
+				var worldPose = parentWorld.ToWorld( clamped );
+
+				resolved[bone.Name] = worldPose;
+				ApplyWorldTransform( bone, worldPose );
 			}
 		}
 		finally
