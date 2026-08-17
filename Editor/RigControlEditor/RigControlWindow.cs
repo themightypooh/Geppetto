@@ -433,6 +433,9 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 			Edited = () =>
 			{
 				LoadRig();
+
+				// ApplyRigToPanels respawns the reference props, which is what picks up a model
+				// being assigned to one.
 				ApplyRigToPanels();
 				MarkDirty( "Edit Rig Source" );
 			},
@@ -521,6 +524,7 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 	{
 		_constraints.SetRig( _rig );
 		_viewport.Rig = _rig;
+		_viewport.SetReferenceProps( _anim?.ReferenceProps );
 
 		// SourceModel on the clip itself wins; the rig's own model is only a fallback for a clip
 		// that hasn't set one yet. Previously this only ever updated the viewport in the fallback

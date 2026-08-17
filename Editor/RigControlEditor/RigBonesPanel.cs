@@ -123,6 +123,11 @@ internal sealed class RigBonesPanel : Widget
 
 		if ( serialized.TryGetProperty( nameof( RigAnimDocument.AnimationSpeed ), out var speed ) )
 			_header.AddRow( speed );
+
+		// Reference props - static models to pose against. Sits with the source model rather than
+		// in its own tab because it answers the same question: what is in this viewport.
+		if ( serialized.TryGetProperty( nameof( RigAnimDocument.ReferenceProps ), out var props ) )
+			_header.AddRow( props );
 	}
 
 	public void Rebuild()

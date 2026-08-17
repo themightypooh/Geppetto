@@ -21,6 +21,7 @@ internal sealed class RigSnapshot
 	private List<BoneTrack> _tracks;
 	private List<RigEvent> _events;
 	private List<MorphEvent> _morphs;
+	private List<ReferenceProp> _references;
 	private int _frameCount;
 	private int _animationSpeed;
 
@@ -38,6 +39,7 @@ internal sealed class RigSnapshot
 			snap._tracks = anim.BoneTracks.Select( Clone ).ToList();
 			snap._events = anim.Events.Select( Clone ).ToList();
 			snap._morphs = anim.MorphEvents.Select( Clone ).ToList();
+			snap._references = anim.ReferenceProps.Select( Clone ).ToList();
 			snap._frameCount = anim.FrameCount;
 			snap._animationSpeed = anim.AnimationSpeed;
 		}
@@ -69,6 +71,7 @@ internal sealed class RigSnapshot
 			anim.BoneTracks = _tracks.Select( Clone ).ToList();
 			anim.Events = _events.Select( Clone ).ToList();
 			anim.MorphEvents = _morphs.Select( Clone ).ToList();
+			anim.ReferenceProps = _references.Select( Clone ).ToList();
 			anim.FrameCount = _frameCount;
 			anim.AnimationSpeed = _animationSpeed;
 		}
@@ -106,6 +109,17 @@ internal sealed class RigSnapshot
 		PositionOffset = e.PositionOffset,
 		RotationOffset = e.RotationOffset,
 		ScaleOffset = e.ScaleOffset
+	};
+
+	private static ReferenceProp Clone( ReferenceProp p ) => new()
+	{
+		Name = p.Name,
+		Model = p.Model,
+		Visible = p.Visible,
+		Position = p.Position,
+		Rotation = p.Rotation,
+		Scale = p.Scale,
+		FollowBone = p.FollowBone
 	};
 
 	private static MorphEvent Clone( MorphEvent m ) => new()

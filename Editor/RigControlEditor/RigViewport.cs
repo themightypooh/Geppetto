@@ -579,6 +579,91 @@ internal sealed class RigViewport : Widget
 	/// RigControlWindow.OnScrub, outside any active Gizmo context, and Gizmo.IsLeftMouseDown
 	/// throws a NullReferenceException unconditionally when read from there. That exception fired
 	/// on every single scrub and every playback tick, silently, the entire time.</summary>
+	private readonly List<GameObject> _referenceObjects = new();
+	private List<ReferenceProp> _referenceProps;
+
+	/// <summary>
+	/// Rebuilds the static reference models - the switch, the weapon, whatever the hands are
+	/// working against.
+	///
+	/// Rebuilt wholesale when the list changes and only transform-updated otherwise, because
+	/// destroying and respawning a model every frame would thrash the scene for no reason. A prop
+	/// following a bone is re-read every frame, since the bone moves.
+	/// </summary>
+	public void SetReferenceProps( List<ReferenceProp> props )
+	{
+		_referenceProps = props;
+
+		using var scope = _canvas.Scene.Push();
+
+		foreach ( var existing in _referenceObjects )
+			existing?.Destroy();
+
+		_referenceObjects.Clear();
+
+		if ( props is null )
+			return;
+
+		foreach ( var prop in props )
+		{
+			if ( prop?.Model is null )
+			{
+				// A placeholder keeps indices lined up with the list, so the transform pass can
+				// pair them up without re-searching.
+				_referenceObjects.Add( null );
+				continue;
+			}
+
+			var go = new GameObject( true, string.IsNullOrWhiteSpace( prop.Name ) ? "reference" : prop.Name );
+			var renderer = go.GetOrAddComponent<ModelRenderer>( false );
+
+			renderer.Model = prop.Model;
+			renderer.Enabled = true;
+
+			_referenceObjects.Add( go );
+		}
+	}
+
+	/// <summary>Placement, every frame, so dragging a number in the panel moves the prop while
+	/// you watch rather than on some later refresh.</summary>
+	private void ApplyReferenceProps()
+	{
+		if ( _referenceProps is null )
+			return;
+
+		for ( var i = 0; i < _referenceProps.Count && i < _referenceObjects.Count; i++ )
+		{
+			var prop = _referenceProps[i];
+			var go = _referenceObjects[i];
+
+			if ( prop is null || !go.IsValid() )
+				continue;
+
+			go.Enabled = prop.Visible;
+
+			if ( !prop.Visible )
+				continue;
+
+			var local = prop.LocalTransform;
+
+			// Following a bone puts the prop in the hand and keeps it there while the hand moves,
+			// which is what you want for a weapon that's already held.
+			if ( !string.IsNullOrWhiteSpace( prop.FollowBone ) && TryGetWorldTransform( prop.FollowBone, out var boneWorld ) )
+			{
+				var followed = boneWorld.ToWorld( local );
+
+				go.WorldPosition = followed.Position;
+				go.WorldRotation = followed.Rotation;
+				go.WorldScale = followed.Scale;
+				continue;
+			}
+
+			go.WorldPosition = local.Position;
+			go.WorldRotation = local.Rotation;
+			go.WorldScale = local.Scale;
+		}
+	}
+
 	/// <summary>The last pose lookup this viewport was given, kept so a drag can re-resolve the
 	/// dragged bone's descendants without the window having to hand it over again.</summary>
 	private Func<string, Transform?> _poseLookup;
@@ -771,6 +856,7 @@ internal sealed class RigViewport : Widget
 		CaptureBindPoseIfNeeded();
 		ApplyPixelStyle();
 		ApplyViewmodelFraming();
+		ApplyReferenceProps();
 
 		_gizmoInstance.Input.IsHovered = IsActiveWindow && _canvas.IsUnderMouse;
 

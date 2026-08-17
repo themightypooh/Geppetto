@@ -16,6 +16,20 @@ public sealed class RigAnimDocument : GameResource
 	[Property, Group( "Source" ), Title( "Animation Speed" )] public int AnimationSpeed { get; set; } = 30;
 	[Property, Group( "Source" ), Title( "Frame Count" )] public int FrameCount { get; set; } = 30;
 
+	/// <summary>
+	/// Static models shown in the viewport purely to pose against - the switch a hand reaches for,
+	/// the weapon it grips, the surface it rests on.
+	///
+	/// They are NOT part of the animation: nothing is keyframed, nothing plays back. They exist so
+	/// a grip can be aimed at something real rather than at empty space, which is otherwise
+	/// guesswork you only discover was wrong once it's in game. That's also why they need no
+	/// bones - a reference is something you animate AGAINST, not something you animate.
+	///
+	/// Distinct from AnimEvents, which attach a prop TO a bone for a frame range and are part of
+	/// the clip. A reference prop stays where the world puts it; an event prop follows the hand.
+	/// </summary>
+	[Property, Group( "Reference" )] public List<ReferenceProp> ReferenceProps { get; set; } = new();
+
 	[Property] public List<BoneTrack> BoneTracks { get; set; } = new();
 	[Property] public List<RigEvent> Events { get; set; } = new();
 	[Property] public List<MorphEvent> MorphEvents { get; set; } = new();
@@ -34,6 +48,29 @@ public sealed class RigAnimDocument : GameResource
 
 		return track;
 	}
+}
+
+/// <summary>One static model in the viewport to pose against. See RigAnimDocument.ReferenceProps.</summary>
+public sealed class ReferenceProp
+{
+	[Property] public string Name { get; set; } = "reference";
+
+	[Property] public Model Model { get; set; }
+
+	/// <summary>Hidden rather than deleted, so a prop can be got out of the way for a moment
+	/// without losing the placement you spent time getting right.</summary>
+	[Property] public bool Visible { get; set; } = true;
+
+	[Property, Group( "Transform" )] public Vector3 Position { get; set; }
+	[Property, Group( "Transform" )] public Angles Rotation { get; set; }
+	[Property, Group( "Transform" )] public float Scale { get; set; } = 1f;
+
+	/// <summary>Optional. Named bone this prop follows, for a reference that should move with the
+	/// rig rather than sit still in the world - a weapon already in the hand, say. Empty means it
+	/// stays where Position puts it.</summary>
+	[Property, Group( "Transform" ), Title( "Follow Bone" )] public string FollowBone { get; set; } = "";
+
+	public Transform LocalTransform => new( Position, Rotation.ToRotation(), Scale );
 }
 
 public sealed class BoneTrack
