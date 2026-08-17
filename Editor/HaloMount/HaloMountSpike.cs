@@ -84,6 +84,58 @@ public static class HaloMountSpike
 
 	const string OdstMapsDir = @"C:\Program Files (x86)\Steam\steamapps\common\Halo The Master Chief Collection\halo3odst\maps";
 
+	const string Halo3MapsDir = @"C:\Program Files (x86)\Steam\steamapps\common\Halo The Master Chief Collection\halo3\maps";
+
+	// Only one bipd tag with the exact short name "grunt" ever showed up in the registered
+	// catalog (asset_search confirmed just one grunt.vmdl) -- but Halo 3 has several distinct
+	// Grunt ranks (minor/major/ultra/spec-ops/heretic) as genuinely separate tags, most likely
+	// living in later campaign missions with actual Covenant combat, not the early
+	// 010_jungle.map the one registered "grunt" came from. This scans every halo3 campaign map
+	// for any bipd tag whose name contains the given substring, regardless of whether a
+	// matching render_model was found -- broader than what Mount() registers.
+	[ConCmd( "halomount_find_biped" )]
+	public static void FindBiped( string nameContains )
+	{
+		var asm = LoadReclaimer();
+		var cacheFactory = asm.GetType( "Reclaimer.Blam.Common.CacheFactory", throwOnError: true );
+
+		var mapPaths = Directory.GetFiles( Halo3MapsDir, "*.map" )
+			.Where( p =>
+			{
+				var name = Path.GetFileName( p );
+				return !name.Equals( "campaign.map", StringComparison.OrdinalIgnoreCase )
+					&& !name.Equals( "shared.map", StringComparison.OrdinalIgnoreCase );
+			} );
+
+		foreach ( var mapPath in mapPaths )
+		{
+			dynamic cache;
+			try
+			{
+				cache = cacheFactory.InvokeMember(
+					"ReadCacheFile",
+					BindingFlags.InvokeMethod | BindingFlags.Static | BindingFlags.Public,
+					null, null, new object[] { mapPath } );
+			}
+			catch ( Exception ex )
+			{
+				Log.Warning( $"[HaloMount] Skipping unreadable map {mapPath}: {ex.Message}" );
+				continue;
+			}
+
+			foreach ( dynamic tag in cache.TagIndex )
+			{
+				string classCode = tag.ClassCode;
+				if ( classCode != "bipd" )
+					continue;
+
+				string tagName = tag.TagName;
+				if ( tagName.Contains( nameContains, StringComparison.OrdinalIgnoreCase ) )
+					Log.Info( $"[HaloMount] bipd in {Path.GetFileName( mapPath )}: {tagName}" );
+			}
+		}
+	}
+
 	[Menu( "Editor", "Halo Mount/Find ODST Pistol", "search" )]
 	[ConCmd( "halomount_find_pistol" )]
 	public static void FindPistol()

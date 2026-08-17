@@ -18,6 +18,11 @@ namespace Marionette.Tools;
 /// </summary>
 internal sealed class RigTutorialPanel : Widget
 {
+	/// <summary>The tutorial's name, in one place. It was written out at three separate call
+	/// sites and two of them still said "Build A Wave" long after the content became a switch
+	/// flip - which is exactly what a duplicated string does.</summary>
+	private const string Title = "Flip A Switch";
+
 	private readonly Widget _list;
 	private readonly Editor.Label _heading;
 	private readonly Editor.Label _progress;
@@ -58,7 +63,7 @@ internal sealed class RigTutorialPanel : Widget
 		header.Margin = new Sandbox.UI.Margin( 12, 10, 12, 6 );
 		header.Spacing = 8;
 
-		_heading = new Editor.Label( "Build A Wave" );
+		_heading = new Editor.Label( Title );
 		_heading.SetStyles( "font-weight: 600; font-size: 20px;" );
 		header.Add( _heading, 1 );
 
@@ -105,7 +110,7 @@ internal sealed class RigTutorialPanel : Widget
 	/// </summary>
 	private void BuildStartScreen()
 	{
-		_heading.Text = "Build A Wave";
+		_heading.Text = Title;
 		_progress.Text = $"{Tutorial.StepCount} steps";
 
 		var intro = new Editor.Label(
@@ -158,14 +163,6 @@ internal sealed class RigTutorialPanel : Widget
 	}
 
 	/// <summary>
-	/// Every step is listed, not just the current one, and each is marked done / current / ahead.
-	///
-	/// Showing one instruction at a time - which is what the status bar did - hides how long the
-	/// process is and where you are in it, and both of those are most of what makes a tutorial
-	/// feel finishable rather than endless. Completed steps stay visible for the same reason:
-	/// progress you can see is the thing that makes you do the next one.
-	/// </summary>
-	/// <summary>
 	/// ONE STEP AT A TIME, given the whole panel.
 	///
 	/// The first version listed all nine at once with the current one highlighted. That shows
@@ -189,7 +186,7 @@ internal sealed class RigTutorialPanel : Widget
 			return;
 		}
 
-		_heading.Text = "Flip A Switch";
+		_heading.Text = Title;
 
 		var index = Math.Min( Tutorial.CurrentIndex, Tutorial.StepCount - 1 );
 		var step = Tutorial.StepAt( index );
