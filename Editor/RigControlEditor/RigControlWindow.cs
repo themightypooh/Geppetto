@@ -296,7 +296,7 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 	/// Deliberately keys the CURRENT pose rather than requiring you to nudge the bone first, so
 	/// holding a pose across a span - the ordinary way you stop a limb drifting between two other
 	/// keys - is one keypress rather than a fake drag.</summary>
-	[Shortcut( "rig.keybone", "K" )]
+	[Shortcut( "rig.keybone", "K", ShortcutType.Window )]
 	private void KeySelectedBone()
 	{
 		if ( _anim is null )
@@ -566,7 +566,10 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 	/// posed state rather than to before the drag.</summary>
 	private void OnBoneDragEnded() => ResetBaseline();
 
-	[Shortcut( "editor.undo", "CTRL+Z" )]
+	// ShortcutType.Window, matching ShaderGraph's MainWindow. Without it the shortcut registers at
+	// the wrong scope and never reaches this window - which is its own reason Ctrl+Z appeared to
+	// do nothing, entirely separate from whether undo itself worked.
+	[Shortcut( "editor.undo", "CTRL+Z", ShortcutType.Window )]
 	private void Undo()
 	{
 		var restored = _undoStack.Undo( RigSnapshot.Capture( _anim, _rig ) );
@@ -576,7 +579,9 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		ApplyRestoredSnapshot( restored );
 	}
 
-	[Shortcut( "editor.redo", "CTRL+SHIFT+Z" )]
+	// CTRL+Y, which is what the editor's own asset editors bind redo to. CTRL+SHIFT+Z was my
+	// habit, not this editor's convention.
+	[Shortcut( "editor.redo", "CTRL+Y", ShortcutType.Window )]
 	private void Redo()
 	{
 		var restored = _undoStack.Redo( RigSnapshot.Capture( _anim, _rig ) );
@@ -664,7 +669,7 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 
 	private void UpdateTitle() => Title = $"Rig Control - {_asset?.Path ?? "nothing open"}{(_dirty ? "*" : "")}";
 
-	[Shortcut( "editor.save", "CTRL+S" )]
+	[Shortcut( "editor.save", "CTRL+S", ShortcutType.Window )]
 	private void Save()
 	{
 		if ( _anim is null )

@@ -654,24 +654,21 @@ internal sealed class RigViewport : Widget
 		}
 	}
 
-	private readonly System.Diagnostics.Stopwatch _sceneClock = System.Diagnostics.Stopwatch.StartNew();
-	private float _lastTickTime;
-
-	/// <summary>SceneRenderingWidget renders its scene but never updates it - it has PreFrame,
-	/// Render and RenderScene, and no tick of any kind. Bone overrides are only folded into the
-	/// render pose during the scene's bone update (rig_test_pose: a write reads back stale in the
-	/// same frame and correct only after a tick), so without this the model sat frozen and no
-	/// amount of correct posing could ever have shown up. Nothing moved because nothing updated.</summary>
+	/// <summary>SceneRenderingWidget renders its scene but never updates it, so a tool hosting its
+	/// own editor scene has to tick it. Bone overrides are only folded into the render pose during
+	/// that tick (rig_test_pose: a write reads back stale in the same frame and correct only after
+	/// a tick), so without this the model sat frozen and no amount of correct posing could have
+	/// shown up.
+	///
+	/// RealTime.Now/RealTime.Delta, which is what ShaderGraph's Preview passes. This used to run
+	/// off a hand-rolled Stopwatch - unnecessary, and a second clock to drift out of step with the
+	/// one the rest of the editor animates against.</summary>
 	private void TickScene()
 	{
 		if ( _canvas.Scene is not { } scene )
 			return;
 
-		var now = (float)_sceneClock.Elapsed.TotalSeconds;
-		var delta = (now - _lastTickTime).Clamp( 0f, 0.1f );
-		_lastTickTime = now;
-
-		scene.EditorTick( now, delta );
+		scene.EditorTick( RealTime.Now, RealTime.Delta );
 	}
 
 	/// <summary>Wear the game's pixel-arms look instead of whatever the model ships with. The
