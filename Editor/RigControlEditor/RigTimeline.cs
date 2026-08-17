@@ -199,17 +199,22 @@ internal sealed class RigTimeline : Widget
 		transport.Margin = new Sandbox.UI.Margin( 8, 4 );
 		transport.Spacing = 4;
 
-		// The key button leads the transport rather than sitting up in the window toolbar: making a
-		// keyframe is a thing you do AT a frame, so it belongs next to the controls that choose
-		// which frame you're on.
+		// LABELLED AND TINTED, because it is not a transport control.
 		//
-		// The icon is a diamond because that's what a keyframe looks like in every animation tool
-		// there is. It was previously "fiber_manual_record", which renders as an anonymous filled
-		// circle and reads as "record" at best.
-		transport.Add( new RigStatusBar.HintButton( "diamond",
-			"Key the selected bone at the playhead, using its current pose (K)", () => KeyRequested?.Invoke() ) );
+		// Everything else in this row moves you through time and changes nothing. This one edits
+		// the clip - it's the most-used action in the tool and the only irreversible-feeling one
+		// here - and as another unlabelled icon in a row of six it was indistinguishable from the
+		// buttons that just move the playhead.
+		//
+		// The yellow matches the colour keyframes are drawn in on the timeline, so the button and
+		// the thing it makes are visibly the same idea. Diamond because that's a keyframe in every
+		// animation tool there is; it was "fiber_manual_record" before, which renders as an
+		// anonymous filled circle and reads as "record" at best.
+		transport.Add( new RigIconButton( this, RigIcon.AddKeyframe, Theme.Yellow, "",
+			"Key the selected bone at the playhead, using its current pose (K)",
+			() => KeyRequested?.Invoke() ) );
 
-		transport.AddSpacingCell( 8f );
+		transport.AddSpacingCell( 12f );
 
 		transport.Add( new RigStatusBar.HintButton( "skip_previous", "Jump to the first frame", () => ScrubTo( 0f ) ) );
 		transport.Add( new RigStatusBar.HintButton( "navigate_before", "Step back one frame", () => StepFrame( -1 ) ) );

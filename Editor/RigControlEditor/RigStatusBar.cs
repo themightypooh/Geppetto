@@ -61,7 +61,8 @@ internal sealed class RigStatusBar : Editor.StatusBar
 	{
 		private readonly string _hint;
 
-		public HintButton( string icon, string hint, Action clicked, Widget parent = null ) : base( "", icon, parent )
+		public HintButton( string icon, string hint, Action clicked, Widget parent = null, string text = "" )
+			: base( text, icon, parent )
 		{
 			_hint = hint;
 
@@ -69,6 +70,13 @@ internal sealed class RigStatusBar : Editor.StatusBar
 			// are on the control you're hovering.
 			ToolTip = hint;
 			Clicked = clicked;
+		}
+
+		/// <summary>Tints it, for marking the one control in a row that isn't like the others.</summary>
+		public HintButton WithAccent( Color color )
+		{
+			SetStyles( $"color: {color.Hex}; font-weight: 600;" );
+			return this;
 		}
 
 		// Qualified - unqualified Show/Clear would bind to Widget's own Show(), which does
