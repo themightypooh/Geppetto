@@ -266,6 +266,8 @@ internal sealed class RigViewport : Widget
 		_modelObject = null;
 		_renderer = null;
 		_pixelMaterial = null;
+		_bindPose = null;
+		_captureBindPose = true;
 		Select( null );
 
 		if ( model is null )
@@ -379,6 +381,45 @@ internal sealed class RigViewport : Widget
 		_renderer.SetBoneTransform( bone, world );
 	}
 
+	private Dictionary<string, Transform> _bindPose;
+	private bool _captureBindPose;
+
+	/// <summary>
+	/// The model's untouched parent-space pose, recorded once when it loads.
+	///
+	/// This is the "no keyframe" value - what a bone should look like when the clip says nothing
+	/// about it. Without a recorded answer the only options are to leave the bone at whatever it
+	/// was last dragged to (which makes undo and scrubbing appear broken) or to wipe overrides
+	/// wholesale (which fights any drag in progress). Both were tried; this is the third option
+	/// and the only one with no hole in it.
+	///
+	/// Captured on the first frame after the model loads - bone transforms aren't readable until
+	/// the scene has ticked at least once, and that first tick is before anything can be posed.
+	/// </summary>
+	private void CaptureBindPoseIfNeeded()
+	{
+		if ( !_captureBindPose || !_renderer.IsValid() || _renderer.Model?.Bones is null )
+			return;
+
+		var captured = new Dictionary<string, Transform>();
+
+		foreach ( var bone in _renderer.Model.Bones.AllBones )
+		{
+			if ( _renderer.TryGetBoneTransformLocal( bone, out var local ) )
+				captured[bone.Name] = local;
+		}
+
+		// Nothing readable yet - try again next frame rather than recording an empty pose.
+		if ( captured.Count == 0 )
+			return;
+
+		_bindPose = captured;
+		_captureBindPose = false;
+	}
+
+	private Transform? BindPoseFor( BoneCollection.Bone bone ) =>
+		_bindPose is not null && _bindPose.TryGetValue( bone.Name, out var local ) ? local : null;
+
 	/// <summary>A bone's parent's world transform, falling back to the model's own for roots.</summary>
 	private Transform ParentWorld( BoneCollection.Bone bone ) =>
 		bone.Parent is { } parent && _renderer.TryGetBoneTransform( parent, out var parentTx )
@@ -412,25 +453,27 @@ internal sealed class RigViewport : Widget
 
 		try
 		{
-			// REBUILD THE POSE FROM THE DOCUMENT, don't layer onto whatever the renderer still
-			// holds. Posing a bone leaves a bone override on the renderer, and the loop below
-			// skips bones that have no keyframe - so without clearing first, a bone keeps the
-			// override from the last time it was dragged even after its keyframes are gone.
+			// EVERY BONE IS DRIVEN EXPLICITLY, from its keyframe if it has one and from the bind
+			// pose if it doesn't. Nothing is left to whatever the renderer happens to be holding.
 			//
-			// That is what made undo look broken. Undo was restoring the document correctly the
-			// whole time; the viewport just went on displaying the posed bone, because nothing
-			// ever told the renderer to let go of it.
+			// Two bugs live here, and the fix for the first caused the second:
 			//
-			// Skipped mid-drag, where clearing would fight the hand doing the dragging.
-			if ( !_draggingBone && _renderer.IsValid() && _renderer.SceneModel is { } sceneModel )
-				sceneModel.ClearBoneOverrides();
-
+			// Posing a bone leaves an override on the renderer. Originally this loop skipped bones
+			// with no keyframe, so a bone kept the override from the last time it was dragged even
+			// after undo removed its keyframes - the document changed and the screen didn't, which
+			// is why undo looked broken.
+			//
+			// Clearing all overrides first fixed that and broke dragging: the clear also wiped the
+			// bone being dragged, which this loop then deliberately skips, so it snapped to bind
+			// pose and the drag re-applied it the next frame - flickering between two poses.
+			// Clearing was too blunt an instrument. Driving each bone to a known value has neither
+			// hole: nothing is ever undefined, so nothing needs wiping.
 			foreach ( var (bone, world) in LiveBones() )
 			{
 				if ( bone.Name == SelectedBone && _draggingBone )
 					continue;
 
-				if ( poseForBone( bone.Name ) is not { } local )
+				if ( (poseForBone( bone.Name ) ?? BindPoseFor( bone )) is not { } local )
 					continue;
 
 				// Keyframes are stored parent-space (BoneTrack.Evaluate) - world space is what
@@ -521,6 +564,7 @@ internal sealed class RigViewport : Widget
 	private void OnPreFrame()
 	{
 		TickScene();
+		CaptureBindPoseIfNeeded();
 		ApplyPixelStyle();
 		ApplyViewmodelFraming();
 
