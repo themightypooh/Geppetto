@@ -201,12 +201,18 @@ internal sealed class RigTutorial
 				{
 					"In the BonesObject tab, add a Reference Prop",
 					"Pick models/lightswitch/lightswitch_plate.vmdl",
-					"Place it about arm's length in front of the hand"
+					"Drag its green dot in the viewport, out in front of the hand"
 				},
 				Detail = "Reference props are shown in the viewport only - never keyed, never exported. Posing at a real object beats imagining where one would be.",
 				Art = StepArt.Model,
 				Panel = "BonesObject",
-				IsDone = ( anim, _ ) => anim?.ReferenceProps?.Any( p => p?.Model is not null ) ?? false
+
+				// Assigning a model isn't the step - PLACING it is. This used to tick the instant a
+				// model was picked, while the prop was still sitting at the origin inside the
+				// model's chest, so the reader was waved on to "pose at the switch" with nothing
+				// to pose at. A prop still at 0,0,0 has not been placed.
+				IsDone = ( anim, _ ) => anim?.ReferenceProps?.Any( p =>
+					p?.Model is not null && p.Position.Length > 1f ) ?? false
 			},
 			new()
 			{
@@ -221,96 +227,74 @@ internal sealed class RigTutorial
 				Panel = "Timeline",
 				IsDone = ( anim, _ ) => KeyNear( anim, 0, 2 )
 			},
+			// THE BACK HALF USED TO BE SEVEN STEPS AND IS NOW THREE.
+			//
+			// It ran anticipation, reach, wrist, contact, overshoot, loop-back, timing - each with
+			// a paragraph explaining why the beat matters. Every one of those is true and none of
+			// them belong in a first run. The reader is trying to find out whether they can make
+			// the arm move at all, and seven principle-steps between them and a thing that plays
+			// reads as homework.
+			//
+			// So: reach, wrist, play. Enough to get something that looks decent, which is the only
+			// thing that earns the reader a second sitting. The craft beats can be taught to
+			// someone who already has a clip they like.
+			//
+			// THE ROTATION VALUES BELOW ARE NOT INVENTED - they are read out of
+			// Assets/animations/reach_and_flip_switch.riganim, which RigSampleBuilder generates by
+			// running this tool's own two-bone IK solver at a world-space target for the hand. So
+			// they are the pose the solver picked for THIS rig, converted from the stored
+			// quaternion to the pitch/yaw/roll the Inspector displays.
+			//
+			// If the model or the switch placement changes, rebuild the sample (Editor menu ->
+			// Marionette -> Rebuild Example Clip, or rig_build_sample) and re-read frames 14 and
+			// 17 from it. Do NOT hand-pick replacements: nobody knows which local axis of
+			// arm_upper_R is "forward" without testing, which is the same reason RigSampleBuilder
+			// solves for a target instead of authoring angles.
 			new()
 			{
-				Instruction = "To stop the reach looking mechanical, wind up before it goes",
+				Instruction = "Now the reach itself",
 				Bullets = new[]
 				{
-					"Go to frame 6",
-					"Rotate arm_upper_R slightly BACK, away from the switch",
-					"A few degrees is plenty"
+					$"Go to frame {ReachFrame}",
+					$"In the Inspector, set arm_upper_R Rotation to  {Show( ReachUpper )}",
+					$"Then arm_lower_R to  {Show( ReachLower )}"
 				},
-				Detail = "This is anticipation - real movement always loads before it fires. It's the beat most people skip.",
+				Detail = "Those are pitch, yaw, roll. Shoulder first, elbow second - the elbow hangs off the shoulder.",
 				Art = StepArt.Rotate,
-				IsDone = ( anim, _ ) => KeyAfter( anim, 3 )
+				Panel = "Inspector",
+
+				// BOTH bones, at the named values. The old check was "any bone has any key past
+				// frame 10", which ticked the moment you keyed anything at all - including the
+				// shoulder alone, with the elbow still hanging where the bind pose left it. Being
+				// waved on from a half-finished pose is worse than no check, because the next step
+				// then builds on something that doesn't look like what the tutorial describes.
+				IsDone = ( anim, _ ) =>
+					PosedAt( anim, "arm_upper_R", ReachFrame, ReachUpper )
+					&& PosedAt( anim, "arm_lower_R", ReachFrame, ReachLower )
 			},
 			new()
 			{
-				Instruction = "Now the reach itself - the pose the whole clip is about",
+				Instruction = "Aim the wrist",
 				Bullets = new[]
 				{
-					"Go to frame 14",
-					"Swing arm_upper_R forward and up",
-					"Then straighten arm_lower_R"
+					$"Go to frame {WristFrame}",
+					$"Set hand_R Rotation to  {Show( WristHand )}"
 				},
-				Detail = "Shoulder first, elbow second. The elbow hangs off the shoulder, so doing it the other way round undoes your own work - that order holds for every limb you'll ever pose.",
+				Detail = "The palm turns to face the switch. Until now the hand has just been dragged along by the arm.",
 				Art = StepArt.Rotate,
-				IsDone = ( anim, _ ) => KeyAfter( anim, 10 )
+				Panel = "Inspector",
+				IsDone = ( anim, _ ) => PosedAt( anim, "hand_R", WristFrame, WristHand )
 			},
 			new()
 			{
-				Instruction = "To read as a hand about to press, aim the wrist",
-				Bullets = new[]
-				{
-					"Go to frame 17",
-					"Rotate hand_R until the palm faces the switch",
-					"The index finger should lead"
-				},
-				Detail = "Until now the hand has just been dragged along by the arm, pointing wherever the elbow left it.",
-				Art = StepArt.Rotate,
-				IsDone = ( anim, _ ) => KeyAfter( anim, 15 )
-			},
-			new()
-			{
-				Instruction = "Contact should land, not ease in",
-				Bullets = new[]
-				{
-					"Go to frame 19",
-					"Curl finger_index_0_R and finger_index_1_R onto the switch",
-					"Right-click the key, Interpolation Mode, Stepped"
-				},
-				Detail = "Keep it one or two frames after the reach arrives, no more. Stepped makes it snap instead of easing in, which is what a switch press actually does.",
-				Art = StepArt.Keyframe,
-				Panel = "Timeline",
-				IsDone = ( anim, _ ) => KeyAfter( anim, 18 )
-			},
-			new()
-			{
-				Instruction = "Nothing heavy stops dead, so let the arm overshoot",
-				Bullets = new[]
-				{
-					"Go to frame 22",
-					"Push arm_upper_R two or three degrees PAST the contact pose",
-					"Then start it back"
-				},
-				Detail = "This is the settle - the other beat people skip, and the reason a limb reads as having weight.",
-				Art = StepArt.Rotate,
-				IsDone = ( anim, _ ) => KeyAfter( anim, 21 )
-			},
-			new()
-			{
-				Instruction = "Close the loop so the clip can repeat cleanly",
-				Bullets = new[]
-				{
-					"Right-click your frame 0 key, Copy",
-					"Move the playhead to frame 28",
-					"Right-click, Paste"
-				},
-				Detail = "Paste lands at the playhead rather than where it came from, so the arm returns to exactly the pose it started in.",
-				Art = StepArt.Keyframe,
-				Panel = "Timeline",
-				IsDone = ( anim, _ ) => KeyAfter( anim, 25 )
-			},
-			new()
-			{
-				Instruction = "The poses are done - now find the timing",
+				Instruction = "Find the timing",
 				Bullets = new[]
 				{
 					"Press Play",
 					"Drag the keys closer together",
 					"Play it again"
 				},
-				Detail = "Almost every first animation runs at half the speed it should. That comparison teaches more than any amount of re-posing.",
+				Detail = "Almost every first animation runs at half the speed it should.",
 				Art = StepArt.Play,
 				Panel = "Timeline",
 				IsDone = ( _, _ ) => false
@@ -318,13 +302,67 @@ internal sealed class RigTutorial
 		};
 	}
 
+	// The poses the tutorial asks for, in one place, so the numbers printed in the bullets and the
+	// numbers checked by IsDone cannot drift apart. They were separate literals for about ten
+	// minutes and that was already one edit away from a step that can never be completed.
+	//
+	// Read out of the generated example clip - see the comment above the reach step.
+	private const int ReachFrame = 14;
+	private const int WristFrame = 17;
+
+	private static readonly Angles ReachUpper = new( -18f, 63f, 36f );
+	private static readonly Angles ReachLower = new( 41f, -32f, 4f );
+	private static readonly Angles WristHand = new( -15f, -24f, 6f );
+
+	/// <summary>How the values are written into the instructions - the same three numbers, in the
+	/// same order the Inspector shows them.</summary>
+	private static string Show( Angles a ) => $"{a.pitch:0.#}, {a.yaw:0.#}, {a.roll:0.#}";
+
+	/// <summary>
+	/// True when one named bone is keyed near a frame at (near enough) a named rotation.
+	///
+	/// Compared component-wise in Euler rather than as a quaternion angle, because this is
+	/// checking the literal thing the step asked for: that these three numbers were typed into
+	/// those three fields. A quaternion distance would also pass a rotation that LOOKS the same
+	/// but reads differently in the boxes, which is not what "put all the values in" means.
+	///
+	/// Five degrees of slack absorbs the rounding - the step prints whole numbers and the values
+	/// behind them have decimals - without being loose enough to pass a pose you eyeballed.
+	/// </summary>
+	private static bool PosedAt( RigAnimDocument anim, string bone, int frame, Angles target, float tolerance = 5f )
+	{
+		if ( anim?.FindTrack( bone ) is not { } track )
+			return false;
+
+		foreach ( var key in track.Keyframes )
+		{
+			if ( Math.Abs( key.Frame - frame ) > 2 )
+				continue;
+
+			var angles = key.Local.Rotation.Angles();
+
+			if ( Apart( angles.pitch, target.pitch ) <= tolerance
+				&& Apart( angles.yaw, target.yaw ) <= tolerance
+				&& Apart( angles.roll, target.roll ) <= tolerance )
+				return true;
+		}
+
+		return false;
+	}
+
+	/// <summary>Degrees between two angles the short way round, so -179 and 179 are two apart
+	/// rather than three hundred and fifty eight.</summary>
+	private static float Apart( float a, float b )
+	{
+		var d = MathF.Abs( a - b ) % 360f;
+
+		return d > 180f ? 360f - d : d;
+	}
+
 	/// <summary>Any bone keyed within tolerance of a frame - the reader shouldn't have to land on
 	/// an exact frame for the tutorial to notice they did the thing.</summary>
 	private static bool KeyNear( RigAnimDocument anim, int frame, int tolerance ) =>
 		anim?.BoneTracks.Any( t => t.Keyframes.Any( k => Math.Abs( k.Frame - frame ) <= tolerance ) ) ?? false;
-
-	private static bool KeyAfter( RigAnimDocument anim, int frame ) =>
-		anim?.BoneTracks.Any( t => t.Keyframes.Any( k => k.Frame >= frame ) ) ?? false;
 
 	/// <summary>
 	/// Whether the tutorial dock opens itself when the tool starts.

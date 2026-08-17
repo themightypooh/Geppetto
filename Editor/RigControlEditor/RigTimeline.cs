@@ -19,6 +19,11 @@ internal sealed class RigTimeline : Widget
 	private readonly RigTimelineLanes _lanes;
 	private readonly RigTimelineRuler _ruler;
 	private readonly RigTimelineRuler _frameRuler;
+	private readonly FloatSlider _scrollBar;
+
+	/// <summary>Set while the bar is being pointed at the view, so writing its value can't be
+	/// mistaken for the user dragging it.</summary>
+	private bool _syncingScrollBar;
 	private readonly Editor.Label _timeLabel;
 	private readonly Button _playButton;
 	private readonly Button _loopButton;
@@ -71,7 +76,49 @@ internal sealed class RigTimeline : Widget
 		}
 	}
 
-	private float LastFrame => MathF.Max( (_anim?.FrameCount ?? 1) - 1, 1f );
+	/// <summary>
+	/// Thirty seconds at 30fps - the shortest the timeline is ever allowed to be.
+	///
+	/// THE TIMELINE IS A CANVAS, NOT A MEASUREMENT OF THE CLIP. It used to end exactly at the
+	/// document's FrameCount, so a clip authored at the old 30-frame default gave you one second
+	/// of timeline and no way to work past it without going and finding a number field first.
+	/// Being told "raise Frame Count" is a worse answer than just having room.
+	/// </summary>
+	private const int MinimumTimelineFrames = 900;
+
+	/// <summary>The last frame the timeline goes to - the clip's own length, or thirty seconds,
+	/// whichever is longer. Everything that positions, scrolls, zooms or clamps reads this.</summary>
+	private float LastFrame => MathF.Max( MathF.Max( _anim?.FrameCount ?? 1, MinimumTimelineFrames ) - 1, 1f );
+
+	/// <summary>
+	/// Where playback stops - the last keyframe in the clip, not the end of the timeline.
+	///
+	/// THE CANVAS IS NOT THE ANIMATION. Since the timeline is always at least thirty seconds, a
+	/// two second clip played on it would run twenty-eight seconds of nothing before stopping, and
+	/// loop with a twenty-eight second gap. Playing to the last key means what you watch is what
+	/// you made, at any canvas length.
+	///
+	/// Falls back to the whole timeline when there are no keys at all, so pressing play on an
+	/// empty clip still does something rather than sitting on frame zero looking broken.
+	/// </summary>
+	private float PlaybackLastFrame
+	{
+		get
+		{
+			var last = 0f;
+
+			if ( _anim?.BoneTracks is { } tracks )
+			{
+				foreach ( var track in tracks )
+				{
+					foreach ( var key in track.Keyframes )
+						last = MathF.Max( last, key.Frame );
+				}
+			}
+
+			return last > 0f ? last : LastFrame;
+		}
+	}
 	private float FrameRate => _anim?.AnimationSpeed > 0 ? _anim.AnimationSpeed : 30f;
 
 	public RigTimeline( Widget parent ) : base( parent )
@@ -100,6 +147,34 @@ internal sealed class RigTimeline : Widget
 		// so neither has to be converted in your head.
 		_frameRuler = new RigTimelineRuler( this, _lanes ) { Scrubbed = ScrubTo, ShowTimecode = false };
 		Layout.Add( _frameRuler );
+
+		// A REAL SCROLLBAR, because shift+wheel is not discoverable.
+		//
+		// Panning and zooming already worked, but nothing on screen said so, and nothing showed
+		// how much clip there was to the right of what you could see. A clip longer than the
+		// window looked identical to a clip that ended at the edge of the window.
+		//
+		// FloatSlider rather than a hand-drawn bar - it's what SpriteEditor's timeline uses for
+		// the same job. The ScrollArea above can't do this: its canvas is the lanes widget, which
+		// is always exactly as wide as the viewport. Horizontal movement is a property of the view
+		// range, not of the widget's size, so it needs its own control.
+		_scrollBar = new FloatSlider( this )
+		{
+			Minimum = 0f,
+			Step = 1f,
+			ToolTip = "Scroll along the clip. Shift+wheel does the same, ctrl+wheel zooms."
+		};
+
+		_scrollBar.OnValueEdited = () =>
+		{
+			if ( _syncingScrollBar )
+				return;
+
+			_lanes.View.Start = _scrollBar.Value;
+			RefreshView();
+		};
+
+		Layout.Add( _scrollBar );
 
 		// ONE view range, three widgets. Each holds the same object rather than its own copy, so
 		// zooming anywhere moves all of them together - a ruler that scrolls independently of the
@@ -210,6 +285,12 @@ internal sealed class RigTimeline : Widget
 		_anim = anim;
 		_lanes.Anim = anim;
 		Playhead = 0f;
+
+		// Back to the start of the clip at the standard zoom. Carrying the previous clip's scroll
+		// position over would open a short clip already scrolled past its own end.
+		_lanes.View.Start = 0f;
+		_lanes.View.Frames = MathF.Min( LastFrame, RigTimelineLayout.DefaultVisibleFrames );
+
 		Refresh();
 	}
 
@@ -220,6 +301,45 @@ internal sealed class RigTimeline : Widget
 		_lanes.Update();
 		_ruler.Update();
 		_frameRuler.Update();
+
+		SyncScrollBar();
+	}
+
+	/// <summary>
+	/// Points the scrollbar at the current view window.
+	///
+	/// Its range is how far the window can travel - clip length minus what's visible - so it
+	/// shrinks to nothing as you zoom out and the handle covers the whole bar when the clip
+	/// already fits. Disabled rather than hidden in that case: a control that vanishes reads as
+	/// broken, and one that's greyed out says "there is nothing to scroll to", which is the
+	/// truth.
+	///
+	/// Driven from RefreshView, so wheel-panning moves the bar and dragging the bar moves the
+	/// view. One view range behind both, same as the rulers.
+	/// </summary>
+	private void SyncScrollBar()
+	{
+		if ( _scrollBar is null )
+			return;
+
+		var view = _lanes.View;
+		var frames = view.Frames > 0f ? view.Frames : MathF.Min( LastFrame, RigTimelineLayout.DefaultVisibleFrames );
+		var travel = MathF.Max( LastFrame - frames, 0f );
+
+		_syncingScrollBar = true;
+
+		try
+		{
+			// Never a zero-width range - a slider whose minimum equals its maximum has nowhere to
+			// put its handle.
+			_scrollBar.Maximum = MathF.Max( travel, 1f );
+			_scrollBar.Value = view.Start.Clamp( 0f, travel );
+			_scrollBar.Enabled = travel > 0f;
+		}
+		finally
+		{
+			_syncingScrollBar = false;
+		}
 	}
 
 	public void Refresh()
@@ -233,6 +353,10 @@ internal sealed class RigTimeline : Widget
 		_frameRuler.FrameCount = _ruler.FrameCount;
 		_frameRuler.Fps = _ruler.Fps;
 		_frameRuler.Update();
+
+		// Clip length can change under us (the Frame Count field), which changes how far there is
+		// to scroll.
+		SyncScrollBar();
 
 		if ( _fpsButton is not null )
 			_fpsButton.Text = $"{_ruler.Fps} FPS";
@@ -306,7 +430,7 @@ internal sealed class RigTimeline : Widget
 
 			var next = Playhead + 1f;
 
-			if ( next > LastFrame )
+			if ( next > PlaybackLastFrame )
 			{
 				if ( !_looping )
 				{
@@ -340,9 +464,29 @@ internal readonly struct RigTimelineLayout
 	public const float RowHeight = 22f;
 	public const float RulerHeight = 22f;
 	public const float Gutter = 130f;
+
+	/// <summary>Where the vertical divider is drawn. Its own number rather than LaneArea.Left,
+	/// because this is only a line - moving it must not move the lane area, the frame mapping or
+	/// anything that hit-tests against them.</summary>
+	public const float DividerX = 100f;
 	public const float DiamondSize = 9f;
 
 	private const float RightPadding = 10f;
+
+	/// <summary>
+	/// How many frames the timeline shows at once before it starts scrolling - three seconds at
+	/// the default 30fps.
+	///
+	/// THE VIEW IS A WINDOW ONTO THE CLIP, NOT THE WHOLE CLIP SQUEEZED TO FIT. It used to be the
+	/// latter, which is fine at 30 frames and useless at 900: every frame becomes a fraction of a
+	/// pixel wide, keys pile into an unclickable smear, and making a clip longer actively makes it
+	/// harder to work on. A fixed span that scrolls keeps a frame the same size whether the clip
+	/// is one second or thirty, which is how MovieMaker and every other timeline behaves.
+	///
+	/// Zooming all the way out still fits the whole clip - see ViewRange.ZoomAt, whose ceiling is
+	/// the clip length. This only changes where you START.
+	/// </summary>
+	public const float DefaultVisibleFrames = 90f;
 
 	private readonly float _width;
 	private readonly int _rows;
@@ -361,9 +505,10 @@ internal readonly struct RigTimelineLayout
 		_rows = rows;
 		LastFrame = MathF.Max( frameCount - 1, 1f );
 
-		// Zero means "fit the whole clip" - the behaviour before zoom existed, and still the
-		// default for every caller that doesn't care.
-		ViewFrames = viewFrames > 0f ? viewFrames : LastFrame;
+		// Zero means "not set yet" - fall back to the standard window rather than the whole clip,
+		// so a long clip scrolls from the moment it's opened instead of being crushed to fit. A
+		// clip shorter than the window still shows all of it, because there's nothing to scroll.
+		ViewFrames = viewFrames > 0f ? viewFrames : MathF.Min( LastFrame, DefaultVisibleFrames );
 		ViewStart = viewStart;
 	}
 
@@ -461,7 +606,10 @@ internal sealed class RigTimelineLanes : Widget
 		public void ZoomAt( float anchorFrame, float factor, float lastFrame )
 		{
 			var fit = MathF.Max( lastFrame, 1f );
-			var current = Frames > 0f ? Frames : fit;
+
+			// Same fallback as the layout's, or the first scroll of the wheel would jump: the view
+			// would be drawn at the default window while zoom measured from the whole clip.
+			var current = Frames > 0f ? Frames : MathF.Min( fit, RigTimelineLayout.DefaultVisibleFrames );
 
 			// Floor of 2 frames stops zoom from collapsing to a division by zero; the ceiling is
 			// the whole clip, since there's nothing beyond it worth looking at.
@@ -548,6 +696,10 @@ internal sealed class RigTimelineLanes : Widget
 		Paint.ClearPen();
 		Paint.SetBrush( Theme.WidgetBackground );
 		Paint.DrawRect( LocalRect );
+
+		// Drawn before the early-out below, so the column edge is there even with nothing keyed -
+		// it's part of the furniture, not a thing that appears once you have tracks.
+		PaintGutterDivider( layout );
 
 		var tracks = Anim?.BoneTracks;
 
@@ -665,6 +817,23 @@ internal sealed class RigTimelineLanes : Widget
 		menu.OpenAtCursor();
 	}
 
+	/// <summary>
+	/// The edge between the bone-name column and the lanes.
+	///
+	/// Without it the names float in the same field as the keyframes and the eye has nothing to
+	/// stop at, which is what makes a dense timeline hard to read - you lose which row you're on
+	/// halfway across.
+	///
+	/// Deliberately dim. It's a boundary, not information, and it sits behind the keyframes.
+	/// </summary>
+	private void PaintGutterDivider( RigTimelineLayout layout )
+	{
+		Paint.SetPen( Theme.TextControl.WithAlpha( 0.2f ) );
+		Paint.DrawLine(
+			new Vector2( RigTimelineLayout.DividerX, 0f ),
+			new Vector2( RigTimelineLayout.DividerX, Height ) );
+	}
+
 	private void PaintGrid( RigTimelineLayout layout )
 	{
 		Paint.SetPen( Theme.WindowBackground.WithAlpha( 0.5f ) );
@@ -672,6 +841,12 @@ internal sealed class RigTimelineLanes : Widget
 		foreach ( var frame in layout.RulerFrames() )
 		{
 			var x = layout.FrameToX( frame );
+
+			// Same rule as the ruler's labels - the grid stops at the divider rather than ruling
+			// lines through the bone names.
+			if ( x < RigTimelineLayout.DividerX )
+				continue;
+
 			Paint.DrawLine( new Vector2( x, 0f ), new Vector2( x, Height ) );
 		}
 	}
@@ -690,12 +865,22 @@ internal sealed class RigTimelineLanes : Widget
 	{
 		var row = layout.RowRect( index );
 		var y = row.Center.y;
-		var ordered = track.Keyframes.OrderBy( k => k.Frame ).ToList();
+
+		// track.Keyframes is ALREADY SORTED - SetKeyframe inserts in place and EnsureSorted keeps
+		// it that way, precisely so nothing has to sort per frame. This used to be
+		// OrderBy(...).ToList(), which allocated a throwaway list for every visible track on every
+		// repaint; the document's own comment calls that out as the thing to avoid, and the paint
+		// path was quietly doing it anyway.
+		var ordered = track.Keyframes;
 
 		for ( var i = 0; i < ordered.Count - 1; i++ )
 		{
 			var from = layout.FrameToX( ordered[i].Frame );
 			var to = layout.FrameToX( ordered[i + 1].Frame );
+
+			// Wholly off the left - nothing to draw.
+			if ( to < RigTimelineLayout.DividerX )
+				continue;
 
 			var key = ordered[i];
 
@@ -710,8 +895,9 @@ internal sealed class RigTimelineLanes : Widget
 
 			if ( key.Interpolation == KeyInterpolation.Stepped )
 			{
-				// Flat hold, then a vertical riser at the moment it snaps.
-				Paint.DrawLine( new Vector2( from, y ), new Vector2( to, y ) );
+				// Flat hold, then a vertical riser at the moment it snaps. The hold starts at the
+				// divider when the key itself is off to the left.
+				Paint.DrawLine( new Vector2( MathF.Max( from, RigTimelineLayout.DividerX ), y ), new Vector2( to, y ) );
 				Paint.DrawLine( new Vector2( to, y - 5f ), new Vector2( to, y + 5f ) );
 				continue;
 			}
@@ -731,7 +917,19 @@ internal sealed class RigTimelineLanes : Widget
 					MathX.Lerp( from, to, t ),
 					y - (key.Ease( t ) - t) * amplitude );
 
-				Paint.DrawLine( previous, point );
+				// Samples left of the divider are carried forward without being drawn, so the
+				// curve starts exactly at the divider instead of either poking into the names or
+				// beginning a few samples late with a visible notch.
+				if ( point.x < RigTimelineLayout.DividerX )
+				{
+					previous = point;
+					continue;
+				}
+
+				Paint.DrawLine( previous.x < RigTimelineLayout.DividerX
+					? new Vector2( RigTimelineLayout.DividerX, previous.y )
+					: previous, point );
+
 				previous = point;
 			}
 		}
@@ -739,6 +937,12 @@ internal sealed class RigTimelineLanes : Widget
 		foreach ( var key in track.Keyframes )
 		{
 			var center = layout.DiamondRect( index, key.Frame ).Center;
+
+			// A key scrolled off the left edge would be drawn on top of the bone name, where it
+			// looks like it belongs to the name column rather than to the track.
+			if ( center.x < RigTimelineLayout.DividerX )
+				continue;
+
 			var isSelected = _selected is { } sel && sel.Track == track && sel.Key == key;
 			var isHovered = _hover is { } hov && hov.Track == track && hov.Key == key;
 
@@ -800,6 +1004,11 @@ internal sealed class RigTimelineLanes : Widget
 	{
 		var x = layout.FrameToX( Playhead );
 
+		// Scrolled off the left, the playhead would otherwise be drawn straight down the bone
+		// names - see the divider rule in PaintGutterDivider.
+		if ( x < RigTimelineLayout.DividerX )
+			return;
+
 		Paint.SetPen( Theme.Primary.WithAlpha( 0.8f ), 1f );
 		Paint.DrawLine( new Vector2( x, 0f ), new Vector2( x, Height ) );
 	}
@@ -813,7 +1022,16 @@ internal sealed class RigTimelineLanes : Widget
 
 		foreach ( var key in track.Keyframes )
 		{
-			if ( layout.DiamondRect( row, key.Frame ).IsInside( position ) )
+			var rect = layout.DiamondRect( row, key.Frame );
+
+			// Keys scrolled behind the name column are not DRAWN there (see PaintKeyframes), so
+			// they must not be clickable there either. Without this, the bone-name strip contains
+			// invisible hitboxes that select and drag keys you can't see - and since the click
+			// also scrubs, the playhead jumps somewhere unrelated at the same time.
+			if ( rect.Center.x < RigTimelineLayout.DividerX )
+				continue;
+
+			if ( rect.IsInside( position ) )
 				return (track, key);
 		}
 
@@ -1263,12 +1481,27 @@ internal sealed class RigTimelineRuler : Widget
 		Paint.DrawText( new Rect( 8f, 0f, RigTimelineLayout.Gutter - 16f, Height ),
 			ShowTimecode ? "BONE" : "FRAME", TextFlag.LeftCenter );
 
+		// Same edge as the lanes draw, at the same x and the same weight, so the column reads as
+		// one continuous strip through the ruler, the tracks and the second ruler rather than as
+		// three separate widgets that happen to be stacked.
+		Paint.SetPen( Theme.TextControl.WithAlpha( 0.2f ) );
+		Paint.DrawLine(
+			new Vector2( RigTimelineLayout.DividerX, 0f ),
+			new Vector2( RigTimelineLayout.DividerX, Height ) );
+
 		// Timecodes are the wider label, so they get the wider minimum spacing.
 		var labelWidth = ShowTimecode ? 58f : 40f;
 
 		foreach ( var frame in layout.RulerFrames( labelWidth ) )
 		{
 			var x = layout.FrameToX( frame );
+
+			// NOTHING IN THE RULER CROSSES THE DIVIDER. RulerFrames starts at the last tick BEFORE
+			// the view, so that first label sits left of the lane area - fine when the view starts
+			// at zero and nothing is there, and a label printed on top of "BONE" the moment you
+			// scroll.
+			if ( x < RigTimelineLayout.DividerX )
+				continue;
 
 			Paint.SetPen( Theme.TextControl.WithAlpha( 0.25f ) );
 
@@ -1285,7 +1518,11 @@ internal sealed class RigTimelineRuler : Widget
 				ShowTimecode ? Timecode( frame ) : $"{(int)frame}", TextFlag.LeftCenter );
 		}
 
-		Paint.SetPen( Theme.WindowBackground );
+		// The rule bracketing the tracks - under the top ruler, over the bottom one. It was
+		// Theme.WindowBackground, which is all but invisible against the ruler's own surface, so
+		// the rulers bled into the track area. Same colour and weight as the gutter edge, so the
+		// three of them read as one frame around the tracks rather than three unrelated lines.
+		Paint.SetPen( Theme.TextControl.WithAlpha( 0.2f ) );
 		Paint.DrawLine(
 			new Vector2( 0f, ShowTimecode ? Height - 1f : 0f ),
 			new Vector2( Width, ShowTimecode ? Height - 1f : 0f ) );

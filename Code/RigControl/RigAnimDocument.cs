@@ -14,7 +14,15 @@ public sealed class RigAnimDocument : GameResource
 	[Property, Group( "Source" )] public Model SourceModel { get; set; }
 	[Property, Group( "Source" ), Title( "Rig Asset Path" )] public RigDocument RigAsset { get; set; }
 	[Property, Group( "Source" ), Title( "Animation Speed" )] public int AnimationSpeed { get; set; } = 30;
-	[Property, Group( "Source" ), Title( "Frame Count" )] public int FrameCount { get; set; } = 30;
+	/// <summary>How many frames long the clip is.
+	///
+	/// 900 - thirty seconds at the default 30fps. The old default of 30 gave a clip exactly ONE
+	/// SECOND long, which read as the timeline being broken rather than as the clip being short.
+	///
+	/// The editor's timeline never goes below thirty seconds regardless of this value, so an
+	/// existing clip saved at the old default still gets room to work in; see
+	/// RigTimeline.MinimumTimelineFrames. This number is what the clip itself claims to be.</summary>
+	[Property, Group( "Source" ), Title( "Frame Count" )] public int FrameCount { get; set; } = 900;
 
 	/// <summary>
 	/// Static models shown in the viewport purely to pose against - the switch a hand reaches for,
@@ -57,6 +65,39 @@ public sealed class ReferenceProp
 
 	[Property] public Model Model { get; set; }
 
+	/// <summary>
+	/// Further models carried by this same prop, sharing its transform.
+	///
+	/// A "prop" is usually more than one model - a light switch is a plate and a toggle, a door is
+	/// a frame and a leaf. Held as separate props they had separate transforms, so lining them up
+	/// meant placing each one and then moving both every time you changed your mind, keeping two
+	/// sets of numbers in agreement by hand.
+	///
+	/// Extra rather than replacing Model, because Model is what every existing .riganim on disk
+	/// already stores. Renaming it would silently drop the prop out of clips that already work.
+	/// </summary>
+	[Property, Title( "Extra Models" )] public List<Model> ExtraModels { get; set; } = new();
+
+	/// <summary>Every model this prop draws - the primary and the extras, skipping empty slots.
+	/// One place to ask, so nothing has to remember that Model is special.</summary>
+	public IEnumerable<Model> AllModels
+	{
+		get
+		{
+			if ( Model is not null )
+				yield return Model;
+
+			if ( ExtraModels is null )
+				yield break;
+
+			foreach ( var extra in ExtraModels )
+			{
+				if ( extra is not null )
+					yield return extra;
+			}
+		}
+	}
+
 	/// <summary>Hidden rather than deleted, so a prop can be got out of the way for a moment
 	/// without losing the placement you spent time getting right.</summary>
 	[Property] public bool Visible { get; set; } = true;
@@ -70,6 +111,10 @@ public sealed class ReferenceProp
 	/// stays where Position puts it.</summary>
 	[Property, Group( "Transform" ), Title( "Follow Bone" )] public string FollowBone { get; set; } = "";
 
+	/// <summary>Position/Rotation/Scale as one transform, for the viewport. Hidden from the
+	/// property sheet - it's derived from the three fields directly above it, so showing it gave
+	/// every prop a second, read-only copy of its own transform sitting under the real one.</summary>
+	[Hide]
 	public Transform LocalTransform => new( Position, Rotation.ToRotation(), Scale );
 }
 

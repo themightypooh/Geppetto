@@ -60,6 +60,11 @@ internal sealed class RigBonesPanel : Widget
 					"Frames per second this clip plays at, used by the Timeline's transport here " +
 					"and by RigAnimPlayerComponent when it plays this clip back in-game." ),
 
+				RigHelpBox.S( "Frame Count",
+					"How long the clip is. The Timeline shows exactly this many frames - if it " +
+					"looks too short to fit what you're animating, this is the number to raise, " +
+					"not the timeline's zoom. At 30 fps, 30 frames is one second." ),
+
 				RigHelpBox.S( "Bone tree",
 					"Every bone in Model, arranged the way it's actually rigged. Click a bone here " +
 					"to select it, same as clicking its dot in the viewport - either way brings up " +
@@ -123,6 +128,14 @@ internal sealed class RigBonesPanel : Widget
 
 		if ( serialized.TryGetProperty( nameof( RigAnimDocument.AnimationSpeed ), out var speed ) )
 			_header.AddRow( speed );
+
+		// HOW LONG THE CLIP IS. Missing from this sheet until now, which meant FrameCount was
+		// stuck at its default of 30 forever - the timeline drew the whole clip correctly and the
+		// clip simply could not be made longer. It reads as the timeline being truncated, or as
+		// scrolling being broken, because those are the explanations that occur to you when the
+		// real one isn't on screen anywhere.
+		if ( serialized.TryGetProperty( nameof( RigAnimDocument.FrameCount ), out var frameCount ) )
+			_header.AddRow( frameCount );
 
 		// Reference props - static models to pose against. Sits with the source model rather than
 		// in its own tab because it answers the same question: what is in this viewport.

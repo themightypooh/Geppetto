@@ -79,12 +79,41 @@ internal sealed class RigViewport : Widget
 	// below it. They are the numbers to tune, not laws - the correct offset depends on the FOV and
 	// the model, which is exactly why they're editable while you watch.
 
+	// THE FOUR VIEW MODES SET THEIR OWN CHECKBOXES. Each one writes through a backing field and
+	// calls RefreshViewToggles, rather than the strip being synced by whoever happened to change
+	// the value. Modes that alter what you can see and click - MoveWholeModel suppresses every
+	// bone handle - are only safe if their state is impossible to miss, and a display that some
+	// call sites remember to update is a display that will eventually lie.
+
 	/// <summary>Frames the model as a viewmodel hanging off the camera instead of as a world prop.</summary>
-	public bool ViewmodelMode { get; set; }
+	public bool ViewmodelMode
+	{
+		get => _viewmodelMode;
+		set
+		{
+			_viewmodelMode = value;
+
+			// The camera lock is meaningless with nothing to frame, so it can't outlive the mode
+			// it belongs to - otherwise the view stays pinned with no visible reason why.
+			if ( !value )
+				_lockCameraToView = false;
+
+			RefreshViewToggles();
+		}
+	}
 
 	/// <summary>Pins the camera to the player's eye instead of free-flying it. Only meaningful in
 	/// viewmodel mode, and it takes the mouse away from camera control - which is the point.</summary>
-	public bool LockCameraToView { get; set; }
+	public bool LockCameraToView
+	{
+		get => _lockCameraToView;
+		set { _lockCameraToView = value; RefreshViewToggles(); }
+	}
+
+	private bool _viewmodelMode;
+	private bool _lockCameraToView;
+	private bool _showBoneHandles = true;
+	private bool _moveWholeModel;
 
 	/// <summary>Zero by default. The model places itself - its camera bone says where the eye
 	/// goes - so nothing needs shifting unless you deliberately want the arms sitting off from
@@ -99,11 +128,19 @@ internal sealed class RigViewport : Widget
 
 	/// <summary>Hides the per-bone dots. A first-person rig puts a hundred handles between you and
 	/// the two you're actually moving; this is the way out of that.</summary>
-	public bool ShowBoneHandles { get; set; } = true;
+	public bool ShowBoneHandles
+	{
+		get => _showBoneHandles;
+		set { _showBoneHandles = value; RefreshViewToggles(); }
+	}
 
 	/// <summary>One gizmo on the model root instead of a handle per bone - for placing the whole
 	/// model, which in viewmodel mode is how you set where the arms sit relative to the eye.</summary>
-	public bool MoveWholeModel { get; set; }
+	public bool MoveWholeModel
+	{
+		get => _moveWholeModel;
+		set { _moveWholeModel = value; RefreshViewToggles(); }
+	}
 
 	public Action ViewmodelChanged { get; set; }
 
@@ -115,12 +152,54 @@ internal sealed class RigViewport : Widget
 
 	public bool IsHidden( string bone ) => Rig is not null && Rig.IsBoneHidden( bone );
 
+	/// <summary>
+	/// Whether twist bones get a handle at all. Off by default.
+	///
+	/// TWIST BONES SIT EXACTLY ON THE JOINT THEY TWIST, so their dot lands on top of - or a pixel
+	/// under - the dot for the bone you actually want. Clicking the shoulder gets you
+	/// arm_upper_R_twist about half the time, and because a twist bone rotates the mesh in a way
+	/// that looks vaguely like what you asked for, you don't necessarily notice you're posing the
+	/// wrong thing until the pose is wrong in a way you can't undo by eye.
+	///
+	/// Nothing here is animation data: this only controls whether a handle is drawn, exactly like
+	/// bone hiding. Twist bones are still driven by EvaluatePose and their keyframes still play.
+	/// </summary>
+	public bool ShowTwistBones { get; set; }
+
+	/// <summary>
+	/// Twist and roll helpers, matched by name.
+	///
+	/// Name matching rather than skeleton analysis, because the thing that actually identifies a
+	/// twist bone - that it shares a position with its parent and only ever rotates about one axis
+	/// - is not reliably detectable from a bind pose, and every rig that has them names them. The
+	/// list is deliberately short and additive: a bone wrongly classed as a twist is still fully
+	/// posable, it just needs the checkbox turned on, which is a far cheaper failure than a real
+	/// twist bone going unrecognised and continuing to steal clicks.
+	/// </summary>
+	public static bool IsTwistBone( string bone ) =>
+		!string.IsNullOrEmpty( bone )
+		&& (bone.Contains( "twist", StringComparison.OrdinalIgnoreCase )
+			|| bone.Contains( "roll", StringComparison.OrdinalIgnoreCase )
+			|| bone.Contains( "helper", StringComparison.OrdinalIgnoreCase ));
+
 	/// <summary>Right-click a bone dot to hide it. Hiding a whole chain in one go matters more
 	/// than it sounds: the useless bones on a rig are almost always a whole subtree - a weapon
 	/// root and everything parented under it - and hiding thirty of them one at a time is enough
 	/// friction that nobody bothers.</summary>
 	protected override void OnContextMenu( ContextMenuEvent e )
 	{
+		// RIGHT-DRAG IS THE LOOK-AROUND CONTROL, so right-click in empty space must do nothing.
+		//
+		// The menu used to open anywhere in the viewport, falling back to the selected bone when
+		// the cursor wasn't over one. That made the camera unusable: every attempt to look around
+		// popped a menu over the thing you were trying to look at.
+		//
+		// Requiring the cursor to be ON a dot also makes the menu mean something more specific -
+		// it acts on what you pointed at, not on whatever happened to be selected somewhere else
+		// on screen.
+		if ( _hoveredBone is not { } target )
+			return;
+
 		if ( Rig is null )
 		{
 			RigStatusBar.Show( "Hiding bones needs a Control Rig - set one in the BonesObject tab first" );
@@ -128,25 +207,21 @@ internal sealed class RigViewport : Widget
 		}
 
 		var menu = new Menu( this );
-		var target = _hoveredBone ?? SelectedBone;
 
-		if ( target is not null )
+		menu.AddHeading( target );
+
+		if ( IsHidden( target ) )
 		{
-			menu.AddHeading( target );
-
-			if ( IsHidden( target ) )
-			{
-				menu.AddOption( "Unhide", "visibility", () => SetHidden( target, false, false ) );
-			}
-			else
-			{
-				menu.AddOption( "Hide Bone", "visibility_off", () => SetHidden( target, true, false ) );
-				menu.AddOption( "Hide Bone And Children", "layers_clear", () => SetHidden( target, true, true ) )
-					.StatusTip = "Hides this bone and everything parented under it";
-			}
-
-			menu.AddSeparator();
+			menu.AddOption( "Unhide", "visibility", () => SetHidden( target, false, false ) );
 		}
+		else
+		{
+			menu.AddOption( "Hide Bone", "visibility_off", () => SetHidden( target, true, false ) );
+			menu.AddOption( "Hide Bone And Children", "layers_clear", () => SetHidden( target, true, true ) )
+				.StatusTip = "Hides this bone and everything parented under it";
+		}
+
+		menu.AddSeparator();
 
 		var showHidden = menu.AddOption( "Show Hidden Bones", "visibility", () =>
 		{
@@ -230,7 +305,7 @@ internal sealed class RigViewport : Widget
 		MinimumSize = 200;
 		Layout = Layout.Column();
 
-		BuildOverlayBar();
+		BuildViewToggleBar();
 
 		_canvas = new SceneRenderingWidget( this );
 		_canvas.OnPreFrame += OnPreFrame;
@@ -261,97 +336,145 @@ internal sealed class RigViewport : Widget
 		Layout.Add( _canvas, 1 );
 	}
 
-	private Button _viewButton;
+	private Checkbox _usingArmsToggle;
+	private Checkbox _lockCameraToggle;
+	private Checkbox _wholeModelToggle;
+	private Checkbox _showBonesToggle;
+	private Checkbox _showTwistToggle;
+	private Checkbox _armShaderToggle;
 
-	/// <summary>A single button at the top-right of the viewport, styled like the scene editor's
-	/// own overlay controls, opening a menu of view options. One button rather than a row of
-	/// toggles, because all of this is setup you touch once per session and then forget - it
-	/// shouldn't cost permanent screen space next to the thing you're actually looking at.</summary>
-	private void BuildOverlayBar()
+	/// <summary>
+	/// A permanently visible strip of checkboxes above the viewport.
+	///
+	/// This used to be a single "videocam" button opening a menu, on the reasoning that these are
+	/// set-once-per-session options that shouldn't cost screen space. That reasoning was wrong,
+	/// and it was wrong in a specific way worth recording: two of these toggles change what is
+	/// VISIBLE AND CLICKABLE in the viewport. Move Whole Model suppresses every bone handle. With
+	/// the state hidden inside a menu, the symptom is "all my bones are gone" and the cause is
+	/// three clicks away - the tool looks broken rather than configured.
+	///
+	/// A mode that changes what you can see has to show that it's on, without being asked. The
+	/// cost is one row of screen space, which is the correct trade.
+	/// </summary>
+	private void BuildViewToggleBar()
 	{
 		var bar = Layout.AddRow();
 		bar.Margin = new Sandbox.UI.Margin( 6, 4 );
+		bar.Spacing = 8;
+
+		_usingArmsToggle = new Checkbox( "Using Arms" )
+		{
+			ToolTip = "Frame the model the way it hangs off the camera in game, rather than as a prop in a world"
+		};
+		_usingArmsToggle.Toggled = () => SetViewMode( () => ViewmodelMode = _usingArmsToggle.Value );
+		bar.Add( _usingArmsToggle );
+
+		_lockCameraToggle = new Checkbox( "Lock Camera" );
+		_lockCameraToggle.Toggled = () => SetViewMode( () => LockCameraToView = _lockCameraToggle.Value );
+		bar.Add( _lockCameraToggle );
+
+		bar.AddSpacingCell( 12 );
+
+		_wholeModelToggle = new Checkbox( "Move Whole Model" )
+		{
+			ToolTip = "One gizmo on the model root instead of a handle per bone - for placing the arms relative to the eye. Drag to move, hold E to rotate. Hides the bone handles while it's on."
+		};
+		_wholeModelToggle.Toggled = () => SetViewMode( () => MoveWholeModel = _wholeModelToggle.Value );
+		bar.Add( _wholeModelToggle );
+
+		_showBonesToggle = new Checkbox( "Show Bone Handles" )
+		{
+			ToolTip = "Hide the per-bone dots when the rig is dense enough that they're in the way"
+		};
+		_showBonesToggle.Toggled = () => SetViewMode( () => ShowBoneHandles = _showBonesToggle.Value );
+		bar.Add( _showBonesToggle );
+
+		_showTwistToggle = new Checkbox( "Twist Bones" )
+		{
+			ToolTip = "Twist bones sit on top of the joint they twist, so their dots overlap the bone you're aiming for. Off by default; they still animate either way."
+		};
+		_showTwistToggle.Toggled = () => SetViewMode( () => ShowTwistBones = _showTwistToggle.Value );
+		bar.Add( _showTwistToggle );
+
+		bar.AddSpacingCell( 12 );
+
+		_armShaderToggle = new Checkbox( "Arm Shader" )
+		{
+			ToolTip = "Draw the model in the first-person arms material. On automatically for viewmodel arms, off for everything else - turn it off if it's painting a model that isn't arms."
+		};
+		_armShaderToggle.Toggled = () => SetViewMode( () => PixelStyle = _armShaderToggle.Value );
+		bar.Add( _armShaderToggle );
+
 		bar.AddStretchCell();
 
-		_viewButton = bar.Add( new Button( "", "videocam" )
+		bar.Add( new Button( "Reset Camera", "restart_alt" )
 		{
-			Clicked = OpenViewMenu,
-			ToolTip = "View options - viewmodel framing, camera lock, and what handles are shown"
+			Clicked = () => SetViewMode( () =>
+			{
+				LockCameraToView = false;
+				FrameCamera();
+			} ),
+			ToolTip = "Back to a free camera framing the whole model"
 		} );
+
+		RefreshViewToggles();
 	}
 
-	private void OpenViewMenu()
+	/// <summary>Applies a view-mode change and tells the window about it. The property setters
+	/// handle putting the checkboxes right; this is only about the one notification that used to
+	/// be hand-written after every toggle.</summary>
+	private void SetViewMode( Action change )
 	{
-		var menu = new Menu( this );
+		change();
+		ViewmodelChanged?.Invoke();
+	}
 
-		menu.AddHeading( "First Person" );
+	/// <summary>Guards against the refresh that a refresh causes: writing Value fires Toggled on
+	/// some widget versions, which would write the property, which would refresh again.</summary>
+	private bool _refreshingToggles;
 
-		var usingArms = menu.AddOption( "Using Arms (viewmodel)", "back_hand", () =>
+	/// <summary>Pulls every checkbox back into line with the real state. Called from the property
+	/// setters, so it covers changes that didn't come from clicking the strip - loading a document,
+	/// Reset Camera, or Using Arms switching the camera lock off underneath you.</summary>
+	private void RefreshViewToggles()
+	{
+		if ( _refreshingToggles || !_usingArmsToggle.IsValid() )
+			return;
+
+		_refreshingToggles = true;
+
+		try
 		{
-			ViewmodelMode = !ViewmodelMode;
+			_usingArmsToggle.Value = _viewmodelMode;
+			_lockCameraToggle.Value = _lockCameraToView;
+			_wholeModelToggle.Value = _moveWholeModel;
+			_showBonesToggle.Value = _showBoneHandles;
+			_showTwistToggle.Value = ShowTwistBones;
 
-			// Turning it off hands the camera back, otherwise the view stays pinned with no
-			// visible reason why.
-			if ( !ViewmodelMode )
-				LockCameraToView = false;
+			// Nothing to add twist dots to when there are no dots at all - same reasoning as the
+			// Lock Camera gating above.
+			_showTwistToggle.Enabled = _showBoneHandles && !_moveWholeModel;
 
-			ViewmodelChanged?.Invoke();
-		} );
+			_armShaderToggle.Value = PixelStyle;
 
-		usingArms.Checkable = true;
-		usingArms.Checked = ViewmodelMode;
-		usingArms.StatusTip = "Frame the model the way it hangs off the camera in game, rather than as a prop in a world";
+			// The camera lock does nothing without a viewmodel to frame, and a live control that
+			// silently does nothing is worse than a greyed-out one.
+			_lockCameraToggle.Enabled = _viewmodelMode;
+			_lockCameraToggle.ToolTip = _viewmodelMode
+				? "Pin the camera to the player's eye. You lose free camera control while this is on."
+				: "Turn on Using Arms first";
 
-		var lockCamera = menu.AddOption( "Lock Camera To Player View", "lock", () =>
+			// Says why the dots are gone at the moment they go, rather than leaving you to work
+			// out which of the two toggles did it.
+			_showBonesToggle.Enabled = !_moveWholeModel;
+			_showBonesToggle.ToolTip = _moveWholeModel
+				? "Hidden while Move Whole Model is on - there's one gizmo on the model root instead"
+				: "Hide the per-bone dots when the rig is dense enough that they're in the way";
+		}
+		finally
 		{
-			LockCameraToView = !LockCameraToView;
-			ViewmodelChanged?.Invoke();
-		} );
-
-		lockCamera.Checkable = true;
-		lockCamera.Checked = LockCameraToView;
-
-		// Gated, as asked: the camera lock is meaningless without something to frame, and an
-		// enabled toggle that silently does nothing is worse than a disabled one.
-		lockCamera.Enabled = ViewmodelMode;
-		lockCamera.StatusTip = ViewmodelMode
-			? "Pin the camera to the player's eye. You lose free camera control while this is on."
-			: "Turn on Using Arms first";
-
-		menu.AddSeparator();
-		menu.AddHeading( "Handles" );
-
-		var wholeModel = menu.AddOption( "Move Whole Model", "open_with", () =>
-		{
-			MoveWholeModel = !MoveWholeModel;
-			ViewmodelChanged?.Invoke();
-		} );
-
-		wholeModel.Checkable = true;
-		wholeModel.Checked = MoveWholeModel;
-		wholeModel.StatusTip = "One gizmo on the model root instead of a handle per bone - for placing the arms relative to the eye";
-
-		var showBones = menu.AddOption( "Show Bone Handles", "scatter_plot", () =>
-		{
-			ShowBoneHandles = !ShowBoneHandles;
-			ViewmodelChanged?.Invoke();
-		} );
-
-		showBones.Checkable = true;
-		showBones.Checked = ShowBoneHandles;
-		showBones.StatusTip = "Hide the per-bone dots when the rig is dense enough that they're in the way";
-
-		menu.AddSeparator();
-		menu.AddOption( "Reset Camera", "restart_alt", () =>
-		{
-			LockCameraToView = false;
-			FrameCamera();
-			ViewmodelChanged?.Invoke();
-		} );
-
-		// OpenAtCursor rather than positioning off the button's rect - the cursor is on the button
-		// when this runs, and it's the call every other menu in the tool already uses.
-		menu.OpenAtCursor();
+			_refreshingToggles = false;
+		}
 	}
 
 	/// <summary>Puts the model where the game puts it: hanging off a camera at the origin. Applied
@@ -428,14 +551,45 @@ internal sealed class RigViewport : Widget
 
 		_boneHandleRadius = (model.Bounds.Size.Length * 0.012f).Clamp( 0.15f, 3f );
 
+		// THE ARM SHADER IS FOR ARMS. It used to default on for every model, which meant loading
+		// anything else - a Halo grunt, say - drew that model in the viewmodel arms' skin. It
+		// looked like the tool had corrupted the model.
+		//
+		// It exists to work around ONE model: the preview arms resolve to materials/dev/gray_25,
+		// a placeholder, so without an override they render as a white mannequin that reads as a
+		// missing material. Every other model already has materials worth showing, so the correct
+		// default for them is off.
+		//
+		// Guessed from the path rather than asked, because being asked on every load is worse than
+		// being wrong occasionally - and the checkbox in the toolbar makes being wrong a one-click
+		// problem that you can see.
+		PixelStyle = LooksLikeViewmodelArms( model );
+
+		RefreshViewToggles();
+
 		FrameCamera();
 	}
+
+	/// <summary>Whether a model is first-person arms, by resource path. A guess, deliberately -
+	/// there is no flag on a model saying "I am a viewmodel", and the alternative (inspecting
+	/// materials for the dev placeholder) is both slower and no more certain.</summary>
+	private static bool LooksLikeViewmodelArms( Model model ) =>
+		model?.ResourcePath is { } path
+		&& (path.Contains( "first_person", StringComparison.OrdinalIgnoreCase )
+			|| path.Contains( "viewmodel", StringComparison.OrdinalIgnoreCase ));
 
 	public SkinnedModelRenderer Renderer => _renderer;
 
 	public void Select( string bone )
 	{
 		SelectedBone = bone;
+
+		// Selecting a bone drops any prop selection, so there is never more than one gizmo on
+		// screen competing for the same drag. Guarded on null so clearing the bone selection -
+		// which is what selecting a PROP does - can't immediately clear the prop again.
+		if ( bone is not null )
+			SelectedReferenceProp = -1;
+
 		BoneSelected?.Invoke( bone );
 	}
 
@@ -510,6 +664,28 @@ internal sealed class RigViewport : Widget
 		return true;
 	}
 
+	/// <summary>
+	/// Pose a bone by parent-space value rather than by dragging it - what the inspector's number
+	/// fields write through.
+	///
+	/// Deliberately the same tail as a gizmo drag: clamp to limits, write, carry the descendants,
+	/// then announce it. Typing 40 into a field and dragging the ring to 40 have to produce the
+	/// same result, and the only way to be sure of that is for them to run the same code. An
+	/// earlier plan had this write the keyframe directly and skip the viewport, which would have
+	/// been a second posing path to keep in step with the first.
+	/// </summary>
+	public void SetLocalTransform( string name, Transform local )
+	{
+		if ( !_renderer.IsValid() || FindBoneData( name ) is not { } bone )
+			return;
+
+		var world = ApplyLimits( bone, ParentWorld( bone ).ToWorld( local ) );
+
+		ApplyWorldTransform( bone, world );
+		PropagateToDescendants( bone, world );
+		NotifyPosed( bone, world );
+	}
+
 	/// <summary>Write a bone's new world-space transform.
 	///
 	/// SetBoneTransform is the right call and it does work - verified headlessly (rig_test_pose):
@@ -539,8 +715,26 @@ internal sealed class RigViewport : Widget
 	/// before that first frame, so the snapshot captured the posed arm and called it the rest
 	/// pose. Undo then restored to a "default" with the forearm already bent, because that WAS
 	/// the recorded default. Reading the model has no such timing to get wrong.
+	///
+	/// BONE.LOCALTRANSFORM IS MODEL-SPACE, NOT PARENT-SPACE, despite the name. It has to be
+	/// converted, and this is the conversion. Returning it raw exploded the mesh into spikes the
+	/// moment anything was dragged: every caller feeds this to parentWorld.ToWorld(), so each
+	/// bone had its entire model-space offset stacked on top of its parent's world transform, and
+	/// the error multiplied with depth - a shoulder barely moved, the fingers ended up in orbit.
+	///
+	/// Verified against the two places the engine reads it, which both convert exactly this way
+	/// and only call the RESULT a bind pose:
+	///
+	///   MovieMaker UpgradeProceduralBoneTracks:  parentBindPose.ToLocal( bone.LocalTransform )
+	///   MovieMaker InverseKinematics:            bone.Parent.LocalTransform.ToLocal( bone.LocalTransform )
+	///
+	/// The property name was found by reflection-dumping the type, which confirms a name exists
+	/// and says nothing about what space it's in. That gap is what this cost.
 	/// </summary>
-	private static Transform BindPoseFor( BoneCollection.Bone bone ) => bone.LocalTransform;
+	private static Transform BindPoseFor( BoneCollection.Bone bone ) =>
+		bone.Parent is { } parent
+			? parent.LocalTransform.ToLocal( bone.LocalTransform )
+			: bone.LocalTransform;
 
 	/// <summary>A bone's parent's world transform, falling back to the model's own for roots.</summary>
 	private Transform ParentWorld( BoneCollection.Bone bone ) =>
@@ -584,6 +778,13 @@ internal sealed class RigViewport : Widget
 	{
 		_referenceProps = props;
 
+		// Deleting a prop must not leave the gizmo pointing at an index that no longer exists, or
+		// at whatever prop happens to have shifted into that slot.
+		if ( SelectedReferenceProp >= (props?.Count ?? 0) )
+			SelectedReferenceProp = -1;
+
+		_propDragIndex = -1;
+
 		using var scope = _canvas.Scene.Push();
 
 		foreach ( var existing in _referenceObjects )
@@ -596,7 +797,9 @@ internal sealed class RigViewport : Widget
 
 		foreach ( var prop in props )
 		{
-			if ( prop?.Model is null )
+			var models = prop?.AllModels.ToList();
+
+			if ( models is null || models.Count == 0 )
 			{
 				// A placeholder keeps indices lined up with the list, so the transform pass can
 				// pair them up without re-searching.
@@ -605,10 +808,21 @@ internal sealed class RigViewport : Widget
 			}
 
 			var go = new GameObject( true, string.IsNullOrWhiteSpace( prop.Name ) ? "reference" : prop.Name );
-			var renderer = go.GetOrAddComponent<ModelRenderer>( false );
 
-			renderer.Model = prop.Model;
-			renderer.Enabled = true;
+			// ONE PARENT, ONE CHILD PER MODEL, rather than a renderer on the parent itself. The
+			// parent carries the placement and the children carry the meshes, so a prop made of
+			// three models is dragged, followed and hidden as one thing - which is the whole
+			// reason for a prop holding more than one model.
+			foreach ( var model in models )
+			{
+				var part = new GameObject( true, model.ResourceName ?? "part" );
+				part.Parent = go;
+
+				var renderer = part.GetOrAddComponent<ModelRenderer>( false );
+
+				renderer.Model = model;
+				renderer.Enabled = true;
+			}
 
 			_referenceObjects.Add( go );
 		}
@@ -652,6 +866,153 @@ internal sealed class RigViewport : Widget
 			go.WorldRotation = local.Rotation;
 			go.WorldScale = local.Scale;
 		}
+	}
+
+	/// <summary>Which reference prop has the gizmo, as an index into the prop list. -1 for none.
+	/// An index rather than the object, because the list is rebuilt from the document whenever it
+	/// changes and holding a stale instance would keep a deleted prop selected.</summary>
+	public int SelectedReferenceProp { get; private set; } = -1;
+
+	/// <summary>Fired every frame a prop is dragged, and once each side of the drag - the same
+	/// three-signal shape bone dragging uses, so undo can record one step per drag rather than one
+	/// per frame.</summary>
+	public Action ReferencePropMoved { get; set; }
+
+	public Action ReferencePropDragStarted { get; set; }
+
+	public Action ReferencePropDragEnded { get; set; }
+
+	private int _propDragIndex = -1;
+	private Transform _propDragStart;
+	private Vector3 _propMoveDelta;
+
+	/// <summary>
+	/// Click a prop to select it, then drag its gizmo - move by default, hold E to rotate, the
+	/// same contract as a bone.
+	///
+	/// Props were placeable only by typing numbers into the panel, which is a poor way to answer
+	/// "is the switch within reach", since that question is about where the hand ends up and is
+	/// only answerable by looking.
+	/// </summary>
+	private void DrawReferenceProps()
+	{
+		if ( _referenceProps is null || MoveWholeModel || !ShowBoneHandles )
+			return;
+
+		for ( var i = 0; i < _referenceProps.Count && i < _referenceObjects.Count; i++ )
+		{
+			var prop = _referenceProps[i];
+			var go = _referenceObjects[i];
+
+			if ( prop is null || !go.IsValid() || !prop.Visible )
+				continue;
+
+			var isSelected = i == SelectedReferenceProp;
+			var world = new Transform( go.WorldPosition, go.WorldRotation );
+
+			using var scope = Gizmo.Scope( $"RefProp{i}", world );
+
+			Gizmo.Draw.IgnoreDepth = true;
+			Gizmo.Draw.Color = isSelected ? Theme.Yellow : Theme.Green.WithAlpha( 0.7f );
+			Gizmo.Draw.SolidSphere( 0f, _boneHandleRadius * (isSelected ? 0.6f : 0.45f), 8, 8 );
+			Gizmo.Draw.IgnoreDepth = false;
+
+			if ( isSelected )
+			{
+				DragReferenceProp( i, prop, world );
+				continue;
+			}
+
+			// Same rule as bones: no hitbox of ours on the selected one, or it wins the hover test
+			// against the control's own handles and the drag never starts.
+			Gizmo.Hitbox.DepthBias = 0.01f;
+			Gizmo.Hitbox.Sphere( new Sphere( 0f, _boneHandleRadius ) );
+
+			if ( !Gizmo.IsHovered )
+				continue;
+
+			RigStatusBar.Show( $"{prop.Name}  -  click to select, then drag to move. Hold E to rotate." );
+
+			if ( Gizmo.WasLeftMousePressed )
+			{
+				SelectedReferenceProp = i;
+
+				// One gizmo on screen at a time - a bone and a prop both showing handles is two
+				// things claiming the same drag.
+				Select( null );
+			}
+		}
+	}
+
+	private void DragReferenceProp( int index, ReferenceProp prop, Transform world )
+	{
+		var dragging = _propDragIndex == index;
+		var start = dragging ? _propDragStart : world;
+
+		Gizmo.Hitbox.DepthBias = 0.01f;
+
+		Transform moved;
+
+		if ( Editor.Application.IsKeyDown( KeyCode.E ) )
+		{
+			if ( !Gizmo.Control.Rotate( "prop-rotate", Rotation.Identity, out var rotation ) )
+			{
+				EndPropDragIfReleased();
+				return;
+			}
+
+			BeginPropDrag( index, world, ref start );
+			moved = new Transform( start.Position, rotation * start.Rotation, start.Scale );
+		}
+		else
+		{
+			if ( !Gizmo.Control.Position( "prop-move", Vector3.Zero, out var delta, Rotation.Identity ) )
+			{
+				EndPropDragIfReleased();
+				return;
+			}
+
+			BeginPropDrag( index, world, ref start );
+			_propMoveDelta += delta;
+
+			moved = new Transform( start.Position + _propMoveDelta, start.Rotation, start.Scale );
+		}
+
+		// A prop that follows a bone stores its placement RELATIVE TO THAT BONE - that's what
+		// makes it stay in the hand. Writing the world transform into it would put it in the hand
+		// exactly once, then send it flying the moment the hand moved.
+		if ( !string.IsNullOrWhiteSpace( prop.FollowBone ) && TryGetWorldTransform( prop.FollowBone, out var boneWorld ) )
+			moved = boneWorld.ToLocal( moved );
+
+		prop.Position = moved.Position;
+		prop.Rotation = moved.Rotation.Angles();
+
+		ReferencePropMoved?.Invoke();
+	}
+
+	private void BeginPropDrag( int index, Transform world, ref Transform start )
+	{
+		if ( _propDragIndex == index )
+			return;
+
+		ReferencePropDragStarted?.Invoke();
+
+		_propDragIndex = index;
+		_propDragStart = world;
+		_propMoveDelta = Vector3.Zero;
+
+		start = world;
+	}
+
+	/// <summary>Same reasoning as EndDragIfReleased for bones - a control reports false on any
+	/// frame its value didn't change, including frames where the button is still held.</summary>
+	private void EndPropDragIfReleased()
+	{
+		if ( Gizmo.IsLeftMouseDown || _propDragIndex < 0 )
+			return;
+
+		_propDragIndex = -1;
+		ReferencePropDragEnded?.Invoke();
 	}
 
 	/// <summary>The last pose lookup this viewport was given, kept so a drag can re-resolve the
@@ -857,6 +1218,7 @@ internal sealed class RigViewport : Widget
 			Gizmo.Draw.Grid( 0, Gizmo.GridAxis.XY );
 
 		DrawBoneHandles();
+		DrawReferenceProps();
 		DrawSelectedBoneReadout();
 
 		Cursor = Gizmo.HasHovered ? CursorShape.Finger : CursorShape.Arrow;
@@ -915,6 +1277,10 @@ internal sealed class RigViewport : Widget
 		// reason this mode exists.
 		if ( MoveWholeModel )
 		{
+			RigStatusBar.Show( Editor.Application.IsKeyDown( KeyCode.E )
+				? "Whole model  -  drag to rotate. Let go of E to move instead."
+				: "Whole model  -  drag to move. Hold E to rotate instead." );
+
 			DragWholeModel();
 			return;
 		}
@@ -943,10 +1309,18 @@ internal sealed class RigViewport : Widget
 			if ( IsHidden( bone.Name ) && !ShowHiddenBones )
 				continue;
 
+			var isSelected = bone.Name == SelectedBone;
+			var isTwist = IsTwistBone( bone.Name );
+
+			// A twist bone that's actually selected keeps its handle regardless - selecting one
+			// from the bone tree and then finding it has no gizmo would be the same class of
+			// invisible-mode bug the toggle bar exists to prevent.
+			if ( isTwist && !ShowTwistBones && !isSelected )
+				continue;
+
 			using var boneScope = Gizmo.Scope( $"Bone{bone.Index}", world );
 
 			var radius = _boneHandleRadius;
-			var isSelected = bone.Name == SelectedBone;
 
 			if ( bone.Parent is { } parentBone && _renderer.TryGetBoneTransform( parentBone, out var parentWorld ) )
 			{
@@ -957,8 +1331,17 @@ internal sealed class RigViewport : Widget
 			// Solid dot, not a hollow ring - the reference draws bones as filled white dots.
 			// The selected one is drawn fatter as well as yellow, so it's still findable in a
 			// dense area of the rig where a colour change alone is easy to lose.
-			Gizmo.Draw.Color = isSelected ? Theme.Yellow : (Gizmo.IsHovered ? Theme.Green : Color.White);
-			Gizmo.Draw.SolidSphere( 0f, radius * (isSelected ? 0.5f : 0.35f), 8, 8 );
+			//
+			// Twist bones, when shown, are drawn small and dim: they read as a satellite of the
+			// joint rather than as a peer of it. Size carries this rather than colour alone,
+			// because the two dots are at the same point - a colour difference between two
+			// coincident dots of equal size is invisible, since one simply covers the other.
+			Gizmo.Draw.Color = isSelected ? Theme.Yellow
+				: Gizmo.IsHovered ? Theme.Green
+				: isTwist ? Theme.Blue.WithAlpha( 0.55f )
+				: Color.White;
+
+			Gizmo.Draw.SolidSphere( 0f, radius * (isSelected ? 0.5f : isTwist ? 0.16f : 0.35f), 8, 8 );
 
 			// No hitbox of our own on the selected bone. Gizmo.Control registers its own hitboxes
 			// for its handles, and a sphere sitting at the same scope origin - depth-biased in
@@ -971,7 +1354,12 @@ internal sealed class RigViewport : Widget
 			}
 
 			Gizmo.Hitbox.DepthBias = 0.01f;
-			Gizmo.Hitbox.Sphere( new Sphere( 0f, radius ) );
+
+			// THE SMALLER HITBOX IS THE ACTUAL FIX, not the smaller dot. Two coincident spheres of
+			// equal radius make the winner of a click arbitrary; shrinking the twist bone's means
+			// the joint underneath wins everywhere except dead centre, so the bone you meant to
+			// grab is the one you get even with both shown.
+			Gizmo.Hitbox.Sphere( new Sphere( 0f, isTwist ? radius * 0.3f : radius ) );
 
 			if ( Gizmo.IsHovered )
 			{
@@ -1007,10 +1395,46 @@ internal sealed class RigViewport : Widget
 
 		if ( selected is { } sel )
 			DragSelectedBone( sel.Bone, sel.World );
+
+		DeselectOnEmptyClick( hovered );
+	}
+
+	/// <summary>
+	/// Click empty space, lose the selection - and with it the gizmo.
+	///
+	/// RUN AFTER DragSelectedBone, NOT BEFORE. The selected bone's control registers its own
+	/// hitboxes inside that call, and a click on one of them only counts as "something is
+	/// hovered" once it has. Checking first would treat every grab of the rotate ring as a click
+	/// on nothing and drop the selection the instant you tried to pose it.
+	///
+	/// Gizmo.HasHovered covers both kinds of target - our per-bone hitboxes and the control's own
+	/// handles - so this needs no list of what is clickable.
+	/// </summary>
+	private void DeselectOnEmptyClick( string hovered )
+	{
+		if ( MoveWholeModel )
+			return;
+
+		if ( SelectedBone is null && SelectedReferenceProp < 0 )
+			return;
+
+		// A drag that happens to finish over empty space is still a drag, not a click on nothing.
+		if ( _draggingBone || _dragBoneName is not null || _propDragIndex >= 0 )
+			return;
+
+		if ( hovered is not null || Gizmo.HasHovered )
+			return;
+
+		if ( !Gizmo.WasLeftMousePressed )
+			return;
+
+		SelectedReferenceProp = -1;
+		Select( null );
 	}
 
 	private bool _draggingModel;
 	private Vector3 _modelDragStart;
+	private Rotation _modelRotateStart;
 	private Vector3 _modelMoveDelta;
 
 	/// <summary>The whole-model handle. Same contract as bone dragging, and the same as
@@ -1032,6 +1456,29 @@ internal sealed class RigViewport : Widget
 
 		Gizmo.Hitbox.DepthBias = 0.01f;
 
+		var startRotation = _draggingModel ? _modelRotateStart : _modelObject.WorldRotation;
+
+		// Same hold-to-flip as bones: E borrows the other mode for as long as it's held. Move is
+		// the default here rather than rotate, because placing the arms relative to the eye is
+		// what this mode is for - the inverse of a bone, where rotation is the common case.
+		if ( Editor.Application.IsKeyDown( KeyCode.E ) )
+		{
+			// Cumulative since the grab, assigned rather than accumulated - see DragSelectedBone
+			// for why the two controls differ.
+			if ( !Gizmo.Control.Rotate( "model-rotate", Rotation.Identity, out var rotation ) )
+			{
+				if ( !Gizmo.IsLeftMouseDown )
+					_draggingModel = false;
+
+				return;
+			}
+
+			BeginModelDrag( ref start, ref startRotation );
+			ApplyModelTransform( start + _modelMoveDelta, rotation * startRotation );
+
+			return;
+		}
+
 		if ( !Gizmo.Control.Position( "model-move", Vector3.Zero, out var delta, Rotation.Identity ) )
 		{
 			if ( !Gizmo.IsLeftMouseDown )
@@ -1040,29 +1487,50 @@ internal sealed class RigViewport : Widget
 			return;
 		}
 
-		if ( !_draggingModel )
-		{
-			_draggingModel = true;
-			_modelDragStart = _modelObject.WorldPosition;
-			_modelMoveDelta = Vector3.Zero;
-			start = _modelDragStart;
-		}
+		BeginModelDrag( ref start, ref startRotation );
 
 		_modelMoveDelta += delta;
 
-		var moved = start + _modelMoveDelta;
+		ApplyModelTransform( start + _modelMoveDelta, startRotation );
+	}
 
-		// In viewmodel mode the offset IS the authored value - the model's position is derived
-		// from it every frame, so writing the object directly would be overwritten instantly.
+	/// <summary>Latches where the model was when the drag began. Both position and rotation are
+	/// captured together, so releasing E mid-drag can't leave one of them measured from a
+	/// different starting point than the other.</summary>
+	private void BeginModelDrag( ref Vector3 start, ref Rotation startRotation )
+	{
+		if ( _draggingModel )
+			return;
+
+		_draggingModel = true;
+		_modelDragStart = _modelObject.WorldPosition;
+		_modelRotateStart = _modelObject.WorldRotation;
+		_modelMoveDelta = Vector3.Zero;
+
+		start = _modelDragStart;
+		startRotation = _modelRotateStart;
+	}
+
+	/// <summary>
+	/// Writes the model's placement to whichever thing actually owns it.
+	///
+	/// In viewmodel mode the offset and rotation ARE the authored values - ApplyViewmodelFraming
+	/// derives the object's transform from them every frame, so writing the object directly would
+	/// be overwritten before you saw it.
+	/// </summary>
+	private void ApplyModelTransform( Vector3 position, Rotation rotation )
+	{
 		if ( ViewmodelMode )
 		{
-			ViewmodelOffset = moved;
+			ViewmodelOffset = position;
+			ViewmodelRotation = rotation.Angles();
 			ViewmodelChanged?.Invoke();
+
+			return;
 		}
-		else
-		{
-			_modelObject.WorldPosition = moved;
-		}
+
+		_modelObject.WorldPosition = position;
+		_modelObject.WorldRotation = rotation;
 	}
 
 	private string _dragBoneName;
@@ -1127,16 +1595,19 @@ internal sealed class RigViewport : Widget
 
 	/// <summary>Drag the selected bone with a normal editor-style gizmo.
 	///
-	/// Gizmo.Control.Position/Rotate are absolute in, absolute out - the out params are named
-	/// newPos/newValue, not deltas. They hand back the value the handle has been dragged *to*,
 	/// THE TWO CONTROLS DO NOT AGREE WITH EACH OTHER, which is the thing to know here. Taken from
-	/// the engine's own shipped examples rather than from the parameter names, which mislead:
+	/// the engine's own shipped tools rather than from the parameter names, which mislead - both
+	/// out params are named as if they were absolute values and neither one is:
 	///
-	///   Position (WidgetGallery PositionTest) is ABSOLUTE IN, ABSOLUTE OUT. You pass the current
-	///   position and assign what comes back:  Control.Position( n, pos, out var newPos ).
+	///   Position (PositionEditorTool) hands back a PER-FRAME DELTA that you accumulate. You pass
+	///   Vector3.Zero, not the current position:  Control.Position( n, Vector3.Zero, out var
+	///   delta, basis )  then  moveDelta += delta.
 	///
-	///   Rotate (WidgetGallery RotationTest, and the scene editor's RotationEditorTool) hands back
-	///   a PER-FRAME DELTA that you accumulate:  rotation *= delta.
+	///   Rotate (RotationEditorTool, and WidgetGallery's RotationTest) hands back the rotation
+	///   CUMULATIVE SINCE THE GRAB, which you assign rather than accumulate:  moveDelta = delta.
+	///
+	/// Both are applied to a start pose captured on the drag's first frame, which is what makes
+	/// the difference survivable: neither one is ever fed back into itself.
 	///
 	/// Every sensitivity bug in this function came from getting that wrong. Passing Vector3.Zero
 	/// for position made the control work against the world origin instead of the bone, so a huge

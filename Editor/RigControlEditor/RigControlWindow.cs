@@ -17,7 +17,7 @@ namespace Marionette.Tools;
 /// code, so this re-does the smaller save/dirty part it actually needs.
 /// </summary>
 [EditorForAssetType( "riganim" )]
-[EditorApp( "Rig Control Editor", "accessibility_new", "Pose and keyframe a skinned model's bones, author IK/Limit rig constraints, and place per-frame prop-attach events" )]
+[EditorApp( "Marionette", "accessibility_new", "Pose and keyframe a skinned model's bones, author IK/Limit rig constraints, and place per-frame prop-attach events" )]
 public sealed class RigControlWindow : DockWindow, IAssetEditor
 {
 	public bool CanOpenMultipleAssets => false;
@@ -33,6 +33,7 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 	private RigEventProperties _events;
 	private RigBonesPanel _bones;
 	private RigConstraintsPanel _constraints;
+	private RigInspectorPanel _inspector;
 	private DockWidget _centralDock;
 
 	private Option _saveOption;
@@ -143,6 +144,19 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		// Ctrl+Z paste the previous clip's tracks into this one.
 		_undoStack.Clear();
 		ResetBaseline();
+
+		// THE POSE HAS TO BE APPLIED HERE OR OPENING A CLIP SHOWS NOTHING IT CONTAINS.
+		//
+		// Loading fills in the document and moves the playhead to 0, but RigTimeline.Playhead's
+		// setter deliberately doesn't raise Scrubbed - that fires on user interaction, so that
+		// moving the playhead in code can't recurse. The consequence was that nothing ever drove
+		// the model after a load: EvaluatePose was never called, every bone kept its bind pose,
+		// and a clip you had just saved opened showing none of its own keyframes.
+		//
+		// That reads exactly like the save silently failing, which is what it was reported as.
+		// The keyframes were on disk and loaded correctly the whole time; nothing asked the
+		// viewport to use them.
+		OnScrub( _timeline.Playhead );
 	}
 
 	private void OpenPicker()
@@ -448,11 +462,31 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 				_timeline.Refresh();
 			}
 
+			_inspector?.Refresh();
+
 			RefreshTutorial();
 		};
 		_viewport.BonePosed += OnBonePosed;
 		_viewport.BoneDragStarted += OnBoneDragStarted;
 		_viewport.BoneDragEnded += OnBoneDragEnded;
+
+		// Same three-signal shape as a bone drag, for the same reason: the move fires every frame
+		// and would bury the undo stack under hundreds of one-pixel entries if it recorded there.
+		_viewport.ReferencePropDragStarted += () =>
+		{
+			_undoStack.Push( _baseline?.WithLabel( "Move Reference Prop" ) );
+			_baseline = RigSnapshot.Capture( _anim, _rig );
+			UpdateUndoOptions();
+		};
+
+		_viewport.ReferencePropMoved += () =>
+		{
+			// The panel shows the same numbers the gizmo is changing, so it has to follow.
+			_bones?.Rebuild();
+			MarkDirtyOnly();
+		};
+
+		_viewport.ReferencePropDragEnded += ResetBaseline;
 
 		// Hiding edits the .ctrlrig, so it's a real document change - dirty, saved, and undoable
 		// like any other. The bones panel rebuilds so its tree can show what's hidden.
@@ -495,6 +529,14 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 			Edited = () => MarkDirty( "Edit Constraint" ),
 		};
 
+		// SetLocalTransform fires BonePosed on its way through, so the keyframe and the dirty flag
+		// are already handled by the time this runs. All that's left is the undo step - one per
+		// field edit, unlike a drag, which is one per drag.
+		_inspector = new RigInspectorPanel( this, _viewport )
+		{
+			Edited = () => MarkDirty( "Edit Bone Transform" ),
+		};
+
 		_tutorialPanel = new RigTutorialPanel( this )
 		{
 			Tutorial = _tutorial,
@@ -512,6 +554,21 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		DockManager.RegisterDock( new() { Title = "AnimEvents", Icon = "bolt", Area = DockArea.Hidden, CreateAction = () => _events } );
 		DockManager.RegisterDock( new() { Title = "BonesObject", Icon = "polyline", Area = DockArea.Hidden, CreateAction = () => _bones } );
 		DockManager.RegisterDock( new() { Title = "Constraints", Icon = "link", Area = DockArea.Hidden, CreateAction = () => _constraints } );
+		DockManager.RegisterDock( new() { Title = "Inspector", Icon = "tune", Area = DockArea.Hidden, CreateAction = () => _inspector } );
+
+		// THE EDITOR'S OWN CONSOLE, not one of ours.
+		//
+		// Half the tool's diagnostics go to the log - rig_test_pose, rig_debug_drag, the sample
+		// and wave builders - and reading them meant leaving the tool for the main editor window,
+		// which on a second monitor is fine and on one monitor means losing sight of the thing you
+		// are debugging.
+		//
+		// ConsoleWidget isn't publicly constructible, so it's created by name through the type
+		// library. That's not a workaround - it's exactly what ShaderGraph does to dock the same
+		// widget (ShaderGraph/Code/MainWindow.cs:1180), and it means this is the real console with
+		// real command input, not a log view that reimplements a third of one.
+		if ( EditorTypeLibrary.Create( "ConsoleWidget", typeof( Widget ), new object[] { this } ) is Widget console )
+			DockManager.RegisterDock( new() { Title = "Console", Icon = "text_snippet", Area = DockArea.Hidden, CreateAction = () => console } );
 		DockManager.RegisterDock( new() { Title = "Timeline", Icon = "view_timeline", Area = DockArea.Hidden, CreateAction = () => _timeline } );
 
 		// Bumped from "RigControlEditor" - the blank-window bug shipped its first broken layout
@@ -524,7 +581,14 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		// Bumped again for the wider default split. Splitter proportions live in the saved layout,
 		// so without a new cookie anyone who has already opened the tool keeps the narrow columns
 		// forever and never sees the change.
-		StateCookie = "Marionette2";
+		// Bumped again for the Inspector dock, for the same reason the Tutorial bump was needed:
+		// a layout saved under the old cookie has no Inspector in it, and a dock that only exists
+		// in BuildDefaultLayout never appears for anyone who has opened the tool before.
+		// Bumped again for the Tutorial moving out of the tab group into its own row, and the new
+		// splitter proportions. Both live entirely in the saved layout, so a restored Marionette3
+		// layout would keep the old arrangement and BuildDefaultLayout would never run again.
+		// Bumped again for the taller timeline row, and again for the Console dock.
+		StateCookie = "Marionette6";
 
 		_lastModel = _anim.SourceModel;
 		_viewport.SetModel( _lastModel );
@@ -543,30 +607,43 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 	// that shipped first) registers docks nobody ever tells to open.
 	protected override void BuildDefaultLayout()
 	{
+		// THE TUTORIAL IS ITS OWN DOCK, NOT A TAB. Tabbed alongside the property sheets it was
+		// either covering them or being covered by them, so following a step meant flipping back
+		// and forth between the instruction and the panel the instruction is about. Below them in
+		// the same column, both are on screen at once, which is the only arrangement where a
+		// written step and the fields it refers to are usable together.
 		var bonesDock = DockManager.OpenDock( "BonesObject", DockArea.Right, _centralDock );
 
-		// 0.62/0.38 rather than 0.72/0.28. The right column holds the tutorial and the property
-		// sheets, all of which are text - and text is what suffers first when a panel is narrow.
-		// The viewport loses a little width and cares far less.
-		DockManager.SetSplitterProportions( bonesDock, 0.62f, 0.38f );
+		// A quarter of the width. Narrower than the 0.62/0.38 it replaced, which was sized for a
+		// column that had to hold the tutorial's prose as well; the tutorial now has its own space
+		// underneath, so the sheets only need to fit label-and-field rows.
+		DockManager.SetSplitterProportions( bonesDock, 0.75f, 0.25f );
 
 		// Center, not Right - Right would split the space into three columns (the bug that
 		// shipped first); Center stacks a dock as a tab alongside whatever's already there.
-		DockManager.OpenDock( "AnimEvents", DockArea.Center, bonesDock );
-		DockManager.OpenDock( "Constraints", DockArea.Center, bonesDock );
+		DockManager.OpenDock( "Inspector", DockArea.Center, bonesDock );
 
-		// Tabbed alongside the others, and raised only if the reader hasn't opted out. It's the
-		// one panel that's useless if nobody notices it - and equally, the one that becomes an
-		// irritant if it insists after being told no.
-		DockManager.OpenDock( "Tutorial", DockArea.Center, bonesDock );
+		// AnimEvents and Constraints are registered but deliberately NOT opened here. Both are
+		// for work that comes after you can already pose and key - and four tabs across a quarter
+		// width column truncates every one of their titles. They're one click away in View.
+		DockManager.RaiseDock( "BonesObject" );
 
 		if ( RigTutorial.OpenOnStartup )
-			DockManager.RaiseDock( "Tutorial" );
-		else
-			DockManager.RaiseDock( "BonesObject" );
+		{
+			var tutorialDock = DockManager.OpenDock( "Tutorial", DockArea.Bottom, bonesDock );
+			DockManager.SetSplitterProportions( tutorialDock, 0.5f, 0.5f );
+		}
 
+		// A third of the height, up from a fifth. The timeline is where the actual work of timing
+		// happens and it was the most cramped thing on screen - the viewport had space to spare.
 		var timeline = DockManager.OpenDock( "Timeline", DockArea.Bottom, _centralDock );
-		DockManager.SetSplitterProportions( timeline, 0.65f, 0.35f );
+		DockManager.SetSplitterProportions( timeline, 0.67f, 0.33f );
+
+		// Tabbed behind the timeline rather than beside it. The console is for when something has
+		// gone wrong or a builder command has been run - worth one click, not worth permanent
+		// space next to the thing you use every second.
+		DockManager.OpenDock( "Console", DockArea.Center, timeline );
+		DockManager.RaiseDock( "Timeline" );
 	}
 
 	private void ApplyRigToPanels()
@@ -614,6 +691,10 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 
 		_timeline.Refresh();
 
+		// The numbers follow the gizmo. Guarded on its side against writing them back, so a drag
+		// updating the fields can't turn into the fields re-posing the bone mid-drag.
+		_inspector?.Refresh();
+
 		// No undo step here - this fires every frame of a drag, and the whole drag was already
 		// recorded as one step by OnBoneDragStarted.
 		MarkDirtyOnly();
@@ -625,6 +706,9 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 			return;
 
 		_viewport.EvaluatePose( bone => _anim.FindTrack( bone ) is { } track && track.Keyframes.Count > 0 ? track.Evaluate( frame ) : null );
+
+		// Scrubbing changes the pose without any drag, so nothing else would update the fields.
+		_inspector?.Refresh();
 	}
 
 	private void Scrub( float frame ) => _timeline.Playhead = frame;
@@ -762,7 +846,7 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 			_saveOption.Enabled = false;
 	}
 
-	private void UpdateTitle() => Title = $"Rig Control - {_asset?.Path ?? "nothing open"}{(_dirty ? "*" : "")}";
+	private void UpdateTitle() => Title = $"Marionette - {_asset?.Path ?? "nothing open"}{(_dirty ? "*" : "")}";
 
 	[Shortcut( "editor.save", "CTRL+S", ShortcutType.Window )]
 	private void Save()
