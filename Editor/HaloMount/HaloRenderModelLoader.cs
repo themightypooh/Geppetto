@@ -1,0 +1,99 @@
+using System;
+using System.Collections.Generic;
+using System.Reflection;
+using Sandbox;
+using Sandbox.Mounting;
+
+// Phase 3+4 (see plans/tidy-singing-backus.md): converts a single Halo 3 render_model
+// tag into an s&box Model, via Reclaimer.Blam's own high-level Model/Mesh object
+// (RenderModelTag.GetContent() -> Scene -> Model) rather than hand-parsing Halo's
+// vertex/index buffer formats ourselves. Actual geometry/material conversion lives in
+// HaloMeshConverter (shared with HaloBspLoader, which produces the same Model shape from
+// ScenarioStructureBspTag) -- this class is just the render_model-specific tag lookup.
+public class HaloRenderModelLoader( HaloMCCMount host, string mapPath, string tagName ) : ResourceLoader<HaloMCCMount>
+{
+	public string MapPath { get; } = mapPath;
+	public string TagName { get; } = tagName;
+
+	protected override object Load()
+	{
+		var asm = HaloMCCMount.LoadReclaimer();
+		var cacheFactory = asm.GetType( "Reclaimer.Blam.Common.CacheFactory", throwOnError: true );
+
+		dynamic cache = cacheFactory.InvokeMember(
+			"ReadCacheFile",
+			BindingFlags.InvokeMethod | BindingFlags.Static | BindingFlags.Public,
+			null, null, new object[] { MapPath } );
+
+		object tagItem = null;
+		foreach ( dynamic tag in cache.TagIndex )
+		{
+			string classCode = tag.ClassCode;
+			string name = tag.TagName;
+			if ( classCode == "mode" && name == TagName )
+			{
+				tagItem = tag;
+				break;
+			}
+		}
+
+		if ( tagItem is null )
+			throw new Exception( $"Could not find render_model tag '{TagName}' in {MapPath}" );
+
+		var renderModelType = asm.GetType( "Reclaimer.Blam.Halo3.RenderModelTag", throwOnError: true );
+		var readMetadata = tagItem.GetType().GetMethod( "ReadMetadata" ).MakeGenericMethod( renderModelType );
+		dynamic renderModelTag = readMetadata.Invoke( tagItem, null );
+
+		dynamic scene = renderModelTag.GetContent();
+
+		dynamic reclaimerModel = null;
+		foreach ( dynamic model in scene.EnumerateModels() )
+		{
+			reclaimerModel = model;
+			break;
+		}
+
+		if ( reclaimerModel is null )
+			throw new Exception( $"render_model tag '{TagName}' produced no models" );
+
+		// Model.Meshes is a flat list covering every region/permutation (alternate variants,
+		// damage states, etc), not just the one default body -- concatenating all of them
+		// produces overlapping garbage. Scope to the first region's first permutation's
+		// MeshRange instead. MeshRange is a named ValueTuple (Index, Count) -- those names are
+		// compiler sugar only, so through `dynamic` the real fields are Item1/Item2.
+		dynamic firstRegion = null;
+		foreach ( dynamic region in reclaimerModel.Regions ) { firstRegion = region; break; }
+
+		dynamic firstPermutation = null;
+		if ( firstRegion is not null )
+			foreach ( dynamic permutation in firstRegion.Permutations ) { firstPermutation = permutation; break; }
+
+		int meshStart = 0;
+		int meshCount = int.MaxValue;
+		if ( firstPermutation is not null )
+		{
+			dynamic meshRange = firstPermutation.MeshRange;
+			meshStart = (int)meshRange.Item1;
+			meshCount = (int)meshRange.Item2;
+		}
+
+		var builder = Model.Builder.WithName( Path );
+
+		var allMeshes = new List<object>();
+		foreach ( dynamic m in reclaimerModel.Meshes )
+			allMeshes.Add( m );
+
+		var materialIndex = 0;
+		for ( var i = meshStart; i < allMeshes.Count && i < meshStart + meshCount; i++ )
+		{
+			dynamic reclaimerMesh = allMeshes[i];
+			if ( reclaimerMesh is null )
+				continue;
+
+			foreach ( var sbMesh in HaloMeshConverter.ConvertMesh( reclaimerMesh, ref materialIndex ) )
+				builder = builder.AddMesh( sbMesh );
+		}
+
+		return builder.Create();
+	}
+}

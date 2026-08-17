@@ -1,7 +1,7 @@
 {
   "Title": "Marionette",
   "Type": "addon",
-  "Org": "local",
+  "Org": "pooh",
   "Ident": "marionette",
   "Schema": 1,
   "IncludeSourceFiles": false,
