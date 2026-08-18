@@ -446,6 +446,43 @@ public static class Program
 
 		var cage = ObjReader.Read( File.ReadAllText( Path.Combine( outDir, "sketch_slot.obj" ) ) );
 		SvgPreview.Write( cage, Path.Combine( outDir, "wire_slot_cage.svg" ), "sketch_slot cage (wireframe)", wireframe: true );
+
+		WriteContactSheets( outDir );
+	}
+
+	/// <summary>PNG contact sheets — one image showing everything, viewable anywhere.</summary>
+	static void WriteContactSheets( string outDir )
+	{
+		PolyMesh Load( string name ) => ObjReader.Read( File.ReadAllText( Path.Combine( outDir, $"{name}.obj" ) ) );
+
+		var primitives = new[]
+		{
+			new PngPreview.Tile( Load( "box" ), "box" ),
+			new PngPreview.Tile( Load( "cylinder" ), "cylinder" ),
+			new PngPreview.Tile( Load( "quadsphere" ), "quad sphere" ),
+			new PngPreview.Tile( Load( "wedge" ), "wedge" ),
+			new PngPreview.Tile( Load( "tube" ), "tube" ),
+			new PngPreview.Tile( Load( "sketch_slot" ), "sketch extrude" ),
+			new PngPreview.Tile( Load( "sketch_torus" ), "sketch revolve" ),
+			new PngPreview.Tile( Load( "sketch_cone" ), "revolve on axis" ),
+		};
+
+		PngPreview.WriteSheet( primitives, Path.Combine( outDir, "preview_primitives.png" ) );
+
+		// Cage beside subdivided, in wireframe, which is where the quad topology shows.
+		var subdivision = new[]
+		{
+			new PngPreview.Tile( Load( "sketch_slot" ), "cage", wireframe: true ),
+			new PngPreview.Tile( Load( "sketch_slot_subdiv2" ), "subdiv 2", wireframe: true ),
+			new PngPreview.Tile( Load( "box" ), "box cage", wireframe: true ),
+			new PngPreview.Tile( Load( "box_subdiv2" ), "box subdiv 2", wireframe: true ),
+			new PngPreview.Tile( Load( "sketch_slot" ), "cage shaded" ),
+			new PngPreview.Tile( Load( "sketch_slot_subdiv2" ), "subdiv 2 shaded" ),
+			new PngPreview.Tile( Load( "cylinder" ), "cylinder cage" ),
+			new PngPreview.Tile( Load( "cylinder_subdiv2" ), "cylinder subdiv 2" ),
+		};
+
+		PngPreview.WriteSheet( subdivision, Path.Combine( outDir, "preview_subdivision.png" ) );
 	}
 
 	// ---------------------------------------------------------------------------------------
