@@ -30,26 +30,28 @@ standing as a guess.** Read the shipped source before writing against it.
 
 ---
 
-## The decision: parametric first, not sculpting
+## The decision: parametric first, then sculpt on top
 
-The tool is hard-surface modelling, not organic sculpting. The reasoning, shortest form:
+The tool is parametric hard-surface modelling **first**, with sculpting as a second stage layered
+over it — not sculpting as the starting point. The reasoning, shortest form:
 
 - **The failure modes are not symmetrical.** A mediocre parametric model is a boring crate that
-  drops into a scene and works. A mediocre sculpt is a shapeless blob with no UVs and no usable
-  topology.
+  drops into a scene and works. A mediocre *sculpt-first* model is a shapeless blob with no UVs and
+  no usable topology.
 - **Retopology and UV unwrap are the two hardest problems in the pipeline**, they are exactly what
-  a sculpt output demands, and they are exactly what a non-modeller cannot do.
+  a sculpt-first output demands, and they are exactly what a non-modeller cannot do. Starting
+  parametric means they never come up — see the pipeline section below, this is the crux.
 - **Collision comes free from parametric history.** If the model is known to be a union of N convex
   primitives, that *is* the physics representation. A sculpt gives a triangle soup needing convex
   decomposition.
 - **UVs nearly come free too.** Planar/box projection per face cluster looks good on hard surface
-  and terrible on organics.
+  and terrible on organics — and the parametric stage is where you get to do it on hard surface.
 - **s&box builds hard surface.** Props, guns, furniture, machinery, signage. Organic characters are
   largely served by Citizen + clothing.
 
-Sculpting is the better demo and the worse tool. If it ever gets built, it should sit on an SDF
-core so it's an added brush set rather than a rewrite — see "Subdivide is not sculpting" below for
-why the cheap version of it doesn't count.
+Sculpting starting from nothing is the better demo and the worse tool. Sculpting *on top of a
+parametric base* is neither — it is the actual goal, and the parametric stage is what makes it
+work.
 
 ---
 
@@ -116,37 +118,92 @@ That is a fraction of the work of a CAD kernel or a sculpt engine, and it is the
 
 ---
 
-## Subdivide is not sculpting
+## CAD → subdivide → sculpt: this is the plan
 
-This came up as "can we subdivide faces enough to then sculpt them?" — the honest answer is no, and
-the reason is structural rather than a matter of resolution.
+**Correction to an earlier draft of this document, which claimed subdivide-then-sculpt does not
+work. It does. The earlier claim conflated two different things:**
 
-Displacement moves existing vertices along their normals on a fixed grid. Topology never changes. So
-it produces cliffs, rock faces, terrain, dented panels — and it cannot produce an undercut, an
-overhang, or an ear, at **any** subdivision level. Subdividing further doesn't approach sculpting;
-it quadruples vertex count per level and falls over on budget before it gets anywhere near.
+| | Moves vertices | Undercuts / overhangs |
+|---|---|---|
+| **Displacement** (Source-style, and s&box's mapping Displacement tool) | along normals only, heightfield on a fixed grid | **no**, at any subdivision level |
+| **Sculpting on a subdivided mesh** (ZBrush subdivision levels, Mudbox, Blender multires) | freely, in 3D | **yes** |
 
-Real sculpting needs one of:
+The first genuinely cannot make an ear. The second is the industry-standard workflow and is what
+this tool should do. Do not let the earlier version of this section talk anyone out of it.
 
-- **dynamic topology** — retriangulate under the brush as it runs
-- **an SDF/voxel field** remeshed with dual contouring or surface nets
+### Why starting from CAD is what makes the sculpt usable
 
-Both are real engines, not a subdivide button. Worth building one day, on the SDF route so parametric
-CSG and sculpt brushes share a core. Not phase one.
+This is the important part. A sculpt-first model is unusable as a game asset because it has no
+low-poly version and no UVs, and getting them means retopology and unwrapping. In a subdivide-and-
+sculpt pipeline **the base cage is already the low-poly, with the UVs assigned at CAD time.** So:
+
+```
+parametric base (quads, UV'd)  →  subdivide 3-4 levels  →  sculpt the dense mesh
+        └────────────── bake detail to a normal map ──────────────┘
+                    ship the cage + the normal map
+```
+
+No retopo step, because the parametric stage produced clean topology as a side effect. That closes
+the exact objection that ruled out sculpting-first, and it is why the two halves belong in one tool
+rather than two.
+
+### What it takes
+
+- **Quad-dominant output from the CAD stage.** Catmull-Clark needs quads; general boolean output is
+  triangle soup and subdivides badly. Keep primitives quad-based and lean on grouping with
+  subtract-only-where-needed — which is already the phase-one scope, so this constrains nothing that
+  wasn't already constrained. (Triangle regions can fall back to Loop subdivision.)
+- **A half-edge mesh and Catmull-Clark subdivision**, levels 0–4, switchable up and down.
+- **Brushes** — grab, inflate, smooth, pinch, flatten, clay — with a falloff radius and an octree or
+  BVH for hit-testing once past ~100k verts.
+- **Multires displacement deltas**, storing the sculpt per level so the base cage stays editable
+  underneath it. This is the hard part and the one that decides whether the tool feels good or feels
+  like a trap. Without it, sculpting is a one-way door and the parametric history dies the moment a
+  brush touches the mesh.
+
+### Real limits, so they aren't surprises
+
+- Detail only goes where polygons were allocated. A fine crease in a large flat area needs density
+  there, at CAD time.
+- Hard pulls stretch triangles thin and detail quality degrades with them.
+- No new protrusion from nothing, no merging separate forms, no new holes. Substantial deformation
+  yes; topology change no.
+- 4× vertex count per level. A 500-triangle base at level 4 is ~128k — fine in C#.
+
+### The SDF route, for the record
+
+A single signed-distance field with CSG primitives and sculpt brushes both writing into it, meshed
+with dual contouring, gives live-editable parametric *and* sculpting with sharp edges preserved.
+It is the better end state and a much larger build — weeks to months for the meshing alone. Multires
+gets most of the benefit for a fraction of the work. Revisit only if the live-both-ways property
+turns out to be the actual point.
 
 ---
 
-## Proposed phase one
+## Proposed phase one — the parametric base
 
 Deliberately small, and it assumes the `PolygonMesh` question came back favourably.
 
-1. Parametric primitives with numeric fields — box, cylinder, sphere, wedge, tube, stairs, arch
+1. Parametric primitives with numeric fields — box, cylinder, sphere, wedge, tube, stairs, arch.
+   **Quad-dominant output is a hard requirement**, not a nicety — phase two subdivides this.
 2. Modifiers over them — bevel, array, mirror, shell
 3. Assembly by grouping; boolean **subtract only where required** (most props need no general CSG)
-4. Planar/box-projection auto-UV per face cluster
+4. Planar/box-projection auto-UV per face cluster. These UVs are what the phase-two normal-map bake
+   uses, so they have to be real, not placeholder.
 5. Export — OBJ + vmdl, collision generated from the primitive list rather than from the triangles
 
 Live tree throughout: change any number, the model rebuilds.
+
+## Phase two — subdivide and sculpt
+
+1. Catmull-Clark subdivision over a half-edge mesh, levels 0–4, switchable
+2. Brushes — grab, inflate, smooth, pinch, flatten, clay — with BVH hit-testing
+3. Multires displacement deltas, so the base cage survives underneath the sculpt
+4. Normal-map bake from the dense mesh down onto the cage
+5. Export the cage plus its normal map
+
+Phase one is worth shipping on its own. Phase two is worth building only after phase one produces
+clean quads, because it is built directly on top of them.
 
 ---
 
@@ -154,7 +211,9 @@ Live tree throughout: change any number, the model rebuilds.
 
 1. **Reflection-dump `Editor.MeshEditor.PolygonMesh` and `EditorMeshComponent`** from a throwaway
    `[ConCmd]` — the technique that found `LocalTransform`. Constructible from tool code? Exposes
-   faces and edges? Is subdivide or bevel already in there? *This one determines everything else.*
+   faces and edges? Is subdivide or bevel already in there? **Does it hold n-gons/quads, or does it
+   triangulate on the way in?** That last one decides whether phase two can build on it at all, since
+   Catmull-Clark needs quads. *This question determines everything else.*
 2. **Open `citizen.vmdl` in a text editor.** Confirm KV3, copy the `RenderMeshFile` node shape.
    One read answers the whole export format question.
 3. **Does `AssetSystem.CreateResource( "vmdl", abs )` work**, or does it only accept `GameResource`

@@ -32,9 +32,11 @@ None of this is engine-specific. It was argued out in the s&box doc and survives
 - **Parametric over sculpting.** Asymmetric failure modes, retopo/UV being exactly what the target
   user cannot do, collision falling out of the primitive history, planar UV projection working on
   hard surface and not on organics.
-- **Subdivide is not sculpting.** Displacement moves vertices on fixed topology, so it fails at
-  every subdivision level rather than just low ones. Real sculpting needs dynamic topology or an
-  SDF field. Pure geometry, no engine involved.
+- **CAD → subdivide → sculpt, via multires.** Sculpting freely on a subdivided base works and is the
+  standard workflow; it's *displacement* (vertices along normals on fixed topology) that can't make
+  an undercut. The parametric base doubles as the low-poly cage and carries the UVs, so the sculpt
+  bakes to a normal map with no retopo step. Pure geometry, no engine involved — see the s&box doc's
+  "CAD → subdivide → sculpt" section, which is the full version and applies here unchanged.
 - **The architecture.** Own document type is the truth; live preview while editing; a bake/export
   step producing the engine's native asset.
 
@@ -160,9 +162,34 @@ real assets** — and the three things that make it not-Cyclops:
    bodies, which `bake_collision_shape()` cannot deliver.
 3. **Props, not level geometry** — a live parametric tree that bakes to a saved `ArrayMesh` asset,
    reusable and re-editable, not blocks welded into a room.
+4. **Sculpting on top**, which nothing in the Godot ecosystem does at all.
 
 Ride `CSGCombiner3D` for the boolean core rather than writing one. It is slow, but it is slow at
 *edit* time and bakes out, which is exactly the tradeoff a parametric tool wants.
+
+### …except that riding CSG buys phase one and costs phase two
+
+Worth seeing before committing to it. `bake_static_mesh()` returns triangles. Catmull-Clark wants
+quads, and triangle soup subdivides badly — so **the built-in CSG that makes phase one nearly free is
+the same thing that blocks the sculpt stage.** The choice is real:
+
+- **Ride CSG** — phase one is fast, phase two needs a quad remesher bolted on afterwards
+- **Own the mesh kernel** — quad-dominant primitives all the way through, phase one is much more
+  work, phase two follows naturally
+
+If sculpting is the actual goal rather than a maybe, own the kernel. The same tension exists in
+s&box if `PolygonMesh` turns out to triangulate on the way in — which is why that is question one
+over there.
+
+### Phase two in Godot specifically
+
+- **Godot has no sculpting whatsoever.** Unlike CSG, there is nothing to ride.
+- **GDScript cannot do this.** Brush work over a 128k-vertex mesh at interactive rates needs C# or a
+  C++/Rust GDExtension. This is the point where the language question in the open questions below
+  stops being a preference and becomes a constraint.
+- `MeshDataTool` exists for per-vertex editing and has a longstanding reputation for being slow.
+  Expect to keep your own half-edge structure and push to `ArrayMesh` directly.
+- Normal-map baking is not built in either; that is yours to write.
 
 ---
 
@@ -174,10 +201,16 @@ Engine-agnostic — plain data and maths, no engine types:
 
 - parametric primitive definitions and their tessellation
 - the modifier stack and its evaluation graph
-- bevel, subdivision, mirror, array
+- bevel, mirror, array, shell
 - planar/box UV projection
 - convex decomposition from the primitive list
+- the half-edge structure, Catmull-Clark subdivision, and multires delta storage
+- brush falloff maths and the BVH behind it
+- normal-map baking from dense mesh to cage
 - the document format and its undo model
+
+That list is now most of the tool — phase two is almost entirely engine-agnostic, which strengthens
+the case for writing the kernel free of engine types before the engine question is settled.
 
 Engine-specific, and genuinely small:
 
@@ -196,16 +229,20 @@ the engine question becomes reversible rather than a bet.
 1. **Is `CSGCombiner3D` fast enough to drive a live parametric tree?** The engine calls it a
    significant CPU cost. Build the ugliest possible test — twenty nested boolean primitives, drag a
    parameter, watch the frame time. *This gates riding CSG at all.*
-2. **What does `bake_static_mesh()` topology actually look like?** Triangle count and whether coplanar
-   faces merge. If the output is a mess, the modifier set has to run before the bake, not after.
+2. **What does `bake_static_mesh()` topology actually look like?** Triangle count, whether coplanar
+   faces merge, and how badly the result subdivides. If the output is a mess, the modifier set has to
+   run before the bake rather than after — and if it can't be made quad-dominant, the sculpt stage
+   cannot sit on top of built-in CSG at all.
 3. **Does `ResourceSaver.save()` on a baked `ArrayMesh` round-trip cleanly** — reopen, re-edit,
    reimport — and how bad is the file-size wart?
-4. **GDScript or C#** for the plugin. Ecosystem convention is GDScript; existing skills say C#.
-   Check how well C# editor plugins are actually supported in 4.7 before committing.
+4. **GDScript or C#** for the plugin. Ecosystem convention is GDScript; existing skills say C#. If
+   phase two is happening at all, this is already decided — GDScript cannot drive brush work over
+   100k+ vertices. Check how well C# editor plugins are supported in 4.7 before committing.
 5. Confirm Godot 4.7 is current and that Cyclops is still the only serious incumbent.
 
 Questions 1 and 2 together decide whether this is a small tool on top of shipped CSG or a full mesh
-kernel. Do them first.
+kernel — and question 2 in particular decides whether the sculpt stage is reachable from the built-in
+CSG at all. Do them first.
 
 ---
 
