@@ -65,6 +65,13 @@ public abstract class SketchConsumingFeature : Feature
 	{
 		var found = ProfileFinder.Find( sketch );
 
+		// ProfileFinder reports what it could not make sense of - a point where three curves meet,
+		// for instance, which it will not guess at. Discarding those left a branching sketch
+		// extruding one arbitrary sub-loop and looking like it had worked. If nothing closed at all
+		// the message below is better; otherwise the warning is the most useful thing available.
+		if ( found.Warnings.Count > 0 && found.Profiles.Count > 0 )
+			throw new InvalidOperationException( string.Join( "; ", found.Warnings ) );
+
 		if ( found.Profiles.Count == 0 )
 		{
 			throw new InvalidOperationException( found.OpenChains > 0
@@ -226,6 +233,14 @@ public sealed class RevolveFeature : SketchConsumingFeature
 	{
 		var sketch = ResolveSketch( ctx );
 		var profiles = ResolveProfiles( sketch );
+
+		// PAST A FULL TURN THE SWEEP OVERLAPS ITSELF, and the overlap welds: the result comes back
+		// with edges shared by four or more faces and no error reported. Only exactly +-360 is
+		// treated as a full revolution, so 720 was never going to mean "twice round" - it meant
+		// "a broken mesh, quietly".
+		if ( MathF.Abs( Angle.Value ) > 360f + 1e-3f )
+			throw new InvalidOperationException(
+				$"A revolve cannot exceed a full turn ({Angle.Value} degrees) — past 360 the sweep passes through itself." );
 
 		if ( MathF.Abs( Angle.Value ) < 1e-4f )
 			throw new InvalidOperationException( "Angle cannot be zero" );

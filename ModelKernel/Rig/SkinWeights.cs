@@ -109,8 +109,16 @@ public sealed class SkinWeights
 		if ( weights is null || weights.Length == 0 )
 			return Array.Empty<BoneWeight>();
 
+		// SORTED EVEN WHEN NOTHING IS DROPPED. SmdWriter takes weights[0] as the vertex's parent
+		// bone, on the documented understanding that the strongest influence comes first — so
+		// returning a short set in whatever order it arrived exports the wrong parent bone. A vertex
+		// weighted [(0, 0.2), (1, 0.8)] would name bone 0 as its parent.
+		//
+		// Copying rather than returning the caller's array matters for the same reason it always
+		// does: a caller that prunes and then edits the result would otherwise be editing the mesh's
+		// own weights through the back door.
 		if ( weights.Length <= max )
-			return weights;
+			return weights.OrderByDescending( w => w.Weight ).ToArray();
 
 		var kept = weights.OrderByDescending( w => w.Weight ).Take( max ).ToArray();
 		var total = kept.Sum( w => w.Weight );

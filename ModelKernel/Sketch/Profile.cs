@@ -60,6 +60,17 @@ public static class ProfileFinder
 		{
 			var pts = circle.Tessellate( sketch, sketch.Tolerance );
 			pts.RemoveAt( pts.Count - 1 ); // drop the repeated closing point
+
+			// A circle at or below the sketch tolerance tessellates to fewer than three points and
+			// is not a region at all. Walked loops are guarded by their own Count >= 3 check; this
+			// path skipped it, and a two-point "loop" extruded into faces with two corners.
+			if ( pts.Count < 3 )
+			{
+				result.Warnings.Add(
+					$"A circle of radius {circle.Radius} is too small to form a region at the sketch tolerance of {sketch.Tolerance}" );
+				continue;
+			}
+
 			loops.Add( pts );
 		}
 
@@ -105,9 +116,18 @@ public static class ProfileFinder
 			var loop = WalkLoop( sketch, start, adjacency, visited, out var closed );
 
 			if ( closed && loop.Count >= 3 )
+			{
 				loops.Add( loop );
-			else if ( !closed )
-				result.OpenChains++;
+				continue;
+			}
+
+			if ( closed )
+				continue;
+
+			// Consume the rest of the same open chain before moving on, or the untouched half gets
+			// seeded separately and one polyline is reported as two.
+			WalkLoop( sketch, start, adjacency, visited, out _, reverse: true );
+			result.OpenChains++;
 		}
 
 		// Nesting: a loop inside an odd number of other loops is a hole.
@@ -149,16 +169,25 @@ public static class ProfileFinder
 		_ => throw new InvalidOperationException( $"{curve.GetType().Name} has no endpoints" )
 	};
 
-	/// <summary>Follow curves end to end until we return to where we started, or run out.</summary>
+	/// <summary>
+	/// Follow curves end to end until we return to where we started, or run out.
+	///
+	/// `reverse` walks out of the seed curve's other end. It exists because a walk only ever goes
+	/// one way: seeded from the MIDDLE of an open polyline, the forward walk consumes one half and
+	/// the untouched other half is then picked up as a second seed, so one chain gets counted as
+	/// two. Walking both ways from the seed consumes the whole chain at once.
+	/// </summary>
 	static List<Vec2> WalkLoop(
 		Sketch sketch,
 		SketchCurve start,
 		Dictionary<int, List<SketchCurve>> adjacency,
 		HashSet<SketchCurve> visited,
-		out bool closed )
+		out bool closed,
+		bool reverse = false )
 	{
 		var points = new List<Vec2>();
-		var (firstPoint, _) = Ends( start );
+		var (startA, startB) = Ends( start );
+		var firstPoint = reverse ? startB : startA;
 
 		var current = start;
 		var entryPoint = firstPoint;

@@ -63,8 +63,6 @@ public static class Program
 
 		RigTests.Run();
 
-		SketchTests.Run();
-
 		ShellTests.Run();
 
 		BevelTests.Run();

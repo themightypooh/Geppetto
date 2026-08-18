@@ -36,6 +36,9 @@ public static class RigTests
 
 		Section( "SMD export" );
 		TestSmd();
+
+		Section( "rig: regressions from review" );
+		TestReviewRegressions();
 	}
 
 	// --- skeleton -----------------------------------------------------------------------
@@ -362,6 +365,51 @@ public static class RigTests
 		}
 		catch ( InvalidOperationException ) { threw = true; }
 		Check( "a weight pointing off the end of the skeleton is refused", threw );
+	}
+
+	/// <summary>Bugs found by the second review cycle, kept together so they cannot come back.</summary>
+	static void TestReviewRegressions()
+	{
+		// Prune returned short weight sets in whatever order they arrived, but SmdWriter takes
+		// weights[0] as the vertex's parent bone on the documented understanding that it is the
+		// strongest. A vertex weighted 0.2/0.8 named the wrong bone as its parent.
+		var unsorted = new[] { new BoneWeight( 0, 0.2f ), new BoneWeight( 1, 0.8f ) };
+		var pruned = SkinWeights.Prune( unsorted, 4 );
+
+		Check( "prune sorts even when it drops nothing", pruned[0].Bone == 1,
+			$"parent came out as bone {pruned[0].Bone}" );
+		Check( "and returns a copy, not the caller's array", !ReferenceEquals( pruned, unsorted ) );
+
+		// An unrigged body merged into a rigged one used to leave empty influences: IsRigged stayed
+		// true, Validate failed on every one of them, and SMD read "no links" as the parent column.
+		var skeleton = TwoBoneChain();
+		var rigged = Primitives.Box( 1, 1, 1 );
+		rigged.Skin = SkinBinder.BindRigid( rigged, skeleton );
+
+		var plain = Primitives.Box( 1, 1, 1 );
+		MeshTransform.Apply( plain, Xform.Translate( new Vec3( 3, 0, 0 ) ) );
+		MeshTransform.Append( rigged, plain );
+
+		Check( "merging unrigged geometry into a rigged body leaves no unweighted vertices",
+			rigged.Skin.Validate( rigged.VertexCount, skeleton.Count ).Count == 0,
+			string.Join( "; ", rigged.Skin.Validate( rigged.VertexCount, skeleton.Count ).Take( 2 ) ) );
+
+		// A reused feature's error vanished from the report, so an unrelated downstream edit made a
+		// broken model look clean.
+		var studio = new PartStudio();
+
+		var broken = studio.Add( new PrimitiveFeature() );
+		broken.Shape.Index = 4;              // Tube
+		broken.InnerRadius.Value = 9f;       // larger than the radius, so it throws
+
+		var after = studio.Add( new PrimitiveFeature() );
+
+		Check( "a broken feature is reported on the first rebuild", studio.Rebuild().HasErrors );
+
+		after.SizeX.Value = 2f;
+		studio.MarkDirty( after );
+
+		Check( "and still reported after an unrelated downstream edit", studio.Rebuild().HasErrors );
 	}
 
 	// --- helpers ------------------------------------------------------------------------
