@@ -68,6 +68,8 @@ public static class Program
 
 		BevelTests.Run();
 
+		UVTests.Run();
+
 		Section( "writing sample OBJs" );
 		WriteSamples( outDir );
 

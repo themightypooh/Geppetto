@@ -23,7 +23,7 @@ cd ModelKernel.Tests
 dotnet run -- out
 ```
 
-391 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
+414 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
 2-level-subdivided version of each. Those are the fastest way to see whether something is actually
 right: open them in Blender, or drop one into ModelDoc to find out what s&box makes of it.
 
@@ -48,6 +48,7 @@ Exit code is non-zero on failure, so it works as a pre-commit or CI check unchan
 | `ShellOperation.cs` | hollow a solid to an exact wall thickness, with optional openings |
 | `BevelOperation.cs` | chamfer every edge, by insetting each face and bridging the gaps |
 | `PlaneOffset.cs` | the offset solve shell and bevel share |
+| `UVProjection.cs` | box and planar UV projection |
 | `Rig/Skeleton.cs` | bones, bind pose, world transforms from the parent chain |
 | `Rig/SkinWeights.cs` | per-vertex influences, blending and pruning |
 | `Rig/SkinBinder.cs` | auto-binding by distance or by body, plus weight smoothing |
@@ -230,6 +231,22 @@ through itself, and checking whether the inset face's **normal** flipped does no
 Over-insetting a rectangle point-reflects it through its centre, and a 180° rotation preserves
 orientation. It is caught per edge instead — every inset edge must still run the same way as the
 edge it came from.
+
+## UV projection
+
+Box projection picks, per face, whichever of the six axis directions it most faces and projects onto
+that plane. Undistorted on hard surface, seams land where the dominant axis changes, and because UVs
+are per corner a seam costs nothing — the two faces simply disagree about the UV at a shared
+position, which is what a seam *is*.
+
+Handedness is the part that goes wrong. Each direction's `u` and `v` must satisfy
+`cross(u, v) == normal`; get one of the six backwards and that side renders its texture mirrored,
+which nothing in a grey-box render makes obvious. The test compares the signed area of every face's
+UV polygon — all six signs must agree.
+
+Worth knowing when writing tests against this: **a cube is seamless at its corners.** Every corner
+has all three coordinates equal, so at `(2,2,2)` the +X face reads `(y,z)`, +Y reads `(z,x)` and +Z
+reads `(x,y)` — all `(2,2)`. An unequal box is needed to observe a seam at all.
 
 ## Not here yet
 

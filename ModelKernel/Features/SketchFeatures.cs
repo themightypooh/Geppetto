@@ -152,3 +152,36 @@ public sealed class BevelFeature : Feature
 			targets[i].Mesh = bevelled[i];
 	}
 }
+
+/// <summary>
+/// Re-project UVs across the selected bodies. Onshape has no equivalent because it does not care
+/// about textures; every game-facing modeller needs one.
+///
+/// Placed as a feature rather than an export option on purpose: where it sits in the tree decides
+/// what it sees. Before a bevel it projects the sharp cage and the chamfer strips inherit
+/// interpolated UVs; after a bevel it projects the chamfers as their own faces.
+/// </summary>
+public sealed class UVProjectFeature : Feature
+{
+	public override string TypeName => "UV project";
+
+	public readonly BodySelectionParam Bodies = new( "Bodies" );
+	public readonly ChoiceParam Mode = new( "Mode", new[] { "Box", "Planar" } );
+	public readonly Vec3Param Direction = new( "Direction", new Vec3( 0, 0, 1 ) );
+	public readonly FloatParam Scale = new( "Units per tile", 1f, 0.0001f, unit: "u" );
+
+	public override IReadOnlyList<IParam> Parameters => Mode.Value == "Planar"
+		? new IParam[] { Bodies, Mode, Direction, Scale }
+		: new IParam[] { Bodies, Mode, Scale };
+
+	protected override void Execute( FeatureContext ctx )
+	{
+		foreach ( var body in ctx.Bodies.Where( Bodies.Matches ) )
+		{
+			if ( Mode.Value == "Planar" )
+				UVProjection.PlanarProject( body.Mesh, Direction.Value, Scale.Clamped );
+			else
+				UVProjection.BoxProject( body.Mesh, Scale.Clamped );
+		}
+	}
+}
