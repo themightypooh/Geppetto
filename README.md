@@ -1,10 +1,8 @@
 # Marionette
 
-A control-rig animation editor for [s&box](https://sbox.game) — pose a skinned model's bones,
-keyframe it, and play it back, without round-tripping through Blender.
+A control-rig animation editor 
 
-Built because there is currently no in-editor way to author character animation in s&box, and
-"open Blender, export, reimport, discover it's wrong, repeat" is not a workflow.
+.
 
 ## Install
 

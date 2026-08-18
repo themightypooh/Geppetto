@@ -190,9 +190,10 @@ public static class BevelTests
 		// In the tree, on top of a sketch — the whole point being that both stay editable.
 		var studio = new PartStudio();
 
-		var extrude = studio.Add( new ExtrudeFeature() );
-		extrude.Sketch.Value = new Sketch( SketchPlane.XY, Profile.Rectangle( 2f, 2f ) );
-		extrude.Distance.Value = 2f;
+		var sketch = studio.Add( new SketchFeature() );
+		sketch.Sketch.AddRectangle( new Vec2( -1, -1 ), new Vec2( 1, 1 ) );
+
+		studio.Add( new ExtrudeFeature() ).Distance.Value = 2f;
 
 		var bevel = studio.Add( new BevelFeature() );
 		bevel.Distance.Value = 0.2f;
@@ -261,8 +262,7 @@ public static class BevelTests
 		yield return ("box", Primitives.Box( 2, 2, 2 ));
 		yield return ("cylinder", Primitives.Cylinder( 1f, 2f, 12 ));
 		yield return ("wedge", Primitives.Wedge( 2, 2, 2 ));
-		yield return ("extrusion", SketchSolids.Extrude(
-			new Sketch( SketchPlane.XY, Profile.Rectangle( 3f, 2f ) ), 2f ));
+		yield return ("extrusion", ExtrudedRectangle( 3f, 2f, 2f ));
 	}
 
 	/// <summary>Perpendicular distance from a point to the infinite line through a and b.</summary>
@@ -271,6 +271,26 @@ public static class BevelTests
 		var direction = (b - a).Normal;
 		var offset = p - a;
 		return (offset - direction * Vec3.Dot( offset, direction )).Length;
+	}
+
+
+	/// <summary>
+	/// Build a solid by extruding a rectangle, through the public feature path.
+	///
+	/// The sketcher owns extrude now, so these tests go through the tree rather than calling a
+	/// mesh builder directly. That is the better test anyway: it exercises the path a user takes.
+	/// </summary>
+	static PolyMesh ExtrudedRectangle( float width, float depth, float height )
+	{
+		var studio = new PartStudio();
+
+		var sketch = studio.Add( new SketchFeature() );
+		sketch.Sketch.AddRectangle( new Vec2( -width / 2f, -depth / 2f ), new Vec2( width / 2f, depth / 2f ) );
+
+		studio.Add( new ExtrudeFeature() ).Distance.Value = height;
+		studio.Rebuild();
+
+		return studio.Bodies[0].Mesh;
 	}
 
 	static float Volume( PolyMesh mesh )

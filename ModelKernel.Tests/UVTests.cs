@@ -147,9 +147,10 @@ public static class UVTests
 	{
 		var studio = new PartStudio();
 
-		var extrude = studio.Add( new ExtrudeFeature() );
-		extrude.Sketch.Value = new Sketch( SketchPlane.XY, Profile.Rectangle( 4f, 4f ) );
-		extrude.Distance.Value = 4f;
+		var sketch = studio.Add( new SketchFeature() );
+		sketch.Sketch.AddRectangle( new Vec2( -2, -2 ), new Vec2( 2, 2 ) );
+
+		studio.Add( new ExtrudeFeature() ).Distance.Value = 4f;
 
 		var project = studio.Add( new UVProjectFeature() );
 		project.Scale.Value = 2f;
@@ -172,8 +173,10 @@ public static class UVTests
 
 		// Resizing upstream must re-project rather than leaving stale UVs behind.
 		project.Mode.Index = 0;
-		extrude.Sketch.Value.Outer = Profile.Rectangle( 8f, 4f );
-		studio.MarkDirty( extrude );
+		sketch.Sketch.Curves.Clear();
+		sketch.Sketch.Points.Clear();
+		sketch.Sketch.AddRectangle( new Vec2( -4, -2 ), new Vec2( 4, 2 ) );
+		studio.MarkDirty( sketch );
 		studio.Rebuild();
 
 		var widest = studio.Bodies[0].Mesh.Faces.Max( f => f.UVs.Max( uv => uv.x ) - f.UVs.Min( uv => uv.x ) );

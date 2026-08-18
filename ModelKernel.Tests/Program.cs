@@ -59,6 +59,7 @@ public static class Program
 		TestObjRoundTrip();
 
 		FeatureTests.Run();
+		SketchTests.Run();
 
 		RigTests.Run();
 
@@ -362,8 +363,13 @@ public static class Program
 			ObjWriter.WriteFile( sub, Path.Combine( outDir, $"{name}_subdiv2.obj" ), $"{name}_subdiv2" );
 		}
 
+		WriteSketchSamples( outDir );
+		WritePreviews( outDir );
+
 		var files = Directory.GetFiles( outDir, "*.obj" ).Length;
+		var svgs = Directory.GetFiles( outDir, "*.svg" ).Length;
 		Check( $"wrote {files} sample OBJs to {outDir}/", files > 0 );
+		Check( $"wrote {svgs} SVG previews to {outDir}/", svgs > 0 );
 
 		Console.WriteLine();
 		Console.WriteLine( "  cost table (what a level slider would warn about):" );
@@ -379,6 +385,114 @@ public static class Program
 
 			Console.WriteLine( $"  {name,-12} {At( 0 ),12} {At( 2 ),14} {At( 4 ),16} {At( 6 ),18}" );
 		}
+	}
+
+	/// <summary>
+	/// Sketch-driven samples, so the whole chain — sketch, profile, solid, subdivision — can be
+	/// looked at rather than only asserted about. Dropping one of these into ModelDoc is still the
+	/// cheapest way to find out what s&box makes of kernel output.
+	/// </summary>
+	static void WriteSketchSamples( string outDir )
+	{
+		// A rounded slot: two lines and two arcs stitched into one loop, then extruded.
+		var slotStudio = new PartStudio();
+		var slotSketch = slotStudio.Add( new SketchFeature() );
+		var s = slotSketch.Sketch;
+		var a0 = s.AddPoint( 0, 0 );
+		var a1 = s.AddPoint( 4, 0 );
+		var a2 = s.AddPoint( 4, 2 );
+		var a3 = s.AddPoint( 0, 2 );
+		var c0 = s.AddPoint( 4, 1 );
+		var c1 = s.AddPoint( 0, 1 );
+		s.Add( new SketchLine( a0, a1 ) );
+		s.Add( new SketchArc( c0, a1, a2 ) );
+		s.Add( new SketchLine( a2, a3 ) );
+		s.Add( new SketchArc( c1, a3, a0 ) );
+		slotStudio.Add( new ExtrudeFeature() ).Distance.Value = 1f;
+		slotStudio.Rebuild();
+		ObjWriter.WriteFile( slotStudio.ToMesh(), Path.Combine( outDir, "sketch_slot.obj" ), "slot" );
+
+		// The same slot subdivided twice — the CAD cage and the dense surface from one tree.
+		slotStudio.Add( new SubdivideFeature() ).Levels.Value = 2;
+		slotStudio.Rebuild();
+		ObjWriter.WriteFile( slotStudio.ToMesh(), Path.Combine( outDir, "sketch_slot_subdiv2.obj" ), "slot_subdiv2" );
+
+		// A revolved torus.
+		var torusStudio = new PartStudio();
+		torusStudio.Add( new SketchFeature() ).Sketch.AddRectangle( new Vec2( 0, 1 ), new Vec2( 1, 2 ) );
+		var revolve = torusStudio.Add( new RevolveFeature() );
+		revolve.AxisDirection.Value = new Vec3( 1, 0, 0 );
+		revolve.Segments.Value = 32;
+		torusStudio.Rebuild();
+		ObjWriter.WriteFile( torusStudio.ToMesh(), Path.Combine( outDir, "sketch_torus.obj" ), "torus" );
+
+		// A revolved profile that touches the axis, which collapses to a proper closed tip.
+		var coneStudio = new PartStudio();
+		coneStudio.Add( new SketchFeature() ).Sketch
+			.AddPolygon( new Vec2( 0, 0 ), new Vec2( 2, 0 ), new Vec2( 0, 3 ) );
+		coneStudio.Add( new RevolveFeature() ).AxisDirection.Value = new Vec3( 0, 1, 0 );
+		coneStudio.Rebuild();
+		ObjWriter.WriteFile( coneStudio.ToMesh(), Path.Combine( outDir, "sketch_cone.obj" ), "cone" );
+	}
+
+	/// <summary>
+	/// Shaded previews of every sample, so the output can be seen rather than only measured.
+	/// Backface culling means an inside-out solid renders as a hole, which makes these a visual
+	/// double-check on the winding tests.
+	/// </summary>
+	static void WritePreviews( string outDir )
+	{
+		foreach ( var file in Directory.GetFiles( outDir, "*.obj" ) )
+		{
+			var name = Path.GetFileNameWithoutExtension( file );
+			var mesh = ObjReader.Read( File.ReadAllText( file ) );
+
+			SvgPreview.Write( mesh, Path.Combine( outDir, $"{name}.svg" ), name );
+		}
+
+		// A wireframe of one subdivided result, where the quad topology is the point.
+		var slot = ObjReader.Read( File.ReadAllText( Path.Combine( outDir, "sketch_slot_subdiv2.obj" ) ) );
+		SvgPreview.Write( slot, Path.Combine( outDir, "wire_slot_subdiv2.svg" ), "sketch_slot_subdiv2 (wireframe)", wireframe: true );
+
+		var cage = ObjReader.Read( File.ReadAllText( Path.Combine( outDir, "sketch_slot.obj" ) ) );
+		SvgPreview.Write( cage, Path.Combine( outDir, "wire_slot_cage.svg" ), "sketch_slot cage (wireframe)", wireframe: true );
+
+		WriteContactSheets( outDir );
+	}
+
+	/// <summary>PNG contact sheets — one image showing everything, viewable anywhere.</summary>
+	static void WriteContactSheets( string outDir )
+	{
+		PolyMesh Load( string name ) => ObjReader.Read( File.ReadAllText( Path.Combine( outDir, $"{name}.obj" ) ) );
+
+		var primitives = new[]
+		{
+			new PngPreview.Tile( Load( "box" ), "box" ),
+			new PngPreview.Tile( Load( "cylinder" ), "cylinder" ),
+			new PngPreview.Tile( Load( "quadsphere" ), "quad sphere" ),
+			new PngPreview.Tile( Load( "wedge" ), "wedge" ),
+			new PngPreview.Tile( Load( "tube" ), "tube" ),
+			new PngPreview.Tile( Load( "sketch_slot" ), "sketch extrude" ),
+			new PngPreview.Tile( Load( "sketch_torus" ), "sketch revolve" ),
+			new PngPreview.Tile( Load( "sketch_cone" ), "revolve on axis" ),
+		};
+
+		PngPreview.WriteSheet( primitives, Path.Combine( outDir, "preview_primitives.png" ) );
+
+		// Cage beside subdivided, in wireframe, which is where the quad topology shows.
+		var subdivision = new[]
+		{
+			new PngPreview.Tile( Load( "sketch_slot" ), "cage", wireframe: true ),
+			new PngPreview.Tile( Load( "sketch_slot_subdiv2" ), "subdiv 2", wireframe: true ),
+			new PngPreview.Tile( Load( "box" ), "box cage", wireframe: true ),
+			new PngPreview.Tile( Load( "box_subdiv2" ), "box subdiv 2", wireframe: true ),
+			new PngPreview.Tile( Load( "sketch_slot" ), "cage shaded" ),
+			new PngPreview.Tile( Load( "sketch_slot_subdiv2" ), "subdiv 2 shaded" ),
+			new PngPreview.Tile( Load( "cylinder" ), "cylinder cage" ),
+			new PngPreview.Tile( Load( "cylinder_subdiv2" ), "cylinder subdiv 2" ),
+		};
+
+		PngPreview.WriteSheet( subdivision, Path.Combine( outDir, "preview_subdivision.png" ) );
 	}
 
 	// ---------------------------------------------------------------------------------------

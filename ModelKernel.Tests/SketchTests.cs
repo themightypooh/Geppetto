@@ -2,22 +2,29 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using ModelKernel;
+using static ModelKernel.Tests.Report;
 
 namespace ModelKernel.Tests;
 
 /// <summary>
-/// Verification for sketches and the solids made from them.
+/// Checks on the sketch layer and the features that consume it.
 ///
-/// The failure this is really guarding against is winding. An extrude wound the wrong way produces
-/// a mesh that is topologically perfect — every Euler check passes, every face is a quad — and
-/// renders as a black hole in the scene. Only enclosed volume catches it, so that is what most of
-/// these assert. Known shapes with known volumes, checked to the number.
+/// The interesting failures here are orientation ones. A prism built from a clockwise loop, or a
+/// revolve whose rings wind the wrong way, produces a solid that looks perfectly normal in
+/// wireframe and renders inside-out. Every solid-producing test therefore asserts on enclosed
+/// volume, which is signed and catches exactly that.
 /// </summary>
 public static class SketchTests
 {
 	public static void Run()
 	{
-		Section( "profiles" );
+		Section( "sketch planes" );
+		TestPlanes();
+
+		Section( "arc tessellation" );
+		TestArcs();
+
+		Section( "finding closed regions" );
 		TestProfiles();
 
 		Section( "extrude" );
@@ -27,236 +34,408 @@ public static class SketchTests
 		TestRevolve();
 
 		Section( "sketches in the feature tree" );
-		TestFeatures();
+		TestSketchInTree();
 	}
 
-	// --- profiles -----------------------------------------------------------------------
+	static float Volume( PolyMesh m ) =>
+		m.Faces.Sum( f => Vec3.Dot( m.FaceCentroid( f ), m.FaceNormal( f ) ) * m.FaceArea( f ) ) / 3f;
+
+	static void TestPlanes()
+	{
+		var plane = SketchPlane.XY;
+		Check( "XY normal is +Z", plane.Normal.AlmostEquals( new Vec3( 0, 0, 1 ) ), plane.Normal.ToString() );
+		Check( "XZ normal is -Y", SketchPlane.XZ.Normal.AlmostEquals( new Vec3( 0, -1, 0 ) ),
+			SketchPlane.XZ.Normal.ToString() );
+		Check( "YZ normal is +X", SketchPlane.YZ.Normal.AlmostEquals( new Vec3( 1, 0, 0 ) ),
+			SketchPlane.YZ.Normal.ToString() );
+
+		// Plane coordinates must survive a trip through world space and back, on every plane, or
+		// sketches drawn on anything but XY end up subtly displaced.
+		foreach ( var (name, p) in new[] { ("XY", SketchPlane.XY), ("XZ", SketchPlane.XZ), ("YZ", SketchPlane.YZ) } )
+		{
+			var original = new Vec2( 3.5f, -1.25f );
+			var back = p.ToPlane( p.ToWorld( original ) );
+			Check( $"{name} round-trips plane coords",
+				MathF.Abs( back.x - original.x ) < 1e-4f && MathF.Abs( back.y - original.y ) < 1e-4f,
+				back.ToString() );
+		}
+
+		var offset = SketchPlane.XY.Offset( 5f );
+		Check( "offset plane moves along its normal", offset.Origin.AlmostEquals( new Vec3( 0, 0, 5 ) ),
+			offset.Origin.ToString() );
+		Check( "offset plane keeps its normal", offset.Normal.AlmostEquals( new Vec3( 0, 0, 1 ) ) );
+	}
+
+	static void TestArcs()
+	{
+		// Segment count comes from the allowed sagitta, so a tighter tolerance must give more
+		// segments and a bigger radius must too.
+		var coarse = SketchArc.SegmentsForArc( 1f, MathF.Tau, 0.1f );
+		var fine = SketchArc.SegmentsForArc( 1f, MathF.Tau, 0.001f );
+		var big = SketchArc.SegmentsForArc( 100f, MathF.Tau, 0.1f );
+
+		Check( "tighter tolerance gives more segments", fine > coarse, $"{coarse} -> {fine}" );
+		Check( "bigger radius gives more segments", big > coarse, $"{coarse} -> {big}" );
+		Check( "segment count stays bounded", fine <= 4096, $"{fine}" );
+
+		var sketch = new Sketch { Tolerance = 0.01f };
+		var c = sketch.AddPoint( 0, 0 );
+		var s = sketch.AddPoint( 1, 0 );
+		var e = sketch.AddPoint( 0, 1 );
+		var arc = sketch.Add( new SketchArc( c, s, e ) );
+
+		var pts = arc.Tessellate( sketch, sketch.Tolerance );
+
+		Check( "arc starts exactly on its start point",
+			MathF.Abs( pts[0].x - 1f ) < 1e-5f && MathF.Abs( pts[0].y ) < 1e-5f, pts[0].ToString() );
+		Check( "arc ends exactly on its end point",
+			MathF.Abs( pts[^1].x ) < 1e-5f && MathF.Abs( pts[^1].y - 1f ) < 1e-5f, pts[^1].ToString() );
+
+		var offRadius = pts.Count( p => MathF.Abs( MathF.Sqrt( p.x * p.x + p.y * p.y ) - 1f ) > 1e-3f );
+		Check( "arc samples sit on the radius", offRadius == 0, $"{offRadius} off" );
+
+		// A quarter turn counter-clockwise from +X to +Y must not go the long way round.
+		Check( "arc takes the short way", pts.All( p => p.x >= -1e-4f && p.y >= -1e-4f ) );
+	}
 
 	static void TestProfiles()
 	{
-		var rect = Profile.Rectangle( 2f, 3f );
-		Check( "rectangle has 4 points", rect.Count == 4 );
-		Check( "rectangle area is right", Near( rect.Area, 6f ), $"{rect.Area}" );
-		Check( "built-in profiles are counter-clockwise", rect.IsCounterClockwise );
+		var rect = new Sketch();
+		rect.AddRectangle( new Vec2( 0, 0 ), new Vec2( 2, 3 ) );
+		var found = ProfileFinder.Find( rect );
 
-		var backwards = new Profile( rect.Points.AsEnumerable().Reverse() );
-		Check( "a clockwise profile is detected", !backwards.IsCounterClockwise );
-		Check( "and can be flipped", backwards.AsCounterClockwise().IsCounterClockwise );
-		Check( "flipping preserves area", Near( backwards.AsCounterClockwise().Area, 6f ) );
+		Check( "rectangle gives one profile", found.Profiles.Count == 1, $"{found.Profiles.Count}" );
+		Check( "rectangle has four corners", found.Profiles[0].Outer.Count == 4,
+			$"{found.Profiles[0].Outer.Count}" );
+		Check( "rectangle outer loop is counter-clockwise",
+			ProfileFinder.SignedArea( found.Profiles[0].Outer ) > 0 );
+		Check( "rectangle area is 6", MathF.Abs( found.Profiles[0].Area - 6f ) < 1e-4f,
+			$"{found.Profiles[0].Area}" );
+		Check( "rectangle has no open chains", found.OpenChains == 0 );
 
-		var circle = Profile.Circle( 1f, 64 );
-		// A 64-gon is slightly inside the circle it approximates, so this is close but under pi.
-		Check( "circle approaches pi r^2", MathF.Abs( circle.Area - MathF.PI ) < 0.01f, $"{circle.Area}" );
+		// A clockwise-drawn rectangle must come back oriented the same way as a counter-clockwise
+		// one, or extruding it would produce an inside-out solid.
+		var cw = new Sketch();
+		cw.AddPolygon( new Vec2( 0, 0 ), new Vec2( 0, 3 ), new Vec2( 2, 3 ), new Vec2( 2, 0 ) );
+		var cwFound = ProfileFinder.Find( cw );
+		Check( "clockwise input is re-oriented",
+			ProfileFinder.SignedArea( cwFound.Profiles[0].Outer ) > 0 );
 
-		var rounded = Profile.RoundedRectangle( 4f, 2f, 0.5f, 4 );
-		Check( "rounded rectangle is smaller than its bounding box", rounded.Area < 8f && rounded.Area > 7f, $"{rounded.Area}" );
-		Check( "a zero radius gives a plain rectangle", Profile.RoundedRectangle( 2f, 2f, 0f ).Count == 4 );
-		Check( "the radius is clamped to what fits", Profile.RoundedRectangle( 2f, 2f, 99f ).Validate().Count == 0 );
+		var circle = new Sketch();
+		circle.AddCircle( new Vec2( 0, 0 ), 2f );
+		var circleFound = ProfileFinder.Find( circle );
+		Check( "circle gives one profile", circleFound.Profiles.Count == 1, $"{circleFound.Profiles.Count}" );
+		Check( "circle area is about pi r squared",
+			MathF.Abs( circleFound.Profiles[0].Area - MathF.PI * 4f ) < 0.1f,
+			$"{circleFound.Profiles[0].Area}" );
 
-		Check( "two points is not a profile", new Profile( new[] { new Vec2( 0, 0 ), new Vec2( 1, 1 ) } ).Validate().Count > 0 );
-		Check( "collinear points enclose nothing",
-			new Profile( new[] { new Vec2( 0, 0 ), new Vec2( 1, 0 ), new Vec2( 2, 0 ) } ).Validate().Count > 0 );
-		Check( "duplicate points are caught",
-			new Profile( new[] { new Vec2( 0, 0 ), new Vec2( 1, 0 ), new Vec2( 1, 0 ), new Vec2( 0, 1 ) } ).Validate().Count > 0 );
+		// Nesting detection: a circle inside a rectangle is a hole, not a second region.
+		var withHole = new Sketch();
+		withHole.AddRectangle( new Vec2( -5, -5 ), new Vec2( 5, 5 ) );
+		withHole.AddCircle( new Vec2( 0, 0 ), 1f );
+		var holeFound = ProfileFinder.Find( withHole );
 
-		// The sketch plane has to survive a round trip or nothing drawn on it lands where it looks.
-		var plane = new SketchPlane( new Vec3( 3, -1, 2 ), new Vec3( 0, 1, 0 ), new Vec3( 0, 0, 1 ) );
-		var local = new Vec2( 1.5f, -2.25f );
-		Check( "plane round-trips a point", Near2( plane.ToLocal( plane.ToWorld( local ) ), local ),
-			plane.ToLocal( plane.ToWorld( local ) ).ToString() );
-		Check( "plane normal is perpendicular to both axes",
-			MathF.Abs( Vec3.Dot( plane.Normal, plane.U ) ) < 1e-5f && MathF.Abs( Vec3.Dot( plane.Normal, plane.V ) ) < 1e-5f );
+		Check( "nested loop is one profile, not two", holeFound.Profiles.Count == 1,
+			$"{holeFound.Profiles.Count}" );
+		Check( "nested loop is detected as a hole", holeFound.Profiles[0].HasHoles );
+		Check( "hole is wound opposite to the outer loop",
+			ProfileFinder.SignedArea( holeFound.Profiles[0].Holes[0] ) < 0 );
+		Check( "hole is subtracted from the area",
+			MathF.Abs( holeFound.Profiles[0].Area - (100f - MathF.PI) ) < 0.1f,
+			$"{holeFound.Profiles[0].Area}" );
+
+		// Two separate shapes are two profiles.
+		var two = new Sketch();
+		two.AddRectangle( new Vec2( 0, 0 ), new Vec2( 1, 1 ) );
+		two.AddRectangle( new Vec2( 5, 5 ), new Vec2( 6, 6 ) );
+		Check( "disjoint shapes give two profiles", ProfileFinder.Find( two ).Profiles.Count == 2 );
+
+		// An unclosed chain is reported rather than silently treated as a region.
+		var open = new Sketch();
+		var p0 = open.AddPoint( 0, 0 );
+		var p1 = open.AddPoint( 1, 0 );
+		var p2 = open.AddPoint( 1, 1 );
+		open.Add( new SketchLine( p0, p1 ) );
+		open.Add( new SketchLine( p1, p2 ) );
+		var openFound = ProfileFinder.Find( open );
+
+		Check( "open chain gives no profile", openFound.Profiles.Count == 0, $"{openFound.Profiles.Count}" );
+		Check( "open chain is counted", openFound.OpenChains == 1, $"{openFound.OpenChains}" );
+
+		// Construction geometry guides but never forms a region.
+		var construction = new Sketch();
+		foreach ( var line in construction.AddRectangle( new Vec2( 0, 0 ), new Vec2( 1, 1 ) ) )
+			line.Construction = true;
+
+		Check( "construction geometry forms no profile",
+			ProfileFinder.Find( construction ).Profiles.Count == 0 );
+
+		// Rounded rectangle: lines and arcs in one loop, which is the real test of the walker
+		// stitching different curve types together.
+		var slot = new Sketch();
+		var a0 = slot.AddPoint( 0, 0 );
+		var a1 = slot.AddPoint( 4, 0 );
+		var a2 = slot.AddPoint( 4, 2 );
+		var a3 = slot.AddPoint( 0, 2 );
+		var c0 = slot.AddPoint( 4, 1 );
+		var c1 = slot.AddPoint( 0, 1 );
+		slot.Add( new SketchLine( a0, a1 ) );
+		slot.Add( new SketchArc( c0, a1, a2 ) );
+		slot.Add( new SketchLine( a2, a3 ) );
+		slot.Add( new SketchArc( c1, a3, a0 ) );
+
+		var slotFound = ProfileFinder.Find( slot );
+		Check( "lines and arcs stitch into one loop", slotFound.Profiles.Count == 1,
+			$"{slotFound.Profiles.Count}, {slotFound.OpenChains} open" );
+		Check( "stitched loop has no duplicated joins",
+			slotFound.Profiles.Count == 1 && NoDuplicatePoints( slotFound.Profiles[0].Outer ) );
 	}
 
-	// --- extrude ------------------------------------------------------------------------
+	static bool NoDuplicatePoints( List<Vec2> loop )
+	{
+		for ( var i = 0; i < loop.Count; i++ )
+		{
+			var a = loop[i];
+			var b = loop[(i + 1) % loop.Count];
+
+			if ( MathF.Abs( a.x - b.x ) < 1e-6f && MathF.Abs( a.y - b.y ) < 1e-6f )
+				return false;
+		}
+
+		return true;
+	}
+
+	static PartStudio ExtrudedRectangle( float w, float h, float d, bool symmetric = false )
+	{
+		var studio = new PartStudio();
+		var sketch = studio.Add( new SketchFeature() );
+		sketch.Sketch.AddRectangle( new Vec2( 0, 0 ), new Vec2( w, h ) );
+
+		var extrude = studio.Add( new ExtrudeFeature() );
+		extrude.Distance.Value = d;
+		extrude.Symmetric.Value = symmetric;
+
+		studio.Rebuild();
+		return studio;
+	}
 
 	static void TestExtrude()
 	{
-		var sketch = new Sketch( SketchPlane.XY, Profile.Rectangle( 2f, 3f ) );
-		var mesh = SketchSolids.Extrude( sketch, 4f );
+		var studio = ExtrudedRectangle( 2, 3, 4 );
+		Check( "extrude produces a body", studio.Bodies.Count == 1, $"{studio.Bodies.Count}" );
 
-		var validation = MeshValidator.Validate( mesh );
-		Check( "extrusion is valid", validation.IsValid, validation.ToString() );
-		Check( "extrusion is closed", validation.IsClosed, validation.ToString() );
-		Check( "Euler characteristic is 2", MeshValidator.EulerCharacteristic( mesh ) == 2,
-			$"{MeshValidator.EulerCharacteristic( mesh )}" );
+		var mesh = studio.Bodies[0].Mesh;
+		Check( "extruded rectangle has 6 faces", mesh.FaceCount == 6, $"{mesh.FaceCount}" );
 
-		// 4 walls + 2 caps.
-		Check( "a rectangle extrudes to 6 faces", mesh.FaceCount == 6, $"{mesh.FaceCount}" );
-		Check( "every wall is a quad", mesh.Faces.Take( 4 ).All( f => f.Count == 4 ) );
+		var v = MeshValidator.Validate( mesh );
+		Check( "extrusion is valid and closed", v.IsValid && v.IsClosed, v.ToString() );
+		Check( "extrusion has X = 2", MeshValidator.EulerCharacteristic( mesh ) == 2 );
 
-		// THE ONE THAT MATTERS: 2 x 3 x 4 is 24, and a negative result means it is inside-out.
-		Check( "enclosed volume is exactly 24", Near( Volume( mesh ), 24f, 1e-3f ), $"{Volume( mesh ):0.####}" );
+		var vol = Volume( mesh );
+		Check( "extruded volume is 2x3x4 = 24", MathF.Abs( vol - 24f ) < 1e-3f, $"{vol:0.####}" );
 
-		// Drawn backwards, the answer must be identical — a user drawing clockwise is not an error.
-		var reversed = new Sketch( SketchPlane.XY, new Profile( Profile.Rectangle( 2f, 3f ).Points.AsEnumerable().Reverse() ) );
-		Check( "a clockwise sketch extrudes the same way", Near( Volume( SketchSolids.Extrude( reversed, 4f ) ), 24f, 1e-3f ),
-			$"{Volume( SketchSolids.Extrude( reversed, 4f ) ):0.####}" );
+		// A negative distance must still give a solid the right way out, not an inside-out one.
+		var negative = ExtrudedRectangle( 2, 3, -4 );
+		var negVol = Volume( negative.Bodies[0].Mesh );
+		Check( "NEGATIVE distance still winds outward", negVol > 0, $"{negVol:0.####}" );
+		Check( "negative distance gives the same volume", MathF.Abs( negVol - 24f ) < 1e-3f, $"{negVol:0.####}" );
 
-		// A negative distance is the other direction, not an inverted solid.
-		Check( "a negative distance still encloses positive volume", Near( Volume( SketchSolids.Extrude( sketch, -4f ) ), 24f, 1e-3f ),
-			$"{Volume( SketchSolids.Extrude( sketch, -4f ) ):0.####}" );
-
-		var sym = SketchSolids.Extrude( sketch, 4f, symmetric: true );
-		Check( "symmetric encloses the same volume", Near( Volume( sym ), 24f, 1e-3f ) );
-
-		var zs = sym.Positions.Select( p => p.z ).ToList();
-		Check( "symmetric straddles the sketch plane", Near( zs.Min(), -2f ) && Near( zs.Max(), 2f ),
+		// Symmetric straddles the sketch plane.
+		var sym = ExtrudedRectangle( 2, 2, 4, symmetric: true );
+		var zs = sym.Bodies[0].Mesh.Positions.Select( p => p.z ).ToList();
+		Check( "symmetric extrude straddles the plane",
+			MathF.Abs( zs.Min() + 2f ) < 1e-4f && MathF.Abs( zs.Max() - 2f ) < 1e-4f,
 			$"{zs.Min()}..{zs.Max()}" );
 
-		// Extruding on a tilted plane is where a hand-rolled basis usually goes wrong.
-		var tilted = new Sketch(
-			new SketchPlane( new Vec3( 5, 5, 5 ), new Vec3( 1, 1, 0 ), new Vec3( 0, 0, 1 ) ),
-			Profile.Rectangle( 2f, 3f ) );
-		Check( "a tilted plane extrudes to the same volume", Near( Volume( SketchSolids.Extrude( tilted, 4f ) ), 24f, 1e-2f ),
-			$"{Volume( SketchSolids.Extrude( tilted, 4f ) ):0.####}" );
+		// A circle extrudes to a cylinder, and the cap arrives as one n-gon rather than a fan.
+		var circleStudio = new PartStudio();
+		var cs = circleStudio.Add( new SketchFeature() );
+		cs.Sketch.AddCircle( new Vec2( 0, 0 ), 1f );
+		circleStudio.Add( new ExtrudeFeature() ).Distance.Value = 2f;
+		circleStudio.Rebuild();
 
-		// Subdivision is the whole reason walls are quads, so prove the result survives it.
-		var subdivided = CatmullClark.Subdivide( mesh, 2 );
-		Check( "extrusion subdivides cleanly", MeshValidator.EulerCharacteristic( subdivided ) == 2 );
-		Check( "and stays all quads", subdivided.Faces.All( f => f.Count == 4 ) );
-		Check( "and stays positive volume", Volume( subdivided ) > 0f, $"{Volume( subdivided ):0.###}" );
+		var cyl = circleStudio.Bodies[0].Mesh;
+		var caps = cyl.Faces.Count( f => f.Count > 4 );
+		Check( "circular extrude caps are n-gons, not fans", caps == 2, $"{caps}" );
 
-		// UVs have to be real, because the normal-map bake will depend on them.
-		var wallUVs = mesh.Faces[0].UVs;
-		Check( "wall UVs run 0..1 around the profile", wallUVs.Any( uv => uv.x >= 0f ) && wallUVs.All( uv => uv.x <= 1.0001f ) );
-		Check( "wall UVs carry height", wallUVs.Any( uv => MathF.Abs( uv.y - 4f ) < 1e-4f ) );
+		// An inscribed polygon is always slightly SMALLER than the circle it samples, so the right
+		// assertion is "just under pi r squared h", not "equal to it". Demanding equality here
+		// would only be satisfiable by over-tessellating.
+		var cylVolume = Volume( cyl );
+		var trueVolume = MathF.PI * 2f;
+		Check( "cylinder volume is just under pi r squared h",
+			cylVolume < trueVolume && cylVolume > trueVolume * 0.97f,
+			$"{cylVolume:0.####} vs {trueVolume:0.####}" );
 
-		var threw = false;
-		try { SketchSolids.Extrude( sketch, 0f ); } catch ( InvalidOperationException ) { threw = true; }
-		Check( "a zero-distance extrude is refused", threw );
+		// On a non-default plane the solid must be built in the right orientation too.
+		var front = new PartStudio();
+		var fs = front.Add( new SketchFeature() );
+		fs.Plane.Index = 1; // XZ
+		fs.Sketch.AddRectangle( new Vec2( 0, 0 ), new Vec2( 2, 2 ) );
+		front.Add( new ExtrudeFeature() ).Distance.Value = 2f;
+		front.Rebuild();
 
-		threw = false;
-		try { SketchSolids.Extrude( new Sketch( SketchPlane.XY, new Profile() ), 1f ); } catch ( InvalidOperationException ) { threw = true; }
-		Check( "an empty profile is refused", threw );
+		Check( "extrude on XZ still winds outward", Volume( front.Bodies[0].Mesh ) > 0,
+			$"{Volume( front.Bodies[0].Mesh ):0.####}" );
+		Check( "extrude on XZ has volume 8",
+			MathF.Abs( Volume( front.Bodies[0].Mesh ) - 8f ) < 1e-3f );
+
+		// Holes are refused clearly rather than silently capped over.
+		var holed = new PartStudio();
+		var hs = holed.Add( new SketchFeature() );
+		hs.Sketch.AddRectangle( new Vec2( -5, -5 ), new Vec2( 5, 5 ) );
+		hs.Sketch.AddCircle( new Vec2( 0, 0 ), 1f );
+		var holedExtrude = holed.Add( new ExtrudeFeature() );
+		holed.Rebuild();
+
+		Check( "extruding a holed profile reports an error", holedExtrude.Error is not null );
+		Check( "the error explains why", holedExtrude.Error?.Contains( "holes" ) == true, holedExtrude.Error );
+
+		// Two disjoint regions extrude to two bodies.
+		var twoStudio = new PartStudio();
+		var ts = twoStudio.Add( new SketchFeature() );
+		ts.Sketch.AddRectangle( new Vec2( 0, 0 ), new Vec2( 1, 1 ) );
+		ts.Sketch.AddRectangle( new Vec2( 5, 5 ), new Vec2( 6, 6 ) );
+		twoStudio.Add( new ExtrudeFeature() ).Distance.Value = 1f;
+		twoStudio.Rebuild();
+		Check( "two regions extrude to two bodies", twoStudio.Bodies.Count == 2, $"{twoStudio.Bodies.Count}" );
 	}
-
-	// --- revolve ------------------------------------------------------------------------
 
 	static void TestRevolve()
 	{
-		// A 2x1 rectangle centred 3 from the axis, spun fully: Pappus's theorem says the volume is
-		// area x the distance the centroid travels. 2 x (2 pi x 3) = 12 pi. A 64-segment revolve
-		// approximates that from slightly inside.
-		var profile = Profile.Rectangle( 2f, 1f );
-		var offset = new Profile( profile.Points.Select( p => new Vec2( p.x + 3f, p.y ) ) );
-		var sketch = new Sketch( SketchPlane.XY, offset );
+		// A square offset from the axis sweeps a torus — genus 1, so Euler characteristic 0. If
+		// the rings failed to close, this reads 2 and the seam is open.
+		//
+		// The profile sits entirely ABOVE the axis (y from 1 to 2, axis along y=0). A profile
+		// straddling the axis is invalid and separately tested below.
+		var studio = new PartStudio();
+		var sketch = studio.Add( new SketchFeature() );
+		sketch.Sketch.AddRectangle( new Vec2( 3, 1f ), new Vec2( 4, 2f ) );
 
-		var mesh = SketchSolids.Revolve( sketch, Vec2.Zero, new Vec2( 0, 1 ), 360f, 64 );
-		var validation = MeshValidator.Validate( mesh );
+		var revolve = studio.Add( new RevolveFeature() );
+		revolve.AxisPoint.Value = Vec3.Zero;
+		revolve.AxisDirection.Value = new Vec3( 1, 0, 0 ); // sketch-space +X
+		revolve.Angle.Value = 360f;
+		revolve.Segments.Value = 24;
 
-		Check( "full revolve is valid", validation.IsValid, validation.ToString() );
-		Check( "full revolve is closed", validation.IsClosed, validation.ToString() );
+		studio.Rebuild();
 
-		// A torus-like ring is genus 1, so V - E + F = 0.
-		Check( "a ring is genus 1", MeshValidator.EulerCharacteristic( mesh ) == 0,
-			$"{MeshValidator.EulerCharacteristic( mesh )}" );
+		Check( "revolve produces a body", studio.Bodies.Count == 1 && revolve.Error is null, revolve.Error );
 
-		var expected = 12f * MathF.PI;
-		Check( "volume approaches Pappus's theorem", MathF.Abs( Volume( mesh ) - expected ) < expected * 0.01f,
-			$"{Volume( mesh ):0.###} vs {expected:0.###}" );
-		Check( "revolve is all quads", mesh.Faces.All( f => f.Count == 4 ) );
+		var torus = studio.Bodies[0].Mesh;
+		var tv = MeshValidator.Validate( torus );
 
-		var half = SketchSolids.Revolve( sketch, Vec2.Zero, new Vec2( 0, 1 ), 180f, 32 );
-		Check( "a partial revolve is closed by its end caps", MeshValidator.Validate( half ).IsClosed,
-			MeshValidator.Validate( half ).ToString() );
-		Check( "half the angle is about half the volume", MathF.Abs( Volume( half ) - expected / 2f ) < expected * 0.02f,
-			$"{Volume( half ):0.###}" );
+		Check( "revolved torus is valid", tv.IsValid, tv.ToString() );
+		Check( "revolved torus is CLOSED (the seam welded)", tv.IsClosed, tv.ToString() );
+		Check( "revolved torus has X = 0", MeshValidator.EulerCharacteristic( torus ) == 0,
+			$"{MeshValidator.EulerCharacteristic( torus )}" );
+		Check( "revolved torus winds outward", Volume( torus ) > 0, $"{Volume( torus ):0.####}" );
 
-		// Crossing the axis sweeps the profile through itself — refused rather than silently wrong.
-		var crossing = new Sketch( SketchPlane.XY, Profile.Rectangle( 8f, 1f ) );
-		var threw = false;
-		try { SketchSolids.Revolve( crossing, Vec2.Zero, new Vec2( 0, 1 ) ); } catch ( InvalidOperationException ) { threw = true; }
-		Check( "a profile crossing the axis is refused", threw );
+		// Pappus: volume = area * 2 pi * centroid radius. The 1x1 profile's centroid is 1.5 from
+		// the axis, so 1 * 2pi * 1.5.
+		var expected = 1f * MathF.Tau * 1.5f;
+		Check( "torus volume matches Pappus' theorem",
+			MathF.Abs( Volume( torus ) - expected ) < expected * 0.02f,
+			$"{Volume( torus ):0.###} vs {expected:0.###}" );
+
+		// A profile touching the axis must collapse to a closed solid rather than leaving a hole.
+		var sphereish = new PartStudio();
+		var ss = sphereish.Add( new SketchFeature() );
+		ss.Sketch.AddPolygon( new Vec2( 0, 0 ), new Vec2( 2, 0 ), new Vec2( 0, 2 ) );
+
+		var sphereRevolve = sphereish.Add( new RevolveFeature() );
+		sphereRevolve.AxisPoint.Value = Vec3.Zero;
+		sphereRevolve.AxisDirection.Value = new Vec3( 0, 1, 0 ); // sketch-space +Y
+		sphereRevolve.Angle.Value = 360f;
+		sphereish.Rebuild();
+
+		Check( "profile on the axis revolves without error",
+			sphereRevolve.Error is null, sphereRevolve.Error );
+
+		var cone = sphereish.Bodies[0].Mesh;
+		var cv = MeshValidator.Validate( cone );
+
+		Check( "on-axis profile gives a valid solid", cv.IsValid, cv.ToString() );
+		Check( "on-axis profile gives a CLOSED solid", cv.IsClosed, cv.ToString() );
+		Check( "on-axis solid has X = 2", MeshValidator.EulerCharacteristic( cone ) == 2,
+			$"{MeshValidator.EulerCharacteristic( cone )}" );
+		Check( "on-axis solid winds outward", Volume( cone ) > 0, $"{Volume( cone ):0.####}" );
+
+		// Partial revolutions get capped at both ends.
+		var partial = new PartStudio();
+		var ps = partial.Add( new SketchFeature() );
+		ps.Sketch.AddRectangle( new Vec2( 3, 1f ), new Vec2( 4, 2f ) );
+
+		var partialRevolve = partial.Add( new RevolveFeature() );
+		partialRevolve.AxisDirection.Value = new Vec3( 1, 0, 0 );
+		partialRevolve.Angle.Value = 90f;
+		partial.Rebuild();
+
+		var wedge = partial.Bodies[0].Mesh;
+		var pv = MeshValidator.Validate( wedge );
+
+		Check( "partial revolve is capped and closed", pv.IsValid && pv.IsClosed, pv.ToString() );
+		Check( "partial revolve winds outward", Volume( wedge ) > 0, $"{Volume( wedge ):0.####}" );
+		Check( "quarter turn is a quarter of the volume",
+			MathF.Abs( Volume( wedge ) - expected / 4f ) < expected * 0.02f,
+			$"{Volume( wedge ):0.###} vs {expected / 4f:0.###}" );
+
+		// A profile straddling the axis must be refused. Left to run it produces a mesh where every
+		// face exists twice with opposite winding: it encloses zero volume, welds vertices that
+		// should be distinct, and looks entirely plausible until measured.
+		var crossing = new PartStudio();
+		var xs = crossing.Add( new SketchFeature() );
+		xs.Sketch.AddRectangle( new Vec2( 3, -0.5f ), new Vec2( 4, 0.5f ) );
+
+		var crossingRevolve = crossing.Add( new RevolveFeature() );
+		crossingRevolve.AxisDirection.Value = new Vec3( 1, 0, 0 );
+		crossing.Rebuild();
+
+		Check( "profile crossing the axis is refused", crossingRevolve.Error is not null );
+		Check( "and the error says why",
+			crossingRevolve.Error?.Contains( "crosses the axis" ) == true, crossingRevolve.Error );
+
+		// Touching the axis is fine — only crossing it is not.
+		Check( "touching the axis is still allowed", sphereRevolve.Error is null, sphereRevolve.Error );
 	}
 
-	// --- the tree -----------------------------------------------------------------------
-
-	static void TestFeatures()
+	static void TestSketchInTree()
 	{
 		var studio = new PartStudio();
+		var sketchFeature = studio.Add( new SketchFeature() );
+		sketchFeature.Sketch.AddRectangle( new Vec2( 0, 0 ), new Vec2( 2, 2 ) );
 
-		var extrude = studio.Add( new ExtrudeFeature() );
-		extrude.Sketch.Value = new Sketch( SketchPlane.XY, Profile.Rectangle( 2f, 3f ) );
-		extrude.Distance.Value = 4f;
+		studio.Add( new ExtrudeFeature() ).Distance.Value = 2f;
+		var subdiv = studio.Add( new SubdivideFeature() );
+		subdiv.Levels.Value = 2;
 
 		studio.Rebuild();
 
-		Check( "extrude feature produces a body", studio.Bodies.Count == 1 );
-		Check( "with the right volume", Near( Volume( studio.Bodies[0].Mesh ), 24f, 1e-3f ),
-			$"{Volume( studio.Bodies[0].Mesh ):0.####}" );
-		Check( "named after the feature type", extrude.Name == "Extrude 1", extrude.Name );
+		Check( "sketch, extrude and subdivide chain together",
+			studio.Bodies.Count == 1 && studio.Bodies[0].Mesh.FaceCount == 96,
+			$"{studio.Bodies.Count} bodies, {studio.Bodies[0].Mesh.FaceCount} faces" );
 
-		// The point of holding the sketch by reference: edit it and the solid follows on rebuild.
-		extrude.Sketch.Value.Outer = Profile.Rectangle( 4f, 3f );
-		studio.MarkDirty( extrude );
+		// The whole point of referencing the sketch by feature id: editing the sketch and
+		// rebuilding must feed through, with nothing to re-wire.
+		sketchFeature.Sketch = new Sketch();
+		sketchFeature.Sketch.AddRectangle( new Vec2( 0, 0 ), new Vec2( 10, 2 ) );
+		studio.MarkDirty( sketchFeature );
 		studio.Rebuild();
 
-		Check( "editing the sketch changes the solid", Near( Volume( studio.Bodies[0].Mesh ), 48f, 1e-3f ),
-			$"{Volume( studio.Bodies[0].Mesh ):0.####}" );
+		var width = studio.Bodies[0].Mesh.Positions.Max( p => p.x ) - studio.Bodies[0].Mesh.Positions.Min( p => p.x );
+		Check( "editing the sketch changes the solid", width > 6f, $"width {width:0.##}" );
 
-		extrude.Distance.Value = 2f;
-		studio.MarkDirty( extrude );
+		// Rolling back above the extrude leaves the sketch with nothing built from it.
+		studio.RollbackIndex = 1;
+		studio.MarkAllDirty();
 		studio.Rebuild();
-		Check( "and so does changing the distance", Near( Volume( studio.Bodies[0].Mesh ), 24f, 1e-3f ) );
+		Check( "rollback above extrude leaves no bodies", studio.Bodies.Count == 0, $"{studio.Bodies.Count}" );
 
-		// Sketch solids have to work with everything else in the tree, not sit apart from it.
-		var mirror = studio.Add( new MirrorFeature() );
-		mirror.PlaneNormal.Value = new Vec3( 1, 0, 0 );
-		mirror.PlanePoint.Value = new Vec3( 6, 0, 0 );
-		studio.Rebuild();
-
-		Check( "an extrusion can be mirrored", studio.Bodies.Count == 2 );
-		Check( "and the mirrored copy is not inside-out", studio.Bodies.All( b => Volume( b.Mesh ) > 0f ),
-			string.Join( ", ", studio.Bodies.Select( b => Volume( b.Mesh ).ToString( "0.##" ) ) ) );
-
-		var revolve = new RevolveFeature();
-		revolve.Sketch.Value = new Sketch( SketchPlane.XY,
-			new Profile( Profile.Rectangle( 2f, 1f ).Points.Select( p => new Vec2( p.x + 3f, p.y ) ) ) );
-		revolve.Segments.Value = 32;
-
-		var studio2 = new PartStudio();
-		studio2.Add( revolve );
-		studio2.Rebuild();
-
-		Check( "revolve feature runs", studio2.Bodies.Count == 1 && revolve.Error is null, revolve.Error );
-		Check( "revolve feature encloses volume", Volume( studio2.Bodies[0].Mesh ) > 0f );
-
-		// A broken sketch has to report through the feature, not take the rebuild down.
-		var broken = new PartStudio();
-		var bad = broken.Add( new ExtrudeFeature() );
-		bad.Sketch.Value = new Sketch( SketchPlane.XY, new Profile() );
-		var report = broken.Rebuild();
-
-		Check( "a bad sketch records an error rather than throwing", report.HasErrors );
-		Check( "and the message names the problem", bad.Error is not null && bad.Error.Contains( "3 points" ), bad.Error );
+		// An extrude with no sketch at all explains itself rather than throwing something opaque.
+		var orphan = new PartStudio();
+		var lonely = orphan.Add( new ExtrudeFeature() );
+		orphan.Rebuild();
+		Check( "extrude with no sketch reports a clear error",
+			lonely.Error?.Contains( "no sketch" ) == true, lonely.Error );
 	}
-
-	// --- helpers ------------------------------------------------------------------------
-
-	/// <summary>Enclosed volume by the divergence theorem. Negative means the mesh is inside-out,
-	/// which is the failure that looks perfect in wireframe.</summary>
-	static float Volume( PolyMesh mesh )
-	{
-		var total = 0f;
-
-		foreach ( var f in mesh.Faces )
-		{
-			for ( var i = 1; i < f.Count - 1; i++ )
-			{
-				var a = mesh.Positions[f.Indices[0]];
-				var b = mesh.Positions[f.Indices[i]];
-				var c = mesh.Positions[f.Indices[i + 1]];
-				total += Vec3.Dot( a, Vec3.Cross( b, c ) ) / 6f;
-			}
-		}
-
-		return total;
-	}
-
-	static bool Near( float a, float b, float tolerance = 1e-4f ) => MathF.Abs( a - b ) < tolerance;
-	static bool Near2( Vec2 a, Vec2 b, float tolerance = 1e-4f ) => (a - b).Length < tolerance;
-
-	static void Section( string title ) => Report.Section( title );
-	static void Check( string what, bool ok, string detail = null ) => Report.Check( what, ok, detail );
 }

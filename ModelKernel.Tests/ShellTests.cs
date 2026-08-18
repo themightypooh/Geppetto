@@ -179,11 +179,7 @@ public static class ShellTests
 			("box", Primitives.Box( 2, 2, 2 )),
 			("cylinder", Primitives.Cylinder( 1f, 2f, 16 )),
 			("wedge", Primitives.Wedge( 2, 2, 2 )),
-			("extruded rounded rect", SketchSolids.Extrude(
-				new Sketch( SketchPlane.XY, Profile.RoundedRectangle( 4, 2, 0.5f, 3 ) ), 2f )),
-			("revolved ring", SketchSolids.Revolve(
-				new Sketch( SketchPlane.XY, new Profile( Profile.Rectangle( 2f, 1f ).Points.Select( p => new Vec2( p.x + 3f, p.y ) ) ) ),
-				Vec2.Zero, new Vec2( 0, 1 ), 360f, 16 ))
+			("extrusion", ExtrudedRectangle( 4f, 2f, 2f ))
 		};
 
 		foreach ( var (name, mesh) in cases )
@@ -324,8 +320,10 @@ public static class ShellTests
 	{
 		var studio = new PartStudio();
 
+		var sketch = studio.Add( new SketchFeature() );
+		sketch.Sketch.AddRectangle( new Vec2( -2, -2 ), new Vec2( 2, 2 ) );
+
 		var extrude = studio.Add( new ExtrudeFeature() );
-		extrude.Sketch.Value = new Sketch( SketchPlane.XY, Profile.Rectangle( 4f, 4f ) );
 		extrude.Distance.Value = 3f;
 
 		var shell = studio.Add( new ShellFeature() );
@@ -343,8 +341,10 @@ public static class ShellTests
 			$"{Volume( studio.Bodies[0].Mesh ):0.####} vs {expected:0.####}" );
 
 		// The whole point of the tree: change the room's size, the walls follow.
-		extrude.Sketch.Value.Outer = Profile.Rectangle( 6f, 4f );
-		studio.MarkDirty( extrude );
+		sketch.Sketch.Curves.Clear();
+		sketch.Sketch.Points.Clear();
+		sketch.Sketch.AddRectangle( new Vec2( -3, -2 ), new Vec2( 3, 2 ) );
+		studio.MarkDirty( sketch );
 		studio.Rebuild();
 
 		var grown = 6f * 4f * 3f - 5.5f * 3.5f * 2.5f;
@@ -362,6 +362,26 @@ public static class ShellTests
 	}
 
 	// --- helpers ------------------------------------------------------------------------
+
+
+	/// <summary>
+	/// Build a solid by extruding a rectangle, through the public feature path.
+	///
+	/// The sketcher owns extrude now, so these tests go through the tree rather than calling a
+	/// mesh builder directly. That is the better test anyway: it exercises the path a user takes.
+	/// </summary>
+	static PolyMesh ExtrudedRectangle( float width, float depth, float height )
+	{
+		var studio = new PartStudio();
+
+		var sketch = studio.Add( new SketchFeature() );
+		sketch.Sketch.AddRectangle( new Vec2( -width / 2f, -depth / 2f ), new Vec2( width / 2f, depth / 2f ) );
+
+		studio.Add( new ExtrudeFeature() ).Distance.Value = height;
+		studio.Rebuild();
+
+		return studio.Bodies[0].Mesh;
+	}
 
 	static float Volume( PolyMesh mesh )
 	{

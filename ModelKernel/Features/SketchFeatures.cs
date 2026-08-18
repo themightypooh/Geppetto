@@ -5,183 +5,426 @@ using System.Linq;
 namespace ModelKernel;
 
 /// <summary>
-/// A sketch parameter. The generic dialog can't render this as a number box — it needs the
-/// viewport, because you draw it. It implements IParam anyway so a panel can lay out a row for it
-/// with an "Edit sketch" button, exactly the way Onshape's own sketch references behave.
+/// Holds a sketch and publishes it for later features to consume. Produces no geometry itself,
+/// exactly like Onshape's Sketch feature.
+///
+/// Downstream features reference this by feature Id rather than holding the Sketch object, so
+/// editing the sketch and rebuilding flows through automatically — there is no second reference to
+/// keep in step.
 /// </summary>
-public sealed class SketchParam : IParam
+public sealed class SketchFeature : Feature
 {
-	public string Label { get; }
-	public Sketch Value;
+	public override string TypeName => "Sketch";
 
-	public SketchParam( string label, Sketch value = null )
+	public Sketch Sketch = new();
+
+	public readonly ChoiceParam Plane = new( "Plane", new[] { "Top (XY)", "Front (XZ)", "Right (YZ)" } );
+	public readonly FloatParam PlaneOffset = new( "Offset", 0f, unit: "u" );
+
+	public override IReadOnlyList<IParam> Parameters => new IParam[] { Plane, PlaneOffset };
+
+	protected override void Execute( FeatureContext ctx )
 	{
-		Label = label;
-		Value = value ?? new Sketch();
+		var basePlane = Plane.Index switch
+		{
+			0 => SketchPlane.XY,
+			1 => SketchPlane.XZ,
+			2 => SketchPlane.YZ,
+			_ => SketchPlane.XY
+		};
+
+		Sketch.Plane = PlaneOffset.Value == 0f ? basePlane : basePlane.Offset( PlaneOffset.Value );
+		ctx.Sketches[Id] = Sketch;
+	}
+}
+
+/// <summary>Shared plumbing for the features that turn a sketch profile into a solid.</summary>
+public abstract class SketchConsumingFeature : Feature
+{
+	public readonly ChoiceParam Sketch = new( "Sketch", new[] { "" } );
+
+	/// <summary>Feature id of the SketchFeature to consume. Empty means "the most recent one",
+	/// which is what you want while there is only one sketch in the tree.</summary>
+	public string SketchFeatureId = "";
+
+	protected Sketch ResolveSketch( FeatureContext ctx )
+	{
+		if ( ctx.Sketches.Count == 0 )
+			throw new InvalidOperationException( "There is no sketch to use — add a Sketch feature first" );
+
+		if ( string.IsNullOrEmpty( SketchFeatureId ) )
+			return ctx.Sketches.Values.Last();
+
+		if ( !ctx.Sketches.TryGetValue( SketchFeatureId, out var sketch ) )
+			throw new InvalidOperationException( $"Sketch '{SketchFeatureId}' is not available at this point in the tree" );
+
+		return sketch;
+	}
+
+	protected static List<Profile> ResolveProfiles( Sketch sketch )
+	{
+		var found = ProfileFinder.Find( sketch );
+
+		if ( found.Profiles.Count == 0 )
+		{
+			throw new InvalidOperationException( found.OpenChains > 0
+				? "The sketch has no closed region — its curves do not join up"
+				: "The sketch has no closed region" );
+		}
+
+		// Holes need the cap to be triangulated around them, which is really the same problem as
+		// a boolean subtract and is better solved once, there. Until then this refuses clearly
+		// rather than producing a cap that renders with the hole filled in.
+		var holed = found.Profiles.FirstOrDefault( p => p.HasHoles );
+
+		if ( holed is not null )
+		{
+			throw new InvalidOperationException(
+				$"Profiles with holes are not supported yet ({holed.Holes.Count} inner loop(s)). "
+				+ "Use the Tube primitive, or extrude the outer and inner shapes separately." );
+		}
+
+		return found.Profiles;
 	}
 }
 
 /// <summary>
-/// Extrude a sketch into a solid. The other way into the modeller, next to PrimitiveFeature.
+/// Extrudes sketch profiles into solids along the sketch plane's normal. Onshape's Extrude.
 ///
-/// Onshape's Extrude carries the sketch by reference and re-reads it on every rebuild, which is
-/// what makes "edit the sketch, watch the solid follow" work. Same here: the feature holds the
-/// sketch and rebuilds from its points, so nothing is baked at the moment of creation.
+/// Caps are emitted as single n-gons rather than triangle fans. Catmull-Clark turns an n-gon into
+/// n clean quads, so a hexagonal boss subdivides properly; a fan would leave a high-valence hub in
+/// the middle of every face that puckers the moment anyone sculpts near it.
 /// </summary>
-public sealed class ExtrudeFeature : Feature
+public sealed class ExtrudeFeature : SketchConsumingFeature
 {
 	public override string TypeName => "Extrude";
 
-	public readonly SketchParam Sketch = new( "Sketch" );
 	public readonly FloatParam Distance = new( "Distance", 1f, unit: "u" );
-	public readonly BoolParam Symmetric = new( "Symmetric about the plane", false );
+	public readonly BoolParam Symmetric = new( "Symmetric", false );
+	public readonly BoolParam Flip = new( "Flip direction", false );
 	public readonly IntParam Material = new( "Material slot", 0, 0, 63 );
 
 	public override IReadOnlyList<IParam> Parameters =>
-		new IParam[] { Sketch, Distance, Symmetric, Material };
+		new IParam[] { Sketch, Distance, Symmetric, Flip, Material };
 
 	protected override void Execute( FeatureContext ctx )
 	{
-		var mesh = SketchSolids.Extrude( Sketch.Value, Distance.Value, Symmetric.Value, Material.Clamped );
-		ctx.Bodies.Add( new Body( ctx.NewBodyId(), Name, mesh ) );
+		var sketch = ResolveSketch( ctx );
+		var profiles = ResolveProfiles( sketch );
+
+		if ( MathF.Abs( Distance.Value ) < 1e-6f )
+			throw new InvalidOperationException( "Distance cannot be zero" );
+
+		var distance = Flip.Value ? -Distance.Value : Distance.Value;
+		var near = Symmetric.Value ? -distance * 0.5f : 0f;
+		var far = Symmetric.Value ? distance * 0.5f : distance;
+
+		foreach ( var profile in profiles )
+		{
+			var mesh = BuildPrism( sketch.Plane, profile.Outer, near, far, Material.Clamped );
+			ctx.Bodies.Add( new Body( ctx.NewBodyId(), Name, mesh ) );
+		}
+	}
+
+	/// <summary>
+	/// Outer loop arrives counter-clockwise in plane coordinates, which fixes every winding
+	/// question: the far cap keeps that order, the near cap reverses, and the side quads run
+	/// bottom edge then up. Verified by the enclosed-volume test rather than by inspection.
+	/// </summary>
+	static PolyMesh BuildPrism( SketchPlane plane, List<Vec2> loop, float near, float far, int material )
+	{
+		var n = loop.Count;
+		var mesh = new PolyMesh();
+
+		// A negative extrusion puts the "far" cap behind the "near" one and flips the solid inside
+		// out. Ordering them here means the rest of the function never has to think about sign.
+		var (low, high) = near <= far ? (near, far) : (far, near);
+
+		foreach ( var p in loop )
+			mesh.AddVertex( plane.ToWorld( p ) + plane.Normal * low );
+
+		foreach ( var p in loop )
+			mesh.AddVertex( plane.ToWorld( p ) + plane.Normal * high );
+
+		// Side walls. Cumulative perimeter drives U so the texture does not stretch on long edges.
+		var perimeter = 0f;
+		var distances = new float[n + 1];
+
+		for ( var i = 0; i < n; i++ )
+		{
+			var a = loop[i];
+			var b = loop[(i + 1) % n];
+			distances[i] = perimeter;
+			perimeter += MathF.Sqrt( (b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y) );
+		}
+
+		distances[n] = perimeter;
+
+		for ( var i = 0; i < n; i++ )
+		{
+			var j = (i + 1) % n;
+			var u0 = perimeter > 0f ? distances[i] / perimeter : 0f;
+			var u1 = perimeter > 0f ? distances[i + 1] / perimeter : 1f;
+
+			mesh.AddFace(
+				new[] { i, j, n + j, n + i },
+				new[] { new Vec2( u0, 0 ), new Vec2( u1, 0 ), new Vec2( u1, 1 ), new Vec2( u0, 1 ) },
+				material );
+		}
+
+		// Caps use plane coordinates directly as UVs, so a face keeps the proportions it was drawn
+		// with instead of being squashed into a unit square.
+		var topIndices = new int[n];
+		var topUVs = new Vec2[n];
+
+		for ( var i = 0; i < n; i++ )
+		{
+			topIndices[i] = n + i;
+			topUVs[i] = loop[i];
+		}
+
+		mesh.AddFace( topIndices, topUVs, material );
+
+		var bottomIndices = new int[n];
+		var bottomUVs = new Vec2[n];
+
+		for ( var i = 0; i < n; i++ )
+		{
+			bottomIndices[i] = n - 1 - i;
+			bottomUVs[i] = loop[n - 1 - i];
+		}
+
+		mesh.AddFace( bottomIndices, bottomUVs, material );
+
+		return mesh;
 	}
 }
 
 /// <summary>
-/// Spin a sketch around an axis. Everything round that isn't a cylinder — bottles, lamp bases,
-/// chess pieces, pipe fittings.
+/// Revolves sketch profiles about an axis lying in the sketch plane. Onshape's Revolve.
+///
+/// Points sitting ON the axis are the awkward case — every revolved copy of them lands in the same
+/// place. Rather than special-casing that, construction runs through the vertex welder, so those
+/// copies collapse to one vertex, the quad next to them degenerates to a triangle, and a profile
+/// touching the axis produces a proper closed solid. A full revolution closes the same way: the
+/// last ring welds onto the first.
 /// </summary>
-public sealed class RevolveFeature : Feature
+public sealed class RevolveFeature : SketchConsumingFeature
 {
 	public override string TypeName => "Revolve";
 
-	public readonly SketchParam Sketch = new( "Sketch" );
-	public readonly Vec3Param Axis = new( "Axis (point x, point y, direction angle°)", new Vec3( 0, 0, 90f ) );
-	public readonly FloatParam Degrees = new( "Angle", 360f, -360f, 360f, "deg" );
-	public readonly IntParam Segments = new( "Segments", 16, 3, 512 );
+	public readonly Vec3Param AxisPoint = new( "Axis through (sketch coords)", Vec3.Zero );
+	public readonly Vec3Param AxisDirection = new( "Axis direction (sketch coords)", new Vec3( 1, 0, 0 ) );
+	public readonly FloatParam Angle = new( "Angle", 360f, unit: "deg" );
+	public readonly IntParam Segments = new( "Segments", 24, 3, 512 );
 	public readonly IntParam Material = new( "Material slot", 0, 0, 63 );
 
 	public override IReadOnlyList<IParam> Parameters =>
-		new IParam[] { Sketch, Axis, Degrees, Segments, Material };
+		new IParam[] { Sketch, AxisPoint, AxisDirection, Angle, Segments, Material };
 
 	protected override void Execute( FeatureContext ctx )
 	{
-		// The axis is packed into one Vec3Param as (point x, point y, direction in degrees) so the
-		// generic dialog can show it today. A real sketch UI would pick the axis by clicking a line,
-		// and this parameter becomes a reference instead — the maths below does not change.
-		var point = new Vec2( Axis.Value.x, Axis.Value.y );
-		var radians = Axis.Value.z * MathF.PI / 180f;
-		var direction = new Vec2( MathF.Cos( radians ), MathF.Sin( radians ) );
+		var sketch = ResolveSketch( ctx );
+		var profiles = ResolveProfiles( sketch );
 
-		var mesh = SketchSolids.Revolve( Sketch.Value, point, direction, Degrees.Value, Segments.Clamped, Material.Clamped );
-		ctx.Bodies.Add( new Body( ctx.NewBodyId(), Name, mesh ) );
+		if ( MathF.Abs( Angle.Value ) < 1e-4f )
+			throw new InvalidOperationException( "Angle cannot be zero" );
+
+		var plane = sketch.Plane;
+
+		// The axis is authored in sketch coordinates and lifted into world space, so it moves with
+		// the plane like everything else in the sketch.
+		var axisOrigin = plane.ToWorld( new Vec2( AxisPoint.Value.x, AxisPoint.Value.y ) );
+		var axisDir = plane.XAxis * AxisDirection.Value.x + plane.YAxis * AxisDirection.Value.y;
+
+		if ( axisDir.LengthSquared < 1e-12f )
+			throw new InvalidOperationException( "Axis direction cannot be zero" );
+
+		var full = MathF.Abs( MathF.Abs( Angle.Value ) - 360f ) < 1e-3f;
+
+		foreach ( var profile in profiles )
+		{
+			RejectIfCrossingAxis( profile.Outer );
+
+			var mesh = BuildRevolve( plane, profile.Outer, axisOrigin, axisDir,
+				Angle.Value, Segments.Clamped, full, Material.Clamped );
+
+			OrientOutward( mesh );
+
+			ctx.Bodies.Add( new Body( ctx.NewBodyId(), Name, mesh ) );
+		}
 	}
-}
-
-/// <summary>
-/// Hollow the selected bodies to a wall thickness. The "make a room" feature.
-///
-/// OpenFaces is an index list because there is no face selection in the kernel yet — a viewport
-/// would set it by clicking. Left empty, the result is a sealed hollow solid, which is what you
-/// want for something that only needs to be light rather than enterable.
-/// </summary>
-public sealed class ShellFeature : Feature
-{
-	public override string TypeName => "Shell";
-
-	public readonly BodySelectionParam Bodies = new( "Bodies" );
-	public readonly FloatParam Thickness = new( "Wall thickness", 0.1f, 0.0001f, unit: "u" );
 
 	/// <summary>
-	/// Face indices to leave open. Not an IParam — a viewport sets this by picking, and a numeric
-	/// list in a dialog would be unusable.
+	/// A profile straddling the axis is rejected, the way Onshape rejects it.
 	///
-	/// These indices are applied to EVERY selected body, which only makes sense when one body is
-	/// selected. That is the normal case for a room, and the alternative — per-body face sets —
-	/// needs a selection model the kernel does not have yet.
+	/// It is not merely unsupported, it is meaningless: each half sweeps the same solid, so every
+	/// face is generated twice with opposite winding. The result passes a casual look, encloses
+	/// zero volume, and welds vertices that should have stayed apart. Catching it here gives the
+	/// user the real reason instead of a mesh that is quietly nonsense.
 	/// </summary>
-	public readonly List<int> OpenFaces = new();
-
-	public override IReadOnlyList<IParam> Parameters => new IParam[] { Bodies, Thickness };
-
-	protected override void Execute( FeatureContext ctx )
+	void RejectIfCrossingAxis( List<Vec2> loop )
 	{
-		var targets = ctx.Bodies.Where( Bodies.Matches ).ToList();
+		var a = new Vec2( AxisPoint.Value.x, AxisPoint.Value.y );
+		var d = new Vec2( AxisDirection.Value.x, AxisDirection.Value.y );
+		var length = MathF.Sqrt( d.x * d.x + d.y * d.y );
 
-		// Shell everything before assigning anything. Feature.Run promises that a failed feature
-		// leaves the bodies as they were, and mutating in place breaks that promise the moment the
-		// third body of four throws — you get a half-shelled model and an error message.
-		var shelled = new List<PolyMesh>( targets.Count );
+		if ( length < 1e-9f )
+			return;
 
-		foreach ( var body in targets )
-			shelled.Add( ShellOperation.Shell( body.Mesh, Thickness.Clamped, OpenFaces ) );
+		var minSide = float.MaxValue;
+		var maxSide = float.MinValue;
 
-		for ( var i = 0; i < targets.Count; i++ )
-			targets[i].Mesh = shelled[i];
-	}
-}
-
-/// <summary>
-/// Bevel every edge of the selected bodies. "Round off", in the language a non-modeller uses.
-///
-/// Every edge, not a selection, because the kernel has no edge selection yet — that arrives with a
-/// viewport. Bevelling everything is the common case for a prop anyway: it is what stops a model
-/// reading as programmer art, because nothing real has a perfectly sharp edge.
-/// </summary>
-public sealed class BevelFeature : Feature
-{
-	public override string TypeName => "Bevel";
-
-	public readonly BodySelectionParam Bodies = new( "Bodies" );
-	public readonly FloatParam Distance = new( "Distance", 0.1f, 0.0001f, unit: "u" );
-
-	public override IReadOnlyList<IParam> Parameters => new IParam[] { Bodies, Distance };
-
-	protected override void Execute( FeatureContext ctx )
-	{
-		var targets = ctx.Bodies.Where( Bodies.Matches ).ToList();
-
-		// Build everything before assigning anything, so a failure partway leaves the bodies as they
-		// were — the same contract ShellFeature had to be fixed to honour.
-		var bevelled = new List<PolyMesh>( targets.Count );
-
-		foreach ( var body in targets )
-			bevelled.Add( BevelOperation.Bevel( body.Mesh, Distance.Clamped ) );
-
-		for ( var i = 0; i < targets.Count; i++ )
-			targets[i].Mesh = bevelled[i];
-	}
-}
-
-/// <summary>
-/// Re-project UVs across the selected bodies. Onshape has no equivalent because it does not care
-/// about textures; every game-facing modeller needs one.
-///
-/// Placed as a feature rather than an export option on purpose: where it sits in the tree decides
-/// what it sees. Before a bevel it projects the sharp cage and the chamfer strips inherit
-/// interpolated UVs; after a bevel it projects the chamfers as their own faces.
-/// </summary>
-public sealed class UVProjectFeature : Feature
-{
-	public override string TypeName => "UV project";
-
-	public readonly BodySelectionParam Bodies = new( "Bodies" );
-	public readonly ChoiceParam Mode = new( "Mode", new[] { "Box", "Planar" } );
-	public readonly Vec3Param Direction = new( "Direction", new Vec3( 0, 0, 1 ) );
-	public readonly FloatParam Scale = new( "Units per tile", 1f, 0.0001f, unit: "u" );
-
-	public override IReadOnlyList<IParam> Parameters => Mode.Value == "Planar"
-		? new IParam[] { Bodies, Mode, Direction, Scale }
-		: new IParam[] { Bodies, Mode, Scale };
-
-	protected override void Execute( FeatureContext ctx )
-	{
-		foreach ( var body in ctx.Bodies.Where( Bodies.Matches ) )
+		foreach ( var p in loop )
 		{
-			if ( Mode.Value == "Planar" )
-				UVProjection.PlanarProject( body.Mesh, Direction.Value, Scale.Clamped );
-			else
-				UVProjection.BoxProject( body.Mesh, Scale.Clamped );
+			// 2D cross product: signed perpendicular distance from the axis line.
+			var side = (d.x * (p.y - a.y) - d.y * (p.x - a.x)) / length;
+			minSide = MathF.Min( minSide, side );
+			maxSide = MathF.Max( maxSide, side );
 		}
+
+		const float eps = 1e-5f;
+
+		if ( minSide < -eps && maxSide > eps )
+		{
+			throw new InvalidOperationException(
+				"The profile crosses the axis of revolution. Move it fully to one side of the axis." );
+		}
+	}
+
+	/// <summary>
+	/// Flip every face if the finished solid encloses negative volume.
+	///
+	/// Whether a sweep comes out inside-out depends on the axis direction, the sign of the angle,
+	/// and which side of the axis the profile sits on. Enumerating those cases invites getting one
+	/// of them wrong silently; measuring the result instead is one cheap pass and is correct for
+	/// all of them. Safe because a revolve is always closed — wrapped when full, capped when not.
+	/// </summary>
+	static void OrientOutward( PolyMesh mesh )
+	{
+		var volume = 0f;
+
+		foreach ( var f in mesh.Faces )
+			volume += Vec3.Dot( mesh.FaceCentroid( f ), mesh.FaceNormal( f ) ) * mesh.FaceArea( f );
+
+		if ( volume >= 0f )
+			return;
+
+		foreach ( var f in mesh.Faces )
+		{
+			Array.Reverse( f.Indices );
+			Array.Reverse( f.UVs );
+		}
+	}
+
+	static PolyMesh BuildRevolve(
+		SketchPlane plane, List<Vec2> loop, Vec3 axisOrigin, Vec3 axisDir,
+		float angleDegrees, int segments, bool full, int material )
+	{
+		var n = loop.Count;
+		var mesh = new PolyMesh();
+		var weld = new VertexWelder( mesh );
+
+		var rings = full ? segments : segments;
+		var step = angleDegrees / segments * MathF.PI / 180f;
+
+		// ring[k][i] is loop point i rotated by k steps. A full turn reuses ring 0 as the last
+		// ring, which the welder achieves on its own by landing on identical positions.
+		var ring = new int[rings + 1][];
+
+		for ( var k = 0; k <= rings; k++ )
+		{
+			ring[k] = new int[n];
+			var xform = Xform.RotateAbout( axisOrigin, axisDir, step * k );
+
+			for ( var i = 0; i < n; i++ )
+				ring[k][i] = weld.Add( xform.TransformPoint( plane.ToWorld( loop[i] ) ) );
+		}
+
+		for ( var k = 0; k < rings; k++ )
+		{
+			for ( var i = 0; i < n; i++ )
+			{
+				var j = (i + 1) % n;
+
+				var quad = new[] { ring[k][i], ring[k][j], ring[k + 1][j], ring[k + 1][i] };
+
+				var uvs = new[]
+				{
+					new Vec2( k / (float)rings, i / (float)n ),
+					new Vec2( k / (float)rings, (i + 1) / (float)n ),
+					new Vec2( (k + 1) / (float)rings, (i + 1) / (float)n ),
+					new Vec2( (k + 1) / (float)rings, i / (float)n )
+				};
+
+				AddNonDegenerate( mesh, quad, uvs, material );
+			}
+		}
+
+		// A partial revolution is open at both ends and needs capping; a full one is already
+		// closed, and adding caps would leave two faces buried inside the solid.
+		if ( !full )
+		{
+			var startCap = new int[n];
+			var startUVs = new Vec2[n];
+
+			for ( var i = 0; i < n; i++ )
+			{
+				startCap[i] = ring[0][n - 1 - i];
+				startUVs[i] = loop[n - 1 - i];
+			}
+
+			AddNonDegenerate( mesh, startCap, startUVs, material );
+
+			var endCap = new int[n];
+			var endUVs = new Vec2[n];
+
+			for ( var i = 0; i < n; i++ )
+			{
+				endCap[i] = ring[rings][i];
+				endUVs[i] = loop[i];
+			}
+
+			AddNonDegenerate( mesh, endCap, endUVs, material );
+		}
+
+		return mesh;
+	}
+
+	/// <summary>
+	/// Add a face, dropping repeated indices first and skipping it entirely if fewer than three
+	/// remain.
+	///
+	/// This is what makes a profile touching the axis work. Those points weld to a single vertex,
+	/// so the quad beside them arrives as (a, a, b, c) — collapsing it gives the triangle the
+	/// geometry actually wants, and a fully degenerate face disappears instead of becoming a
+	/// zero-area sliver that breaks normals downstream.
+	/// </summary>
+	static void AddNonDegenerate( PolyMesh mesh, int[] indices, Vec2[] uvs, int material )
+	{
+		var keptIndices = new List<int>( indices.Length );
+		var keptUVs = new List<Vec2>( indices.Length );
+
+		for ( var i = 0; i < indices.Length; i++ )
+		{
+			// Compare against the previous kept corner, and wrap for the last one, so runs of
+			// duplicates collapse whether they are adjacent or straddle the end of the face.
+			if ( keptIndices.Count > 0 && keptIndices[^1] == indices[i] )
+				continue;
+
+			keptIndices.Add( indices[i] );
+			keptUVs.Add( uvs[i] );
+		}
+
+		while ( keptIndices.Count > 1 && keptIndices[0] == keptIndices[^1] )
+		{
+			keptIndices.RemoveAt( keptIndices.Count - 1 );
+			keptUVs.RemoveAt( keptUVs.Count - 1 );
+		}
+
+		if ( keptIndices.Count < 3 )
+			return;
+
+		mesh.AddFace( keptIndices.ToArray(), keptUVs.ToArray(), material );
 	}
 }

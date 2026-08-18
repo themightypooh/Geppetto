@@ -3,9 +3,16 @@
 Companion to `MODELING-HANDOFF.md`, which works the same idea through s&box. This one asks whether
 the tool should be built in Godot instead.
 
-Short version: **Godot is the better engineering bet and the worse strategic one.** Everything hard
-about the s&box version is already solved and documented in Godot; everything that made the idea
-*worth doing* is weaker there. The rest of this document is the evidence for that sentence.
+Short version: **Godot is the better engineering bet and the worse strategic one, and the gap
+widened once the real goal became clear.** Everything hard about the s&box version is already solved
+and documented in Godot; everything that made the idea *worth doing* is weaker there.
+
+**Read the pipeline section of `MODELING-HANDOFF.md` first.** The tool is not a prop builder — it
+runs CAD → sculpt → bake → rig → animate, and it ends in Marionette. That endpoint is the single
+biggest argument against Godot and did not exist when this document was first written: **Marionette
+is an s&box tool.** Porting the modeller to Godot without porting Marionette leaves the pipeline
+with nothing to hand off to, and porting Marionette as well roughly doubles the work. Godot has no
+equivalent in-editor control-rig animation editor to fall back on.
 
 ---
 
@@ -81,6 +88,13 @@ Two documented calls. The hardest open question in the s&box plan is a solved pr
 *(Minor known wart: procedurally saved meshes come out larger on disk than imported equivalents —
 a forum report, unquantified. Check it if file size matters.)*
 
+**And the gap widens again for rigged output.** s&box needs a source mesh in a format that carries a
+skeleton, which means writing SMD or DMX by hand. Godot takes bones and weights as `ARRAY_BONES` and
+`ARRAY_WEIGHTS` surface arrays on the same `ArrayMesh`, with a `Skeleton3D` beside it — no file
+format to author at all. On engineering merit alone the rigging stage is markedly easier in Godot.
+It still loses on the Marionette point above, which is about where the pipeline *ends* rather than
+how hard each stage is to build.
+
 ### Trap: baked collision is static-only
 
 `bake_collision_shape()` returns a **ConcavePolygonShape3D** — a trimesh. Trimesh collision does not
@@ -144,6 +158,9 @@ to read as a different category on sight, not as "another blockout plugin."
   cultural fit. Godot's users are developers, many with a Blender workflow already.
 - **It abandons a position that already exists.** s&box has loud unmet demand, a low bar, and
   Marionette already standing in it.
+- **The pipeline ends in Marionette, which is s&box-only.** A Godot modeller would have nothing to
+  hand its rigged output to, so the real cost is the modeller *plus* a second Marionette. This alone
+  probably settles it.
 - Most Godot editor plugins are GDScript; the C# editor-tool experience transfers only partly.
 
 **Verdict:** if the goal is reach and a pleasant build, Godot. If the goal is filling a hole nobody

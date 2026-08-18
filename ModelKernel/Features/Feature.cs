@@ -131,10 +131,16 @@ public sealed class BodySelectionParam : IParam
 
 // --- features ---------------------------------------------------------------------------------
 
-/// <summary>The body list a feature reads and writes as it runs.</summary>
+/// <summary>The state a feature reads and writes as it runs.</summary>
 public sealed class FeatureContext
 {
 	public List<Body> Bodies = new();
+
+	/// <summary>Sketches published by SketchFeature, keyed by that feature's id. Extrude and
+	/// Revolve look themselves up here rather than holding a reference, so editing the sketch
+	/// upstream and rebuilding feeds the new geometry through without any wiring to keep in sync.</summary>
+	public Dictionary<string, Sketch> Sketches = new();
+
 	int _nextId = 1;
 
 	public string NewBodyId() => $"body{_nextId++}";
