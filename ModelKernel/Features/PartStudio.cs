@@ -48,8 +48,27 @@ public sealed class PartStudio
 	/// <summary>Result of the last rebuild.</summary>
 	public List<Body> Bodies { get; private set; } = new();
 
-	// _cache[i] is the body list AFTER feature i ran. _cache[-1] is conceptually empty.
-	readonly List<List<Body>> _cache = new();
+	/// <summary>A snapshot of everything a feature can see, taken after each one runs.</summary>
+	sealed class Snapshot
+	{
+		public List<Body> Bodies;
+		public Dictionary<string, Sketch> Sketches;
+
+		public static Snapshot Of( FeatureContext ctx ) => new()
+		{
+			Bodies = ctx.Bodies.Select( b => b.Clone() ).ToList(),
+			Sketches = ctx.Sketches.ToDictionary( kv => kv.Key, kv => kv.Value.Clone() )
+		};
+
+		public void RestoreInto( FeatureContext ctx )
+		{
+			ctx.Bodies = Bodies.Select( b => b.Clone() ).ToList();
+			ctx.Sketches = Sketches.ToDictionary( kv => kv.Key, kv => kv.Value.Clone() );
+		}
+	}
+
+	// _cache[i] is the state AFTER feature i ran.
+	readonly List<Snapshot> _cache = new();
 	int _dirtyFrom;
 
 	public PartStudio()
@@ -145,9 +164,9 @@ public sealed class PartStudio
 
 		if ( reusableUpTo > 0 )
 		{
-			// Clone out of the cache rather than handing the cached list to the features, or the
+			// Clone out of the cache rather than handing the cached state to the features, or the
 			// next rebuild reuses a snapshot that a feature has since mutated.
-			ctx.Bodies = _cache[reusableUpTo - 1].Select( b => b.Clone() ).ToList();
+			_cache[reusableUpTo - 1].RestoreInto( ctx );
 			report.FeaturesReused = reusableUpTo;
 		}
 
@@ -171,7 +190,7 @@ public sealed class PartStudio
 			if ( feature.Error is not null )
 				report.Errors.Add( (feature.Id, feature.Error) );
 
-			_cache.Add( ctx.Bodies.Select( b => b.Clone() ).ToList() );
+			_cache.Add( Snapshot.Of( ctx ) );
 		}
 
 		// Features past the rollback bar are neither evaluated nor errors; just note them.
