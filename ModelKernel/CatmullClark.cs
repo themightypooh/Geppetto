@@ -64,6 +64,15 @@ public static class CatmullClark
 		//   [V+E .. V+E+F)           face points
 		var newPositions = new Vec3[vertCount + edgeCount + faceCount];
 
+		// Skin weights ride along through every rule below, using THE SAME COEFFICIENTS as the
+		// positions. That is not a nicety: every Catmull-Clark rule is an affine combination — its
+		// coefficients sum to 1 — so applying it to weights preserves "non-negative and sums to 1"
+		// automatically. A rigged cage stays correctly rigged at level 4 with no renormalisation
+		// step and no special cases. There is a test asserting exactly that.
+		var rigged = mesh.IsRigged;
+		var newWeights = rigged ? new BoneWeight[newPositions.Length][] : null;
+		var facePointWeights = rigged ? new BoneWeight[faceCount][] : null;
+
 		// --- face points -------------------------------------------------------------------
 		var facePoints = new Vec3[faceCount];
 
@@ -71,6 +80,19 @@ public static class CatmullClark
 		{
 			facePoints[fi] = mesh.FaceCentroid( mesh.Faces[fi] );
 			newPositions[vertCount + edgeCount + fi] = facePoints[fi];
+
+			if ( !rigged )
+				continue;
+
+			var face = mesh.Faces[fi];
+			var share = 1f / face.Count;
+			var corners = new List<(BoneWeight[], float)>( face.Count );
+
+			foreach ( var ci in face.Indices )
+				corners.Add( (mesh.Skin[ci], share) );
+
+			facePointWeights[fi] = SkinWeights.Blend( corners );
+			newWeights[vertCount + edgeCount + fi] = facePointWeights[fi];
 		}
 
 		// --- edge points -------------------------------------------------------------------
@@ -86,6 +108,11 @@ public static class CatmullClark
 				// Boundary edge: plain midpoint. Pulling it toward the single adjacent face point
 				// would drag the border inward, which is exactly the "my open mesh shrank" bug.
 				newPositions[vertCount + ei] = (a + b) * 0.5f;
+
+				if ( rigged )
+					newWeights[vertCount + ei] = SkinWeights.Blend(
+						(mesh.Skin[key.A], 0.5f), (mesh.Skin[key.B], 0.5f) );
+
 				continue;
 			}
 
@@ -98,6 +125,22 @@ public static class CatmullClark
 			// Written to average over faces.Count rather than assuming 2, so a non-manifold edge
 			// degrades to something sane instead of reading past the end.
 			newPositions[vertCount + ei] = (a + b + faceSum / faces.Count * 2f) * 0.25f;
+
+			if ( !rigged )
+				continue;
+
+			var edgeTerms = new List<(BoneWeight[], float)>( faces.Count + 2 )
+			{
+				(mesh.Skin[key.A], 0.25f),
+				(mesh.Skin[key.B], 0.25f)
+			};
+
+			var facePointShare = 0.5f / faces.Count;
+
+			foreach ( var fi in faces )
+				edgeTerms.Add( (facePointWeights[fi], facePointShare) );
+
+			newWeights[vertCount + ei] = SkinWeights.Blend( edgeTerms );
 		}
 
 		// --- updated original vertices -----------------------------------------------------
@@ -123,6 +166,13 @@ public static class CatmullClark
 					(mesh.Positions[boundaryNeighbours[0]]
 					 + v * 6f
 					 + mesh.Positions[boundaryNeighbours[1]]) / 8f;
+
+				if ( rigged )
+					newWeights[vi] = SkinWeights.Blend(
+						(mesh.Skin[boundaryNeighbours[0]], 0.125f),
+						(mesh.Skin[vi], 0.75f),
+						(mesh.Skin[boundaryNeighbours[1]], 0.125f) );
+
 				continue;
 			}
 
@@ -130,6 +180,10 @@ public static class CatmullClark
 			{
 				// A corner where several borders meet. Nothing sensible to interpolate, so pin it.
 				newPositions[vi] = v;
+
+				if ( rigged )
+					newWeights[vi] = mesh.Skin[vi];
+
 				continue;
 			}
 
@@ -141,6 +195,10 @@ public static class CatmullClark
 				// Valence 1 or 2 interior vertices are degenerate; the (n-3)/n term misbehaves.
 				// Pinning is the least surprising thing to do with them.
 				newPositions[vi] = v;
+
+				if ( rigged )
+					newWeights[vi] = mesh.Skin[vi];
+
 				continue;
 			}
 
@@ -163,10 +221,37 @@ public static class CatmullClark
 			r /= edges.Count;
 
 			newPositions[vi] = (f + r * 2f + v * (n - 3)) / n;
+
+			if ( !rigged )
+				continue;
+
+			// The same rule, expanded to per-input coefficients:
+			//   each adjacent face point   1/n^2        (F is itself an average over n faces)
+			//   each adjacent edge endpoint 1/(n*E)     (R averages midpoints, each half its ends)
+			//   the vertex itself           (n-3)/n
+			// which sums to (1 + 2 + n-3)/n = 1, as it must.
+			var vertexTerms = new List<(BoneWeight[], float)>( n + edges.Count * 2 + 1 );
+
+			foreach ( var fi in faces )
+				vertexTerms.Add( (facePointWeights[fi], 1f / (n * n)) );
+
+			var endpointShare = 1f / (n * edges.Count);
+
+			foreach ( var key in edges )
+			{
+				vertexTerms.Add( (mesh.Skin[key.A], endpointShare) );
+				vertexTerms.Add( (mesh.Skin[key.B], endpointShare) );
+			}
+
+			vertexTerms.Add( (mesh.Skin[vi], (n - 3f) / n) );
+			newWeights[vi] = SkinWeights.Blend( vertexTerms );
 		}
 
 		// --- new faces ---------------------------------------------------------------------
 		var result = new PolyMesh { Positions = new List<Vec3>( newPositions ) };
+
+		if ( rigged )
+			result.Skin = new SkinWeights { Vertices = new List<BoneWeight[]>( newWeights ) };
 
 		for ( var fi = 0; fi < faceCount; fi++ )
 		{

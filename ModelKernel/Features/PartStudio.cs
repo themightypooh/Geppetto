@@ -208,6 +208,29 @@ public sealed class PartStudio
 		return merged;
 	}
 
+	/// <summary>
+	/// The same merge as ToMesh, but recording which run of vertices came from which body.
+	///
+	/// This is what makes feature-bound rigging possible. Vertex indices are meaningless across a
+	/// rebuild — change one number upstream and every index after it moves — but body ids are
+	/// stable, so a rig stored as "body3 is the forearm" can be reapplied to the new geometry
+	/// instead of being invalidated by it. See SkinBinder.BindBodies.
+	/// </summary>
+	public (PolyMesh Mesh, List<BodyRange> Ranges) ToMeshWithBodies()
+	{
+		var merged = new PolyMesh();
+		var ranges = new List<BodyRange>( Bodies.Count );
+
+		foreach ( var b in Bodies )
+		{
+			var start = merged.VertexCount;
+			MeshTransform.Append( merged, b.Mesh );
+			ranges.Add( new BodyRange( b.Id, b.Name, start, merged.VertexCount - start ) );
+		}
+
+		return (merged, ranges);
+	}
+
 	public int TotalFaceCount => Bodies.Sum( b => b.Mesh.FaceCount );
 	public int TotalVertexCount => Bodies.Sum( b => b.Mesh.VertexCount );
 }
