@@ -17,41 +17,43 @@ namespace ModelKernel;
 /// 0.1/sqrt(3) = 0.058 thick. The model looks right and measures wrong, which is the worst kind of
 /// bug to ship.
 ///
-/// Thickness is a property of PLANES, not of vertices. So for each vertex this solves for the point
-/// that sits exactly `thickness` from every face plane meeting there:
+/// Thickness is a property of PLANES, not of vertices. So for each vertex this solves for the
+/// displacement d that puts the vertex exactly `thickness` from every face plane meeting there:
 ///
-///     for each adjacent face i:   dot( f_i, p' ) = dot( f_i, p ) - thickness
+///     for each adjacent face i:   dot( f_i, d ) = thickness,     minimising |d|
 ///
-/// which is a small overdetermined linear system, solved in the least-squares sense via the normal
-/// equations. At a box corner it returns exactly (t, t, t) — the wall is t thick on all three
-/// faces, and the vertex has moved t*sqrt(3), not t. There is a test that measures plane-to-plane
-/// distance directly rather than trusting the vertex positions.
+/// Minimising |d| matters as much as the constraints do. The system is underdetermined wherever
+/// fewer than three distinct planes meet — which is the normal case along the rim of an opening,
+/// where only the two side walls constrain the point. The least-norm solution slides the vertex
+/// straight in and not along the rim, which is what keeps an opening's edge flush instead of
+/// chamfered.
 ///
-/// WHAT THIS DOES NOT DO, stated plainly rather than discovered later:
+/// Solved in closed form by plane count, which is exact and needs no matrix machinery for the two
+/// common cases:
 ///
-///   - No self-intersection handling. Shell a shape by more than its own thinnest feature and the
-///     inner surface passes through itself. Detecting that needs the offset surface computed
-///     properly, which is a different and much larger algorithm.
-///   - Faces with no adjacent-plane rank-3 solution (a flat sheet, a vertex where every normal is
-///     coplanar) fall back to a scaled vertex-normal offset. That fallback is exact for symmetric
-///     cases and approximate otherwise, and it is reported by the returned diagnostics.
+///     one plane     d = t * f
+///     two planes    d = t / (1 + f0·f1) * (f0 + f1)          least-norm, exact
+///     three or more normal equations, in double precision
+///
+/// At a box corner that returns exactly (0.1, 0.1, 0.1) — the vertex travels t*sqrt(3), not t.
+///
+/// WHAT THIS DOES NOT DO, stated plainly rather than discovered later: no self-intersection
+/// handling. Shell a shape by more than its own thinnest feature and the inner surface passes
+/// through itself. Detecting that needs the offset surface computed properly, which is a different
+/// and much larger algorithm.
 /// </summary>
 public static class ShellOperation
 {
-	/// <summary>Faces whose normals differ by less than this are treated as one plane, so a
-	/// smoothly tessellated surface does not stack near-identical constraints into the solve and
-	/// make it ill-conditioned.</summary>
+	/// <summary>Faces whose normals differ by less than this are treated as one plane. Two coplanar
+	/// faces impose the same constraint twice, which would bias a least-squares fit toward whichever
+	/// plane happens to be split into more polygons — and a subdivided mesh splits every one.</summary>
 	const double DistinctPlaneTolerance = 1e-4;
 
-	/// <summary>
-	/// Hollow `mesh`, leaving walls `thickness` thick. Faces listed in `openFaces` are removed from
-	/// both surfaces and their rim is bridged, which is how you get a room you can see into.
-	/// </summary>
 	public static PolyMesh Shell( PolyMesh mesh, float thickness, IEnumerable<int> openFaces = null )
 		=> Shell( mesh, thickness, openFaces, out _ );
 
-	/// <summary>As Shell, and reports how many vertices needed the approximate fallback — zero on
-	/// every shape this kernel generates, and worth surfacing if it ever is not.</summary>
+	/// <summary>As Shell, and reports how many vertices could not be solved exactly. Zero on every
+	/// shape this kernel generates; worth surfacing if it ever is not.</summary>
 	public static PolyMesh Shell( PolyMesh mesh, float thickness, IEnumerable<int> openFaces, out int approximatedVertices )
 	{
 		if ( mesh is null )
@@ -84,8 +86,12 @@ public static class ShellOperation
 		for ( var fi = 0; fi < mesh.FaceCount; fi++ )
 			faceNormals[fi] = mesh.FaceNormal( mesh.Faces[fi] );
 
+		var edgeFaces = mesh.BuildEdgeFaces();
+		var rimEdges = FindRimEdges( edgeFaces, open );
+
+		RejectPinchedOpenings( rimEdges );
+
 		var vertexFaces = mesh.BuildVertexFaces();
-		var vertexNormals = mesh.ComputeVertexNormals();
 
 		// --- inner surface positions -------------------------------------------------------
 		var inner = new Vec3[mesh.VertexCount];
@@ -93,23 +99,23 @@ public static class ShellOperation
 
 		for ( var vi = 0; vi < mesh.VertexCount; vi++ )
 		{
-			var planes = DistinctNormals( vertexFaces[vi], faceNormals );
+			// AN OPENED FACE MUST NOT CONSTRAIN THE SOLVE. It is being deleted, so requiring the
+			// inner surface to stand `thickness` clear of it pulls the wall back from the opening
+			// and turns the rim into a 45-degree chamfer instead of a flat band of wall.
+			var planes = DistinctNormals( vertexFaces[vi].Where( fi => !open.Contains( fi ) ), faceNormals );
 
-			if ( TrySolveOffset( mesh.Positions[vi], planes, thickness, out inner[vi] ) )
+			if ( planes.Count == 0 )
+			{
+				// Every face here was opened, so this vertex survives in neither surface. Its
+				// position is never referenced; leaving it put is tidier than inventing one.
+				inner[vi] = mesh.Positions[vi];
 				continue;
+			}
 
-			// Rank-deficient: every plane here is parallel or the normals are coplanar. Fall back to
-			// the vertex normal, corrected by the angle to the faces so the wall is still `thickness`
-			// where it can be. Exact when the corner is symmetric, approximate otherwise.
-			approximatedVertices++;
+			if ( !TrySolveDisplacement( planes, thickness, out var displacement ) )
+				approximatedVertices++;
 
-			var n = vertexNormals[vi];
-			var cos = planes.Count > 0 ? planes.Max( f => Vec3.Dot( n, f ) ) : 1f;
-
-			if ( cos < 1e-4f )
-				cos = 1f;
-
-			inner[vi] = mesh.Positions[vi] - n * (thickness / cos);
+			inner[vi] = mesh.Positions[vi] - displacement;
 		}
 
 		// --- assemble ----------------------------------------------------------------------
@@ -121,6 +127,23 @@ public static class ShellOperation
 
 		foreach ( var p in inner )
 			result.AddVertex( p );
+
+		// The inner surface is the outer one displaced, so a rigged mesh keeps its rig: each inner
+		// vertex carries the weights of the outer vertex it came from. Without this, shelling a
+		// rigged body silently unrigs it — which is exactly what PolyMesh.Skin's own comment warns
+		// about anything that rebuilds a vertex list.
+		if ( mesh.IsRigged )
+		{
+			var skin = new SkinWeights();
+
+			foreach ( var w in mesh.Skin.Vertices )
+				skin.Vertices.Add( (BoneWeight[])w.Clone() );
+
+			foreach ( var w in mesh.Skin.Vertices )
+				skin.Vertices.Add( (BoneWeight[])w.Clone() );
+
+			result.Skin = skin;
+		}
 
 		var offset = mesh.VertexCount;
 
@@ -148,94 +171,185 @@ public static class ShellOperation
 			result.AddFace( innerIndices, innerUVs, f.Material );
 		}
 
-		// --- rim, where faces were opened --------------------------------------------------
-		if ( open.Count > 0 )
-			BridgeOpening( mesh, result, open, faceNormals, offset );
+		foreach ( var (edge, removed) in rimEdges )
+			AddRimQuad( result, mesh, edge, removed, faceNormals, offset );
 
 		return result;
 	}
 
 	/// <summary>
-	/// Close the gap between the two surfaces around every opened face, so the result is a solid
-	/// with a hole in it rather than two loose sheets.
+	/// Edges where exactly one of the two adjacent faces was opened — the border of the hole, and
+	/// the only place a rim is needed. An edge between two opened faces is interior to the opening
+	/// and simply disappears.
 	/// </summary>
-	static void BridgeOpening( PolyMesh mesh, PolyMesh result, HashSet<int> open, Vec3[] faceNormals, int offset )
+	static List<(EdgeKey Edge, int RemovedFace)> FindRimEdges( Dictionary<EdgeKey, List<int>> edgeFaces, HashSet<int> open )
 	{
-		foreach ( var (edge, faces) in mesh.BuildEdgeFaces() )
+		var rim = new List<(EdgeKey, int)>();
+
+		if ( open.Count == 0 )
+			return rim;
+
+		foreach ( var (edge, faces) in edgeFaces )
 		{
 			if ( faces.Count != 2 )
 				continue;
 
-			var keptCount = faces.Count( fi => !open.Contains( fi ) );
+			var openCount = faces.Count( open.Contains );
 
-			// Only edges on the border of the opening need bridging: one side survived, one did not.
-			if ( keptCount != 1 )
-				continue;
-
-			var removed = faces.First( open.Contains );
-
-			var a = edge.A;
-			var b = edge.B;
-
-			var quad = new[] { a, b, b + offset, a + offset };
-
-			// The rim faces the way the removed face did. Rather than deriving the winding from the
-			// kept face's traversal order — which depends on the mesh's own conventions and is easy
-			// to get backwards — build it, measure it, and flip it if it points inward. Same posture
-			// as the revolve sweep check, and for the same reason: an inverted face is invisible in
-			// wireframe.
-			var normal = NewellNormal( result, quad );
-
-			if ( Vec3.Dot( normal, faceNormals[removed] ) < 0f )
-				Array.Reverse( quad );
-
-			result.AddFace( quad, new[] { new Vec2( 0, 0 ), new Vec2( 1, 0 ), new Vec2( 1, 1 ), new Vec2( 0, 1 ) },
-				mesh.Faces[removed].Material );
+			if ( openCount == 1 )
+				rim.Add( (edge, faces.First( open.Contains )) );
 		}
+
+		return rim;
 	}
 
 	/// <summary>
-	/// The vertex offset solve: find p' with dot(f_i, p') = dot(f_i, p) - thickness for every
-	/// adjacent plane, in the least-squares sense.
+	/// Refuse an opening that pinches to a point.
 	///
-	/// Built as the normal equations (A^T A) p' = A^T b and solved by Cramer's rule. Done in double
-	/// precision — the kernel is float everywhere else, but a 3x3 determinant of nearly-parallel
-	/// normals loses far too many digits in single, and this is the one place the answer is a
-	/// difference of similar quantities.
+	/// If two opened faces meet at only a VERTEX — diagonally opposite quads of a subdivided face,
+	/// say — then four rim edges meet there, and every rim quad built on them contains the same
+	/// outer-to-inner edge. The result is an edge shared by four faces: non-manifold, and something
+	/// no exporter or physics system will accept.
 	///
-	/// Returns false when the system is rank-deficient, meaning the adjacent planes do not pin the
-	/// point down in all three axes. The caller decides what to do about it rather than getting a
-	/// silently wrong answer.
+	/// Splitting the vertex to separate the two rims is the proper fix and a much larger change.
+	/// Until then this is refused loudly rather than returned broken, because a silently
+	/// non-manifold mesh fails much later and somewhere else.
 	/// </summary>
-	static bool TrySolveOffset( Vec3 p, List<Vec3> planes, float thickness, out Vec3 solved )
+	static void RejectPinchedOpenings( List<(EdgeKey Edge, int RemovedFace)> rimEdges )
 	{
-		solved = p;
+		if ( rimEdges.Count == 0 )
+			return;
 
-		if ( planes.Count < 3 )
+		var incident = new Dictionary<int, int>();
+
+		foreach ( var (edge, _) in rimEdges )
+		{
+			incident.TryGetValue( edge.A, out var a );
+			incident[edge.A] = a + 1;
+			incident.TryGetValue( edge.B, out var b );
+			incident[edge.B] = b + 1;
+		}
+
+		foreach ( var (vertex, count) in incident )
+		{
+			// A vertex on a simple boundary loop has exactly two rim edges. More means two separate
+			// stretches of rim meet there.
+			if ( count > 2 )
+				throw new InvalidOperationException(
+					$"The opened faces pinch to a point at vertex {vertex}: {count} rim edges meet there, "
+					+ "which would produce a non-manifold mesh. Open faces that share an edge, or leave a "
+					+ "face between them." );
+		}
+	}
+
+	static void AddRimQuad( PolyMesh result, PolyMesh source, EdgeKey edge, int removedFace, Vec3[] faceNormals, int offset )
+	{
+		var quad = new[] { edge.A, edge.B, edge.B + offset, edge.A + offset };
+		var uvs = new[] { new Vec2( 0, 0 ), new Vec2( 1, 0 ), new Vec2( 1, 1 ), new Vec2( 0, 1 ) };
+
+		// The rim faces the way the removed face did. Rather than deriving the winding from the kept
+		// face's traversal order — which depends on the mesh's own conventions and is easy to get
+		// backwards — build it, measure it, and flip it if it points inward. Same posture as the
+		// revolve sweep check, and for the same reason: an inverted face is invisible in wireframe.
+		if ( Vec3.Dot( NewellNormal( result, quad ), faceNormals[removedFace] ) < 0f )
+		{
+			// Reverse the UVs alongside the indices, or a flipped quad ends up mirrored relative to
+			// its unflipped neighbours along the same rim.
+			Array.Reverse( quad );
+			Array.Reverse( uvs );
+		}
+
+		result.AddFace( quad, uvs, source.Faces[removedFace].Material );
+	}
+
+	/// <summary>
+	/// The displacement d satisfying dot(f_i, d) = thickness for every adjacent plane, with the
+	/// smallest possible magnitude.
+	///
+	/// Returns false when no exact solution exists — anti-parallel planes, or three-plus planes whose
+	/// normals do not span three dimensions and are mutually inconsistent. The caller is told rather
+	/// than handed a silently wrong answer.
+	/// </summary>
+	static bool TrySolveDisplacement( List<Vec3> planes, float thickness, out Vec3 displacement )
+	{
+		switch ( planes.Count )
+		{
+			case 0:
+				displacement = Vec3.Zero;
+				return false;
+
+			// Flat region: straight in along the one normal.
+			case 1:
+				displacement = planes[0] * thickness;
+				return true;
+
+			// An edge. The constraint pins two directions and leaves the third free; the least-norm
+			// solution takes no step along the edge at all, which is what keeps a rim flush.
+			//
+			//   d = a*f0 + b*f1, and symmetry gives a = b = t / (1 + f0·f1)
+			case 2:
+				return TrySolvePair( planes[0], planes[1], thickness, out displacement );
+
+			default:
+			{
+				if ( TrySolveNormalEquations( planes, thickness, out displacement ) )
+					return true;
+
+				// Rank-deficient with three or more planes: the normals lie in a plane or a line, so
+				// the corner is not a corner. Fall back to the two most independent of them, which is
+				// exact whenever the remaining planes are redundant and approximate otherwise.
+				var (a, b) = MostIndependentPair( planes );
+				TrySolvePair( planes[a], planes[b], thickness, out displacement );
+				return false;
+			}
+		}
+	}
+
+	static bool TrySolvePair( Vec3 f0, Vec3 f1, float thickness, out Vec3 displacement )
+	{
+		var c = Vec3.Dot( f0, f1 );
+
+		// Anti-parallel planes face away from each other, so no single step is `thickness` clear of
+		// both. That is a zero-thickness sheet, not a solid.
+		if ( 1f + c < 1e-6f )
+		{
+			displacement = f0 * thickness;
 			return false;
+		}
 
-		// A^T A, symmetric, and A^T b.
+		displacement = (f0 + f1) * (thickness / (1f + c));
+		return true;
+	}
+
+	/// <summary>
+	/// Least squares through the normal equations (A^T A) d = A^T b, by Cramer's rule.
+	///
+	/// Double precision on purpose. The kernel is float everywhere else, but this is the one place
+	/// the answer comes from a difference of similar quantities, and a 3x3 determinant of
+	/// near-parallel normals loses far too many digits in single.
+	/// </summary>
+	static bool TrySolveNormalEquations( List<Vec3> planes, float thickness, out Vec3 displacement )
+	{
+		displacement = Vec3.Zero;
+
 		var m = new double[3, 3];
 		var rhs = new double[3];
 
 		foreach ( var f in planes )
 		{
 			double fx = f.x, fy = f.y, fz = f.z;
-			var target = fx * p.x + fy * p.y + fz * p.z - thickness;
 
 			m[0, 0] += fx * fx; m[0, 1] += fx * fy; m[0, 2] += fx * fz;
 			m[1, 0] += fy * fx; m[1, 1] += fy * fy; m[1, 2] += fy * fz;
 			m[2, 0] += fz * fx; m[2, 1] += fz * fy; m[2, 2] += fz * fz;
 
-			rhs[0] += fx * target;
-			rhs[1] += fy * target;
-			rhs[2] += fz * target;
+			rhs[0] += fx * thickness;
+			rhs[1] += fy * thickness;
+			rhs[2] += fz * thickness;
 		}
 
 		var det = Determinant( m );
 
-		// A^T A has determinant 1 only when the normals span all three axes well. Scale the
-		// threshold by the number of planes, since each contributes to the magnitude.
 		if ( Math.Abs( det ) < 1e-9 * planes.Count )
 			return false;
 
@@ -246,8 +360,34 @@ public static class ShellOperation
 		if ( double.IsNaN( x ) || double.IsNaN( y ) || double.IsNaN( z ) )
 			return false;
 
-		solved = new Vec3( (float)x, (float)y, (float)z );
+		displacement = new Vec3( (float)x, (float)y, (float)z );
 		return true;
+	}
+
+	/// <summary>The two normals furthest from parallel, which are the best-conditioned pair to solve
+	/// with when the full set is rank-deficient.</summary>
+	static (int, int) MostIndependentPair( List<Vec3> planes )
+	{
+		var bestA = 0;
+		var bestB = 1;
+		var lowest = float.MaxValue;
+
+		for ( var i = 0; i < planes.Count; i++ )
+		{
+			for ( var j = i + 1; j < planes.Count; j++ )
+			{
+				var dot = MathF.Abs( Vec3.Dot( planes[i], planes[j] ) );
+
+				if ( dot < lowest )
+				{
+					lowest = dot;
+					bestA = i;
+					bestB = j;
+				}
+			}
+		}
+
+		return (bestA, bestB);
 	}
 
 	static double Determinant( double[,] m ) =>
@@ -265,12 +405,9 @@ public static class ShellOperation
 		return copy;
 	}
 
-	/// <summary>Adjacent face normals with near-duplicates collapsed. Two coplanar faces impose the
-	/// same constraint twice, which biases a least-squares fit toward whichever plane happens to be
-	/// split into more polygons.</summary>
-	static List<Vec3> DistinctNormals( List<int> faces, Vec3[] faceNormals )
+	static List<Vec3> DistinctNormals( IEnumerable<int> faces, Vec3[] faceNormals )
 	{
-		var distinct = new List<Vec3>( faces.Count );
+		var distinct = new List<Vec3>( 4 );
 
 		foreach ( var fi in faces )
 		{

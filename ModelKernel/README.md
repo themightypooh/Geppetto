@@ -23,7 +23,7 @@ cd ModelKernel.Tests
 dotnet run -- out
 ```
 
-332 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
+344 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
 2-level-subdivided version of each. Those are the fastest way to see whether something is actually
 right: open them in Blender, or drop one into ModelDoc to find out what s&box makes of it.
 
@@ -184,8 +184,19 @@ this avoids. A faceted cylinder makes the point sharpest: its inner vertices lan
 `r - t/cos(pi/n)`, strictly tighter than a naive `r - t`, and that closed form is what the test
 checks.
 
-Known limit, stated rather than discovered: there is no self-intersection handling. Shell a shape by
-more than its thinnest feature and the inner surface passes through itself.
+An opened face does **not** constrain the solve. It is being deleted, so requiring the inner surface
+to stand clear of it would pull the wall back and turn the rim into a 45-degree chamfer instead of a
+flat band. Dropping those constraints leaves rim vertices with only two planes, which is why the
+solver takes the **least-norm** solution rather than any solution: it slides the vertex straight in
+and not along the rim.
+
+Known limits, stated rather than discovered:
+
+- **No self-intersection handling.** Shell a shape by more than its thinnest feature and the inner
+  surface passes through itself.
+- **Openings must form simple loops.** Two opened faces meeting at only a vertex would put four rim
+  quads on one outer-to-inner edge — non-manifold, and nothing downstream accepts it. That case is
+  refused with an explanation rather than returned broken.
 
 ## Not here yet
 

@@ -92,15 +92,31 @@ public sealed class ShellFeature : Feature
 	public readonly BodySelectionParam Bodies = new( "Bodies" );
 	public readonly FloatParam Thickness = new( "Wall thickness", 0.1f, 0.0001f, unit: "u" );
 
-	/// <summary>Face indices to leave open. Not an IParam — a viewport sets this by picking, and a
-	/// numeric list in a dialog would be unusable.</summary>
+	/// <summary>
+	/// Face indices to leave open. Not an IParam — a viewport sets this by picking, and a numeric
+	/// list in a dialog would be unusable.
+	///
+	/// These indices are applied to EVERY selected body, which only makes sense when one body is
+	/// selected. That is the normal case for a room, and the alternative — per-body face sets —
+	/// needs a selection model the kernel does not have yet.
+	/// </summary>
 	public readonly List<int> OpenFaces = new();
 
 	public override IReadOnlyList<IParam> Parameters => new IParam[] { Bodies, Thickness };
 
 	protected override void Execute( FeatureContext ctx )
 	{
-		foreach ( var body in ctx.Bodies.Where( Bodies.Matches ).ToList() )
-			body.Mesh = ShellOperation.Shell( body.Mesh, Thickness.Clamped, OpenFaces );
+		var targets = ctx.Bodies.Where( Bodies.Matches ).ToList();
+
+		// Shell everything before assigning anything. Feature.Run promises that a failed feature
+		// leaves the bodies as they were, and mutating in place breaks that promise the moment the
+		// third body of four throws — you get a half-shelled model and an error message.
+		var shelled = new List<PolyMesh>( targets.Count );
+
+		foreach ( var body in targets )
+			shelled.Add( ShellOperation.Shell( body.Mesh, Thickness.Clamped, OpenFaces ) );
+
+		for ( var i = 0; i < targets.Count; i++ )
+			targets[i].Mesh = shelled[i];
 	}
 }

@@ -29,6 +29,114 @@ public static class ShellTests
 
 		Section( "shell: in the feature tree" );
 		TestFeature();
+
+		Section( "shell: regressions from review" );
+		TestReviewRegressions();
+	}
+
+	/// <summary>
+	/// Every one of these is a bug that shipped and was caught by review rather than by the suite.
+	/// They are kept together deliberately: the tests above check that shell is right, and these
+	/// check the specific ways it was wrong.
+	/// </summary>
+	static void TestReviewRegressions()
+	{
+		// 1. Openings that pinch to a point produced a non-manifold mesh - an edge shared by four
+		//    faces - because four rim quads all contained the same outer-to-inner edge.
+		var subdivided = CatmullClark.Subdivide( Primitives.Box( 2, 2, 2 ), 1 );
+		var threw = false;
+
+		try { ShellOperation.Shell( subdivided, 0.05f, new[] { 0, 2 } ); }
+		catch ( InvalidOperationException ) { threw = true; }
+
+		Check( "an opening pinched at a vertex is refused, not returned broken", threw );
+
+		// ...but openings that share an edge are perfectly legal and must still work.
+		var adjacent = ShellOperation.Shell( subdivided, 0.05f, new[] { 0, 1 } );
+		Check( "two openings sharing an edge still shell cleanly",
+			MeshValidator.Validate( adjacent ).IsValid && MeshValidator.Validate( adjacent ).IsClosed,
+			MeshValidator.Validate( adjacent ).ToString() );
+
+		// 2. Opened faces were still constraining the vertex solve, so the wall was pulled back by
+		//    the thickness and the rim came out as a 45-degree chamfer instead of a flat band.
+		var box = Primitives.Box( 2, 2, 2 );
+		var opened = ShellOperation.Shell( box, 0.1f, new[] { 0 } );
+		var openedNormal = box.FaceNormal( box.Faces[0] );
+		var worstDrift = 0f;
+
+		foreach ( var vi in box.Faces[0].Indices )
+		{
+			// A vertex on the rim must stay exactly in the opened face's plane, not retreat from it.
+			var outer = box.Positions[vi];
+			var inner = opened.Positions[vi + box.VertexCount];
+			worstDrift = MathF.Max( worstDrift, MathF.Abs( Vec3.Dot( openedNormal, outer - inner ) ) );
+		}
+
+		Check( "the rim stays flush with the opened face", worstDrift < 1e-5f, $"drifted {worstDrift:0.######}" );
+		Check( "so an opened box encloses exactly 1.844", Near( Volume( opened ), 1.844f, 1e-3f ),
+			$"{Volume( opened ):0.####}" );
+
+		// 3. The rank-deficient fallback divided by the LARGEST cosine where it needed the smallest,
+		//    making walls too thin wherever one flat face was split into several coplanar polygons -
+		//    which subdivision does to every face.
+		var split = ShellOperation.Shell( subdivided, 0.1f, null, out var approximated );
+		Check( "coplanar-split faces still give exact thickness",
+			WorstPlaneError( subdivided, split, 0.1f ) < 1e-4f,
+			$"worst {WorstPlaneError( subdivided, split, 0.1f ):0.#######}" );
+		Check( "and need no approximation at all", approximated == 0, $"{approximated} approximated" );
+
+		// 4. Shelling silently threw away a rig, because the result rebuilt the vertex list without
+		//    rebuilding the weights alongside it.
+		var rigged = Primitives.Box( 2, 2, 2 );
+		var skeleton = new Skeleton();
+		skeleton.AddBoneFromPoints( "root", -1, new Vec3( 0, 0, -1 ), new Vec3( 0, 0, 1 ) );
+		rigged.Skin = SkinBinder.BindRigid( rigged, skeleton );
+
+		var riggedShell = ShellOperation.Shell( rigged, 0.1f );
+		Check( "a rigged body survives shelling", riggedShell.IsRigged );
+		Check( "with valid weights", riggedShell.Skin.Validate( riggedShell.VertexCount, skeleton.Count ).Count == 0 );
+		Check( "and the inner surface inherits the outer's weights",
+			Enumerable.Range( 0, rigged.VertexCount ).All( i =>
+				riggedShell.Skin[i].Length == riggedShell.Skin[i + rigged.VertexCount].Length
+				&& riggedShell.Skin[i][0].Bone == riggedShell.Skin[i + rigged.VertexCount][0].Bone ) );
+
+		// 5. The feature mutated bodies in place, so a throw partway left earlier bodies shelled -
+		//    breaking Feature.Run's promise that a failed feature changes nothing.
+		var studio = new PartStudio();
+
+		var cylinder = studio.Add( new PrimitiveFeature() );
+		cylinder.Shape.Index = 1;
+		cylinder.Segments.Value = 16;
+
+		var boxFeature = studio.Add( new PrimitiveFeature() );
+
+		var shell = studio.Add( new ShellFeature() );
+		shell.Thickness.Value = 0.05f;
+		shell.OpenFaces.Add( 7 );   // valid on the 18-face cylinder, out of range on the 6-face box
+
+		studio.Rebuild();
+
+		Check( "a shell that fails partway records an error", shell.Error is not null, shell.Error );
+		Check( "and leaves every body untouched",
+			studio.Bodies.All( b => b.Mesh.FaceCount is 18 or 6 ),
+			string.Join( ",", studio.Bodies.Select( b => b.Mesh.FaceCount ) ) );
+
+		// 6. Flipped rim quads had their indices reversed but not their UVs, so they mapped mirrored
+		//    relative to the unflipped quads beside them.
+		var rimFaces = opened.Faces.Skip( 10 ).ToList();   // 5 outer + 5 inner, then the rim
+		var outerV = new HashSet<float>();
+
+		foreach ( var face in rimFaces )
+		{
+			for ( var i = 0; i < face.Count; i++ )
+			{
+				if ( face.Indices[i] < box.VertexCount )
+					outerV.Add( MathF.Round( face.UVs[i].y, 3 ) );
+			}
+		}
+
+		Check( "every rim quad maps its outer edge to the same UV row", outerV.Count == 1,
+			string.Join( ",", outerV ) );
 	}
 
 	// --- the important one --------------------------------------------------------------
