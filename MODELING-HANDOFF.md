@@ -216,7 +216,7 @@ turns out to be the actual point.
 
 ## Phase one — the parametric base
 
-Much of this now exists in `ModelKernel/`, engine-free and with 248 checks behind it. See that
+Much of this now exists in `Effigy/`, engine-free and with 248 checks behind it. See that
 folder's README for the design decisions; the status here is what remains.
 
 1. **Parametric primitives** — box, plane, cylinder, quad sphere, wedge, tube. **Done.**
@@ -226,11 +226,12 @@ folder's README for the design decisions; the status here is what remains.
    **Done**, modelled on Onshape's Part Studio.
 3. **Sketcher** — planes, lines, arcs, circles, closed-region finding, extrude, revolve. **Done.**
    The constraint solver is not: coordinates are typed rather than derived.
-4. **Modifiers** — bevel, shell. Array and mirror are **done**; bevel and shell are not.
+4. **Modifiers** — array, mirror, bevel (flat chamfer by angle threshold, not yet a rounded fillet)
+   and shell are **done**.
 5. **Boolean subtract**, which also unlocks profiles with holes. Not started.
-6. **Planar/box-projection auto-UV per face cluster.** Primitives and sketch solids carry real UVs
-   already; a general projection modifier does not exist. These UVs are what the phase-two
-   normal-map bake consumes, so they have to be real rather than placeholder.
+6. **Planar/box-projection auto-UV per face cluster.** **Done** — `UVProjectFeature` re-projects box
+   or planar per selected bodies. These UVs are what the phase-two normal-map bake consumes, so they
+   have to be real rather than placeholder.
 7. **Export** — OBJ works. Collision from the primitive list rather than from triangles is not
    built.
 
@@ -238,7 +239,7 @@ Live tree throughout: change any number, the model rebuilds.
 
 ## Phase two — subdivide and sculpt
 
-1. Catmull-Clark subdivision, levels 0–4, switchable — **done, in `ModelKernel/CatmullClark.cs`**
+1. Catmull-Clark subdivision, levels 0–4, switchable — **done, in `Effigy/CatmullClark.cs`**
 2. Brushes — grab, inflate, smooth, pinch, flatten, clay — with BVH hit-testing
 3. Multires displacement deltas, so the base cage survives underneath the sculpt
 4. Normal-map bake from the dense mesh down onto the cage
