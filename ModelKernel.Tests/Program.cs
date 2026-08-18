@@ -64,6 +64,8 @@ public static class Program
 
 		SketchTests.Run();
 
+		ShellTests.Run();
+
 		Section( "writing sample OBJs" );
 		WriteSamples( outDir );
 

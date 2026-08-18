@@ -23,7 +23,7 @@ cd ModelKernel.Tests
 dotnet run -- out
 ```
 
-291 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
+332 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
 2-level-subdivided version of each. Those are the fastest way to see whether something is actually
 right: open them in Blender, or drop one into ModelDoc to find out what s&box makes of it.
 
@@ -45,6 +45,7 @@ Exit code is non-zero on failure, so it works as a pre-commit or CI check unchan
 | `Features/SketchFeatures.cs` | extrude, revolve |
 | `Sketching/Sketch.cs` | sketch planes and closed profiles, with ready-made rectangle/circle/rounded shapes |
 | `Sketching/SketchSolids.cs` | extrude and revolve, quad-walled with real UVs |
+| `ShellOperation.cs` | hollow a solid to an exact wall thickness, with optional openings |
 | `Rig/Skeleton.cs` | bones, bind pose, world transforms from the parent chain |
 | `Rig/SkinWeights.cs` | per-vertex influences, blending and pruning |
 | `Rig/SkinBinder.cs` | auto-binding by distance or by body, plus weight smoothing |
@@ -156,7 +157,37 @@ as a black hole. Revolve is worse than extrude because the sweep direction is no
 front — it depends on the axis, which side the profile sits on, and the sign of the angle — so it
 is measured per revolve. That bug was caught by the volume test, not by looking.
 
+## Shell, and why the obvious version is wrong
+
+Hollowing a solid looks like a one-liner: push every vertex along its normal by the wall thickness.
+That is incorrect at every corner, and quietly so.
+
+A box corner's area-weighted normal is `(1,1,1)/sqrt(3)`. Move it 0.1 along that and each wall ends
+up `0.1/sqrt(3)` = **0.058** thick. The model looks perfectly fine and measures wrong — the worst
+kind of bug, because nothing in a render tells you.
+
+Thickness is a property of **planes**, not vertices. So for each vertex the kernel solves for the
+point sitting exactly `thickness` from every face plane meeting there:
+
+```
+for each adjacent face i:   dot( f_i, p' ) = dot( f_i, p ) - thickness
+```
+
+an overdetermined system solved by least squares through the normal equations, in double precision
+because a 3x3 determinant of near-parallel normals loses too many digits in single. At a box corner
+it returns exactly `(0.9, 0.9, 0.9)` — the vertex travels `t*sqrt(3)`, not `t`, which is the correct
+answer and the one the naive version misses.
+
+The tests measure **plane-to-plane distance**, not vertex movement, across a box, cylinder, wedge,
+extrusion and revolve. Asserting that a vertex moved by `thickness` would enshrine the exact bug
+this avoids. A faceted cylinder makes the point sharpest: its inner vertices land at
+`r - t/cos(pi/n)`, strictly tighter than a naive `r - t`, and that closed form is what the test
+checks.
+
+Known limit, stated rather than discovered: there is no self-intersection handling. Shell a shape by
+more than its thinnest feature and the inner surface passes through itself.
+
 ## Not here yet
 
-The sketch constraint solver, fillet and chamfer, shell, boolean subtract, planar UV projection.
+The sketch constraint solver, fillet and chamfer, boolean subtract, planar UV projection.
 Then the whole phase-two sculpt side — brushes, multires deltas, normal-map bake.

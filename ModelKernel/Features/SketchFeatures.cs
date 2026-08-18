@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace ModelKernel;
 
@@ -74,5 +75,32 @@ public sealed class RevolveFeature : Feature
 
 		var mesh = SketchSolids.Revolve( Sketch.Value, point, direction, Degrees.Value, Segments.Clamped, Material.Clamped );
 		ctx.Bodies.Add( new Body( ctx.NewBodyId(), Name, mesh ) );
+	}
+}
+
+/// <summary>
+/// Hollow the selected bodies to a wall thickness. The "make a room" feature.
+///
+/// OpenFaces is an index list because there is no face selection in the kernel yet — a viewport
+/// would set it by clicking. Left empty, the result is a sealed hollow solid, which is what you
+/// want for something that only needs to be light rather than enterable.
+/// </summary>
+public sealed class ShellFeature : Feature
+{
+	public override string TypeName => "Shell";
+
+	public readonly BodySelectionParam Bodies = new( "Bodies" );
+	public readonly FloatParam Thickness = new( "Wall thickness", 0.1f, 0.0001f, unit: "u" );
+
+	/// <summary>Face indices to leave open. Not an IParam — a viewport sets this by picking, and a
+	/// numeric list in a dialog would be unusable.</summary>
+	public readonly List<int> OpenFaces = new();
+
+	public override IReadOnlyList<IParam> Parameters => new IParam[] { Bodies, Thickness };
+
+	protected override void Execute( FeatureContext ctx )
+	{
+		foreach ( var body in ctx.Bodies.Where( Bodies.Matches ).ToList() )
+			body.Mesh = ShellOperation.Shell( body.Mesh, Thickness.Clamped, OpenFaces );
 	}
 }
