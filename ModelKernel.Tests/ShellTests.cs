@@ -85,6 +85,19 @@ public static class ShellTests
 			$"worst {WorstPlaneError( subdivided, split, 0.1f ):0.#######}" );
 		Check( "and need no approximation at all", approximated == 0, $"{approximated} approximated" );
 
+		// 3b. On a CURVED surface there is no point exactly `thickness` from every neighbouring face
+		//     plane, because the neighbours disagree. The normal equations return a least-squares
+		//     compromise regardless and used to report it as exact, making the approximated count
+		//     meaningless. It is now measured against the residual.
+		var curved = CatmullClark.Subdivide( Primitives.Box( 2, 2, 2 ), 2 );
+		ShellOperation.Shell( curved, 0.1f, null, out var curvedApprox );
+
+		Check( "a curved surface honestly reports vertices it cannot solve exactly", curvedApprox > 0,
+			$"{curvedApprox} approximated" );
+		Check( "but the answer stays the least-squares one, so the error stays small",
+			WorstPlaneError( curved, ShellOperation.Shell( curved, 0.1f ), 0.1f ) < 1e-3f,
+			$"worst {WorstPlaneError( curved, ShellOperation.Shell( curved, 0.1f ), 0.1f ):0.#######}" );
+
 		// 4. Shelling silently threw away a rig, because the result rebuilt the vertex list without
 		//    rebuilding the weights alongside it.
 		var rigged = Primitives.Box( 2, 2, 2 );

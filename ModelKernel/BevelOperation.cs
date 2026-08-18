@@ -70,8 +70,29 @@ public static class BevelOperation
 		var insetIndex = new int[mesh.FaceCount][];
 		var insetUV = new Vec2[mesh.FaceCount][];
 
+		// Which original vertex each new one came from. Every inset vertex is one face corner, so
+		// this is exact rather than a nearest-match — which is what lets the rig come along.
+		var sourceVertex = new List<int>();
+
 		for ( var fi = 0; fi < mesh.FaceCount; fi++ )
+		{
 			InsetFace( mesh, fi, faceNormals[fi], distance, result, out insetIndex[fi], out insetUV[fi] );
+
+			foreach ( var original in mesh.Faces[fi].Indices )
+				sourceVertex.Add( original );
+		}
+
+		// A bevelled body keeps its rig. Shell had to be taught this after shipping without it; the
+		// rule is that anything rebuilding a vertex list rebuilds the weights beside it.
+		if ( mesh.IsRigged )
+		{
+			var skin = new SkinWeights();
+
+			foreach ( var original in sourceVertex )
+				skin.Vertices.Add( (BoneWeight[])mesh.Skin[original].Clone() );
+
+			result.Skin = skin;
+		}
 
 		// --- one face per original face ----------------------------------------------------
 		for ( var fi = 0; fi < mesh.FaceCount; fi++ )

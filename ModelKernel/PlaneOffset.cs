@@ -37,9 +37,10 @@ public static class PlaneOffset
 	/// The displacement satisfying every plane's distance constraint, with the smallest magnitude.
 	///
 	/// Returns false when no exact solution exists: anti-parallel planes, which face away from each
-	/// other so no single step clears both, or three-plus planes whose normals neither span three
-	/// dimensions nor agree. `displacement` still receives the best available answer, so a caller
-	/// that wants to carry on can, but it has been told.
+	/// other so no single step clears both, or three-plus planes that simply cannot all be satisfied
+	/// at once — which is the ordinary case on a curved surface, where a vertex's several
+	/// almost-coplanar neighbours disagree slightly. `displacement` still receives the best
+	/// available answer, so a caller that wants to carry on can, but it has been told.
 	/// </summary>
 	public static bool TrySolve( IReadOnlyList<Vec3> planeNormals, float distance, out Vec3 displacement )
 	{
@@ -64,16 +65,49 @@ public static class PlaneOffset
 			default:
 			{
 				if ( TrySolveNormalEquations( planeNormals, distance, out displacement ) )
-					return true;
+				{
+					// A least-squares answer that cannot satisfy every constraint is still the best
+					// available one, so it is KEPT and merely reported as inexact. Replacing it with
+					// something simpler here would trade a good answer for an honest label, when both
+					// are available: measured on a twice-subdivided box, discarding it roughly doubles
+					// the worst thickness error.
+					return Satisfies( planeNormals, distance, displacement );
+				}
 
-				// Rank-deficient with three or more: the normals lie in a plane or a line, so this
-				// corner is not really a corner. Fall back to the two furthest from parallel, which
-				// is exact when the rest are redundant and approximate when they are not.
+				// Rank-deficient: the normals lie in a plane or a line, so this corner is not really
+				// a corner and the normal equations have nothing to invert. Fall back to the two
+				// furthest from parallel, which is exact when the rest are redundant.
 				var (a, b) = MostIndependentPair( planeNormals );
 				TrySolvePair( planeNormals[a], planeNormals[b], distance, out displacement );
 				return false;
 			}
 		}
+	}
+
+	/// <summary>
+	/// Whether a displacement actually meets every constraint.
+	///
+	/// The normal equations always return something — they are a least-squares FIT, not a solve —
+	/// so with four or more planes that do not agree, they hand back the best compromise and no
+	/// indication that it is one. On a subdivided box, where every face is slightly curved, that is
+	/// the common case rather than an edge case: a vertex with four almost-coplanar neighbours has
+	/// no point that is exactly `distance` from all of them.
+	///
+	/// Checking the residual is what makes TrySolve's contract true and makes
+	/// ShellOperation's approximated-vertex count mean something. The tolerance is relative to the
+	/// requested distance, because a 0.5% error on a 0.1 wall and on a 100 wall are the same mistake.
+	/// </summary>
+	static bool Satisfies( IReadOnlyList<Vec3> planes, float distance, Vec3 displacement )
+	{
+		var tolerance = 1e-3f * MathF.Abs( distance );
+
+		foreach ( var n in planes )
+		{
+			if ( MathF.Abs( Vec3.Dot( n, displacement ) - distance ) > tolerance )
+				return false;
+		}
+
+		return true;
 	}
 
 	static bool TrySolvePair( Vec3 n0, Vec3 n1, float distance, out Vec3 displacement )

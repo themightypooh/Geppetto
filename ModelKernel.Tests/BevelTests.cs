@@ -35,6 +35,12 @@ public static class BevelTests
 		Section( "bevel: other shapes and the tree" );
 		TestShapesAndFeature();
 
+		Section( "bevel: the rig comes along" );
+		TestRigSurvives();
+
+		Section( "bevel: auto-binding at any scale" );
+		TestBindingAtScale();
+
 		Section( "bevel: refusals" );
 		TestRefusals();
 	}
@@ -215,6 +221,54 @@ public static class BevelTests
 
 		// That last check is the argument for parametric in one line: a destructive modeller would
 		// have bevelled the already-bevelled result and produced something else entirely.
+	}
+
+	/// <summary>
+	/// Bevel rebuilds the vertex list, so it has to rebuild the weights beside it. Shell shipped
+	/// without this and bevel inherited the same omission; both are now covered.
+	/// </summary>
+	static void TestRigSurvives()
+	{
+		var skeleton = new Skeleton();
+		skeleton.AddBoneFromPoints( "root", -1, new Vec3( 0, 0, -1 ), new Vec3( 0, 0, 0 ) );
+		skeleton.AddBoneFromPoints( "tip", 0, new Vec3( 0, 0, 0 ), new Vec3( 0, 0, 1 ) );
+
+		var mesh = Primitives.Box( 2, 2, 2 );
+		mesh.Skin = SkinBinder.BindSmooth( mesh, skeleton );
+
+		var bevelled = BevelOperation.Bevel( mesh, 0.2f );
+
+		Check( "a rigged body survives bevelling", bevelled.IsRigged );
+		Check( "with one weight set per new vertex", bevelled.Skin.Count == bevelled.VertexCount,
+			$"{bevelled.Skin.Count} vs {bevelled.VertexCount}" );
+		Check( "and every set still valid", bevelled.Skin.Validate( bevelled.VertexCount, skeleton.Count ).Count == 0 );
+
+		// Each inset vertex comes from exactly one original corner, so its weights should be that
+		// corner's - not an average, and not bone 0.
+		Check( "inset corners inherit their source vertex's weights",
+			bevelled.Skin[0].Length == mesh.Skin[mesh.Faces[0].Indices[0]].Length
+			&& bevelled.Skin[0][0].Bone == mesh.Skin[mesh.Faces[0].Indices[0]][0].Bone );
+	}
+
+	/// <summary>
+	/// Auto-binding used an absolute threshold on un-normalised accumulator values, so on a large
+	/// model every influence fell below it and every vertex came out unweighted — which export then
+	/// silently pinned to bone 0. Scale-dependent, so a small test model never showed it.
+	/// </summary>
+	static void TestBindingAtScale()
+	{
+		var skeleton = new Skeleton();
+		skeleton.AddBoneFromPoints( "a", -1, new Vec3( 0, 0, -50 ), new Vec3( 0, 0, 0 ) );
+		skeleton.AddBoneFromPoints( "b", 0, new Vec3( 0, 0, 0 ), new Vec3( 0, 0, 50 ) );
+
+		foreach ( var size in new[] { 1f, 100f, 10000f } )
+		{
+			var mesh = Primitives.Box( size, size, size );
+			var weights = SkinBinder.BindSmooth( mesh, skeleton, 4f );
+			var unweighted = weights.Vertices.Count( w => w.Length == 0 );
+
+			Check( $"a {size}-unit model binds every vertex", unweighted == 0, $"{unweighted} unweighted" );
+		}
 	}
 
 	// --- refusals -----------------------------------------------------------------------
