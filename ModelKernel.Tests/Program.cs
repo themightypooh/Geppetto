@@ -354,9 +354,12 @@ public static class Program
 		}
 
 		WriteSketchSamples( outDir );
+		WritePreviews( outDir );
 
 		var files = Directory.GetFiles( outDir, "*.obj" ).Length;
+		var svgs = Directory.GetFiles( outDir, "*.svg" ).Length;
 		Check( $"wrote {files} sample OBJs to {outDir}/", files > 0 );
+		Check( $"wrote {svgs} SVG previews to {outDir}/", svgs > 0 );
 
 		Console.WriteLine();
 		Console.WriteLine( "  cost table (what a level slider would warn about):" );
@@ -420,6 +423,29 @@ public static class Program
 		coneStudio.Add( new RevolveFeature() ).AxisDirection.Value = new Vec3( 0, 1, 0 );
 		coneStudio.Rebuild();
 		ObjWriter.WriteFile( coneStudio.ToMesh(), Path.Combine( outDir, "sketch_cone.obj" ), "cone" );
+	}
+
+	/// <summary>
+	/// Shaded previews of every sample, so the output can be seen rather than only measured.
+	/// Backface culling means an inside-out solid renders as a hole, which makes these a visual
+	/// double-check on the winding tests.
+	/// </summary>
+	static void WritePreviews( string outDir )
+	{
+		foreach ( var file in Directory.GetFiles( outDir, "*.obj" ) )
+		{
+			var name = Path.GetFileNameWithoutExtension( file );
+			var mesh = ObjReader.Read( File.ReadAllText( file ) );
+
+			SvgPreview.Write( mesh, Path.Combine( outDir, $"{name}.svg" ), name );
+		}
+
+		// A wireframe of one subdivided result, where the quad topology is the point.
+		var slot = ObjReader.Read( File.ReadAllText( Path.Combine( outDir, "sketch_slot_subdiv2.obj" ) ) );
+		SvgPreview.Write( slot, Path.Combine( outDir, "wire_slot_subdiv2.svg" ), "sketch_slot_subdiv2 (wireframe)", wireframe: true );
+
+		var cage = ObjReader.Read( File.ReadAllText( Path.Combine( outDir, "sketch_slot.obj" ) ) );
+		SvgPreview.Write( cage, Path.Combine( outDir, "wire_slot_cage.svg" ), "sketch_slot cage (wireframe)", wireframe: true );
 	}
 
 	// ---------------------------------------------------------------------------------------
