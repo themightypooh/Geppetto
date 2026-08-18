@@ -28,14 +28,10 @@ namespace ModelKernel;
 /// straight in and not along the rim, which is what keeps an opening's edge flush instead of
 /// chamfered.
 ///
-/// Solved in closed form by plane count, which is exact and needs no matrix machinery for the two
-/// common cases:
-///
-///     one plane     d = t * f
-///     two planes    d = t / (1 + f0·f1) * (f0 + f1)          least-norm, exact
-///     three or more normal equations, in double precision
-///
-/// At a box corner that returns exactly (0.1, 0.1, 0.1) — the vertex travels t*sqrt(3), not t.
+/// The solve itself lives in PlaneOffset, because bevel needs the identical thing one dimension
+/// down — insetting a face corner is the same problem with the two edge normals taken inside the
+/// face plane. At a box corner it returns exactly (0.1, 0.1, 0.1): the vertex travels t*sqrt(3),
+/// not t.
 ///
 /// WHAT THIS DOES NOT DO, stated plainly rather than discovered later: no self-intersection
 /// handling. Shell a shape by more than its own thinnest feature and the inner surface passes
@@ -44,11 +40,6 @@ namespace ModelKernel;
 /// </summary>
 public static class ShellOperation
 {
-	/// <summary>Faces whose normals differ by less than this are treated as one plane. Two coplanar
-	/// faces impose the same constraint twice, which would bias a least-squares fit toward whichever
-	/// plane happens to be split into more polygons — and a subdivided mesh splits every one.</summary>
-	const double DistinctPlaneTolerance = 1e-4;
-
 	public static PolyMesh Shell( PolyMesh mesh, float thickness, IEnumerable<int> openFaces = null )
 		=> Shell( mesh, thickness, openFaces, out _ );
 
@@ -102,7 +93,8 @@ public static class ShellOperation
 			// AN OPENED FACE MUST NOT CONSTRAIN THE SOLVE. It is being deleted, so requiring the
 			// inner surface to stand `thickness` clear of it pulls the wall back from the opening
 			// and turns the rim into a 45-degree chamfer instead of a flat band of wall.
-			var planes = DistinctNormals( vertexFaces[vi].Where( fi => !open.Contains( fi ) ), faceNormals );
+			var planes = PlaneOffset.Distinct(
+				vertexFaces[vi].Where( fi => !open.Contains( fi ) ).Select( fi => faceNormals[fi] ) );
 
 			if ( planes.Count == 0 )
 			{
@@ -112,7 +104,7 @@ public static class ShellOperation
 				continue;
 			}
 
-			if ( !TrySolveDisplacement( planes, thickness, out var displacement ) )
+			if ( !PlaneOffset.TrySolve( planes, thickness, out var displacement ) )
 				approximatedVertices++;
 
 			inner[vi] = mesh.Positions[vi] - displacement;
@@ -262,173 +254,6 @@ public static class ShellOperation
 		result.AddFace( quad, uvs, source.Faces[removedFace].Material );
 	}
 
-	/// <summary>
-	/// The displacement d satisfying dot(f_i, d) = thickness for every adjacent plane, with the
-	/// smallest possible magnitude.
-	///
-	/// Returns false when no exact solution exists — anti-parallel planes, or three-plus planes whose
-	/// normals do not span three dimensions and are mutually inconsistent. The caller is told rather
-	/// than handed a silently wrong answer.
-	/// </summary>
-	static bool TrySolveDisplacement( List<Vec3> planes, float thickness, out Vec3 displacement )
-	{
-		switch ( planes.Count )
-		{
-			case 0:
-				displacement = Vec3.Zero;
-				return false;
-
-			// Flat region: straight in along the one normal.
-			case 1:
-				displacement = planes[0] * thickness;
-				return true;
-
-			// An edge. The constraint pins two directions and leaves the third free; the least-norm
-			// solution takes no step along the edge at all, which is what keeps a rim flush.
-			//
-			//   d = a*f0 + b*f1, and symmetry gives a = b = t / (1 + f0·f1)
-			case 2:
-				return TrySolvePair( planes[0], planes[1], thickness, out displacement );
-
-			default:
-			{
-				if ( TrySolveNormalEquations( planes, thickness, out displacement ) )
-					return true;
-
-				// Rank-deficient with three or more planes: the normals lie in a plane or a line, so
-				// the corner is not a corner. Fall back to the two most independent of them, which is
-				// exact whenever the remaining planes are redundant and approximate otherwise.
-				var (a, b) = MostIndependentPair( planes );
-				TrySolvePair( planes[a], planes[b], thickness, out displacement );
-				return false;
-			}
-		}
-	}
-
-	static bool TrySolvePair( Vec3 f0, Vec3 f1, float thickness, out Vec3 displacement )
-	{
-		var c = Vec3.Dot( f0, f1 );
-
-		// Anti-parallel planes face away from each other, so no single step is `thickness` clear of
-		// both. That is a zero-thickness sheet, not a solid.
-		if ( 1f + c < 1e-6f )
-		{
-			displacement = f0 * thickness;
-			return false;
-		}
-
-		displacement = (f0 + f1) * (thickness / (1f + c));
-		return true;
-	}
-
-	/// <summary>
-	/// Least squares through the normal equations (A^T A) d = A^T b, by Cramer's rule.
-	///
-	/// Double precision on purpose. The kernel is float everywhere else, but this is the one place
-	/// the answer comes from a difference of similar quantities, and a 3x3 determinant of
-	/// near-parallel normals loses far too many digits in single.
-	/// </summary>
-	static bool TrySolveNormalEquations( List<Vec3> planes, float thickness, out Vec3 displacement )
-	{
-		displacement = Vec3.Zero;
-
-		var m = new double[3, 3];
-		var rhs = new double[3];
-
-		foreach ( var f in planes )
-		{
-			double fx = f.x, fy = f.y, fz = f.z;
-
-			m[0, 0] += fx * fx; m[0, 1] += fx * fy; m[0, 2] += fx * fz;
-			m[1, 0] += fy * fx; m[1, 1] += fy * fy; m[1, 2] += fy * fz;
-			m[2, 0] += fz * fx; m[2, 1] += fz * fy; m[2, 2] += fz * fz;
-
-			rhs[0] += fx * thickness;
-			rhs[1] += fy * thickness;
-			rhs[2] += fz * thickness;
-		}
-
-		var det = Determinant( m );
-
-		if ( Math.Abs( det ) < 1e-9 * planes.Count )
-			return false;
-
-		var x = Determinant( Replace( m, 0, rhs ) ) / det;
-		var y = Determinant( Replace( m, 1, rhs ) ) / det;
-		var z = Determinant( Replace( m, 2, rhs ) ) / det;
-
-		if ( double.IsNaN( x ) || double.IsNaN( y ) || double.IsNaN( z ) )
-			return false;
-
-		displacement = new Vec3( (float)x, (float)y, (float)z );
-		return true;
-	}
-
-	/// <summary>The two normals furthest from parallel, which are the best-conditioned pair to solve
-	/// with when the full set is rank-deficient.</summary>
-	static (int, int) MostIndependentPair( List<Vec3> planes )
-	{
-		var bestA = 0;
-		var bestB = 1;
-		var lowest = float.MaxValue;
-
-		for ( var i = 0; i < planes.Count; i++ )
-		{
-			for ( var j = i + 1; j < planes.Count; j++ )
-			{
-				var dot = MathF.Abs( Vec3.Dot( planes[i], planes[j] ) );
-
-				if ( dot < lowest )
-				{
-					lowest = dot;
-					bestA = i;
-					bestB = j;
-				}
-			}
-		}
-
-		return (bestA, bestB);
-	}
-
-	static double Determinant( double[,] m ) =>
-		m[0, 0] * (m[1, 1] * m[2, 2] - m[1, 2] * m[2, 1])
-		- m[0, 1] * (m[1, 0] * m[2, 2] - m[1, 2] * m[2, 0])
-		+ m[0, 2] * (m[1, 0] * m[2, 1] - m[1, 1] * m[2, 0]);
-
-	static double[,] Replace( double[,] m, int column, double[] with )
-	{
-		var copy = (double[,])m.Clone();
-
-		for ( var r = 0; r < 3; r++ )
-			copy[r, column] = with[r];
-
-		return copy;
-	}
-
-	static List<Vec3> DistinctNormals( IEnumerable<int> faces, Vec3[] faceNormals )
-	{
-		var distinct = new List<Vec3>( 4 );
-
-		foreach ( var fi in faces )
-		{
-			var n = faceNormals[fi];
-			var seen = false;
-
-			foreach ( var existing in distinct )
-			{
-				if ( 1.0 - Vec3.Dot( existing, n ) < DistinctPlaneTolerance )
-				{
-					seen = true;
-					break;
-				}
-			}
-
-			if ( !seen )
-				distinct.Add( n );
-		}
-
-		return distinct;
-	}
 
 	static Vec3 NewellNormal( PolyMesh mesh, int[] indices )
 	{

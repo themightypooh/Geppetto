@@ -120,3 +120,35 @@ public sealed class ShellFeature : Feature
 			targets[i].Mesh = shelled[i];
 	}
 }
+
+/// <summary>
+/// Bevel every edge of the selected bodies. "Round off", in the language a non-modeller uses.
+///
+/// Every edge, not a selection, because the kernel has no edge selection yet — that arrives with a
+/// viewport. Bevelling everything is the common case for a prop anyway: it is what stops a model
+/// reading as programmer art, because nothing real has a perfectly sharp edge.
+/// </summary>
+public sealed class BevelFeature : Feature
+{
+	public override string TypeName => "Bevel";
+
+	public readonly BodySelectionParam Bodies = new( "Bodies" );
+	public readonly FloatParam Distance = new( "Distance", 0.1f, 0.0001f, unit: "u" );
+
+	public override IReadOnlyList<IParam> Parameters => new IParam[] { Bodies, Distance };
+
+	protected override void Execute( FeatureContext ctx )
+	{
+		var targets = ctx.Bodies.Where( Bodies.Matches ).ToList();
+
+		// Build everything before assigning anything, so a failure partway leaves the bodies as they
+		// were — the same contract ShellFeature had to be fixed to honour.
+		var bevelled = new List<PolyMesh>( targets.Count );
+
+		foreach ( var body in targets )
+			bevelled.Add( BevelOperation.Bevel( body.Mesh, Distance.Clamped ) );
+
+		for ( var i = 0; i < targets.Count; i++ )
+			targets[i].Mesh = bevelled[i];
+	}
+}

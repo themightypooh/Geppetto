@@ -66,6 +66,8 @@ public static class Program
 
 		ShellTests.Run();
 
+		BevelTests.Run();
+
 		Section( "writing sample OBJs" );
 		WriteSamples( outDir );
 

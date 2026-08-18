@@ -23,7 +23,7 @@ cd ModelKernel.Tests
 dotnet run -- out
 ```
 
-344 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
+391 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
 2-level-subdivided version of each. Those are the fastest way to see whether something is actually
 right: open them in Blender, or drop one into ModelDoc to find out what s&box makes of it.
 
@@ -46,6 +46,8 @@ Exit code is non-zero on failure, so it works as a pre-commit or CI check unchan
 | `Sketching/Sketch.cs` | sketch planes and closed profiles, with ready-made rectangle/circle/rounded shapes |
 | `Sketching/SketchSolids.cs` | extrude and revolve, quad-walled with real UVs |
 | `ShellOperation.cs` | hollow a solid to an exact wall thickness, with optional openings |
+| `BevelOperation.cs` | chamfer every edge, by insetting each face and bridging the gaps |
+| `PlaneOffset.cs` | the offset solve shell and bevel share |
 | `Rig/Skeleton.cs` | bones, bind pose, world transforms from the parent chain |
 | `Rig/SkinWeights.cs` | per-vertex influences, blending and pruning |
 | `Rig/SkinBinder.cs` | auto-binding by distance or by body, plus weight smoothing |
@@ -198,7 +200,43 @@ Known limits, stated rather than discovered:
   quads on one outer-to-inner edge — non-manifold, and nothing downstream accepts it. That case is
   refused with an explanation rather than returned broken.
 
+## Bevel
+
+Inset every face within its own plane, then fill the gaps: one quad per original edge, one n-gon per
+original vertex. A box becomes 6 + 12 + 8 = 26 faces.
+
+The corner inset is **the same solve as shell**, one dimension down — put a point a fixed distance
+from two planes, moving as little as possible, with the edge normals taken inside the face plane
+instead of the face normals taken in space. Both call `PlaneOffset`. Doing it as "bisector times
+1/sin(half-angle)" is the same formula rediscovered, and it gets sharp corners wrong.
+
+Verified against a closed form. Chamfering a 2×2×2 cube by `d` gives
+
+```
+V(d) = 8 - 12d² + (16/3)d³
+```
+
+which is worth checking at its limit: at `d = 1` the inset squares shrink to points and the solid
+becomes the octahedron with vertices at the face centres. The formula gives `8 - 12 + 16/3 = 4/3`,
+and that octahedron's volume is exactly `4/3`.
+
+**Single segment only** — a chamfer, not a rounded fillet. Deliberate: multi-segment rounding needs
+the corner caps rebuilt as patches agreeing with every edge strip meeting them, which is most of why
+the engine's own bevel runs to two thousand lines. It is also largely unnecessary here, since a
+chamfer followed by Catmull-Clark gives a rounded edge whose tightness the bevel distance controls.
+
+One trap worth recording, because the obvious guard misses it: an over-large bevel collapses a face
+through itself, and checking whether the inset face's **normal** flipped does not catch it.
+Over-insetting a rectangle point-reflects it through its centre, and a 180° rotation preserves
+orientation. It is caught per edge instead — every inset edge must still run the same way as the
+edge it came from.
+
 ## Not here yet
 
-The sketch constraint solver, fillet and chamfer, boolean subtract, planar UV projection.
+The sketch constraint solver, rounded (multi-segment) fillets, boolean subtract.
+
+Boolean is the notable absence. Robust mesh CSG is a decades-old problem — coplanar faces,
+floating-point robustness, self-intersection — and a half-working one is worse than none. s&box ships
+`PolygonMesh.PerformBoolean`, so the plan is to put booleans behind an interface with an engine-backed
+implementation there and our own only if a portable one is ever genuinely needed.
 Then the whole phase-two sculpt side — brushes, multires deltas, normal-map bake.
