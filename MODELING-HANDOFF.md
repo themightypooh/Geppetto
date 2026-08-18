@@ -216,7 +216,7 @@ turns out to be the actual point.
 
 ## Phase one — the parametric base
 
-Much of this now exists in `ModelKernel/`, engine-free and with 248 checks behind it. See that
+Much of this now exists in `Effigy/`, engine-free and with 248 checks behind it. See that
 folder's README for the design decisions; the status here is what remains.
 
 1. **Parametric primitives** — box, plane, cylinder, quad sphere, wedge, tube. **Done.**
@@ -238,7 +238,7 @@ Live tree throughout: change any number, the model rebuilds.
 
 ## Phase two — subdivide and sculpt
 
-1. Catmull-Clark subdivision, levels 0–4, switchable — **done, in `ModelKernel/CatmullClark.cs`**
+1. Catmull-Clark subdivision, levels 0–4, switchable — **done, in `Effigy/CatmullClark.cs`**
 2. Brushes — grab, inflate, smooth, pinch, flatten, clay — with BVH hit-testing
 3. Multires displacement deltas, so the base cage survives underneath the sculpt
 4. Normal-map bake from the dense mesh down onto the cage
