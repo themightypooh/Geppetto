@@ -23,7 +23,7 @@ cd ModelKernel.Tests
 dotnet run -- out
 ```
 
-179 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
+291 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
 2-level-subdivided version of each. Those are the fastest way to see whether something is actually
 right: open them in Blender, or drop one into ModelDoc to find out what s&box makes of it.
 
@@ -42,6 +42,14 @@ Exit code is non-zero on failure, so it works as a pre-commit or CI check unchan
 | `Features/Feature.cs` | feature base, self-describing parameters, bodies |
 | `Features/PartStudio.cs` | the ordered history: rollback and incremental rebuild |
 | `Features/BasicFeatures.cs` | primitive, transform, linear/circular pattern, mirror, subdivide |
+| `Features/SketchFeatures.cs` | extrude, revolve |
+| `Sketching/Sketch.cs` | sketch planes and closed profiles, with ready-made rectangle/circle/rounded shapes |
+| `Sketching/SketchSolids.cs` | extrude and revolve, quad-walled with real UVs |
+| `Rig/Skeleton.cs` | bones, bind pose, world transforms from the parent chain |
+| `Rig/SkinWeights.cs` | per-vertex influences, blending and pruning |
+| `Rig/SkinBinder.cs` | auto-binding by distance or by body, plus weight smoothing |
+| `SmdWriter.cs` | the export path — static and skinned in one writer |
+| `MeshNormals.cs` | angle-thresholded corner normals, shared by every exporter |
 
 ## The feature tree
 
@@ -117,9 +125,38 @@ The pattern-merge tests exist because they caught a real one: merging appended i
 while the loop kept re-reading it, so instance counts doubled instead of incrementing — 6, 12, 24,
 48 faces rather than 6, 12, 18, 24.
 
+## Sketches
+
+The other way into the modeller. Primitives cover what three numbers can describe; a sketch covers
+everything else, and "draw the outline, pull it up" is the move every CAD package opens with.
+
+```csharp
+var sketch = new Sketch( SketchPlane.XY, Profile.RoundedRectangle( 4, 2, 0.5f ) );
+
+var extrude = studio.Add( new ExtrudeFeature() );
+extrude.Sketch.Value = sketch;
+extrude.Distance.Value = 3f;
+```
+
+**There is no constraint solver, deliberately.** A sketch with real constraints — perpendicular,
+tangent, equal, dimension-driven — is a nonlinear numerical project with under- and
+over-constrained detection attached, and it is the single largest thing in the roadmap. A sketch
+that is points on a grid with typed dimensions gives the entire sketch-then-extrude workflow for a
+fraction of the work, and the solver bolts on later without changing anything downstream: extrude
+reads points, and a solver only decides where those points end up.
+
+Extrude and revolve both produce **quad walls by construction**, with caps left as n-gons because
+PolyMesh holds them natively and Catmull-Clark turns an n-gon into n quads on the first level. UVs
+are real, not placeholder — arc length around the profile against height on the walls, the sketch's
+own coordinates on the caps.
+
+Winding is the trap here, and it is why the tests check enclosed volume rather than looking at the
+result: a sweep wound the wrong way is topologically perfect, passes every Euler check, and renders
+as a black hole. Revolve is worse than extrude because the sweep direction is not knowable up
+front — it depends on the axis, which side the profile sits on, and the sign of the angle — so it
+is measured per revolve. That bug was caught by the volume test, not by looking.
+
 ## Not here yet
 
-Sketches and the constraint solver, extrude/revolve, fillet and chamfer, shell, boolean subtract,
-planar UV projection. Then the whole phase-two sculpt side — brushes, multires deltas, normal-map
-bake. See the open questions in the handoff docs; two of them gate how this connects to an actual
-editor.
+The sketch constraint solver, fillet and chamfer, shell, boolean subtract, planar UV projection.
+Then the whole phase-two sculpt side — brushes, multires deltas, normal-map bake.

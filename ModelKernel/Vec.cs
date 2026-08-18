@@ -85,5 +85,25 @@ public readonly struct Vec2
 	public static Vec2 operator *( Vec2 a, float s ) => new( a.x * s, a.y * s );
 	public static Vec2 operator /( Vec2 a, float s ) => new( a.x / s, a.y / s );
 
+	public float LengthSquared => x * x + y * y;
+	public float Length => MathF.Sqrt( LengthSquared );
+
+	/// <summary>Unit-length copy, or Zero for a degenerate vector — same reasoning as Vec3.Normal:
+	/// a zero-length edge should produce something harmless rather than NaN.</summary>
+	public Vec2 Normal
+	{
+		get
+		{
+			var len = Length;
+			return len > 1e-12f ? this / len : Zero;
+		}
+	}
+
+	public static float Dot( Vec2 a, Vec2 b ) => a.x * b.x + a.y * b.y;
+
+	/// <summary>The 2D cross product — a scalar. Its sign says which side of `a` the vector `b`
+	/// falls on, which is how winding and "is this point left of that line" get decided.</summary>
+	public static float Cross( Vec2 a, Vec2 b ) => a.x * b.y - a.y * b.x;
+
 	public override string ToString() => $"({x:0.####}, {y:0.####})";
 }
