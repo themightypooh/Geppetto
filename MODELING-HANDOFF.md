@@ -1,10 +1,21 @@
 # Modeling tool — session handoff
 
-Research session for a second s&box tool: **let people build usable 3D models without leaving the
-editor**, the same thesis as Marionette applied to meshes instead of animation.
+A second s&box tool: **make a usable, rigged 3D model without leaving the editor**, the same thesis
+as Marionette applied to meshes instead of animation.
 
-No code was written. This document exists so the next session starts from what was established
-rather than re-deriving it.
+Not a prop builder. The intended pipeline runs end to end:
+
+```
+CAD  →  subdivide  →  sculpt  →  bake to cage  →  add bones  →  Marionette animates it
+```
+
+Every stage feeds the next, and **the low-poly cage the CAD stage produces is the spine of the whole
+thing.** It carries the UVs, it receives the baked sculpt detail, it is what gets skinned, and it is
+what Marionette ends up posing. Nothing downstream works if the cage is not clean, which is what
+justifies starting parametric — see the decision section.
+
+An earlier draft of this document framed the goal as static hard-surface props. That was wrong, and
+the correction matters: it changes the export format and adds a whole rigging stage.
 
 ---
 
@@ -32,26 +43,25 @@ standing as a guess.** Read the shipped source before writing against it.
 
 ## The decision: parametric first, then sculpt on top
 
-The tool is parametric hard-surface modelling **first**, with sculpting as a second stage layered
-over it — not sculpting as the starting point. The reasoning, shortest form:
+Parametric modelling **first**, with sculpting layered over it — not sculpting as the starting
+point. The reasoning, shortest form:
 
-- **The failure modes are not symmetrical.** A mediocre parametric model is a boring crate that
-  drops into a scene and works. A mediocre *sculpt-first* model is a shapeless blob with no UVs and
-  no usable topology.
-- **Retopology and UV unwrap are the two hardest problems in the pipeline**, they are exactly what
-  a sculpt-first output demands, and they are exactly what a non-modeller cannot do. Starting
-  parametric means they never come up — see the pipeline section below, this is the crux.
-- **Collision comes free from parametric history.** If the model is known to be a union of N convex
-  primitives, that *is* the physics representation. A sculpt gives a triangle soup needing convex
-  decomposition.
-- **UVs nearly come free too.** Planar/box projection per face cluster looks good on hard surface
-  and terrible on organics — and the parametric stage is where you get to do it on hard surface.
-- **s&box builds hard surface.** Props, guns, furniture, machinery, signage. Organic characters are
-  largely served by Citizen + clothing.
+- **A sculpt-first model cannot be rigged.** It has no clean topology and no UVs, and getting them
+  means retopology and unwrapping — the two hardest jobs in the pipeline and exactly the two a
+  non-modeller cannot do. Starting parametric means they never come up, because the CAD stage
+  produces rig-ready topology as a side effect.
+- **The failure modes are not symmetrical.** A mediocre parametric model is a plain shape that
+  works. A mediocre sculpt-first model is a shapeless blob nothing downstream can consume.
+- **Quads deform correctly when skinned; triangles pinch at joints.** This is the same quad
+  requirement Catmull-Clark imposes, arriving a second time from a different direction — which is a
+  good sign the constraint is real rather than an artefact of one algorithm.
+- **UVs nearly come free.** Planar/box projection per face cluster is cheap on parametric geometry
+  and impossible to do well on a raw sculpt. Those UVs are what the normal-map bake later needs.
+- **Collision comes free from parametric history.** A model known to be a union of N convex
+  primitives *is* its own physics representation.
 
-Sculpting starting from nothing is the better demo and the worse tool. Sculpting *on top of a
-parametric base* is neither — it is the actual goal, and the parametric stage is what makes it
-work.
+Sculpting from nothing is the better demo and the worse tool. Sculpting *on top of a parametric
+base* is the actual goal, and the parametric stage is what makes every later stage possible.
 
 ---
 
@@ -65,6 +75,8 @@ repo.
 | ModelDoc imports **DMX, SMD, FBX, OBJ, VOX**. OBJ is on the list. | `docs/editor/model-editor.md` |
 | ModelDoc's *Export As…* writes OBJ and FBX, including skinned meshes | same |
 | A model that isn't fully static needs at least an `AnimBindPose` node, or morph targets and IK data silently break | same |
+| **Max 4 weight influences per vertex.** Extra weights are culled and normalised automatically, which the docs call "far from ideal" — plan skinning around it from the start | same |
+| Creating bones in ModelDoc is a last resort, for rigid props needing one attachment. Bones belong in the source mesh | same |
 | `citizen.vmdl` ships as a readable source file at `sbox\addons\citizen\Assets\models\citizen\citizen.vmdl` | same |
 | Scene Mapping mode (`M`) ships Primitive, Vertex, Edge, Face, Texture, Vertex Paint and **Displacement** tools. Displacement is described as *"Sculpt and displace vertices to create organic shapes."* | `docs/editor/mapping/index.md` |
 | The Texture tool already does per-face material assignment plus UV align/scale/rotate | same |
@@ -87,18 +99,40 @@ repo.
 
 ## The two facts that shape the tool
 
-### 1. The export path is OBJ
+### 1. The export path is a source mesh plus a .vmdl — and OBJ is only half of it
 
-`.vmdl` is a text KV3 source file that references a source mesh; ModelDoc imports OBJ; OBJ is plain
-text and takes about sixty lines of C# to write, UVs and per-material groups included. So:
+`.vmdl` is a text KV3 source file that references a source mesh, so export means writing both:
 
 ```
-tool document  →  thing.obj  +  thing.vmdl (RenderMeshFile → thing.obj)  →  compile
+tool document  →  thing.<mesh>  +  thing.vmdl (RenderMeshFile → thing.<mesh>)  →  compile
 ```
 
-`Model.Builder` handles the live model in the tool's viewport, OBJ+vmdl handles export. Structurally
-identical to Marionette: the tool's own document type is the truth, the compiled asset is build
-output.
+**Which mesh format depends on whether the model has bones**, and the pipeline says it eventually
+does:
+
+| Format | Bones? | Notes |
+|---|---|---|
+| **OBJ** | **no** | Plain text, ~60 lines to write. Positions, UVs, normals, material groups, nothing else. Written and working |
+| **SMD** | **yes** | Plain text, carries skeleton and per-vertex weights. ModelDoc calls it *"technically deprecated, but usable"*. The natural next target |
+| **DMX** | yes | Valve's current format (version 22?). The proper answer if SMD's deprecation ever bites |
+| **FBX** | yes | Binary. Supported, and by far the most work to write |
+
+So OBJ is the static-geometry path and a debugging convenience — it is what makes a kernel result
+openable in Blender or ModelDoc today. **It is not the destination.** The day the rigging stage
+lands, the export layer needs an SMD writer; that is a rewrite of the export layer only, not of the
+kernel.
+
+Two constraints from the ModelDoc docs that only matter once there are bones, and both matter a
+lot then:
+
+- **A model that is not fully static needs at least an `AnimBindPose` node**, or morph targets and
+  IK data silently break.
+- **No more than 4 weight influences per vertex.** Extra weights are culled and normalised
+  automatically, which the docs describe as far from ideal — so the skinning stage has to cap at
+  four deliberately rather than discovering it later.
+
+`Model.Builder` still handles the live model in the tool's viewport; only the file export needs a
+format that carries a skeleton.
 
 ### 2. Facepunch already shipped most of a mesh editor
 
@@ -180,30 +214,59 @@ turns out to be the actual point.
 
 ---
 
-## Proposed phase one — the parametric base
+## Phase one — the parametric base
 
-Deliberately small, and it assumes the `PolygonMesh` question came back favourably.
+Much of this now exists in `ModelKernel/`, engine-free and with 248 checks behind it. See that
+folder's README for the design decisions; the status here is what remains.
 
-1. Parametric primitives with numeric fields — box, cylinder, sphere, wedge, tube, stairs, arch.
-   **Quad-dominant output is a hard requirement**, not a nicety — phase two subdivides this.
-2. Modifiers over them — bevel, array, mirror, shell
-3. Assembly by grouping; boolean **subtract only where required** (most props need no general CSG)
-4. Planar/box-projection auto-UV per face cluster. These UVs are what the phase-two normal-map bake
-   uses, so they have to be real, not placeholder.
-5. Export — OBJ + vmdl, collision generated from the primitive list rather than from the triangles
+1. **Parametric primitives** — box, plane, cylinder, quad sphere, wedge, tube. **Done.**
+   Quad-dominant output is a hard requirement, not a nicety: Catmull-Clark needs it in phase two
+   and skinning needs it in phase three.
+2. **Feature tree** — ordered history, rollback, incremental rebuild, self-describing parameters.
+   **Done**, modelled on Onshape's Part Studio.
+3. **Sketcher** — planes, lines, arcs, circles, closed-region finding, extrude, revolve. **Done.**
+   The constraint solver is not: coordinates are typed rather than derived.
+4. **Modifiers** — bevel, shell. Array and mirror are **done**; bevel and shell are not.
+5. **Boolean subtract**, which also unlocks profiles with holes. Not started.
+6. **Planar/box-projection auto-UV per face cluster.** Primitives and sketch solids carry real UVs
+   already; a general projection modifier does not exist. These UVs are what the phase-two
+   normal-map bake consumes, so they have to be real rather than placeholder.
+7. **Export** — OBJ works. Collision from the primitive list rather than from triangles is not
+   built.
 
 Live tree throughout: change any number, the model rebuilds.
 
 ## Phase two — subdivide and sculpt
 
-1. Catmull-Clark subdivision over a half-edge mesh, levels 0–4, switchable
+1. Catmull-Clark subdivision, levels 0–4, switchable — **done, in `ModelKernel/CatmullClark.cs`**
 2. Brushes — grab, inflate, smooth, pinch, flatten, clay — with BVH hit-testing
 3. Multires displacement deltas, so the base cage survives underneath the sculpt
 4. Normal-map bake from the dense mesh down onto the cage
-5. Export the cage plus its normal map
 
-Phase one is worth shipping on its own. Phase two is worth building only after phase one produces
-clean quads, because it is built directly on top of them.
+Step 3 is the one that makes the pipeline work rather than merely run. Without multires the sculpt
+consumes the cage, and with the cage gone there is nothing clean left to rig.
+
+## Phase three — bones
+
+1. Place a skeleton — bones, hierarchy, orientation
+2. Skinning weights, **capped at 4 influences per vertex** because the compiler culls beyond that
+3. Auto-weighting so a first result is not hand-painted; heat diffusion or bone-glow
+4. Weight painting to fix what auto-weighting gets wrong
+5. Export as SMD (or DMX), with an `AnimBindPose` node in the `.vmdl`
+
+Skinning targets **the cage, not the sculpt.** Nobody rigs a two-million-vertex mesh; the sculpt
+detail rides along as a normal map. This is the same cage phase one produced, which is why it has
+to survive every stage between.
+
+## Phase four — Marionette
+
+Nothing to build. Marionette already poses and keyframes a skinned model; it is the reason the
+pipeline ends where it does. The handover is a `.vmdl` with a skeleton — no new integration, no
+shared format beyond the one s&box already reads.
+
+Phase one is worth shipping alone. Each later phase is built directly on the one before it, so the
+order is not negotiable: clean quads, then a sculpt that preserves them, then a rig that deforms
+them.
 
 ---
 
@@ -221,6 +284,10 @@ clean quads, because it is built directly on top of them.
 4. **Does the mapping toolbar already have "create model from selection"?** If yes, scope shrinks
    again and the tool may reduce to modifiers alone.
 5. Confirm the real `Model.Builder` signature against shipped source before building the viewport on it.
+6. **Does ModelDoc still import SMD cleanly, bones and weights included?** The docs call it
+   deprecated but usable. This gates phase three, and if the answer is no the export layer needs
+   DMX instead — a much bigger write. Worth answering early even though the rigging stage is far
+   off, because it is cheap now and expensive to discover late.
 
 Questions 1 and 2 are both cheap and both gate everything. Do them first, in that order.
 

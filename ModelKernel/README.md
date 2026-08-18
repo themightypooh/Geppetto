@@ -23,7 +23,7 @@ cd ModelKernel.Tests
 dotnet run -- out
 ```
 
-179 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
+248 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
 2-level-subdivided version of each. Those are the fastest way to see whether something is actually
 right: open them in Blender, or drop one into ModelDoc to find out what s&box makes of it.
 
@@ -42,6 +42,10 @@ Exit code is non-zero on failure, so it works as a pre-commit or CI check unchan
 | `Features/Feature.cs` | feature base, self-describing parameters, bodies |
 | `Features/PartStudio.cs` | the ordered history: rollback and incremental rebuild |
 | `Features/BasicFeatures.cs` | primitive, transform, linear/circular pattern, mirror, subdivide |
+| `Features/SketchFeatures.cs` | sketch, extrude, revolve |
+| `Sketch/SketchPlane.cs` | the plane a sketch lives on, and plane↔world mapping |
+| `Sketch/Sketch.cs` | points, lines, arcs, circles, tessellation |
+| `Sketch/Profile.cs` | closed-region finding, nesting, orientation |
 
 ## The feature tree
 
@@ -81,6 +85,52 @@ does — a box asks for three lengths and doesn't mention radius.
 A feature that throws records an error and the rebuild carries on, so one upstream mistake doesn't
 cascade into every later feature also failing.
 
+## The sketcher
+
+Onshape's core loop — sketch on a plane, then extrude or revolve it.
+
+```csharp
+var sketch = studio.Add( new SketchFeature() );
+sketch.Sketch.AddRectangle( new Vec2( 0, 0 ), new Vec2( 4, 2 ) );
+
+studio.Add( new ExtrudeFeature() ).Distance.Value = 1f;
+```
+
+**Curves reference shared point indices**, so two lines meeting at a corner point at the same
+index. Coincidence is identity rather than a constraint that can drift, dragging a corner moves
+both lines with no bookkeeping, and finding closed regions is an integer graph walk instead of
+floating-point position matching.
+
+**Profiles are found, not declared.** `ProfileFinder` walks the curve graph for cycles, works out
+which loops nest inside which, and orients every outer loop counter-clockwise — which is what makes
+extrude's winding questions answer themselves. Construction geometry is excluded. Circles close on
+their own.
+
+Lines and arcs stitch into one loop, so rounded profiles work. Arc tessellation derives its segment
+count from the allowed sagitta, so small arcs aren't over-sampled and big ones aren't visibly
+faceted.
+
+**Caps are single n-gons, not triangle fans** — Catmull-Clark turns an n-gon into n clean quads, so
+a sketched profile subdivides properly.
+
+### Two known limits, both deliberate
+
+**Branching sketches.** Only points where exactly two curves meet are followed. A line drawn across
+a rectangle is ambiguous without full planar face traversal, so it's reported as a warning rather
+than guessed at. That still covers rectangles, polygons, circles, slots and rounded profiles.
+Proper face traversal — sort half-edges by angle at each vertex, always take the next one clockwise
+— is the upgrade, and doesn't change `ProfileFinder`'s interface.
+
+**Profiles with holes.** Detected and reported, not built. Capping around a hole is the same problem
+as a boolean subtract and is better solved once, there. Until then use the Tube primitive.
+
+### Not yet: constraints
+
+There's no solver, so sketch coordinates are typed rather than derived. This was shipped first on
+purpose — the sketch→extrude loop works end to end while the solver is built, and nothing in
+`Sketch.cs` or `Profile.cs` has to change when it lands. The solver's job is to let coordinates be
+implied by constraints; the geometry and topology layers below it are already done.
+
 ## Two decisions worth knowing before changing anything
 
 **Quads are a requirement, not a preference.** Catmull-Clark turns clean quads into a clean surface
@@ -113,13 +163,26 @@ rebuild does no work, that rollback and roll-forward round-trip, that a broken f
 the ones after it, and that **a mirrored body's enclosed volume stays positive** — the winding-
 reversal check, which guards a bug that renders black and looks fine in wireframe.
 
-The pattern-merge tests exist because they caught a real one: merging appended into the source mesh
-while the loop kept re-reading it, so instance counts doubled instead of incrementing — 6, 12, 24,
-48 faces rather than 6, 12, 18, 24.
+On the sketch side, solids are checked against known volumes rather than eyeballed: an extruded
+2×3 rectangle must enclose exactly 24, a revolved square must match **Pappus' theorem**, and a
+quarter revolution must be exactly a quarter of the full one. Plane coordinates round-trip through
+world space on all three planes. Every solid asserts positive enclosed volume, because an
+inside-out sweep looks completely normal in wireframe.
+
+Three of these tests exist because they caught real bugs:
+
+- **Pattern merge** appended into the source mesh while the loop kept re-reading it, so instance
+  counts doubled instead of incrementing — 6, 12, 24, 48 faces rather than 6, 12, 18, 24.
+- **Revolve winding** came out inverted. Rather than enumerate the cases — axis direction, sign of
+  the angle, which side the profile sits on — the fix measures the finished volume and flips if it
+  is negative. One cheap pass, correct for all of them.
+- **A profile straddling the axis** produced a mesh where every face existed twice with opposite
+  winding: zero enclosed volume, vertices welded that should have stayed apart, and entirely
+  plausible until measured. Now refused with the same reasoning Onshape gives.
 
 ## Not here yet
 
-Sketches and the constraint solver, extrude/revolve, fillet and chamfer, shell, boolean subtract,
+The sketch constraint solver, fillet and chamfer, shell, boolean subtract,
 planar UV projection. Then the whole phase-two sculpt side — brushes, multires deltas, normal-map
 bake. See the open questions in the handoff docs; two of them gate how this connects to an actual
 editor.
