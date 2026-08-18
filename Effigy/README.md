@@ -38,10 +38,11 @@ Exit code is non-zero on failure, so it works as a pre-commit or CI check unchan
 | `PolyMesh.cs` | n-gon mesh, adjacency, validation, Euler characteristic |
 | `Primitives.cs` | box, plane, cylinder, quad sphere, wedge, tube — all quad-dominant |
 | `CatmullClark.cs` | subdivision, boundary rules, cost prediction |
+| `Bevel.cs` | flat chamfer by angle threshold: corner cutting, edge bridging, vertex caps |
 | `ObjWriter.cs` | OBJ export with angle-thresholded normals, plus a reader for round-trip tests |
 | `Features/Feature.cs` | feature base, self-describing parameters, bodies |
 | `Features/PartStudio.cs` | the ordered history: rollback and incremental rebuild |
-| `Features/BasicFeatures.cs` | primitive, transform, linear/circular pattern, mirror, subdivide |
+| `Features/BasicFeatures.cs` | primitive, transform, linear/circular pattern, mirror, subdivide, bevel |
 | `Features/SketchFeatures.cs` | sketch, extrude, revolve |
 | `Sketch/SketchPlane.cs` | the plane a sketch lives on, and plane↔world mapping |
 | `Sketch/Sketch.cs` | points, lines, arcs, circles, tessellation |
@@ -182,7 +183,21 @@ Three of these tests exist because they caught real bugs:
 
 ## Not here yet
 
-The sketch constraint solver, fillet and chamfer, shell, boolean subtract,
+The sketch constraint solver, a rounded fillet, shell, boolean subtract,
 planar UV projection. Then the whole phase-two sculpt side — brushes, multires deltas, normal-map
 bake. See the open questions in the handoff docs; two of them gate how this connects to an actual
 editor.
+
+## Bevel
+
+`Bevel.cs` cuts every edge whose two face normals diverge past an angle threshold, by a fixed
+width on each side — a flat chamfer (Segments=1), not a rounded fillet. `BevelFeature` wraps it
+into the tree.
+
+The one non-obvious part: a corner can move because of an edge that ISN'T selected, simply because
+the corner's OTHER edge is — that moved point lands exactly on the unselected edge's own line, so
+the face across THAT edge, even though nothing about it was selected, now disagrees with its
+neighbour about where their shared edge ends. Left alone that's a T-junction (an open boundary, not
+a crash). The fix is to reconcile every edge whose two sides disagree, not only the ones the angle
+threshold picked — see the class comment on `Bevel` for the failed alternative (routing a bridge
+face through the untouched vertex) and why it reliably added volume instead of removing it.

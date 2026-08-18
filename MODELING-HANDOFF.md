@@ -226,7 +226,8 @@ folder's README for the design decisions; the status here is what remains.
    **Done**, modelled on Onshape's Part Studio.
 3. **Sketcher** — planes, lines, arcs, circles, closed-region finding, extrude, revolve. **Done.**
    The constraint solver is not: coordinates are typed rather than derived.
-4. **Modifiers** — bevel, shell. Array and mirror are **done**; bevel and shell are not.
+4. **Modifiers** — bevel, shell. Array, mirror and bevel (flat chamfer by angle threshold, not yet
+   a rounded fillet) are **done**; shell is not.
 5. **Boolean subtract**, which also unlocks profiles with holes. Not started.
 6. **Planar/box-projection auto-UV per face cluster.** Primitives and sketch solids carry real UVs
    already; a general projection modifier does not exist. These UVs are what the phase-two

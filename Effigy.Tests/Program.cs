@@ -60,6 +60,7 @@ public static class Program
 
 		FeatureTests.Run();
 		SketchTests.Run();
+		BevelTests.Run();
 
 		RigTests.Run();
 
@@ -425,6 +426,17 @@ public static class Program
 		coneStudio.Add( new RevolveFeature() ).AxisDirection.Value = new Vec3( 0, 1, 0 );
 		coneStudio.Rebuild();
 		ObjWriter.WriteFile( coneStudio.ToMesh(), Path.Combine( outDir, "sketch_cone.obj" ), "cone" );
+
+		// A cube with every edge chamfered — the flat-bevel look, side by side with the sharp box.
+		var bevelStudio = new PartStudio();
+		var bevelBox = bevelStudio.Add( new PrimitiveFeature() );
+		bevelBox.Shape.Index = 0;
+		bevelBox.SizeX.Value = bevelBox.SizeY.Value = bevelBox.SizeZ.Value = 2f;
+		var bevel = bevelStudio.Add( new BevelFeature() );
+		bevel.Width.Value = 0.2f;
+		bevel.AngleThreshold.Value = 15f;
+		bevelStudio.Rebuild();
+		ObjWriter.WriteFile( bevelStudio.ToMesh(), Path.Combine( outDir, "bevel_box.obj" ), "bevel_box" );
 	}
 
 	/// <summary>

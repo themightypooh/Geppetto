@@ -291,3 +291,25 @@ public sealed class SubdivideFeature : Feature
 			body.Mesh = CatmullClark.Subdivide( body.Mesh, Levels.Clamped );
 	}
 }
+
+/// <summary>
+/// Flat chamfer along every edge sharper than the angle threshold. Onshape's Fillet, minus the
+/// round — this is the Segments=1 case, a straight cut rather than an arc. See Bevel.cs for why
+/// that is the whole algorithm rather than a special case of one.
+/// </summary>
+public sealed class BevelFeature : Feature
+{
+	public override string TypeName => "Bevel";
+
+	public readonly BodySelectionParam Bodies = new( "Bodies" );
+	public readonly FloatParam Width = new( "Width", 0.1f, 0.0001f, unit: "u" );
+	public readonly FloatParam AngleThreshold = new( "Angle threshold", 15f, 0f, 180f, unit: "deg" );
+
+	public override IReadOnlyList<IParam> Parameters => new IParam[] { Bodies, Width, AngleThreshold };
+
+	protected override void Execute( FeatureContext ctx )
+	{
+		foreach ( var body in ctx.Bodies.Where( Bodies.Matches ) )
+			body.Mesh = Bevel.Apply( body.Mesh, Width.Clamped, AngleThreshold.Clamped );
+	}
+}
