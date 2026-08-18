@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>Effigy.Tests</RootNamespace>
+    <AssemblyName>Effigy.Tests</AssemblyName>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <!--
+    The kernel is compiled from source rather than referenced as a library, on purpose: it is
+    meant to be copied into an s&box or Godot project as loose .cs files, exactly the way
+    Marionette ships. Building it the same way here keeps that honest - if the kernel ever picks
+    up a dependency this project stops compiling.
+  -->
+  <ItemGroup>
+    <Compile Include="../Effigy/**/*.cs" />
+    <Compile Include="*.cs" />
+  </ItemGroup>
+
+</Project>

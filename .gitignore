@@ -11,7 +11,7 @@ bin
 
 # ...except the kernel's test runner. The rule above exists because s&box regenerates its own
 # csproj files; this one is hand-written and has to be in the repo for `dotnet run` to work.
-!ModelKernel.Tests/ModelKernel.Tests.csproj
+!Effigy.Tests/Effigy.Tests.csproj
 Properties/*
 code/obj/*
 code/Properties/*
