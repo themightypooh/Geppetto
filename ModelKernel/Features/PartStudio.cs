@@ -177,6 +177,17 @@ public sealed class PartStudio
 		if ( _cache.Count > reusableUpTo )
 			_cache.RemoveRange( reusableUpTo, _cache.Count - reusableUpTo );
 
+		// A REUSED FEATURE'S ERROR IS STILL AN ERROR. Features before the dirty point are not re-run,
+		// so they never re-report - and the report came back clean while an upstream feature was
+		// still broken, purely because the edit happened downstream of it. Carrying the errors
+		// forward keeps HasErrors meaning "this model has something wrong with it" rather than
+		// "something went wrong during this particular rebuild".
+		for ( var i = 0; i < reusableUpTo; i++ )
+		{
+			if ( Features[i].Error is not null )
+				report.Errors.Add( (Features[i].Id, Features[i].Error) );
+		}
+
 		for ( var i = reusableUpTo; i < count; i++ )
 		{
 			var feature = Features[i];

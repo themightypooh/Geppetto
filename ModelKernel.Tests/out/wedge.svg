@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 460 460" width="460" height="460">
+<rect width="100%" height="100%" fill="#14161a"/>
+<polygon points="196.81,276.9 41.8,366.95 263.19,430 418.2,339.95" fill="rgb(51,66,83)" stroke="rgb(51,66,83)" stroke-width="0.35"/>
+<polygon points="41.8,366.95 196.81,276.9 196.81,30 41.8,120.05" fill="rgb(66,87,109)" stroke="rgb(66,87,109)" stroke-width="0.35"/>
+<polygon points="196.81,276.9 418.2,339.95 196.81,30" fill="rgb(103,140,174)" stroke="rgb(103,140,174)" stroke-width="0.35"/>
+<text x="16" y="430" fill="#8b98a8" font-family="ui-monospace,monospace" font-size="13">wedge</text>
+<text x="16" y="447" fill="#5d6874" font-family="ui-monospace,monospace" font-size="11">6 verts · 5 faces · 3 drawn</text>
+</svg>

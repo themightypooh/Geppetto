@@ -63,6 +63,12 @@ public static class Program
 
 		RigTests.Run();
 
+		ShellTests.Run();
+
+		BevelTests.Run();
+
+		UVTests.Run();
+
 		Section( "writing sample OBJs" );
 		WriteSamples( outDir );
 

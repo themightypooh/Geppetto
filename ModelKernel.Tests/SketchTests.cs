@@ -151,6 +151,44 @@ public static class SketchTests
 		Check( "disjoint shapes give two profiles", ProfileFinder.Find( two ).Profiles.Count == 2 );
 
 		// An unclosed chain is reported rather than silently treated as a region.
+		// A revolve past a full turn swept over itself and welded the overlap, producing a mesh with
+		// edges shared by four or more faces and no error at all.
+		var over = new PartStudio();
+		var os = over.Add( new SketchFeature() );
+		os.Sketch.AddRectangle( new Vec2( 3, -0.5f ), new Vec2( 5, 0.5f ) );
+		var overRevolve = over.Add( new RevolveFeature() );
+		overRevolve.AxisDirection.Value = new Vec3( 0, 1, 0 );
+		overRevolve.Angle.Value = 720f;
+		over.Rebuild();
+
+		Check( "a revolve past a full turn is refused", overRevolve.Error is not null, overRevolve.Error );
+
+		// A circle at or below the sketch tolerance tessellates to fewer than three points. Walked
+		// loops are guarded; the circle path was not, and produced faces with two corners.
+		var tiny = new Sketch { Tolerance = 0.1f };
+		var tc = tiny.AddPoint( 0, 0 );
+		tiny.Add( new SketchCircle( tc, 0.01f ) );
+		var tinyResult = ProfileFinder.Find( tiny );
+
+		Check( "a circle too small to be a region is reported, not extruded",
+			tinyResult.Profiles.Count == 0 && tinyResult.Warnings.Count > 0,
+			$"{tinyResult.Profiles.Count} profiles, {tinyResult.Warnings.Count} warnings" );
+
+		// An open chain seeded from its MIDDLE used to be counted twice: the walk goes one way, and
+		// the untouched half was then picked up as a fresh seed.
+		var middle = new Sketch();
+		var m0 = middle.AddPoint( 0, 0 );
+		var m1 = middle.AddPoint( 1, 0 );
+		var m2 = middle.AddPoint( 2, 0 );
+		var m3 = middle.AddPoint( 3, 0 );
+		middle.Add( new SketchLine( m1, m2 ) );   // the middle segment is seeded first
+		middle.Add( new SketchLine( m0, m1 ) );
+		middle.Add( new SketchLine( m2, m3 ) );
+
+		Check( "an open chain seeded from its middle counts once",
+			ProfileFinder.Find( middle ).OpenChains == 1,
+			$"{ProfileFinder.Find( middle ).OpenChains}" );
+
 		var open = new Sketch();
 		var p0 = open.AddPoint( 0, 0 );
 		var p1 = open.AddPoint( 1, 0 );

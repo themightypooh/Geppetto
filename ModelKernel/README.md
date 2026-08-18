@@ -23,7 +23,7 @@ cd ModelKernel.Tests
 dotnet run -- out
 ```
 
-248 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
+447 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
 2-level-subdivided version of each. Those are the fastest way to see whether something is actually
 right: open them in Blender, or drop one into ModelDoc to find out what s&box makes of it.
 
@@ -43,9 +43,19 @@ Exit code is non-zero on failure, so it works as a pre-commit or CI check unchan
 | `Features/PartStudio.cs` | the ordered history: rollback and incremental rebuild |
 | `Features/BasicFeatures.cs` | primitive, transform, linear/circular pattern, mirror, subdivide |
 | `Features/SketchFeatures.cs` | sketch, extrude, revolve |
+| `Features/SolidFeatures.cs` | shell, bevel, UV project — the ops that reshape a solid once it exists |
 | `Sketch/SketchPlane.cs` | the plane a sketch lives on, and plane↔world mapping |
 | `Sketch/Sketch.cs` | points, lines, arcs, circles, tessellation |
 | `Sketch/Profile.cs` | closed-region finding, nesting, orientation |
+| `ShellOperation.cs` | hollow a solid to an exact wall thickness, with optional openings |
+| `BevelOperation.cs` | chamfer every edge, by insetting each face and bridging the gaps |
+| `PlaneOffset.cs` | the offset solve shell and bevel share |
+| `UVProjection.cs` | box and planar UV projection |
+| `Rig/Skeleton.cs` | bones, bind pose, world transforms from the parent chain |
+| `Rig/SkinWeights.cs` | per-vertex influences, blending and pruning |
+| `Rig/SkinBinder.cs` | auto-binding by distance or by body, plus weight smoothing |
+| `SmdWriter.cs` | the export path — static and skinned in one writer |
+| `MeshNormals.cs` | angle-thresholded corner normals, shared by every exporter |
 
 ## The feature tree
 
@@ -180,9 +190,100 @@ Three of these tests exist because they caught real bugs:
   winding: zero enclosed volume, vertices welded that should have stayed apart, and entirely
   plausible until measured. Now refused with the same reasoning Onshape gives.
 
+## Shell, and why the obvious version is wrong
+
+Hollowing a solid looks like a one-liner: push every vertex along its normal by the wall thickness.
+That is incorrect at every corner, and quietly so.
+
+A box corner's area-weighted normal is `(1,1,1)/sqrt(3)`. Move it 0.1 along that and each wall ends
+up `0.1/sqrt(3)` = **0.058** thick. The model looks perfectly fine and measures wrong — the worst
+kind of bug, because nothing in a render tells you.
+
+Thickness is a property of **planes**, not vertices. So for each vertex the kernel solves for the
+point sitting exactly `thickness` from every face plane meeting there:
+
+```
+for each adjacent face i:   dot( f_i, p' ) = dot( f_i, p ) - thickness
+```
+
+an overdetermined system solved by least squares through the normal equations, in double precision
+because a 3x3 determinant of near-parallel normals loses too many digits in single. At a box corner
+it returns exactly `(0.9, 0.9, 0.9)` — the vertex travels `t*sqrt(3)`, not `t`, which is the correct
+answer and the one the naive version misses.
+
+The tests measure **plane-to-plane distance**, not vertex movement, across a box, cylinder, wedge,
+extrusion and revolve. Asserting that a vertex moved by `thickness` would enshrine the exact bug
+this avoids. A faceted cylinder makes the point sharpest: its inner vertices land at
+`r - t/cos(pi/n)`, strictly tighter than a naive `r - t`, and that closed form is what the test
+checks.
+
+An opened face does **not** constrain the solve. It is being deleted, so requiring the inner surface
+to stand clear of it would pull the wall back and turn the rim into a 45-degree chamfer instead of a
+flat band. Dropping those constraints leaves rim vertices with only two planes, which is why the
+solver takes the **least-norm** solution rather than any solution: it slides the vertex straight in
+and not along the rim.
+
+Known limits, stated rather than discovered:
+
+- **No self-intersection handling.** Shell a shape by more than its thinnest feature and the inner
+  surface passes through itself.
+- **Openings must form simple loops.** Two opened faces meeting at only a vertex would put four rim
+  quads on one outer-to-inner edge — non-manifold, and nothing downstream accepts it. That case is
+  refused with an explanation rather than returned broken.
+
+## Bevel
+
+Inset every face within its own plane, then fill the gaps: one quad per original edge, one n-gon per
+original vertex. A box becomes 6 + 12 + 8 = 26 faces.
+
+The corner inset is **the same solve as shell**, one dimension down — put a point a fixed distance
+from two planes, moving as little as possible, with the edge normals taken inside the face plane
+instead of the face normals taken in space. Both call `PlaneOffset`. Doing it as "bisector times
+1/sin(half-angle)" is the same formula rediscovered, and it gets sharp corners wrong.
+
+Verified against a closed form. Chamfering a 2×2×2 cube by `d` gives
+
+```
+V(d) = 8 - 12d² + (16/3)d³
+```
+
+which is worth checking at its limit: at `d = 1` the inset squares shrink to points and the solid
+becomes the octahedron with vertices at the face centres. The formula gives `8 - 12 + 16/3 = 4/3`,
+and that octahedron's volume is exactly `4/3`.
+
+**Single segment only** — a chamfer, not a rounded fillet. Deliberate: multi-segment rounding needs
+the corner caps rebuilt as patches agreeing with every edge strip meeting them, which is most of why
+the engine's own bevel runs to two thousand lines. It is also largely unnecessary here, since a
+chamfer followed by Catmull-Clark gives a rounded edge whose tightness the bevel distance controls.
+
+One trap worth recording, because the obvious guard misses it: an over-large bevel collapses a face
+through itself, and checking whether the inset face's **normal** flipped does not catch it.
+Over-insetting a rectangle point-reflects it through its centre, and a 180° rotation preserves
+orientation. It is caught per edge instead — every inset edge must still run the same way as the
+edge it came from.
+
+## UV projection
+
+Box projection picks, per face, whichever of the six axis directions it most faces and projects onto
+that plane. Undistorted on hard surface, seams land where the dominant axis changes, and because UVs
+are per corner a seam costs nothing — the two faces simply disagree about the UV at a shared
+position, which is what a seam *is*.
+
+Handedness is the part that goes wrong. Each direction's `u` and `v` must satisfy
+`cross(u, v) == normal`; get one of the six backwards and that side renders its texture mirrored,
+which nothing in a grey-box render makes obvious. The test compares the signed area of every face's
+UV polygon — all six signs must agree.
+
+Worth knowing when writing tests against this: **a cube is seamless at its corners.** Every corner
+has all three coordinates equal, so at `(2,2,2)` the +X face reads `(y,z)`, +Y reads `(z,x)` and +Z
+reads `(x,y)` — all `(2,2)`. An unequal box is needed to observe a seam at all.
+
 ## Not here yet
 
-The sketch constraint solver, fillet and chamfer, shell, boolean subtract,
-planar UV projection. Then the whole phase-two sculpt side — brushes, multires deltas, normal-map
-bake. See the open questions in the handoff docs; two of them gate how this connects to an actual
-editor.
+The sketch constraint solver, rounded (multi-segment) fillets, boolean subtract. Then the whole
+phase-two sculpt side — brushes, multires deltas, normal-map bake.
+
+Boolean is the notable absence. Robust mesh CSG is a decades-old problem — coplanar faces,
+floating-point robustness, self-intersection — and a half-working one is worse than none. s&box ships
+`PolygonMesh.PerformBoolean`, so the plan is to put booleans behind an interface with an engine-backed
+implementation there and our own only if a portable one is ever genuinely needed.

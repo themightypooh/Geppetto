@@ -237,13 +237,21 @@ public static class MeshTransform
 			target.Skin ??= new SkinWeights( target.Positions.Count );
 
 			while ( target.Skin.Count < target.Positions.Count )
-				target.Skin.Vertices.Add( System.Array.Empty<BoneWeight>() );
+				target.Skin.Vertices.Add( new[] { new BoneWeight( 0, 1f ) } );
+
+			// An unrigged body merged into a rigged one gets bound to the FIRST BONE rather than
+			// left empty. Empty influences pass IsRigged, fail Validate, and export as "no links",
+			// which studiomdl reads as the parent bone column - so the body silently ends up rigged
+			// to whatever bone 0 happens to be, discovered much later and somewhere else. Binding it
+			// explicitly is the same outcome, stated out loud, and it keeps the partition of unity
+			// that everything downstream assumes.
+			var unrigged = new[] { new BoneWeight( 0, 1f ) };
 
 			for ( var i = 0; i < source.Positions.Count; i++ )
 			{
-				target.Skin.Vertices.Add( source.Skin is not null && i < source.Skin.Count
+				target.Skin.Vertices.Add( source.Skin is not null && i < source.Skin.Count && source.Skin[i].Length > 0
 					? (BoneWeight[])source.Skin[i].Clone()
-					: System.Array.Empty<BoneWeight>() );
+					: unrigged );
 			}
 		}
 

@@ -109,8 +109,16 @@ public sealed class SkinWeights
 		if ( weights is null || weights.Length == 0 )
 			return Array.Empty<BoneWeight>();
 
+		// SORTED EVEN WHEN NOTHING IS DROPPED. SmdWriter takes weights[0] as the vertex's parent
+		// bone, on the documented understanding that the strongest influence comes first — so
+		// returning a short set in whatever order it arrived exports the wrong parent bone. A vertex
+		// weighted [(0, 0.2), (1, 0.8)] would name bone 0 as its parent.
+		//
+		// Copying rather than returning the caller's array matters for the same reason it always
+		// does: a caller that prunes and then edits the result would otherwise be editing the mesh's
+		// own weights through the back door.
 		if ( weights.Length <= max )
-			return weights;
+			return weights.OrderByDescending( w => w.Weight ).ToArray();
 
 		var kept = weights.OrderByDescending( w => w.Weight ).Take( max ).ToArray();
 		var total = kept.Sum( w => w.Weight );
@@ -124,27 +132,49 @@ public sealed class SkinWeights
 		return kept;
 	}
 
-	/// <summary>Normalise, drop negligible and negative influences, and order strongest first.
-	/// Shared by Blend and the binders so there is one definition of a tidy weight set.</summary>
-	internal static BoneWeight[] Finish( Dictionary<int, float> acc, float epsilon = 1e-6f )
+	/// <summary>
+	/// Normalise, drop negligible and negative influences, and order strongest first. Shared by
+	/// Blend and the binders so there is one definition of a tidy weight set.
+	///
+	/// THE THRESHOLD IS RELATIVE, AND HAS TO BE. It runs on raw accumulator values, before
+	/// normalising, and those are not on any fixed scale: inverse-distance weighting on a 100-unit
+	/// model with a falloff of 4 produces influences around 1e-7. An absolute epsilon discards every
+	/// one of them, the vertex comes out with no influences at all, and export silently pins the
+	/// whole mesh to bone 0 — which is exactly what happened before this comment existed. Scaling
+	/// the threshold to the total makes the result depend on the shape of the weights rather than on
+	/// how big the model happens to be.
+	/// </summary>
+	internal static BoneWeight[] Finish( Dictionary<int, float> acc, float relativeEpsilon = 1e-6f )
 	{
 		var total = 0f;
 
 		foreach ( var v in acc.Values )
 		{
-			if ( v > epsilon )
+			if ( v > 0f )
 				total += v;
 		}
 
 		if ( total <= 0f )
 			return Array.Empty<BoneWeight>();
 
+		var floor = total * relativeEpsilon;
+		var keptTotal = 0f;
+
+		foreach ( var v in acc.Values )
+		{
+			if ( v > floor )
+				keptTotal += v;
+		}
+
+		if ( keptTotal <= 0f )
+			return Array.Empty<BoneWeight>();
+
 		var result = new List<BoneWeight>( acc.Count );
 
 		foreach ( var (bone, v) in acc )
 		{
-			if ( v > epsilon )
-				result.Add( new BoneWeight( bone, v / total ) );
+			if ( v > floor )
+				result.Add( new BoneWeight( bone, v / keptTotal ) );
 		}
 
 		result.Sort( ( a, b ) => b.Weight.CompareTo( a.Weight ) );
