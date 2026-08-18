@@ -1,0 +1,395 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using ModelKernel;
+
+namespace ModelKernel.Tests;
+
+/// <summary>
+/// Verification for the kernel. Console runner rather than a test framework, so it stays a
+/// dependency-free thing that can be pointed at any of this code from anywhere.
+///
+/// This exists because subdivision code is the classic case of "looks right, is wrong". A
+/// Catmull-Clark implementation with the vertex rule subtly off still produces a smooth, plausible
+/// blob — it just shrinks slightly incorrectly and drifts further from the limit surface at every
+/// level. Eyeballing a render will not catch it. Euler characteristic and the exact V/E/F growth
+/// laws will.
+/// </summary>
+public static class Program
+{
+	static int _passed, _failed;
+
+	public static int Main( string[] args )
+	{
+		var outDir = args.Length > 0 ? args[0] : "out";
+
+		Section( "primitives are valid and manifold" );
+		TestPrimitiveValidity();
+
+		Section( "primitives are closed, except the plane" );
+		TestClosedness();
+
+		Section( "Euler characteristic matches expected genus" );
+		TestEuler();
+
+		Section( "face winding puts normals outward" );
+		TestWinding();
+
+		Section( "Catmull-Clark output is all quads" );
+		TestAllQuads();
+
+		Section( "Catmull-Clark obeys the V/E/F growth laws" );
+		TestGrowthLaws();
+
+		Section( "Catmull-Clark preserves topology" );
+		TestTopologyPreserved();
+
+		Section( "Catmull-Clark keeps an open mesh's boundary" );
+		TestBoundaryPreserved();
+
+		Section( "subdivision converges rather than drifting" );
+		TestConvergence();
+
+		Section( "PredictCost agrees with reality" );
+		TestPredictCost();
+
+		Section( "UV seams survive subdivision" );
+		TestUVSeams();
+
+		Section( "OBJ round-trips" );
+		TestObjRoundTrip();
+
+		Section( "writing sample OBJs" );
+		WriteSamples( outDir );
+
+		Console.WriteLine();
+		Console.WriteLine( new string( '-', 60 ) );
+		Console.WriteLine( $"  {_passed} passed, {_failed} failed" );
+		Console.WriteLine( new string( '-', 60 ) );
+
+		return _failed == 0 ? 0 : 1;
+	}
+
+	// ---------------------------------------------------------------------------------------
+
+	static Dictionary<string, PolyMesh> Closed() => new()
+	{
+		["box"] = Primitives.Box( 2, 2, 2 ),
+		["cylinder"] = Primitives.Cylinder( 0.5f, 1f, 16 ),
+		["quadsphere"] = Primitives.QuadSphere( 0.5f, 4 ),
+		["wedge"] = Primitives.Wedge( 1, 1, 1 ),
+		["tube"] = Primitives.Tube( 0.5f, 0.3f, 1f, 16 ),
+	};
+
+	static void TestPrimitiveValidity()
+	{
+		foreach ( var (name, mesh) in Closed() )
+		{
+			var v = MeshValidator.Validate( mesh );
+			Check( $"{name} validates", v.IsValid, v.ToString() );
+		}
+
+		var plane = Primitives.Plane( 2, 2, 3, 3 );
+		Check( "plane validates", MeshValidator.Validate( plane ).IsValid );
+	}
+
+	static void TestClosedness()
+	{
+		foreach ( var (name, mesh) in Closed() )
+		{
+			var v = MeshValidator.Validate( mesh );
+			Check( $"{name} is closed", v.IsClosed, $"{v.BoundaryEdges} boundary edges" );
+		}
+
+		var plane = Primitives.Plane( 2, 2, 3, 3 );
+		var pv = MeshValidator.Validate( plane );
+
+		// A 3x3 grid has 12 edges around its border.
+		Check( "plane has a 12-edge boundary", pv.BoundaryEdges == 12, $"got {pv.BoundaryEdges}" );
+	}
+
+	static void TestEuler()
+	{
+		// Genus 0 closed surfaces have V - E + F = 2.
+		foreach ( var name in new[] { "box", "cylinder", "quadsphere", "wedge" } )
+		{
+			var x = MeshValidator.EulerCharacteristic( Closed()[name] );
+			Check( $"{name} has X = 2", x == 2, $"got {x}" );
+		}
+
+		// The tube is a torus - genus 1, so X = 0. If this reads 2 the inner wall is missing or
+		// the rings welded together somewhere they should not have.
+		var tubeX = MeshValidator.EulerCharacteristic( Closed()["tube"] );
+		Check( "tube has X = 0 (genus 1)", tubeX == 0, $"got {tubeX}" );
+	}
+
+	static void TestWinding()
+	{
+		// Divergence theorem: for outward normals, sum over faces of (centroid . normal) * area
+		// equals three times the enclosed volume, so it must come out positive. Inverted winding
+		// anywhere flips the sign or cancels it toward zero.
+		foreach ( var (name, mesh) in Closed() )
+		{
+			var acc = 0f;
+
+			foreach ( var f in mesh.Faces )
+				acc += Vec3.Dot( mesh.FaceCentroid( f ), mesh.FaceNormal( f ) ) * mesh.FaceArea( f );
+
+			var volume = acc / 3f;
+			Check( $"{name} winds outward (volume {volume:0.####} > 0)", volume > 0.001f );
+		}
+
+		// Spot-check the box exactly: a 2x2x2 box encloses 8.
+		var box = Primitives.Box( 2, 2, 2 );
+		var boxVol = box.Faces.Sum( f => Vec3.Dot( box.FaceCentroid( f ), box.FaceNormal( f ) ) * box.FaceArea( f ) ) / 3f;
+		Check( "box volume is 8", MathF.Abs( boxVol - 8f ) < 1e-3f, $"got {boxVol:0.####}" );
+	}
+
+	static void TestAllQuads()
+	{
+		foreach ( var (name, mesh) in Closed() )
+		{
+			var sub = CatmullClark.Subdivide( mesh, 1 );
+			var nonQuads = sub.Faces.Count( f => f.Count != 4 );
+			Check( $"{name} subdivides to all quads", nonQuads == 0, $"{nonQuads} non-quads" );
+		}
+
+		// The wedge is the interesting one - it goes in with two triangles and must still come out
+		// entirely quads.
+		var wedge = CatmullClark.Subdivide( Primitives.Wedge(), 1 );
+		Check( "wedge's triangles became quads", wedge.Faces.All( f => f.Count == 4 ) );
+	}
+
+	static void TestGrowthLaws()
+	{
+		foreach ( var (name, mesh) in Closed() )
+		{
+			var v = mesh.VertexCount;
+			var e = mesh.BuildEdgeFaces().Count;
+			var f = mesh.FaceCount;
+			var corners = mesh.Faces.Sum( x => x.Count );
+
+			var sub = CatmullClark.Subdivide( mesh, 1 );
+
+			Check( $"{name}: V' = V+E+F", sub.VertexCount == v + e + f,
+				$"expected {v + e + f}, got {sub.VertexCount}" );
+
+			Check( $"{name}: F' = total corners", sub.FaceCount == corners,
+				$"expected {corners}, got {sub.FaceCount}" );
+
+			Check( $"{name}: E' = 2E + corners", sub.BuildEdgeFaces().Count == e * 2 + corners,
+				$"expected {e * 2 + corners}, got {sub.BuildEdgeFaces().Count}" );
+		}
+	}
+
+	static void TestTopologyPreserved()
+	{
+		foreach ( var (name, mesh) in Closed() )
+		{
+			var before = MeshValidator.EulerCharacteristic( mesh );
+			var sub = CatmullClark.Subdivide( mesh, 3 );
+			var after = MeshValidator.EulerCharacteristic( sub );
+			var v = MeshValidator.Validate( sub );
+
+			Check( $"{name} keeps X = {before} after 3 levels", after == before, $"got {after}" );
+			Check( $"{name} still valid after 3 levels", v.IsValid, v.ToString() );
+			Check( $"{name} still closed after 3 levels", v.IsClosed );
+		}
+	}
+
+	static void TestBoundaryPreserved()
+	{
+		var plane = Primitives.Plane( 2, 2, 2, 2 );
+		var sub = CatmullClark.Subdivide( plane, 2 );
+		var v = MeshValidator.Validate( sub );
+
+		Check( "subdivided plane is still valid", v.IsValid, v.ToString() );
+		Check( "subdivided plane still has a boundary", v.BoundaryEdges > 0 );
+
+		// The border must stay flat at z=0. If the boundary rules were wrong it would be pulled
+		// toward the interior and this would drift.
+		var maxZ = sub.Positions.Max( p => MathF.Abs( p.z ) );
+		Check( "subdivided plane stays planar", maxZ < 1e-5f, $"max |z| = {maxZ}" );
+
+		// A unit-ish plane's corners are pinned by the corner rule, so the extent should not
+		// collapse inward the way an unclamped surface would.
+		var extent = sub.Positions.Max( p => MathF.Abs( p.x ) );
+		Check( "subdivided plane keeps its corners", MathF.Abs( extent - 1f ) < 1e-5f, $"extent {extent:0.#####}" );
+	}
+
+	static void TestConvergence()
+	{
+		// Subdividing a cube converges on a rounded solid. Two things must hold: the centroid must
+		// not wander, and successive levels must move points less and less. A wrong vertex rule
+		// typically shows up as drift that never settles.
+		var mesh = Primitives.Box( 2, 2, 2 );
+		var previousRadius = 0f;
+		var deltas = new List<float>();
+
+		for ( var level = 1; level <= 5; level++ )
+		{
+			var sub = CatmullClark.Subdivide( mesh, level );
+
+			var centroid = Vec3.Zero;
+			foreach ( var p in sub.Positions ) centroid += p;
+			centroid /= sub.VertexCount;
+
+			Check( $"level {level} stays centred", centroid.Length < 1e-4f, $"centroid {centroid}" );
+
+			var radius = sub.Positions.Average( p => p.Length );
+
+			if ( level > 1 )
+				deltas.Add( MathF.Abs( radius - previousRadius ) );
+
+			previousRadius = radius;
+		}
+
+		var settling = true;
+
+		for ( var i = 1; i < deltas.Count; i++ )
+		{
+			if ( deltas[i] > deltas[i - 1] + 1e-6f )
+				settling = false;
+		}
+
+		Check( "successive levels move less each time", settling,
+			string.Join( ", ", deltas.Select( d => d.ToString( "0.#####" ) ) ) );
+	}
+
+	static void TestPredictCost()
+	{
+		foreach ( var (name, mesh) in Closed() )
+		{
+			for ( var level = 1; level <= 3; level++ )
+			{
+				var predicted = CatmullClark.PredictCost( mesh, level );
+				var actual = CatmullClark.Subdivide( mesh, level );
+
+				Check( $"{name} level {level} cost predicted",
+					predicted.Vertices == actual.VertexCount && predicted.Faces == actual.FaceCount,
+					$"predicted {predicted.Vertices}v/{predicted.Faces}f, got {actual.VertexCount}v/{actual.FaceCount}f" );
+			}
+		}
+	}
+
+	static void TestUVSeams()
+	{
+		// A box's corner belongs to three faces that each want a different UV for the same
+		// position. Per-corner UVs are what allow that, and subdivision must not quietly average
+		// them together - that would smear the texture across every seam.
+		var box = Primitives.Box( 2, 2, 2 );
+		var sub = CatmullClark.Subdivide( box, 2 );
+
+		var uvsByPosition = new Dictionary<int, HashSet<(long, long)>>();
+
+		foreach ( var f in sub.Faces )
+		{
+			for ( var i = 0; i < f.Count; i++ )
+			{
+				if ( !uvsByPosition.TryGetValue( f.Indices[i], out var set ) )
+					uvsByPosition[f.Indices[i]] = set = new HashSet<(long, long)>();
+
+				set.Add( ((long)MathF.Round( f.UVs[i].x * 1000 ), (long)MathF.Round( f.UVs[i].y * 1000 )) );
+			}
+		}
+
+		var seamVerts = uvsByPosition.Count( kv => kv.Value.Count > 1 );
+		Check( "seam vertices still carry several UVs", seamVerts > 0, $"found {seamVerts}" );
+
+		// Every UV must stay inside the unit square - the box's islands are all 0..1 and linear
+		// subdivision cannot legitimately push one outside.
+		var outOfRange = sub.Faces.SelectMany( f => f.UVs )
+			.Count( uv => uv.x < -1e-4f || uv.x > 1 + 1e-4f || uv.y < -1e-4f || uv.y > 1 + 1e-4f );
+
+		Check( "UVs stay in the unit square", outOfRange == 0, $"{outOfRange} outside" );
+	}
+
+	static void TestObjRoundTrip()
+	{
+		foreach ( var (name, mesh) in Closed() )
+		{
+			var text = ObjWriter.Write( mesh, name );
+			var back = ObjReader.Read( text );
+
+			Check( $"{name} OBJ keeps vertex count", back.VertexCount == mesh.VertexCount,
+				$"{mesh.VertexCount} -> {back.VertexCount}" );
+
+			Check( $"{name} OBJ keeps face count", back.FaceCount == mesh.FaceCount,
+				$"{mesh.FaceCount} -> {back.FaceCount}" );
+
+			Check( $"{name} OBJ keeps topology",
+				MeshValidator.EulerCharacteristic( back ) == MeshValidator.EulerCharacteristic( mesh ) );
+
+			// Normals must be present and finite; some importers reject a zero normal outright.
+			var vnCount = text.Split( '\n' ).Count( l => l.StartsWith( "vn " ) );
+			Check( $"{name} OBJ writes normals", vnCount > 0, $"{vnCount} normals" );
+			Check( $"{name} OBJ has no NaN", !text.Contains( "NaN" ) && !text.Contains( "âˆž" ) );
+		}
+
+		// The smoothing threshold has to actually do something: a box should end up with exactly
+		// six distinct normals, a cylinder with far more than six.
+		var boxNormals = ObjWriter.Write( Primitives.Box(), "box" )
+			.Split( '\n' ).Count( l => l.StartsWith( "vn " ) );
+
+		Check( "box gets 6 hard normals", boxNormals == 6, $"got {boxNormals}" );
+
+		var cylNormals = ObjWriter.Write( Primitives.Cylinder( 0.5f, 1f, 16 ), "cyl" )
+			.Split( '\n' ).Count( l => l.StartsWith( "vn " ) );
+
+		Check( "cylinder gets smoothed sides", cylNormals >= 16, $"got {cylNormals}" );
+	}
+
+	static void WriteSamples( string outDir )
+	{
+		Directory.CreateDirectory( outDir );
+
+		foreach ( var (name, mesh) in Closed() )
+		{
+			ObjWriter.WriteFile( mesh, Path.Combine( outDir, $"{name}.obj" ), name );
+
+			var sub = CatmullClark.Subdivide( mesh, 2 );
+			ObjWriter.WriteFile( sub, Path.Combine( outDir, $"{name}_subdiv2.obj" ), $"{name}_subdiv2" );
+		}
+
+		var files = Directory.GetFiles( outDir, "*.obj" ).Length;
+		Check( $"wrote {files} sample OBJs to {outDir}/", files > 0 );
+
+		Console.WriteLine();
+		Console.WriteLine( "  cost table (what a level slider would warn about):" );
+		Console.WriteLine( $"  {"primitive",-12} {"L0",12} {"L2",14} {"L4",16} {"L6",18}" );
+
+		foreach ( var (name, mesh) in Closed() )
+		{
+			string At( int level )
+			{
+				var (v, f) = CatmullClark.PredictCost( mesh, level );
+				return $"{v}v/{f}f";
+			}
+
+			Console.WriteLine( $"  {name,-12} {At( 0 ),12} {At( 2 ),14} {At( 4 ),16} {At( 6 ),18}" );
+		}
+	}
+
+	// ---------------------------------------------------------------------------------------
+
+	static void Section( string title )
+	{
+		Console.WriteLine();
+		Console.WriteLine( $"{title}" );
+	}
+
+	static void Check( string what, bool ok, string detail = null )
+	{
+		if ( ok )
+		{
+			_passed++;
+			Console.WriteLine( $"  ok    {what}" );
+		}
+		else
+		{
+			_failed++;
+			Console.WriteLine( $"  FAIL  {what}{(detail is null ? "" : $"  [{detail}]")}" );
+		}
+	}
+}
