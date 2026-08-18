@@ -216,28 +216,42 @@ turns out to be the actual point.
 
 ## Phase one — the parametric base
 
-Much of this now exists in `Effigy/`, engine-free and with 248 checks behind it. See that
+Much of this now exists in `Effigy/`, engine-free and with 417 checks behind it. See that
 folder's README for the design decisions; the status here is what remains.
 
 1. **Parametric primitives** — box, plane, cylinder, quad sphere, wedge, tube. **Done.**
-   Quad-dominant output is a hard requirement, not a nicety: Catmull-Clark needs it in phase two
-   and skinning needs it in phase three.
+   Quad-dominant output is a hard requirement, not a nicety: skinning needs it in phase two.
 2. **Feature tree** — ordered history, rollback, incremental rebuild, self-describing parameters.
    **Done**, modelled on Onshape's Part Studio.
 3. **Sketcher** — planes, lines, arcs, circles, closed-region finding, extrude, revolve. **Done.**
    The constraint solver is not: coordinates are typed rather than derived.
-4. **Modifiers** — array, mirror, bevel (flat chamfer by angle threshold, not yet a rounded fillet)
+4. **Modifiers** — array, mirror, bevel (flat chamfer by angle threshold with skin-weight passthrough)
    and shell are **done**.
 5. **Boolean subtract**, which also unlocks profiles with holes. Not started.
 6. **Planar/box-projection auto-UV per face cluster.** **Done** — `UVProjectFeature` re-projects box
-   or planar per selected bodies. These UVs are what the phase-two normal-map bake consumes, so they
-   have to be real rather than placeholder.
-7. **Export** — OBJ works. Collision from the primitive list rather than from triangles is not
-   built.
+   or planar per selected bodies.
+7. **Export** — OBJ works for static geometry. Collision from the primitive list rather than from 
+   triangles is not built.
 
 Live tree throughout: change any number, the model rebuilds.
 
-## Phase two — subdivide and sculpt
+## Phase two — bones and rigged export
+
+Bones come before sculpt because you have bone experience and can iterate faster. Sculpt is deferred
+until phase three.
+
+1. **Skeleton in the kernel** — bones, hierarchy, orientation, bind pose
+2. **Skinning weights**, **capped at 4 influences per vertex** because the compiler culls beyond that
+3. **Auto-weighting** so a first result is not hand-painted; heat diffusion or bone-glow
+4. **Weight painting** to fix what auto-weighting gets wrong
+5. **Export as SMD** (or DMX), with an `AnimBindPose` node in the `.vmdl`
+
+Skinning targets the cage produced by phase one. This is the same cage that sculpting (phase three)
+and editor integration (phase four) will later use — it has to survive every stage between.
+
+## Phase three — subdivide and sculpt
+
+Deferred until phase two ships. The cage from phase one is what this operates on.
 
 1. Catmull-Clark subdivision, levels 0–4, switchable — **done, in `Effigy/CatmullClark.cs`**
 2. Brushes — grab, inflate, smooth, pinch, flatten, clay — with BVH hit-testing
@@ -245,29 +259,16 @@ Live tree throughout: change any number, the model rebuilds.
 4. Normal-map bake from the dense mesh down onto the cage
 
 Step 3 is the one that makes the pipeline work rather than merely run. Without multires the sculpt
-consumes the cage, and with the cage gone there is nothing clean left to rig.
+consumes the cage, and with the cage gone there is nothing to rig.
 
-## Phase three — bones
+## Phase four — editor integration
 
-1. Place a skeleton — bones, hierarchy, orientation
-2. Skinning weights, **capped at 4 influences per vertex** because the compiler culls beyond that
-3. Auto-weighting so a first result is not hand-painted; heat diffusion or bone-glow
-4. Weight painting to fix what auto-weighting gets wrong
-5. Export as SMD (or DMX), with an `AnimBindPose` node in the `.vmdl`
+Nothing to build here until phases 1–3 are solid. Marionette already poses and keyframes a skinned
+model; the handover is a `.vmdl` with a skeleton — no new integration, no shared format beyond the
+one s&box already reads.
 
-Skinning targets **the cage, not the sculpt.** Nobody rigs a two-million-vertex mesh; the sculpt
-detail rides along as a normal map. This is the same cage phase one produced, which is why it has
-to survive every stage between.
-
-## Phase four — Marionette
-
-Nothing to build. Marionette already poses and keyframes a skinned model; it is the reason the
-pipeline ends where it does. The handover is a `.vmdl` with a skeleton — no new integration, no
-shared format beyond the one s&box already reads.
-
-Phase one is worth shipping alone. Each later phase is built directly on the one before it, so the
-order is not negotiable: clean quads, then a sculpt that preserves them, then a rig that deforms
-them.
+Phase one is worth shipping alone. Phase two (rigging) ships a complete static→rigged→posed pipeline
+separate from the editor. Phases three and four are optimizations and integration on top.
 
 ---
 

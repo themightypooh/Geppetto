@@ -274,8 +274,9 @@ reads `(x,y)` — all `(2,2)`. An unequal box is needed to observe a seam at all
 
 ## Not here yet
 
-The sketch constraint solver, rounded (multi-segment) fillets, boolean subtract. Then the whole
-phase-two sculpt side — brushes, multires deltas, normal-map bake.
+**Phase two (next)**: Skeleton editing, auto-weighting, weight painting, SMD export. Bones come before sculpt because you have bone experience.
+
+**Phase three**: The sketch constraint solver, rounded (multi-segment) fillets, then Catmull-Clark subdivision brushes, multires deltas, normal-map bake.
 
 Boolean is the notable absence. Robust mesh CSG is a decades-old problem — coplanar faces,
 floating-point robustness, self-intersection — and a half-working one is worse than none. s&box ships
