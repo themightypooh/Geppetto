@@ -74,6 +74,19 @@ public sealed class PolyMesh
 	public List<Vec3> Positions = new();
 	public List<Face> Faces = new();
 
+	/// <summary>
+	/// Bone influences, parallel to Positions. Null until something rigs the mesh, which is the
+	/// normal state for a prop.
+	///
+	/// It lives on the mesh rather than beside it because everything that rebuilds a vertex list —
+	/// Clone, Append, Catmull-Clark — has to rebuild the weights the same way. Kept alongside, it
+	/// would be silently dropped by whichever of those somebody forgot to update, and the symptom
+	/// would be a model that only loses its rig after a subdivide.
+	/// </summary>
+	public SkinWeights Skin;
+
+	public bool IsRigged => Skin is not null && Skin.Count == Positions.Count;
+
 	public PolyMesh() { }
 
 	public PolyMesh( IEnumerable<Vec3> positions, IEnumerable<Face> faces )
@@ -238,7 +251,7 @@ public sealed class PolyMesh
 
 	public PolyMesh Clone()
 	{
-		var m = new PolyMesh { Positions = new List<Vec3>( Positions ) };
+		var m = new PolyMesh { Positions = new List<Vec3>( Positions ), Skin = Skin?.Clone() };
 
 		foreach ( var f in Faces )
 			m.Faces.Add( new Face( (int[])f.Indices.Clone(), (Vec2[])f.UVs.Clone(), f.Material ) );

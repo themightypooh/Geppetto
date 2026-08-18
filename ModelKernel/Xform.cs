@@ -104,6 +104,89 @@ public readonly struct Xform
 		a.TransformDirection( b.Y ),
 		a.TransformDirection( b.Z ),
 		a.TransformPoint( b.Origin ) );
+
+	/// <summary>
+	/// The inverse transform. General 3x3 inverse rather than the transpose shortcut, because an
+	/// Xform is allowed to carry scale and a mirror — the transpose is only correct for a pure
+	/// rotation, and silently wrong for everything else this type can hold.
+	///
+	/// Throws on a singular basis. A zero-scaled transform has no inverse and returning identity
+	/// would hide the mistake somewhere far away from its cause.
+	/// </summary>
+	public Xform Inverse => InverseOf( this );
+
+	static Xform InverseOf( Xform t )
+	{
+		var det = t.Determinant;
+
+		if ( MathF.Abs( det ) < 1e-12f )
+			throw new InvalidOperationException( "Xform is singular and cannot be inverted" );
+
+		// For a matrix whose COLUMNS are X, Y, Z, the inverse has ROWS (Y×Z)/det, (Z×X)/det,
+		// (X×Y)/det. Xform stores columns, so the rows are transposed back into columns below.
+		var r0 = Vec3.Cross( t.Y, t.Z ) / det;
+		var r1 = Vec3.Cross( t.Z, t.X ) / det;
+		var r2 = Vec3.Cross( t.X, t.Y ) / det;
+
+		var origin = new Vec3(
+			-Vec3.Dot( r0, t.Origin ),
+			-Vec3.Dot( r1, t.Origin ),
+			-Vec3.Dot( r2, t.Origin ) );
+
+		return new Xform(
+			new Vec3( r0.x, r1.x, r2.x ),
+			new Vec3( r0.y, r1.y, r2.y ),
+			new Vec3( r0.z, r1.z, r2.z ),
+			origin );
+	}
+
+	/// <summary>
+	/// Euler angles in radians, in the convention R = Rz(z) * Ry(y) * Rx(x) — X applied first.
+	///
+	/// This is general maths, not an export detail, but it is worth saying where it gets used:
+	/// SMD stores bone rotations exactly this way, and getting the composition order backwards
+	/// produces a skeleton that looks plausible in the node list and is wrong the moment a bone
+	/// is not axis-aligned. There is a round-trip test.
+	///
+	/// The basis is normalised first, so a transform carrying scale still yields the rotation it
+	/// represents. A mirrored basis has no Euler representation at all — bones are never mirrored,
+	/// and a caller that manages it gets a wrong answer rather than an exception, which is the one
+	/// rough edge here.
+	/// </summary>
+	public Vec3 ToEulerXyz()
+	{
+		var x = X.Normal;
+		var y = Y.Normal;
+		var z = Z.Normal;
+
+		// Matrix entry naming below is [row][column]; Xform stores columns, so m20 is X.z.
+		var m20 = x.z;
+
+		// cos(pitch) collapses at the poles and the remaining two angles stop being separable —
+		// the classic gimbal case. Pin roll to zero and fold everything into the first angle.
+		if ( MathF.Abs( m20 ) > 0.999999f )
+		{
+			var pitch = m20 < 0f ? MathF.PI / 2f : -MathF.PI / 2f;
+
+			return m20 < 0f
+				? new Vec3( MathF.Atan2( y.x, y.y ), pitch, 0f )
+				: new Vec3( MathF.Atan2( -y.x, y.y ), pitch, 0f );
+		}
+
+		return new Vec3(
+			MathF.Atan2( y.z, z.z ),
+			MathF.Asin( -m20 ),
+			MathF.Atan2( x.y, x.x ) );
+	}
+
+	/// <summary>Rebuilds a rotation from ToEulerXyz's angles. Same convention, so the two
+	/// round-trip.</summary>
+	public static Xform FromEulerXyz( Vec3 radians )
+	{
+		return Rotate( new Vec3( 0, 0, 1 ), radians.z )
+			* Rotate( new Vec3( 0, 1, 0 ), radians.y )
+			* Rotate( new Vec3( 1, 0, 0 ), radians.x );
+	}
 }
 
 public static class MeshTransform
@@ -144,6 +227,26 @@ public static class MeshTransform
 	public static void Append( PolyMesh target, PolyMesh source )
 	{
 		var offset = target.Positions.Count;
+
+		// Weights have to be reconciled BEFORE the position lists merge, because both sides are
+		// padded against their own current vertex count. Merging an unrigged body into a rigged one
+		// is normal — a rig usually arrives after some of the model does — so the unrigged side is
+		// padded with empty influences rather than treated as an error.
+		if ( target.Skin is not null || source.Skin is not null )
+		{
+			target.Skin ??= new SkinWeights( target.Positions.Count );
+
+			while ( target.Skin.Count < target.Positions.Count )
+				target.Skin.Vertices.Add( System.Array.Empty<BoneWeight>() );
+
+			for ( var i = 0; i < source.Positions.Count; i++ )
+			{
+				target.Skin.Vertices.Add( source.Skin is not null && i < source.Skin.Count
+					? (BoneWeight[])source.Skin[i].Clone()
+					: System.Array.Empty<BoneWeight>() );
+			}
+		}
+
 		target.Positions.AddRange( source.Positions );
 
 		foreach ( var f in source.Faces )

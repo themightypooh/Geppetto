@@ -60,6 +60,8 @@ public static class Program
 
 		FeatureTests.Run();
 
+		RigTests.Run();
+
 		Section( "writing sample OBJs" );
 		WriteSamples( outDir );
 
