@@ -23,7 +23,7 @@ cd ModelKernel.Tests
 dotnet run -- out
 ```
 
-114 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
+179 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
 2-level-subdivided version of each. Those are the fastest way to see whether something is actually
 right: open them in Blender, or drop one into ModelDoc to find out what s&box makes of it.
 
@@ -34,10 +34,52 @@ Exit code is non-zero on failure, so it works as a pre-commit or CI check unchan
 | File | |
 |---|---|
 | `Vec.cs` | `Vec3`, `Vec2`. Deliberately not the engine's |
+| `Xform.cs` | transforms, and the winding reversal a mirror needs |
 | `PolyMesh.cs` | n-gon mesh, adjacency, validation, Euler characteristic |
 | `Primitives.cs` | box, plane, cylinder, quad sphere, wedge, tube — all quad-dominant |
 | `CatmullClark.cs` | subdivision, boundary rules, cost prediction |
 | `ObjWriter.cs` | OBJ export with angle-thresholded normals, plus a reader for round-trip tests |
+| `Features/Feature.cs` | feature base, self-describing parameters, bodies |
+| `Features/PartStudio.cs` | the ordered history: rollback and incremental rebuild |
+| `Features/BasicFeatures.cs` | primitive, transform, linear/circular pattern, mirror, subdivide |
+
+## The feature tree
+
+Modelled on Onshape's Part Studio, because that structure is what makes a parametric modeller
+parametric rather than a stack of bakes.
+
+```csharp
+var studio = new PartStudio();
+
+var box = studio.Add( new PrimitiveFeature() );
+box.SizeX.Value = 4f;
+
+var mirror = studio.Add( new MirrorFeature() );
+mirror.PlaneNormal.Value = new Vec3( 1, 0, 0 );
+
+studio.Add( new SubdivideFeature() ).Levels.Value = 2;
+
+studio.Rebuild();
+```
+
+Two properties do the work, and both are tested:
+
+**Rollback.** `RollbackIndex` evaluates only the first N features, so you can go back and see the
+model as it was. Rolling back above the Subdivide feature is how you get at the low-poly cage — the
+same cage the sculpt stage eventually bakes down onto. That is why subdivision is a feature in the
+tree rather than an export step.
+
+**Incremental rebuild.** The body list after each feature is cached, so editing feature 7 of 20
+re-runs 7 onward and reuses the snapshot from 6. Without it every parameter drag re-runs the whole
+tree and the tool stops feeling live at about a dozen features.
+
+Parameters describe themselves (`FloatParam`, `IntParam`, `ChoiceParam`, …) so one generic panel can
+render any feature's dialog. That is copied from Onshape deliberately: every dialog there has the
+same shape, and `PrimitiveFeature.Parameters` changes with the shape dropdown the way Onshape's
+does — a box asks for three lengths and doesn't mention radius.
+
+A feature that throws records an error and the rebuild carries on, so one upstream mistake doesn't
+cascade into every later feature also failing.
 
 ## Two decisions worth knowing before changing anything
 
@@ -66,8 +108,18 @@ So the tests check things that fail loudly instead:
 - an open mesh keeps its boundary, stays planar, and keeps its corners
 - a box exports with exactly 6 hard normals; a 16-segment cylinder with at least 16
 
+On the tree side: that editing feature 4 of 6 reuses exactly 3 and re-runs exactly 3, that a clean
+rebuild does no work, that rollback and roll-forward round-trip, that a broken feature doesn't stop
+the ones after it, and that **a mirrored body's enclosed volume stays positive** — the winding-
+reversal check, which guards a bug that renders black and looks fine in wireframe.
+
+The pattern-merge tests exist because they caught a real one: merging appended into the source mesh
+while the loop kept re-reading it, so instance counts doubled instead of incrementing — 6, 12, 24,
+48 faces rather than 6, 12, 18, 24.
+
 ## Not here yet
 
-Bevel, mirror, array, shell, boolean subtract, planar UV projection, and the whole phase-two sculpt
-side — brushes, multires deltas, normal-map bake. See the open questions in the handoff docs; two of
-them gate how this connects to an actual editor.
+Sketches and the constraint solver, extrude/revolve, fillet and chamfer, shell, boolean subtract,
+planar UV projection. Then the whole phase-two sculpt side — brushes, multires deltas, normal-map
+bake. See the open questions in the handoff docs; two of them gate how this connects to an actual
+editor.

@@ -18,8 +18,6 @@ namespace ModelKernel.Tests;
 /// </summary>
 public static class Program
 {
-	static int _passed, _failed;
-
 	public static int Main( string[] args )
 	{
 		var outDir = args.Length > 0 ? args[0] : "out";
@@ -60,15 +58,17 @@ public static class Program
 		Section( "OBJ round-trips" );
 		TestObjRoundTrip();
 
+		FeatureTests.Run();
+
 		Section( "writing sample OBJs" );
 		WriteSamples( outDir );
 
 		Console.WriteLine();
 		Console.WriteLine( new string( '-', 60 ) );
-		Console.WriteLine( $"  {_passed} passed, {_failed} failed" );
+		Console.WriteLine( $"  {Report.Passed} passed, {Report.Failed} failed" );
 		Console.WriteLine( new string( '-', 60 ) );
 
-		return _failed == 0 ? 0 : 1;
+		return Report.Failed == 0 ? 0 : 1;
 	}
 
 	// ---------------------------------------------------------------------------------------
@@ -373,23 +373,7 @@ public static class Program
 
 	// ---------------------------------------------------------------------------------------
 
-	static void Section( string title )
-	{
-		Console.WriteLine();
-		Console.WriteLine( $"{title}" );
-	}
+	static void Section( string title ) => Report.Section( title );
 
-	static void Check( string what, bool ok, string detail = null )
-	{
-		if ( ok )
-		{
-			_passed++;
-			Console.WriteLine( $"  ok    {what}" );
-		}
-		else
-		{
-			_failed++;
-			Console.WriteLine( $"  FAIL  {what}{(detail is null ? "" : $"  [{detail}]")}" );
-		}
-	}
+	static void Check( string what, bool ok, string detail = null ) => Report.Check( what, ok, detail );
 }
