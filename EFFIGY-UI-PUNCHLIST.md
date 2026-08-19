@@ -10,33 +10,51 @@ runs it.
 
 ---
 
-## 1. Sketch toolbar does not actually replace the feature toolbar
+## 1. Sketch toolbar does not actually replace the feature toolbar — FIXED
 
-**Reported symptom:** entering sketch mode is supposed to swap the feature tool strip for the
-sketch tool strip, in the same slot, above the viewport. It does not — both are visible /
-the feature strip stays where it was the whole time instead of being replaced.
+**Root cause found by reading the code, not guessing:** the feature strip (`EffigyToolStrip`,
+main's floating-on-the-canvas system) and the sketch strip (`_sketchBar`, a leftover
+window-docked `ToolBar`) were two completely unrelated widget systems. `EnterSketch`/`FinishSketch`
+called `_sketchBar.Show()`/`Hide()` — which only ever touched the docked bar. Nothing, anywhere,
+ever hid the floating feature strip. That's why it "stayed where it was the whole time."
 
-Status: **not yet investigated in this session.** Next step is reading `EffigyWindow`'s
-`ShowSketchTools`/sketch-mode-entry path and `EffigyViewport`'s toolbar-hosting code together,
-since this branch went through a full merge with `main` for the toolbar system and the two sides
-built genuinely different toolbar architectures (see `ONSHAPE-WORKFLOW.md`'s status note at the
-top — main's `EffigyToolStrip` won the merge). This is exactly the kind of seam a merge leaves
-behind. Suspect the visibility toggle references the wrong strip object, or the sketch strip is
-being added without hiding the feature one.
+**Fix**: the sketch toolbar is now `EffigySketchStrip`, a second floating strip built the same way
+as the feature one, positioned by `EffigyViewport.CompleteLayout` at the exact same spot. Only one
+is ever visible — `EnterSketch`/`FinishSketch` now toggle `_toolStrip.Visible`/`_sketchStrip.Visible`
+together, so entering a sketch genuinely replaces the strip rather than hiding an unrelated one.
 
-## 2. Sketch toolbar icons need to be better custom icons
+**Icons**: font-drawn (`Paint.DrawIcon`), using the same classic-Material-Icon names already
+audited in this repo's history (see `ONSHAPE-WORKFLOW.md`'s table) — NOT the hand-painted
+`EffigyIcons` style the feature strip uses. That's item 2, still open, see below.
 
-Current icons are placeholders / generic. Every sketch tool (line, rectangle, circle, arc, polygon,
-slot, point, construction toggle, profile inspector, finish sketch) needs a hand-drawn icon in the
-same style as `EffigyIcons` (main's drawn-icon system — chosen over font icon names specifically
-because s&box ships classic Material Icons, not Symbols, and font-name lookups were rendering
-blank). Not started.
+**Status: written, matches every proven API pattern in the codebase, NOT compiled or run.** This
+is UI/widget code in an environment with no s&box — see the top of this doc.
 
-## 3. All tool buttons ~40% bigger, evenly spaced
+## 2. Sketch toolbar icons need to be better custom icons — STILL OPEN
 
-Applies to every tool strip: feature tools, sketch tools, history (undo/redo) group. Current sizing
-predates this request. Not started. This is a small, mechanical, low-risk change once the button
-widget is located — should be done together with item 1 so both toolbar fixes land in one pass.
+Item 1's fix gave the sketch strip real, safe, non-blank icons (classic Material Icon font names),
+which unblocked the structural bug. But they are still generic font glyphs, not the hand-drawn,
+CAD-operation-specific style `EffigyIcons` uses for the feature strip (Bevel shows a corner being
+cut, Shell shows a wall inside a shape, etc.). Drawing ~14 more glyphs in that style — line,
+rectangle x2, circle x2, arc x2, polygon x2, slot, point, construction, profile inspector, finish —
+is real design work and is still not started.
+
+## 3. All tool buttons ~40% bigger, evenly spaced — DONE for feature + sketch strips
+
+`EffigyToolButton` and the new `EffigySketchToolButton` both went from 28x28 to 40x40
+(`EffigyToolStrip.ButtonSize`, shared by both) — 28→40 is +42.8%. Spacing between buttons within a
+group went 3→5px, between groups 11→16px, on both strips.
+
+**Known gap, called out in code**: the hand-painted `EffigyIcons` glyphs are still drawn at their
+original nominal 18px weight rather than scaled up with the bigger button — `Paint`'s scaling API
+was not confirmed safe to guess at from this environment, so the glyph is left slightly small
+inside a bigger button rather than risking broken icon rendering. Worth revisiting once this can
+be seen running.
+
+**There was no "history (undo/redo) group" to resize** — that item doesn't exist as a separate
+strip in the current merged code (unlike an earlier, since-superseded version of this branch that
+did have one). If po still wants undo/redo pinned as their own floating group, say so and it can
+be added; right now Undo/Redo live only in the Edit menu and their keyboard shortcuts.
 
 ## 4. Confirm the extrude gizmo + numeric-entry box actually work — WITH PICTURES
 
@@ -101,25 +119,27 @@ Partially related work exists (`RegionPicked`, `RegionSeed`, the tree's existing
 earlier in this session) but the specific hover-selects-sketch and right-click-face-menu behaviors
 are not implemented. Not started.
 
-## 10. End-to-end confirmation: cube → sketch on its face → extrude from that face-sketch
+## 10. End-to-end confirmation: cube → sketch on its face → extrude from that face-sketch — UI NOW WIRED
 
-This is the "get it on video" milestone po wants to demo. The KERNEL SIDE of this is done and
-proven this session:
-- `PrimitiveFeature` makes the cube.
-- `SketchFeature.Face` (a `FaceRef`) lets a sketch attach to a body's face, resolved by geometry
-  (body id + point + normal) rather than a fragile face index — see `CAD-REFERENCE.md` for why,
-  including the design flaw the tests caught and the fix.
-- `FaceSketchTests.TestBossOnTopOfBox` and `TestReferenceSurvivesUpstreamEdit` prove this builds
-  correctly and that the sketch's plane follows the face if the body underneath changes.
+The kernel side (from before) is proven: `SketchFeature.Face` (a `FaceRef` — body id + point +
+normal, not a fragile face index) resolves correctly and follows the body if it changes,
+`FaceSketchTests` proves it.
 
-**What's missing is 100% UI**: there is no way in the editor yet to click an existing body's face
-and have that become a `SketchFeature.Face` reference. The plane-selector box exists
-(`EffigyPlaneSelector`); a face-of-a-solid selector does not. This is the highest-value UI item on
-this list because the kernel work behind it is already done and tested — it just needs a selection
-box wired up the same way `EffigyRegionSelector`/`EffigyBodySelector` were built earlier (see
-"Pick bodies in the viewport" commit) before being dropped in the merge for review-size reasons.
-**Recommend building this next**, before items 1-3 and 5-9, since it's pure payoff on top of
-already-tested kernel code.
+**New this pass**: the missing UI piece. `MeshRaycast` (new kernel file, `Effigy/MeshRaycast.cs`) is
+a proven, tested (`RaycastTests`, ray-triangle intersection verified against a box's six known
+faces and normals) ray-mesh hit test — pure geometry, zero engine surface. `EffigyPlaneSelector`
+(the same box `SketchFeature`'s dialog already used for the three reference planes) now ALSO arms
+face-of-solid picking at the same time: one click resolves to whichever was actually hit, a plane
+or a face, exactly like Onshape never asks "plane or face?" first. The viewport adapter
+(`EffigyViewport.FacePickMode`/`FacePicked`, in `EffigyViewport.Sketching.cs`) is a thin wrapper
+around `Gizmo.CurrentRay` feeding `MeshRaycast` — the only genuinely new engine-facing code, and
+it's the same three-line "Vector3 -> Vec3 is a straight re-type" pattern already proven elsewhere
+in this file.
+
+**Status: written end-to-end, matches proven patterns, kernel half fully tested, UI half NOT
+compiled or run.** This is the one to test first when back at the machine — sketch on a face of a
+primitive box, extrude it, confirm the boss appears in the right place. If it works, this is the
+demo.
 
 ## 11. Keep docs updated continuously in case of a usage-limit cutoff mid-edit
 
@@ -153,9 +173,17 @@ code from **https://github.com/wes-kay/sbox-wargame/tree/main/Code**.
 exactly where aimed, brush settings, in a proper standalone tool panel (not an in-game HUD panel
 the way the current wargame code apparently uses it).
 
-Status: **not yet investigated in this session** — next step after writing this doc down. Need to
-clone/read that repo's `Code/` directory (public GitHub, should be reachable the same way
-Solvespace/FreeCAD were this session) and identify: what decal/paint mechanism it uses (render
+Status: **blocked from this session, confirmed, do not retry here.** This session's GitHub access
+is scoped to `themightypooh/marionette` only (both `git clone` and the `mcp__github__*` API tools
+enforce the same scope — tried both; the API call returned "repository is not configured for this
+session"). Unlike Solvespace/FreeCAD earlier, which were plain `git clone` of public repos with no
+scoping involved, THIS session has a GitHub App/token limited to one repo, and there is no
+`add_repo`-equivalent tool available here to widen it.
+
+**What to do next**, for whoever picks this up: either (a) po adds `wes-kay/sbox-wargame` to this
+session's allowed repos (however this environment exposes that — outside this session's own
+control), or (b) investigate it from a session/environment that has open `git clone` access the
+way this one did for Solvespace and FreeCAD. Once readable, identify: what decal/paint mechanism it uses (render
 target? vertex colors? projected decals?), how accurate its raycast-to-UV or raycast-to-triangle
 mapping is, and what would need to change to (a) fix the aim-accuracy problem po described and
 (b) lift it out of an in-game panel into an editor tool window. **This is significant enough new
@@ -166,19 +194,20 @@ CAD-REFERENCE.md.**
 
 ## Priority order, as recommended by reading po's message
 
-1. Write this doc (done, this commit).
-2. Investigate wargame repo — cheap to do here (just reading), high excitement value, and needs to
-   happen before context is lost.
-3. Face-of-solid sketch selector (item 10) — kernel already proven, pure UI payoff, unblocks the
-   demo po explicitly wants on video.
-4. Fix sketch-toolbar-not-swapping (item 1) — likely a small, findable bug, and every other toolbar
-   item (2, 3) is easier to do correctly once this is fixed rather than before.
-5. Toolbar icons + sizing (items 2, 3) — bundle with item 4 since they touch the same files.
-6. Settings tab: grid toggle + palette dropdown (items 5, 6).
-7. Hide affordances for planes/origin, resizeable plane corners (items 7, 8) — more novel
-   interaction work, higher risk, lower urgency than the demo path.
-8. Face-hover-selects / right-click-edit-menu / tree-click-selects (item 9).
-9. Bones design doc (item 12) — can start once 1-8 stop consuming all available time; genuinely
-   independent of the rest.
+1. Write this doc — done.
+2. Investigate wargame repo — **blocked**, see item 13. Confirmed blocked via both `git clone` and
+   the GitHub API tools; this session's access is scoped to `themightypooh/marionette` only and
+   there is no tool here to widen that. Needs po or a differently-scoped session.
+3. Face-of-solid sketch selector (item 10) — **done this pass**, kernel proven + UI wired.
+4. Sketch-toolbar-not-swapping (item 1) — **done this pass**, root cause found and fixed.
+5. Toolbar sizing (item 3) — **done this pass** for both strips.
+6. Toolbar icons (item 2) — still open; the sketch strip has safe, non-blank, but generic icons.
+7. Settings tab: grid toggle + palette dropdown (items 5, 6) — not started, next up.
+8. Hide affordances for planes/origin, resizeable plane corners (items 7, 8) — not started.
+9. Face-hover-selects / right-click-edit-menu / tree-click-selects (item 9) — not started.
+10. Bones design doc (item 12) — not started.
 
 Item 4 (screenshots) is not schedulable — it happens on po's machine, whenever they're at it next.
+**Item 10 (the cube-face-sketch demo) is now the single highest-value thing to test first once
+back at the machine** — everything behind it, kernel and UI both, is written and it's the one po
+explicitly wants on video.

@@ -412,6 +412,66 @@ internal sealed partial class EffigyViewport
 		_displaySketches = sketches?.ToList() ?? new List<Sketch>();
 	}
 
+	// --- face-of-solid picking --------------------------------------------------------------
+
+	/// <summary>While true, existing bodies are pickable by their faces — the "or click a face of
+	/// something already built" half of choosing a sketch plane. Set by the plane selector when
+	/// it offers this alongside the three reference planes.</summary>
+	public bool FacePickMode { get; set; }
+
+	/// <summary>Fires with a FaceRef built from the click — the body id, the hit point, and that
+	/// face's normal. See FaceRef and FacePlane in the kernel for why it is geometry rather than a
+	/// face index.</summary>
+	public Action<FaceRef> FacePicked { get; set; }
+
+	/// <summary>Bodies that can be clicked while FacePickMode is armed. Pushed by the window from
+	/// PartStudio.Bodies, the same way SetDisplaySketches is pushed from the sketch features.</summary>
+	public void SetPickableBodies( IEnumerable<Body> bodies )
+	{
+		_pickableBodies = bodies?.ToList() ?? new List<Body>();
+	}
+
+	private List<Body> _pickableBodies = new();
+
+	/// <summary>Body id under the cursor this frame, or null — drawn brighter and reported to the
+	/// status prompt, the same treatment PlanePickMode gives a hovered reference plane.</summary>
+	private string _hoveredFaceBodyId;
+
+	/// <summary>
+	/// Resolve the click, if any, against every pickable body's actual triangles.
+	///
+	/// The raycast itself is MeshRaycast.Raycast in the kernel — pure geometry, proven by
+	/// RaycastTests against a box's six faces and known normals. This is only the adapter: turn
+	/// the cursor into a ray in kernel coordinates, and turn the winning hit into a FaceRef.
+	/// </summary>
+	private void FacePickFrame()
+	{
+		_hoveredFaceBodyId = null;
+
+		if ( !FacePickMode || _pickableBodies.Count == 0 || !_canvasHasCursor )
+			return;
+
+		var ray = Gizmo.CurrentRay;
+
+		// Vector3 -> Vec3 is a straight re-type, not a transform - ToWorldDir does the same thing
+		// in the other direction elsewhere in this file, because the kernel's axes and s&box's
+		// line up exactly (see EffigyTool's own note on this).
+		var origin = new Vec3( ray.Position.x, ray.Position.y, ray.Position.z );
+		var direction = new Vec3( ray.Forward.x, ray.Forward.y, ray.Forward.z );
+
+		var result = MeshRaycast.Raycast( _pickableBodies, origin, direction );
+
+		if ( result is not { } hit )
+			return;
+
+		_hoveredFaceBodyId = hit.Body.Id;
+
+		if ( !Gizmo.WasLeftMousePressed )
+			return;
+
+		FacePicked?.Invoke( new FaceRef( hit.Body.Id, hit.Hit.Point, hit.Hit.Normal ) );
+	}
+
 	public void EndSketch()
 	{
 		ActiveSketch = null;

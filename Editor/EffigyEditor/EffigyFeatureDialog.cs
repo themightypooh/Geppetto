@@ -251,6 +251,8 @@ internal sealed class EffigyFeatureDialog : Widget
 
 		_activeArmable = null;
 		_viewport.PlanePickMode = false;
+		_viewport.FacePickMode = false;
+		_viewport.FacePicked = null;
 		_viewport.SketchPickMode = false;
 		_viewport.SketchPicked = null;
 		_viewport.SetPickPrompt( "" );
@@ -388,7 +390,15 @@ internal sealed class EffigyFeatureDialog : Widget
 		// selection box instead of the generic ChoiceParam row.
 		if ( _feature is SketchFeature sketch )
 		{
-			var planeSelector = new EffigyPlaneSelector( _body, _viewport, sketch.Plane, OnPlaneChanged, _planeChosen );
+			// Feed the pickable bodies in fresh every time the dialog rebuilds - the studio may
+			// have gained or lost bodies since this feature was last open, and a stale list would
+			// let a click resolve against a body that no longer exists.
+			_viewport.SetPickableBodies( _pickableBodiesLookup?.Invoke() );
+
+			var faceLabel = sketch.Face is not null ? FaceLabel( sketch ) : null;
+
+			var planeSelector = new EffigyPlaneSelector( _body, _viewport, sketch.Plane, OnPlaneChanged,
+				_planeChosen, OnFaceChanged, faceLabel );
 			_activeArmable = planeSelector;
 			AddRow( planeSelector );
 			AddRow( BuildFloatRow( sketch.PlaneOffset ) );
@@ -434,12 +444,63 @@ internal sealed class EffigyFeatureDialog : Widget
 	{
 		_planeChosen = true;
 
+		// A plane click and a face click are mutually exclusive ways to answer the same question,
+		// so choosing one clears the other rather than leaving a stale Face reference that
+		// ResolveBasePlane would prefer over the plane just picked.
+		if ( _feature is SketchFeature clearedFace )
+			clearedFace.Face = null;
+
 		Edited?.Invoke();
 		Rebuild();
 
 		if ( _feature is SketchFeature sketch )
 			SketchRequested?.Invoke( sketch );
 	}
+
+	/// <summary>A face of an existing body was picked, so the sketch is fully specified the same
+	/// way a plane pick specifies it - straight into sketch mode.</summary>
+	private void OnFaceChanged( FaceRef face )
+	{
+		_planeChosen = true;
+
+		if ( _feature is not SketchFeature sketch )
+			return;
+
+		sketch.Face = face;
+
+		Edited?.Invoke();
+		Rebuild();
+
+		SketchRequested?.Invoke( sketch );
+	}
+
+	/// <summary>Where a chosen face is reported which body it came from. Falls back to the raw id
+	/// if the body has since been renamed or removed - a lookup failing here should not make the
+	/// dialog throw, only say something slightly less specific.</summary>
+	private string FaceLabel( SketchFeature sketch )
+	{
+		var name = sketch.Face is { } f ? _bodyNameLookup?.Invoke( f.BodyId ) : null;
+		return name is not null ? $"Face of {name}" : "Face of an existing part";
+	}
+
+	/// <summary>Supplies the bodies that can be clicked for a face - the window owns the studio.</summary>
+	public Func<IEnumerable<Body>> PickableBodiesLookup
+	{
+		get => _pickableBodiesLookup;
+		set => _pickableBodiesLookup = value;
+	}
+
+	private Func<IEnumerable<Body>> _pickableBodiesLookup;
+
+	/// <summary>Maps a body id to its display name, for the face label. Same shape as
+	/// SketchNameLookup.</summary>
+	public Func<string, string> BodyNameLookup
+	{
+		get => _bodyNameLookup;
+		set => _bodyNameLookup = value;
+	}
+
+	private Func<string, string> _bodyNameLookup;
 
 	/// <summary>A sketch was picked in the viewport, so the consumer's input is chosen. Unlike
 	/// a plane pick there is no second stage to drop into — the dialog stays open for the
@@ -770,24 +831,38 @@ internal sealed class EffigyPlaneSelector : Widget, IArmableSelection
 {
 	private readonly EffigyViewport _viewport;
 	private readonly ChoiceParam _plane;
+
+	/// <summary>Set when the sketch is also allowed to sit on a face of an existing solid — only
+	/// true for SketchFeature's own dialog. Extrude/Revolve reuse none of this box.</summary>
+	private readonly Action<FaceRef> _faceChosen;
 	private readonly Action _changed;
 
 	/// <summary>True while waiting for a viewport click. The box goes accent-coloured and the
-	/// three reference planes become pickable.</summary>
+	/// three reference planes — plus, when offered, every pickable body's faces — become clickable
+	/// at once. One click resolves to whichever of the two was actually hit; there is no separate
+	/// mode to switch between them, the same way Onshape's plane selection never asks "plane or
+	/// face?" before you point at something.</summary>
 	private bool _armed;
 
-	/// <summary>Whether a plane has actually been chosen. A fresh Sketch has Index 0 by default,
-	/// which is a value but not a choice — showing "Top (XY)" in the box before the user picked
-	/// anything would be a lie, and would hide that the feature is waiting on them.</summary>
+	/// <summary>Whether a plane OR a face has actually been chosen. A fresh Sketch has Plane.Index
+	/// 0 by default, which is a value but not a choice — showing "Top (XY)" in the box before the
+	/// user picked anything would be a lie, and would hide that the feature is waiting on them.</summary>
 	private bool _chosen;
 
-	public EffigyPlaneSelector( Widget parent, EffigyViewport viewport, ChoiceParam plane, Action changed, bool chosen )
+	/// <summary>What the box currently reads, once something is chosen — "Top (XY)" or "Face of
+	/// Box 1".</summary>
+	private string _chosenLabel;
+
+	public EffigyPlaneSelector( Widget parent, EffigyViewport viewport, ChoiceParam plane, Action changed,
+		bool chosen, Action<FaceRef> faceChosen = null, string chosenFaceLabel = null )
 		: base( parent )
 	{
 		_viewport = viewport;
 		_plane = plane;
 		_changed = changed;
 		_chosen = chosen;
+		_faceChosen = faceChosen;
+		_chosenLabel = chosenFaceLabel ?? (chosen ? plane.Value : null);
 
 		Layout = Layout.Row();
 		Layout.Margin = new Sandbox.UI.Margin( 8, 3 );
@@ -820,12 +895,17 @@ internal sealed class EffigyPlaneSelector : Widget, IArmableSelection
 		if ( _armed )
 		{
 			Paint.SetPen( Theme.Blue );
-			Paint.DrawText( box.Shrink( 6f, 0f, 0f, 0f ), "Pick a plane in the viewport", TextFlag.LeftCenter );
+
+			var prompt = _faceChosen is not null
+				? "Pick a plane, or click a face of an existing part"
+				: "Pick a plane in the viewport";
+
+			Paint.DrawText( box.Shrink( 6f, 0f, 0f, 0f ), prompt, TextFlag.LeftCenter );
 		}
 		else if ( _chosen )
 		{
 			Paint.SetPen( Theme.TextControl );
-			Paint.DrawText( box.Shrink( 6f, 0f, 0f, 0f ), _plane.Value, TextFlag.LeftCenter );
+			Paint.DrawText( box.Shrink( 6f, 0f, 0f, 0f ), _chosenLabel ?? _plane.Value, TextFlag.LeftCenter );
 		}
 		else
 		{
@@ -860,8 +940,20 @@ internal sealed class EffigyPlaneSelector : Widget, IArmableSelection
 
 		_armed = true;
 		_viewport.PlanePickMode = true;
-		_viewport.PlanePicked = OnPicked;
-		_viewport.SetPickPrompt( "Pick a plane in the viewport" );
+		_viewport.PlanePicked = OnPlanePicked;
+
+		// Faces only get wired up for SketchFeature's own box - Extrude and Revolve pass no
+		// faceChosen callback and get exactly the old three-plane behaviour.
+		if ( _faceChosen is not null )
+		{
+			_viewport.FacePickMode = true;
+			_viewport.FacePicked = OnFacePicked;
+		}
+
+		_viewport.SetPickPrompt( _faceChosen is not null
+			? "Pick a plane, or click a face of an existing part"
+			: "Pick a plane in the viewport" );
+
 		Update();
 	}
 
@@ -873,25 +965,39 @@ internal sealed class EffigyPlaneSelector : Widget, IArmableSelection
 		_armed = false;
 		_viewport.PlanePickMode = false;
 		_viewport.PlanePicked = null;
+		_viewport.FacePickMode = false;
+		_viewport.FacePicked = null;
 		_viewport.SetPickPrompt( "" );
 		Update();
 	}
 
-	private void OnPicked( int index )
+	private void OnPlanePicked( int index )
 	{
 		_plane.Index = index;
 		_chosen = true;
+		_chosenLabel = null;
 		_viewport.IgnoreNextSketchClick();
 
 		Disarm();
 		_changed?.Invoke();
 	}
 
+	private void OnFacePicked( FaceRef face )
+	{
+		_chosen = true;
+		_chosenLabel = "Face of an existing part";
+		_viewport.IgnoreNextSketchClick();
+
+		Disarm();
+		_faceChosen?.Invoke( face );
+	}
+
 	public override void OnDestroyed()
 	{
 		base.OnDestroyed();
 
-		// Leaving pick mode armed would make the planes stay clickable after the dialog closed.
+		// Leaving pick mode armed would make the planes and faces stay clickable after the dialog
+		// closed.
 		if ( _armed )
 			Disarm();
 	}

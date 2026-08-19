@@ -73,6 +73,8 @@ public static class Program
 
 		SnapTests.Run();
 
+		RaycastTests.Run();
+
 		AllFeaturesTests.Run();
 
 		FaceSketchTests.Run();
