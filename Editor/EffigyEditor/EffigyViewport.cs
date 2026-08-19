@@ -164,12 +164,21 @@ internal sealed partial class EffigyViewport : Widget
 	/// at that point orphans the canvas: it keeps whatever tiny geometry it had and renders the
 	/// whole 3D scene into a sliver, leaving the rest of the viewport black.
 	/// </summary>
-	public void CompleteLayout( Widget overlay )
+	public void CompleteLayout( Widget featureOverlay, Widget sketchOverlay )
 	{
 		Layout.Add( _canvas, 1 );
 
-		_overlay = overlay;
+		// Both strips sit in the SAME spot and only one is ever visible at a time - entering a
+		// sketch is supposed to REPLACE the feature strip with the sketch one, not add a second
+		// row alongside it. They used to be two unrelated widget systems (this floating strip and
+		// a window-docked ToolBar that showed and hid itself independently), which is exactly why
+		// the feature strip stayed on screen through the whole time anyone was sketching - nothing
+		// ever told it to get out of the way.
+		_overlay = featureOverlay;
 		_overlay.Position = OverlayMargin;
+
+		sketchOverlay.Position = OverlayMargin;
+		sketchOverlay.Visible = false;
 	}
 
 	/// <summary>Inset of the floating tool strip from the canvas's top-left corner.</summary>
@@ -642,6 +651,7 @@ internal sealed partial class EffigyViewport : Widget
 		DrawReferencePlanes();
 		DrawCommittedSketches();
 		SketchPickFrame();
+		FacePickFrame();
 
 		SketchFrame();
 
@@ -658,7 +668,8 @@ internal sealed partial class EffigyViewport : Widget
 
 		DrawViewCube();
 
-		Cursor = Gizmo.HasHovered || IsSketching || _hoveredSketchId is not null ? CursorShape.Finger : CursorShape.Arrow;
+		Cursor = Gizmo.HasHovered || IsSketching || _hoveredSketchId is not null || _hoveredFaceBodyId is not null
+			? CursorShape.Finger : CursorShape.Arrow;
 	}
 
 	/// <summary>Escape backs out of the half-drawn entity, then out of the tool - the same two

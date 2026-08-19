@@ -118,12 +118,14 @@ public sealed class EffigyWindow : DockWindow
 	/// act on.</summary>
 	private EffigyToolStrip _toolStrip;
 
-	/// <summary>The sketch toolbar - a second row that exists only while a sketch is open, the way
-	/// Onshape's does. Its tools mean nothing outside sketch mode, and leaving them visible but
-	/// dead is worse than hiding them.</summary>
-	private ToolBar _sketchBar;
-	private readonly List<(Option Option, SketchToolKind Kind)> _sketchTools = new();
-	private Option _constructionOption;
+	/// <summary>The sketch tool strip - floats in the SAME spot as the feature strip and replaces
+	/// it while a sketch is open, the way Onshape's toolbar swaps rather than stacks a second row.
+	/// Its tools mean nothing outside sketch mode, and leaving them visible but dead is worse than
+	/// hiding them - which is exactly what the previous window-docked ToolBar version did, since
+	/// hiding IT never touched the unrelated floating feature strip sitting on the canvas.</summary>
+	private EffigySketchStrip _sketchStrip;
+	private readonly List<(EffigySketchToolButton Button, SketchToolKind Kind)> _sketchTools = new();
+	private EffigySketchToolButton _constructionButton;
 	private DockWidget _centralDock;
 	private StatusBar _statusWidget;
 	private Editor.Label _statusInfoLabel;
@@ -220,7 +222,8 @@ public sealed class EffigyWindow : DockWindow
 		// parented to the canvas and positioned by the viewport, so the scene fills the whole
 		// widget and nothing eats a band off the top of it.
 		_toolStrip = new EffigyToolStrip( _viewport.Canvas );
-		_viewport.CompleteLayout( _toolStrip );
+		_sketchStrip = new EffigySketchStrip( _viewport.Canvas );
+		_viewport.CompleteLayout( _toolStrip, _sketchStrip );
 
 		// --- creation tools (each adds a feature to the studio) ---
 		AddCreateButton( EffigyIcon.Sketch, "Add a Sketch feature — draw lines/arcs on a plane", () => new SketchFeature() );
@@ -255,95 +258,68 @@ public sealed class EffigyWindow : DockWindow
 	/// </summary>
 	private void BuildSketchToolbar()
 	{
-		_sketchBar = new ToolBar( this, "EffigySketchToolbar" );
-		_sketchBar.SetIconSize( 20 );
-		AddToolBar( _sketchBar, ToolbarPosition.Top );
+		AddSketchTool( "near_me", "Select — click without drawing", SketchToolKind.Select );
+		_sketchStrip.AddGap();
 
-		AddSketchTool( "Select", "near_me", "Select — click without drawing", SketchToolKind.Select );
-		_sketchBar.AddSeparator();
+		AddSketchTool( "show_chart", "Line — click start, click end; keeps chaining until Escape", SketchToolKind.Line );
 
-		AddSketchTool( "Line", "show_chart", "Line — click start, click end; keeps chaining until Escape", SketchToolKind.Line );
+		AddSketchTool( "crop_square", "Corner rectangle — click two opposite corners", SketchToolKind.Rectangle );
+		AddSketchTool( "crop_free", "Centre rectangle — click the centre, then a corner", SketchToolKind.RectangleCentre );
 
-		AddSketchTool( "Rectangle", "crop_square", "Corner rectangle — click two opposite corners", SketchToolKind.Rectangle );
-		AddSketchTool( "Centre Rectangle", "crop_free", "Centre rectangle — click the centre, then a corner", SketchToolKind.RectangleCentre );
+		AddSketchTool( "panorama_fish_eye", "Centre circle — click the centre, then a point on the rim", SketchToolKind.Circle );
+		AddSketchTool( "trip_origin", "3-point circle — click three points on the rim", SketchToolKind.CircleThreePoint );
 
-		AddSketchTool( "Circle", "panorama_fish_eye", "Centre circle — click the centre, then a point on the rim", SketchToolKind.Circle );
-		AddSketchTool( "3-Point Circle", "trip_origin", "3-point circle — click three points on the rim", SketchToolKind.CircleThreePoint );
+		AddSketchTool( "cached", "Centre arc — click the centre, the start, then the end direction", SketchToolKind.Arc );
+		AddSketchTool( "timeline", "3-point arc — click start, end, then a point it passes through", SketchToolKind.ArcThreePoint );
 
-		AddSketchTool( "Arc", "cached", "Centre arc — click the centre, the start, then the end direction", SketchToolKind.Arc );
-		AddSketchTool( "3-Point Arc", "timeline", "3-point arc — click start, end, then a point it passes through", SketchToolKind.ArcThreePoint );
+		AddSketchTool( "change_history", "Inscribed polygon — click the centre, then a corner", SketchToolKind.Polygon );
+		AddSketchTool( "details", "Circumscribed polygon — click the centre, then an edge midpoint", SketchToolKind.PolygonCircumscribed );
 
-		AddSketchTool( "Polygon", "change_history", "Inscribed polygon — click the centre, then a corner", SketchToolKind.Polygon );
-		AddSketchTool( "Circumscribed Polygon", "details", "Circumscribed polygon — click the centre, then an edge midpoint", SketchToolKind.PolygonCircumscribed );
+		AddSketchTool( "linear_scale", "Slot — click both ends of the centre line, then the width", SketchToolKind.Slot );
+		AddSketchTool( "fiber_manual_record", "Point — click to place", SketchToolKind.Point );
 
-		AddSketchTool( "Slot", "linear_scale", "Slot — click both ends of the centre line, then the width", SketchToolKind.Slot );
-		AddSketchTool( "Point", "fiber_manual_record", "Point — click to place", SketchToolKind.Point );
-
-		_sketchBar.AddSeparator();
+		_sketchStrip.AddGap();
 
 		// Construction geometry is a modifier on whatever tool is active, not a tool of its own -
 		// same as Onshape's toggle. SketchCurve.Construction and ProfileFinder's handling of it
 		// were already in the kernel with nothing in the UI able to set them.
-		var construction = new Option( "Construction", "gesture" )
-		{
-			ToolTip = "Construction geometry — reference lines that never become part of a profile",
-			StatusTip = "Draw construction geometry: shapes the sketch, never extrudes",
-			Checkable = true,
-		};
+		_constructionButton = _sketchStrip.AddButton( "gesture",
+			"Construction geometry — reference lines that never become part of a profile",
+			checkable: true, clicked: null );
+		_constructionButton.Clicked = () => _viewport.ConstructionMode = _constructionButton.Checked;
 
-		construction.Toggled += on => _viewport.ConstructionMode = on;
-		_sketchBar.AddOption( construction );
-		_constructionOption = construction;
+		_sketchStrip.AddGap();
 
-		_sketchBar.AddSeparator();
+		var inspector = _sketchStrip.AddButton( "select_all",
+			"Profile Inspector — shade closed regions and highlight loose ends",
+			checkable: true, clicked: null );
+		inspector.Checked = true;
+		inspector.Clicked = () => _viewport.ProfileInspector = inspector.Checked;
 
-		var inspector = new Option( "Profile Inspector", "select_all" )
-		{
-			ToolTip = "Profile Inspector — shade closed regions and highlight loose ends",
-			StatusTip = "Closed profiles shade blue; loose or branching points show orange",
-			Checkable = true,
-			Checked = true,
-		};
-
-		inspector.Toggled += on => _viewport.ProfileInspector = on;
-		_sketchBar.AddOption( inspector );
-
-		_sketchBar.AddOption( new Option( "Finish Sketch", "check" )
-		{
-			ToolTip = "Leave sketch mode",
-			StatusTip = "Leave sketch mode and go back to the feature tree",
-			Triggered = FinishSketch,
-		} );
-
-		_sketchBar.Hide();
+		_sketchStrip.AddButton( "check", "Finish Sketch — leave sketch mode and go back to the feature tree",
+			checkable: false, clicked: FinishSketch );
 	}
 
-	private void AddSketchTool( string label, string icon, string tip, SketchToolKind kind )
+	private void AddSketchTool( string icon, string tip, SketchToolKind kind )
 	{
-		var option = new Option( label, icon )
-		{
-			ToolTip = tip,
-			StatusTip = tip,
-			Checkable = true,
-			Checked = kind == SketchToolKind.Select,
-		};
+		var button = _sketchStrip.AddButton( icon, tip, checkable: true, clicked: null );
+		button.Checked = kind == SketchToolKind.Select;
 
-		option.Triggered = () =>
+		button.Clicked = () =>
 		{
 			_viewport.SetSketchTool( kind );
 			UpdateSketchToolChecks( kind );
 		};
 
-		_sketchBar.AddOption( option );
-		_sketchTools.Add( (option, kind) );
+		_sketchTools.Add( (button, kind) );
 	}
 
-	/// <summary>Only one tool can be active, so the rest have to visibly let go. ToolBar has no
-	/// radio-group concept, so the exclusivity is enforced here.</summary>
+	/// <summary>Only one tool can be active, so the rest have to visibly let go. The floating strip
+	/// has no radio-group concept of its own, so the exclusivity is enforced here.</summary>
 	private void UpdateSketchToolChecks( SketchToolKind active )
 	{
-		foreach ( var (option, kind) in _sketchTools )
-			option.Checked = kind == active;
+		foreach ( var (button, kind) in _sketchTools )
+			button.Checked = kind == active;
 	}
 
 	// --- sketch mode -------------------------------------------------------------------------
@@ -361,13 +337,17 @@ public sealed class EffigyWindow : DockWindow
 	{
 		RebuildStudio();
 
-		_sketchBar.Show();
+		// The sketch strip REPLACES the feature strip - same spot, one visible at a time - rather
+		// than the two of them being independent widget systems that both stayed on screen.
+		_toolStrip.Visible = false;
+		_sketchStrip.Visible = true;
+
 		_viewport.BeginSketch( feature.Sketch );
 
 		_viewport.ConstructionMode = false;
 
-		if ( _constructionOption is not null )
-			_constructionOption.Checked = false;
+		if ( _constructionButton is not null )
+			_constructionButton.Checked = false;
 
 		UpdateSketchToolChecks( _viewport.SketchTool );
 	}
@@ -378,7 +358,10 @@ public sealed class EffigyWindow : DockWindow
 			return;
 
 		_viewport.EndSketch();
-		_sketchBar.Hide();
+
+		_sketchStrip.Visible = false;
+		_toolStrip.Visible = true;
+
 		UpdateSketchToolChecks( SketchToolKind.Select );
 
 		SetPrompt( "" );
@@ -484,6 +467,8 @@ public sealed class EffigyWindow : DockWindow
 			Cancelled = OnDialogCancelled,
 			SketchRequested = EnterSketch,
 			SketchNameLookup = id => _studio.Features.OfType<SketchFeature>().FirstOrDefault( f => f.Id == id )?.Name,
+			PickableBodiesLookup = () => _studio.Bodies,
+			BodyNameLookup = id => _studio.Bodies.FirstOrDefault( b => b.Id == id )?.Name,
 			OpenedForFeature = UpdatePickTargets,
 		};
 
@@ -962,11 +947,11 @@ public sealed class EffigyWindow : DockWindow
 	[Shortcut( "effigy.sketch.construction", "Q", ShortcutType.Window )]
 	private void ShortcutConstruction()
 	{
-		if ( _viewport?.IsSketching != true || _constructionOption is null )
+		if ( _viewport?.IsSketching != true || _constructionButton is null )
 			return;
 
-		_constructionOption.Checked = !_constructionOption.Checked;
-		_viewport.ConstructionMode = _constructionOption.Checked;
+		_constructionButton.Checked = !_constructionButton.Checked;
+		_viewport.ConstructionMode = _constructionButton.Checked;
 	}
 
 	/// <summary>A sketch tool key outside sketch mode has nothing to arm, and silently switching a
@@ -1219,11 +1204,11 @@ internal sealed class EffigyToolStrip : Widget
 	/// <summary>Gap between buttons inside a group. Every one is identical - the strip was
 	/// previously left to the layout's own distribution, which spread twelve buttons across the
 	/// full width of the viewport at whatever intervals happened to fall out.</summary>
-	private const float ButtonSpacing = 3f;
+	private const float ButtonSpacing = 5f;
 
 	/// <summary>Gap between tool groups. Wider than ButtonSpacing and used nowhere else, so the
 	/// grouping reads as deliberate rather than as uneven spacing.</summary>
-	private const float GroupSpacing = 11f;
+	private const float GroupSpacing = 16f;
 
 	public EffigyToolStrip( Widget parent ) : base( parent )
 	{
@@ -1236,8 +1221,12 @@ internal sealed class EffigyToolStrip : Widget
 		TranslucentBackground = true;
 		NoSystemBackground = true;
 
-		FixedHeight = 28;
+		FixedHeight = ButtonSize;
 	}
+
+	/// <summary>Button edge length. 28 -> 40 is +42.8%, matching po's "make ALL buttons bigger by
+	/// like 40%" - shared with EffigySketchToolButton so both strips size identically.</summary>
+	public const float ButtonSize = 40f;
 
 	public EffigyToolButton AddButton( EffigyIcon icon, string tip, Action clicked )
 	{
@@ -1255,6 +1244,144 @@ internal sealed class EffigyToolStrip : Widget
 		AdjustSize();
 	}
 }
+
+/// <summary>
+/// A sketch-tool button in the floating sketch strip - same visual language and sizing as
+/// EffigyToolButton (the feature strip's), but font-icon-drawn rather than hand-painted, and
+/// checkable, since sketch tools are mutually exclusive modes rather than one-shot commands.
+///
+/// FONT ICONS, NOT DRAWN ONES, and that is a smaller scope than it looks. EffigyIcons only covers
+/// the twelve feature-creation tools; drawing another dozen-plus glyphs for every sketch tool in
+/// the same hand-painted style is real design work of its own (see EFFIGY-UI-PUNCHLIST.md item 2)
+/// and is deliberately not attempted here. Every name used is a CLASSIC Material Icon already
+/// audited against the same s&box-ships-classic-not-Symbols problem EffigyIcons exists to dodge -
+/// see ONSHAPE-WORKFLOW.md's icon table - so this does not reintroduce the blank-icon bug, it just
+/// does not yet look as considered as the feature strip.
+/// </summary>
+internal sealed class EffigySketchToolButton : Widget
+{
+	private readonly string _icon;
+	private readonly bool _checkable;
+	private bool _pressed;
+
+	public bool Checked { get; set; }
+	public Action Clicked { get; set; }
+
+	public EffigySketchToolButton( Widget parent, string icon, string tip, bool checkable ) : base( parent )
+	{
+		_icon = icon;
+		_checkable = checkable;
+
+		ToolTip = tip;
+		StatusTip = tip;
+		Cursor = CursorShape.Finger;
+		MouseTracking = true;
+
+		FixedSize = new Vector2( EffigyToolStrip.ButtonSize, EffigyToolStrip.ButtonSize );
+	}
+
+	protected override void OnPaint()
+	{
+		Paint.Antialiasing = true;
+
+		var hovered = IsUnderMouse;
+
+		Paint.ClearPen();
+
+		// Checked reads as a stronger, blue-tinted version of the hover state, so an armed sketch
+		// tool stays visibly armed even once the cursor has moved off it and onto the canvas.
+		Paint.SetBrush( Checked
+			? Theme.Blue.WithAlpha( 0.35f )
+			: _pressed
+				? Theme.ControlBackground.Darken( 0.2f )
+				: hovered ? Theme.ControlBackground.Lighten( 0.4f ) : Theme.ControlBackground.WithAlpha( 0.82f ) );
+
+		Paint.DrawRect( LocalRect, 4f );
+
+		Paint.SetPen( Checked ? Theme.Blue : hovered ? Theme.Text : Theme.TextLight );
+		Paint.DrawIcon( LocalRect, _icon, 20, TextFlag.Center );
+	}
+
+	protected override void OnMousePress( MouseEvent e )
+	{
+		if ( !e.LeftMouseButton )
+			return;
+
+		_pressed = true;
+		Update();
+		e.Accepted = true;
+	}
+
+	protected override void OnMouseReleased( MouseEvent e )
+	{
+		if ( !_pressed )
+			return;
+
+		_pressed = false;
+		Update();
+
+		if ( !IsUnderMouse )
+			return;
+
+		if ( _checkable )
+			Checked = !Checked;
+
+		Clicked?.Invoke();
+	}
+
+	protected override void OnMouseEnter()
+	{
+		base.OnMouseEnter();
+		Update();
+	}
+
+	protected override void OnMouseLeave()
+	{
+		base.OnMouseLeave();
+
+		_pressed = false;
+		Update();
+	}
+}
+
+/// <summary>
+/// The floating sketch tool strip. Same shape as EffigyToolStrip - no background of its own,
+/// floats on the 3D view, positioned by EffigyViewport.CompleteLayout at the identical spot the
+/// feature strip uses, so showing one and hiding the other reads as one strip changing rather than
+/// two unrelated pieces of chrome.
+/// </summary>
+internal sealed class EffigySketchStrip : Widget
+{
+	private const float ButtonSpacing = 5f;
+	private const float GroupSpacing = 16f;
+
+	public EffigySketchStrip( Widget parent ) : base( parent )
+	{
+		Layout = Layout.Row();
+		Layout.Spacing = ButtonSpacing;
+		Layout.Margin = new Sandbox.UI.Margin( 0 );
+
+		TranslucentBackground = true;
+		NoSystemBackground = true;
+
+		FixedHeight = EffigyToolStrip.ButtonSize;
+	}
+
+	public EffigySketchToolButton AddButton( string icon, string tip, bool checkable, Action clicked )
+	{
+		var button = new EffigySketchToolButton( this, icon, tip, checkable ) { Clicked = clicked };
+		Layout.Add( button );
+		AdjustSize();
+		return button;
+	}
+
+	public void AddGap()
+	{
+		Layout.Add( new Widget( this ) { FixedWidth = GroupSpacing - ButtonSpacing } );
+		AdjustSize();
+	}
+}
+
 
 /// <summary>One square of the strip — a hand-painted icon button, 28x28, matching the
 /// editor's own button states so it reads as chrome rather than a foreign object.</summary>
@@ -1274,7 +1401,7 @@ internal sealed class EffigyToolButton : Widget
 		Cursor = CursorShape.Finger;
 		MouseTracking = true;
 
-		FixedSize = new Vector2( 28, 28 );
+		FixedSize = new Vector2( EffigyToolStrip.ButtonSize, EffigyToolStrip.ButtonSize );
 	}
 
 	protected override void OnPaint()
@@ -1293,6 +1420,10 @@ internal sealed class EffigyToolButton : Widget
 
 		Paint.DrawRect( LocalRect, 4f );
 
+		// The glyphs themselves are still drawn at their original nominal 18px weight (see
+		// EffigyIcons) rather than scaled up with the button - Paint has no transform confirmed
+		// safe to use here, and a slightly small glyph in a bigger button is a much smaller risk
+		// than guessing at unproven scaling API. Worth revisiting once this can be seen running.
 		EffigyIcons.Draw( _icon, LocalRect.Center, hovered ? Theme.Text : Theme.TextLight );
 	}
 
