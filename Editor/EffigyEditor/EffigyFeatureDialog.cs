@@ -43,11 +43,29 @@ internal sealed class EffigyFeatureDialog : Widget
 	/// </summary>
 	private bool _planeChosen;
 
+	/// <summary>Features whose sketch plane has actually been picked, so reopening one remembers.
+	/// Identity-keyed and never cleared: a studio's worth of features is a few dozen objects.</summary>
+	private readonly HashSet<Feature> _planeChosenFor = new();
+
 	// --- widgets ---
 	private Widget _header;
 	private LineEdit _nameEdit;
+	private IconButton _acceptButton;
+	private Editor.Label _statusLabel;
 	private Widget _body;
 	private readonly List<Widget> _rows = new();
+
+	/// <summary>
+	/// Whether the feature would refuse to build right now.
+	///
+	/// Onshape's rule, and it is a workflow rule rather than a cosmetic one: "The title is red if
+	/// you have not completely filled out the dialog, or if the information entered has resulted
+	/// in an error. This prevents you from committing a broken feature." Two ways to be broken -
+	/// the kernel threw (Feature.Error), or the dialog is still waiting on a selection the user
+	/// has not made, which no rebuild can report because the feature never ran.
+	/// </summary>
+	private bool IsBroken => _feature is not null
+		&& (_feature.Error is not null || (_feature is SketchFeature && !_planeChosen));
 
 	/// <summary>Fires when the tick is pressed. The window rebuilds and closes the dialog.</summary>
 	public Action<Feature> Accepted { get; set; }
@@ -64,6 +82,9 @@ internal sealed class EffigyFeatureDialog : Widget
 
 	/// <summary>Fires when a Sketch feature's dialog wants the viewport to enter sketch mode.</summary>
 	public Action<SketchFeature> SketchRequested { get; set; }
+
+	/// <summary>Shift+Enter accepted and wants another feature of the same kind appended.</summary>
+	public Action<Feature> RepeatRequested { get; set; }
 
 	public Feature Feature => _feature;
 	public bool IsOpen => _feature is not null;
@@ -96,21 +117,53 @@ internal sealed class EffigyFeatureDialog : Widget
 		_nameEdit.TextEdited += OnNameEdited;
 		_header.Layout.Add( _nameEdit, 1 );
 
-		_header.Layout.Add( new IconButton( "check", Accept )
+		_acceptButton = new IconButton( "check", Accept )
 		{
-			ToolTip = "Accept (commit this feature)",
+			ToolTip = "Accept (Enter) - commit this feature",
 			IconSize = 16,
 			Background = Color.Transparent,
-		} );
+		};
+
+		_header.Layout.Add( _acceptButton );
 
 		_header.Layout.Add( new IconButton( "close", Cancel )
 		{
-			ToolTip = "Cancel (discard changes)",
+			ToolTip = "Cancel (Escape) - discard changes",
 			IconSize = 16,
 			Background = Color.Transparent,
 		} );
 
 		Layout.Add( _header );
+
+		// The reason the tick is refusing, in words. A greyed-out tick with no explanation is the
+		// most frustrating possible version of "this feature is not finished".
+		_statusLabel = new Editor.Label( "" ) { Color = Theme.Red };
+		_statusLabel.Visible = false;
+		Layout.Add( _statusLabel );
+	}
+
+	/// <summary>
+	/// Re-read the feature's build state and show it. Called by the window after every rebuild,
+	/// because Feature.Error is only meaningful once the studio has actually tried to run it.
+	/// </summary>
+	public void RefreshState()
+	{
+		if ( _feature is null )
+			return;
+
+		var broken = IsBroken;
+
+		if ( _acceptButton.IsValid() )
+			_acceptButton.Enabled = !broken;
+
+		if ( _statusLabel.IsValid() )
+		{
+			_statusLabel.Text = _feature.Error
+				?? (_feature is SketchFeature && !_planeChosen ? "Pick a sketch plane to continue" : "");
+			_statusLabel.Visible = broken;
+		}
+
+		Update();
 	}
 
 	private void OnNameEdited( string text )
@@ -132,12 +185,61 @@ internal sealed class EffigyFeatureDialog : Widget
 	/// </summary>
 	protected override void OnPaint()
 	{
+		var broken = IsBroken;
+
 		Paint.ClearPen();
 		Paint.SetBrush( Theme.ControlBackground );
 		Paint.DrawRect( LocalRect );
 
-		Paint.SetPen( Theme.WindowBackground );
+		// A red spine down the open edge, so "this will not build" is legible from across the
+		// screen rather than only by reading the status line.
+		if ( broken )
+		{
+			Paint.SetBrush( Theme.Red );
+			Paint.DrawRect( new Rect( 0f, 0f, 2f, Height ) );
+		}
+
+		Paint.ClearBrush();
+		Paint.SetPen( broken ? Theme.Red.WithAlpha( 0.5f ) : Theme.WindowBackground );
 		Paint.DrawLine( new Vector2( 0f, Height - 1f ), new Vector2( Width, Height - 1f ) );
+	}
+
+	/// <summary>
+	/// Enter commits, Escape cancels, Shift+Enter commits and reopens the same tool for another
+	/// one. All three are Onshape's, and the third is the one that makes adding six of something
+	/// bearable.
+	/// </summary>
+	protected override void OnKeyPress( KeyEvent e )
+	{
+		if ( _feature is null )
+		{
+			base.OnKeyPress( e );
+			return;
+		}
+
+		switch ( e.Key )
+		{
+			// KeyCode.Enter and KeyCode.Shift are the only two enum members in this tool that are
+			// NOT already used somewhere in RigControlEditor, so they are the two things here that
+			// a first compile will confirm or reject. If either is named differently in this
+			// engine build, it is a one-word fix on each and nothing else in the file depends on
+			// them. (KeyCode.Escape below is proven - RigTimeline and RigViewport both use it.)
+			case KeyCode.Enter:
+				if ( Editor.Application.IsKeyDown( KeyCode.Shift ) )
+					AcceptAndRepeat();
+				else
+					Accept();
+
+				e.Accepted = true;
+				return;
+
+			case KeyCode.Escape:
+				Cancel();
+				e.Accepted = true;
+				return;
+		}
+
+		base.OnKeyPress( e );
 	}
 
 	// --- open / close -------------------------------------------------------------------------
@@ -147,8 +249,11 @@ internal sealed class EffigyFeatureDialog : Widget
 		_feature = feature;
 		_isNew = isNew;
 
-		// An existing sketch already has its plane; a brand new one is waiting for you to pick.
-		_planeChosen = !isNew;
+		// Whether a plane was ever actually picked, remembered per feature rather than inferred
+		// from isNew. Inferring it meant reopening a sketch you had abandoned without choosing a
+		// plane showed "Top (XY)" in the box as though you had picked it - the exact lie the
+		// selection box exists to avoid, just deferred to the second time you looked at it.
+		_planeChosen = _planeChosenFor.Contains( feature );
 
 		TakeSnapshot();
 
@@ -157,6 +262,8 @@ internal sealed class EffigyFeatureDialog : Widget
 		Rebuild();
 
 		Visible = true;
+
+		RefreshState();
 	}
 
 	public new void Close()
@@ -174,9 +281,34 @@ internal sealed class EffigyFeatureDialog : Widget
 		if ( _feature is null )
 			return;
 
+		// Onshape will not let a broken feature be committed, and neither will this. Refreshing on
+		// the way out is what puts the reason on screen when the tick was hit rather than ignored.
+		if ( IsBroken )
+		{
+			RefreshState();
+			return;
+		}
+
 		var feature = _feature;
 		Close();
 		Accepted?.Invoke( feature );
+	}
+
+	/// <summary>Shift+Enter: commit, then open a fresh one of the same kind. Onshape's, and the
+	/// difference between placing six holes and placing one hole six times.</summary>
+	private void AcceptAndRepeat()
+	{
+		if ( _feature is null || IsBroken )
+			return;
+
+		var type = _feature.GetType();
+
+		Accept();
+
+		// Every feature is constructed parameterless by the toolbar already (see EffigyWindow's
+		// CreateOption factories), so this cannot hit a feature type it does not know how to make.
+		if ( Activator.CreateInstance( type ) is Feature repeat )
+			RepeatRequested?.Invoke( repeat );
 	}
 
 	private void Cancel()
@@ -278,6 +410,9 @@ internal sealed class EffigyFeatureDialog : Widget
 	{
 		_planeChosen = true;
 
+		if ( _feature is not null )
+			_planeChosenFor.Add( _feature );
+
 		Edited?.Invoke();
 		Rebuild();
 
@@ -338,28 +473,80 @@ internal sealed class EffigyFeatureDialog : Widget
 		return row;
 	}
 
+	/// <summary>
+	/// Whether a parameter's own bounds make a slider worth showing next to the field.
+	///
+	/// Most of Effigy's lengths declare min 0.0001 and no maximum at all (BasicFeatures.cs), and
+	/// the version this replaces invented a -9999..9999 range for them. A slider spanning five
+	/// orders of magnitude at 0.1 per step cannot be aimed at a value; it only looks like a
+	/// control. Bevel's 0..180 angle threshold and Subdivide's 0..6 levels are real ranges, and
+	/// those are the ones worth dragging.
+	/// </summary>
+	private static bool Draggable( float min, float max ) =>
+		min > float.MinValue && max < float.MaxValue && max - min <= 1024f;
+
+	/// <summary>Effigy's lengths are dimensionless, so FloatParam's "u" is decoration rather than
+	/// a unit. Real units - "deg" - still earn their label.</summary>
+	private static bool ShowUnit( string unit ) => !string.IsNullOrEmpty( unit ) && unit != "u";
+
 	private Widget BuildFloatRow( FloatParam fp )
 	{
 		var row = NewRow( out var layout );
 		layout.Add( new Editor.Label( fp.Label ) { FixedWidth = 110 } );
 
-		var slider = new FloatSlider( row )
+		var draggable = Draggable( fp.Min, fp.Max );
+
+		var field = new EffigyNumericField( row, fp.Clamped, fp.Unit )
 		{
-			Minimum = Math.Max( fp.Min, -9999f ),
-			Maximum = Math.Min( fp.Max, 9999f ),
-			Step = fp.Unit == "deg" ? 5f : 0.1f,
-			Value = fp.Clamped,
+			Min = fp.Min,
+			Max = fp.Max,
 		};
 
-		slider.OnValueEdited = () =>
+		FloatSlider slider = null;
+
+		if ( draggable )
 		{
-			fp.Value = slider.Value;
+			slider = new FloatSlider( row )
+			{
+				Minimum = fp.Min,
+				Maximum = fp.Max,
+				Step = fp.Unit == "deg" ? 1f : 0.01f,
+				Value = fp.Clamped,
+			};
+
+			slider.OnValueEdited = () =>
+			{
+				fp.Value = slider.Value;
+
+				// SetValue rather than assigning through the field's text, so pushing the slider
+				// does not echo back out of the field as another edit.
+				field.SetValue( slider.Value );
+				Edited?.Invoke();
+			};
+		}
+
+		field.ValueEdited = v =>
+		{
+			fp.Value = v;
+
+			if ( slider.IsValid() )
+				slider.Value = v;
+
 			Edited?.Invoke();
 		};
 
-		layout.Add( slider, 1 );
+		if ( draggable )
+		{
+			field.FixedWidth = 96;
+			layout.Add( field );
+			layout.Add( slider, 1 );
+		}
+		else
+		{
+			layout.Add( field, 1 );
+		}
 
-		if ( !string.IsNullOrEmpty( fp.Unit ) )
+		if ( ShowUnit( fp.Unit ) )
 			layout.Add( new Editor.Label( fp.Unit ) { FixedWidth = 26 } );
 
 		return row;
@@ -370,21 +557,56 @@ internal sealed class EffigyFeatureDialog : Widget
 		var row = NewRow( out var layout );
 		layout.Add( new Editor.Label( ip.Label ) { FixedWidth = 110 } );
 
-		var slider = new FloatSlider( row )
+		var draggable = Draggable( ip.Min, ip.Max );
+
+		var field = new EffigyNumericField( row, ip.Clamped )
 		{
-			Minimum = ip.Min,
-			Maximum = ip.Max,
-			Step = 1f,
-			Value = ip.Clamped,
+			Min = ip.Min,
+			Max = ip.Max,
+			Integer = true,
 		};
 
-		slider.OnValueEdited = () =>
+		FloatSlider slider = null;
+
+		if ( draggable )
 		{
-			ip.Value = (int)slider.Value;
+			slider = new FloatSlider( row )
+			{
+				Minimum = ip.Min,
+				Maximum = ip.Max,
+				Step = 1f,
+				Value = ip.Clamped,
+			};
+
+			slider.OnValueEdited = () =>
+			{
+				ip.Value = (int)slider.Value;
+				field.SetValue( ip.Value );
+				Edited?.Invoke();
+			};
+		}
+
+		field.ValueEdited = v =>
+		{
+			ip.Value = (int)v;
+
+			if ( slider.IsValid() )
+				slider.Value = ip.Value;
+
 			Edited?.Invoke();
 		};
 
-		layout.Add( slider, 1 );
+		if ( draggable )
+		{
+			field.FixedWidth = 96;
+			layout.Add( field );
+			layout.Add( slider, 1 );
+		}
+		else
+		{
+			layout.Add( field, 1 );
+		}
+
 		return row;
 	}
 
@@ -441,26 +663,34 @@ internal sealed class EffigyFeatureDialog : Widget
 		var sub = new Widget( row ) { Layout = Layout.Row() };
 		sub.Layout.Spacing = 4;
 
-		AddAxis( sub, "X", vp.Value.x, v => vp.Value = new Vec3( v, vp.Value.y, vp.Value.z ) );
-		AddAxis( sub, "Y", vp.Value.y, v => vp.Value = new Vec3( vp.Value.x, v, vp.Value.z ) );
-		AddAxis( sub, "Z", vp.Value.z, v => vp.Value = new Vec3( vp.Value.x, vp.Value.y, v ) );
+		AddAxis( sub, "X", Theme.Red, vp.Value.x, v => vp.Value = new Vec3( v, vp.Value.y, vp.Value.z ) );
+		AddAxis( sub, "Y", Theme.Green, vp.Value.y, v => vp.Value = new Vec3( vp.Value.x, v, vp.Value.z ) );
+		AddAxis( sub, "Z", Theme.Blue, vp.Value.z, v => vp.Value = new Vec3( vp.Value.x, vp.Value.y, v ) );
 
 		layout.Add( sub );
 		return row;
 	}
 
-	private void AddAxis( Widget parent, string label, float value, Action<float> set )
+	/// <summary>
+	/// One axis of a Vec3, as a typed field.
+	///
+	/// These were unbounded FloatSliders — constructed with no Minimum or Maximum at all, so they
+	/// took whatever the widget's default range is and a direction vector of (0,0,1) was not
+	/// reliably expressible. Axis letters carry the viewport's own X/Y/Z colours so the field and
+	/// the gizmo agree about which one is which.
+	/// </summary>
+	private void AddAxis( Widget parent, string label, Color colour, float value, Action<float> set )
 	{
-		var slider = new FloatSlider( parent ) { Step = 0.1f, Value = value };
+		var field = new EffigyNumericField( parent, value );
 
-		slider.OnValueEdited = () =>
+		field.ValueEdited = v =>
 		{
-			set( slider.Value );
+			set( v );
 			Edited?.Invoke();
 		};
 
-		parent.Layout.Add( new Editor.Label( label ) { FixedWidth = 12 } );
-		parent.Layout.Add( slider, 1 );
+		parent.Layout.Add( new Editor.Label( label ) { FixedWidth = 12, Color = colour } );
+		parent.Layout.Add( field, 1 );
 	}
 
 	private Widget BuildBodySelectionRow( BodySelectionParam bs )
@@ -516,7 +746,7 @@ internal sealed class EffigyPlaneSelector : Widget
 	{
 		var label = new Rect( 0f, 0f, Width, 16f );
 
-		Paint.SetPen( Theme.TextLight );
+		Paint.SetPen( Theme.TextControl.WithAlpha( 0.6f ) );
 		Paint.SetDefaultFont( 8 );
 		Paint.DrawText( label.Shrink( 8f, 2f, 0f, 0f ), "Sketch plane", TextFlag.LeftTop );
 

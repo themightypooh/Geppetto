@@ -228,22 +228,6 @@ internal sealed partial class EffigyViewport
 		PushPrompt();
 	}
 
-	/// <summary>Look straight down the sketch plane's normal, the way entering a sketch in any CAD
-	/// package does. Drawing on a plane seen edge-on is impossible, so this is not optional.</summary>
-	public void LookAtSketchPlane()
-	{
-		if ( ActiveSketch is null )
-			return;
-
-		var normal = ToWorldDir( ActiveSketch.Plane.Normal );
-		var up = ToWorldDir( ActiveSketch.Plane.YAxis );
-		var centre = OriginPosition + ToWorldDir( ActiveSketch.Plane.Origin );
-
-		_camera.WorldPosition = centre + normal * (PlaneSize * 1.6f);
-		_camera.WorldRotation = Rotation.LookAt( -normal, up );
-		_camera.ZNear = 0.5f;
-	}
-
 	// --- kernel <-> world -------------------------------------------------------------------
 
 	// Effigy's Vec3 and s&box's Vector3 are the same axes in the same order (x forward, y left,

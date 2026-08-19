@@ -69,6 +69,8 @@ public static class Program
 
 		UVTests.Run();
 
+		KernelSyncTests.Run();
+
 		Section( "writing sample OBJs" );
 		WriteSamples( outDir );
 

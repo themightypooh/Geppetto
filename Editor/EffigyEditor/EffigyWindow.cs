@@ -1,4 +1,4 @@
-﻿using Editor;
+using Editor;
 using Effigy;
 using Sandbox;
 using System;
@@ -79,18 +79,25 @@ internal sealed class EffigyPalette
 }
 
 // ============================================================================
-//  The main Effigy dock window — Onshape-faithful layout with:
-//    Top:    thin dark toolbar with compact feature-creation icon buttons
-//    Left:   flat feature tree (Default geometry → features → bodies)
-//    Center: 3D viewport with reference planes, origin, orbit camera
-//    Right:  parameter panel for the selected feature
-//    Bottom: Part-studio-style tabs
+//  The main Effigy dock window — Onshape's Part Studio layout:
 //
-//  Registered under Marionette in the Tools menu. Opens from Tools or by
-//  double-clicking any Effigy-related asset (if/when one exists).
+//    Left:   the feature dialog, above the feature tree, above the parts list
+//    Centre: the 3D viewport, with the tool strips along its top edge
+//    Bottom: status bar — what the active tool wants next, and mesh stats
+//
+//  The tools live in the VIEWPORT rather than in the window's toolbar area, and
+//  the dialog shares the left column with the tree rather than having a dock of
+//  its own. Both are Onshape's arrangement, and both were the difference
+//  between this reading as a CAD tool and reading as a form with a 3D preview.
+//
+//  Registered as "Effigy" in the Tools menu — RigControlWindow is the one
+//  called "Marionette".
 // ============================================================================
 
-[EditorApp( "Marionette", "view_in_ar", "Parametric modelling, subdivision, and rig-ready mesh export" )]
+// Named "Effigy", not "Marionette". RigControlWindow already registers an EditorApp called
+// Marionette, so this one put a second identically-named entry in the Tools menu with nothing to
+// tell them apart — and the modelling tool is Effigy, which is what its own docs call it.
+[EditorApp( "Effigy", "view_in_ar", "Parametric modelling, subdivision, and rig-ready mesh export" )]
 public sealed class EffigyWindow : DockWindow
 {
 	// --- core state -------------------------------------------------------------------------
@@ -113,12 +120,11 @@ public sealed class EffigyWindow : DockWindow
 	private EffigyFeatureDialog _dialog;
 	private Widget _leftPanel;
 
-	/// <summary>The sketch toolbar - a second row that exists only while a sketch is open, the way
-	/// Onshape's does. Its tools mean nothing outside sketch mode, and leaving them visible but
-	/// dead is worse than hiding them.</summary>
-	private ToolBar _sketchBar;
-	private readonly List<(Option Option, SketchToolKind Kind)> _sketchTools = new();
-	private Option _constructionOption;
+	/// <summary>The sketch tools, which replace the feature strip along the top of the viewport
+	/// for as long as a sketch is open - the way Onshape swaps its toolbar. They mean nothing
+	/// outside sketch mode, and leaving them visible but dead is worse than hiding them.</summary>
+	private readonly List<(EffigyToolButton Button, SketchToolKind Kind)> _sketchTools = new();
+	private EffigyToolButton _constructionButton;
 	private DockWidget _centralDock;
 	private StatusBar _statusWidget;
 	private Editor.Label _statusInfoLabel;
@@ -149,7 +155,7 @@ public sealed class EffigyWindow : DockWindow
 		file.Clear();
 		file.AddOption( "New Studio", "common/new.png", NewStudio );
 		file.AddSeparator();
-		file.AddOption( "Export OBJ", "download", ExportObj );
+		file.AddOption( "Export OBJ", "file_download", ExportObj );
 		file.AddOption( "Compile .vmdl", "build", CompileVmdl );
 		file.AddSeparator();
 		file.AddOption( "Close", "close", Close );
@@ -160,15 +166,39 @@ public sealed class EffigyWindow : DockWindow
 		edit.AddOption( "Redo", "redo", Redo, "editor.redo" );
 		edit.AddSeparator();
 		edit.AddOption( "Delete Feature", "delete", DeleteSelectedFeature );
-		edit.AddOption( "Move Feature Up", "arrow_up", MoveFeatureUp );
-		edit.AddOption( "Move Feature Down", "arrow_down", MoveFeatureDown );
+		edit.AddOption( "Move Feature Up", "arrow_upward", MoveFeatureUp );
+		edit.AddOption( "Move Feature Down", "arrow_downward", MoveFeatureDown );
 		edit.AddSeparator();
 		edit.AddOption( "Toggle Suppress", "visibility", ToggleSuppressFeature );
+		edit.AddSeparator();
+		edit.AddOption( "Roll to Selected Feature", "history",
+			() => { if ( _featureTree?.SelectedFeature is { } f ) RollToHere( f ); } );
+		edit.AddOption( "Roll to End", "last_page", RollToEnd );
 
 		var view = MenuBar.FindOrCreateMenu( "View" );
 		view.Clear();
 		view.AddOption( "Frame Camera", "center_focus_strong", () => _viewport?.FrameCamera() );
-		view.AddOption( "Reset Origin", "restart_alt", () => _viewport?.ResetOrigin() );
+		view.AddOption( "Normal to Sketch Plane\tN", "straighten", () => _viewport?.ViewNormalToSketchPlane() );
+		view.AddOption( "Reset Origin", "settings_backup_restore", () => _viewport?.ResetOrigin() );
+
+		// The orientations Onshape's view cube offers when you click it. Ours is a corner label
+		// rather than a clickable cube, so the list has to be reachable from somewhere.
+		view.AddSeparator();
+
+		foreach ( var standard in new[]
+		{
+			EffigyViewport.StandardView.Isometric,
+			EffigyViewport.StandardView.Top,
+			EffigyViewport.StandardView.Bottom,
+			EffigyViewport.StandardView.Front,
+			EffigyViewport.StandardView.Back,
+			EffigyViewport.StandardView.Left,
+			EffigyViewport.StandardView.Right,
+		} )
+		{
+			var v = standard;
+			view.AddOption( v.ToString(), "videocam", () => _viewport?.SetStandardView( v ) );
+		}
 
 		// Palette submenu
 		view.AddSeparator();
@@ -182,32 +212,79 @@ public sealed class EffigyWindow : DockWindow
 			opt.Toggled += b => { if ( b ) SetPalette( idx ); };
 		}
 	}
+	// --- feature toolbar (a strip of boxes along the top of the viewport) --------------------
 
-	// --- toolbar (Onshape-style compact icon row) ------------------------------------------
-
+	/// <summary>
+	/// The feature tools, in Onshape's order: create, then modify, then repeat, then place.
+	///
+	/// These used to be Options on an Editor.ToolBar docked to the top of the WINDOW, which put
+	/// them up in the chrome beside File/Edit/View where they read as window furniture rather than
+	/// as the modelling tools. They belong directly above the graphics area they act on, each in
+	/// its own box - see EffigyViewportToolbar.
+	///
+	/// Grouped tools carry a chevron and open a menu of their variants, the way Onshape's Fillet
+	/// and Pattern buttons do, rather than spending a top-level box on every variant.
+	/// </summary>
 	private void BuildToolbar()
 	{
-		var bar = new ToolBar( this, "EffigyToolbar" );
-		bar.SetIconSize( 22 );
-		AddToolBar( bar, ToolbarPosition.Top );
+		var bar = _viewport.FeatureTools;
 
-		// --- creation tools (each adds a feature to the studio) ---
-		bar.AddOption( CreateOption( "Sketch", "edit", "Add a Sketch feature — draw lines/arcs on a plane", () => new SketchFeature() ) );
+		bar.AddTool( "edit", "Sketch - draw lines, arcs and circles on a plane",
+			() => AddFeature( new SketchFeature() ) );
+
 		bar.AddSeparator();
-		bar.AddOption( CreateOption( "Primitive", "square", "Add a Primitive (Box, Cylinder, Sphere, etc.)", () => new PrimitiveFeature() ) );
-		bar.AddOption( CreateOption( "Extrude", "expand_less", "Add an Extrude — pull a sketch profile into a solid", () => new ExtrudeFeature() ) );
-		bar.AddOption( CreateOption( "Revolve", "360", "Add a Revolve — sweep a sketch profile around an axis", () => new RevolveFeature() ) );
+
+		bar.AddTool( "widgets", "Primitive - box, cylinder, sphere, wedge or tube",
+			() => AddFeature( new PrimitiveFeature() ) );
+
 		bar.AddSeparator();
-		bar.AddOption( CreateOption( "Bevel", "call_made", "Add a Bevel — chamfer sharp edges", () => new BevelFeature() ) );
-		bar.AddOption( CreateOption( "Shell", "crop_square", "Add a Shell — hollow to a wall thickness", () => new ShellFeature() ) );
-		bar.AddOption( CreateOption( "Subdivide", "grid_on", "Add a Subdivide — Catmull-Clark subdivision", () => new SubdivideFeature() ) );
+
+		// --- build geometry out of a sketch ---
+		bar.AddTool( "expand_less", "Extrude - pull a sketch profile into a solid",
+			() => AddFeature( new ExtrudeFeature() ) );
+
+		bar.AddTool( "360", "Revolve - sweep a sketch profile around an axis",
+			() => AddFeature( new RevolveFeature() ) );
+
 		bar.AddSeparator();
-		bar.AddOption( CreateOption( "Mirror", "flip", "Add a Mirror — reflect bodies across a plane", () => new MirrorFeature() ) );
-		bar.AddOption( CreateOption( "Pattern", "content_copy", "Add a Linear Pattern — copy bodies along a direction", () => new LinearPatternFeature() ) );
-		bar.AddOption( CreateOption( "Circular Pattern", "rotate_right", "Add a Circular Pattern — copy bodies around an axis", () => new CircularPatternFeature() ) );
+
+		// --- modify what is already there ---
+		bar.AddTool( "call_made", "Bevel - chamfer every edge sharper than a threshold",
+			() => AddFeature( new BevelFeature() ) );
+
+		bar.AddTool( "crop_square", "Shell - hollow the body out to a wall thickness",
+			() => AddFeature( new ShellFeature() ) );
+
+		bar.AddTool( "grid_on", "Subdivide - Catmull-Clark subdivision",
+			() => AddFeature( new SubdivideFeature() ) );
+
 		bar.AddSeparator();
-		bar.AddOption( CreateOption( "Transform", "open_with", "Add a Transform — move, rotate or scale bodies", () => new TransformFeature() ) );
-		bar.AddOption( CreateOption( "UV Project", "texture", "Add a UV Project — re-project UVs (box or planar)", () => new UVProjectFeature() ) );
+
+		// --- repeat it ---
+		bar.AddTool( "content_copy", "Linear pattern - copy bodies along a direction (right-click for circular)",
+			() => AddFeature( new LinearPatternFeature() ),
+			dropdown: () =>
+			{
+				var menu = new Menu( this );
+				menu.AddOption( "Linear pattern", "content_copy", () => AddFeature( new LinearPatternFeature() ) );
+				menu.AddOption( "Circular pattern", "rotate_right", () => AddFeature( new CircularPatternFeature() ) );
+				menu.OpenAtCursor();
+			} );
+
+		bar.AddTool( "flip", "Mirror - reflect bodies across a plane",
+			() => AddFeature( new MirrorFeature() ) );
+
+		bar.AddSeparator();
+
+		// --- place it ---
+		bar.AddTool( "open_with", "Transform - move, rotate or scale bodies",
+			() => AddFeature( new TransformFeature() ) );
+
+		bar.AddTool( "texture", "UV Project - re-project UVs, box or planar",
+			() => AddFeature( new UVProjectFeature() ) );
+
+		// Without this the boxes stretch to fill the viewport's whole width.
+		bar.AddStretch();
 
 		BuildSketchToolbar();
 	}
@@ -217,126 +294,199 @@ public sealed class EffigyWindow : DockWindow
 	/// <summary>
 	/// The tools from Onshape's sketch row that this kernel can actually build.
 	///
-	/// Line, rectangle, circle, arc, polygon and point all map onto SketchLine / SketchArc /
-	/// SketchCircle. The rest of Onshape's row — spline, trim, extend, offset, dimensions,
-	/// constraints — has no kernel behind it (the handoff notes the constraint solver is the one
-	/// sketcher piece not built), so those buttons are absent rather than present and dead.
+	/// Line, rectangle, circle, arc, polygon, slot and point all map onto SketchLine / SketchArc /
+	/// SketchCircle. The rest of Onshape's row - spline, trim, extend, offset, dimensions,
+	/// constraints - has no kernel behind it (the constraint solver is the one sketcher piece not
+	/// built), so those buttons are absent rather than present and dead.
+	///
+	/// Variants sit under chevrons exactly as they do in Onshape: one Rectangle box offering
+	/// corner and centre, one Circle box offering centre and 3-point, and so on. The previous
+	/// version spent a top-level button on each variant, which is how a sketch row ends up
+	/// fourteen glyphs wide with no way to tell which is which.
 	/// </summary>
 	private void BuildSketchToolbar()
 	{
-		_sketchBar = new ToolBar( this, "EffigySketchToolbar" );
-		_sketchBar.SetIconSize( 20 );
-		AddToolBar( _sketchBar, ToolbarPosition.Top );
+		var bar = _viewport.SketchTools;
 
-		AddSketchTool( "Select", "near_me", "Select — click without drawing", SketchToolKind.Select );
-		_sketchBar.AddSeparator();
+		AddSketchTool( bar, "near_me", "Select - click without drawing", SketchToolKind.Select );
 
-		AddSketchTool( "Line", "show_chart", "Line — click start, click end; keeps chaining until Escape", SketchToolKind.Line );
+		bar.AddSeparator();
 
-		AddSketchTool( "Rectangle", "crop_square", "Corner rectangle — click two opposite corners", SketchToolKind.Rectangle );
-		AddSketchTool( "Centre Rectangle", "crop_free", "Centre rectangle — click the centre, then a corner", SketchToolKind.RectangleCentre );
+		AddSketchTool( bar, "show_chart", "Line - click start, click end; keeps chaining until Escape",
+			SketchToolKind.Line );
 
-		AddSketchTool( "Circle", "circle", "Centre circle — click the centre, then a point on the rim", SketchToolKind.Circle );
-		AddSketchTool( "3-Point Circle", "trip_origin", "3-point circle — click three points on the rim", SketchToolKind.CircleThreePoint );
+		AddSketchTool( bar, "crop_square", "Corner rectangle - click two opposite corners",
+			SketchToolKind.Rectangle,
+			variants: new[]
+			{
+				("Corner rectangle", "crop_square", SketchToolKind.Rectangle),
+				("Centre rectangle", "crop_free", SketchToolKind.RectangleCentre),
+			} );
 
-		AddSketchTool( "Arc", "cached", "Centre arc — click the centre, the start, then the end direction", SketchToolKind.Arc );
-		AddSketchTool( "3-Point Arc", "timeline", "3-point arc — click start, end, then a point it passes through", SketchToolKind.ArcThreePoint );
+		AddSketchTool( bar, "panorama_fish_eye", "Centre circle - click the centre, then a point on the rim",
+			SketchToolKind.Circle,
+			variants: new[]
+			{
+				("Centre circle", "panorama_fish_eye", SketchToolKind.Circle),
+				("3-point circle", "trip_origin", SketchToolKind.CircleThreePoint),
+			} );
 
-		AddSketchTool( "Polygon", "hexagon", "Inscribed polygon — click the centre, then a corner", SketchToolKind.Polygon );
-		AddSketchTool( "Circumscribed Polygon", "pentagon", "Circumscribed polygon — click the centre, then an edge midpoint", SketchToolKind.PolygonCircumscribed );
+		AddSketchTool( bar, "cached", "Centre arc - click the centre, the start, then the end direction",
+			SketchToolKind.Arc,
+			variants: new[]
+			{
+				("Centre arc", "cached", SketchToolKind.Arc),
+				("3-point arc", "timeline", SketchToolKind.ArcThreePoint),
+			} );
 
-		AddSketchTool( "Slot", "linear_scale", "Slot — click both ends of the centre line, then the width", SketchToolKind.Slot );
-		AddSketchTool( "Point", "fiber_manual_record", "Point — click to place", SketchToolKind.Point );
+		AddSketchTool( bar, "change_history", "Inscribed polygon - click the centre, then a corner",
+			SketchToolKind.Polygon,
+			variants: new[]
+			{
+				("Inscribed polygon", "change_history", SketchToolKind.Polygon),
+				("Circumscribed polygon", "details", SketchToolKind.PolygonCircumscribed),
+			} );
 
-		_sketchBar.AddSeparator();
+		AddSketchTool( bar, "linear_scale", "Slot - click both ends of the centre line, then the width",
+			SketchToolKind.Slot );
+
+		AddSketchTool( bar, "fiber_manual_record", "Point - click to place", SketchToolKind.Point );
+
+		bar.AddSeparator();
 
 		// Construction geometry is a modifier on whatever tool is active, not a tool of its own -
-		// same as Onshape's toggle. SketchCurve.Construction and ProfileFinder's handling of it
-		// were already in the kernel with nothing in the UI able to set them.
-		var construction = new Option( "Construction", "gesture" )
-		{
-			ToolTip = "Construction geometry — reference lines that never become part of a profile",
-			StatusTip = "Draw construction geometry: shapes the sketch, never extrudes",
-			Checkable = true,
-		};
+		// same as Onshape's toggle, and on the same Q key. SketchCurve.Construction and
+		// ProfileFinder's handling of it were already in the kernel with nothing able to set them.
+		_constructionButton = bar.AddTool( "gesture",
+			"Construction geometry (Q) - reference lines that never become part of a profile",
+			null, checkable: true );
 
-		construction.Toggled += on => _viewport.ConstructionMode = on;
-		_sketchBar.AddOption( construction );
-		_constructionOption = construction;
+		_constructionButton.Clicked = () => _viewport.ConstructionMode = _constructionButton.Checked;
 
-		_sketchBar.AddSeparator();
+		var inspector = bar.AddTool( "select_all",
+			"Profile inspector - shade closed regions and highlight loose ends",
+			null, checkable: true );
 
-		var inspector = new Option( "Profile Inspector", "rule" )
-		{
-			ToolTip = "Profile Inspector — shade closed regions and highlight loose ends",
-			StatusTip = "Closed profiles shade blue; loose or branching points show orange",
-			Checkable = true,
-			Checked = true,
-		};
+		inspector.Checked = true;
+		_viewport.ProfileInspector = true;
 
-		inspector.Toggled += on => _viewport.ProfileInspector = on;
-		_sketchBar.AddOption( inspector );
+		inspector.Clicked = () => _viewport.ProfileInspector = inspector.Checked;
 
-		_sketchBar.AddOption( new Option( "Finish Sketch", "check" )
-		{
-			ToolTip = "Leave sketch mode",
-			StatusTip = "Leave sketch mode and go back to the feature tree",
-			Triggered = FinishSketch,
-		} );
+		bar.AddSeparator();
 
-		_sketchBar.Hide();
+		bar.AddTool( "check", "Finish sketch (Enter) - leave sketch mode", FinishSketch );
+
+		bar.AddStretch();
 	}
 
-	private void AddSketchTool( string label, string icon, string tip, SketchToolKind kind )
+	/// <summary>
+	/// One sketch tool box. When variants are supplied the box carries a chevron, opens them on
+	/// right-click or on the chevron itself, and adopts whichever variant was chosen so the box
+	/// keeps showing the tool you are actually holding.
+	/// </summary>
+	private void AddSketchTool( EffigyViewportToolbar bar, string icon, string tip, SketchToolKind kind,
+		(string Label, string Icon, SketchToolKind Kind)[] variants = null )
 	{
-		var option = new Option( label, icon )
-		{
-			ToolTip = tip,
-			StatusTip = tip,
-			Checkable = true,
-			Checked = kind == SketchToolKind.Select,
-		};
+		EffigyToolButton button = null;
 
-		option.Triggered = () =>
-		{
-			_viewport.SetSketchTool( kind );
-			UpdateSketchToolChecks( kind );
-		};
+		// The click reads the box's CURRENT kind rather than closing over the one it was built
+		// with, or picking "3-point circle" from the chevron and then clicking the box would arm
+		// the centre circle again.
+		button = bar.AddTool( icon, tip, () => ChooseSketchTool( CurrentKindOf( button, kind ) ),
+			checkable: true,
+			dropdown: variants is null
+				? null
+				: () =>
+				{
+					var menu = new Menu( this );
 
-		_sketchBar.AddOption( option );
-		_sketchTools.Add( (option, kind) );
+					foreach ( var variant in variants )
+					{
+						var v = variant;
+
+						menu.AddOption( v.Label, v.Icon, () =>
+						{
+							// Retarget the box - kind, icon and tooltip - so the strip shows the
+							// variant in use rather than always showing the group's default.
+							ReplaceSketchToolKind( button, v.Kind );
+							button.Icon = v.Icon;
+							button.ToolTip = v.Label;
+							ChooseSketchTool( v.Kind );
+						} );
+					}
+
+					menu.OpenAtCursor();
+				} );
+
+		button.Checked = kind == SketchToolKind.Select;
+		_sketchTools.Add( (button, kind) );
 	}
 
-	/// <summary>Only one tool can be active, so the rest have to visibly let go. ToolBar has no
-	/// radio-group concept, so the exclusivity is enforced here.</summary>
+	/// <summary>Which tool a grouped box is currently pointed at.</summary>
+	private SketchToolKind CurrentKindOf( EffigyToolButton button, SketchToolKind fallback )
+	{
+		foreach ( var (b, k) in _sketchTools )
+		{
+			if ( b == button )
+				return k;
+		}
+
+		return fallback;
+	}
+
+	/// <summary>Point an existing box at a different tool kind after its variant menu was used.</summary>
+	private void ReplaceSketchToolKind( EffigyToolButton button, SketchToolKind kind )
+	{
+		for ( var i = 0; i < _sketchTools.Count; i++ )
+		{
+			if ( _sketchTools[i].Button != button )
+				continue;
+
+			_sketchTools[i] = (button, kind);
+			return;
+		}
+	}
+
+	private void ChooseSketchTool( SketchToolKind kind )
+	{
+		_viewport.SetSketchTool( kind );
+		UpdateSketchToolChecks( kind );
+	}
+
+	/// <summary>Only one tool can be active, so the rest have to visibly let go. Construction and
+	/// the profile inspector are toggles rather than tools and are left alone.</summary>
 	private void UpdateSketchToolChecks( SketchToolKind active )
 	{
-		foreach ( var (option, kind) in _sketchTools )
-			option.Checked = kind == active;
+		foreach ( var (button, kind) in _sketchTools )
+			button.Checked = kind == active;
 	}
 
 	// --- sketch mode -------------------------------------------------------------------------
 
 	/// <summary>
-	/// Enter sketch mode on a Sketch feature: show the sketch toolbar, point the camera straight
-	/// at the plane, and start on the Line tool.
+	/// Enter sketch mode on a Sketch feature: swap the viewport's tool strip for the sketch one
+	/// and start on the Line tool.
 	///
 	/// The rebuild first is not optional. SketchFeature.Plane is a parameter; the Sketch object's
 	/// actual plane is only assigned when the feature executes, so entering a sketch without
 	/// rebuilding would draw onto whatever plane the sketch was last built with — or the XY
 	/// default on a brand new one, regardless of what the selection box says.
+	///
+	/// The camera is deliberately left alone. Onshape does not rotate the view when you pick a
+	/// plane, and taking a three-quarter view away from someone who set it up to sketch against
+	/// existing geometry is worse than the N key they can press themselves.
 	/// </summary>
 	private void EnterSketch( SketchFeature feature )
 	{
 		RebuildStudio();
 
-		_sketchBar.Show();
+		ShowSketchTools( true );
 		_viewport.BeginSketch( feature.Sketch );
 
 		_viewport.ConstructionMode = false;
 
-		if ( _constructionOption is not null )
-			_constructionOption.Checked = false;
+		if ( _constructionButton is not null )
+			_constructionButton.Checked = false;
 
 		UpdateSketchToolChecks( _viewport.SketchTool );
 	}
@@ -347,11 +497,23 @@ public sealed class EffigyWindow : DockWindow
 			return;
 
 		_viewport.EndSketch();
-		_sketchBar.Hide();
+		ShowSketchTools( false );
 		UpdateSketchToolChecks( SketchToolKind.Select );
 
 		SetPrompt( "" );
 		RebuildStudio();
+	}
+
+	/// <summary>One strip at a time, in the same place. Onshape replaces its toolbar on entering a
+	/// sketch rather than stacking a second row, and stacking was costing a row of viewport height
+	/// permanently to hold tools that are dead most of the time.</summary>
+	private void ShowSketchTools( bool sketching )
+	{
+		if ( _viewport?.SketchTools.IsValid() == true )
+			_viewport.SketchTools.Visible = sketching;
+
+		if ( _viewport?.FeatureTools.IsValid() == true )
+			_viewport.FeatureTools.Visible = !sketching;
 	}
 
 	/// <summary>A curve was drawn. Rebuilding here is what makes an extrude above the sketch update
@@ -409,6 +571,8 @@ public sealed class EffigyWindow : DockWindow
 		{
 			FeatureSelected = OnFeatureSelected,
 			StudioChanged = OnStudioChanged,
+			ContextMenuRequested = OpenFeatureMenu,
+			RollToEndRequested = RollToEnd,
 		};
 
 		_dialog = new EffigyFeatureDialog( this, _viewport )
@@ -418,6 +582,7 @@ public sealed class EffigyWindow : DockWindow
 			Accepted = OnDialogAccepted,
 			Cancelled = OnDialogCancelled,
 			SketchRequested = EnterSketch,
+			RepeatRequested = AddFeature,
 		};
 
 		// Dialog ABOVE the tree in one column, which is where Onshape puts it. It was a separate
@@ -499,6 +664,10 @@ public sealed class EffigyWindow : DockWindow
 		if ( _dialog is null || (_dialog.IsOpen && _dialog.Feature == feature) )
 			return;
 
+		// One undo step per dialog session. Taken here, before any edit, so Ctrl+Z after fiddling
+		// with a feature's parameters goes back to how it was when you opened it.
+		RecordUndo();
+
 		_dialog.Open( feature, isNew: false );
 	}
 
@@ -551,6 +720,10 @@ public sealed class EffigyWindow : DockWindow
 		if ( _dialog?.Feature is { } editing )
 			_featureTree?.Select( editing );
 
+		// Feature.Error is only meaningful once the studio has tried to run it, so the dialog's
+		// red/blocked state has to be refreshed here rather than when it was opened.
+		_dialog?.RefreshState();
+
 		if ( report.HasErrors )
 			Log.Warning( $"[Effigy] rebuild: {string.Join( "; ", report.Errors.Select( e => e.Message ) )}" );
 	}
@@ -601,6 +774,87 @@ public sealed class EffigyWindow : DockWindow
 			_studio.Move( idx, idx + 1 );
 			RebuildStudio();
 		}
+	}
+
+	// --- rollback ----------------------------------------------------------------------------
+
+	/// <summary>
+	/// Onshape's "Roll to here": evaluate only the features ABOVE this one, so you can go back and
+	/// work on the model as it was at that point.
+	///
+	/// PartStudio.RollbackIndex and the snapshot cache behind it have been in the kernel since it
+	/// was written — its own class comment calls rollback one of the "two things that make this
+	/// parametric rather than a pile of bakes" — and the editor referenced it exactly zero times.
+	/// This is the whole feature: set an int, rebuild.
+	///
+	/// No MarkAllDirty. Rebuild truncates its cache to EffectiveCount on the way down and re-runs
+	/// from there on the way back up, so rolling is already incremental; forcing a full rebuild
+	/// would only throw that away.
+	/// </summary>
+	private void RollToHere( Feature feature )
+	{
+		var index = _studio.Features.IndexOf( feature );
+
+		if ( index < 0 || _studio.RollbackIndex == index )
+			return;
+
+		RecordUndo();
+		_studio.RollbackIndex = index;
+		RebuildStudio();
+	}
+
+	private void RollToEnd()
+	{
+		if ( _studio.RollbackIndex == int.MaxValue )
+			return;
+
+		RecordUndo();
+		_studio.RollbackIndex = int.MaxValue;
+		RebuildStudio();
+	}
+
+	// --- feature context menu ------------------------------------------------------------------
+
+	/// <summary>
+	/// Right-click on the feature list. Onshape puts rename, suppress, roll-to-here and delete
+	/// here, and before this every one of them was reachable only from the Edit menu.
+	/// </summary>
+	private void OpenFeatureMenu( Feature feature )
+	{
+		var menu = new Menu( this );
+
+		if ( feature is null )
+		{
+			// Nothing selected — the only command that still means something is the global one.
+			var rollEnd = menu.AddOption( "Roll to end", "last_page", RollToEnd );
+			rollEnd.Enabled = _studio.RollbackIndex != int.MaxValue;
+
+			menu.OpenAtCursor();
+			return;
+		}
+
+		menu.AddHeading( feature.Name ?? feature.TypeName );
+
+		// The dialog owns the name field, so "edit" and "rename" are the same command.
+		menu.AddOption( "Edit / rename", "edit", () => OnFeatureSelected( feature ) );
+
+		menu.AddSeparator();
+		menu.AddOption( feature.Suppressed ? "Unsuppress" : "Suppress", "visibility", ToggleSuppressFeature );
+
+		menu.AddSeparator();
+		menu.AddOption( "Roll to here", "history", () => RollToHere( feature ) );
+
+		var toEnd = menu.AddOption( "Roll to end", "last_page", RollToEnd );
+		toEnd.Enabled = _studio.RollbackIndex != int.MaxValue;
+
+		menu.AddSeparator();
+		menu.AddOption( "Move up", "arrow_upward", MoveFeatureUp );
+		menu.AddOption( "Move down", "arrow_downward", MoveFeatureDown );
+
+		menu.AddSeparator();
+		menu.AddOption( "Delete", "delete", DeleteSelectedFeature );
+
+		menu.OpenAtCursor();
 	}
 
 	private void ToggleSuppressFeature()
@@ -709,47 +963,169 @@ public sealed class EffigyWindow : DockWindow
 		"\t\tbase_model_name = \"\"\n" +
 		"\t}\n" +
 		"}\n";
+	// --- undo / redo -------------------------------------------------------------------------
 
-	// --- undo / redo (lightweight — snapshot the feature list) ------------------------------
+	/// <summary>
+	/// A point in the studio's history: which features exist, in what order, with what values,
+	/// and where the rollback bar was.
+	///
+	/// The values are the part that was missing. The previous version snapshotted
+	/// `_studio.Features.Select( f => f ).ToList()` - a shallow copy of the LIST, holding the same
+	/// Feature objects. Parameters are the storage in this kernel (see Feature.cs: "The parameter
+	/// object IS the storage"), so undo restored membership and order while silently keeping every
+	/// number the user had changed since. Ctrl+Z after a parameter edit did nothing at all.
+	///
+	/// Values are keyed by parameter object rather than by index, because PrimitiveFeature returns
+	/// a different Parameters list per shape - indices are not stable across a shape change, and
+	/// the parameter objects are (they are readonly fields on the feature).
+	/// </summary>
+	private sealed class StudioSnapshot
+	{
+		public List<Feature> Features;
+		public Dictionary<IParam, object> Values;
+		public int RollbackIndex;
+	}
 
-	private readonly List<List<Feature>> _undoStack = new();
-	private readonly List<List<Feature>> _redoStack = new();
+	private readonly List<StudioSnapshot> _undoStack = new();
+	private readonly List<StudioSnapshot> _redoStack = new();
 
+	private StudioSnapshot Capture()
+	{
+		var values = new Dictionary<IParam, object>();
+
+		foreach ( var feature in _studio.Features )
+		{
+			foreach ( var param in feature.Parameters )
+			{
+				if ( ParamValue( param ) is { } value )
+					values[param] = value;
+			}
+		}
+
+		return new StudioSnapshot
+		{
+			Features = _studio.Features.ToList(),
+			Values = values,
+			RollbackIndex = _studio.RollbackIndex,
+		};
+	}
+
+	private static object ParamValue( IParam param ) => param switch
+	{
+		FloatParam f => f.Value,
+		IntParam i => i.Value,
+		BoolParam b => b.Value,
+		Vec3Param v => v.Value,
+		ChoiceParam c => c.Index,
+		_ => null,
+	};
+
+	private void Restore( StudioSnapshot snapshot )
+	{
+		_studio.Features = snapshot.Features.ToList();
+		_studio.RollbackIndex = snapshot.RollbackIndex;
+
+		foreach ( var (param, value) in snapshot.Values )
+		{
+			switch ( param )
+			{
+				case FloatParam f when value is float v: f.Value = v; break;
+				case IntParam i when value is int v: i.Value = v; break;
+				case BoolParam b when value is bool v: b.Value = v; break;
+				case Vec3Param p when value is Vec3 v: p.Value = v; break;
+				case ChoiceParam c when value is int v: c.Index = v; break;
+			}
+		}
+
+		_studio.MarkAllDirty();
+
+		// The dialog may be open on a feature the restore just removed, and its snapshot of
+		// "before" is now meaningless either way.
+		_dialog?.Close();
+
+		RebuildStudio();
+	}
+
+	/// <summary>
+	/// Mark an undo point.
+	///
+	/// Granularity is one dialog session, not one keystroke: this is called when a feature is
+	/// added, when its dialog is opened to edit it, and on the structural commands. Recording per
+	/// parameter tick would put a hundred steps on the stack for one slider drag.
+	/// </summary>
 	private void RecordUndo()
 	{
-		_undoStack.Add( _studio.Features.Select( f => f ).ToList() );
+		_undoStack.Add( Capture() );
 		_redoStack.Clear();
 
 		if ( _undoStack.Count > 100 )
 			_undoStack.RemoveAt( 0 );
 	}
 
+	// ShortcutType.Window, matching RigControlWindow and ShaderGraph's MainWindow. Without the
+	// attribute the Edit menu's "editor.undo" name resolves to nothing and Ctrl+Z never reaches
+	// this window - the menu item worked and the key did not.
+	[Shortcut( "editor.undo", "CTRL+Z", ShortcutType.Window )]
 	private void Undo()
 	{
 		if ( _undoStack.Count == 0 )
 			return;
 
-		_redoStack.Add( _studio.Features.Select( f => f ).ToList() );
-		var prev = _undoStack[^1];
+		_redoStack.Add( Capture() );
+
+		var previous = _undoStack[^1];
 		_undoStack.RemoveAt( _undoStack.Count - 1 );
 
-		_studio.Features = prev;
-		_studio.MarkAllDirty();
-		RebuildStudio();
+		Restore( previous );
 	}
 
+	// CTRL+Y, which is what this editor's own asset editors bind redo to.
+	[Shortcut( "editor.redo", "CTRL+Y", ShortcutType.Window )]
 	private void Redo()
 	{
 		if ( _redoStack.Count == 0 )
 			return;
 
-		_undoStack.Add( _studio.Features.Select( f => f ).ToList() );
+		_undoStack.Add( Capture() );
+
 		var next = _redoStack[^1];
 		_redoStack.RemoveAt( _redoStack.Count - 1 );
 
-		_studio.Features = next;
-		_studio.MarkAllDirty();
-		RebuildStudio();
+		Restore( next );
+	}
+
+	// --- sketch shortcuts --------------------------------------------------------------------
+
+	// Onshape's own sketch keys: N looks square at the sketch plane, L is line, C is circle,
+	// Q toggles construction geometry. They are documented shortcuts, not invented ones.
+
+	[Shortcut( "effigy.view.normal", "N", ShortcutType.Window )]
+	private void ShortcutViewNormal() => _viewport?.ViewNormalToSketchPlane();
+
+	[Shortcut( "effigy.sketch.line", "L", ShortcutType.Window )]
+	private void ShortcutLineTool() => ArmSketchTool( SketchToolKind.Line );
+
+	[Shortcut( "effigy.sketch.circle", "C", ShortcutType.Window )]
+	private void ShortcutCircleTool() => ArmSketchTool( SketchToolKind.Circle );
+
+	[Shortcut( "effigy.sketch.construction", "Q", ShortcutType.Window )]
+	private void ShortcutConstruction()
+	{
+		if ( _viewport?.IsSketching != true || _constructionButton is null )
+			return;
+
+		_constructionButton.Checked = !_constructionButton.Checked;
+		_viewport.ConstructionMode = _constructionButton.Checked;
+	}
+
+	/// <summary>A sketch tool key outside sketch mode has nothing to arm, and silently switching a
+	/// hidden tool would leave the strip disagreeing with the viewport next time it opened.</summary>
+	private void ArmSketchTool( SketchToolKind kind )
+	{
+		if ( _viewport?.IsSketching != true )
+			return;
+
+		ChooseSketchTool( kind );
 	}
 
 	// --- palette / theming ------------------------------------------------------------------
@@ -762,27 +1138,42 @@ public sealed class EffigyWindow : DockWindow
 		BuildMenuBar(); // rebuild so checkmarks update
 	}
 
+	/// <summary>
+	/// Push the active palette at everything that reads one.
+	///
+	/// This used to set a single auto-property that nothing downstream ever read again, so all
+	/// four palettes rendered identically — see EffigyViewport.BackgroundColor for the half of
+	/// that bug that lived at the other end.
+	/// </summary>
 	private void ApplyPalette()
 	{
-		if ( _viewport is not null )
-			_viewport.BackgroundColor = _palette.ViewportBg;
+		if ( !_viewport.IsValid() )
+			return;
+
+		_viewport.BackgroundColor = _palette.ViewportBg;
+
+		// Grid lines want the palette's dim text colour: it is picked to sit just above the
+		// background in every one of these palettes, which is exactly the job.
+		_viewport.PlaneColor = _palette.TextDim.WithAlpha( 0.55f );
 	}
 }
-
 // ============================================================================
-//  The left panel — a flat feature tree matching Onshape's Part Studio layout:
+//  The left panel — Onshape's Part Studio feature list:
 //
-//    FEATURES (2)
+//    FEATURES
 //    ├─ Default geometry
 //    │   ├─ Origin
-//    │   ├─ Top
-//    │   ├─ Front
-//    │   └─ Right
-//    ├─ Box
-//    └─ Subdivide
+//    │   ├─ Top (XY) / Front (XZ) / Right (YZ)
+//    ├─ Sketch 1
+//    ├─ Extrude 1
+//    ──────────── rollback bar ────────────
+//    └─ Subdivide 1        (rolled back, not evaluated)
 //
-//  Selecting a feature shows its parameters in the right panel.
-//  Uses TreeView + TreeNode<T> — the same pattern as RigBonesPanel.
+//    PARTS
+//    └─ Part 1 · 384 faces
+//
+//  Right-click a feature for rename / suppress / roll to here / delete, which
+//  is where Onshape puts all of them.
 // ============================================================================
 
 internal sealed class EffigyFeatureTreePanel : Widget
@@ -791,10 +1182,21 @@ internal sealed class EffigyFeatureTreePanel : Widget
 	private TreeView _tree;
 	private readonly Dictionary<Feature, FeatureNode> _nodes = new();
 
+	private Editor.Label _rollbackLabel;
+	private Widget _partsRows;
+	private readonly List<Widget> _partWidgets = new();
+
 	public Feature SelectedFeature { get; private set; }
 
 	public Action<Feature> FeatureSelected { get; set; }
 	public Action StudioChanged { get; set; }
+
+	/// <summary>Right-click on the list. The window owns the menu because every command on it
+	/// needs RecordUndo and RebuildStudio, which live there.</summary>
+	public Action<Feature> ContextMenuRequested { get; set; }
+
+	/// <summary>"Roll to end" from the panel's own control row.</summary>
+	public Action RollToEndRequested { get; set; }
 
 	public EffigyFeatureTreePanel( Widget parent, PartStudio studio ) : base( parent )
 	{
@@ -809,7 +1211,7 @@ internal sealed class EffigyFeatureTreePanel : Widget
 		header.Layout.Margin = new Sandbox.UI.Margin( 8, 4 );
 		header.Layout.Spacing = 8;
 		header.Layout.Add( new Editor.Label( "Features" ) { FixedWidth = 80 } );
-		header.Layout.Add( new Editor.Label( "" ), 1 );
+		header.Layout.AddStretchCell();
 		Layout.Add( header );
 
 		_tree = new TreeView( this );
@@ -828,12 +1230,35 @@ internal sealed class EffigyFeatureTreePanel : Widget
 		};
 		Layout.Add( _tree, 1 );
 
-		// Bottom: Bodies summary
-		var bodies = new Widget( this ) { Layout = Layout.Row() };
-		bodies.Layout.Margin = new Sandbox.UI.Margin( 8, 6 );
-		var bodiesLabel = new Editor.Label( "" );
-		bodies.Layout.Add( bodiesLabel );
-		Layout.Add( bodies );
+		// --- rollback control row ---
+		//
+		// Onshape's rollback bar is dragged between two features in the list. A TreeView gives no
+		// row to drag a bar into, so the state is shown here and moved by "Roll to here" from the
+		// context menu - the same command Onshape offers on right-click, which is how most people
+		// move the bar anyway.
+		var rollback = new Widget( this ) { Layout = Layout.Row() };
+		rollback.Layout.Margin = new Sandbox.UI.Margin( 8, 4 );
+		rollback.Layout.Spacing = 6;
+
+		_rollbackLabel = new Editor.Label( "" );
+		rollback.Layout.Add( _rollbackLabel, 1 );
+
+		rollback.Layout.Add( new Button( "Roll to end", "last_page" )
+		{
+			Clicked = () => RollToEndRequested?.Invoke(),
+		} );
+
+		Layout.Add( rollback );
+
+		// --- parts list ---
+		var partsHeader = new Widget( this ) { Layout = Layout.Row() };
+		partsHeader.Layout.Margin = new Sandbox.UI.Margin( 8, 4 );
+		partsHeader.Layout.Add( new Editor.Label( "Parts" ) { FixedWidth = 80 } );
+		partsHeader.Layout.AddStretchCell();
+		Layout.Add( partsHeader );
+
+		_partsRows = new Widget( this ) { Layout = Layout.Column() };
+		Layout.Add( _partsRows );
 
 		Rebuild();
 	}
@@ -857,6 +1282,19 @@ internal sealed class EffigyFeatureTreePanel : Widget
 		_tree.SelectItem( node );
 	}
 
+	/// <summary>
+	/// Right-click anywhere in the panel acts on the selected feature.
+	///
+	/// It is on the panel rather than on the TreeView's rows because TreeNode has no context-menu
+	/// hook proven against this editor's API. The cost is that you select first and right-click
+	/// second, rather than right-clicking straight onto a row.
+	/// </summary>
+	protected override void OnContextMenu( ContextMenuEvent e )
+	{
+		ContextMenuRequested?.Invoke( SelectedFeature );
+		e.Accepted = true;
+	}
+
 	public void Rebuild()
 	{
 		_tree.Clear();
@@ -867,16 +1305,74 @@ internal sealed class EffigyFeatureTreePanel : Widget
 		var defaultGeo = _tree.AddItem( new DefaultGeometryNode() );
 		_tree.Open( defaultGeo );
 
-		// Feature nodes
-		foreach ( var feature in _studio.Features )
+		// Feature nodes. Anything at or past the rollback bar is drawn as not evaluated.
+		var effective = _studio.EffectiveCount;
+
+		for ( var i = 0; i < _studio.Features.Count; i++ )
 		{
-			var node = new FeatureNode( feature );
+			var feature = _studio.Features[i];
+			var node = new FeatureNode( feature )
+			{
+				RolledBack = i >= effective,
+				IsFirstRolledBack = i == effective,
+			};
+
 			_nodes[feature] = node;
 			_tree.AddItem( node );
-
-			if ( feature.Suppressed )
-				_tree.Close( node );
 		}
+
+		RebuildRollbackLabel( effective );
+		RebuildPartsList();
+	}
+
+	private void RebuildRollbackLabel( int effective )
+	{
+		if ( !_rollbackLabel.IsValid() )
+			return;
+
+		var total = _studio.Features.Count;
+		var rolledBack = total - effective;
+
+		_rollbackLabel.Text = rolledBack > 0
+			? $"Rolled back — {effective} of {total} features active"
+			: $"{total} feature{(total == 1 ? "" : "s")}";
+
+		_rollbackLabel.Color = rolledBack > 0 ? Theme.Yellow : Theme.TextControl.WithAlpha( 0.6f );
+	}
+
+	/// <summary>
+	/// The parts the last rebuild produced. Onshape's list carries a per-part hide/show eye; that
+	/// is left out rather than stubbed, because the viewport previews one merged mesh
+	/// (PartStudio.ToMesh) and there is nothing per-body to hide yet.
+	/// </summary>
+	private void RebuildPartsList()
+	{
+		foreach ( var w in _partWidgets )
+			w.Destroy();
+
+		_partWidgets.Clear();
+
+		if ( !_partsRows.IsValid() )
+			return;
+
+		if ( _studio.Bodies.Count == 0 )
+		{
+			AddPartRow( "No parts yet", Theme.TextControl.WithAlpha( 0.45f ) );
+			return;
+		}
+
+		foreach ( var body in _studio.Bodies )
+			AddPartRow( $"{body.Name ?? body.Id} · {body.Mesh?.FaceCount ?? 0} faces", Theme.TextControl );
+	}
+
+	private void AddPartRow( string text, Color colour )
+	{
+		var row = new Widget( _partsRows ) { Layout = Layout.Row() };
+		row.Layout.Margin = new Sandbox.UI.Margin( 16, 2 );
+		row.Layout.Add( new Editor.Label( text ) { Color = colour } );
+
+		_partsRows.Layout.Add( row );
+		_partWidgets.Add( row );
 	}
 
 	// --- tree node types --------------------------------------------------------------------
@@ -890,7 +1386,7 @@ internal sealed class EffigyFeatureTreePanel : Widget
 		{
 			PaintSelection( item );
 
-			Paint.SetPen( Theme.TextLight );
+			Paint.SetPen( Theme.TextControl.WithAlpha( 0.6f ) );
 			Paint.DrawIcon( item.Rect, "folder", 14, TextFlag.LeftCenter );
 
 			Paint.SetPen( Theme.Text );
@@ -924,7 +1420,7 @@ internal sealed class EffigyFeatureTreePanel : Widget
 		{
 			PaintSelection( item );
 
-			Paint.SetPen( Theme.TextLight );
+			Paint.SetPen( Theme.TextControl.WithAlpha( 0.6f ) );
 			Paint.DrawIcon( item.Rect, _icon, 14, TextFlag.LeftCenter );
 
 			Paint.SetPen( Theme.Text );
@@ -932,10 +1428,17 @@ internal sealed class EffigyFeatureTreePanel : Widget
 		}
 	}
 
-	/// <summary>A feature in the tree — icon + name + error/suppressed indicator.</summary>
+	/// <summary>A feature in the tree — icon, name, and its state: suppressed, errored, or sitting
+	/// past the rollback bar.</summary>
 	private sealed class FeatureNode : TreeNode<Feature>
 	{
 		public Feature Feature => Value;
+
+		/// <summary>Past the rollback bar, so this feature did not run at all.</summary>
+		public bool RolledBack { get; init; }
+
+		/// <summary>The first feature past the bar — the only one that draws the bar itself.</summary>
+		public bool IsFirstRolledBack { get; init; }
 
 		public FeatureNode( Feature feature ) : base( feature ) { }
 
@@ -943,21 +1446,36 @@ internal sealed class EffigyFeatureTreePanel : Widget
 		{
 			PaintSelection( item );
 
-			// Icon color: blue for active, grey for suppressed, red for error
-			if ( Value.Suppressed )
-				Paint.SetPen( Theme.TextLight.WithAlpha( 0.5f ) );
+			var inactive = RolledBack || Value.Suppressed;
+
+			if ( inactive )
+				Paint.SetPen( Theme.TextControl.WithAlpha( 0.35f ) );
 			else if ( Value.Error is not null )
 				Paint.SetPen( Theme.Red );
 			else
 				Paint.SetPen( Theme.Blue );
 
-			Paint.DrawIcon( item.Rect, "category", 14, TextFlag.LeftCenter );
+			Paint.DrawIcon( item.Rect, RolledBack ? "history" : "category", 14, TextFlag.LeftCenter );
 
-			Paint.SetPen( Value.Suppressed ? Theme.TextLight : Theme.Text );
-			var label = $"{Value.Name ?? Value.TypeName}";
+			Paint.SetPen( inactive ? Theme.TextControl.WithAlpha( 0.5f ) : Theme.Text );
+
+			var label = Value.Name ?? Value.TypeName;
+
 			if ( Value.Suppressed )
-				label += " (suppressed)";
+				label += "  (suppressed)";
+			else if ( RolledBack )
+				label += "  (rolled back)";
+
 			Paint.DrawText( item.Rect.Shrink( 22, 0, 0, 0 ), label, TextFlag.LeftCenter );
+
+			// A rule above the first rolled-back feature: this is the rollback bar itself, drawn
+			// where Onshape draws it. Only the first one — a rule above every rolled-back feature
+			// would read as a list of separators rather than as one bar.
+			if ( !IsFirstRolledBack )
+				return;
+
+			Paint.SetPen( Theme.Yellow.WithAlpha( 0.5f ) );
+			Paint.DrawLine( new Vector2( item.Rect.Left, item.Rect.Top ), new Vector2( item.Rect.Right, item.Rect.Top ) );
 		}
 	}
 }
