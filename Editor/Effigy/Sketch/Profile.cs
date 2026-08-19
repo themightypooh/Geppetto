@@ -17,6 +17,16 @@ public sealed class Profile
 
 	public bool HasHoles => Holes.Count > 0;
 
+	/// <summary>
+	/// Whether a point in plane coordinates falls inside this region — within the outer loop and
+	/// not down any of its holes.
+	///
+	/// This is what turns a click in the viewport into a face selection, and what lets a feature
+	/// re-find the face it was pointed at after the sketch was edited.
+	/// </summary>
+	public bool Contains( Vec2 p ) =>
+		ProfileFinder.Contains( Outer, p ) && !Holes.Any( h => ProfileFinder.Contains( h, p ) );
+
 	/// <summary>Shoelace area of the outer loop, minus the holes.</summary>
 	public float Area => MathF.Abs( ProfileFinder.SignedArea( Outer ) )
 		- Holes.Sum( h => MathF.Abs( ProfileFinder.SignedArea( h ) ) );

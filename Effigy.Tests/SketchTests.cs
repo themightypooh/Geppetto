@@ -35,6 +35,74 @@ public static class SketchTests
 
 		Section( "sketches in the feature tree" );
 		TestSketchInTree();
+
+		Section( "picking one region out of a sketch" );
+		TestRegionSelection();
+	}
+
+	/// <summary>
+	/// A sketch with two separate rectangles in it, and an Extrude pointed at one of them.
+	///
+	/// This is what the viewport's face picking rests on: RegionSeed is a POINT inside the wanted
+	/// region rather than an index into the profile list, because profiles are re-found from the
+	/// curve graph every rebuild and carry no stable order. These checks are the ones that would
+	/// catch that going wrong - a seed selecting the wrong region, or silently selecting all of
+	/// them.
+	/// </summary>
+	static void TestRegionSelection()
+	{
+		static PartStudio TwoSquares( out ExtrudeFeature extrude )
+		{
+			var studio = new PartStudio();
+			var sketch = studio.Add( new SketchFeature() );
+
+			// 2x2 at the origin, and a 1x1 well clear of it.
+			sketch.Sketch.AddRectangle( new Vec2( 0, 0 ), new Vec2( 2, 2 ) );
+			sketch.Sketch.AddRectangle( new Vec2( 5, 5 ), new Vec2( 6, 6 ) );
+
+			extrude = studio.Add( new ExtrudeFeature() );
+			extrude.Distance.Value = 1f;
+
+			return studio;
+		}
+
+		// No seed - every region, which is the behaviour that existed before faces were pickable
+		// and has to keep working.
+		var studio = TwoSquares( out var all );
+		var report = studio.Rebuild();
+
+		Check( "no seed extrudes every region", studio.Bodies.Count == 2 && !report.HasErrors,
+			$"{studio.Bodies.Count} bodies, {report}" );
+
+		// Seeded inside the big square.
+		studio = TwoSquares( out var big );
+		big.RegionSeed = new Vec2( 1f, 1f );
+		report = studio.Rebuild();
+
+		Check( "a seed picks exactly one region", studio.Bodies.Count == 1 && !report.HasErrors,
+			$"{studio.Bodies.Count} bodies, {report}" );
+		Check( "the seed picks the region it is inside",
+			MathF.Abs( Volume( studio.Bodies[0].Mesh ) - 4f ) < 1e-3f,
+			$"volume {Volume( studio.Bodies[0].Mesh )}, expected 4" );
+
+		// Seeded inside the small square - same sketch, different face.
+		studio = TwoSquares( out var small );
+		small.RegionSeed = new Vec2( 5.5f, 5.5f );
+		studio.Rebuild();
+
+		Check( "a different seed picks the other region",
+			studio.Bodies.Count == 1 && MathF.Abs( Volume( studio.Bodies[0].Mesh ) - 1f ) < 1e-3f,
+			$"{studio.Bodies.Count} bodies, volume {Volume( studio.Bodies[0].Mesh )}, expected 1" );
+
+		// A seed in empty space is an error, not a silent fallback to every region. Falling back
+		// would quietly extrude the whole sketch when the face you picked stopped existing.
+		studio = TwoSquares( out var gone );
+		gone.RegionSeed = new Vec2( 100f, 100f );
+		report = studio.Rebuild();
+
+		Check( "a seed that matches nothing reports an error", report.HasErrors, report.ToString() );
+		Check( "and produces no body from that feature", studio.Bodies.Count == 0,
+			$"{studio.Bodies.Count} bodies" );
 	}
 
 	static float Volume( PolyMesh m ) =>

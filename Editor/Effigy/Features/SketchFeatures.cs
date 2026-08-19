@@ -47,6 +47,19 @@ public abstract class SketchConsumingFeature : Feature
 	/// which is what you want while there is only one sketch in the tree.</summary>
 	public string SketchFeatureId = "";
 
+	/// <summary>
+	/// Which closed region of the sketch to build from, as a point inside it in plane coordinates.
+	/// Null means every region, which is the old behaviour and stays the default.
+	///
+	/// A POINT RATHER THAN AN INDEX, deliberately. Profiles have no identity of their own — they
+	/// are re-found from the curve graph on every rebuild, and their order is whatever order the
+	/// walk happens to discover them in. "Region 2" would silently come to mean a different face
+	/// the moment a curve was added upstream. A point inside the region is stable under every edit
+	/// that does not destroy the region itself, and it is also exactly what a click in the viewport
+	/// already gives us.
+	/// </summary>
+	public Vec2? RegionSeed;
+
 	protected Sketch ResolveSketch( FeatureContext ctx )
 	{
 		if ( ctx.Sketches.Count == 0 )
@@ -61,7 +74,35 @@ public abstract class SketchConsumingFeature : Feature
 		return sketch;
 	}
 
-	protected static List<Profile> ResolveProfiles( Sketch sketch )
+	/// <summary>
+	/// The regions this feature builds from: every closed region in the sketch, or just the one
+	/// under RegionSeed when a face has been picked.
+	///
+	/// Instance rather than static because of the seed. A missing seed region throws by name
+	/// rather than falling back to "all regions" — silently extruding the whole sketch because the
+	/// face you picked stopped existing is exactly the kind of thing you notice three features
+	/// later.
+	/// </summary>
+	protected List<Profile> ResolveProfiles( Sketch sketch )
+	{
+		var all = FindProfiles( sketch );
+
+		if ( RegionSeed is not { } seed )
+			return all;
+
+		var picked = all.Where( p => p.Contains( seed ) ).ToList();
+
+		if ( picked.Count == 0 )
+		{
+			throw new InvalidOperationException(
+				"The selected region no longer exists — the sketch changed underneath it. "
+				+ "Pick a region again, or clear the selection to use every closed region." );
+		}
+
+		return picked;
+	}
+
+	static List<Profile> FindProfiles( Sketch sketch )
 	{
 		var found = ProfileFinder.Find( sketch );
 

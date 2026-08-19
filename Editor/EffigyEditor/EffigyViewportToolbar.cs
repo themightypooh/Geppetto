@@ -68,8 +68,8 @@ internal sealed class EffigyToolButton : Widget
 		// FixedWidth/FixedHeight rather than FixedSize, and MouseTracking + IsUnderMouse rather
 		// than tracking hover by hand - both copied from RigIconButton, which is the one custom
 		// button in this repo already proven against the editor's API.
-		FixedWidth = 32f;
-		FixedHeight = 30f;
+		FixedWidth = 38f;
+		FixedHeight = 34f;
 
 		Cursor = CursorShape.Finger;
 		MouseTracking = true;
@@ -103,8 +103,8 @@ internal sealed class EffigyToolButton : Widget
 		Paint.SetPen( _checked ? Theme.Blue : Theme.TextControl.WithAlpha( Enabled ? 0.95f : 0.35f ) );
 
 		// Leave room on the right for the chevron so the glyph does not sit under it.
-		var iconRect = HasDropdown ? rect.Shrink( 0f, 0f, 7f, 0f ) : rect;
-		Paint.DrawIcon( iconRect, Icon, 17, TextFlag.Center );
+		var iconRect = HasDropdown ? rect.Shrink( 0f, 0f, 8f, 0f ) : rect;
+		Paint.DrawIcon( iconRect, Icon, 20, TextFlag.Center );
 
 		if ( !HasDropdown )
 			return;
@@ -186,8 +186,8 @@ internal sealed class EffigyViewportToolbar : Widget
 	public EffigyViewportToolbar( Widget parent ) : base( parent )
 	{
 		Layout = Layout.Row();
-		Layout.Margin = new Sandbox.UI.Margin( 8, 6 );
-		Layout.Spacing = 4;
+		Layout.Margin = new Sandbox.UI.Margin( 6, 7 );
+		Layout.Spacing = 6;
 	}
 
 	public EffigyToolButton AddTool( string icon, string tip, Action clicked,
@@ -212,11 +212,7 @@ internal sealed class EffigyViewportToolbar : Widget
 
 	/// <summary>A gap rather than a drawn rule. The boxes already separate themselves; a divider
 	/// on top of that is one more line for no extra information.</summary>
-	public void AddSeparator() => Layout.AddSpacingCell( 10f );
-
-	/// <summary>Push everything left, so the strip does not stretch its boxes across the width of
-	/// the viewport.</summary>
-	public void AddStretch() => Layout.AddStretchCell();
+	public void AddSeparator() => Layout.AddSpacingCell( 14f );
 
 	/// <summary>Exclusive selection across the strip - only one sketch tool can be armed, and the
 	/// others have to visibly let go. Editor.ToolBar has no radio-group concept and neither does

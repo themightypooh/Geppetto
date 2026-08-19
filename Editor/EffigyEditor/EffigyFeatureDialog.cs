@@ -395,8 +395,33 @@ internal sealed class EffigyFeatureDialog : Widget
 			return;
 		}
 
+		// Extrude and Revolve pick a FACE, not a dropdown entry. The kernel's Sketch ChoiceParam
+		// only ever held a single empty string - it was never populated with real sketch ids - so
+		// the selection box supersedes it rather than sitting next to it.
+		if ( _feature is SketchConsumingFeature consumer )
+		{
+			AddRow( new EffigyRegionSelector( _body, _viewport, consumer, OnRegionCleared ) );
+
+			foreach ( var param in _feature.Parameters )
+			{
+				if ( ReferenceEquals( param, consumer.Sketch ) )
+					continue;
+
+				AddRow( BuildParamRow( param ) );
+			}
+
+			return;
+		}
+
 		foreach ( var param in _feature.Parameters )
 			AddRow( BuildParamRow( param ) );
+	}
+
+	/// <summary>The region selection was cleared back to "every closed region".</summary>
+	private void OnRegionCleared()
+	{
+		Edited?.Invoke();
+		Rebuild();
 	}
 
 	/// <summary>
@@ -824,6 +849,134 @@ internal sealed class EffigyPlaneSelector : Widget
 		base.OnDestroyed();
 
 		// Leaving pick mode armed would make the planes stay clickable after the dialog closed.
+		if ( _armed )
+			Disarm();
+	}
+}
+
+/// <summary>
+/// The face selection box for Extrude and Revolve.
+///
+/// Same affordance as the plane selector above it, for the same reason: you point at the region
+/// you mean in the graphics area rather than choosing it from a list. There is no useful list to
+/// choose from anyway — closed regions are re-found from the curve graph on every rebuild and have
+/// no names or stable order, which is exactly why the selection is stored as a point inside the
+/// region (SketchConsumingFeature.RegionSeed) rather than as an index.
+///
+/// Unset means every closed region in the sketch, which is what these features have always done
+/// and stays the default.
+/// </summary>
+internal sealed class EffigyRegionSelector : Widget
+{
+	private readonly EffigyViewport _viewport;
+	private readonly SketchConsumingFeature _feature;
+	private readonly Action _cleared;
+
+	/// <summary>True while waiting for a viewport click, with every closed region lit up.</summary>
+	private bool _armed;
+
+	public EffigyRegionSelector( Widget parent, EffigyViewport viewport, SketchConsumingFeature feature, Action cleared )
+		: base( parent )
+	{
+		_viewport = viewport;
+		_feature = feature;
+		_cleared = cleared;
+
+		Layout = Layout.Row();
+		Layout.Margin = new Sandbox.UI.Margin( 8, 3 );
+		Layout.Spacing = 6;
+
+		FixedHeight = 46f;
+		Cursor = CursorShape.Finger;
+
+		// Only offered once there is something to clear. A permanently visible "use all" next to
+		// an empty box would read as a second, competing choice.
+		if ( feature.RegionSeed is not null )
+		{
+			Layout.AddStretchCell();
+
+			Layout.Add( new Button( "Use all", "select_all" )
+			{
+				ToolTip = "Build from every closed region in the sketch",
+				Clicked = Clear,
+			} );
+		}
+	}
+
+	protected override void OnPaint()
+	{
+		var label = new Rect( 0f, 0f, Width, 16f );
+
+		Paint.SetPen( Theme.TextControl.WithAlpha( 0.6f ) );
+		Paint.SetDefaultFont( 8 );
+		Paint.DrawText( label.Shrink( 8f, 2f, 0f, 0f ), "Region", TextFlag.LeftTop );
+
+		var box = new Rect( 8f, 18f, Width - 96f, 22f );
+
+		Paint.ClearPen();
+		Paint.SetBrush( _armed ? Theme.Blue.WithAlpha( 0.18f ) : Theme.ControlBackground );
+		Paint.DrawRect( box, 2f );
+
+		Paint.ClearBrush();
+		Paint.SetPen( _armed ? Theme.Blue : Theme.TextControl.WithAlpha( 0.35f ) );
+		Paint.DrawRect( box, 2f );
+
+		Paint.SetDefaultFont( 9 );
+
+		if ( _armed )
+		{
+			Paint.SetPen( Theme.Blue );
+			Paint.DrawText( box.Shrink( 6f, 0f, 0f, 0f ), "Click a shaded face in the viewport", TextFlag.LeftCenter );
+			return;
+		}
+
+		// Unset is a legitimate, useful state here - unlike the plane box, which is genuinely
+		// waiting on you - so it reads as a value rather than as a warning.
+		Paint.SetPen( Theme.TextControl );
+		Paint.DrawText( box.Shrink( 6f, 0f, 0f, 0f ),
+			_feature.RegionSeed is null ? "All closed regions" : "1 face selected", TextFlag.LeftCenter );
+	}
+
+	protected override void OnMousePress( MouseEvent e )
+	{
+		base.OnMousePress( e );
+
+		if ( e.LeftMouseButton )
+			Toggle();
+	}
+
+	private void Toggle()
+	{
+		if ( _armed )
+		{
+			Disarm();
+			return;
+		}
+
+		_armed = true;
+		_viewport.RegionPickMode = true;
+		Update();
+	}
+
+	private void Disarm()
+	{
+		_armed = false;
+		_viewport.RegionPickMode = false;
+		Update();
+	}
+
+	private void Clear()
+	{
+		_feature.RegionSeed = null;
+		Disarm();
+		_cleared?.Invoke();
+	}
+
+	public override void OnDestroyed()
+	{
+		base.OnDestroyed();
+
+		// Leaving pick mode armed would keep every face lit and clickable after the dialog closed.
 		if ( _armed )
 			Disarm();
 	}

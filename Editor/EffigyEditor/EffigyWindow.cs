@@ -227,6 +227,14 @@ public sealed class EffigyWindow : DockWindow
 	/// </summary>
 	private void BuildToolbar()
 	{
+		// Undo/redo first and leftmost, where Onshape's toolbar starts. They sit in their own
+		// group so they stay put when the feature tools are swapped out for the sketch tools.
+		var history = _viewport.HistoryTools;
+
+		history.AddTool( "undo", "Undo (Ctrl+Z)", Undo );
+		history.AddTool( "redo", "Redo (Ctrl+Y)", Redo );
+		history.AddSeparator();
+
 		var bar = _viewport.FeatureTools;
 
 		bar.AddTool( "edit", "Sketch - draw lines, arcs and circles on a plane",
@@ -282,9 +290,6 @@ public sealed class EffigyWindow : DockWindow
 
 		bar.AddTool( "texture", "UV Project - re-project UVs, box or planar",
 			() => AddFeature( new UVProjectFeature() ) );
-
-		// Without this the boxes stretch to fill the viewport's whole width.
-		bar.AddStretch();
 
 		BuildSketchToolbar();
 	}
@@ -375,8 +380,6 @@ public sealed class EffigyWindow : DockWindow
 		bar.AddSeparator();
 
 		bar.AddTool( "check", "Finish sketch (Enter) - leave sketch mode", FinishSketch );
-
-		bar.AddStretch();
 	}
 
 	/// <summary>
@@ -575,6 +578,8 @@ public sealed class EffigyWindow : DockWindow
 			RollToEndRequested = RollToEnd,
 		};
 
+		_viewport.RegionPicked = OnRegionPicked;
+
 		_dialog = new EffigyFeatureDialog( this, _viewport )
 		{
 			Edited = RebuildStudio,
@@ -720,6 +725,8 @@ public sealed class EffigyWindow : DockWindow
 		if ( _dialog?.Feature is { } editing )
 			_featureTree?.Select( editing );
 
+		PushSketchesToViewport();
+
 		// Feature.Error is only meaningful once the studio has tried to run it, so the dialog's
 		// red/blocked state has to be refreshed here rather than when it was opened.
 		_dialog?.RefreshState();
@@ -774,6 +781,79 @@ public sealed class EffigyWindow : DockWindow
 			_studio.Move( idx, idx + 1 );
 			RebuildStudio();
 		}
+	}
+
+	// --- sketches and faces in the viewport ----------------------------------------------------
+
+	/// <summary>
+	/// Hand the viewport every sketch the studio currently has, so finished sketches keep drawing
+	/// and their closed regions stay pickable after you leave them.
+	///
+	/// Rolled-back features are excluded: a feature past the bar did not run, so its sketch has no
+	/// resolved plane for this rebuild and drawing it would put geometry on screen that nothing in
+	/// the model is standing on.
+	/// </summary>
+	private void PushSketchesToViewport()
+	{
+		if ( !_viewport.IsValid() )
+			return;
+
+		var active = _studio.Features.Take( _studio.EffectiveCount ).ToList();
+
+		_viewport.SetVisibleSketches( active
+			.OfType<SketchFeature>()
+			.Select( f => (f.Id, f.Sketch) ) );
+
+		// Which faces are already spoken for, so they draw as taken rather than as free.
+		_viewport.SetSelectedRegions( active
+			.OfType<SketchConsumingFeature>()
+			.Where( f => f.RegionSeed is not null )
+			.Select( f => (ResolveSketchId( f, active ), f.RegionSeed.Value) )
+			.Where( r => !string.IsNullOrEmpty( r.Item1 ) ) );
+	}
+
+	/// <summary>
+	/// Which sketch a consuming feature actually reads.
+	///
+	/// An empty SketchFeatureId means "the most recent one", matching
+	/// SketchConsumingFeature.ResolveSketch — so the viewport has to resolve it the same way or a
+	/// face selected on the default sketch would draw as unselected.
+	/// </summary>
+	private static string ResolveSketchId( SketchConsumingFeature feature, List<Feature> active )
+	{
+		if ( !string.IsNullOrEmpty( feature.SketchFeatureId ) )
+			return feature.SketchFeatureId;
+
+		// Only sketches ABOVE the consumer are visible to it, same as the rebuild sees them.
+		var index = active.IndexOf( feature );
+
+		return active.Take( index < 0 ? active.Count : index )
+			.OfType<SketchFeature>()
+			.LastOrDefault()
+			?.Id ?? "";
+	}
+
+	/// <summary>
+	/// A face was clicked while the open feature's region box was armed.
+	///
+	/// The seed is the click point itself, which is inside the region by construction — that is
+	/// the whole reason RegionSeed is a point rather than an index (see SketchFeatures.cs).
+	/// </summary>
+	private void OnRegionPicked( string sketchFeatureId, Vec2 seed )
+	{
+		if ( _dialog?.Feature is not SketchConsumingFeature consumer )
+			return;
+
+		consumer.SketchFeatureId = sketchFeatureId;
+		consumer.RegionSeed = seed;
+
+		_studio.MarkDirty( consumer );
+		_viewport.RegionPickMode = false;
+
+		// Redraw the dialog so the box stops saying "click a face", then rebuild so the extrude
+		// immediately shows the one region rather than all of them.
+		_dialog.Rebuild();
+		RebuildStudio();
 	}
 
 	// --- rollback ----------------------------------------------------------------------------

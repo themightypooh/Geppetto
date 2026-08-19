@@ -28,11 +28,21 @@ internal sealed partial class EffigyViewport : Widget
 	private readonly CameraComponent _camera;
 	private readonly Gizmo.Instance _gizmoInstance;
 
+	/// <summary>
+	/// Undo and redo, pinned to the far left of the strip and visible in every mode.
+	///
+	/// Onshape's own toolbar starts with them and keeps them there whether or not a sketch is
+	/// open, which is why they are a separate group rather than part of either tool set — the set
+	/// to their right swaps, these never do.
+	/// </summary>
+	public EffigyViewportToolbar HistoryTools { get; }
+
 	/// <summary>The feature tools, along the top of the viewport. Populated by the window.</summary>
 	public EffigyViewportToolbar FeatureTools { get; }
 
-	/// <summary>The sketch tools. Takes the feature strip's place while a sketch is open, the way
-	/// Onshape swaps its toolbar on entering a sketch.</summary>
+	/// <summary>The sketch tools. Takes the feature strip's PLACE while a sketch is open — same
+	/// row, same position — the way Onshape swaps its toolbar on entering a sketch, rather than
+	/// stacking a second row and costing a strip of viewport height permanently.</summary>
 	public EffigyViewportToolbar SketchTools { get; }
 
 	private GameObject _modelObject;
@@ -144,13 +154,26 @@ internal sealed partial class EffigyViewport : Widget
 
 		_gizmoInstance = _canvas.GizmoInstance;
 
-		// Tool strips first, so they land along the top edge of the viewport with the 3D canvas
-		// filling everything under them. The window populates both - this only owns the space.
-		FeatureTools = new EffigyViewportToolbar( this );
-		SketchTools = new EffigyViewportToolbar( this ) { Visible = false };
+		// One strip along the top edge of the viewport, with the 3D canvas filling everything under
+		// it. History stays put; the feature and sketch groups occupy the same slot to its right
+		// and only one of them is ever visible. The window populates all three - this owns the
+		// space and the swapping, nothing else.
+		var toolRow = new Widget( this ) { Layout = Layout.Row() };
+		toolRow.Layout.Spacing = 0;
 
-		Layout.Add( FeatureTools );
-		Layout.Add( SketchTools );
+		HistoryTools = new EffigyViewportToolbar( toolRow );
+		FeatureTools = new EffigyViewportToolbar( toolRow );
+		SketchTools = new EffigyViewportToolbar( toolRow ) { Visible = false };
+
+		toolRow.Layout.Add( HistoryTools );
+		toolRow.Layout.Add( FeatureTools );
+		toolRow.Layout.Add( SketchTools );
+
+		// The stretch lives on the ROW, not inside the bars. Put inside, each bar would push its
+		// own boxes apart across the full width instead of keeping them grouped.
+		toolRow.Layout.AddStretchCell();
+
+		Layout.Add( toolRow );
 		Layout.Add( _canvas, 1 );
 
 		FrameCamera();
@@ -613,6 +636,10 @@ internal sealed partial class EffigyViewport : Widget
 
 		// Draw planes first (behind everything else)
 		DrawReferencePlanes();
+
+		// Then every finished sketch and the faces it closes. Unconditional: this is what makes
+		// sketch geometry survive leaving the sketch, and what makes a face pickable from outside.
+		DrawFinishedSketches();
 
 		SketchFrame();
 

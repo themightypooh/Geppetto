@@ -237,11 +237,12 @@ internal sealed partial class EffigyViewport
 
 	/// <summary>Sketch-plane (u,v) to a point in the viewport, including the origin handle's
 	/// offset so sketch geometry sits on the reference planes as drawn.</summary>
-	private Vector3 PlaneToWorld( Vec2 uv )
-	{
-		var p = ActiveSketch.Plane;
-		return OriginPosition + ToWorldDir( p.Origin ) + ToWorldDir( p.XAxis ) * uv.x + ToWorldDir( p.YAxis ) * uv.y;
-	}
+	private Vector3 PlaneToWorld( SketchPlane p, Vec2 uv ) =>
+		OriginPosition + ToWorldDir( p.Origin ) + ToWorldDir( p.XAxis ) * uv.x + ToWorldDir( p.YAxis ) * uv.y;
+
+	/// <summary>The active sketch's plane. Kept so the drawing code inside sketch mode reads the
+	/// same as it did before finished sketches also needed projecting.</summary>
+	private Vector3 PlaneToWorld( Vec2 uv ) => PlaneToWorld( ActiveSketch.Plane, uv );
 
 	/// <summary>Intersect the cursor ray with the sketch plane. False when the plane is edge-on or
 	/// behind the camera, in which case there is no sensible point to report.</summary>
@@ -252,7 +253,15 @@ internal sealed partial class EffigyViewport
 		if ( ActiveSketch is null )
 			return false;
 
-		var p = ActiveSketch.Plane;
+		return CursorToPlane( ActiveSketch.Plane, out uv );
+	}
+
+	/// <summary>Intersect the cursor ray with any sketch plane. Split out from the active-sketch
+	/// version so a finished sketch's faces can be hit-tested without entering it.</summary>
+	private bool CursorToPlane( SketchPlane p, out Vec2 uv )
+	{
+		uv = Vec2.Zero;
+
 		var origin = OriginPosition + ToWorldDir( p.Origin );
 		var normal = ToWorldDir( p.Normal );
 
@@ -822,16 +831,9 @@ internal sealed partial class EffigyViewport
 		}
 	}
 
-	private void DrawRegionFan( List<Vec2> loop )
-	{
-		if ( loop.Count < 3 )
-			return;
-
-		var centre = loop[0];
-		for ( var i = 1; i < loop.Count - 1; i++ )
-			Gizmo.Draw.SolidTriangle( new Triangle(
-				PlaneToWorld( centre ), PlaneToWorld( loop[i] ), PlaneToWorld( loop[i + 1] ) ) );
-	}
+	/// <summary>The active sketch's regions. Same fill the finished sketches use - see
+	/// EffigyViewport.Faces.cs - so a region looks the same before and after you leave it.</summary>
+	private void DrawRegionFan( List<Vec2> loop ) => DrawRegionFan( ActiveSketch.Plane, loop );
 
 	/// <summary>Highlight every non-construction point whose endpoint degree is not exactly two.
 	/// Degree one is a loose end; degree three or more is a branch the profile walker cannot choose
