@@ -72,9 +72,22 @@ after an unrelated edit upstream.
 list, precisely because profiles are re-found from the curve graph on every rebuild and their
 order is whatever the walk discovers. A point survives any edit that does not destroy the region.
 
-**Keep that principle when faces become referenceable.** A face reference should be a point on the
-face plus its normal — geometry that can be re-found — not "face 6 of body 3". This is the single
-most valuable thing in this document.
+**Keep that principle when faces become referenceable.** A face reference should be geometry that
+can be re-found, not "face 6 of body 3". This is the single most valuable thing in this document.
+
+**Correction, from building it.** Pure geometry is not sufficient on its own, and a test caught
+that within an hour of this being written. A point and a normal survive an unrelated upstream edit
+perfectly — and break the moment the referenced face ITSELF moves, because the stored point is no
+longer anywhere near it. Make the block taller and the sketch on its top face is lost. FreeCAD's
+`"Face6"` has exactly the opposite failure: it follows a face that moves, and jumps to a different
+one when the ordering changes.
+
+`FaceRef` therefore carries **the body id as well** as the point and normal. Body ids are already
+kept stable across rebuilds (`FeatureContext.SeedIdCounter` exists for this). Resolution is: find
+that body, take its faces pointing the right way, and among those pick the one nearest the stored
+point — so the point *disambiguates between candidates* rather than acting as a hard constraint.
+That is what lets the face move and still be found, and it is why `FaceSketchTests` can assert that
+growing a block carries the boss on its top face up with it.
 
 ## 4. Regeneration and dirtiness — Effigy's model is right
 

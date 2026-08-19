@@ -73,6 +73,8 @@ public static class Program
 
 		SnapTests.Run();
 
+		FaceSketchTests.Run();
+
 		EditorFlowTests.Run();
 
 		KernelSyncTests.Run();

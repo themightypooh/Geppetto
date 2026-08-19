@@ -21,20 +21,46 @@ public sealed class SketchFeature : Feature
 	public readonly ChoiceParam Plane = new( "Plane", new[] { "Top (XY)", "Front (XZ)", "Right (YZ)" } );
 	public readonly FloatParam PlaneOffset = new( "Offset", 0f, unit: "u" );
 
+	/// <summary>
+	/// A face of an existing body to sketch on, instead of one of the three global planes.
+	///
+	/// Stored as geometry (a point and a normal) rather than a face index, and re-found on every
+	/// rebuild — see FaceRef for why an index would silently attach itself to a different face the
+	/// moment anything upstream changed.
+	/// </summary>
+	public FaceRef? Face;
+
 	public override IReadOnlyList<IParam> Parameters => new IParam[] { Plane, PlaneOffset };
 
 	protected override void Execute( FeatureContext ctx )
 	{
-		var basePlane = Plane.Index switch
-		{
-			0 => SketchPlane.XY,
-			1 => SketchPlane.XZ,
-			2 => SketchPlane.YZ,
-			_ => SketchPlane.XY
-		};
+		var basePlane = ResolveBasePlane( ctx );
 
 		Sketch.Plane = PlaneOffset.Value == 0f ? basePlane : basePlane.Offset( PlaneOffset.Value );
 		ctx.Sketches[Id] = Sketch;
+	}
+
+	SketchPlane ResolveBasePlane( FeatureContext ctx )
+	{
+		if ( Face is not { } face )
+		{
+			return Plane.Index switch
+			{
+				0 => SketchPlane.XY,
+				1 => SketchPlane.XZ,
+				2 => SketchPlane.YZ,
+				_ => SketchPlane.XY
+			};
+		}
+
+		if ( !FacePlane.TryResolve( ctx.Bodies, face, out var resolved ) )
+		{
+			throw new InvalidOperationException(
+				"The face this sketch was placed on is gone — nothing at that point faces that way "
+				+ "any more. Move the sketch to another face, or back to one of the global planes." );
+		}
+
+		return resolved;
 	}
 }
 

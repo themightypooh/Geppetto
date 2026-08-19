@@ -10,6 +10,10 @@ public sealed class Body
 	public string Name;
 	public PolyMesh Mesh;
 
+	/// <summary>Whether this body is drawn. Set from the feature that produced it — see
+	/// Feature.Visible for why this is not the same thing as suppression.</summary>
+	public bool Visible = true;
+
 	public Body( string id, string name, PolyMesh mesh )
 	{
 		Id = id;
@@ -17,7 +21,7 @@ public sealed class Body
 		Mesh = mesh;
 	}
 
-	public Body Clone() => new( Id, Name, Mesh.Clone() );
+	public Body Clone() => new( Id, Name, Mesh.Clone() ) { Visible = Visible };
 }
 
 // --- parameters -------------------------------------------------------------------------------
@@ -162,7 +166,21 @@ public abstract class Feature
 {
 	public string Id = Guid.NewGuid().ToString( "N" )[..8];
 	public string Name;
+
+	/// <summary>
+	/// Suppressed features do not run at all — their effect is removed from the model.
+	/// </summary>
 	public bool Suppressed;
+
+	/// <summary>
+	/// Whether the geometry this feature produced is DRAWN. Deliberately not the same thing as
+	/// Suppressed, and conflating the two would be wrong: suppression takes a feature's effect out
+	/// of the model, hiding only stops you looking at it. A hidden body is still there, still
+	/// exported, and everything downstream still builds on it.
+	///
+	/// Solvespace keeps the same two flags separately on a group for the same reason.
+	/// </summary>
+	public bool Visible = true;
 
 	/// <summary>Set by Run when Execute threw. A failed feature does not stop the rebuild — the
 	/// tree carries on with the bodies as they were, which is what lets you fix an upstream
