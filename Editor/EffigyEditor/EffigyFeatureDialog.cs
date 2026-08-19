@@ -76,7 +76,8 @@ internal sealed class EffigyFeatureDialog : Widget
 	private bool IsBroken => _feature is not null
 		&& (_feature.Error is not null
 			|| (_feature is SketchFeature && !_planeChosen)
-			|| (_isNew && _feature is SketchConsumingFeature { RegionSeed: null }));
+			|| (_isNew && _feature is SketchConsumingFeature { RegionSeed: null })
+			|| (_isNew && BodySelectionOf( _feature ) is { BodyIds.Count: 0 }));
 
 	/// <summary>Fires when the tick is pressed. The window rebuilds and closes the dialog.</summary>
 	public Action<Feature> Accepted { get; set; }
@@ -186,6 +187,9 @@ internal sealed class EffigyFeatureDialog : Widget
 		if ( _isNew && _feature is SketchConsumingFeature { RegionSeed: null } )
 			return "Select a face in the viewport to extrude";
 
+		if ( _isNew && BodySelectionOf( _feature ) is { BodyIds.Count: 0 } )
+			return "Select a body in the viewport";
+
 		return "";
 	}
 
@@ -288,6 +292,10 @@ internal sealed class EffigyFeatureDialog : Widget
 		if ( isNew && feature is SketchConsumingFeature { RegionSeed: null } )
 			_viewport.RegionPickMode = true;
 
+		// Same for the eight features that act on bodies rather than on a sketch.
+		if ( isNew && BodySelectionOf( feature ) is { BodyIds.Count: 0 } )
+			_viewport.BodyPickMode = true;
+
 		Rebuild();
 
 		Visible = true;
@@ -307,6 +315,7 @@ internal sealed class EffigyFeatureDialog : Widget
 		// feature that is no longer open.
 		_viewport.PlanePickMode = false;
 		_viewport.RegionPickMode = false;
+		_viewport.BodyPickMode = false;
 		_viewport.ClearPullTarget();
 	}
 
@@ -779,13 +788,32 @@ internal sealed class EffigyFeatureDialog : Widget
 		parent.Layout.Add( field, 1 );
 	}
 
+	/// <summary>
+	/// Which bodies the feature acts on.
+	///
+	/// This was a disabled label reading "All bodies" - the parameter existed and the kernel
+	/// honoured it, and there was no way to put anything in it. Now it is a selection box like the
+	/// plane and face ones: click it, and the bodies light up in the viewport to be chosen.
+	/// </summary>
 	private Widget BuildBodySelectionRow( BodySelectionParam bs )
 	{
 		var row = NewRow( out var layout );
 		layout.Add( new Editor.Label( bs.Label ) { FixedWidth = 110 } );
-		layout.Add( new Editor.Label( "All bodies" ) { Enabled = false }, 1 );
+		layout.Add( new EffigyBodySelector( _body, _viewport, bs, OnBodySelectionCleared ), 1 );
 		return row;
 	}
+
+	/// <summary>The body selection was cleared back to "every body".</summary>
+	private void OnBodySelectionCleared()
+	{
+		Edited?.Invoke();
+		Rebuild();
+	}
+
+	/// <summary>The feature's body selection, if it has one. Detected from the parameter list
+	/// rather than by type, so any future feature that takes bodies gets this for free.</summary>
+	public static BodySelectionParam BodySelectionOf( Feature feature ) =>
+		feature?.Parameters.OfType<BodySelectionParam>().FirstOrDefault();
 }
 
 /// <summary>
@@ -1042,6 +1070,125 @@ internal sealed class EffigyRegionSelector : Widget
 		base.OnDestroyed();
 
 		// Leaving pick mode armed would keep every face lit and clickable after the dialog closed.
+		if ( _armed )
+			Disarm();
+	}
+}
+
+/// <summary>
+/// The body selection box, for the eight features that act on solids rather than on a sketch.
+///
+/// Same shape as the plane and region selectors: a bordered field that is empty until you click it
+/// and then pick in the graphics area. Multi-select, because Mirror and the patterns genuinely take
+/// several — clicking a body that is already in takes it back out.
+///
+/// Empty means every body, which is BodySelectionParam's own documented default. So an unset box is
+/// a value rather than a warning, and only a NEW feature treats it as something still outstanding.
+/// </summary>
+internal sealed class EffigyBodySelector : Widget
+{
+	private readonly EffigyViewport _viewport;
+	private readonly BodySelectionParam _param;
+	private readonly Action _cleared;
+
+	private bool _armed;
+
+	public EffigyBodySelector( Widget parent, EffigyViewport viewport, BodySelectionParam param, Action cleared )
+		: base( parent )
+	{
+		_viewport = viewport;
+		_param = param;
+		_cleared = cleared;
+
+		// Reflect picking that was armed for us when the dialog opened.
+		_armed = viewport.BodyPickMode;
+
+		Layout = Layout.Row();
+		Layout.Spacing = 6;
+
+		FixedHeight = 26f;
+		Cursor = CursorShape.Finger;
+
+		if ( param.BodyIds.Count > 0 )
+		{
+			Layout.AddStretchCell();
+
+			Layout.Add( new Button( "All", "select_all" )
+			{
+				ToolTip = "Act on every body",
+				Clicked = Clear,
+			} );
+		}
+	}
+
+	protected override void OnPaint()
+	{
+		var box = new Rect( 0f, 2f, Width - (_param.BodyIds.Count > 0 ? 60f : 0f), 22f );
+
+		Paint.ClearPen();
+		Paint.SetBrush( _armed ? Theme.Blue.WithAlpha( 0.18f ) : Theme.ControlBackground );
+		Paint.DrawRect( box, 2f );
+
+		Paint.ClearBrush();
+		Paint.SetPen( _armed ? Theme.Blue : Theme.TextControl.WithAlpha( 0.35f ) );
+		Paint.DrawRect( box, 2f );
+
+		Paint.SetDefaultFont( 9 );
+
+		if ( _armed )
+		{
+			Paint.SetPen( Theme.Blue );
+			Paint.DrawText( box.Shrink( 6f, 0f, 0f, 0f ), "Click bodies in the viewport", TextFlag.LeftCenter );
+			return;
+		}
+
+		Paint.SetPen( Theme.TextControl );
+
+		var count = _param.BodyIds.Count;
+
+		Paint.DrawText( box.Shrink( 6f, 0f, 0f, 0f ),
+			count == 0 ? "All bodies" : count == 1 ? "1 body" : $"{count} bodies", TextFlag.LeftCenter );
+	}
+
+	protected override void OnMousePress( MouseEvent e )
+	{
+		base.OnMousePress( e );
+
+		if ( e.LeftMouseButton )
+			Toggle();
+	}
+
+	private void Toggle()
+	{
+		if ( _armed )
+		{
+			Disarm();
+			return;
+		}
+
+		_armed = true;
+		_viewport.BodyPickMode = true;
+		Update();
+	}
+
+	private void Disarm()
+	{
+		_armed = false;
+		_viewport.BodyPickMode = false;
+		Update();
+	}
+
+	private void Clear()
+	{
+		_param.BodyIds.Clear();
+		Disarm();
+		_cleared?.Invoke();
+	}
+
+	public override void OnDestroyed()
+	{
+		base.OnDestroyed();
+
 		if ( _armed )
 			Disarm();
 	}

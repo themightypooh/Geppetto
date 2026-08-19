@@ -561,6 +561,19 @@ public sealed class EffigyWindow : DockWindow
 		if ( feature is SketchConsumingFeature { RegionSeed: null } )
 			feature.Suppressed = true;
 
+		// Body features wait for their selection the same way. With exactly one body in the studio
+		// there is nothing to choose between, so it is picked outright rather than nagging for the
+		// only possible answer - the overwhelmingly common case while modelling one part. Otherwise
+		// it waits, for the same reason Extrude does: an empty selection means "every body", which
+		// would shell or bevel the lot the instant the button was pressed.
+		if ( EffigyFeatureDialog.BodySelectionOf( feature ) is { BodyIds.Count: 0 } bodies )
+		{
+			if ( _studio.Bodies.Count == 1 )
+				bodies.BodyIds.Add( _studio.Bodies[0].Id );
+			else
+				feature.Suppressed = true;
+		}
+
 		_studio.Add( feature );
 		RebuildStudio();
 
@@ -589,6 +602,7 @@ public sealed class EffigyWindow : DockWindow
 		_viewport.RegionPicked = OnRegionPicked;
 		_viewport.FacePullChanged = OnFacePullChanged;
 		_viewport.FacePullEnded = OnFacePullEnded;
+		_viewport.BodyPicked = OnBodyPicked;
 
 		_dialog = new EffigyFeatureDialog( this, _viewport )
 		{
@@ -815,6 +829,12 @@ public sealed class EffigyWindow : DockWindow
 			.OfType<SketchFeature>()
 			.Select( f => (f.Id, f.Sketch) ) );
 
+		_viewport.SetVisibleBodies( _studio.Bodies );
+
+		// Whatever the open feature has already chosen, so those bodies read as taken.
+		_viewport.SetSelectedBodies(
+			EffigyFeatureDialog.BodySelectionOf( _dialog?.Feature )?.BodyIds );
+
 		// Which faces are already spoken for, so they draw as taken rather than as free.
 		_viewport.SetSelectedRegions( active
 			.OfType<SketchConsumingFeature>()
@@ -939,6 +959,33 @@ public sealed class EffigyWindow : DockWindow
 		var distance = extrude.Flip.Value ? -extrude.Distance.Value : extrude.Distance.Value;
 
 		_viewport.SetPullTarget( sketchId, seed, distance );
+	}
+
+	/// <summary>
+	/// A body was clicked while the open feature's body box was armed.
+	///
+	/// Toggles rather than replaces: Mirror and the patterns genuinely take several bodies, and
+	/// clicking one that is already in should take it back out - which is what every multi-select
+	/// in a CAD tool does.
+	/// </summary>
+	private void OnBodyPicked( string bodyId )
+	{
+		if ( EffigyFeatureDialog.BodySelectionOf( _dialog?.Feature ) is not { } selection )
+			return;
+
+		if ( !selection.BodyIds.Remove( bodyId ) )
+			selection.BodyIds.Add( bodyId );
+
+		// Emptied by unpicking the last one means "every body" again, which is the parameter's own
+		// default - so the feature stops waiting either way and is never left in limbo.
+		if ( _dialog?.Feature is { } feature )
+		{
+			feature.Suppressed = false;
+			_studio.MarkDirty( feature );
+		}
+
+		_dialog?.Rebuild();
+		RebuildStudio();
 	}
 
 	// --- rollback ----------------------------------------------------------------------------

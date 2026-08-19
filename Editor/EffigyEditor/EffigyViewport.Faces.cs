@@ -118,6 +118,9 @@ internal sealed partial class EffigyViewport
 		// The pull handle on the hovered face, and the drag if one is running.
 		FacePullFrame();
 
+		// Body outlines, while some feature is asking which solid it acts on.
+		BodyPickFrame();
+
 		// The click is taken here rather than in SketchFrame: picking a face happens from outside
 		// sketch mode, where SketchFrame has already returned.
 		if ( RegionPickMode && _hoveredRegion is { } hit && Gizmo.WasLeftMousePressed
