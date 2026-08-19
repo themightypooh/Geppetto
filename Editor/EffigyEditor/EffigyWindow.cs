@@ -553,6 +553,14 @@ public sealed class EffigyWindow : DockWindow
 	{
 		RecordUndo();
 
+		// A brand new Extrude is WAITING for a face, so it must not build anything yet. Left to
+		// run, a null RegionSeed means "every closed region" — the documented default, and correct
+		// for a feature someone configured deliberately, but as the response to pressing the
+		// toolbar button it slams a finished solid onto the screen before you have chosen anything.
+		// Suppression is lifted the moment a face is picked, in OnRegionPicked.
+		if ( feature is SketchConsumingFeature { RegionSeed: null } )
+			feature.Suppressed = true;
+
 		_studio.Add( feature );
 		RebuildStudio();
 
@@ -579,6 +587,8 @@ public sealed class EffigyWindow : DockWindow
 		};
 
 		_viewport.RegionPicked = OnRegionPicked;
+		_viewport.FacePullChanged = OnFacePullChanged;
+		_viewport.FacePullEnded = OnFacePullEnded;
 
 		_dialog = new EffigyFeatureDialog( this, _viewport )
 		{
@@ -726,6 +736,7 @@ public sealed class EffigyWindow : DockWindow
 			_featureTree?.Select( editing );
 
 		PushSketchesToViewport();
+		RefreshPullTarget();
 
 		// Feature.Error is only meaningful once the studio has tried to run it, so the dialog's
 		// red/blocked state has to be refreshed here rather than when it was opened.
@@ -847,13 +858,87 @@ public sealed class EffigyWindow : DockWindow
 		consumer.SketchFeatureId = sketchFeatureId;
 		consumer.RegionSeed = seed;
 
+		// It has what it was waiting for, so let it build.
+		consumer.Suppressed = false;
+
 		_studio.MarkDirty( consumer );
 		_viewport.RegionPickMode = false;
 
 		// Redraw the dialog so the box stops saying "click a face", then rebuild so the extrude
-		// immediately shows the one region rather than all of them.
+		// immediately shows the one region rather than all of them. RebuildStudio points the pull
+		// handle at the face that was just chosen, which is what makes the gizmo appear.
 		_dialog.Rebuild();
 		RebuildStudio();
+	}
+
+	// --- drag the chosen face out into a solid --------------------------------------------------
+
+	/// <summary>
+	/// The gizmo moved. The feature already exists — it was created by the toolbar button and is
+	/// sitting open in the dialog waiting for exactly this — so this only writes the distance.
+	///
+	/// No undo step of its own: the dialog session is the undo granularity everywhere else in this
+	/// tool, and it was already recorded when the feature was added. Ctrl+Z after dragging a face
+	/// out undoes the extrude, which is what "undo that" means here.
+	/// </summary>
+	private void OnFacePullChanged( EffigyFacePull pull )
+	{
+		if ( _dialog?.Feature is not ExtrudeFeature extrude )
+			return;
+
+		// A negative pull is a real answer - it means through the plane the other way - so the sign
+		// goes into Flip rather than being thrown away. The floor keeps it off exactly zero, which
+		// the kernel rejects outright ("Distance cannot be zero").
+		extrude.Distance.Value = MathF.Max( MathF.Abs( pull.Distance ), 1e-4f );
+		extrude.Flip.Value = pull.Distance < 0f;
+
+		_studio.MarkDirty( extrude );
+		RebuildStudio();
+
+		// Push the new number into the dialog's field, so the typed value and the gizmo are two
+		// views of one thing rather than two competing sources of truth.
+		_dialog.RefreshValues();
+	}
+
+	private void OnFacePullEnded() => _dialog?.RefreshState();
+
+	/// <summary>
+	/// Keep the viewport's handle pointed at whatever the open dialog is building.
+	///
+	/// Only Extrude gets a handle: it is the one feature whose single parameter is a distance along
+	/// the face's own normal, which is the only thing this gesture can express. Revolve's angle is
+	/// not that, so it gets the selection box and the dialog and no gizmo.
+	/// </summary>
+	private void RefreshPullTarget()
+	{
+		if ( !_viewport.IsValid() )
+			return;
+
+		// Written out rather than as `is not ExtrudeFeature { RegionSeed: { } seed } extrude`:
+		// designations inside a NEGATED nested pattern are the kind of definite-assignment corner
+		// that is not worth betting a compile on when the plain version reads the same.
+		var extrude = _dialog?.Feature as ExtrudeFeature;
+
+		if ( extrude?.RegionSeed is null )
+		{
+			_viewport.ClearPullTarget();
+			return;
+		}
+
+		var seed = extrude.RegionSeed.Value;
+
+		var active = _studio.Features.Take( _studio.EffectiveCount ).ToList();
+		var sketchId = ResolveSketchId( extrude, active );
+
+		if ( string.IsNullOrEmpty( sketchId ) )
+		{
+			_viewport.ClearPullTarget();
+			return;
+		}
+
+		var distance = extrude.Flip.Value ? -extrude.Distance.Value : extrude.Distance.Value;
+
+		_viewport.SetPullTarget( sketchId, seed, distance );
 	}
 
 	// --- rollback ----------------------------------------------------------------------------
@@ -1541,7 +1626,12 @@ internal sealed class EffigyFeatureTreePanel : Widget
 
 			var label = Value.Name ?? Value.TypeName;
 
-			if ( Value.Suppressed )
+			// A consumer with no region yet is suppressed for a different reason than one somebody
+			// suppressed on purpose - it is mid-creation, waiting on a face - and saying
+			// "suppressed" about it reads as a state you have to undo rather than one you finish.
+			if ( Value is SketchConsumingFeature { RegionSeed: null } && Value.Suppressed )
+				label += "  (select a face)";
+			else if ( Value.Suppressed )
 				label += "  (suppressed)";
 			else if ( RolledBack )
 				label += "  (rolled back)";

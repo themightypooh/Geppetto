@@ -56,6 +56,15 @@ internal sealed class EffigyFeatureDialog : Widget
 	private readonly List<Widget> _rows = new();
 
 	/// <summary>
+	/// One per editable row: pushes the parameter's CURRENT value back into that row's widgets.
+	///
+	/// This is what keeps the numeric field honest while the face is being dragged in the viewport.
+	/// The alternative - rebuilding the dialog every frame of a drag - destroys and recreates every
+	/// widget in it, which throws away focus and any half-typed expression.
+	/// </summary>
+	private readonly List<Action> _valueRefreshers = new();
+
+	/// <summary>
 	/// Whether the feature would refuse to build right now.
 	///
 	/// Onshape's rule, and it is a workflow rule rather than a cosmetic one: "The title is red if
@@ -65,7 +74,9 @@ internal sealed class EffigyFeatureDialog : Widget
 	/// has not made, which no rebuild can report because the feature never ran.
 	/// </summary>
 	private bool IsBroken => _feature is not null
-		&& (_feature.Error is not null || (_feature is SketchFeature && !_planeChosen));
+		&& (_feature.Error is not null
+			|| (_feature is SketchFeature && !_planeChosen)
+			|| (_isNew && _feature is SketchConsumingFeature { RegionSeed: null }));
 
 	/// <summary>Fires when the tick is pressed. The window rebuilds and closes the dialog.</summary>
 	public Action<Feature> Accepted { get; set; }
@@ -158,12 +169,24 @@ internal sealed class EffigyFeatureDialog : Widget
 
 		if ( _statusLabel.IsValid() )
 		{
-			_statusLabel.Text = _feature.Error
-				?? (_feature is SketchFeature && !_planeChosen ? "Pick a sketch plane to continue" : "");
+			_statusLabel.Text = _feature.Error ?? WaitingOn();
 			_statusLabel.Visible = broken;
 		}
 
 		Update();
+	}
+
+	/// <summary>What the feature is still waiting for, when it has not failed but is not finished
+	/// either. Empty when nothing is outstanding.</summary>
+	private string WaitingOn()
+	{
+		if ( _feature is SketchFeature && !_planeChosen )
+			return "Pick a sketch plane to continue";
+
+		if ( _isNew && _feature is SketchConsumingFeature { RegionSeed: null } )
+			return "Select a face in the viewport to extrude";
+
+		return "";
 	}
 
 	private void OnNameEdited( string text )
@@ -259,6 +282,12 @@ internal sealed class EffigyFeatureDialog : Widget
 
 		_nameEdit.Text = feature.Name ?? feature.TypeName;
 
+		// A freshly created Extrude is waiting for a face, so arm the picking immediately rather
+		// than making the user find and click the selection box first. This is the whole "press
+		// the button, then choose a face" flow - the button IS the start of the selection.
+		if ( isNew && feature is SketchConsumingFeature { RegionSeed: null } )
+			_viewport.RegionPickMode = true;
+
 		Rebuild();
 
 		Visible = true;
@@ -273,7 +302,12 @@ internal sealed class EffigyFeatureDialog : Widget
 		ClearRows();
 		Visible = false;
 
+		// Explicitly, not just via the selectors' OnDestroyed: widget destruction can be deferred,
+		// and a frame with picking still armed is a frame where a stray click lands on a face for a
+		// feature that is no longer open.
 		_viewport.PlanePickMode = false;
+		_viewport.RegionPickMode = false;
+		_viewport.ClearPullTarget();
 	}
 
 	private void Accept()
@@ -373,6 +407,15 @@ internal sealed class EffigyFeatureDialog : Widget
 			w.Destroy();
 
 		_rows.Clear();
+		_valueRefreshers.Clear();
+	}
+
+	/// <summary>Re-read every parameter into its row. Called while the viewport is driving a value,
+	/// so the typed field tracks the gizmo instead of showing a stale number.</summary>
+	public void RefreshValues()
+	{
+		foreach ( var refresh in _valueRefreshers )
+			refresh();
 	}
 
 	/// <summary>Rebuild the parameter rows. Called on open and whenever a choice changes the set of
@@ -574,6 +617,15 @@ internal sealed class EffigyFeatureDialog : Widget
 		if ( ShowUnit( fp.Unit ) )
 			layout.Add( new Editor.Label( fp.Unit ) { FixedWidth = 26 } );
 
+		_valueRefreshers.Add( () =>
+		{
+			if ( field.IsValid() )
+				field.SetValue( fp.Clamped );
+
+			if ( slider.IsValid() )
+				slider.Value = fp.Clamped;
+		} );
+
 		return row;
 	}
 
@@ -631,6 +683,15 @@ internal sealed class EffigyFeatureDialog : Widget
 		{
 			layout.Add( field, 1 );
 		}
+
+		_valueRefreshers.Add( () =>
+		{
+			if ( field.IsValid() )
+				field.SetValue( ip.Clamped );
+
+			if ( slider.IsValid() )
+				slider.Value = ip.Clamped;
+		} );
 
 		return row;
 	}
@@ -881,6 +942,10 @@ internal sealed class EffigyRegionSelector : Widget
 		_viewport = viewport;
 		_feature = feature;
 		_cleared = cleared;
+
+		// Reflect picking that was armed for us when the dialog opened, rather than starting
+		// unarmed and disagreeing with the lit-up faces in the viewport.
+		_armed = viewport.RegionPickMode;
 
 		Layout = Layout.Row();
 		Layout.Margin = new Sandbox.UI.Margin( 8, 3 );

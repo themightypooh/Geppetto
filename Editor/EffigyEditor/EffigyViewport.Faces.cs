@@ -100,7 +100,9 @@ internal sealed partial class EffigyViewport
 		Gizmo.Draw.IgnoreDepth = true;
 
 		// Resolve hover first so the region can be drawn in its hovered colour in the same pass.
-		if ( RegionPickMode && _canvasHasCursor )
+		// Not gated on RegionPickMode any more: a face has to be hoverable for its pull handle to
+		// appear, which is the whole drag-to-extrude gesture.
+		if ( _canvasHasCursor && !IsSketching )
 			_hoveredRegion = HitTestRegion();
 
 		foreach ( var (featureId, sketch, profiles) in _visibleSketches )
@@ -112,6 +114,9 @@ internal sealed partial class EffigyViewport
 		}
 
 		Gizmo.Draw.IgnoreDepth = false;
+
+		// The pull handle on the hovered face, and the drag if one is running.
+		FacePullFrame();
 
 		// The click is taken here rather than in SketchFrame: picking a face happens from outside
 		// sketch mode, where SketchFrame has already returned.
