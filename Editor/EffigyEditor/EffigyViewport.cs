@@ -125,20 +125,37 @@ internal sealed partial class EffigyViewport : Widget
 
 	// --- layout helpers ---------------------------------------------------------------------
 
+	/// <summary>The 3D canvas, exposed so the window can parent floating overlays (the tool strip)
+	/// onto it rather than into the layout.</summary>
+	public Widget Canvas => _canvas;
+
 	/// <summary>
-	/// Fill the viewport's column layout: a fixed-height widget above the 3D canvas, which fills
-	/// everything below it. Called once from BuildToolbar after the tool strip is created.
+	/// Give the canvas the whole viewport and float <paramref name="overlay"/> on top of it at the
+	/// top-left. Called once from BuildToolbar, after the tool strip is built.
 	///
-	/// It fills the layout the constructor already made rather than assigning a fresh one. This
-	/// runs after DockManager.SetCentralWidget has sized the viewport, and replacing the layout
+	/// The overlay is deliberately NOT a layout row above the canvas. A row takes a band off the
+	/// top of the viewport and paints window chrome across it; parenting to the canvas instead
+	/// lets the 3D scene fill the widget with the buttons sitting on it, which is what the tool
+	/// strip was always described as doing.
+	///
+	/// Note this fills the layout the constructor already made rather than assigning a fresh one.
+	/// It runs after DockManager.SetCentralWidget has sized the viewport, and replacing the layout
 	/// at that point orphans the canvas: it keeps whatever tiny geometry it had and renders the
-	/// whole 3D scene into a sliver beside the tool strip, leaving the viewport black.
+	/// whole 3D scene into a sliver, leaving the rest of the viewport black.
 	/// </summary>
-	public void CompleteLayout( Widget header )
+	public void CompleteLayout( Widget overlay )
 	{
-		Layout.Add( header );
 		Layout.Add( _canvas, 1 );
+
+		_overlay = overlay;
+		_overlay.Position = OverlayMargin;
 	}
+
+	/// <summary>Inset of the floating tool strip from the canvas's top-left corner.</summary>
+	private static readonly Vector2 OverlayMargin = new( 10f, 10f );
+
+	/// <summary>The floating tool strip, so the frame loop can keep camera drags out of it.</summary>
+	private Widget _overlay;
 
 	// --- model management -------------------------------------------------------------------
 
@@ -507,7 +524,12 @@ internal sealed partial class EffigyViewport : Widget
 		if ( _canvas.Scene is { } scene )
 			scene.EditorTick( RealTime.Now, RealTime.Delta );
 
-		_gizmoInstance.Input.IsHovered = IsActiveWindow && _canvas.IsUnderMouse;
+		// The floating tool strip sits inside the canvas, so "cursor over the canvas" is true while
+		// you are aiming at a button. Without excluding it, pressing a tool also grabs the orbit
+		// camera and the click drags the view.
+		var overCanvas = _canvas.IsUnderMouse && !(_overlay?.IsUnderMouse ?? false);
+
+		_gizmoInstance.Input.IsHovered = IsActiveWindow && overCanvas;
 
 		if ( _gizmoInstance.FirstPersonCamera( _camera, _canvas ) )
 			_gizmoInstance.Input.IsHovered = false;

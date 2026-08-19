@@ -192,29 +192,30 @@ public sealed class EffigyWindow : DockWindow
 
 	private void BuildToolbar()
 	{
-		// The creation tools float over the viewport's top-left edge, one square per button,
-		// instead of a window toolbar row - the same spot the sketch toolbar appears when a
-		// sketch opens. The viewport is the thing the tools act on, so they live on it.
-		_toolStrip = new EffigyToolStrip( _viewport );
+		// The creation tools float ON the 3D view at its top-left, one square per button, rather
+		// than in a window toolbar row - the viewport is the thing the tools act on. They are
+		// parented to the canvas and positioned by the viewport, so the scene fills the whole
+		// widget and nothing eats a band off the top of it.
+		_toolStrip = new EffigyToolStrip( _viewport.Canvas );
 		_viewport.CompleteLayout( _toolStrip );
 
 		// --- creation tools (each adds a feature to the studio) ---
-		AddCreateButton( "Sketch", "edit", "Add a Sketch feature — draw lines/arcs on a plane", () => new SketchFeature() );
+		AddCreateButton( EffigyIcon.Sketch, "Add a Sketch feature — draw lines/arcs on a plane", () => new SketchFeature() );
 		_toolStrip.AddGap();
-		AddCreateButton( "Primitive", "square", "Add a Primitive (Box, Cylinder, Sphere, etc.)", () => new PrimitiveFeature() );
-		AddCreateButton( "Extrude", "expand_less", "Add an Extrude — pull a sketch profile into a solid", () => new ExtrudeFeature() );
-		AddCreateButton( "Revolve", "360", "Add a Revolve — sweep a sketch profile around an axis", () => new RevolveFeature() );
+		AddCreateButton( EffigyIcon.Primitive, "Add a Primitive (Box, Cylinder, Sphere, etc.)", () => new PrimitiveFeature() );
+		AddCreateButton( EffigyIcon.Extrude, "Add an Extrude — pull a sketch profile into a solid", () => new ExtrudeFeature() );
+		AddCreateButton( EffigyIcon.Revolve, "Add a Revolve — sweep a sketch profile around an axis", () => new RevolveFeature() );
 		_toolStrip.AddGap();
-		AddCreateButton( "Bevel", "call_made", "Add a Bevel — chamfer sharp edges", () => new BevelFeature() );
-		AddCreateButton( "Shell", "crop_square", "Add a Shell — hollow to a wall thickness", () => new ShellFeature() );
-		AddCreateButton( "Subdivide", "grid_on", "Add a Subdivide — Catmull-Clark subdivision", () => new SubdivideFeature() );
+		AddCreateButton( EffigyIcon.Bevel, "Add a Bevel — chamfer sharp edges", () => new BevelFeature() );
+		AddCreateButton( EffigyIcon.Shell, "Add a Shell — hollow to a wall thickness", () => new ShellFeature() );
+		AddCreateButton( EffigyIcon.Subdivide, "Add a Subdivide — Catmull-Clark subdivision", () => new SubdivideFeature() );
 		_toolStrip.AddGap();
-		AddCreateButton( "Mirror", "flip", "Add a Mirror — reflect bodies across a plane", () => new MirrorFeature() );
-		AddCreateButton( "Pattern", "content_copy", "Add a Linear Pattern — copy bodies along a direction", () => new LinearPatternFeature() );
-		AddCreateButton( "Circular Pattern", "rotate_right", "Add a Circular Pattern — copy bodies around an axis", () => new CircularPatternFeature() );
+		AddCreateButton( EffigyIcon.Mirror, "Add a Mirror — reflect bodies across a plane", () => new MirrorFeature() );
+		AddCreateButton( EffigyIcon.LinearPattern, "Add a Linear Pattern — copy bodies along a direction", () => new LinearPatternFeature() );
+		AddCreateButton( EffigyIcon.CircularPattern, "Add a Circular Pattern — copy bodies around an axis", () => new CircularPatternFeature() );
 		_toolStrip.AddGap();
-		AddCreateButton( "Transform", "open_with", "Add a Transform — move, rotate or scale bodies", () => new TransformFeature() );
-		AddCreateButton( "UV Project", "texture", "Add a UV Project — re-project UVs (box or planar)", () => new UVProjectFeature() );
+		AddCreateButton( EffigyIcon.Transform, "Add a Transform — move, rotate or scale bodies", () => new TransformFeature() );
+		AddCreateButton( EffigyIcon.UVProject, "Add a UV Project — re-project UVs (box or planar)", () => new UVProjectFeature() );
 
 		BuildSketchToolbar();
 	}
@@ -378,7 +379,7 @@ public sealed class EffigyWindow : DockWindow
 
 	/// <summary>A square strip button that appends one feature to the history. The factory runs
 	/// per click rather than the feature being built up front, so each press makes a new one.</summary>
-	private void AddCreateButton( string text, string icon, string tip, Func<Feature> factory ) =>
+	private void AddCreateButton( EffigyIcon icon, string tip, Func<Feature> factory ) =>
 		_toolStrip.AddButton( icon, tip, () => AddFeature( factory() ) );
 
 	/// <summary>
@@ -996,15 +997,30 @@ internal sealed class EffigyFeatureTreePanel : Widget
 
 internal sealed class EffigyToolStrip : Widget
 {
+	/// <summary>Gap between buttons inside a group. Every one is identical - the strip was
+	/// previously left to the layout's own distribution, which spread twelve buttons across the
+	/// full width of the viewport at whatever intervals happened to fall out.</summary>
+	private const float ButtonSpacing = 3f;
+
+	/// <summary>Gap between tool groups. Wider than ButtonSpacing and used nowhere else, so the
+	/// grouping reads as deliberate rather than as uneven spacing.</summary>
+	private const float GroupSpacing = 11f;
+
 	public EffigyToolStrip( Widget parent ) : base( parent )
 	{
 		Layout = Layout.Row();
-		Layout.Spacing = 2;
-		Layout.Margin = new Sandbox.UI.Margin( 4, 4 );
-		FixedHeight = 36;
+		Layout.Spacing = ButtonSpacing;
+		Layout.Margin = new Sandbox.UI.Margin( 0 );
+
+		// No background of its own: the strip floats on the 3D view and only its buttons should
+		// be visible. Anything painted here would read as a chrome band across the viewport.
+		TranslucentBackground = true;
+		NoSystemBackground = true;
+
+		FixedHeight = 28;
 	}
 
-	public EffigyToolButton AddButton( string icon, string tip, Action clicked )
+	public EffigyToolButton AddButton( EffigyIcon icon, string tip, Action clicked )
 	{
 		var button = new EffigyToolButton( this, icon, tip, clicked );
 		Layout.Add( button );
@@ -1012,11 +1028,11 @@ internal sealed class EffigyToolStrip : Widget
 		return button;
 	}
 
-	/// <summary>A narrow spacer standing in for the old toolbar's separators, keeping the
-	/// tool groups readable.</summary>
+	/// <summary>A spacer standing in for the old toolbar's separators, keeping the tool groups
+	/// readable. Sized to the difference so the visible gap is exactly GroupSpacing.</summary>
 	public void AddGap()
 	{
-		Layout.Add( new Widget( this ) { FixedWidth = 8 } );
+		Layout.Add( new Widget( this ) { FixedWidth = GroupSpacing - ButtonSpacing } );
 		AdjustSize();
 	}
 }
@@ -1025,11 +1041,11 @@ internal sealed class EffigyToolStrip : Widget
 /// editor's own button states so it reads as chrome rather than a foreign object.</summary>
 internal sealed class EffigyToolButton : Widget
 {
-	private readonly string _icon;
+	private readonly EffigyIcon _icon;
 	private readonly Action _clicked;
 	private bool _pressed;
 
-	public EffigyToolButton( Widget parent, string icon, string tip, Action clicked ) : base( parent )
+	public EffigyToolButton( Widget parent, EffigyIcon icon, string tip, Action clicked ) : base( parent )
 	{
 		_icon = icon;
 		_clicked = clicked;
@@ -1048,15 +1064,17 @@ internal sealed class EffigyToolButton : Widget
 
 		var hovered = IsUnderMouse;
 
+		// Sitting on the 3D view rather than in a toolbar, the button has to carry its own
+		// contrast - the scene behind it can be any colour. Mostly-opaque at rest, fully opaque
+		// once you are on it.
 		Paint.ClearPen();
 		Paint.SetBrush( _pressed
 			? Theme.ControlBackground.Darken( 0.2f )
-			: hovered ? Theme.ControlBackground.Lighten( 0.4f ) : Theme.ControlBackground );
+			: hovered ? Theme.ControlBackground.Lighten( 0.4f ) : Theme.ControlBackground.WithAlpha( 0.82f ) );
 
 		Paint.DrawRect( LocalRect, 4f );
 
-		Paint.SetPen( hovered ? Theme.Text : Theme.TextLight );
-		Paint.DrawIcon( LocalRect, _icon, 16, TextFlag.Center );
+		EffigyIcons.Draw( _icon, LocalRect.Center, hovered ? Theme.Text : Theme.TextLight );
 	}
 
 	protected override void OnMousePress( MouseEvent e )
