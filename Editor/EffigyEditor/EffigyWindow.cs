@@ -523,8 +523,49 @@ public sealed class EffigyWindow : DockWindow
 	/// as you draw its profile.</summary>
 	private void OnSketchEdited()
 	{
+		// The curve just drawn lives inside a SketchFeature's Sketch object, and PartStudio caches
+		// a CLONE of that sketch after the feature runs (Snapshot.Of). Without marking it dirty the
+		// clone is what every downstream feature keeps reading, so an extrude above the sketch never
+		// sees the profile you just closed.
+		if ( ActiveSketchFeature() is { } sketchFeature )
+			_studio.MarkDirty( sketchFeature );
+
 		RebuildStudio();
 		_dialog?.Rebuild();
+	}
+
+	/// <summary>The feature that owns the sketch currently being drawn on, by identity.</summary>
+	private SketchFeature ActiveSketchFeature()
+	{
+		if ( _viewport?.ActiveSketch is not { } active )
+			return null;
+
+		return _studio.Features
+			.OfType<SketchFeature>()
+			.FirstOrDefault( f => ReferenceEquals( f.Sketch, active ) );
+	}
+
+	/// <summary>
+	/// A parameter on the open feature changed.
+	///
+	/// MARKING IT DIRTY IS THE ENTIRE POINT OF THIS METHOD. PartStudio caches the body list after
+	/// each feature and only re-runs from the first dirty one — and Rebuild() ends by setting
+	/// _dirtyFrom to the feature count, so a rebuild with nothing marked reuses the whole cache and
+	/// re-executes NOTHING.
+	///
+	/// This was wired straight to RebuildStudio, so every edit that went through the dialog was
+	/// silently thrown away: the sketch plane dropdown (which is why a sketch stayed on XY however
+	/// many times you picked Front or Right), an extrude distance, subdivide levels, every checkbox.
+	/// Only the four paths that happened to call MarkDirty themselves — the face pull, region and
+	/// body picking — actually did anything, which is exactly why picking highlighted beautifully
+	/// and then changed nothing.
+	/// </summary>
+	private void OnFeatureEdited()
+	{
+		if ( _dialog?.Feature is { } feature )
+			_studio.MarkDirty( feature );
+
+		RebuildStudio();
 	}
 
 	/// <summary>The left half of the status bar — what the active tool wants next.</summary>
@@ -606,7 +647,7 @@ public sealed class EffigyWindow : DockWindow
 
 		_dialog = new EffigyFeatureDialog( this, _viewport )
 		{
-			Edited = RebuildStudio,
+			Edited = OnFeatureEdited,
 			Renamed = () => _featureTree?.Rebuild(),
 			Accepted = OnDialogAccepted,
 			Cancelled = OnDialogCancelled,
