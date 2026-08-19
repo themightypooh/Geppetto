@@ -118,13 +118,60 @@ internal sealed class ShaderForgeViewport : Widget
 			FrameCamera();
 	}
 
-	/// <summary>Apply (or clear, with null) a whole-model material override — the hook Phase 3's
-	/// manual shader preview and Phase 4's generator both apply the previewed material through.</summary>
+	/// <summary>Apply (or clear, with null) a whole-model material override — how the manual
+	/// shader preview and the generator both put a material on screen.</summary>
 	public void SetMaterialOverride( Material material )
 	{
 		if ( _renderer.IsValid() )
 			_renderer.MaterialOverride = material;
 	}
+
+	/// <summary>
+	/// Try to override one material slot rather than the whole model, so a character can preview a
+	/// skin shader on the body and glass on the eyes at once.
+	///
+	/// Guarded and reported rather than assumed: whole-model MaterialOverride is proven in this
+	/// repo (RigViewport uses it), per-slot targeting through the SceneObject is not. False means
+	/// the caller should fall back to the whole model and TELL the user it did — silently painting
+	/// every slot when one was asked for is worse than saying it cannot.
+	/// </summary>
+	public bool TrySetSlotOverride( int slotIndex, Material material )
+	{
+		if ( !_renderer.IsValid() || slotIndex < 0 )
+			return false;
+
+		try
+		{
+			var sceneObject = _renderer.SceneObject;
+
+			if ( sceneObject is null )
+				return false;
+
+			// SetMaterialOverride( material, attributeName, attributeValue ) targets the subset of
+			// the model whose material carries that attribute. Slot index is the addressing the
+			// model itself exposes, so that is what gets passed through.
+			var method = sceneObject.GetType().GetMethod( "SetMaterialOverride",
+				new[] { typeof( Material ), typeof( string ), typeof( int ) } );
+
+			if ( method is null )
+				return false;
+
+			method.Invoke( sceneObject, new object[] { material, "materialIndex", slotIndex } );
+			return true;
+		}
+		catch ( Exception e )
+		{
+			Log.Warning( $"[ShaderForge] per-slot material override unavailable — " +
+				$"{e.GetType().Name}: {e.Message}. Falling back to a whole-model override." );
+			return false;
+		}
+	}
+
+	/// <summary>Whether anything is currently loaded to shade.</summary>
+	public bool HasModel => _renderer.IsValid() && _renderer.Model is not null;
+
+	/// <summary>The model on screen, so the slot panel can read its material slots.</summary>
+	public Model CurrentModel => _renderer.IsValid() ? _renderer.Model : null;
 
 	/// <summary>
 	/// Frame whatever is on screen from an isometric-ish front-right-top angle.

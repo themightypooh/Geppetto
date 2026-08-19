@@ -1,67 +1,135 @@
 # Shader Forge — session handoff
 
-A third s&box tool, alongside the RigControl animation editor and the Effigy modelling tool: a
+A third s&box tool alongside the RigControl animation editor and the Effigy modelling tool: a
 shader previewer paired with a keyword-driven `.shad` generator, so someone who doesn't know HLSL
-can describe an effect in plain English and get a working shader back. Full scope, block library
-and phase plan live in the tool design doc this session started from.
+can describe an effect in plain English and get a working shader back.
 
-The design doc's own build order is explicit: get the editor window rendering a preview model
-before anything else, then layer preview hardening, manual shader loading, generation and save on
-top, each phase independently shippable. **This session did Phase 1 only** — the shell — on
-purpose, per that order.
+All five phases from the design doc are built. **None of it has been compiled** — read the next
+section before anything else.
 
 ---
 
 ## How to not waste the next session
 
-**This session ran in a cloud container with no engine source and no `dotnet` reachable through the
-proxy** (installer and NuGet both 403'd). Nothing here was compiled or opened in the editor. The
-camera, lighting and Model.Builder patterns are copied verbatim from `EffigyViewport` /
-`EffigyPreview`, which HAVE been run and are trustworthy. The one piece that is a first use in this
-repo and therefore unverified:
+**This ran in a cloud container with no engine source and no `dotnet`** (the installer and NuGet
+both 403'd through the egress proxy). Nothing here was compiled, no test was run, and the editor
+was never opened. That is the exact failure mode Marionette's own HANDOFF.md was written to
+prevent, so the provenance below is load-bearing.
 
-| Used | Where | Confidence |
+**First two things to do, in order:**
+
+1. `dotnet run --project ShaderForge.Tests -- out` — the generator is engine-free, so this runs
+   without the editor. It checks block selection, conflict resolution and the structure of the
+   emitted HLSL, and writes ten sample `.shad` files to `out/`.
+2. Open the project and run **`shaderforge_probe`** in the console (or Shader Forge → Help → Check
+   engine shader APIs). It reports which of the assumed shader APIs actually exist.
+
+### What is assumed rather than known
+
+| API | Used for | Confidence |
 |---|---|---|
-| `PointLight` component, `.Radius` property | `ShaderForgeViewport` fill light | Not verified against engine source or a build. `DirectionalLight`/`AmbientLight` are proven elsewhere in this repo; `PointLight` is new here. If it doesn't compile, check the actual component name/property first via `sbox` MCP `compile_status`, or a throwaway reflection dump — see Marionette's own HANDOFF.md for that trick. |
+| `File.WriteAllText` to the assets folder | writing the `.shad` | **Certain.** Deliberately the only thing the deliverable depends on. |
+| `Project.Current.GetAssetsPath()` | resolving where to write | High — standard editor API, but unverified here. |
+| `Material.FromShader( string )` | building the preview material | **Assumed.** Probe reports it. |
+| `Material.Set( string, float/Color )` | live tweaking | **Assumed.** Probe reports it. |
+| `Shader.Load` / `Shader.Schema` | inspecting hand-written shaders | **Assumed, and read by reflection** so a wrong shape costs one panel, not the tool. |
+| `SceneObject.SetMaterialOverride( material, string, int )` | per-slot preview | **Assumed.** Falls back to whole-model and says so in the UI. |
+| `AssetSystem.All` / `AssetType.Model` | scanning project models | Assumed. Falls back to stock primitives. |
+| `ModelRenderer.MaterialOverride` | whole-model preview | High — RigViewport already uses it. |
+| `PointLight` + `.Radius` | the fill light | Assumed; no prior use in this repo. |
 
-Open the project in the editor and check `compile_status` before touching anything else.
+Everything in that table is funnelled through `Editor/ShaderForgeEditor/ShaderForgeBridge.cs` and
+guarded, on purpose: **generating and saving shaders must work even if every preview API is wrong.**
+If the preview is dead the tool still writes correct `.shad` files, and the panel says so rather
+than the window dying.
+
+### The one thing no test here can check
+
+Whether the generated HLSL actually **compiles**. The tests verify structure — that vertex code
+lands in `VS`, that uv warps precede `Material::From`, that braces balance — but only the s&box
+shader compiler can judge the HLSL itself. Generate one, watch the console, and expect to fix
+small things. The most likely culprits are the field names assumed on `Material` (`Albedo`,
+`Emission`, `Opacity`, `Roughness`) and `PixelInput` (`vNormalWs`, `vPositionWithOffsetWs`,
+`vTextureCoords`, `vPositionSs`).
 
 ---
 
 ## What's here
 
 ```
-Editor/ShaderForgeEditor/ShaderForgeWindow.cs       DockWindow shell, menu bar, model-picker toolbar, status bar
-Editor/ShaderForgeEditor/ShaderForgeViewport.cs      SceneRenderingWidget preview: orbit camera, key/fill/ambient lights
-Editor/ShaderForgeEditor/ShaderForgePrimitives.cs    Stock Sphere/Cube/Plane/Cylinder, built from Effigy.Primitives
+Editor/ShaderForge/            the generator kernel - ENGINE-FREE, no Sandbox/Editor references
+  ShaderBlock.cs               block + parameter model; a param declares its HLSL, UI and Material.Set
+  BlockLibrary.cs              the locked v1 set of 18 blocks
+  ShaderForgeGenerator.cs      tokenise -> match -> resolve conflicts -> result
+  ShaderTemplate.cs            emits the .shad file
+
+Editor/ShaderForgeEditor/      the tool
+  ShaderForgeWindow.cs         DockWindow: viewport centre, Preview left, Generator right
+  ShaderForgeViewport.cs       orbit camera, key/fill/ambient rig, material overrides
+  ShaderForgePreviewPanel.cs   model picker, material slot list, load an existing .shad
+  ShaderForgeGeneratorPanel.cs description box, Generate, block report, tweak sliders, Save
+  ShaderForgeBridge.cs         EVERY engine shader/material call, guarded + the probe concmd
+  ShaderForgeModelLibrary.cs   project .vmdl scan and slot reading
+  ShaderForgePrimitives.cs     stock shapes, built via the Effigy kernel
+
+ShaderForge.Tests/             console runner over the kernel, same shape as Effigy.Tests
 ```
 
-Registered as `[EditorApp("Marionette", ...)]`, same as `EffigyWindow` — it should appear in the
-Tools menu as **Shader Forge** once it compiles.
+Appears in the Tools menu as **Shader Forge**.
 
-**Done = open the window and see an orbit-able sphere**, per the design doc's Phase 1 exit
-criterion. The model picker toolbar switches it to a cube, plane, or cylinder, all generated
-through the Effigy kernel and its existing `EffigyPreview.Build` (PolyMesh → runtime `Model`) so
-Shader Forge carries no geometry code of its own.
+### Design decisions worth not re-litigating
 
-Deliberately **not** built yet, in build-order order:
+- **The kernel is not duplicated.** Effigy keeps two copies (`Effigy/` and `Editor/Effigy/`)
+  because it is meant to stay portable to Godot. Shader Forge emits s&box shader format and is
+  editor-only, so it lives once in `Editor/ShaderForge` and the test project compiles from there.
+- **Blocks contribute to five slots** — Common, Vertex, Uv, Surface, Post — rather than the design
+  doc's two. Splitting Uv out is what lets a warp run before `Material::From` samples textures;
+  splitting Post out is what lets Toon band the *lit* result. Unrelated blocks combine because
+  each only writes to its own slot.
+- **`SFPulse()` is always emitted**, returning `1.0` when no time-modulation block was selected.
+  That is the whole mechanism behind "glowing edges that pulse": Emissive multiplies by it
+  unconditionally, and neither block knows the other exists.
+- **Generate writes the file.** A `.shad` has to be on disk for the asset pipeline to compile it,
+  so there is no separate in-memory preview path that could drift from what gets saved.
+- **Tweak controls are built from the generator's own parameter list**, not from a schema read back
+  off the compiled shader. The generator declared them, so it already knows their names, ranges
+  and defaults exactly — a round trip through `Shader.Schema` would be asking an unverified API
+  for something already known.
+- **Nothing fails silently.** A description that matches nothing says "no block for that yet" and
+  names the words it didn't understand; a conflict between two blocks reports the loser. That is
+  the living-library promise from the design doc, and it is what the misses are supposed to feed.
 
-- Phase 2 — scanning the project for real `.vmdl` files, material slot list, full lighting rig
-  (this session already added the point light Phase 2 calls for, since it was nearly free once the
-  key light and ambient existed — everything else in Phase 2 is still open)
-- Phase 3 — loading an existing `.shad`, reading `Shader.Schema`, auto-built tweak controls
-- Phase 4 — the keyword parser, block library, and Generate button
-- Phase 5 — save to `shaders/custom/` via `FileSystem.Mounted`
+---
 
-No right-hand generator panel exists yet either, on purpose — this project's own convention
-(see the sketch toolbar comment in `EffigyWindow`) is that a control with nothing behind it is
-worse than no control, so the panel arrives with Phase 4 rather than sitting there disabled.
+## Scope: what it does and does not do
+
+18 blocks: Emissive, Dissolve, Toon, Glass, Water, Wind, Hit Flash, Rim Light, Hologram, Outline,
+Time Modulation, Colour Tint, Health Reactive, Loot Glow, Interactable Highlight, Team Colour,
+Snow Cover, Heat Distortion.
+
+Three of them are honest approximations, documented at their definitions:
+
+- **Toon** bands the shaded luminance rather than replacing the lighting model. A real cel shader
+  owns the whole shading path and loses everything else the standard model gives you.
+- **Outline** is a silhouette band from the view-facing term, not an inverted hull. A hull outline
+  is a second pass, and multi-pass is out of v1 scope.
+- **Heat Distortion** warps the surface's own UVs, not the frame buffer. True screen-space haze
+  needs a translucent pass and a frame-buffer grab. On an untextured surface it will look like
+  nothing is happening — that is expected, not a bug.
+
+**Do not grow the block library to cover hypotheticals.** The rule from the design doc is that
+every prompt the tool cannot match is the roadmap for the next block. The generator already names
+the words it missed; those are the queue.
 
 ---
 
 ## Where to pick this up
 
-Phase 2's material slot list and model scan are the natural next step — `Model.Materials` /
-`Model.BodyParts` for slots, `FileSystem.Mounted.FindFile()` for `.vmdl` discovery, both already
-named in the design doc's API table. `RigControlWindow`'s `OpenPicker` (model loading from the
-project) is the closest existing precedent for the file-picker side of that.
+In order of what will actually block people:
+
+1. Run the tests and the probe. Fix whatever they say.
+2. Generate one shader and get it compiling. Expect a few field-name corrections.
+3. The preview panel's "load an existing .shad" path takes a typed path. A real asset picker
+   (`RigControlWindow.OpenPicker` is the precedent) would be better once the rest works.
+4. Per-slot material override is written but unproven — the fallback message in the preview panel
+   is what tells you which case you are in.

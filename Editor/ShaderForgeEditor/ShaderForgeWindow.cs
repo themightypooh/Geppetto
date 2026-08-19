@@ -4,28 +4,35 @@ using Sandbox;
 namespace Marionette.ShaderForgeEditor;
 
 /// <summary>
-/// Shader Forge — a shader previewer paired with a keyword-driven generator (see the tool design
-/// doc). This is Phase 1 only: the editor window shell, a live orbit-camera preview of a stock
-/// primitive under a small lighting rig, and a picker to switch between primitives. Nothing here
-/// touches shaders yet — that starts at Phase 3 (manual preview) and Phase 4 (generation), each
-/// building on this shell rather than the other way around.
+/// Shader Forge — a shader previewer paired with a keyword-driven generator.
+///
+/// Describe an effect in plain English, get a working .shad file, see it on a model straight away,
+/// tweak it, save it. The generator works from a library of composable HLSL blocks rather than a
+/// language model, so what it produces is deterministic, readable, and yours to edit — see
+/// Editor/ShaderForge for the kernel and SHADER-FORGE-HANDOFF.md for the scope.
+///
+/// Layout follows the design doc: preview on the left and centre, generator on the right.
 /// </summary>
 [EditorApp( "Shader Forge", "auto_awesome", "Shader previewer and keyword-driven shader generator" )]
 public sealed class ShaderForgeWindow : DockWindow
 {
 	private ShaderForgeViewport _viewport;
+	private ShaderForgePreviewPanel _previewPanel;
+	private ShaderForgeGeneratorPanel _generatorPanel;
+
+	private DockWidget _centralDock;
 	private StatusBar _statusWidget;
 	private Editor.Label _statusInfoLabel;
+	private Editor.Label _statusMessageLabel;
 
 	public ShaderForgeWindow()
 	{
 		DeleteOnClose = true;
-		Size = new Vector2( 1280, 800 );
+		Size = new Vector2( 1440, 900 );
 		SetWindowIcon( "auto_awesome" );
 
 		BuildMenuBar();
 		BuildDocks();
-		BuildToolbar();
 		BuildStatusBar();
 
 		Show();
@@ -42,31 +49,13 @@ public sealed class ShaderForgeWindow : DockWindow
 		var view = MenuBar.FindOrCreateMenu( "View" );
 		view.Clear();
 		view.AddOption( "Frame Camera", "center_focus_strong", () => _viewport?.FrameCamera() );
-	}
 
-	// --- toolbar ----------------------------------------------------------------------------
+		var help = MenuBar.FindOrCreateMenu( "Help" );
+		help.Clear();
 
-	/// <summary>The model picker — stock primitives only for now. Loading real project .vmdl files
-	/// is Phase 2; the combo box here is built so adding those entries later is just more calls to
-	/// <c>AddItem</c>, not a new control.</summary>
-	private void BuildToolbar()
-	{
-		var bar = new ToolBar( this, "ShaderForgeToolbar" );
-		bar.SetIconSize( 22 );
-		AddToolBar( bar, ToolbarPosition.Top );
-
-		bar.AddWidget( new Editor.Label( "Model" ) );
-
-		var combo = new ComboBox( bar );
-
-		foreach ( ShaderForgePrimitiveKind kind in System.Enum.GetValues( typeof( ShaderForgePrimitiveKind ) ) )
-		{
-			var k = kind;
-			combo.AddItem( ShaderForgePrimitives.Label( k ), "", () => _viewport.SetPrimitive( k ), "",
-				k == ShaderForgePrimitiveKind.Sphere, true );
-		}
-
-		bar.AddWidget( combo );
+		// The probe is the first thing to reach for when the preview misbehaves, so it is a menu
+		// item rather than console-only trivia. See ShaderForgeBridge for why it exists.
+		help.AddOption( "Check engine shader APIs", "biotech", ShaderForgeBridge.Probe );
 	}
 
 	// --- docks ------------------------------------------------------------------------------
@@ -74,12 +63,48 @@ public sealed class ShaderForgeWindow : DockWindow
 	private void BuildDocks()
 	{
 		_viewport = new ShaderForgeViewport( this );
-		DockManager.SetCentralWidget( _viewport );
+		_previewPanel = new ShaderForgePreviewPanel( this, _viewport );
+		_generatorPanel = new ShaderForgeGeneratorPanel( this );
 
-		// No side docks yet — the right-hand generator panel arrives with Phase 4. An empty dock
-		// registered ahead of the feature it serves is a control with nothing behind it, which is
-		// exactly what this project avoids elsewhere (see EffigyWindow's sketch toolbar).
-		StateCookie = "ShaderForge1";
+		// The generator hands its material to the preview panel rather than straight to the
+		// viewport, because the preview panel owns which slot it lands on.
+		_generatorPanel.PreviewMaterial = material => _previewPanel?.SetPreviewMaterial( material );
+		_generatorPanel.StatusChanged = SetMessage;
+
+		_centralDock = DockManager.SetCentralWidget( _viewport );
+
+		DockManager.RegisterDock( new()
+		{
+			Title = "Preview",
+			Icon = "visibility",
+			Area = DockArea.Left,
+			CreateAction = () => _previewPanel,
+		} );
+
+		DockManager.RegisterDock( new()
+		{
+			Title = "Generator",
+			Icon = "auto_awesome",
+			Area = DockArea.Right,
+			CreateAction = () => _generatorPanel,
+		} );
+
+		// Bumped from ShaderForge1, which had no docks at all. A restored ShaderForge1 layout
+		// would leave both panels closed and BuildDefaultLayout would never run again — the trap
+		// HANDOFF.md records hitting with the Rig tool's docks.
+		StateCookie = "ShaderForge2";
+	}
+
+	protected override void BuildDefaultLayout()
+	{
+		var previewDock = DockManager.OpenDock( "Preview", DockArea.Left, _centralDock );
+		DockManager.SetSplitterProportions( previewDock, 0.22f, 0.78f );
+
+		var generatorDock = DockManager.OpenDock( "Generator", DockArea.Right, _centralDock );
+		DockManager.SetSplitterProportions( generatorDock, 0.72f, 0.28f );
+
+		DockManager.RaiseDock( "Preview" );
+		DockManager.RaiseDock( "Generator" );
 	}
 
 	// --- status bar -------------------------------------------------------------------------
@@ -91,6 +116,10 @@ public sealed class ShaderForgeWindow : DockWindow
 		_statusWidget.Layout.Spacing = 16;
 
 		_statusWidget.Layout.Add( new Editor.Label( "Shader Forge" ) { FixedWidth = 96 } );
+
+		_statusMessageLabel = new Editor.Label( "" );
+		_statusWidget.Layout.Add( _statusMessageLabel );
+
 		_statusWidget.Layout.AddStretchCell();
 
 		_statusInfoLabel = new Editor.Label( "" );
@@ -102,10 +131,16 @@ public sealed class ShaderForgeWindow : DockWindow
 				_statusInfoLabel.Text = info;
 		};
 
-		// The viewport already loaded its default primitive in its own constructor, before this
-		// callback existed to hear about it — set the label from its current state once here.
+		// The viewport loaded its default primitive in its own constructor, before this callback
+		// existed to hear about it — seed the label from its current state.
 		_statusInfoLabel.Text = _viewport.ModelInfo;
 
 		StatusBar = _statusWidget;
+	}
+
+	private void SetMessage( string text )
+	{
+		if ( _statusMessageLabel.IsValid() )
+			_statusMessageLabel.Text = text;
 	}
 }
