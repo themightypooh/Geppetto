@@ -544,12 +544,13 @@ internal sealed partial class EffigyViewport : Widget
 		// Draw planes first (behind everything else)
 		DrawReferencePlanes();
 		DrawCommittedSketches();
+		SketchPickFrame();
 
 		SketchFrame();
 
-		// Origin on top of the planes. Hidden while sketching or picking a plane - it sits at the
+		// Origin on top of the planes. Hidden while sketching or picking anything - it sits at the
 		// exact spot most first clicks land, and stealing them was the first thing that broke.
-		if ( !IsSketching && !PlanePickMode )
+		if ( !IsSketching && !PlanePickMode && !SketchPickMode )
 		{
 			DrawOrigin();
 
@@ -560,7 +561,7 @@ internal sealed partial class EffigyViewport : Widget
 
 		DrawViewCube();
 
-		Cursor = Gizmo.HasHovered || IsSketching ? CursorShape.Finger : CursorShape.Arrow;
+		Cursor = Gizmo.HasHovered || IsSketching || _hoveredSketchId is not null ? CursorShape.Finger : CursorShape.Arrow;
 	}
 
 	/// <summary>Escape backs out of the half-drawn entity, then out of the tool - the same two
@@ -576,6 +577,17 @@ internal sealed partial class EffigyViewport : Widget
 		if ( IsSketching )
 		{
 			CancelSketchTool();
+			e.Accepted = true;
+			return;
+		}
+
+		// Escape stands down an armed selection box. The viewport owns the key press; the dialog
+		// owns the boxes' painted state, so it is told through PickModeCancelled. Sketch picking
+		// itself stays live while a consumer dialog is open — the dialog turns it off.
+		if ( PlanePickMode || SketchPickMode )
+		{
+			PlanePickMode = false;
+			PickModeCancelled?.Invoke();
 			e.Accepted = true;
 			return;
 		}

@@ -90,6 +90,170 @@ internal sealed partial class EffigyViewport
 			PlanePicked?.Invoke( index );
 	}
 
+	// --- sketch picking ---------------------------------------------------------------------
+
+	/// <summary>A committed sketch the viewport can offer for picking. Extrude and Revolve use
+	/// this to choose the profile they consume — the same "click what you mean" affordance the
+	/// plane selector gives a new Sketch.</summary>
+	internal sealed class PickableSketch
+	{
+		public string FeatureId;
+		public string Name;
+		public Sketch Sketch;
+
+		public PickableSketch( string featureId, string name, Sketch sketch )
+		{
+			FeatureId = featureId;
+			Name = name;
+			Sketch = sketch;
+		}
+	}
+
+	/// <summary>While true the committed sketches are pickable and highlight on hover. Set by
+	/// the feature dialog when its sketch selection box is armed.</summary>
+	public bool SketchPickMode { get; set; }
+
+	/// <summary>Fires with the picked sketch's SketchFeature id.</summary>
+	public Action<string> SketchPicked { get; set; }
+
+	/// <summary>Raised when Escape cancels an armed pick mode, so the dialog's selection box
+	/// can stand down too — the viewport owns the key, the box owns its painted state.</summary>
+	public Action PickModeCancelled { get; set; }
+
+	/// <summary>Sketches currently offered for picking, pushed by the window after each
+	/// rebuild. Only sketches that sit before the feature being edited are listed.</summary>
+	public IReadOnlyList<PickableSketch> PickableSketches => _pickableSketches;
+
+	private readonly List<PickableSketch> _pickableSketches = new();
+
+	/// <summary>Feature id of the sketch under the cursor this frame, or null.</summary>
+	private string _hoveredSketchId;
+
+	/// <summary>Distance in sketch units within which the cursor counts as pointing at a
+	/// sketch's curves. Generous on purpose: the curves are thin and the part may be small.</summary>
+	private const float SketchPickRadius = 5f;
+
+	public void SetPickableSketches( IEnumerable<PickableSketch> sketches )
+	{
+		_pickableSketches.Clear();
+
+		if ( sketches is not null )
+			_pickableSketches.AddRange( sketches );
+	}
+
+	/// <summary>Status-bar prompt for pick modes, reusing the sketch prompt channel — it is the
+	/// same "what the tool wants next" line.</summary>
+	public void SetPickPrompt( string text ) => SketchPromptChanged?.Invoke( text );
+
+	/// <summary>
+	/// Hover and click resolution for sketch picking. A sketch is a set of curves on a plane, so
+	/// "pointing at it" means the cursor ray lands on that plane near one of its curves — no
+	/// hitbox exists for that shape, and a bounding slab would overlap every sketch on the same
+	/// plane. Nearest curve within SketchPickRadius wins.
+	/// </summary>
+	private void SketchPickFrame()
+	{
+		_hoveredSketchId = null;
+
+		if ( !SketchPickMode || IsSketching || _pickableSketches.Count == 0 || !_canvasHasCursor )
+			return;
+
+		var ray = Gizmo.CurrentRay;
+		var best = SketchPickRadius;
+
+		foreach ( var pickable in _pickableSketches )
+		{
+			if ( !RayToPlane( pickable.Sketch.Plane, ray.Position, ray.Forward, out var uv ) )
+				continue;
+
+			foreach ( var curve in pickable.Sketch.Curves )
+			{
+				if ( curve.Construction )
+					continue;
+
+				foreach ( var p in curve.Tessellate( pickable.Sketch, pickable.Sketch.Tolerance ) )
+				{
+					var dist = (p - uv).Length;
+
+					if ( dist < best )
+					{
+						best = dist;
+						_hoveredSketchId = pickable.FeatureId;
+					}
+				}
+			}
+		}
+
+		if ( _hoveredSketchId is null )
+			return;
+
+		DrawSketchPickHighlight( _hoveredSketchId );
+
+		if ( Gizmo.WasLeftMousePressed )
+			SketchPicked?.Invoke( _hoveredSketchId );
+	}
+
+	/// <summary>Intersect a ray with any sketch plane. The active-sketch version above this is
+	/// the same math against ActiveSketch.Plane.</summary>
+	private bool RayToPlane( SketchPlane p, Vector3 rayPosition, Vector3 rayForward, out Vec2 uv )
+	{
+		uv = Vec2.Zero;
+
+		var origin = OriginPosition + ToWorldDir( p.Origin );
+		var normal = ToWorldDir( p.Normal );
+		var denom = Vector3.Dot( rayForward, normal );
+
+		if ( MathF.Abs( denom ) < 1e-5f )
+			return false;
+
+		var t = Vector3.Dot( origin - rayPosition, normal ) / denom;
+
+		if ( t <= 0f )
+			return false;
+
+		var hit = rayPosition + rayForward * t;
+		var d = hit - origin;
+
+		uv = new Vec2( Vector3.Dot( d, ToWorldDir( p.XAxis ) ), Vector3.Dot( d, ToWorldDir( p.YAxis ) ) );
+		return true;
+	}
+
+	/// <summary>Redraw the hovered sketch bright and filled so the pick target is unambiguous —
+	/// the same fill-in treatment the reference planes get while picking one.</summary>
+	private void DrawSketchPickHighlight( string featureId )
+	{
+		var pickable = _pickableSketches.FirstOrDefault( s => s.FeatureId == featureId );
+
+		if ( pickable is null )
+			return;
+
+		var sketch = pickable.Sketch;
+		var plane = sketch.Plane;
+
+		Gizmo.Draw.IgnoreDepth = true;
+
+		Gizmo.Draw.Color = new Color( 0.25f, 0.65f, 1f, 0.25f );
+		foreach ( var profile in ProfileFinder.Find( sketch ).Profiles )
+			DrawRegionFan( plane, profile.Outer );
+
+		Gizmo.Draw.LineThickness = 3f;
+		Gizmo.Draw.Color = new Color( 0.45f, 0.85f, 1f, 1f );
+
+		foreach ( var curve in sketch.Curves )
+		{
+			if ( curve.Construction )
+				continue;
+
+			var pts = curve.Tessellate( sketch, sketch.Tolerance );
+
+			for ( var i = 0; i < pts.Count - 1; i++ )
+				Gizmo.Draw.Line( PlaneToWorld( plane, pts[i] ), PlaneToWorld( plane, pts[i + 1] ) );
+		}
+
+		Gizmo.Draw.LineThickness = 1f;
+		Gizmo.Draw.IgnoreDepth = false;
+	}
+
 	/// <summary>Wash the hovered plane in its own colour so the pick target is unambiguous.
 	/// Onshape does the same thing — the plane you are about to choose fills in.</summary>
 	private void DrawHoveredPlaneHighlight()
@@ -141,6 +305,7 @@ internal sealed partial class EffigyViewport
 			return;
 
 		_pending.Clear();
+		_chainStartIndex = -1;
 		SketchTool = tool;
 		PushPrompt();
 	}
@@ -182,6 +347,11 @@ internal sealed partial class EffigyViewport
 	/// snap is visible before you commit to it — without that, closing a profile is guesswork.</summary>
 	private int _snapPoint = -1;
 	private int _inferenceAxis;
+	private int _chainStartIndex = -1;
+
+	/// <summary>Sketches from finished SketchFeatures, drawn dimmer so the user can see
+	/// committed geometry without it competing with the active sketch.</summary>
+	private List<Sketch> _displaySketches = new();
 
 	/// <summary>Radius in world units within which the cursor snaps to an existing point.</summary>
 	private const float SnapRadius = 4f;
@@ -204,11 +374,19 @@ internal sealed partial class EffigyViewport
 	/// it cannot also become the first line endpoint when the sketch opens.</summary>
 	public void IgnoreNextSketchClick() => _ignoreNextSketchClick = true;
 
+	/// <summary>Replace the set of finished sketches drawn in the viewport. Called after each
+	/// studio rebuild so the user can see committed geometry even when not actively sketching.</summary>
+	public void SetDisplaySketches( IEnumerable<Sketch> sketches )
+	{
+		_displaySketches = sketches?.ToList() ?? new List<Sketch>();
+	}
+
 	public void EndSketch()
 	{
 		ActiveSketch = null;
 		SketchTool = SketchToolKind.Select;
 		_pending.Clear();
+		_chainStartIndex = -1;
 		_ignoreNextSketchClick = false;
 		SketchPromptChanged?.Invoke( "" );
 	}
@@ -220,6 +398,7 @@ internal sealed partial class EffigyViewport
 		if ( _pending.Count > 0 )
 		{
 			_pending.Clear();
+			_chainStartIndex = -1;
 			PushPrompt();
 			return;
 		}
@@ -253,10 +432,11 @@ internal sealed partial class EffigyViewport
 
 	/// <summary>Sketch-plane (u,v) to a point in the viewport, including the origin handle's
 	/// offset so sketch geometry sits on the reference planes as drawn.</summary>
-	private Vector3 PlaneToWorld( Vec2 uv )
+	private Vector3 PlaneToWorld( Vec2 uv ) => PlaneToWorld( ActiveSketch.Plane, uv );
+
+	private Vector3 PlaneToWorld( SketchPlane plane, Vec2 uv )
 	{
-		var p = ActiveSketch.Plane;
-		return OriginPosition + ToWorldDir( p.Origin ) + ToWorldDir( p.XAxis ) * uv.x + ToWorldDir( p.YAxis ) * uv.y;
+		return OriginPosition + ToWorldDir( plane.Origin ) + ToWorldDir( plane.XAxis ) * uv.x + ToWorldDir( plane.YAxis ) * uv.y;
 	}
 
 	/// <summary>Intersect the cursor ray with the sketch plane. False when the plane is edge-on or
@@ -324,6 +504,20 @@ internal sealed partial class EffigyViewport
 		}
 
 		var best = SnapRadius * SnapRadius;
+
+		// The first endpoint of a new entity is still pending until the entity is committed.
+		// It must nevertheless be a snap target: this is what lets a line close back onto its
+		// start, and lets rectangles/arcs share the point the cursor is visibly over.
+		for ( var i = 0; i < _pending.Count; i++ )
+		{
+			var dist = ( _pending[i] - raw ).LengthSquared;
+
+			if ( dist >= best )
+				continue;
+
+			best = dist;
+			raw = _pending[i];
+		}
 
 		for ( var i = 0; i < ActiveSketch.Points.Count; i++ )
 		{
@@ -463,18 +657,31 @@ internal sealed partial class EffigyViewport
 				Edited();
 				break;
 
+			case SketchToolKind.Line when _pending.Count == 1:
+				_chainStartIndex = PointIndex( _pending[0] );
+				break;
+
 			case SketchToolKind.Line when _pending.Count == 2:
-				var line = Track( new SketchLine( PointIndex( _pending[0] ), PointIndex( _pending[1] ) ) );
+				var endIdx = PointIndex( _pending[1] );
+				var line = Track( new SketchLine( PointIndex( _pending[0] ), endIdx ) );
 				if ( (_inferenceAxis & 1) != 0 )
 					ActiveSketch.AddConstraint( line, SketchConstraintKind.Vertical );
 				else if ( (_inferenceAxis & 2) != 0 )
 					ActiveSketch.AddConstraint( line, SketchConstraintKind.Horizontal );
 
-				// Chain: the end of this line is the start of the next, which is how every CAD
-				// line tool behaves. Escape breaks the chain.
-				var last = _pending[1];
-				_pending.Clear();
-				_pending.Add( last );
+				// Chain closes back to the start point — break the chain.
+				if ( endIdx == _chainStartIndex && _chainStartIndex >= 0 )
+				{
+					_pending.Clear();
+					_chainStartIndex = -1;
+				}
+				else
+				{
+					// Chain: the end of this line is the start of the next.
+					var last = _pending[1];
+					_pending.Clear();
+					_pending.Add( last );
+				}
 				Edited();
 				break;
 
@@ -807,7 +1014,7 @@ internal sealed partial class EffigyViewport
 		Gizmo.Draw.Color = SketchPointColor;
 
 		foreach ( var p in ActiveSketch.Points )
-			Gizmo.Draw.SolidSphere( PlaneToWorld( p ), 0.45f, 6, 6 );
+			Gizmo.Draw.SolidSphere( PlaneToWorld( p ), 1.25f, 10, 10 );
 
 		if ( ProfileInspector )
 			DrawProfileDiagnostics();
@@ -815,7 +1022,7 @@ internal sealed partial class EffigyViewport
 		if ( _snapPoint >= 0 && _snapPoint < ActiveSketch.Points.Count )
 		{
 			Gizmo.Draw.Color = SketchPreviewColor;
-			Gizmo.Draw.SolidSphere( PlaneToWorld( ActiveSketch.Points[_snapPoint] ), 0.9f, 8, 8 );
+			Gizmo.Draw.SolidSphere( PlaneToWorld( ActiveSketch.Points[_snapPoint] ), 1.5f, 10, 10 );
 		}
 
 		Gizmo.Draw.LineThickness = 1f;
@@ -838,7 +1045,9 @@ internal sealed partial class EffigyViewport
 		}
 	}
 
-	private void DrawRegionFan( List<Vec2> loop )
+	private void DrawRegionFan( List<Vec2> loop ) => DrawRegionFan( ActiveSketch.Plane, loop );
+
+	private void DrawRegionFan( SketchPlane plane, List<Vec2> loop )
 	{
 		if ( loop.Count < 3 )
 			return;
@@ -846,7 +1055,60 @@ internal sealed partial class EffigyViewport
 		var centre = loop[0];
 		for ( var i = 1; i < loop.Count - 1; i++ )
 			Gizmo.Draw.SolidTriangle( new Triangle(
-				PlaneToWorld( centre ), PlaneToWorld( loop[i] ), PlaneToWorld( loop[i + 1] ) ) );
+				PlaneToWorld( plane, centre ), PlaneToWorld( plane, loop[i] ), PlaneToWorld( plane, loop[i + 1] ) ) );
+	}
+
+	/// <summary>
+	/// Draw finished sketches from the feature tree so they remain visible after leaving sketch
+	/// mode. Dimmer than the active sketch to avoid visual competition, but clear enough that the
+	/// user can see what profiles exist.
+	/// </summary>
+	private void DrawCommittedSketches()
+	{
+		if ( _displaySketches.Count == 0 )
+			return;
+
+		Gizmo.Draw.IgnoreDepth = true;
+
+		foreach ( var sketch in _displaySketches )
+		{
+			if ( sketch == ActiveSketch )
+				continue;
+
+			var profiles = ProfileFinder.Find( sketch );
+
+			// Shade closed regions
+			Gizmo.Draw.Color = SketchRegionColor.WithAlpha( 0.08f );
+			foreach ( var profile in profiles.Profiles )
+				DrawRegionFan( sketch.Plane, profile.Outer );
+
+			// Draw curves
+			foreach ( var curve in sketch.Curves )
+			{
+				var pts = curve.Tessellate( sketch, sketch.Tolerance );
+				Gizmo.Draw.Color = curve.Construction
+					? SketchConstructionColor.WithAlpha( 0.5f )
+					: SketchColor.WithAlpha( 0.6f );
+				Gizmo.Draw.LineThickness = curve.Construction ? 1f : 1.5f;
+
+				for ( var i = 0; i < pts.Count - 1; i++ )
+				{
+					if ( curve.Construction && i % 2 == 1 )
+						continue;
+
+					Gizmo.Draw.Line( PlaneToWorld( sketch.Plane, pts[i] ), PlaneToWorld( sketch.Plane, pts[i + 1] ) );
+				}
+			}
+
+			// Draw points
+			Gizmo.Draw.LineThickness = 2f;
+			Gizmo.Draw.Color = SketchPointColor.WithAlpha( 0.7f );
+			foreach ( var p in sketch.Points )
+				Gizmo.Draw.SolidSphere( PlaneToWorld( sketch.Plane, p ), 1.0f, 8, 8 );
+		}
+
+		Gizmo.Draw.LineThickness = 1f;
+		Gizmo.Draw.IgnoreDepth = false;
 	}
 
 	/// <summary>Highlight every non-construction point whose endpoint degree is not exactly two.
@@ -877,7 +1139,7 @@ internal sealed partial class EffigyViewport
 			if ( count == 2 )
 				continue;
 
-			Gizmo.Draw.SolidSphere( PlaneToWorld( ActiveSketch.Points[point] ), count > 2 ? 0.8f : 0.7f, 8, 8 );
+			Gizmo.Draw.SolidSphere( PlaneToWorld( ActiveSketch.Points[point] ), count > 2 ? 1.2f : 1.0f, 10, 10 );
 		}
 
 		void AddDegree( int point ) => degree[point] = degree.TryGetValue( point, out var count ) ? count + 1 : 1;
@@ -894,9 +1156,14 @@ internal sealed partial class EffigyViewport
 		Gizmo.Draw.LineThickness = 2f;
 		Gizmo.Draw.Color = SketchPreviewColor;
 
+		// Pending endpoints are not in ActiveSketch.Points until the entity is committed. Draw them
+		// explicitly so the user can see the actual point the next click will connect to.
+		foreach ( var p in _pending )
+			Gizmo.Draw.SolidSphere( PlaneToWorld( p ), 1.5f, 10, 10 );
+
 		// Cursor crosshair, so the snapped position is visible even with nothing pending.
 		var c = PlaneToWorld( _cursorOnPlane );
-		Gizmo.Draw.SolidSphere( c, 0.5f, 6, 6 );
+		Gizmo.Draw.SolidSphere( c, 0.75f, 8, 8 );
 
 		if ( _pending.Count > 0 )
 		{

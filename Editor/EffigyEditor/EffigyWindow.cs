@@ -421,6 +421,8 @@ public sealed class EffigyWindow : DockWindow
 			Accepted = OnDialogAccepted,
 			Cancelled = OnDialogCancelled,
 			SketchRequested = EnterSketch,
+			SketchNameLookup = id => _studio.Features.OfType<SketchFeature>().FirstOrDefault( f => f.Id == id )?.Name,
+			OpenedForFeature = UpdatePickTargets,
 		};
 
 		// Dialog ABOVE the tree in one column, which is where Onshape puts it. It was a separate
@@ -563,18 +565,31 @@ public sealed class EffigyWindow : DockWindow
 	}
 
 	/// <summary>Push all committed sketches from the feature tree into the viewport so they
-	/// remain visible after leaving sketch mode.</summary>
-	private void UpdateDisplaySketches()
+	/// remain visible after leaving sketch mode, and push the subset a feature being edited is
+	/// allowed to pick — only sketches standing before it in the history, since a feature cannot
+	/// consume a sketch that has not run yet.</summary>
+	private void UpdateDisplaySketches() => UpdatePickTargets( _dialog?.Feature );
+
+	/// <summary>Rebuild both sketch lists against the feature a dialog is open on. Called by the
+	/// dialog the moment it opens, because the pick list and the auto-arm decision are only
+	/// correct relative to THAT feature.</summary>
+	private void UpdatePickTargets( Feature editing )
 	{
 		if ( _viewport is null )
 			return;
 
-		var sketches = _studio.Features
-			.OfType<SketchFeature>()
-			.Select( f => f.Sketch )
-			.ToList();
+		var sketchFeatures = _studio.Features.OfType<SketchFeature>().ToList();
 
-		_viewport.SetDisplaySketches( sketches );
+		_viewport.SetDisplaySketches( sketchFeatures.Select( f => f.Sketch ) );
+
+		var cutoff = editing is null ? int.MaxValue : _studio.Features.IndexOf( editing );
+
+		if ( cutoff < 0 )
+			cutoff = int.MaxValue;
+
+		_viewport.SetPickableSketches( _studio.Features.Take( cutoff )
+			.OfType<SketchFeature>()
+			.Select( f => new EffigyViewport.PickableSketch( f.Id, f.Name ?? f.TypeName, f.Sketch ) ) );
 	}
 
 	private void NewStudio()
