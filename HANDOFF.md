@@ -67,6 +67,10 @@ Each cost real time to find. All are documented at their call sites too.
 
 ---
 
+See `CAD-REFERENCE.md` for how Solvespace and FreeCAD solve the problems Effigy is still missing —
+sketching on a face, cut vs boss, and referring to geometry that gets rebuilt. Design notes only:
+they are GPL and LGPL, this repo is MIT.
+
 ## Where things are
 
 ```
