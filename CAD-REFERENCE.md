@@ -143,6 +143,39 @@ here rather than at the far end of a compile.
 
 ---
 
+## Audit: what each feature needs to select, and whether it can
+
+Taken from the parameter each feature declares against what the dialog can actually render.
+`AllFeaturesTests` proves every one of these BUILDS; this table is about whether you can point at
+what it should act on.
+
+| Feature | Needs to select | State |
+|---|---|---|
+| Sketch | a plane | **works** — plane selector, and it is the affordance to copy |
+| Sketch | a face of a body | kernel supports it (`FaceRef`); no UI yet |
+| Primitive | nothing | n/a |
+| Extrude | which sketch | **works** — sketch selector |
+| Extrude | which region of it | kernel supports it (`RegionSeed`); no UI yet |
+| Revolve | which sketch | **works** |
+| Revolve | **an axis** | typed Vec3 only. Its default runs through the sketch origin, so the first press on a normal sketch always fails |
+| Shell, Bevel, Subdivide, Transform, UV Project, Mirror, Linear Pattern, Circular Pattern | which bodies | `BodySelectionParam` renders as a disabled "All bodies" label. **Eight features with a parameter that cannot be set.** |
+| Mirror | a mirror plane | typed Vec3 point + normal |
+| Linear Pattern | a direction | typed Vec3 |
+| Circular Pattern | an axis | typed Vec3 point + direction |
+
+The one to fix first is body selection: it is a single control that unblocks eight tools, and the
+parameter behind it already works — `BodySelectionParam.Matches` is honoured by every one of them.
+
+Revolve's axis is second, and is the clearest case of a tool that looks broken rather than
+unfinished: the default axis passes through the sketch origin, which is where people draw, so the
+button reliably errors the first time it is pressed. The error now names how far the profile
+reaches either side, but the real fix is picking the axis in the viewport.
+
+The typed Vec3 directions (mirror plane, pattern axis) are usable as-is and are a much lower
+priority than either.
+
+---
+
 ## Suggested order for Effigy
 
 Ranked by value against cost, given a mesh boolean is the expensive prerequisite for the headline

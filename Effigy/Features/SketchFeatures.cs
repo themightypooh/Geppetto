@@ -377,8 +377,13 @@ public sealed class RevolveFeature : SketchConsumingFeature
 
 		if ( minSide < -eps && maxSide > eps )
 		{
+			// Name the numbers. The default axis runs through the sketch origin, and people draw
+			// around the origin, so this is the FIRST thing most Revolves hit - a message that just
+			// says "move it" leaves you guessing which way and how far.
 			throw new InvalidOperationException(
-				"The profile crosses the axis of revolution. Move it fully to one side of the axis." );
+				$"The profile crosses the axis of revolution - it reaches {MathF.Abs( minSide ):0.###} "
+				+ $"one side and {maxSide:0.###} the other. Move the axis at least {MathF.Abs( minSide ):0.###} "
+				+ "so the whole profile sits on one side of it, or move the profile." );
 		}
 	}
 
