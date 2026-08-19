@@ -116,9 +116,9 @@ internal sealed partial class EffigyViewport : Widget
 
 		_gizmoInstance = _canvas.GizmoInstance;
 
-		// The canvas is NOT added to the layout here. BuildToolbar calls CompleteLayout
-		// to build the Column layout in one shot with the tool strip above the canvas,
-		// avoiding Layout reassignment after the DockManager has sized the viewport.
+		// The canvas is NOT added to the layout here - the tool strip has to go above it and does
+		// not exist yet. BuildToolbar calls CompleteLayout to fill this widget's existing column
+		// layout in the right order.
 
 		FrameCamera();
 	}
@@ -126,13 +126,16 @@ internal sealed partial class EffigyViewport : Widget
 	// --- layout helpers ---------------------------------------------------------------------
 
 	/// <summary>
-	/// Build the viewport's Column layout in one shot: a fixed-height widget above the 3D
-	/// canvas, which fills everything below it. Called once from BuildToolbar after the tool
-	/// strip is created.
+	/// Fill the viewport's column layout: a fixed-height widget above the 3D canvas, which fills
+	/// everything below it. Called once from BuildToolbar after the tool strip is created.
+	///
+	/// It fills the layout the constructor already made rather than assigning a fresh one. This
+	/// runs after DockManager.SetCentralWidget has sized the viewport, and replacing the layout
+	/// at that point orphans the canvas: it keeps whatever tiny geometry it had and renders the
+	/// whole 3D scene into a sliver beside the tool strip, leaving the viewport black.
 	/// </summary>
 	public void CompleteLayout( Widget header )
 	{
-		Layout = Layout.Column();
 		Layout.Add( header );
 		Layout.Add( _canvas, 1 );
 	}

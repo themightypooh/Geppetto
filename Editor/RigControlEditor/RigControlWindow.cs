@@ -17,7 +17,7 @@ namespace Marionette.Tools;
 /// code, so this re-does the smaller save/dirty part it actually needs.
 /// </summary>
 [EditorForAssetType( "riganim" )]
-[EditorApp( "Rig Control Editor", "accessibility_new", "Pose and keyframe a skinned model's bones, author IK/Limit rig constraints, and place per-frame prop-attach events" )]
+[EditorApp( "Marionette", "accessibility_new", "Pose and keyframe a skinned model's bones, author IK/Limit rig constraints, and place per-frame prop-attach events" )]
 public sealed class RigControlWindow : DockWindow, IAssetEditor
 {
 	public bool CanOpenMultipleAssets => false;
