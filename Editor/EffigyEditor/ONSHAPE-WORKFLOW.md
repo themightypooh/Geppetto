@@ -5,6 +5,20 @@ editor now implements. Written because the previous pass built ~3,400 lines of e
 *impression* of Onshape rather than against its docs, and several of the resulting doc comments
 described behaviour that was never actually wired up.
 
+> **Status after the main merge.** This document was written against a branch that was later
+> reconciled with `main`, which had independently built its own tool strip (`EffigyToolStrip`,
+> custom-drawn icons), committed-sketch display, and sketch selection for Extrude — and, unlike
+> that branch, had actually been compiled and run. Where the two overlapped, main's version won.
+>
+> Still in: numeric fields and the expression evaluator, the parameter-edit fix, value-snapshot
+> undo, screen-space snapping, the degree/plane tests, `RegionSeed` in the kernel.
+>
+> **Deferred, not delivered:** the rollback bar UI, the face-pull gizmo, region and body selection
+> boxes, the parts list, the feature context menu, and the sketch tools moving into the floating
+> strip. They exist in this branch's history (`7fcb45f`, `c67e544`) and are meant to be re-applied
+> onto the merged base deliberately, one at a time. Sections below that describe them describe
+> INTENT, not current behaviour.
+
 **Sources.** Onshape help — Feature Basics, Sketch Basics, Feature and Part Lists, Numeric Fields,
 Dialogs, Keyboard Shortcuts and Hotkeys, View Navigation and the View Cube. Fetched via search
 summaries rather than directly: the environment this was written in blocks outbound HTTP to
@@ -107,7 +121,7 @@ the constraint solver. Those buttons are absent rather than present and dead.
 Onshape: right-click a feature → **Roll to here**; right-click the bar → **Roll to end**. Evaluate
 only the features above the bar, so you can go back and work on the model as it was at that point.
 
-Effigy now: implemented. It cost about forty lines, because **the kernel has always supported it** —
+Effigy: **not wired yet** (see the status note at the top). The kernel has always supported it —
 `PartStudio.RollbackIndex`, with the snapshot cache behind it, and a class comment calling rollback
 one of the *"two things that make this parametric rather than a pile of bakes"*. The editor
 referenced it exactly zero times. Rolled-back features draw dimmed with the bar ruled above the
@@ -140,11 +154,14 @@ continuous strip of twelve undifferentiated glyphs — window furniture rather t
 row was a *second* strip below it spending a top-level button on every single variant, fourteen
 wide.
 
-Effigy now: `EffigyViewportToolbar` along the top edge of the viewport, each tool its own bordered
-box. Variants live under chevrons (right-click, or click the chevron): one Rectangle box offering
-corner and centre, one Circle box offering centre and 3-point, one Pattern box offering linear and
-circular. The sketch strip **replaces** the feature strip while a sketch is open rather than
-stacking below it.
+Effigy now: main's `EffigyToolStrip` — a strip of squares FLOATING on the 3D canvas at its top-left,
+with every icon hand-drawn in `EffigyIcons` rather than looked up by name. That last part matters:
+s&box ships classic `MaterialIcons-Regular.ttf`, so a Material Symbols name renders as nothing at
+all, and drawing them removes the guesswork permanently.
+
+The sketch tools are still an `Editor.ToolBar` docked to the window, so they sit alongside the
+feature strip rather than replacing it. Moving them into the floating strip needs about ten more
+drawn icons and is deferred.
 
 ## 8. Views
 

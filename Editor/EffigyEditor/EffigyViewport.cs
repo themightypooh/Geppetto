@@ -28,23 +28,6 @@ internal sealed partial class EffigyViewport : Widget
 	private readonly CameraComponent _camera;
 	private readonly Gizmo.Instance _gizmoInstance;
 
-	/// <summary>
-	/// Undo and redo, pinned to the far left of the strip and visible in every mode.
-	///
-	/// Onshape's own toolbar starts with them and keeps them there whether or not a sketch is
-	/// open, which is why they are a separate group rather than part of either tool set — the set
-	/// to their right swaps, these never do.
-	/// </summary>
-	public EffigyViewportToolbar HistoryTools { get; }
-
-	/// <summary>The feature tools, along the top of the viewport. Populated by the window.</summary>
-	public EffigyViewportToolbar FeatureTools { get; }
-
-	/// <summary>The sketch tools. Takes the feature strip's PLACE while a sketch is open — same
-	/// row, same position — the way Onshape swaps its toolbar on entering a sketch, rather than
-	/// stacking a second row and costing a strip of viewport height permanently.</summary>
-	public EffigyViewportToolbar SketchTools { get; }
-
 	private GameObject _modelObject;
 	private ModelRenderer _renderer;
 
@@ -154,30 +137,46 @@ internal sealed partial class EffigyViewport : Widget
 
 		_gizmoInstance = _canvas.GizmoInstance;
 
-		// One strip along the top edge of the viewport, with the 3D canvas filling everything under
-		// it. History stays put; the feature and sketch groups occupy the same slot to its right
-		// and only one of them is ever visible. The window populates all three - this owns the
-		// space and the swapping, nothing else.
-		var toolRow = new Widget( this ) { Layout = Layout.Row() };
-		toolRow.Layout.Spacing = 0;
-
-		HistoryTools = new EffigyViewportToolbar( toolRow );
-		FeatureTools = new EffigyViewportToolbar( toolRow );
-		SketchTools = new EffigyViewportToolbar( toolRow ) { Visible = false };
-
-		toolRow.Layout.Add( HistoryTools );
-		toolRow.Layout.Add( FeatureTools );
-		toolRow.Layout.Add( SketchTools );
-
-		// The stretch lives on the ROW, not inside the bars. Put inside, each bar would push its
-		// own boxes apart across the full width instead of keeping them grouped.
-		toolRow.Layout.AddStretchCell();
-
-		Layout.Add( toolRow );
-		Layout.Add( _canvas, 1 );
+		// The canvas is NOT added to the layout here - the tool strip has to go above it and does
+		// not exist yet. BuildToolbar calls CompleteLayout to fill this widget's existing column
+		// layout in the right order.
 
 		FrameCamera();
 	}
+
+	// --- layout helpers ---------------------------------------------------------------------
+
+	/// <summary>The 3D canvas, exposed so the window can parent floating overlays (the tool strip)
+	/// onto it rather than into the layout.</summary>
+	public Widget Canvas => _canvas;
+
+	/// <summary>
+	/// Give the canvas the whole viewport and float <paramref name="overlay"/> on top of it at the
+	/// top-left. Called once from BuildToolbar, after the tool strip is built.
+	///
+	/// The overlay is deliberately NOT a layout row above the canvas. A row takes a band off the
+	/// top of the viewport and paints window chrome across it; parenting to the canvas instead
+	/// lets the 3D scene fill the widget with the buttons sitting on it, which is what the tool
+	/// strip was always described as doing.
+	///
+	/// Note this fills the layout the constructor already made rather than assigning a fresh one.
+	/// It runs after DockManager.SetCentralWidget has sized the viewport, and replacing the layout
+	/// at that point orphans the canvas: it keeps whatever tiny geometry it had and renders the
+	/// whole 3D scene into a sliver, leaving the rest of the viewport black.
+	/// </summary>
+	public void CompleteLayout( Widget overlay )
+	{
+		Layout.Add( _canvas, 1 );
+
+		_overlay = overlay;
+		_overlay.Position = OverlayMargin;
+	}
+
+	/// <summary>Inset of the floating tool strip from the canvas's top-left corner.</summary>
+	private static readonly Vector2 OverlayMargin = new( 10f, 10f );
+
+	/// <summary>The floating tool strip, so the frame loop can keep camera drags out of it.</summary>
+	private Widget _overlay;
 
 	// --- model management -------------------------------------------------------------------
 
@@ -622,7 +621,12 @@ internal sealed partial class EffigyViewport : Widget
 		if ( _canvas.Scene is { } scene )
 			scene.EditorTick( RealTime.Now, RealTime.Delta );
 
-		_gizmoInstance.Input.IsHovered = IsActiveWindow && _canvas.IsUnderMouse;
+		// The floating tool strip sits inside the canvas, so "cursor over the canvas" is true while
+		// you are aiming at a button. Without excluding it, pressing a tool also grabs the orbit
+		// camera and the click drags the view.
+		var overCanvas = _canvas.IsUnderMouse && !(_overlay?.IsUnderMouse ?? false);
+
+		_gizmoInstance.Input.IsHovered = IsActiveWindow && overCanvas;
 
 		if ( _gizmoInstance.FirstPersonCamera( _camera, _canvas ) )
 			_gizmoInstance.Input.IsHovered = false;
@@ -636,16 +640,14 @@ internal sealed partial class EffigyViewport : Widget
 
 		// Draw planes first (behind everything else)
 		DrawReferencePlanes();
-
-		// Then every finished sketch and the faces it closes. Unconditional: this is what makes
-		// sketch geometry survive leaving the sketch, and what makes a face pickable from outside.
-		DrawFinishedSketches();
+		DrawCommittedSketches();
+		SketchPickFrame();
 
 		SketchFrame();
 
-		// Origin on top of the planes. Hidden while sketching or picking a plane - it sits at the
+		// Origin on top of the planes. Hidden while sketching or picking anything - it sits at the
 		// exact spot most first clicks land, and stealing them was the first thing that broke.
-		if ( !IsSketching && !PlanePickMode )
+		if ( !IsSketching && !PlanePickMode && !SketchPickMode )
 		{
 			DrawOrigin();
 
@@ -656,7 +658,7 @@ internal sealed partial class EffigyViewport : Widget
 
 		DrawViewCube();
 
-		Cursor = Gizmo.HasHovered || IsSketching ? CursorShape.Finger : CursorShape.Arrow;
+		Cursor = Gizmo.HasHovered || IsSketching || _hoveredSketchId is not null ? CursorShape.Finger : CursorShape.Arrow;
 	}
 
 	/// <summary>Escape backs out of the half-drawn entity, then out of the tool - the same two
@@ -672,6 +674,17 @@ internal sealed partial class EffigyViewport : Widget
 		if ( IsSketching )
 		{
 			CancelSketchTool();
+			e.Accepted = true;
+			return;
+		}
+
+		// Escape stands down an armed selection box. The viewport owns the key press; the dialog
+		// owns the boxes' painted state, so it is told through PickModeCancelled. Sketch picking
+		// itself stays live while a consumer dialog is open — the dialog turns it off.
+		if ( PlanePickMode || SketchPickMode )
+		{
+			PlanePickMode = false;
+			PickModeCancelled?.Invoke();
 			e.Accepted = true;
 			return;
 		}

@@ -33,6 +33,11 @@ internal sealed class EffigyFeatureDialog : Widget
 	/// <summary>Parameter values as they were when the dialog opened, for Cancel.</summary>
 	private readonly Dictionary<IParam, object> _snapshot = new();
 
+	/// <summary>The consumed-sketch id when the dialog opened. It is a plain field on the
+	/// feature rather than an IParam, so the generic snapshot cannot see it — Cancel has to put
+	/// it back by hand or an abandoned pick would survive.</summary>
+	private string _sketchIdSnapshot;
+
 	/// <summary>
 	/// Whether a sketch plane has actually been chosen.
 	///
@@ -43,41 +48,19 @@ internal sealed class EffigyFeatureDialog : Widget
 	/// </summary>
 	private bool _planeChosen;
 
-	/// <summary>Features whose sketch plane has actually been picked, so reopening one remembers.
-	/// Identity-keyed and never cleared: a studio's worth of features is a few dozen objects.</summary>
-	private readonly HashSet<Feature> _planeChosenFor = new();
-
 	// --- widgets ---
 	private Widget _header;
 	private LineEdit _nameEdit;
-	private IconButton _acceptButton;
-	private Editor.Label _statusLabel;
 	private Widget _body;
 	private readonly List<Widget> _rows = new();
 
 	/// <summary>
 	/// One per editable row: pushes the parameter's CURRENT value back into that row's widgets.
 	///
-	/// This is what keeps the numeric field honest while the face is being dragged in the viewport.
-	/// The alternative - rebuilding the dialog every frame of a drag - destroys and recreates every
-	/// widget in it, which throws away focus and any half-typed expression.
+	/// Lets a value be driven from outside the dialog - a viewport gizmo, say - without rebuilding
+	/// it, which would destroy every widget and throw away focus and any half-typed expression.
 	/// </summary>
 	private readonly List<Action> _valueRefreshers = new();
-
-	/// <summary>
-	/// Whether the feature would refuse to build right now.
-	///
-	/// Onshape's rule, and it is a workflow rule rather than a cosmetic one: "The title is red if
-	/// you have not completely filled out the dialog, or if the information entered has resulted
-	/// in an error. This prevents you from committing a broken feature." Two ways to be broken -
-	/// the kernel threw (Feature.Error), or the dialog is still waiting on a selection the user
-	/// has not made, which no rebuild can report because the feature never ran.
-	/// </summary>
-	private bool IsBroken => _feature is not null
-		&& (_feature.Error is not null
-			|| (_feature is SketchFeature && !_planeChosen)
-			|| (_isNew && _feature is SketchConsumingFeature { RegionSeed: null })
-			|| (_isNew && BodySelectionOf( _feature ) is { BodyIds.Count: 0 }));
 
 	/// <summary>Fires when the tick is pressed. The window rebuilds and closes the dialog.</summary>
 	public Action<Feature> Accepted { get; set; }
@@ -95,8 +78,20 @@ internal sealed class EffigyFeatureDialog : Widget
 	/// <summary>Fires when a Sketch feature's dialog wants the viewport to enter sketch mode.</summary>
 	public Action<SketchFeature> SketchRequested { get; set; }
 
-	/// <summary>Shift+Enter accepted and wants another feature of the same kind appended.</summary>
-	public Action<Feature> RepeatRequested { get; set; }
+	/// <summary>Maps a SketchFeature id to its display name, for the sketch selection box.
+	/// The window owns the studio, so it supplies the lookup.</summary>
+	public Func<string, string> SketchNameLookup { get; set; }
+
+	/// <summary>Raised with the feature the dialog just opened on, before any auto-arm reads
+	/// the viewport's pick list. The pick list is relative to the feature being edited, so the
+	/// window has to rebuild it against THIS feature right now — reading a list that was built
+	/// for whatever the dialog was open on before is how a brand new Extrude sees zero sketches.</summary>
+	public Action<Feature> OpenedForFeature { get; set; }
+
+	/// <summary>The selection box currently in the dialog, if any. Only one kind exists per
+	/// feature — a plane picker, or a sketch picker — so a single reference is enough for
+	/// Escape to stand it down and for a brand new feature to auto-arm it.</summary>
+	private IArmableSelection _activeArmable;
 
 	public Feature Feature => _feature;
 	public bool IsOpen => _feature is not null;
@@ -104,6 +99,10 @@ internal sealed class EffigyFeatureDialog : Widget
 	public EffigyFeatureDialog( Widget parent, EffigyViewport viewport ) : base( parent )
 	{
 		_viewport = viewport;
+
+		// Escape while a pick mode is armed comes through the viewport, which clears its own
+		// flags and then tells the box here to repaint itself as disarmed.
+		_viewport.PickModeCancelled = () => _activeArmable?.Disarm();
 
 		Name = "FeatureDialog";
 		Layout = Layout.Column();
@@ -129,68 +128,21 @@ internal sealed class EffigyFeatureDialog : Widget
 		_nameEdit.TextEdited += OnNameEdited;
 		_header.Layout.Add( _nameEdit, 1 );
 
-		_acceptButton = new IconButton( "check", Accept )
+		_header.Layout.Add( new IconButton( "check", Accept )
 		{
-			ToolTip = "Accept (Enter) - commit this feature",
+			ToolTip = "Accept (commit this feature)",
 			IconSize = 16,
 			Background = Color.Transparent,
-		};
-
-		_header.Layout.Add( _acceptButton );
+		} );
 
 		_header.Layout.Add( new IconButton( "close", Cancel )
 		{
-			ToolTip = "Cancel (Escape) - discard changes",
+			ToolTip = "Cancel (discard changes)",
 			IconSize = 16,
 			Background = Color.Transparent,
 		} );
 
 		Layout.Add( _header );
-
-		// The reason the tick is refusing, in words. A greyed-out tick with no explanation is the
-		// most frustrating possible version of "this feature is not finished".
-		_statusLabel = new Editor.Label( "" ) { Color = Theme.Red };
-		_statusLabel.Visible = false;
-		Layout.Add( _statusLabel );
-	}
-
-	/// <summary>
-	/// Re-read the feature's build state and show it. Called by the window after every rebuild,
-	/// because Feature.Error is only meaningful once the studio has actually tried to run it.
-	/// </summary>
-	public void RefreshState()
-	{
-		if ( _feature is null )
-			return;
-
-		var broken = IsBroken;
-
-		if ( _acceptButton.IsValid() )
-			_acceptButton.Enabled = !broken;
-
-		if ( _statusLabel.IsValid() )
-		{
-			_statusLabel.Text = _feature.Error ?? WaitingOn();
-			_statusLabel.Visible = broken;
-		}
-
-		Update();
-	}
-
-	/// <summary>What the feature is still waiting for, when it has not failed but is not finished
-	/// either. Empty when nothing is outstanding.</summary>
-	private string WaitingOn()
-	{
-		if ( _feature is SketchFeature && !_planeChosen )
-			return "Pick a sketch plane to continue";
-
-		if ( _isNew && _feature is SketchConsumingFeature { RegionSeed: null } )
-			return "Select a face in the viewport to extrude";
-
-		if ( _isNew && BodySelectionOf( _feature ) is { BodyIds.Count: 0 } )
-			return "Select a body in the viewport";
-
-		return "";
 	}
 
 	private void OnNameEdited( string text )
@@ -212,61 +164,12 @@ internal sealed class EffigyFeatureDialog : Widget
 	/// </summary>
 	protected override void OnPaint()
 	{
-		var broken = IsBroken;
-
 		Paint.ClearPen();
 		Paint.SetBrush( Theme.ControlBackground );
 		Paint.DrawRect( LocalRect );
 
-		// A red spine down the open edge, so "this will not build" is legible from across the
-		// screen rather than only by reading the status line.
-		if ( broken )
-		{
-			Paint.SetBrush( Theme.Red );
-			Paint.DrawRect( new Rect( 0f, 0f, 2f, Height ) );
-		}
-
-		Paint.ClearBrush();
-		Paint.SetPen( broken ? Theme.Red.WithAlpha( 0.5f ) : Theme.WindowBackground );
+		Paint.SetPen( Theme.WindowBackground );
 		Paint.DrawLine( new Vector2( 0f, Height - 1f ), new Vector2( Width, Height - 1f ) );
-	}
-
-	/// <summary>
-	/// Enter commits, Escape cancels, Shift+Enter commits and reopens the same tool for another
-	/// one. All three are Onshape's, and the third is the one that makes adding six of something
-	/// bearable.
-	/// </summary>
-	protected override void OnKeyPress( KeyEvent e )
-	{
-		if ( _feature is null )
-		{
-			base.OnKeyPress( e );
-			return;
-		}
-
-		switch ( e.Key )
-		{
-			// KeyCode.Enter and KeyCode.Shift are the only two enum members in this tool that are
-			// NOT already used somewhere in RigControlEditor, so they are the two things here that
-			// a first compile will confirm or reject. If either is named differently in this
-			// engine build, it is a one-word fix on each and nothing else in the file depends on
-			// them. (KeyCode.Escape below is proven - RigTimeline and RigViewport both use it.)
-			case KeyCode.Enter:
-				if ( Editor.Application.IsKeyDown( KeyCode.Shift ) )
-					AcceptAndRepeat();
-				else
-					Accept();
-
-				e.Accepted = true;
-				return;
-
-			case KeyCode.Escape:
-				Cancel();
-				e.Accepted = true;
-				return;
-		}
-
-		base.OnKeyPress( e );
 	}
 
 	// --- open / close -------------------------------------------------------------------------
@@ -276,31 +179,60 @@ internal sealed class EffigyFeatureDialog : Widget
 		_feature = feature;
 		_isNew = isNew;
 
-		// Whether a plane was ever actually picked, remembered per feature rather than inferred
-		// from isNew. Inferring it meant reopening a sketch you had abandoned without choosing a
-		// plane showed "Top (XY)" in the box as though you had picked it - the exact lie the
-		// selection box exists to avoid, just deferred to the second time you looked at it.
-		_planeChosen = _planeChosenFor.Contains( feature );
+		// The pick list is relative to the feature being edited, so the window rebuilds it for
+		// this feature before anything below reads it — an auto-arm decision made against the
+		// previous dialog's list is how a brand new Extrude saw zero sketches.
+		OpenedForFeature?.Invoke( feature );
+
+		// An existing sketch already has its plane; a brand new one is waiting for you to pick.
+		_planeChosen = !isNew;
 
 		TakeSnapshot();
 
 		_nameEdit.Text = feature.Name ?? feature.TypeName;
 
-		// A freshly created Extrude is waiting for a face, so arm the picking immediately rather
-		// than making the user find and click the selection box first. This is the whole "press
-		// the button, then choose a face" flow - the button IS the start of the selection.
-		if ( isNew && feature is SketchConsumingFeature { RegionSeed: null } )
-			_viewport.RegionPickMode = true;
-
-		// Same for the eight features that act on bodies rather than on a sketch.
-		if ( isNew && BodySelectionOf( feature ) is { BodyIds.Count: 0 } )
-			_viewport.BodyPickMode = true;
-
 		Rebuild();
 
 		Visible = true;
 
-		RefreshState();
+		ArmPendingSelection( isNew );
+	}
+
+	/// <summary>
+	/// A feature opens asking for its input, the way Sketch's plane box arms on a new sketch:
+	///  - Sketch: arm the plane picker — it cannot exist without a plane.
+	///  - Extrude/Revolve: a single available sketch is assigned outright on a brand new feature
+	///    (asking would be theatre); otherwise, with no choice yet, the profile box arms and the
+	///    sketches in the viewport are already hoverable and clickable either way.
+	/// </summary>
+	private void ArmPendingSelection( bool isNew )
+	{
+		if ( _feature is SketchFeature )
+		{
+			if ( isNew )
+				_activeArmable?.Arm();
+
+			return;
+		}
+
+		if ( _feature is SketchConsumingFeature consumer )
+		{
+			var hasChoice = !string.IsNullOrEmpty( consumer.SketchFeatureId )
+				&& SketchNameLookup?.Invoke( consumer.SketchFeatureId ) is not null;
+
+			var count = _viewport.PickableSketches.Count;
+
+			if ( isNew && !hasChoice && count == 1 )
+			{
+				consumer.SketchFeatureId = _viewport.PickableSketches[0].FeatureId;
+				Edited?.Invoke();
+				Rebuild();
+				return;
+			}
+
+			if ( !hasChoice && count > 0 )
+				_activeArmable?.Arm();
+		}
 	}
 
 	public new void Close()
@@ -310,13 +242,11 @@ internal sealed class EffigyFeatureDialog : Widget
 		ClearRows();
 		Visible = false;
 
-		// Explicitly, not just via the selectors' OnDestroyed: widget destruction can be deferred,
-		// and a frame with picking still armed is a frame where a stray click lands on a face for a
-		// feature that is no longer open.
+		_activeArmable = null;
 		_viewport.PlanePickMode = false;
-		_viewport.RegionPickMode = false;
-		_viewport.BodyPickMode = false;
-		_viewport.ClearPullTarget();
+		_viewport.SketchPickMode = false;
+		_viewport.SketchPicked = null;
+		_viewport.SetPickPrompt( "" );
 	}
 
 	private void Accept()
@@ -324,34 +254,9 @@ internal sealed class EffigyFeatureDialog : Widget
 		if ( _feature is null )
 			return;
 
-		// Onshape will not let a broken feature be committed, and neither will this. Refreshing on
-		// the way out is what puts the reason on screen when the tick was hit rather than ignored.
-		if ( IsBroken )
-		{
-			RefreshState();
-			return;
-		}
-
 		var feature = _feature;
 		Close();
 		Accepted?.Invoke( feature );
-	}
-
-	/// <summary>Shift+Enter: commit, then open a fresh one of the same kind. Onshape's, and the
-	/// difference between placing six holes and placing one hole six times.</summary>
-	private void AcceptAndRepeat()
-	{
-		if ( _feature is null || IsBroken )
-			return;
-
-		var type = _feature.GetType();
-
-		Accept();
-
-		// Every feature is constructed parameterless by the toolbar already (see EffigyWindow's
-		// CreateOption factories), so this cannot hit a feature type it does not know how to make.
-		if ( Activator.CreateInstance( type ) is Feature repeat )
-			RepeatRequested?.Invoke( repeat );
 	}
 
 	private void Cancel()
@@ -376,9 +281,13 @@ internal sealed class EffigyFeatureDialog : Widget
 	private void TakeSnapshot()
 	{
 		_snapshot.Clear();
+		_sketchIdSnapshot = null;
 
 		if ( _feature is null )
 			return;
+
+		if ( _feature is SketchConsumingFeature consumer )
+			_sketchIdSnapshot = consumer.SketchFeatureId;
 
 		foreach ( var p in _feature.Parameters )
 		{
@@ -395,6 +304,9 @@ internal sealed class EffigyFeatureDialog : Widget
 
 	private void RestoreSnapshot()
 	{
+		if ( _feature is SketchConsumingFeature consumer && _sketchIdSnapshot is not null )
+			consumer.SketchFeatureId = _sketchIdSnapshot;
+
 		foreach ( var (p, value) in _snapshot )
 		{
 			switch ( p )
@@ -419,8 +331,8 @@ internal sealed class EffigyFeatureDialog : Widget
 		_valueRefreshers.Clear();
 	}
 
-	/// <summary>Re-read every parameter into its row. Called while the viewport is driving a value,
-	/// so the typed field tracks the gizmo instead of showing a stale number.</summary>
+	/// <summary>Re-read every parameter into its row, for when something outside the dialog is
+	/// driving a value.</summary>
 	public void RefreshValues()
 	{
 		foreach ( var refresh in _valueRefreshers )
@@ -433,6 +345,13 @@ internal sealed class EffigyFeatureDialog : Widget
 	public void Rebuild()
 	{
 		ClearRows();
+		_activeArmable = null;
+
+		// Sketch picking is live only while a consumer's dialog is open; the consumer branch
+		// below turns it back on. Without this default, switching to a Sketch feature would
+		// leave the previous dialog's pick handler wired into the viewport.
+		_viewport.SketchPickMode = false;
+		_viewport.SketchPicked = null;
 
 		if ( _feature is null )
 			return;
@@ -441,39 +360,39 @@ internal sealed class EffigyFeatureDialog : Widget
 		// selection box instead of the generic ChoiceParam row.
 		if ( _feature is SketchFeature sketch )
 		{
-			AddRow( new EffigyPlaneSelector( _body, _viewport, sketch.Plane, OnPlaneChanged, _planeChosen ) );
+			var planeSelector = new EffigyPlaneSelector( _body, _viewport, sketch.Plane, OnPlaneChanged, _planeChosen );
+			_activeArmable = planeSelector;
+			AddRow( planeSelector );
 			AddRow( BuildFloatRow( sketch.PlaneOffset ) );
 			AddRow( BuildSketchButtonRow( sketch ) );
 			return;
 		}
 
-		// Extrude and Revolve pick a FACE, not a dropdown entry. The kernel's Sketch ChoiceParam
-		// only ever held a single empty string - it was never populated with real sketch ids - so
-		// the selection box supersedes it rather than sitting next to it.
+		// Extrude/Revolve consume a sketch, and the profile is picked in the viewport the same
+		// way a sketch's plane is. The Sketch ChoiceParam is storage plumbing the kernel never
+		// reads a choice from, so it is swapped for a selection box instead of a dead dropdown.
+		// While this dialog is open the sketches stay live in the viewport — hover highlights,
+		// click picks — exactly like the reference planes while their box is armed.
 		if ( _feature is SketchConsumingFeature consumer )
 		{
-			AddRow( new EffigyRegionSelector( _body, _viewport, consumer, OnRegionCleared ) );
+			var sketchSelector = new EffigySketchSelector( _body, _viewport, consumer, SketchNameLookup, OnSketchPicked );
+			_activeArmable = sketchSelector;
+			AddRow( sketchSelector );
 
-			foreach ( var param in _feature.Parameters )
-			{
-				if ( ReferenceEquals( param, consumer.Sketch ) )
-					continue;
+			_viewport.SketchPickMode = true;
+			_viewport.SketchPicked = sketchSelector.Picked;
 
+			foreach ( var param in _feature.Parameters.Where( p => !ReferenceEquals( p, consumer.Sketch ) ) )
 				AddRow( BuildParamRow( param ) );
-			}
 
 			return;
 		}
 
+		_viewport.SketchPickMode = false;
+		_viewport.SketchPicked = null;
+
 		foreach ( var param in _feature.Parameters )
 			AddRow( BuildParamRow( param ) );
-	}
-
-	/// <summary>The region selection was cleared back to "every closed region".</summary>
-	private void OnRegionCleared()
-	{
-		Edited?.Invoke();
-		Rebuild();
 	}
 
 	/// <summary>
@@ -487,14 +406,20 @@ internal sealed class EffigyFeatureDialog : Widget
 	{
 		_planeChosen = true;
 
-		if ( _feature is not null )
-			_planeChosenFor.Add( _feature );
-
 		Edited?.Invoke();
 		Rebuild();
 
 		if ( _feature is SketchFeature sketch )
 			SketchRequested?.Invoke( sketch );
+	}
+
+	/// <summary>A sketch was picked in the viewport, so the consumer's input is chosen. Unlike
+	/// a plane pick there is no second stage to drop into — the dialog stays open for the
+	/// distance and direction parameters.</summary>
+	private void OnSketchPicked()
+	{
+		Edited?.Invoke();
+		Rebuild();
 	}
 
 	private void AddRow( Widget row )
@@ -766,14 +691,6 @@ internal sealed class EffigyFeatureDialog : Widget
 		return row;
 	}
 
-	/// <summary>
-	/// One axis of a Vec3, as a typed field.
-	///
-	/// These were unbounded FloatSliders — constructed with no Minimum or Maximum at all, so they
-	/// took whatever the widget's default range is and a direction vector of (0,0,1) was not
-	/// reliably expressible. Axis letters carry the viewport's own X/Y/Z colours so the field and
-	/// the gizmo agree about which one is which.
-	/// </summary>
 	private void AddAxis( Widget parent, string label, Color colour, float value, Action<float> set )
 	{
 		var field = new EffigyNumericField( parent, value );
@@ -799,21 +716,17 @@ internal sealed class EffigyFeatureDialog : Widget
 	{
 		var row = NewRow( out var layout );
 		layout.Add( new Editor.Label( bs.Label ) { FixedWidth = 110 } );
-		layout.Add( new EffigyBodySelector( _body, _viewport, bs, OnBodySelectionCleared ), 1 );
+		layout.Add( new Editor.Label( "All bodies" ) { Enabled = false }, 1 );
 		return row;
 	}
+}
 
-	/// <summary>The body selection was cleared back to "every body".</summary>
-	private void OnBodySelectionCleared()
-	{
-		Edited?.Invoke();
-		Rebuild();
-	}
-
-	/// <summary>The feature's body selection, if it has one. Detected from the parameter list
-	/// rather than by type, so any future feature that takes bodies gets this for free.</summary>
-	public static BodySelectionParam BodySelectionOf( Feature feature ) =>
-		feature?.Parameters.OfType<BodySelectionParam>().FirstOrDefault();
+/// <summary>A selection box the dialog can arm and disarm from the outside — so a brand new
+/// feature can start waiting for a pick the moment it is added, and Escape can stand it down.</summary>
+internal interface IArmableSelection
+{
+	void Arm();
+	void Disarm();
 }
 
 /// <summary>
@@ -825,7 +738,7 @@ internal sealed class EffigyFeatureDialog : Widget
 /// expect to choose a plane and the only version that extends to picking a face later — the
 /// dropdown has nothing to list once planes stop being a fixed set of three.
 /// </summary>
-internal sealed class EffigyPlaneSelector : Widget
+internal sealed class EffigyPlaneSelector : Widget, IArmableSelection
 {
 	private readonly EffigyViewport _viewport;
 	private readonly ChoiceParam _plane;
@@ -860,7 +773,7 @@ internal sealed class EffigyPlaneSelector : Widget
 	{
 		var label = new Rect( 0f, 0f, Width, 16f );
 
-		Paint.SetPen( Theme.TextControl.WithAlpha( 0.6f ) );
+		Paint.SetPen( Theme.TextLight );
 		Paint.SetDefaultFont( 8 );
 		Paint.DrawText( label.Shrink( 8f, 2f, 0f, 0f ), "Sketch plane", TextFlag.LeftTop );
 
@@ -909,17 +822,30 @@ internal sealed class EffigyPlaneSelector : Widget
 			return;
 		}
 
+		Arm();
+	}
+
+	public void Arm()
+	{
+		if ( _armed )
+			return;
+
 		_armed = true;
 		_viewport.PlanePickMode = true;
 		_viewport.PlanePicked = OnPicked;
+		_viewport.SetPickPrompt( "Pick a plane in the viewport" );
 		Update();
 	}
 
-	private void Disarm()
+	public void Disarm()
 	{
+		if ( !_armed )
+			return;
+
 		_armed = false;
 		_viewport.PlanePickMode = false;
 		_viewport.PlanePicked = null;
+		_viewport.SetPickPrompt( "" );
 		Update();
 	}
 
@@ -944,36 +870,30 @@ internal sealed class EffigyPlaneSelector : Widget
 }
 
 /// <summary>
-/// The face selection box for Extrude and Revolve.
-///
-/// Same affordance as the plane selector above it, for the same reason: you point at the region
-/// you mean in the graphics area rather than choosing it from a list. There is no useful list to
-/// choose from anyway — closed regions are re-found from the curve graph on every rebuild and have
-/// no names or stable order, which is exactly why the selection is stored as a point inside the
-/// region (SketchConsumingFeature.RegionSeed) rather than as an index.
-///
-/// Unset means every closed region in the sketch, which is what these features have always done
-/// and stays the default.
+/// The profile selection box for Extrude and Revolve — the same bordered field as the plane
+/// selector, but picking one of the committed sketches drawn in the viewport instead of a
+/// reference plane. This is the box a brand new Extrude opens with, armed and blue, because the
+/// profile is the one thing the tool cannot guess.
 /// </summary>
-internal sealed class EffigyRegionSelector : Widget
+internal sealed class EffigySketchSelector : Widget, IArmableSelection
 {
 	private readonly EffigyViewport _viewport;
-	private readonly SketchConsumingFeature _feature;
-	private readonly Action _cleared;
+	private readonly SketchConsumingFeature _consumer;
+	private readonly Func<string, string> _nameLookup;
+	private readonly Action _changed;
 
-	/// <summary>True while waiting for a viewport click, with every closed region lit up.</summary>
+	/// <summary>True while waiting for a viewport click. The box goes accent-coloured and the
+	/// committed sketches become pickable.</summary>
 	private bool _armed;
 
-	public EffigyRegionSelector( Widget parent, EffigyViewport viewport, SketchConsumingFeature feature, Action cleared )
+	public EffigySketchSelector( Widget parent, EffigyViewport viewport, SketchConsumingFeature consumer,
+		Func<string, string> nameLookup, Action changed )
 		: base( parent )
 	{
 		_viewport = viewport;
-		_feature = feature;
-		_cleared = cleared;
-
-		// Reflect picking that was armed for us when the dialog opened, rather than starting
-		// unarmed and disagreeing with the lit-up faces in the viewport.
-		_armed = viewport.RegionPickMode;
+		_consumer = consumer;
+		_nameLookup = nameLookup;
+		_changed = changed;
 
 		Layout = Layout.Row();
 		Layout.Margin = new Sandbox.UI.Margin( 8, 3 );
@@ -981,37 +901,40 @@ internal sealed class EffigyRegionSelector : Widget
 
 		FixedHeight = 46f;
 		Cursor = CursorShape.Finger;
+	}
 
-		// Only offered once there is something to clear. A permanently visible "use all" next to
-		// an empty box would read as a second, competing choice.
-		if ( feature.RegionSeed is not null )
-		{
-			Layout.AddStretchCell();
+	/// <summary>The viewport click handler for this box's feature. The dialog wires it into the
+	/// viewport for as long as it is open on the consumer — sketches stay pickable the whole
+	/// time, armed or not, the way planes are while their box is armed.</summary>
+	public Action<string> Picked => OnPicked;
 
-			Layout.Add( new Button( "Use all", "select_all" )
-			{
-				ToolTip = "Build from every closed region in the sketch",
-				Clicked = Clear,
-			} );
-		}
+	/// <summary>The name of the chosen sketch, or null when nothing valid is chosen. An id the
+	/// tree no longer contains (the sketch was deleted) counts as nothing.</summary>
+	private string ChosenName()
+	{
+		if ( string.IsNullOrEmpty( _consumer.SketchFeatureId ) )
+			return null;
+
+		return _nameLookup?.Invoke( _consumer.SketchFeatureId );
 	}
 
 	protected override void OnPaint()
 	{
 		var label = new Rect( 0f, 0f, Width, 16f );
 
-		Paint.SetPen( Theme.TextControl.WithAlpha( 0.6f ) );
+		Paint.SetPen( Theme.TextLight );
 		Paint.SetDefaultFont( 8 );
-		Paint.DrawText( label.Shrink( 8f, 2f, 0f, 0f ), "Region", TextFlag.LeftTop );
+		Paint.DrawText( label.Shrink( 8f, 2f, 0f, 0f ), "Profile (sketch)", TextFlag.LeftTop );
 
-		var box = new Rect( 8f, 18f, Width - 96f, 22f );
+		var box = new Rect( 8f, 18f, Width - 16f, 22f );
+		var chosen = ChosenName();
 
 		Paint.ClearPen();
 		Paint.SetBrush( _armed ? Theme.Blue.WithAlpha( 0.18f ) : Theme.ControlBackground );
 		Paint.DrawRect( box, 2f );
 
 		Paint.ClearBrush();
-		Paint.SetPen( _armed ? Theme.Blue : Theme.TextControl.WithAlpha( 0.35f ) );
+		Paint.SetPen( _armed ? Theme.Blue : (chosen is not null ? Theme.TextControl.WithAlpha( 0.35f ) : Theme.Red.WithAlpha( 0.6f )) );
 		Paint.DrawRect( box, 2f );
 
 		Paint.SetDefaultFont( 9 );
@@ -1019,176 +942,78 @@ internal sealed class EffigyRegionSelector : Widget
 		if ( _armed )
 		{
 			Paint.SetPen( Theme.Blue );
-			Paint.DrawText( box.Shrink( 6f, 0f, 0f, 0f ), "Click a shaded face in the viewport", TextFlag.LeftCenter );
-			return;
+			Paint.DrawText( box.Shrink( 6f, 0f, 0f, 0f ), "Pick a sketch in the viewport", TextFlag.LeftCenter );
 		}
-
-		// Unset is a legitimate, useful state here - unlike the plane box, which is genuinely
-		// waiting on you - so it reads as a value rather than as a warning.
-		Paint.SetPen( Theme.TextControl );
-		Paint.DrawText( box.Shrink( 6f, 0f, 0f, 0f ),
-			_feature.RegionSeed is null ? "All closed regions" : "1 face selected", TextFlag.LeftCenter );
+		else if ( chosen is not null )
+		{
+			Paint.SetPen( Theme.TextControl );
+			Paint.DrawText( box.Shrink( 6f, 0f, 0f, 0f ), chosen, TextFlag.LeftCenter );
+		}
+		else if ( _viewport.PickableSketches.Count == 0 )
+		{
+			Paint.SetPen( Theme.Red.WithAlpha( 0.8f ) );
+			Paint.DrawText( box.Shrink( 6f, 0f, 0f, 0f ), "No sketch yet — add a Sketch first", TextFlag.LeftCenter );
+		}
+		else
+		{
+			Paint.SetPen( Theme.TextControl.WithAlpha( 0.45f ) );
+			Paint.DrawText( box.Shrink( 6f, 0f, 0f, 0f ), "Select a sketch", TextFlag.LeftCenter );
+		}
 	}
 
 	protected override void OnMousePress( MouseEvent e )
 	{
 		base.OnMousePress( e );
 
-		if ( e.LeftMouseButton )
-			Toggle();
-	}
+		if ( !e.LeftMouseButton )
+			return;
 
-	private void Toggle()
-	{
 		if ( _armed )
 		{
 			Disarm();
 			return;
 		}
 
+		// Nothing to pick — an empty red box has no waiting state to show.
+		if ( _viewport.PickableSketches.Count == 0 )
+			return;
+
+		Arm();
+	}
+
+	public void Arm()
+	{
+		if ( _armed )
+			return;
+
 		_armed = true;
-		_viewport.RegionPickMode = true;
+		_viewport.SetPickPrompt( "Pick the sketch to pull into a solid" );
 		Update();
 	}
 
-	private void Disarm()
+	public void Disarm()
 	{
+		if ( !_armed )
+			return;
+
 		_armed = false;
-		_viewport.RegionPickMode = false;
+		_viewport.SetPickPrompt( "" );
 		Update();
 	}
 
-	private void Clear()
+	private void OnPicked( string featureId )
 	{
-		_feature.RegionSeed = null;
+		_consumer.SketchFeatureId = featureId;
+
 		Disarm();
-		_cleared?.Invoke();
+		_changed?.Invoke();
 	}
 
 	public override void OnDestroyed()
 	{
 		base.OnDestroyed();
 
-		// Leaving pick mode armed would keep every face lit and clickable after the dialog closed.
-		if ( _armed )
-			Disarm();
-	}
-}
-
-/// <summary>
-/// The body selection box, for the eight features that act on solids rather than on a sketch.
-///
-/// Same shape as the plane and region selectors: a bordered field that is empty until you click it
-/// and then pick in the graphics area. Multi-select, because Mirror and the patterns genuinely take
-/// several — clicking a body that is already in takes it back out.
-///
-/// Empty means every body, which is BodySelectionParam's own documented default. So an unset box is
-/// a value rather than a warning, and only a NEW feature treats it as something still outstanding.
-/// </summary>
-internal sealed class EffigyBodySelector : Widget
-{
-	private readonly EffigyViewport _viewport;
-	private readonly BodySelectionParam _param;
-	private readonly Action _cleared;
-
-	private bool _armed;
-
-	public EffigyBodySelector( Widget parent, EffigyViewport viewport, BodySelectionParam param, Action cleared )
-		: base( parent )
-	{
-		_viewport = viewport;
-		_param = param;
-		_cleared = cleared;
-
-		// Reflect picking that was armed for us when the dialog opened.
-		_armed = viewport.BodyPickMode;
-
-		Layout = Layout.Row();
-		Layout.Spacing = 6;
-
-		FixedHeight = 26f;
-		Cursor = CursorShape.Finger;
-
-		if ( param.BodyIds.Count > 0 )
-		{
-			Layout.AddStretchCell();
-
-			Layout.Add( new Button( "All", "select_all" )
-			{
-				ToolTip = "Act on every body",
-				Clicked = Clear,
-			} );
-		}
-	}
-
-	protected override void OnPaint()
-	{
-		var box = new Rect( 0f, 2f, Width - (_param.BodyIds.Count > 0 ? 60f : 0f), 22f );
-
-		Paint.ClearPen();
-		Paint.SetBrush( _armed ? Theme.Blue.WithAlpha( 0.18f ) : Theme.ControlBackground );
-		Paint.DrawRect( box, 2f );
-
-		Paint.ClearBrush();
-		Paint.SetPen( _armed ? Theme.Blue : Theme.TextControl.WithAlpha( 0.35f ) );
-		Paint.DrawRect( box, 2f );
-
-		Paint.SetDefaultFont( 9 );
-
-		if ( _armed )
-		{
-			Paint.SetPen( Theme.Blue );
-			Paint.DrawText( box.Shrink( 6f, 0f, 0f, 0f ), "Click bodies in the viewport", TextFlag.LeftCenter );
-			return;
-		}
-
-		Paint.SetPen( Theme.TextControl );
-
-		var count = _param.BodyIds.Count;
-
-		Paint.DrawText( box.Shrink( 6f, 0f, 0f, 0f ),
-			count == 0 ? "All bodies" : count == 1 ? "1 body" : $"{count} bodies", TextFlag.LeftCenter );
-	}
-
-	protected override void OnMousePress( MouseEvent e )
-	{
-		base.OnMousePress( e );
-
-		if ( e.LeftMouseButton )
-			Toggle();
-	}
-
-	private void Toggle()
-	{
-		if ( _armed )
-		{
-			Disarm();
-			return;
-		}
-
-		_armed = true;
-		_viewport.BodyPickMode = true;
-		Update();
-	}
-
-	private void Disarm()
-	{
-		_armed = false;
-		_viewport.BodyPickMode = false;
-		Update();
-	}
-
-	private void Clear()
-	{
-		_param.BodyIds.Clear();
-		Disarm();
-		_cleared?.Invoke();
-	}
-
-	public override void OnDestroyed()
-	{
-		base.OnDestroyed();
-
+		// Leaving pick mode armed would make the sketches stay clickable after the dialog closed.
 		if ( _armed )
 			Disarm();
 	}
