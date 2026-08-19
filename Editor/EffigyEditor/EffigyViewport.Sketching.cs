@@ -332,6 +332,10 @@ internal sealed partial class EffigyViewport
 	/// grid stays about GridPixels apart on screen however far you are zoomed in.</summary>
 	public float SketchGridSnap { get; set; } = 0f;
 
+	/// <summary>Snapping and point reuse, which are sketch maths rather than UI and therefore live
+	/// in the kernel where they can be tested without s&amp;box. This only feeds it tolerances.</summary>
+	private readonly SketchSnapper _snapper = new();
+
 	/// <summary>Points clicked so far for the tool in progress. Cleared on completion or Escape.</summary>
 	private readonly List<Vec2> _pending = new();
 
@@ -385,28 +389,6 @@ internal sealed partial class EffigyViewport
 		var halfHeight = MathF.Tan( _camera.FieldOfView.DegreeToRadian() * 0.5f ) * distance;
 
 		return halfHeight / MathF.Max( _canvas.Size.y * 0.5f, 1f );
-	}
-
-	/// <summary>
-	/// The grid step, either the explicit override or one chosen to sit about GridPixels apart on
-	/// screen - rounded to 1, 2 or 5 times a power of ten so it is always a number a person would
-	/// have picked. A fixed 0.25 grid gave a one-unit part four steps across it.
-	/// </summary>
-	private float GridStep( float unitsPerPixel )
-	{
-		if ( SketchGridSnap > 0f )
-			return SketchGridSnap;
-
-		var target = GridPixels * unitsPerPixel;
-
-		if ( target <= 0f || float.IsNaN( target ) || float.IsInfinity( target ) )
-			return 0f;
-
-		var magnitude = MathF.Pow( 10f, MathF.Floor( MathF.Log10( target ) ) );
-		var normalised = target / magnitude;
-		var step = normalised < 1.5f ? 1f : normalised < 3.5f ? 2f : normalised < 7.5f ? 5f : 10f;
-
-		return step * magnitude;
 	}
 
 	public void BeginSketch( Sketch sketch )
@@ -520,144 +502,29 @@ internal sealed partial class EffigyViewport
 	/// </summary>
 	private Vec2 SnapPoint( Vec2 raw )
 	{
-		_snapPoint = -1;
-		_inferenceAxis = 0;
-
+		// Tolerances are a fixed number of SCREEN PIXELS, converted here to sketch units at the
+		// plane's depth. That conversion is the whole reason snapping survives a part one unit
+		// across; see SketchSnapper for what it looked like when they were world constants.
 		var unitsPerPixel = UnitsPerPixel();
-		var snapRadius = SnapPixels * unitsPerPixel;
-		var alignRadius = AlignmentPixels * unitsPerPixel;
-		var gridStep = GridStep( unitsPerPixel );
 
-		// The active line is the strongest inference target. Evaluate it before generic point/grid
-		// snapping so a near-horizontal or near-vertical second click cannot be swallowed by a less
-		// useful grid result.
-		if ( SketchTool == SketchToolKind.Line && _pending.Count == 1 )
-		{
-			var start = _pending[0];
-			var dx = MathF.Abs( raw.x - start.x );
-			var dy = MathF.Abs( raw.y - start.y );
+		_snapper.PointRadius = SnapPixels * unitsPerPixel;
+		_snapper.AlignmentRadius = AlignmentPixels * unitsPerPixel;
+		_snapper.GridStep = SketchGridSnap > 0f
+			? SketchGridSnap
+			: SketchSnapper.AutoGridStep( unitsPerPixel, GridPixels );
 
-			if ( dx <= alignRadius && dx <= dy )
-			{
-				_inferenceAxis = 1;
-				raw = new Vec2( start.x, raw.y );
-			}
-			else if ( dy <= alignRadius )
-			{
-				_inferenceAxis = 2;
-				raw = new Vec2( raw.x, start.y );
-			}
-		}
+		var result = _snapper.Snap( ActiveSketch, raw, _pending,
+			SketchTool == SketchToolKind.Line && _pending.Count == 1 );
 
-		var best = snapRadius * snapRadius;
+		_snapPoint = result.SnappedPointIndex;
+		_inferenceAxis = result.InferenceAxis;
 
-		// The first endpoint of a new entity is still pending until the entity is committed.
-		// It must nevertheless be a snap target: this is what lets a line close back onto its
-		// start, and lets rectangles/arcs share the point the cursor is visibly over.
-		for ( var i = 0; i < _pending.Count; i++ )
-		{
-			var dist = ( _pending[i] - raw ).LengthSquared;
-
-			if ( dist >= best )
-				continue;
-
-			best = dist;
-			raw = _pending[i];
-		}
-
-		for ( var i = 0; i < ActiveSketch.Points.Count; i++ )
-		{
-			var dist = (ActiveSketch.Points[i] - raw).LengthSquared;
-
-			if ( dist >= best )
-				continue;
-
-			best = dist;
-			_snapPoint = i;
-		}
-
-		if ( _snapPoint >= 0 )
-			return ActiveSketch.Points[_snapPoint];
-
-		var snapped = gridStep > 0f
-			? new Vec2(
-				MathF.Round( raw.x / gridStep ) * gridStep,
-				MathF.Round( raw.y / gridStep ) * gridStep )
-			: raw;
-
-		// Onshape's inference lines make it easy to keep geometry level or vertical. Use the
-		// existing sketch points plus the two sketch axes as alignment targets. Point snapping above
-		// still wins when the cursor is actually on a point.
-		var xTarget = 0f;
-		var yTarget = 0f;
-		var xDistance = MathF.Abs( snapped.x );
-		var yDistance = MathF.Abs( snapped.y );
-
-		foreach ( var point in ActiveSketch.Points )
-		{
-			var dx = MathF.Abs( snapped.x - point.x );
-			if ( dx < xDistance )
-			{
-				xDistance = dx;
-				xTarget = point.x;
-			}
-
-			var dy = MathF.Abs( snapped.y - point.y );
-			if ( dy < yDistance )
-			{
-				yDistance = dy;
-				yTarget = point.y;
-			}
-		}
-
-		if ( xDistance <= alignRadius )
-		{
-			snapped = new Vec2( xTarget, snapped.y );
-			_inferenceAxis |= 1;
-		}
-
-		if ( yDistance <= alignRadius )
-		{
-			snapped = new Vec2( snapped.x, yTarget );
-			_inferenceAxis |= 2;
-		}
-
-		// The active line gets its own inference target. This is what makes the second click stay
-		// horizontal or vertical with the first click even when there are no other points nearby.
-		if ( SketchTool == SketchToolKind.Line && _pending.Count == 1 && _inferenceAxis == 0 )
-		{
-			var start = _pending[0];
-			var dx = MathF.Abs( snapped.x - start.x );
-			var dy = MathF.Abs( snapped.y - start.y );
-
-			if ( dx <= alignRadius && dx <= dy )
-			{
-				snapped = new Vec2( start.x, snapped.y );
-				_inferenceAxis |= 1;
-			}
-			else if ( dy <= alignRadius )
-			{
-				snapped = new Vec2( snapped.x, start.y );
-				_inferenceAxis |= 2;
-			}
-		}
-
-		return snapped;
+		return result.Point;
 	}
 
-	/// <summary>Reuse an existing point index when the coordinate already exists, so shared corners
-	/// really are shared and the chain closes. The kernel's AddPoint deliberately does not do this
-	/// - it is a UI concern, and a coordinate-typing caller wants the literal point.</summary>
-	private int PointIndex( Vec2 p )
-	{
-		for ( var i = 0; i < ActiveSketch.Points.Count; i++ )
-		{
-			if ( (ActiveSketch.Points[i] - p).LengthSquared < 1e-8f )
-				return i;
-		}
-
-		return ActiveSketch.AddPoint( p );
-	}
+	/// <summary>Point reuse lives in the kernel with the rest of the snapping - see
+	/// SketchSnapper.PointIndex.</summary>
+	private int PointIndex( Vec2 p ) => SketchSnapper.PointIndex( ActiveSketch, p );
 
 	// --- per-frame sketch pass ---------------------------------------------------------------
 
