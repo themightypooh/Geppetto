@@ -606,7 +606,8 @@ public sealed class EffigyWindow : DockWindow
 		// Show whatever DID build, errors or not. A broken feature halfway down the tree should
 		// leave the part above it on screen — going blank hides the very geometry you need to
 		// look at to work out what the failing feature is missing.
-		var preview = EffigyPreview.Build( _studio.ToMesh() );
+		// Preview shows only what is visible; export below deliberately still takes everything.
+		var preview = EffigyPreview.Build( _studio.ToVisibleMesh() );
 
 		// Frame only when geometry first appears. Every later rebuild leaves the camera alone,
 		// because rebuilds also happen on every parameter tick and the view must hold still

@@ -200,7 +200,15 @@ public sealed class PartStudio
 		for ( var i = reusableUpTo; i < count; i++ )
 		{
 			var feature = Features[i];
+
+			// Bodies added by this feature inherit its visibility. Doing it here rather than in
+			// every feature's Execute means a new feature type gets it for free and cannot forget.
+			var bodiesBefore = ctx.Bodies.Count;
+
 			feature.Run( ctx );
+
+			for ( var b = bodiesBefore; b < ctx.Bodies.Count; b++ )
+				ctx.Bodies[b].Visible = feature.Visible;
 
 			if ( feature.Suppressed )
 				report.FeaturesSuppressed++;
@@ -243,12 +251,28 @@ public sealed class PartStudio
 	}
 
 	/// <summary>Every body merged into one mesh, which is what export wants.</summary>
+	/// <summary>Every body, hidden or not. Export takes this: hiding a part is a working
+	/// convenience, not a statement that it should leave the model.</summary>
 	public PolyMesh ToMesh()
 	{
 		var merged = new PolyMesh();
 
 		foreach ( var b in Bodies )
 			MeshTransform.Append( merged, b.Mesh );
+
+		return merged;
+	}
+
+	/// <summary>Only what is being drawn. The viewport preview takes this.</summary>
+	public PolyMesh ToVisibleMesh()
+	{
+		var merged = new PolyMesh();
+
+		foreach ( var b in Bodies )
+		{
+			if ( b.Visible )
+				MeshTransform.Append( merged, b.Mesh );
+		}
 
 		return merged;
 	}
