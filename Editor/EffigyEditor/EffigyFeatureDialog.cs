@@ -51,6 +51,7 @@ internal sealed class EffigyFeatureDialog : Widget
 	// --- widgets ---
 	private Widget _header;
 	private LineEdit _nameEdit;
+	private Editor.Label _statusLabel;
 	private Widget _body;
 	private readonly List<Widget> _rows = new();
 
@@ -143,6 +144,12 @@ internal sealed class EffigyFeatureDialog : Widget
 		} );
 
 		Layout.Add( _header );
+
+		// Why the feature is unhappy, in words. A feature that quietly built from half its input,
+		// or refused entirely, is the thing people spend evenings hunting.
+		_statusLabel = new Editor.Label( "" );
+		_statusLabel.Visible = false;
+		Layout.Add( _statusLabel );
 	}
 
 	private void OnNameEdited( string text )
@@ -342,6 +349,27 @@ internal sealed class EffigyFeatureDialog : Widget
 	/// <summary>Rebuild the parameter rows. Called on open and whenever a choice changes the set of
 	/// parameters — PrimitiveFeature.Parameters returns a different list per shape, so switching
 	/// Box to Cylinder has to redraw the dialog, exactly as it does in Onshape.</summary>
+	/// <summary>
+	/// Show the feature's build state: an error in red, or a warning in yellow.
+	///
+	/// The two are deliberately different. An error means there is no geometry; a warning means
+	/// there IS geometry but it was not built from everything you gave it - a stray line the
+	/// profile finder would not guess at, say. Collapsing them into one colour is how "it built,
+	/// but not from what you think" goes unnoticed.
+	/// </summary>
+	public void RefreshState()
+	{
+		if ( !_statusLabel.IsValid() )
+			return;
+
+		var error = _feature?.Error;
+		var warning = _feature?.Warning;
+
+		_statusLabel.Text = error ?? warning ?? "";
+		_statusLabel.Color = error is not null ? Theme.Red : Theme.Yellow;
+		_statusLabel.Visible = _statusLabel.Text.Length > 0;
+	}
+
 	public void Rebuild()
 	{
 		ClearRows();

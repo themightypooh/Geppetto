@@ -1,4 +1,5 @@
 using Editor;
+using Effigy;
 using Sandbox;
 using System;
 
@@ -56,7 +57,7 @@ internal sealed class EffigyNumericField : Widget
 		Layout = Layout.Row();
 		Layout.Spacing = 6;
 
-		_edit = new LineEdit( EffigyExpression.Format( value ), this );
+		_edit = new LineEdit( Expression.Format( value ), this );
 		_edit.TextEdited += OnTextEdited;
 		Layout.Add( _edit, 1 );
 
@@ -75,14 +76,14 @@ internal sealed class EffigyNumericField : Widget
 		_value = Clamp( value );
 
 		if ( _edit.IsValid() )
-			_edit.Text = EffigyExpression.Format( _value );
+			_edit.Text = Expression.Format( _value );
 
 		ShowReadout( null );
 	}
 
 	private void OnTextEdited( string text )
 	{
-		if ( !EffigyExpression.TryEvaluate( text, Unit, out var parsed ) )
+		if ( !Expression.TryEvaluate( text, Unit, out var parsed ) )
 		{
 			// Half-typed is the common case, not an error worth shouting about - the field just
 			// stops agreeing with the model until it makes sense again.
@@ -95,9 +96,9 @@ internal sealed class EffigyNumericField : Widget
 		// Show the evaluated number whenever it is not literally what was typed. That covers both
 		// `1/8` becoming 0.125 and a value being clamped against the parameter's own limits, which
 		// is the case that otherwise looks like the field ignoring you.
-		ShowReadout( EffigyExpression.Format( clamped ) == text.Trim()
+		ShowReadout( Expression.Format( clamped ) == text.Trim()
 			? null
-			: $"= {EffigyExpression.Format( clamped )}" );
+			: $"= {Expression.Format( clamped )}" );
 
 		if ( clamped == _value )
 			return;

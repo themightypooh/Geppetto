@@ -69,6 +69,8 @@ public static class Program
 
 		UVTests.Run();
 
+		ExpressionTests.Run();
+
 		SnapTests.Run();
 
 		EditorFlowTests.Run();

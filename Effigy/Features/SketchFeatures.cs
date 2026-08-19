@@ -102,16 +102,24 @@ public abstract class SketchConsumingFeature : Feature
 		return picked;
 	}
 
-	static List<Profile> FindProfiles( Sketch sketch )
+	List<Profile> FindProfiles( Sketch sketch )
 	{
 		var found = ProfileFinder.Find( sketch );
 
 		// ProfileFinder reports what it could not make sense of - a point where three curves meet,
-		// for instance, which it will not guess at. Discarding those left a branching sketch
-		// extruding one arbitrary sub-loop and looking like it had worked. If nothing closed at all
-		// the message below is better; otherwise the warning is the most useful thing available.
+		// for instance, which it will not guess at.
+		//
+		// This used to THROW whenever there was any such note, even with perfectly good regions
+		// alongside it, so a single stray line left anywhere in a sketch failed every feature that
+		// read it and there was no way to proceed but to hunt the stray down. Silently ignoring
+		// them is the opposite mistake - that extruded one arbitrary sub-loop and looked like it
+		// had worked. So: build from what did close, and say plainly what was skipped.
 		if ( found.Warnings.Count > 0 && found.Profiles.Count > 0 )
-			throw new InvalidOperationException( string.Join( "; ", found.Warnings ) );
+		{
+			Warning = $"Built from {found.Profiles.Count} closed region"
+				+ (found.Profiles.Count == 1 ? "" : "s")
+				+ $"; ignored: {string.Join( "; ", found.Warnings )}";
+		}
 
 		if ( found.Profiles.Count == 0 )
 		{

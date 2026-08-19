@@ -30,7 +30,8 @@ instead of reading shipped code that uses it. Each of these cost a round trip or
 | Redo is Ctrl+Shift+Z | editor convention is **Ctrl+Y** |
 | No bind-pose accessor exists | `BoneCollection.Bone.LocalTransform` |
 
-**If there is no .NET on the machine, install it first**: `apt-get install -y dotnet-sdk-8.0`.
+**Run `tools/test.sh` before anything else.** It installs the .NET SDK if the machine has none
+(`apt-get install -y dotnet-sdk-8.0`), syncs the editor's kernel mirror, and runs the suite.
 The Effigy kernel is engine-free, so `cd Effigy.Tests && dotnet run -- out` compiles and runs ~480
 checks with no s&box anywhere — including headless replays of editor workflows (EditorFlowTests).
 That is the difference between verifying a change and reading it and hoping.

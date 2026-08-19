@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 
-namespace Marionette.EditorTools;
+namespace Effigy;
 
 /// <summary>
 /// The evaluator behind Onshape's numeric fields.
@@ -13,11 +13,10 @@ namespace Marionette.EditorTools;
 /// nicety - a slider cannot express a fraction, a tapped hole size, or "half of the last one",
 /// and those are most of what a dimension actually is.
 ///
-/// Deliberately hand-written rather than pulled from a package: the kernel's whole point is that
-/// it has no dependencies, and an editor-side expression parser is a hundred lines. It is also
-/// pure C# with no engine surface, which is why it is the one piece of this change that could be
-/// verified without s&box - the same grammar was transliterated and exercised before it was
-/// committed.
+/// Deliberately hand-written rather than pulled from a package: the kernel's whole point is
+/// that it has no dependencies. It lives in the kernel rather than the editor because it has no
+/// engine surface whatsoever - which also means it can be compiled and exercised directly, and
+/// ExpressionTests does exactly that.
 ///
 /// UNITS. Effigy's lengths are dimensionless (see EffigyViewport.FrameCamera - a default Box is
 /// one unit on a side), so length fields take bare numbers and reject unit suffixes rather than
@@ -27,7 +26,7 @@ namespace Marionette.EditorTools;
 /// TRIG IS IN DEGREES. sin(30) is 0.5. Onshape's trig takes a unit-carrying angle and cannot be
 /// ambiguous; with no unit system here, degrees is what someone typing into a CAD field means.
 /// </summary>
-internal static class EffigyExpression
+public static class Expression
 {
 	/// <summary>
 	/// Evaluate an expression. False when it is not a well-formed expression at all, which is the

@@ -35,6 +35,62 @@ public static class EditorFlowTests
 
 		Report.Section( "editor flow: the feature tree as a parametric tree" );
 		TestTreeOperations();
+
+		Report.Section( "editor flow: a messy sketch degrades instead of blocking" );
+		TestMessySketchStillBuilds();
+	}
+
+	/// <summary>
+	/// A stray line left in a sketch used to fail EVERY feature that read it, with no way forward
+	/// but to hunt the stray down - and no indication of where it was beyond a point index.
+	///
+	/// Now the good regions build and the feature carries a warning saying what it skipped. The
+	/// opposite mistake matters too: it must NOT silently ignore the stray, because extruding one
+	/// arbitrary sub-loop and looking like it worked is worse than refusing.
+	/// </summary>
+	static void TestMessySketchStillBuilds()
+	{
+		var studio = new PartStudio();
+		var sketch = studio.Add( new SketchFeature() );
+
+		// A clean rectangle...
+		sketch.Sketch.AddRectangle( new Vec2( 0, 0 ), new Vec2( 2, 2 ) );
+
+		// ...plus a stray line spliced onto one of its corners, which makes that corner join three
+		// curves. ProfileFinder will not guess at a branch like that.
+		var corner = sketch.Sketch.Points
+			.Select( ( p, i ) => (p, i) )
+			.First( t => MathF.Abs( t.p.x ) < 1e-6f && MathF.Abs( t.p.y ) < 1e-6f ).i;
+
+		var stray = sketch.Sketch.AddPoint( new Vec2( -3, -3 ) );
+		sketch.Sketch.Add( new SketchLine( corner, stray ) );
+
+		var extrude = studio.Add( new ExtrudeFeature() );
+		extrude.Distance.Value = 1f;
+		var report = EditAndRebuild( studio, extrude );
+
+		Check( "ProfileFinder does flag the branch", ProfileFinder.Find( sketch.Sketch ).Warnings.Count > 0 );
+
+		Check( "the extrude still builds a body rather than failing outright",
+			!report.HasErrors && studio.Bodies.Count >= 1,
+			$"{studio.Bodies.Count} bodies, {report}" );
+
+		Check( "and it says what it ignored",
+			report.HasWarnings && extrude.Warning is not null
+			&& extrude.Warning.Contains( "ignored" ), extrude.Warning ?? "no warning" );
+
+		// A sketch with NOTHING closed is still a hard error - there is no geometry to show.
+		var empty = new PartStudio();
+		var emptySketch = empty.Add( new SketchFeature() );
+		var a = emptySketch.Sketch.AddPoint( new Vec2( 0, 0 ) );
+		var b = emptySketch.Sketch.AddPoint( new Vec2( 1, 0 ) );
+		emptySketch.Sketch.Add( new SketchLine( a, b ) );
+
+		empty.Add( new ExtrudeFeature() ).Distance.Value = 1f;
+		var emptyReport = empty.Rebuild();
+
+		Check( "a sketch with no closed region is still an error, not a warning",
+			emptyReport.HasErrors && empty.Bodies.Count == 0, emptyReport.ToString() );
 	}
 
 	// --- what the editor does, named the way the editor names it ---------------------------

@@ -622,6 +622,10 @@ public sealed class EffigyWindow : DockWindow
 
 		UpdateDisplaySketches();
 
+		// Feature.Error and Feature.Warning are only meaningful once the studio has tried to run
+		// the feature, so the dialog's state is refreshed here rather than when it was opened.
+		_dialog?.RefreshState();
+
 		if ( report.HasErrors )
 			Log.Warning( $"[Effigy] rebuild: {string.Join( "; ", report.Errors.Select( e => e.Message ) )}" );
 	}

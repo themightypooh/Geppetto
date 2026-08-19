@@ -169,6 +169,17 @@ public abstract class Feature
 	/// mistake without every later feature also reporting failure.</summary>
 	public string Error { get; internal set; }
 
+	/// <summary>
+	/// Something the feature worked around rather than failed on — it built, but not from
+	/// everything it was given.
+	///
+	/// Distinct from Error because the two need opposite handling. An error means there is no
+	/// geometry and the tree below is standing on nothing; a warning means there IS geometry and
+	/// you should look at it. Collapsing the second into the first is why one stray branch
+	/// anywhere in a sketch used to fail every extrude that read it.
+	/// </summary>
+	public string Warning { get; internal set; }
+
 	public abstract string TypeName { get; }
 	public abstract IReadOnlyList<IParam> Parameters { get; }
 
@@ -177,6 +188,7 @@ public abstract class Feature
 	internal void Run( FeatureContext ctx )
 	{
 		Error = null;
+		Warning = null;
 
 		if ( Suppressed )
 			return;
