@@ -13,11 +13,17 @@ public sealed class RebuildReport
 	public int FeaturesSuppressed;
 	public List<(string FeatureId, string Message)> Errors = new();
 
+	/// <summary>Features that built, but not from everything they were given.</summary>
+	public List<(string FeatureId, string Message)> Warnings = new();
+
 	public bool HasErrors => Errors.Count > 0;
+
+	public bool HasWarnings => Warnings.Count > 0;
 
 	public override string ToString() =>
 		$"{FeaturesEvaluated} evaluated, {FeaturesReused} reused, {FeaturesSuppressed} suppressed"
-		+ (HasErrors ? $", {Errors.Count} errors" : "");
+		+ (HasErrors ? $", {Errors.Count} errors" : "")
+		+ (HasWarnings ? $", {Warnings.Count} warnings" : "");
 }
 
 /// <summary>
@@ -186,6 +192,9 @@ public sealed class PartStudio
 		{
 			if ( Features[i].Error is not null )
 				report.Errors.Add( (Features[i].Id, Features[i].Error) );
+
+			if ( Features[i].Warning is not null )
+				report.Warnings.Add( (Features[i].Id, Features[i].Warning) );
 		}
 
 		for ( var i = reusableUpTo; i < count; i++ )
@@ -201,12 +210,18 @@ public sealed class PartStudio
 			if ( feature.Error is not null )
 				report.Errors.Add( (feature.Id, feature.Error) );
 
+			if ( feature.Warning is not null )
+				report.Warnings.Add( (feature.Id, feature.Warning) );
+
 			_cache.Add( Snapshot.Of( ctx ) );
 		}
 
 		// Features past the rollback bar are neither evaluated nor errors; just note them.
 		for ( var i = count; i < Features.Count; i++ )
+		{
 			Features[i].Error = null;
+			Features[i].Warning = null;
+		}
 
 		Bodies = ctx.Bodies;
 		_dirtyFrom = count;

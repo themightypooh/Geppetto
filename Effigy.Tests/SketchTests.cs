@@ -35,6 +35,193 @@ public static class SketchTests
 
 		Section( "sketches in the feature tree" );
 		TestSketchInTree();
+
+		Section( "picking one region out of a sketch" );
+		TestRegionSelection();
+
+		Section( "each sketch plane builds where it should" );
+		TestPlaneOrientation();
+
+		Section( "editing a parameter actually re-runs the feature" );
+		TestIncrementalRebuildSeesEdits();
+	}
+
+	/// <summary>
+	/// A rectangle sketched on each of the three planes, extruded, and checked for where the solid
+	/// actually landed.
+	///
+	/// The symptom this pins: sketches appearing to work only on Top, with Front and Right
+	/// behaving as though they were Top. That turned out to be an editor bug rather than a kernel
+	/// one - the plane change never reached the feature - but nothing here asserted the kernel's
+	/// half of it either, so a real regression in SketchPlane would have looked identical.
+	///
+	/// Expected, from SketchPlane's own axes:
+	///   XY  X=(1,0,0) Y=(0,1,0) N=(0,0,1)  -> u along world x, v along world y, grows +z
+	///   XZ  X=(1,0,0) Y=(0,0,1) N=(0,-1,0) -> u along world x, v along world z, grows -y
+	///   YZ  X=(0,1,0) Y=(0,0,1) N=(1,0,0)  -> u along world y, v along world z, grows +x
+	/// </summary>
+	static void TestPlaneOrientation()
+	{
+		var cases = new[]
+		{
+			("Top (XY)", 0, new Vec3( 0, 0, 1 )),
+			("Front (XZ)", 1, new Vec3( 0, -1, 0 )),
+			("Right (YZ)", 2, new Vec3( 1, 0, 0 )),
+		};
+
+		foreach ( var (name, index, normal) in cases )
+		{
+			var studio = new PartStudio();
+			var sketch = studio.Add( new SketchFeature() );
+			sketch.Plane.Index = index;
+
+			// 2 wide in the plane's u, 3 in its v.
+			sketch.Sketch.AddRectangle( new Vec2( 0, 0 ), new Vec2( 2, 3 ) );
+
+			var extrude = studio.Add( new ExtrudeFeature() );
+			extrude.Distance.Value = 1f;
+
+			var report = studio.Rebuild();
+
+			Check( $"{name} builds", !report.HasErrors && studio.Bodies.Count == 1, report.ToString() );
+
+			if ( studio.Bodies.Count != 1 )
+				continue;
+
+			var (min, max) = Bounds( studio.Bodies[0].Mesh );
+			var plane = index switch { 0 => SketchPlane.XY, 1 => SketchPlane.XZ, _ => SketchPlane.YZ };
+
+			// The extrusion has to run along the plane's normal and nowhere else.
+			var span = max - min;
+			var along = MathF.Abs( Vec3.Dot( span, normal ) );
+
+			Check( $"{name} extrudes 1 unit along its own normal",
+				MathF.Abs( along - 1f ) < 1e-3f, $"got {along}" );
+
+			// And the profile has to keep its 2x3 proportions in the plane's own axes.
+			var u = MathF.Abs( Vec3.Dot( span, plane.XAxis ) );
+			var v = MathF.Abs( Vec3.Dot( span, plane.YAxis ) );
+
+			Check( $"{name} keeps the profile 2 x 3 in plane axes",
+				MathF.Abs( u - 2f ) < 1e-3f && MathF.Abs( v - 3f ) < 1e-3f, $"got {u} x {v}" );
+		}
+	}
+
+	/// <summary>
+	/// The contract the editor leans on: change a parameter, mark the feature dirty, rebuild, and
+	/// the change is actually reflected.
+	///
+	/// PartStudio only re-runs from the first dirty feature and Rebuild() ends by clearing the
+	/// dirty mark, so a rebuild with nothing marked reuses the entire cache and re-executes
+	/// nothing. The editor was doing exactly that on every parameter edit, which silently threw
+	/// away every change made through a feature dialog.
+	/// </summary>
+	static void TestIncrementalRebuildSeesEdits()
+	{
+		var studio = new PartStudio();
+		var sketch = studio.Add( new SketchFeature() );
+		sketch.Sketch.AddRectangle( new Vec2( 0, 0 ), new Vec2( 2, 2 ) );
+
+		var extrude = studio.Add( new ExtrudeFeature() );
+		extrude.Distance.Value = 1f;
+		studio.Rebuild();
+
+		var before = Volume( studio.Bodies[0].Mesh );
+
+		// Edit WITHOUT marking dirty - the stale path the editor was taking.
+		extrude.Distance.Value = 5f;
+		studio.Rebuild();
+
+		Check( "an unmarked edit is NOT picked up (documents why MarkDirty is required)",
+			MathF.Abs( Volume( studio.Bodies[0].Mesh ) - before ) < 1e-3f,
+			$"{Volume( studio.Bodies[0].Mesh )} vs {before}" );
+
+		// Now the correct path.
+		studio.MarkDirty( extrude );
+		studio.Rebuild();
+
+		Check( "a marked edit IS picked up",
+			MathF.Abs( Volume( studio.Bodies[0].Mesh ) - before * 5f ) < 1e-2f,
+			$"{Volume( studio.Bodies[0].Mesh )}, expected {before * 5f}" );
+	}
+
+	static (Vec3 Min, Vec3 Max) Bounds( PolyMesh mesh )
+	{
+		var min = new Vec3( float.MaxValue, float.MaxValue, float.MaxValue );
+		var max = new Vec3( float.MinValue, float.MinValue, float.MinValue );
+
+		foreach ( var p in mesh.Positions )
+		{
+			min = new Vec3( MathF.Min( min.x, p.x ), MathF.Min( min.y, p.y ), MathF.Min( min.z, p.z ) );
+			max = new Vec3( MathF.Max( max.x, p.x ), MathF.Max( max.y, p.y ), MathF.Max( max.z, p.z ) );
+		}
+
+		return (min, max);
+	}
+
+	/// <summary>
+	/// A sketch with two separate rectangles in it, and an Extrude pointed at one of them.
+	///
+	/// This is what the viewport's face picking rests on: RegionSeed is a POINT inside the wanted
+	/// region rather than an index into the profile list, because profiles are re-found from the
+	/// curve graph every rebuild and carry no stable order. These checks are the ones that would
+	/// catch that going wrong - a seed selecting the wrong region, or silently selecting all of
+	/// them.
+	/// </summary>
+	static void TestRegionSelection()
+	{
+		static PartStudio TwoSquares( out ExtrudeFeature extrude )
+		{
+			var studio = new PartStudio();
+			var sketch = studio.Add( new SketchFeature() );
+
+			// 2x2 at the origin, and a 1x1 well clear of it.
+			sketch.Sketch.AddRectangle( new Vec2( 0, 0 ), new Vec2( 2, 2 ) );
+			sketch.Sketch.AddRectangle( new Vec2( 5, 5 ), new Vec2( 6, 6 ) );
+
+			extrude = studio.Add( new ExtrudeFeature() );
+			extrude.Distance.Value = 1f;
+
+			return studio;
+		}
+
+		// No seed - every region, which is the behaviour that existed before faces were pickable
+		// and has to keep working.
+		var studio = TwoSquares( out var all );
+		var report = studio.Rebuild();
+
+		Check( "no seed extrudes every region", studio.Bodies.Count == 2 && !report.HasErrors,
+			$"{studio.Bodies.Count} bodies, {report}" );
+
+		// Seeded inside the big square.
+		studio = TwoSquares( out var big );
+		big.RegionSeed = new Vec2( 1f, 1f );
+		report = studio.Rebuild();
+
+		Check( "a seed picks exactly one region", studio.Bodies.Count == 1 && !report.HasErrors,
+			$"{studio.Bodies.Count} bodies, {report}" );
+		Check( "the seed picks the region it is inside",
+			MathF.Abs( Volume( studio.Bodies[0].Mesh ) - 4f ) < 1e-3f,
+			$"volume {Volume( studio.Bodies[0].Mesh )}, expected 4" );
+
+		// Seeded inside the small square - same sketch, different face.
+		studio = TwoSquares( out var small );
+		small.RegionSeed = new Vec2( 5.5f, 5.5f );
+		studio.Rebuild();
+
+		Check( "a different seed picks the other region",
+			studio.Bodies.Count == 1 && MathF.Abs( Volume( studio.Bodies[0].Mesh ) - 1f ) < 1e-3f,
+			$"{studio.Bodies.Count} bodies, volume {Volume( studio.Bodies[0].Mesh )}, expected 1" );
+
+		// A seed in empty space is an error, not a silent fallback to every region. Falling back
+		// would quietly extrude the whole sketch when the face you picked stopped existing.
+		studio = TwoSquares( out var gone );
+		gone.RegionSeed = new Vec2( 100f, 100f );
+		report = studio.Rebuild();
+
+		Check( "a seed that matches nothing reports an error", report.HasErrors, report.ToString() );
+		Check( "and produces no body from that feature", studio.Bodies.Count == 0,
+			$"{studio.Bodies.Count} bodies" );
 	}
 
 	static float Volume( PolyMesh m ) =>

@@ -51,8 +51,17 @@ internal sealed class EffigyFeatureDialog : Widget
 	// --- widgets ---
 	private Widget _header;
 	private LineEdit _nameEdit;
+	private Editor.Label _statusLabel;
 	private Widget _body;
 	private readonly List<Widget> _rows = new();
+
+	/// <summary>
+	/// One per editable row: pushes the parameter's CURRENT value back into that row's widgets.
+	///
+	/// Lets a value be driven from outside the dialog - a viewport gizmo, say - without rebuilding
+	/// it, which would destroy every widget and throw away focus and any half-typed expression.
+	/// </summary>
+	private readonly List<Action> _valueRefreshers = new();
 
 	/// <summary>Fires when the tick is pressed. The window rebuilds and closes the dialog.</summary>
 	public Action<Feature> Accepted { get; set; }
@@ -135,6 +144,12 @@ internal sealed class EffigyFeatureDialog : Widget
 		} );
 
 		Layout.Add( _header );
+
+		// Why the feature is unhappy, in words. A feature that quietly built from half its input,
+		// or refused entirely, is the thing people spend evenings hunting.
+		_statusLabel = new Editor.Label( "" );
+		_statusLabel.Visible = false;
+		Layout.Add( _statusLabel );
 	}
 
 	private void OnNameEdited( string text )
@@ -320,11 +335,41 @@ internal sealed class EffigyFeatureDialog : Widget
 			w.Destroy();
 
 		_rows.Clear();
+		_valueRefreshers.Clear();
+	}
+
+	/// <summary>Re-read every parameter into its row, for when something outside the dialog is
+	/// driving a value.</summary>
+	public void RefreshValues()
+	{
+		foreach ( var refresh in _valueRefreshers )
+			refresh();
 	}
 
 	/// <summary>Rebuild the parameter rows. Called on open and whenever a choice changes the set of
 	/// parameters — PrimitiveFeature.Parameters returns a different list per shape, so switching
 	/// Box to Cylinder has to redraw the dialog, exactly as it does in Onshape.</summary>
+	/// <summary>
+	/// Show the feature's build state: an error in red, or a warning in yellow.
+	///
+	/// The two are deliberately different. An error means there is no geometry; a warning means
+	/// there IS geometry but it was not built from everything you gave it - a stray line the
+	/// profile finder would not guess at, say. Collapsing them into one colour is how "it built,
+	/// but not from what you think" goes unnoticed.
+	/// </summary>
+	public void RefreshState()
+	{
+		if ( !_statusLabel.IsValid() )
+			return;
+
+		var error = _feature?.Error;
+		var warning = _feature?.Warning;
+
+		_statusLabel.Text = error ?? warning ?? "";
+		_statusLabel.Color = error is not null ? Theme.Red : Theme.Yellow;
+		_statusLabel.Visible = _statusLabel.Text.Length > 0;
+	}
+
 	public void Rebuild()
 	{
 		ClearRows();
@@ -458,29 +503,90 @@ internal sealed class EffigyFeatureDialog : Widget
 		return row;
 	}
 
+	/// <summary>
+	/// Whether a parameter's own bounds make a slider worth showing next to the field.
+	///
+	/// Most of Effigy's lengths declare min 0.0001 and no maximum at all (BasicFeatures.cs), and
+	/// the version this replaces invented a -9999..9999 range for them. A slider spanning five
+	/// orders of magnitude at 0.1 per step cannot be aimed at a value; it only looks like a
+	/// control. Bevel's 0..180 angle threshold and Subdivide's 0..6 levels are real ranges, and
+	/// those are the ones worth dragging.
+	/// </summary>
+	private static bool Draggable( float min, float max ) =>
+		min > float.MinValue && max < float.MaxValue && max - min <= 1024f;
+
+	/// <summary>Effigy's lengths are dimensionless, so FloatParam's "u" is decoration rather than
+	/// a unit. Real units - "deg" - still earn their label.</summary>
+	private static bool ShowUnit( string unit ) => !string.IsNullOrEmpty( unit ) && unit != "u";
+
 	private Widget BuildFloatRow( FloatParam fp )
 	{
 		var row = NewRow( out var layout );
 		layout.Add( new Editor.Label( fp.Label ) { FixedWidth = 110 } );
 
-		var slider = new FloatSlider( row )
+		var draggable = Draggable( fp.Min, fp.Max );
+
+		var field = new EffigyNumericField( row, fp.Clamped, fp.Unit )
 		{
-			Minimum = Math.Max( fp.Min, -9999f ),
-			Maximum = Math.Min( fp.Max, 9999f ),
-			Step = fp.Unit == "deg" ? 5f : 0.1f,
-			Value = fp.Clamped,
+			Min = fp.Min,
+			Max = fp.Max,
 		};
 
-		slider.OnValueEdited = () =>
+		FloatSlider slider = null;
+
+		if ( draggable )
 		{
-			fp.Value = slider.Value;
+			slider = new FloatSlider( row )
+			{
+				Minimum = fp.Min,
+				Maximum = fp.Max,
+				Step = fp.Unit == "deg" ? 1f : 0.01f,
+				Value = fp.Clamped,
+			};
+
+			slider.OnValueEdited = () =>
+			{
+				fp.Value = slider.Value;
+
+				// SetValue rather than assigning through the field's text, so pushing the slider
+				// does not echo back out of the field as another edit.
+				field.SetValue( slider.Value );
+				Edited?.Invoke();
+			};
+		}
+
+		field.ValueEdited = v =>
+		{
+			fp.Value = v;
+
+			if ( slider.IsValid() )
+				slider.Value = v;
+
 			Edited?.Invoke();
 		};
 
-		layout.Add( slider, 1 );
+		if ( draggable )
+		{
+			field.FixedWidth = 96;
+			layout.Add( field );
+			layout.Add( slider, 1 );
+		}
+		else
+		{
+			layout.Add( field, 1 );
+		}
 
-		if ( !string.IsNullOrEmpty( fp.Unit ) )
+		if ( ShowUnit( fp.Unit ) )
 			layout.Add( new Editor.Label( fp.Unit ) { FixedWidth = 26 } );
+
+		_valueRefreshers.Add( () =>
+		{
+			if ( field.IsValid() )
+				field.SetValue( fp.Clamped );
+
+			if ( slider.IsValid() )
+				slider.Value = fp.Clamped;
+		} );
 
 		return row;
 	}
@@ -490,21 +596,65 @@ internal sealed class EffigyFeatureDialog : Widget
 		var row = NewRow( out var layout );
 		layout.Add( new Editor.Label( ip.Label ) { FixedWidth = 110 } );
 
-		var slider = new FloatSlider( row )
+		var draggable = Draggable( ip.Min, ip.Max );
+
+		var field = new EffigyNumericField( row, ip.Clamped )
 		{
-			Minimum = ip.Min,
-			Maximum = ip.Max,
-			Step = 1f,
-			Value = ip.Clamped,
+			Min = ip.Min,
+			Max = ip.Max,
+			Integer = true,
 		};
 
-		slider.OnValueEdited = () =>
+		FloatSlider slider = null;
+
+		if ( draggable )
 		{
-			ip.Value = (int)slider.Value;
+			slider = new FloatSlider( row )
+			{
+				Minimum = ip.Min,
+				Maximum = ip.Max,
+				Step = 1f,
+				Value = ip.Clamped,
+			};
+
+			slider.OnValueEdited = () =>
+			{
+				ip.Value = (int)slider.Value;
+				field.SetValue( ip.Value );
+				Edited?.Invoke();
+			};
+		}
+
+		field.ValueEdited = v =>
+		{
+			ip.Value = (int)v;
+
+			if ( slider.IsValid() )
+				slider.Value = ip.Value;
+
 			Edited?.Invoke();
 		};
 
-		layout.Add( slider, 1 );
+		if ( draggable )
+		{
+			field.FixedWidth = 96;
+			layout.Add( field );
+			layout.Add( slider, 1 );
+		}
+		else
+		{
+			layout.Add( field, 1 );
+		}
+
+		_valueRefreshers.Add( () =>
+		{
+			if ( field.IsValid() )
+				field.SetValue( ip.Clamped );
+
+			if ( slider.IsValid() )
+				slider.Value = ip.Clamped;
+		} );
+
 		return row;
 	}
 
@@ -561,28 +711,35 @@ internal sealed class EffigyFeatureDialog : Widget
 		var sub = new Widget( row ) { Layout = Layout.Row() };
 		sub.Layout.Spacing = 4;
 
-		AddAxis( sub, "X", vp.Value.x, v => vp.Value = new Vec3( v, vp.Value.y, vp.Value.z ) );
-		AddAxis( sub, "Y", vp.Value.y, v => vp.Value = new Vec3( vp.Value.x, v, vp.Value.z ) );
-		AddAxis( sub, "Z", vp.Value.z, v => vp.Value = new Vec3( vp.Value.x, vp.Value.y, v ) );
+		AddAxis( sub, "X", Theme.Red, vp.Value.x, v => vp.Value = new Vec3( v, vp.Value.y, vp.Value.z ) );
+		AddAxis( sub, "Y", Theme.Green, vp.Value.y, v => vp.Value = new Vec3( vp.Value.x, v, vp.Value.z ) );
+		AddAxis( sub, "Z", Theme.Blue, vp.Value.z, v => vp.Value = new Vec3( vp.Value.x, vp.Value.y, v ) );
 
 		layout.Add( sub );
 		return row;
 	}
 
-	private void AddAxis( Widget parent, string label, float value, Action<float> set )
+	private void AddAxis( Widget parent, string label, Color colour, float value, Action<float> set )
 	{
-		var slider = new FloatSlider( parent ) { Step = 0.1f, Value = value };
+		var field = new EffigyNumericField( parent, value );
 
-		slider.OnValueEdited = () =>
+		field.ValueEdited = v =>
 		{
-			set( slider.Value );
+			set( v );
 			Edited?.Invoke();
 		};
 
-		parent.Layout.Add( new Editor.Label( label ) { FixedWidth = 12 } );
-		parent.Layout.Add( slider, 1 );
+		parent.Layout.Add( new Editor.Label( label ) { FixedWidth = 12, Color = colour } );
+		parent.Layout.Add( field, 1 );
 	}
 
+	/// <summary>
+	/// Which bodies the feature acts on.
+	///
+	/// This was a disabled label reading "All bodies" - the parameter existed and the kernel
+	/// honoured it, and there was no way to put anything in it. Now it is a selection box like the
+	/// plane and face ones: click it, and the bodies light up in the viewport to be chosen.
+	/// </summary>
 	private Widget BuildBodySelectionRow( BodySelectionParam bs )
 	{
 		var row = NewRow( out var layout );

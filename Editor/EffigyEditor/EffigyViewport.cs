@@ -1,4 +1,4 @@
-﻿using Editor;
+using Editor;
 using Effigy;
 using Sandbox;
 using System;
@@ -72,10 +72,31 @@ internal sealed partial class EffigyViewport : Widget
 	/// <summary>Current model stats for the status bar.</summary>
 	public string ModelInfo { get; private set; } = "";
 
-	/// <summary>Background color — overridden by the active palette.</summary>
-	public Color BackgroundColor { get; set; } = new( 0.82f, 0.84f, 0.86f, 1f );
+	private Color _backgroundColor = new( 0.82f, 0.84f, 0.86f, 1f );
 
-	/// <summary>Plane wire color — overridden by the active palette.</summary>
+	/// <summary>
+	/// Viewport background, driven by the active palette.
+	///
+	/// This was an auto-property, and the camera read it exactly once - in this constructor,
+	/// before any palette had been applied. So every palette in the View menu changed this field
+	/// and nothing else, and all four themes rendered identically. The setter is the whole fix.
+	/// </summary>
+	public Color BackgroundColor
+	{
+		get => _backgroundColor;
+		set
+		{
+			_backgroundColor = value;
+
+			if ( _camera.IsValid() )
+				_camera.BackgroundColor = value;
+		}
+	}
+
+	/// <summary>Grid colour for the reference planes, driven by the active palette. The plane
+	/// OUTLINES keep their per-axis hues (Top orange, Front blue, Right green) because that is how
+	/// you tell them apart; it is the grid infill that has to stay legible against whatever the
+	/// background happens to be.</summary>
 	public Color PlaneColor { get; set; } = new( 0.55f, 0.58f, 0.61f, 1f );
 
 	public EffigyViewport( Widget parent ) : base( parent )
@@ -198,19 +219,6 @@ internal sealed partial class EffigyViewport : Widget
 
 		if ( frameCamera )
 			FrameCamera();
-	}
-
-	/// <summary>Load a model from an asset path string, resolving via Model.Load.</summary>
-	public void SetModelByPath( string path )
-	{
-		if ( string.IsNullOrWhiteSpace( path ) )
-		{
-			SetModel( null );
-			return;
-		}
-
-		var model = Model.Load( path );
-		SetModel( model );
 	}
 
 	/// <summary>
@@ -379,23 +387,21 @@ internal sealed partial class EffigyViewport : Widget
 
 		Gizmo.Draw.IgnoreDepth = true;
 
-		// --- Top plane (XY at z=0) — faint orange ---
-		var topColor = new Color( 0.85f, 0.55f, 0.25f, 0.35f );
-		var topEdgeColor = new Color( 0.85f, 0.55f, 0.25f, 0.55f );
-		DrawPlaneOutline( center, Vector3.Forward, Vector3.Left, s, topEdgeColor );
-		DrawPlaneGrid( center, Vector3.Forward, Vector3.Left, s, step, topColor );
+		// Grid infill comes from the palette so it stays readable on a light or a dark background;
+		// outlines keep their per-axis hue so the three planes remain tellable apart.
+		var grid = PlaneColor.WithAlpha( PlaneColor.a * 0.5f );
 
-		// --- Front plane (XZ at y=0) — faint blue ---
-		var frontColor = new Color( 0.25f, 0.5f, 0.85f, 0.35f );
-		var frontEdgeColor = new Color( 0.25f, 0.5f, 0.85f, 0.55f );
-		DrawPlaneOutline( center, Vector3.Forward, Vector3.Up, s, frontEdgeColor );
-		DrawPlaneGrid( center, Vector3.Forward, Vector3.Up, s, step, frontColor );
+		// --- Top plane (XY at z=0) — orange edge ---
+		DrawPlaneOutline( center, Vector3.Forward, Vector3.Left, s, new Color( 0.85f, 0.55f, 0.25f, 0.55f ) );
+		DrawPlaneGrid( center, Vector3.Forward, Vector3.Left, s, step, grid );
 
-		// --- Right plane (YZ at x=0) — faint green ---
-		var rightColor = new Color( 0.25f, 0.78f, 0.45f, 0.35f );
-		var rightEdgeColor = new Color( 0.25f, 0.78f, 0.45f, 0.55f );
-		DrawPlaneOutline( center, Vector3.Left, Vector3.Up, s, rightEdgeColor );
-		DrawPlaneGrid( center, Vector3.Left, Vector3.Up, s, step, rightColor );
+		// --- Front plane (XZ at y=0) — blue edge ---
+		DrawPlaneOutline( center, Vector3.Forward, Vector3.Up, s, new Color( 0.25f, 0.5f, 0.85f, 0.55f ) );
+		DrawPlaneGrid( center, Vector3.Forward, Vector3.Up, s, step, grid );
+
+		// --- Right plane (YZ at x=0) — green edge ---
+		DrawPlaneOutline( center, Vector3.Left, Vector3.Up, s, new Color( 0.25f, 0.78f, 0.45f, 0.55f ) );
+		DrawPlaneGrid( center, Vector3.Left, Vector3.Up, s, step, grid );
 
 		// An offset sketch lives on a parallel plane, not on the origin reference plane. Keep the
 		// normal reference planes visible, but draw the active sketch plane where the sketch math
@@ -509,8 +515,99 @@ internal sealed partial class EffigyViewport : Widget
 		else
 			label = forward.y > 0 ? "LEFT" : "RIGHT";
 
+		// Set the colour explicitly. Gizmo.Draw.Color is sticky, so without this the label came out
+		// in whatever the last thing drawn happened to leave behind - the Z axis blue on one frame,
+		// the origin handle's yellow on the next.
+		Gizmo.Draw.Color = PlaneColor.WithAlpha( 0.9f );
+
 		Gizmo.Draw.ScreenText( label, new Vector2( _canvas.Size.x - 52f, 18f ),
 			"Roboto", 11f, TextFlag.Center );
+	}
+
+	// --- standard views ----------------------------------------------------------------------
+
+	/// <summary>The orientations Onshape's view cube offers when you click it.</summary>
+	public enum StandardView
+	{
+		Top,
+		Bottom,
+		Front,
+		Back,
+		Left,
+		Right,
+		Isometric,
+	}
+
+	/// <summary>
+	/// Point the camera down a named axis, keeping whatever the current framing distance is.
+	///
+	/// s&box is +x forward, +y left, +z up, so "Front" looks along -x at the XZ plane and "Right"
+	/// looks along +y at the YZ plane — matching how DrawReferencePlanes names the same three.
+	/// </summary>
+	public void SetStandardView( StandardView view )
+	{
+		var dir = view switch
+		{
+			StandardView.Top => new Vector3( 0f, 0f, 1f ),
+			StandardView.Bottom => new Vector3( 0f, 0f, -1f ),
+			StandardView.Front => new Vector3( 1f, 0f, 0f ),
+			StandardView.Back => new Vector3( -1f, 0f, 0f ),
+			StandardView.Left => new Vector3( 0f, 1f, 0f ),
+			StandardView.Right => new Vector3( 0f, -1f, 0f ),
+			_ => new Vector3( 1f, -1f, 0.65f ).Normal,
+		};
+
+		// Looking straight down needs an up vector that is not also straight down.
+		var up = MathF.Abs( dir.z ) > 0.99f ? Vector3.Forward : Vector3.Up;
+
+		PointCameraAt( CurrentFocus(), dir, up );
+	}
+
+	/// <summary>
+	/// Look square at the active sketch plane — Onshape's N.
+	///
+	/// This is bound to a key rather than fired on sketch entry on purpose. Onshape does NOT
+	/// rotate the view when you pick a plane (automating it is a standing request on their forum,
+	/// not shipped behaviour), and taking the camera away from someone who deliberately set up a
+	/// three-quarter view to sketch against existing geometry is worse than one keypress.
+	/// </summary>
+	public void ViewNormalToSketchPlane()
+	{
+		if ( ActiveSketch?.Plane is not { } plane )
+			return;
+
+		var normal = ToWorldDir( plane.Normal );
+		var up = ToWorldDir( plane.YAxis );
+		var centre = OriginPosition + ToWorldDir( plane.Origin );
+
+		// Second press flips to the far side, the way Onshape's N does.
+		if ( Vector3.Dot( _camera.WorldPosition - centre, normal ) > 0f )
+			normal = -normal;
+
+		PointCameraAt( centre, normal, up );
+	}
+
+	/// <summary>What the camera is currently looking at, so a view change rotates around the part
+	/// rather than throwing it off screen.</summary>
+	private Vector3 CurrentFocus()
+	{
+		if ( _renderer.IsValid() && _renderer.Model is { } model )
+			return model.Bounds.Center;
+
+		return Vector3.Zero;
+	}
+
+	private void PointCameraAt( Vector3 focus, Vector3 direction, Vector3 up )
+	{
+		var distance = (_camera.WorldPosition - focus).Length;
+
+		// A camera sitting exactly on the focus has no distance to preserve, which happens before
+		// anything has been framed. Fall back to the reference planes' own scale.
+		if ( distance < 1f )
+			distance = PlaneSize * 1.25f;
+
+		_camera.WorldPosition = focus + direction.Normal * distance;
+		_camera.WorldRotation = Rotation.LookAt( -direction.Normal, up );
 	}
 
 	// --- per-frame tick ---------------------------------------------------------------------

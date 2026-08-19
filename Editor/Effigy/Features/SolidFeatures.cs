@@ -51,6 +51,7 @@ public sealed class ShellFeature : Feature
 			targets[i].Mesh = shelled[i];
 	}
 }
+
 /// <summary>
 /// Flat chamfer along every edge sharper than the angle threshold. Onshape's Fillet, minus the
 /// round — this is the Segments=1 case, a straight cut rather than an arc. See Bevel.cs for why

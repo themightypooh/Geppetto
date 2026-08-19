@@ -1,4 +1,4 @@
-﻿using Editor;
+using Editor;
 using Effigy;
 using Sandbox;
 using System;
@@ -154,7 +154,7 @@ public sealed class EffigyWindow : DockWindow
 		file.Clear();
 		file.AddOption( "New Studio", "common/new.png", NewStudio );
 		file.AddSeparator();
-		file.AddOption( "Export OBJ", "download", ExportObj );
+		file.AddOption( "Export OBJ", "file_download", ExportObj );
 		file.AddOption( "Compile .vmdl", "build", CompileVmdl );
 		file.AddSeparator();
 		file.AddOption( "Close", "close", Close );
@@ -165,15 +165,38 @@ public sealed class EffigyWindow : DockWindow
 		edit.AddOption( "Redo", "redo", Redo, "editor.redo" );
 		edit.AddSeparator();
 		edit.AddOption( "Delete Feature", "delete", DeleteSelectedFeature );
-		edit.AddOption( "Move Feature Up", "arrow_up", MoveFeatureUp );
-		edit.AddOption( "Move Feature Down", "arrow_down", MoveFeatureDown );
+		edit.AddOption( "Move Feature Up", "arrow_upward", MoveFeatureUp );
+		edit.AddOption( "Move Feature Down", "arrow_downward", MoveFeatureDown );
 		edit.AddSeparator();
 		edit.AddOption( "Toggle Suppress", "visibility", ToggleSuppressFeature );
 
 		var view = MenuBar.FindOrCreateMenu( "View" );
 		view.Clear();
 		view.AddOption( "Frame Camera", "center_focus_strong", () => _viewport?.FrameCamera() );
-		view.AddOption( "Reset Origin", "restart_alt", () => _viewport?.ResetOrigin() );
+		view.AddOption( "Normal to Sketch Plane\tN", "straighten", () => _viewport?.ViewNormalToSketchPlane() );
+
+		// "restart_alt" is a Material SYMBOLS name and s&box ships classic Material Icons, so it
+		// was drawing nothing at all - see EffigyIcons for why that whole class of name is unsafe.
+		view.AddOption( "Reset Origin", "settings_backup_restore", () => _viewport?.ResetOrigin() );
+
+		// The orientations Onshape's view cube offers when you click it. Ours is a corner label
+		// rather than a clickable cube, so the list has to be reachable from somewhere.
+		view.AddSeparator();
+
+		foreach ( var standard in new[]
+		{
+			EffigyViewport.StandardView.Isometric,
+			EffigyViewport.StandardView.Top,
+			EffigyViewport.StandardView.Bottom,
+			EffigyViewport.StandardView.Front,
+			EffigyViewport.StandardView.Back,
+			EffigyViewport.StandardView.Left,
+			EffigyViewport.StandardView.Right,
+		} )
+		{
+			var v = standard;
+			view.AddOption( v.ToString(), "videocam", () => _viewport?.SetStandardView( v ) );
+		}
 
 		// Palette submenu
 		view.AddSeparator();
@@ -244,14 +267,14 @@ public sealed class EffigyWindow : DockWindow
 		AddSketchTool( "Rectangle", "crop_square", "Corner rectangle — click two opposite corners", SketchToolKind.Rectangle );
 		AddSketchTool( "Centre Rectangle", "crop_free", "Centre rectangle — click the centre, then a corner", SketchToolKind.RectangleCentre );
 
-		AddSketchTool( "Circle", "circle", "Centre circle — click the centre, then a point on the rim", SketchToolKind.Circle );
+		AddSketchTool( "Circle", "panorama_fish_eye", "Centre circle — click the centre, then a point on the rim", SketchToolKind.Circle );
 		AddSketchTool( "3-Point Circle", "trip_origin", "3-point circle — click three points on the rim", SketchToolKind.CircleThreePoint );
 
 		AddSketchTool( "Arc", "cached", "Centre arc — click the centre, the start, then the end direction", SketchToolKind.Arc );
 		AddSketchTool( "3-Point Arc", "timeline", "3-point arc — click start, end, then a point it passes through", SketchToolKind.ArcThreePoint );
 
-		AddSketchTool( "Polygon", "hexagon", "Inscribed polygon — click the centre, then a corner", SketchToolKind.Polygon );
-		AddSketchTool( "Circumscribed Polygon", "pentagon", "Circumscribed polygon — click the centre, then an edge midpoint", SketchToolKind.PolygonCircumscribed );
+		AddSketchTool( "Polygon", "change_history", "Inscribed polygon — click the centre, then a corner", SketchToolKind.Polygon );
+		AddSketchTool( "Circumscribed Polygon", "details", "Circumscribed polygon — click the centre, then an edge midpoint", SketchToolKind.PolygonCircumscribed );
 
 		AddSketchTool( "Slot", "linear_scale", "Slot — click both ends of the centre line, then the width", SketchToolKind.Slot );
 		AddSketchTool( "Point", "fiber_manual_record", "Point — click to place", SketchToolKind.Point );
@@ -274,7 +297,7 @@ public sealed class EffigyWindow : DockWindow
 
 		_sketchBar.AddSeparator();
 
-		var inspector = new Option( "Profile Inspector", "rule" )
+		var inspector = new Option( "Profile Inspector", "select_all" )
 		{
 			ToolTip = "Profile Inspector — shade closed regions and highlight loose ends",
 			StatusTip = "Closed profiles shade blue; loose or branching points show orange",
@@ -366,8 +389,47 @@ public sealed class EffigyWindow : DockWindow
 	/// as you draw its profile.</summary>
 	private void OnSketchEdited()
 	{
+		// The curve just drawn lives inside a SketchFeature's Sketch object, and PartStudio caches
+		// a CLONE of that sketch after the feature runs (Snapshot.Of). Without marking it dirty the
+		// clone is what every downstream feature keeps reading, so an extrude above the sketch never
+		// sees the profile just closed.
+		if ( ActiveSketchFeature() is { } sketchFeature )
+			_studio.MarkDirty( sketchFeature );
+
 		RebuildStudio();
 		_dialog?.Rebuild();
+	}
+
+	/// <summary>The feature that owns the sketch currently being drawn on, by identity.</summary>
+	private SketchFeature ActiveSketchFeature()
+	{
+		if ( _viewport?.ActiveSketch is not { } active )
+			return null;
+
+		return _studio.Features
+			.OfType<SketchFeature>()
+			.FirstOrDefault( f => ReferenceEquals( f.Sketch, active ) );
+	}
+
+	/// <summary>
+	/// A parameter on the open feature changed.
+	///
+	/// MARKING IT DIRTY IS THE ENTIRE POINT OF THIS METHOD. PartStudio caches the body list after
+	/// each feature and only re-runs from the first dirty one — and Rebuild() ends by setting
+	/// _dirtyFrom to the feature count, so a rebuild with nothing marked reuses the whole cache and
+	/// re-executes NOTHING.
+	///
+	/// This was wired straight to RebuildStudio, so every edit made through a feature dialog was
+	/// silently thrown away: the sketch plane dropdown (which is why a sketch stayed on XY however
+	/// many times you picked Front or Right), an extrude distance, subdivide levels, every checkbox.
+	/// Picking highlighted beautifully and then changed nothing.
+	/// </summary>
+	private void OnFeatureEdited()
+	{
+		if ( _dialog?.Feature is { } feature )
+			_studio.MarkDirty( feature );
+
+		RebuildStudio();
 	}
 
 	/// <summary>The left half of the status bar — what the active tool wants next.</summary>
@@ -416,7 +478,7 @@ public sealed class EffigyWindow : DockWindow
 
 		_dialog = new EffigyFeatureDialog( this, _viewport )
 		{
-			Edited = RebuildStudio,
+			Edited = OnFeatureEdited,
 			Renamed = () => _featureTree?.Rebuild(),
 			Accepted = OnDialogAccepted,
 			Cancelled = OnDialogCancelled,
@@ -559,6 +621,10 @@ public sealed class EffigyWindow : DockWindow
 			_featureTree?.Select( editing );
 
 		UpdateDisplaySketches();
+
+		// Feature.Error and Feature.Warning are only meaningful once the studio has tried to run
+		// the feature, so the dialog's state is refreshed here rather than when it was opened.
+		_dialog?.RefreshState();
 
 		if ( report.HasErrors )
 			Log.Warning( $"[Effigy] rebuild: {string.Join( "; ", report.Errors.Select( e => e.Message ) )}" );
@@ -747,46 +813,170 @@ public sealed class EffigyWindow : DockWindow
 		"\t}\n" +
 		"}\n";
 
-	// --- undo / redo (lightweight — snapshot the feature list) ------------------------------
+	// --- undo / redo -------------------------------------------------------------------------
 
-	private readonly List<List<Feature>> _undoStack = new();
-	private readonly List<List<Feature>> _redoStack = new();
+	/// <summary>
+	/// A point in the studio's history: which features exist, in what order, with what values,
+	/// and where the rollback bar was.
+	///
+	/// The values are the part that was missing. The previous version snapshotted
+	/// `_studio.Features.Select( f => f ).ToList()` - a shallow copy of the LIST, holding the same
+	/// Feature objects. Parameters are the storage in this kernel (see Feature.cs: "The parameter
+	/// object IS the storage"), so undo restored membership and order while silently keeping every
+	/// number the user had changed since. Ctrl+Z after a parameter edit did nothing at all.
+	///
+	/// Values are keyed by parameter object rather than by index, because PrimitiveFeature returns
+	/// a different Parameters list per shape - indices are not stable across a shape change, and
+	/// the parameter objects are (they are readonly fields on the feature).
+	/// </summary>
+	private sealed class StudioSnapshot
+	{
+		public List<Feature> Features;
+		public Dictionary<IParam, object> Values;
+		public int RollbackIndex;
+	}
 
+	private readonly List<StudioSnapshot> _undoStack = new();
+	private readonly List<StudioSnapshot> _redoStack = new();
+
+	private StudioSnapshot Capture()
+	{
+		var values = new Dictionary<IParam, object>();
+
+		foreach ( var feature in _studio.Features )
+		{
+			foreach ( var param in feature.Parameters )
+			{
+				if ( ParamValue( param ) is { } value )
+					values[param] = value;
+			}
+		}
+
+		return new StudioSnapshot
+		{
+			Features = _studio.Features.ToList(),
+			Values = values,
+			RollbackIndex = _studio.RollbackIndex,
+		};
+	}
+
+	private static object ParamValue( IParam param ) => param switch
+	{
+		FloatParam f => f.Value,
+		IntParam i => i.Value,
+		BoolParam b => b.Value,
+		Vec3Param v => v.Value,
+		ChoiceParam c => c.Index,
+		_ => null,
+	};
+
+	private void Restore( StudioSnapshot snapshot )
+	{
+		_studio.Features = snapshot.Features.ToList();
+		_studio.RollbackIndex = snapshot.RollbackIndex;
+
+		foreach ( var (param, value) in snapshot.Values )
+		{
+			switch ( param )
+			{
+				case FloatParam f when value is float v: f.Value = v; break;
+				case IntParam i when value is int v: i.Value = v; break;
+				case BoolParam b when value is bool v: b.Value = v; break;
+				case Vec3Param p when value is Vec3 v: p.Value = v; break;
+				case ChoiceParam c when value is int v: c.Index = v; break;
+			}
+		}
+
+		_studio.MarkAllDirty();
+
+		// The dialog may be open on a feature the restore just removed, and its snapshot of
+		// "before" is now meaningless either way.
+		_dialog?.Close();
+
+		RebuildStudio();
+	}
+
+	/// <summary>
+	/// Mark an undo point.
+	///
+	/// Granularity is one dialog session, not one keystroke: this is called when a feature is
+	/// added, when its dialog is opened to edit it, and on the structural commands. Recording per
+	/// parameter tick would put a hundred steps on the stack for one slider drag.
+	/// </summary>
 	private void RecordUndo()
 	{
-		_undoStack.Add( _studio.Features.Select( f => f ).ToList() );
+		_undoStack.Add( Capture() );
 		_redoStack.Clear();
 
 		if ( _undoStack.Count > 100 )
 			_undoStack.RemoveAt( 0 );
 	}
 
+	// ShortcutType.Window, matching RigControlWindow and ShaderGraph's MainWindow. Without the
+	// attribute the Edit menu's "editor.undo" name resolves to nothing and Ctrl+Z never reaches
+	// this window - the menu item worked and the key did not.
+	[Shortcut( "editor.undo", "CTRL+Z", ShortcutType.Window )]
 	private void Undo()
 	{
 		if ( _undoStack.Count == 0 )
 			return;
 
-		_redoStack.Add( _studio.Features.Select( f => f ).ToList() );
-		var prev = _undoStack[^1];
+		_redoStack.Add( Capture() );
+
+		var previous = _undoStack[^1];
 		_undoStack.RemoveAt( _undoStack.Count - 1 );
 
-		_studio.Features = prev;
-		_studio.MarkAllDirty();
-		RebuildStudio();
+		Restore( previous );
 	}
 
+	// CTRL+Y, which is what this editor's own asset editors bind redo to.
+	[Shortcut( "editor.redo", "CTRL+Y", ShortcutType.Window )]
 	private void Redo()
 	{
 		if ( _redoStack.Count == 0 )
 			return;
 
-		_undoStack.Add( _studio.Features.Select( f => f ).ToList() );
+		_undoStack.Add( Capture() );
+
 		var next = _redoStack[^1];
 		_redoStack.RemoveAt( _redoStack.Count - 1 );
 
-		_studio.Features = next;
-		_studio.MarkAllDirty();
-		RebuildStudio();
+		Restore( next );
+	}
+
+	// --- sketch shortcuts --------------------------------------------------------------------
+
+	// Onshape's own sketch keys: N looks square at the sketch plane, L is line, C is circle,
+	// Q toggles construction geometry. They are documented shortcuts, not invented ones.
+
+	[Shortcut( "effigy.view.normal", "N", ShortcutType.Window )]
+	private void ShortcutViewNormal() => _viewport?.ViewNormalToSketchPlane();
+
+	[Shortcut( "effigy.sketch.line", "L", ShortcutType.Window )]
+	private void ShortcutLineTool() => ArmSketchTool( SketchToolKind.Line );
+
+	[Shortcut( "effigy.sketch.circle", "C", ShortcutType.Window )]
+	private void ShortcutCircleTool() => ArmSketchTool( SketchToolKind.Circle );
+
+	[Shortcut( "effigy.sketch.construction", "Q", ShortcutType.Window )]
+	private void ShortcutConstruction()
+	{
+		if ( _viewport?.IsSketching != true || _constructionOption is null )
+			return;
+
+		_constructionOption.Checked = !_constructionOption.Checked;
+		_viewport.ConstructionMode = _constructionOption.Checked;
+	}
+
+	/// <summary>A sketch tool key outside sketch mode has nothing to arm, and silently switching a
+	/// hidden tool would leave the strip disagreeing with the viewport next time it opened.</summary>
+	private void ArmSketchTool( SketchToolKind kind )
+	{
+		if ( _viewport?.IsSketching != true )
+			return;
+
+		_viewport.SetSketchTool( kind );
+		UpdateSketchToolChecks( kind );
 	}
 
 	// --- palette / theming ------------------------------------------------------------------
@@ -799,10 +989,23 @@ public sealed class EffigyWindow : DockWindow
 		BuildMenuBar(); // rebuild so checkmarks update
 	}
 
+	/// <summary>
+	/// Push the active palette at everything that reads one.
+	///
+	/// This set a single property that the camera had already read once in the viewport's
+	/// constructor, before any palette was applied - so all four palettes rendered identically.
+	/// See EffigyViewport.BackgroundColor for the other half of that fix.
+	/// </summary>
 	private void ApplyPalette()
 	{
-		if ( _viewport is not null )
-			_viewport.BackgroundColor = _palette.ViewportBg;
+		if ( !_viewport.IsValid() )
+			return;
+
+		_viewport.BackgroundColor = _palette.ViewportBg;
+
+		// Grid lines want the palette's dim text colour: it is picked to sit just above the
+		// background in every one of these palettes, which is exactly the job.
+		_viewport.PlaneColor = _palette.TextDim.WithAlpha( 0.55f );
 	}
 }
 

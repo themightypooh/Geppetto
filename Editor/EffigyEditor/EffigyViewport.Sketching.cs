@@ -328,8 +328,13 @@ internal sealed partial class EffigyViewport
 	/// <summary>Show Onshape-style sketch diagnostics: loose endpoints and branching points.</summary>
 	public bool ProfileInspector { get; set; }
 
-	/// <summary>Grid snap in sketch units. Zero disables it.</summary>
-	public float SketchGridSnap { get; set; } = 0.25f;
+	/// <summary>Grid snap in sketch units. Zero means AUTOMATIC — a 1/2/5 x 10^n step chosen so the
+	/// grid stays about GridPixels apart on screen however far you are zoomed in.</summary>
+	public float SketchGridSnap { get; set; } = 0f;
+
+	/// <summary>Snapping and point reuse, which are sketch maths rather than UI and therefore live
+	/// in the kernel where they can be tested without s&amp;box. This only feeds it tolerances.</summary>
+	private readonly SketchSnapper _snapper = new();
 
 	/// <summary>Points clicked so far for the tool in progress. Cleared on completion or Escape.</summary>
 	private readonly List<Vec2> _pending = new();
@@ -353,12 +358,38 @@ internal sealed partial class EffigyViewport
 	/// committed geometry without it competing with the active sketch.</summary>
 	private List<Sketch> _displaySketches = new();
 
-	/// <summary>Radius in world units within which the cursor snaps to an existing point.</summary>
-	private const float SnapRadius = 4f;
+	/// <summary>Cursor-to-point snapping distance, in SCREEN PIXELS.</summary>
+	private const float SnapPixels = 12f;
 
-	/// <summary>Distance in sketch units for horizontal/vertical inference. This is deliberately
-	/// smaller than point snapping: alignment should assist a click, not pull it across the sketch.</summary>
-	private const float AlignmentSnapRadius = 1f;
+	/// <summary>Horizontal/vertical inference distance, in SCREEN PIXELS. Deliberately smaller than
+	/// point snapping: alignment should assist a click, not pull it across the sketch.</summary>
+	private const float AlignmentPixels = 7f;
+
+	/// <summary>Roughly how far apart the snap grid should look on screen, in pixels.</summary>
+	private const float GridPixels = 14f;
+
+	/// <summary>
+	/// How many sketch units one screen pixel covers, at the sketch plane's depth.
+	///
+	/// EVERY SNAP TOLERANCE IS DERIVED FROM THIS, and that is the whole fix. They used to be fixed
+	/// sketch-unit constants - the point-snap radius was 4 units - which is reasonable on a sketch
+	/// spanning tens of units and catastrophic on a part one unit across, where every existing
+	/// point sits inside the snap radius of every new click. A four-corner rectangle collapsed to
+	/// two points joined by degenerate zero-length lines; ProfileFinder counted those twice at the
+	/// shared point, called it a branching sketch, and the region never closed. Zooming in made it
+	/// worse, because the tolerance did not move with the view.
+	/// </summary>
+	private float UnitsPerPixel()
+	{
+		var plane = ActiveSketch?.Plane ?? SketchPlane.XY;
+		var origin = OriginPosition + ToWorldDir( plane.Origin );
+		var distance = MathF.Max( (origin - _camera.WorldPosition).Length, 0.01f );
+
+		// Half the view's world height at that depth, over half its height in pixels.
+		var halfHeight = MathF.Tan( _camera.FieldOfView.DegreeToRadian() * 0.5f ) * distance;
+
+		return halfHeight / MathF.Max( _canvas.Size.y * 0.5f, 1f );
+	}
 
 	public void BeginSketch( Sketch sketch )
 	{
@@ -407,22 +438,6 @@ internal sealed partial class EffigyViewport
 		PushPrompt();
 	}
 
-	/// <summary>Look straight down the sketch plane's normal, the way entering a sketch in any CAD
-	/// package does. Drawing on a plane seen edge-on is impossible, so this is not optional.</summary>
-	public void LookAtSketchPlane()
-	{
-		if ( ActiveSketch is null )
-			return;
-
-		var normal = ToWorldDir( ActiveSketch.Plane.Normal );
-		var up = ToWorldDir( ActiveSketch.Plane.YAxis );
-		var centre = OriginPosition + ToWorldDir( ActiveSketch.Plane.Origin );
-
-		_camera.WorldPosition = centre + normal * (PlaneSize * 1.6f);
-		_camera.WorldRotation = Rotation.LookAt( -normal, up );
-		_camera.ZNear = 0.5f;
-	}
-
 	// --- kernel <-> world -------------------------------------------------------------------
 
 	// Effigy's Vec3 and s&box's Vector3 are the same axes in the same order (x forward, y left,
@@ -448,7 +463,15 @@ internal sealed partial class EffigyViewport
 		if ( ActiveSketch is null )
 			return false;
 
-		var p = ActiveSketch.Plane;
+		return CursorToPlane( ActiveSketch.Plane, out uv );
+	}
+
+	/// <summary>Intersect the cursor ray with any sketch plane. Split out from the active-sketch
+	/// version so a finished sketch's faces can be hit-tested without entering it.</summary>
+	private bool CursorToPlane( SketchPlane p, out Vec2 uv )
+	{
+		uv = Vec2.Zero;
+
 		var origin = OriginPosition + ToWorldDir( p.Origin );
 		var normal = ToWorldDir( p.Normal );
 
@@ -479,139 +502,29 @@ internal sealed partial class EffigyViewport
 	/// </summary>
 	private Vec2 SnapPoint( Vec2 raw )
 	{
-		_snapPoint = -1;
-		_inferenceAxis = 0;
+		// Tolerances are a fixed number of SCREEN PIXELS, converted here to sketch units at the
+		// plane's depth. That conversion is the whole reason snapping survives a part one unit
+		// across; see SketchSnapper for what it looked like when they were world constants.
+		var unitsPerPixel = UnitsPerPixel();
 
-		// The active line is the strongest inference target. Evaluate it before generic point/grid
-		// snapping so a near-horizontal or near-vertical second click cannot be swallowed by a less
-		// useful grid result.
-		if ( SketchTool == SketchToolKind.Line && _pending.Count == 1 )
-		{
-			var start = _pending[0];
-			var dx = MathF.Abs( raw.x - start.x );
-			var dy = MathF.Abs( raw.y - start.y );
+		_snapper.PointRadius = SnapPixels * unitsPerPixel;
+		_snapper.AlignmentRadius = AlignmentPixels * unitsPerPixel;
+		_snapper.GridStep = SketchGridSnap > 0f
+			? SketchGridSnap
+			: SketchSnapper.AutoGridStep( unitsPerPixel, GridPixels );
 
-			if ( dx <= AlignmentSnapRadius && dx <= dy )
-			{
-				_inferenceAxis = 1;
-				raw = new Vec2( start.x, raw.y );
-			}
-			else if ( dy <= AlignmentSnapRadius )
-			{
-				_inferenceAxis = 2;
-				raw = new Vec2( raw.x, start.y );
-			}
-		}
+		var result = _snapper.Snap( ActiveSketch, raw, _pending,
+			SketchTool == SketchToolKind.Line && _pending.Count == 1 );
 
-		var best = SnapRadius * SnapRadius;
+		_snapPoint = result.SnappedPointIndex;
+		_inferenceAxis = result.InferenceAxis;
 
-		// The first endpoint of a new entity is still pending until the entity is committed.
-		// It must nevertheless be a snap target: this is what lets a line close back onto its
-		// start, and lets rectangles/arcs share the point the cursor is visibly over.
-		for ( var i = 0; i < _pending.Count; i++ )
-		{
-			var dist = ( _pending[i] - raw ).LengthSquared;
-
-			if ( dist >= best )
-				continue;
-
-			best = dist;
-			raw = _pending[i];
-		}
-
-		for ( var i = 0; i < ActiveSketch.Points.Count; i++ )
-		{
-			var dist = (ActiveSketch.Points[i] - raw).LengthSquared;
-
-			if ( dist >= best )
-				continue;
-
-			best = dist;
-			_snapPoint = i;
-		}
-
-		if ( _snapPoint >= 0 )
-			return ActiveSketch.Points[_snapPoint];
-
-		var snapped = SketchGridSnap > 0f
-			? new Vec2(
-				MathF.Round( raw.x / SketchGridSnap ) * SketchGridSnap,
-				MathF.Round( raw.y / SketchGridSnap ) * SketchGridSnap )
-			: raw;
-
-		// Onshape's inference lines make it easy to keep geometry level or vertical. Use the
-		// existing sketch points plus the two sketch axes as alignment targets. Point snapping above
-		// still wins when the cursor is actually on a point.
-		var xTarget = 0f;
-		var yTarget = 0f;
-		var xDistance = MathF.Abs( snapped.x );
-		var yDistance = MathF.Abs( snapped.y );
-
-		foreach ( var point in ActiveSketch.Points )
-		{
-			var dx = MathF.Abs( snapped.x - point.x );
-			if ( dx < xDistance )
-			{
-				xDistance = dx;
-				xTarget = point.x;
-			}
-
-			var dy = MathF.Abs( snapped.y - point.y );
-			if ( dy < yDistance )
-			{
-				yDistance = dy;
-				yTarget = point.y;
-			}
-		}
-
-		if ( xDistance <= AlignmentSnapRadius )
-		{
-			snapped = new Vec2( xTarget, snapped.y );
-			_inferenceAxis |= 1;
-		}
-
-		if ( yDistance <= AlignmentSnapRadius )
-		{
-			snapped = new Vec2( snapped.x, yTarget );
-			_inferenceAxis |= 2;
-		}
-
-		// The active line gets its own inference target. This is what makes the second click stay
-		// horizontal or vertical with the first click even when there are no other points nearby.
-		if ( SketchTool == SketchToolKind.Line && _pending.Count == 1 && _inferenceAxis == 0 )
-		{
-			var start = _pending[0];
-			var dx = MathF.Abs( snapped.x - start.x );
-			var dy = MathF.Abs( snapped.y - start.y );
-
-			if ( dx <= AlignmentSnapRadius && dx <= dy )
-			{
-				snapped = new Vec2( start.x, snapped.y );
-				_inferenceAxis |= 1;
-			}
-			else if ( dy <= AlignmentSnapRadius )
-			{
-				snapped = new Vec2( snapped.x, start.y );
-				_inferenceAxis |= 2;
-			}
-		}
-
-		return snapped;
+		return result.Point;
 	}
 
-	/// <summary>Reuse an existing point index when the coordinate already exists, so shared corners
-	/// really are shared and the chain closes. The kernel's AddPoint deliberately does not do this
-	/// - it is a UI concern, and a coordinate-typing caller wants the literal point.</summary>
-	private int PointIndex( Vec2 p )
-	{
-		for ( var i = 0; i < ActiveSketch.Points.Count; i++ )
-		{
-			if ( (ActiveSketch.Points[i] - p).LengthSquared < 1e-8f )
-				return i;
-		}
-
-		return ActiveSketch.AddPoint( p );
-	}
+	/// <summary>Point reuse lives in the kernel with the rest of the snapping - see
+	/// SketchSnapper.PointIndex.</summary>
+	private int PointIndex( Vec2 p ) => SketchSnapper.PointIndex( ActiveSketch, p );
 
 	// --- per-frame sketch pass ---------------------------------------------------------------
 
@@ -662,12 +575,24 @@ internal sealed partial class EffigyViewport
 				break;
 
 			case SketchToolKind.Line when _pending.Count == 2:
-				var endIdx = PointIndex( _pending[1] );
-				var line = Track( new SketchLine( PointIndex( _pending[0] ), endIdx ) );
-				if ( (_inferenceAxis & 1) != 0 )
-					ActiveSketch.AddConstraint( line, SketchConstraintKind.Vertical );
-				else if ( (_inferenceAxis & 2) != 0 )
-					ActiveSketch.AddConstraint( line, SketchConstraintKind.Horizontal );
+			{
+				var from = PointIndex( _pending[0] );
+				var to = PointIndex( _pending[1] );
+
+				// A ZERO-LENGTH LINE IS NOT GEOMETRY. It is what a click that snapped back onto its
+				// own start point produces, and ProfileFinder links it into the adjacency map TWICE
+				// at that one point - so a perfectly good corner reports as joining three curves,
+				// the sketch is called branching, and the region never closes. AddPolygonReusing
+				// has always guarded this; the line tool never did.
+				if ( from != to )
+				{
+					var line = Track( new SketchLine( from, to ) );
+
+					if ( (_inferenceAxis & 1) != 0 )
+						ActiveSketch.AddConstraint( line, SketchConstraintKind.Vertical );
+					else if ( (_inferenceAxis & 2) != 0 )
+						ActiveSketch.AddConstraint( line, SketchConstraintKind.Horizontal );
+				}
 
 				// Chain closes back to the start point — break the chain.
 				if ( endIdx == _chainStartIndex && _chainStartIndex >= 0 )
@@ -684,6 +609,7 @@ internal sealed partial class EffigyViewport
 				}
 				Edited();
 				break;
+			}
 
 			case SketchToolKind.RectangleCentre when _pending.Count == 2:
 				var span = _pending[1] - _pending[0];

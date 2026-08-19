@@ -47,6 +47,19 @@ public abstract class SketchConsumingFeature : Feature
 	/// which is what you want while there is only one sketch in the tree.</summary>
 	public string SketchFeatureId = "";
 
+	/// <summary>
+	/// Which closed region of the sketch to build from, as a point inside it in plane coordinates.
+	/// Null means every region, which is the old behaviour and stays the default.
+	///
+	/// A POINT RATHER THAN AN INDEX, deliberately. Profiles have no identity of their own — they
+	/// are re-found from the curve graph on every rebuild, and their order is whatever order the
+	/// walk happens to discover them in. "Region 2" would silently come to mean a different face
+	/// the moment a curve was added upstream. A point inside the region is stable under every edit
+	/// that does not destroy the region itself, and it is also exactly what a click in the viewport
+	/// already gives us.
+	/// </summary>
+	public Vec2? RegionSeed;
+
 	protected Sketch ResolveSketch( FeatureContext ctx )
 	{
 		if ( ctx.Sketches.Count == 0 )
@@ -61,16 +74,52 @@ public abstract class SketchConsumingFeature : Feature
 		return sketch;
 	}
 
-	protected static List<Profile> ResolveProfiles( Sketch sketch )
+	/// <summary>
+	/// The regions this feature builds from: every closed region in the sketch, or just the one
+	/// under RegionSeed when a face has been picked.
+	///
+	/// Instance rather than static because of the seed. A missing seed region throws by name
+	/// rather than falling back to "all regions" — silently extruding the whole sketch because the
+	/// face you picked stopped existing is exactly the kind of thing you notice three features
+	/// later.
+	/// </summary>
+	protected List<Profile> ResolveProfiles( Sketch sketch )
+	{
+		var all = FindProfiles( sketch );
+
+		if ( RegionSeed is not { } seed )
+			return all;
+
+		var picked = all.Where( p => p.Contains( seed ) ).ToList();
+
+		if ( picked.Count == 0 )
+		{
+			throw new InvalidOperationException(
+				"The selected region no longer exists — the sketch changed underneath it. "
+				+ "Pick a region again, or clear the selection to use every closed region." );
+		}
+
+		return picked;
+	}
+
+	List<Profile> FindProfiles( Sketch sketch )
 	{
 		var found = ProfileFinder.Find( sketch );
 
 		// ProfileFinder reports what it could not make sense of - a point where three curves meet,
-		// for instance, which it will not guess at. Discarding those left a branching sketch
-		// extruding one arbitrary sub-loop and looking like it had worked. If nothing closed at all
-		// the message below is better; otherwise the warning is the most useful thing available.
+		// for instance, which it will not guess at.
+		//
+		// This used to THROW whenever there was any such note, even with perfectly good regions
+		// alongside it, so a single stray line left anywhere in a sketch failed every feature that
+		// read it and there was no way to proceed but to hunt the stray down. Silently ignoring
+		// them is the opposite mistake - that extruded one arbitrary sub-loop and looked like it
+		// had worked. So: build from what did close, and say plainly what was skipped.
 		if ( found.Warnings.Count > 0 && found.Profiles.Count > 0 )
-			throw new InvalidOperationException( string.Join( "; ", found.Warnings ) );
+		{
+			Warning = $"Built from {found.Profiles.Count} closed region"
+				+ (found.Profiles.Count == 1 ? "" : "s")
+				+ $"; ignored: {string.Join( "; ", found.Warnings )}";
+		}
 
 		if ( found.Profiles.Count == 0 )
 		{
