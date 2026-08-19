@@ -23,6 +23,19 @@ cd Effigy.Tests
 dotnet run -- out
 ```
 
+**On a machine with no .NET** — a cloud dev container, say — the SDK is one command away and is
+worth installing before doing anything else:
+
+```
+apt-get update -qq && apt-get install -y dotnet-sdk-8.0
+```
+
+That matters more than it looks. The kernel is engine-free by design, so the whole of it and every
+editor workflow that is "kernel calls in a particular order" can be verified without s&box on the
+machine. A session that skips this ends up reasoning about the code by reading it, and reading it
+is how a bug that made every parameter edit a silent no-op survived long enough to look like three
+unrelated UI faults.
+
 447 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
 2-level-subdivided version of each. Those are the fastest way to see whether something is actually
 right: open them in Blender, or drop one into ModelDoc to find out what s&box makes of it.

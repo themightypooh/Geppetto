@@ -69,6 +69,8 @@ public static class Program
 
 		UVTests.Run();
 
+		EditorFlowTests.Run();
+
 		KernelSyncTests.Run();
 
 		Section( "writing sample OBJs" );

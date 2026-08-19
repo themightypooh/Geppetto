@@ -30,6 +30,11 @@ instead of reading shipped code that uses it. Each of these cost a round trip or
 | Redo is Ctrl+Shift+Z | editor convention is **Ctrl+Y** |
 | No bind-pose accessor exists | `BoneCollection.Bone.LocalTransform` |
 
+**If there is no .NET on the machine, install it first**: `apt-get install -y dotnet-sdk-8.0`.
+The Effigy kernel is engine-free, so `cd Effigy.Tests && dotnet run -- out` compiles and runs ~480
+checks with no s&box anywhere — including headless replays of editor workflows (EditorFlowTests).
+That is the difference between verifying a change and reading it and hoping.
+
 The MCP `sbox` server is attached to whatever project the editor has open. `compile_status` after
 every edit; `read_console` for runtime output. When an API's shape is unknown, a throwaway
 `[ConCmd]` that reflection-dumps the type beats guessing — that's how `LocalTransform` was found.
