@@ -6,7 +6,7 @@ using System.Text;
 namespace Marionette.ShaderForge;
 
 /// <summary>
-/// Assembles selected blocks into a complete .shad file in s&box's VFX wrapper format.
+/// Assembles selected blocks into a complete .shader file in s&box's VFX wrapper format.
 ///
 /// The skeleton is the engine's own minimal shader — HEADER / FEATURES / MODES / COMMON, the two
 /// input structs, then VS and PS — with the blocks' snippets spliced into four points. Everything
@@ -21,6 +21,16 @@ public static class ShaderTemplate
 {
 	/// <summary>Where the generated shaders are written, relative to the project's Assets folder.</summary>
 	public const string OutputFolder = "shaders/custom";
+
+	/// <summary>
+	/// The engine's shader source extension.
+	///
+	/// It is ".shader", NOT the ".shad" the design doc used. Writing .shad produced a file the
+	/// asset pipeline never compiled, so the material system went looking for a .shader_c that
+	/// nothing had produced and failed with ERROR_FILEOPEN. Assets/shaders/pixel_arms.shader is
+	/// the working example in this repo.
+	/// </summary>
+	public const string Extension = ".shader";
 
 	public static string Build( IReadOnlyList<ShaderBlock> blocks, string description )
 	{
@@ -67,7 +77,10 @@ public static class ShaderTemplate
 		sb.AppendLine( "MODES" );
 		sb.AppendLine( "{" );
 		sb.AppendLine( "\tForward();" );
-		sb.AppendLine( "\tDepth();" );
+
+		// Depth takes the mode define, matching Assets/shaders/pixel_arms.shader - the one shader
+		// in this project known to compile.
+		sb.AppendLine( "\tDepth( S_MODE_DEPTH );" );
 		sb.AppendLine( "}" );
 		sb.AppendLine();
 
@@ -113,8 +126,8 @@ public static class ShaderTemplate
 
 		if ( pulseBlock is not null )
 		{
-			sb.AppendLine( "\t\tfloat wave = sin( g_flTime * g_flPulseSpeed * 6.2831853 ) * 0.5 + 0.5;" );
-			sb.AppendLine( "\t\treturn 1.0 - g_flPulseDepth + g_flPulseDepth * wave;" );
+			sb.AppendLine( "\t\tfloat wave = sin( g_flTime * g_flSfPulseSpeed * 6.2831853 ) * 0.5 + 0.5;" );
+			sb.AppendLine( "\t\treturn 1.0 - g_flSfPulseDepth + g_flSfPulseDepth * wave;" );
 		}
 		else
 		{

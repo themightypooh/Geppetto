@@ -6,7 +6,7 @@ namespace Marionette.ShaderForgeEditor;
 /// <summary>
 /// Shader Forge — a shader previewer paired with a keyword-driven generator.
 ///
-/// Describe an effect in plain English, get a working .shad file, see it on a model straight away,
+/// Describe an effect in plain English, get a working .shader file, see it on a model straight away,
 /// tweak it, save it. The generator works from a library of composable HLSL blocks rather than a
 /// language model, so what it produces is deterministic, readable, and yours to edit — see
 /// Editor/ShaderForge for the kernel and SHADER-FORGE-HANDOFF.md for the scope.

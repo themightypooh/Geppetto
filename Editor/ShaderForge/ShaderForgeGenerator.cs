@@ -56,7 +56,7 @@ public sealed class GenerationResult
 }
 
 /// <summary>
-/// Turns a plain-English description into a compiling .shad file.
+/// Turns a plain-English description into a compiling .shader file.
 ///
 /// Pipeline, in order: tokenise → match keywords to blocks → resolve conflicts → compose the
 /// selected snippets → fill the file template.

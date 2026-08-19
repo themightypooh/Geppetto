@@ -18,13 +18,21 @@ public enum ShaderParamKind
 
 /// <summary>
 /// One exposed shader parameter. This is the single source of truth for three separate things:
-/// the HLSL declaration written into the .shad, the tweak control the panel builds, and the
+/// the HLSL declaration written into the .shader, the tweak control the panel builds, and the
 /// <c>Material.Set</c> call that pushes an edited value at the live preview. Keeping them off one
 /// definition is what stops the UI and the shader drifting apart.
 /// </summary>
 public sealed class ShaderParam
 {
-	/// <summary>HLSL variable name, engine convention: g_fl* float, g_v* vector, g_b* bool.</summary>
+	/// <summary>
+	/// HLSL variable name. Engine convention is g_fl* for float and g_v* for vector; every one
+	/// generated here also carries an "Sf" prefix after that.
+	///
+	/// The prefix is not tidiness. Shader parameters are globals sharing a namespace with the
+	/// engine's own material system, and a plain name like g_vColor or g_flRoughness can collide
+	/// with something the engine already declares and quietly lose — the note at the top of
+	/// Assets/shaders/pixel_arms.shader records that costing several rounds of debugging there.
+	/// </summary>
 	public string Name;
 
 	public ShaderParamKind Kind;
@@ -51,10 +59,18 @@ public sealed class ShaderParam
 	public static ShaderParam Bool( string name, string label, bool def ) =>
 		new() { Name = name, Kind = ShaderParamKind.Bool, Label = label, Default = def ? 1f : 0f };
 
-	/// <summary>The HLSL declaration line, including its UI annotations.</summary>
+	/// <summary>
+	/// The HLSL declaration line, including its UI and attribute annotations.
+	///
+	/// Both are emitted. UiGroup is what makes the parameter appear and persist in the material
+	/// editor; Attribute is what lets it be written at runtime — by this tool's tweak sliders, and
+	/// by game code doing Material.Set on a live material. A parameter with only UiGroup can be
+	/// edited in the editor but not driven, which would make Hit Flash and Health Reactive
+	/// pointless: the whole reason those blocks exist is that the game pushes values at them.
+	/// </summary>
 	public string Declare( int orderInGroup )
 	{
-		var ui = $"UiGroup( \"{Group},10/{orderInGroup}\" );";
+		var ui = $"UiGroup( \"{Group},10/{orderInGroup}\" ); Attribute( \"{Name}\" );";
 
 		return Kind switch
 		{

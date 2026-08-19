@@ -8,10 +8,10 @@ namespace Marionette.ShaderForgeEditor;
 
 /// <summary>
 /// The preview-side controls: what the shader is being shown on, which of its material slots the
-/// preview material lands on, and a way to put an existing hand-written .shad on it.
+/// preview material lands on, and a way to put an existing hand-written .shader on it.
 ///
 /// That last part is why this panel is worth having before the generator exists at all — loading
-/// a .shad from the project and inspecting what it exposes makes the tool a working shader
+/// a .shader from the project and inspecting what it exposes makes the tool a working shader
 /// previewer on its own, independent of anything being generated.
 /// </summary>
 internal sealed class ShaderForgePreviewPanel : Widget
@@ -74,7 +74,7 @@ internal sealed class ShaderForgePreviewPanel : Widget
 
 		Layout.Add( new Editor.Label( "Preview an existing shader" ) );
 
-		_shaderPath = new LineEdit( "", this ) { PlaceholderText = "shaders/custom/my_shader.shad" };
+		_shaderPath = new LineEdit( "", this ) { PlaceholderText = "shaders/custom/my_shader.shader" };
 		Layout.Add( _shaderPath );
 
 		Layout.Add( new Button( "Load and apply", "folder_open" ) { Clicked = LoadExisting } );
@@ -199,7 +199,7 @@ internal sealed class ShaderForgePreviewPanel : Widget
 	// --- existing shaders ---------------------------------------------------------------------
 
 	/// <summary>
-	/// Put a hand-written .shad on the preview model and list what it exposes.
+	/// Put a hand-written .shader on the preview model and list what it exposes.
 	///
 	/// The schema read is best-effort by design — see ShaderForgeBridge.ReadSchema. If it comes
 	/// back empty the shader still previews; you just do not get the parameter list.

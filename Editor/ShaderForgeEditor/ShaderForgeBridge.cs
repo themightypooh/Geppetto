@@ -17,7 +17,7 @@ namespace Marionette.ShaderForgeEditor;
 /// the UI where one wrong signature takes the whole window down, they are funnelled through here
 /// and every one is guarded.
 ///
-/// The contract that follows from that: writing the .shad file is the deliverable and must always
+/// The contract that follows from that: writing the .shader file is the deliverable and must always
 /// work — it is plain File.WriteAllText. Live preview is best-effort. If the material APIs are not
 /// shaped the way this assumes, the tool still generates and saves correct shaders and the panel
 /// says preview is unavailable, rather than the tool being dead.
@@ -66,12 +66,13 @@ internal static class ShaderForgeBridge
 
 		var safe = ShaderTemplate.SafeFileName( fileName );
 
-		return Path.Combine( assets, ShaderTemplate.OutputFolder.Replace( '/', Path.DirectorySeparatorChar ), $"{safe}.shad" );
+		return Path.Combine( assets, ShaderTemplate.OutputFolder.Replace( '/', Path.DirectorySeparatorChar ),
+			$"{safe}{ShaderTemplate.Extension}" );
 	}
 
-	/// <summary>The asset-relative path (shaders/custom/foo.shad) for a given file name.</summary>
+	/// <summary>The asset-relative path (shaders/custom/foo.shader) for a given file name.</summary>
 	public static string RelativePathFor( string fileName ) =>
-		$"{ShaderTemplate.OutputFolder}/{ShaderTemplate.SafeFileName( fileName )}.shad";
+		$"{ShaderTemplate.OutputFolder}/{ShaderTemplate.SafeFileName( fileName )}{ShaderTemplate.Extension}";
 
 	// --- writing ----------------------------------------------------------------------------
 
@@ -103,7 +104,7 @@ internal static class ShaderForgeBridge
 			return null;
 		}
 
-		// Best-effort nudge for the asset system. Hot-reload normally notices a new .shad on its
+		// Best-effort nudge for the asset system. Hot-reload normally notices a new .shader on its
 		// own; if this call is wrong the file is still on disk and correct.
 		try
 		{
@@ -196,7 +197,7 @@ internal static class ShaderForgeBridge
 	///
 	/// Reflection rather than a direct property read, deliberately. Shader.Schema is the one API
 	/// in this tool whose shape was never confirmed against engine source, and it is only needed
-	/// for the secondary path — inspecting somebody else's hand-written .shad. Generated shaders
+	/// for the secondary path — inspecting somebody else's hand-written .shader. Generated shaders
 	/// never need it: the generator already knows every parameter it declared, and the tweak panel
 	/// builds from that. So a wrong guess here costs one panel's contents, not the tool.
 	/// </summary>

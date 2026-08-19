@@ -269,8 +269,8 @@ public static class Program
 		var vs = source.Substring( vsStart, psStart - vsStart );
 		var ps = source.Substring( psStart );
 
-		Check( "wind displacement is in the vertex stage", vs.Contains( "g_flWindStrength" ) );
-		Check( "and not in the pixel stage", !ps.Contains( "g_flWindStrength" ) );
+		Check( "wind displacement is in the vertex stage", vs.Contains( "g_flSfWindStrength" ) );
+		Check( "and not in the pixel stage", !ps.Contains( "g_flSfWindStrength" ) );
 
 		Check( "emission is in the pixel stage", ps.Contains( "m.Emission" ) );
 		Check( "and not in the vertex stage", !vs.Contains( "m.Emission" ) );
@@ -330,7 +330,7 @@ public static class Program
 
 		// Floats need a decimal point in HLSL - Default( 1 ) on a float is an int literal.
 		var emissive = BlockLibrary.ById( "emissive" );
-		var strength = emissive.Declarations().First( d => d.Contains( "g_flEmissiveStrength" ) );
+		var strength = emissive.Declarations().First( d => d.Contains( "g_flSfEmissiveStrength" ) );
 
 		Check( "float defaults carry a decimal point", strength.Contains( "2.0" ), strength );
 	}
@@ -347,7 +347,7 @@ public static class Program
 	// --- samples ----------------------------------------------------------------------------
 
 	/// <summary>
-	/// Writes one .shad per sample description. These are the fastest way to see whether the
+	/// Writes one .shader per sample description. These are the fastest way to see whether the
 	/// output is actually right — drop one into the project and let the compiler judge it, which
 	/// is the one check this runner cannot do for itself.
 	/// </summary>
@@ -379,7 +379,7 @@ public static class Program
 				continue;
 			}
 
-			File.WriteAllText( Path.Combine( outDir, $"{name}.shad" ), result.ShaderSource );
+			File.WriteAllText( Path.Combine( outDir, $"{name}{ShaderTemplate.Extension}" ), result.ShaderSource );
 		}
 
 		Console.WriteLine();

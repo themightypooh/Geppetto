@@ -97,7 +97,7 @@ internal sealed class ShaderForgeGeneratorPanel : Widget
 
 		_fileName = new LineEdit( "", this ) { PlaceholderText = "my_shader" };
 		saveRow.Add( _fileName, 1 );
-		saveRow.Add( new Editor.Label( ".shad" ) );
+		saveRow.Add( new Editor.Label( ShaderForge.ShaderTemplate.Extension ) );
 
 		_saveButton = new Button( "Save to project", "save" ) { Clicked = Save, Enabled = false };
 		Layout.Add( _saveButton );
@@ -139,7 +139,7 @@ internal sealed class ShaderForgeGeneratorPanel : Widget
 	/// <summary>
 	/// Writing the shader IS the preview path.
 	///
-	/// A .shad has to be compiled by the asset pipeline before a material can exist for it, and
+	/// A .shader has to be compiled by the asset pipeline before a material can exist for it, and
 	/// the pipeline compiles files on disk. So Generate writes to the project, then asks for a
 	/// material — which also means the thing being previewed is exactly the file that gets saved,
 	/// with no separate in-memory path that could drift from it.

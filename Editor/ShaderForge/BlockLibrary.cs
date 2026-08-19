@@ -62,11 +62,11 @@ float3 SFViewDir( PixelInput i )
 			Keywords = new[] { "glow", "glowing", "neon", "emissive", "emit", "light up", "lit up", "bright" },
 			Params = new[]
 			{
-				ShaderParam.Color( "g_vEmissiveColor", "Emissive Colour", 1.0f, 0.65f, 0.25f ),
-				ShaderParam.Float( "g_flEmissiveStrength", "Emissive Strength", 2.0f, 0.0f, 20.0f ),
+				ShaderParam.Color( "g_vSfEmissiveColor", "Emissive Colour", 1.0f, 0.65f, 0.25f ),
+				ShaderParam.Float( "g_flSfEmissiveStrength", "Emissive Strength", 2.0f, 0.0f, 20.0f ),
 			},
 			SurfaceCode = @"
-	m.Emission += g_vEmissiveColor * g_flEmissiveStrength * SFPulse();",
+	m.Emission += g_vSfEmissiveColor * g_flSfEmissiveStrength * SFPulse();",
 		},
 
 		new ShaderBlock
@@ -80,21 +80,21 @@ float3 SFViewDir( PixelInput i )
 			NeedsNoise = true,
 			Params = new[]
 			{
-				ShaderParam.Float( "g_flDissolveAmount", "Dissolve Amount", 0.0f, 0.0f, 1.0f ),
-				ShaderParam.Float( "g_flDissolveEdge", "Edge Width", 0.08f, 0.001f, 0.4f ),
-				ShaderParam.Color( "g_vDissolveEdgeColor", "Edge Colour", 1.0f, 0.4f, 0.05f ),
-				ShaderParam.Float( "g_flDissolveScale", "Noise Scale", 12.0f, 1.0f, 60.0f ),
+				ShaderParam.Float( "g_flSfDissolveAmount", "Dissolve Amount", 0.0f, 0.0f, 1.0f ),
+				ShaderParam.Float( "g_flSfDissolveEdge", "Edge Width", 0.08f, 0.001f, 0.4f ),
+				ShaderParam.Color( "g_vSfDissolveEdgeColor", "Edge Colour", 1.0f, 0.4f, 0.05f ),
+				ShaderParam.Float( "g_flSfDissolveScale", "Noise Scale", 12.0f, 1.0f, 60.0f ),
 			},
 			SurfaceCode = @"
 	// Cut where the noise falls below the threshold, and light the surviving rim so the cut edge
 	// reads as burning rather than as a hole.
-	float sfDissolveNoise = SFNoise( i.vTextureCoords.xy * g_flDissolveScale );
-	float sfDissolveEdge = sfDissolveNoise - g_flDissolveAmount;
+	float sfDissolveNoise = SFNoise( i.vTextureCoords.xy * g_flSfDissolveScale );
+	float sfDissolveEdge = sfDissolveNoise - g_flSfDissolveAmount;
 
 	clip( sfDissolveEdge );
 
-	float sfDissolveRim = saturate( 1.0 - sfDissolveEdge / max( g_flDissolveEdge, 0.0001 ) );
-	m.Emission += g_vDissolveEdgeColor * sfDissolveRim * 6.0;",
+	float sfDissolveRim = saturate( 1.0 - sfDissolveEdge / max( g_flSfDissolveEdge, 0.0001 ) );
+	m.Emission += g_vSfDissolveEdgeColor * sfDissolveRim * 6.0;",
 		},
 
 		new ShaderBlock
@@ -107,8 +107,8 @@ float3 SFViewDir( PixelInput i )
 			Priority = 5,
 			Params = new[]
 			{
-				ShaderParam.Float( "g_flToonSteps", "Bands", 3.0f, 2.0f, 8.0f ),
-				ShaderParam.Float( "g_flToonBoost", "Band Contrast", 1.0f, 0.0f, 2.0f ),
+				ShaderParam.Float( "g_flSfToonSteps", "Bands", 3.0f, 2.0f, 8.0f ),
+				ShaderParam.Float( "g_flSfToonBoost", "Band Contrast", 1.0f, 0.0f, 2.0f ),
 			},
 			// Quantising the shaded luminance in Post, rather than replacing the lighting model.
 			// A true cel shader overrides the diffuse response, which means owning the whole
@@ -120,9 +120,9 @@ float3 SFViewDir( PixelInput i )
 
 	if ( sfToonLum > 0.0001 )
 	{
-		float sfToonSteps = max( g_flToonSteps, 1.0 );
+		float sfToonSteps = max( g_flSfToonSteps, 1.0 );
 		float sfToonQuant = floor( sfToonLum * sfToonSteps + 0.5 ) / sfToonSteps;
-		float sfToonScale = lerp( 1.0, sfToonQuant / sfToonLum, saturate( g_flToonBoost ) );
+		float sfToonScale = lerp( 1.0, sfToonQuant / sfToonLum, saturate( g_flSfToonBoost ) );
 		result.rgb *= sfToonScale;
 	}",
 		},
@@ -139,20 +139,20 @@ float3 SFViewDir( PixelInput i )
 			NeedsTranslucent = true,
 			Params = new[]
 			{
-				ShaderParam.Float( "g_flGlassOpacity", "Base Opacity", 0.18f, 0.0f, 1.0f ),
-				ShaderParam.Float( "g_flGlassFresnel", "Fresnel Power", 3.0f, 0.5f, 8.0f ),
-				ShaderParam.Color( "g_vGlassTint", "Tint", 0.85f, 0.93f, 1.0f ),
-				ShaderParam.Float( "g_flGlassRoughness", "Surface Roughness", 0.08f, 0.0f, 1.0f ),
+				ShaderParam.Float( "g_flSfGlassOpacity", "Base Opacity", 0.18f, 0.0f, 1.0f ),
+				ShaderParam.Float( "g_flSfGlassFresnel", "Fresnel Power", 3.0f, 0.5f, 8.0f ),
+				ShaderParam.Color( "g_vSfGlassTint", "Tint", 0.85f, 0.93f, 1.0f ),
+				ShaderParam.Float( "g_flSfGlassRoughness", "Surface Roughness", 0.08f, 0.0f, 1.0f ),
 			},
 			SurfaceCode = @"
 	// Edge-on faces go opaque, face-on faces go clear - the whole reason glass reads as glass.
 	float3 sfGlassView = SFViewDir( i );
-	float sfGlassFacing = 1.0 - saturate( dot( normalize( i.vNormalWs ), sfGlassView ) );
-	float sfGlassFresnel = pow( sfGlassFacing, g_flGlassFresnel );
+	float sfGlassFacing = 1.0 - saturate( dot( normalize( i.vNormalWs.xyz ), sfGlassView ) );
+	float sfGlassFresnel = pow( sfGlassFacing, g_flSfGlassFresnel );
 
-	m.Albedo *= g_vGlassTint;
-	m.Roughness = g_flGlassRoughness;
-	m.Opacity = saturate( g_flGlassOpacity + sfGlassFresnel );",
+	m.Albedo *= g_vSfGlassTint;
+	m.Roughness = g_flSfGlassRoughness;
+	m.Opacity = saturate( g_flSfGlassOpacity + sfGlassFresnel );",
 		},
 
 		new ShaderBlock
@@ -163,18 +163,18 @@ float3 SFViewDir( PixelInput i )
 			Keywords = new[] { "water", "ocean", "sea", "wave", "waves", "ripple", "ripples", "liquid" },
 			Params = new[]
 			{
-				ShaderParam.Float( "g_flWaveAmplitude", "Wave Height", 3.0f, 0.0f, 32.0f ),
-				ShaderParam.Float( "g_flWaveFrequency", "Wave Frequency", 0.06f, 0.001f, 0.5f ),
-				ShaderParam.Float( "g_flWaveSpeed", "Wave Speed", 1.5f, 0.0f, 8.0f ),
-				ShaderParam.Color( "g_vWaterTint", "Water Tint", 0.25f, 0.55f, 0.75f ),
+				ShaderParam.Float( "g_flSfWaveAmplitude", "Wave Height", 3.0f, 0.0f, 32.0f ),
+				ShaderParam.Float( "g_flSfWaveFrequency", "Wave Frequency", 0.06f, 0.001f, 0.5f ),
+				ShaderParam.Float( "g_flSfWaveSpeed", "Wave Speed", 1.5f, 0.0f, 8.0f ),
+				ShaderParam.Color( "g_vSfWaterTint", "Water Tint", 0.25f, 0.55f, 0.75f ),
 			},
 			VertexCode = @"
 	// Two crossed sine waves - one sine alone reads as a flag, not a surface.
-	float sfWavePhaseA = ( vPositionOs.x + vPositionOs.y ) * g_flWaveFrequency + g_flTime * g_flWaveSpeed;
-	float sfWavePhaseB = ( vPositionOs.x - vPositionOs.y ) * g_flWaveFrequency * 1.7 + g_flTime * g_flWaveSpeed * 0.8;
-	vPositionOs.z += ( sin( sfWavePhaseA ) + sin( sfWavePhaseB ) * 0.5 ) * g_flWaveAmplitude;",
+	float sfWavePhaseA = ( vPositionOs.x + vPositionOs.y ) * g_flSfWaveFrequency + g_flTime * g_flSfWaveSpeed;
+	float sfWavePhaseB = ( vPositionOs.x - vPositionOs.y ) * g_flSfWaveFrequency * 1.7 + g_flTime * g_flSfWaveSpeed * 0.8;
+	vPositionOs.z += ( sin( sfWavePhaseA ) + sin( sfWavePhaseB ) * 0.5 ) * g_flSfWaveAmplitude;",
 			SurfaceCode = @"
-	m.Albedo *= g_vWaterTint;
+	m.Albedo *= g_vSfWaterTint;
 	m.Roughness = min( m.Roughness, 0.12 );",
 		},
 
@@ -186,15 +186,15 @@ float3 SFViewDir( PixelInput i )
 			Keywords = new[] { "wind", "windy", "foliage", "grass", "leaves", "flag", "sway", "swaying", "blowing" },
 			Params = new[]
 			{
-				ShaderParam.Float( "g_flWindStrength", "Wind Strength", 2.0f, 0.0f, 24.0f ),
-				ShaderParam.Float( "g_flWindSpeed", "Wind Speed", 1.5f, 0.0f, 8.0f ),
-				ShaderParam.Float( "g_flWindFalloff", "Height Falloff", 0.05f, 0.001f, 0.5f ),
+				ShaderParam.Float( "g_flSfWindStrength", "Wind Strength", 2.0f, 0.0f, 24.0f ),
+				ShaderParam.Float( "g_flSfWindSpeed", "Wind Speed", 1.5f, 0.0f, 8.0f ),
+				ShaderParam.Float( "g_flSfWindFalloff", "Height Falloff", 0.05f, 0.001f, 0.5f ),
 			},
 			VertexCode = @"
 	// Masked by height so the base stays planted - without this the whole mesh slides sideways.
-	float sfWindMask = saturate( vPositionOs.z * g_flWindFalloff );
-	float sfWindPhase = g_flTime * g_flWindSpeed + ( vPositionOs.x + vPositionOs.y ) * 0.04;
-	vPositionOs.xy += sin( sfWindPhase ) * g_flWindStrength * sfWindMask;",
+	float sfWindMask = saturate( vPositionOs.z * g_flSfWindFalloff );
+	float sfWindPhase = g_flTime * g_flSfWindSpeed + ( vPositionOs.x + vPositionOs.y ) * 0.04;
+	vPositionOs.xy += sin( sfWindPhase ) * g_flSfWindStrength * sfWindMask;",
 		},
 
 		new ShaderBlock
@@ -205,14 +205,14 @@ float3 SFViewDir( PixelInput i )
 			Keywords = new[] { "hit flash", "hit", "damage", "damaged", "flash", "hurt", "impact" },
 			Params = new[]
 			{
-				ShaderParam.Float( "g_flHitFlash", "Flash Amount", 0.0f, 0.0f, 1.0f ),
-				ShaderParam.Color( "g_vHitFlashColor", "Flash Colour", 1.0f, 1.0f, 1.0f ),
+				ShaderParam.Float( "g_flSfHitFlash", "Flash Amount", 0.0f, 0.0f, 1.0f ),
+				ShaderParam.Color( "g_vSfHitFlashColor", "Flash Colour", 1.0f, 1.0f, 1.0f ),
 			},
 			SurfaceCode = @"
-	// Driven, not animated: the game writes g_flHitFlash on impact and decays it. Animating it
+	// Driven, not animated: the game writes g_flSfHitFlash on impact and decays it. Animating it
 	// here would make every object in the scene flash on the same clock.
-	m.Albedo = lerp( m.Albedo, g_vHitFlashColor, saturate( g_flHitFlash ) );
-	m.Emission += g_vHitFlashColor * g_flHitFlash * 8.0;",
+	m.Albedo = lerp( m.Albedo, g_vSfHitFlashColor, saturate( g_flSfHitFlash ) );
+	m.Emission += g_vSfHitFlashColor * g_flSfHitFlash * 8.0;",
 		},
 
 		new ShaderBlock
@@ -224,14 +224,14 @@ float3 SFViewDir( PixelInput i )
 			NeedsViewDir = true,
 			Params = new[]
 			{
-				ShaderParam.Color( "g_vRimColor", "Rim Colour", 0.4f, 0.7f, 1.0f ),
-				ShaderParam.Float( "g_flRimPower", "Rim Tightness", 3.0f, 0.5f, 8.0f ),
-				ShaderParam.Float( "g_flRimStrength", "Rim Strength", 1.5f, 0.0f, 10.0f ),
+				ShaderParam.Color( "g_vSfRimColor", "Rim Colour", 0.4f, 0.7f, 1.0f ),
+				ShaderParam.Float( "g_flSfRimPower", "Rim Tightness", 3.0f, 0.5f, 8.0f ),
+				ShaderParam.Float( "g_flSfRimStrength", "Rim Strength", 1.5f, 0.0f, 10.0f ),
 			},
 			SurfaceCode = @"
 	float3 sfRimView = SFViewDir( i );
-	float sfRim = pow( 1.0 - saturate( dot( normalize( i.vNormalWs ), sfRimView ) ), g_flRimPower );
-	m.Emission += g_vRimColor * sfRim * g_flRimStrength * SFPulse();",
+	float sfRim = pow( 1.0 - saturate( dot( normalize( i.vNormalWs.xyz ), sfRimView ) ), g_flSfRimPower );
+	m.Emission += g_vSfRimColor * sfRim * g_flSfRimStrength * SFPulse();",
 		},
 
 		new ShaderBlock
@@ -245,19 +245,19 @@ float3 SFViewDir( PixelInput i )
 			NeedsTranslucent = true,
 			Params = new[]
 			{
-				ShaderParam.Color( "g_vHologramColor", "Hologram Colour", 0.3f, 0.9f, 1.0f ),
-				ShaderParam.Float( "g_flScanlineDensity", "Scanline Density", 1.2f, 0.05f, 6.0f ),
-				ShaderParam.Float( "g_flScanlineSpeed", "Scanline Speed", 1.0f, 0.0f, 10.0f ),
-				ShaderParam.Float( "g_flHologramOpacity", "Opacity", 0.6f, 0.0f, 1.0f ),
+				ShaderParam.Color( "g_vSfHologramColor", "Hologram Colour", 0.3f, 0.9f, 1.0f ),
+				ShaderParam.Float( "g_flSfScanlineDensity", "Scanline Density", 1.2f, 0.05f, 6.0f ),
+				ShaderParam.Float( "g_flSfScanlineSpeed", "Scanline Speed", 1.0f, 0.0f, 10.0f ),
+				ShaderParam.Float( "g_flSfHologramOpacity", "Opacity", 0.6f, 0.0f, 1.0f ),
 			},
 			SurfaceCode = @"
 	// Scanlines in SCREEN space, so they stay put as the object turns - the giveaway that
 	// something is projected rather than painted on.
-	float sfHoloScan = sin( i.vPositionSs.y * g_flScanlineDensity - g_flTime * g_flScanlineSpeed * 6.0 ) * 0.5 + 0.5;
+	float sfHoloScan = sin( i.vPositionSs.y * g_flSfScanlineDensity - g_flTime * g_flSfScanlineSpeed * 6.0 ) * 0.5 + 0.5;
 	float sfHoloFlicker = 0.9 + 0.1 * sin( g_flTime * 37.0 );
 
-	m.Emission += g_vHologramColor * ( 0.35 + sfHoloScan * 0.9 ) * sfHoloFlicker * 3.0;
-	m.Opacity = saturate( g_flHologramOpacity * ( 0.55 + sfHoloScan * 0.45 ) * sfHoloFlicker );",
+	m.Emission += g_vSfHologramColor * ( 0.35 + sfHoloScan * 0.9 ) * sfHoloFlicker * 3.0;
+	m.Opacity = saturate( g_flSfHologramOpacity * ( 0.55 + sfHoloScan * 0.45 ) * sfHoloFlicker );",
 		},
 
 		new ShaderBlock
@@ -269,20 +269,20 @@ float3 SFViewDir( PixelInput i )
 			NeedsViewDir = true,
 			Params = new[]
 			{
-				ShaderParam.Color( "g_vOutlineColor", "Outline Colour", 0.05f, 0.05f, 0.06f ),
-				ShaderParam.Float( "g_flOutlineWidth", "Outline Width", 0.35f, 0.01f, 1.0f ),
-				ShaderParam.Float( "g_flOutlineGlow", "Outline Glow", 0.0f, 0.0f, 8.0f ),
+				ShaderParam.Color( "g_vSfOutlineColor", "Outline Colour", 0.05f, 0.05f, 0.06f ),
+				ShaderParam.Float( "g_flSfOutlineWidth", "Outline Width", 0.35f, 0.01f, 1.0f ),
+				ShaderParam.Float( "g_flSfOutlineGlow", "Outline Glow", 0.0f, 0.0f, 8.0f ),
 			},
 			// A silhouette band from the view-facing term, NOT an inverted hull. A real hull
 			// outline is a second pass with front-face culling, and multi-pass shaders are out of
 			// v1 scope. This holds up on rounded shapes and thins out on hard edges seen flat on.
 			SurfaceCode = @"
 	float3 sfOutlineView = SFViewDir( i );
-	float sfOutlineFacing = 1.0 - saturate( dot( normalize( i.vNormalWs ), sfOutlineView ) );
-	float sfOutlineMask = smoothstep( 1.0 - g_flOutlineWidth, 1.0, sfOutlineFacing );
+	float sfOutlineFacing = 1.0 - saturate( dot( normalize( i.vNormalWs.xyz ), sfOutlineView ) );
+	float sfOutlineMask = smoothstep( 1.0 - g_flSfOutlineWidth, 1.0, sfOutlineFacing );
 
-	m.Albedo = lerp( m.Albedo, g_vOutlineColor, sfOutlineMask );
-	m.Emission += g_vOutlineColor * sfOutlineMask * g_flOutlineGlow;",
+	m.Albedo = lerp( m.Albedo, g_vSfOutlineColor, sfOutlineMask );
+	m.Emission += g_vSfOutlineColor * sfOutlineMask * g_flSfOutlineGlow;",
 		},
 
 		new ShaderBlock
@@ -294,8 +294,8 @@ float3 SFViewDir( PixelInput i )
 			ProvidesPulse = true,
 			Params = new[]
 			{
-				ShaderParam.Float( "g_flPulseSpeed", "Pulse Speed", 2.0f, 0.0f, 12.0f ),
-				ShaderParam.Float( "g_flPulseDepth", "Pulse Depth", 0.6f, 0.0f, 1.0f ),
+				ShaderParam.Float( "g_flSfPulseSpeed", "Pulse Speed", 2.0f, 0.0f, 12.0f ),
+				ShaderParam.Float( "g_flSfPulseDepth", "Pulse Depth", 0.6f, 0.0f, 1.0f ),
 			},
 			// No code of its own - it supplies SFPulse's body, which the emissive-style blocks
 			// already multiply by. That is what makes "glowing edges that pulse" work without
@@ -311,11 +311,11 @@ float3 SFViewDir( PixelInput i )
 			Priority = -5,
 			Params = new[]
 			{
-				ShaderParam.Color( "g_vTintColor", "Tint Colour", 1.0f, 1.0f, 1.0f ),
-				ShaderParam.Float( "g_flTintAmount", "Tint Amount", 1.0f, 0.0f, 1.0f ),
+				ShaderParam.Color( "g_vSfTintColor", "Tint Colour", 1.0f, 1.0f, 1.0f ),
+				ShaderParam.Float( "g_flSfTintAmount", "Tint Amount", 1.0f, 0.0f, 1.0f ),
 			},
 			SurfaceCode = @"
-	m.Albedo = lerp( m.Albedo, m.Albedo * g_vTintColor, g_flTintAmount );",
+	m.Albedo = lerp( m.Albedo, m.Albedo * g_vSfTintColor, g_flSfTintAmount );",
 		},
 
 		// ================= the game-specific ones =================
@@ -330,17 +330,17 @@ float3 SFViewDir( PixelInput i )
 			Keywords = new[] { "health", "low health", "dying", "wounded", "critical" },
 			Params = new[]
 			{
-				ShaderParam.Float( "g_flHealthFraction", "Health Fraction", 1.0f, 0.0f, 1.0f ),
-				ShaderParam.Color( "g_vHealthLowColor", "Critical Colour", 1.0f, 0.12f, 0.1f ),
-				ShaderParam.Float( "g_flHealthPulseSpeed", "Critical Pulse Speed", 6.0f, 0.0f, 20.0f ),
+				ShaderParam.Float( "g_flSfHealthFraction", "Health Fraction", 1.0f, 0.0f, 1.0f ),
+				ShaderParam.Color( "g_vSfHealthLowColor", "Critical Colour", 1.0f, 0.12f, 0.1f ),
+				ShaderParam.Float( "g_flSfHealthPulseSpeed", "Critical Pulse Speed", 6.0f, 0.0f, 20.0f ),
 			},
 			SurfaceCode = @"
 	// Pulses faster as it gets worse, which reads as urgency without needing a number on screen.
-	float sfHealthDanger = 1.0 - saturate( g_flHealthFraction );
-	float sfHealthBeat = sin( g_flTime * g_flHealthPulseSpeed * sfHealthDanger ) * 0.5 + 0.5;
+	float sfHealthDanger = 1.0 - saturate( g_flSfHealthFraction );
+	float sfHealthBeat = sin( g_flTime * g_flSfHealthPulseSpeed * sfHealthDanger ) * 0.5 + 0.5;
 
-	m.Albedo = lerp( m.Albedo, g_vHealthLowColor, sfHealthDanger * 0.6 );
-	m.Emission += g_vHealthLowColor * sfHealthDanger * sfHealthBeat * 2.5;",
+	m.Albedo = lerp( m.Albedo, g_vSfHealthLowColor, sfHealthDanger * 0.6 );
+	m.Emission += g_vSfHealthLowColor * sfHealthDanger * sfHealthBeat * 2.5;",
 		},
 
 		new ShaderBlock
@@ -352,8 +352,8 @@ float3 SFViewDir( PixelInput i )
 			NeedsViewDir = true,
 			Params = new[]
 			{
-				ShaderParam.Float( "g_flRarity", "Rarity Tier", 1.0f, 0.0f, 4.0f ),
-				ShaderParam.Float( "g_flLootGlow", "Glow Strength", 2.5f, 0.0f, 12.0f ),
+				ShaderParam.Float( "g_flSfRarity", "Rarity Tier", 1.0f, 0.0f, 4.0f ),
+				ShaderParam.Float( "g_flSfLootGlow", "Glow Strength", 2.5f, 0.0f, 12.0f ),
 			},
 			CommonCode = @"
 // Rarity ramp: 0 common, 1 uncommon, 2 rare, 3 epic, 4 legendary. Interpolating rather than
@@ -372,8 +372,8 @@ float3 SFRarityColor( float tier )
 }",
 			SurfaceCode = @"
 	float3 sfLootView = SFViewDir( i );
-	float sfLootRim = pow( 1.0 - saturate( dot( normalize( i.vNormalWs ), sfLootView ) ), 2.5 );
-	m.Emission += SFRarityColor( g_flRarity ) * sfLootRim * g_flLootGlow * SFPulse();",
+	float sfLootRim = pow( 1.0 - saturate( dot( normalize( i.vNormalWs.xyz ), sfLootView ) ), 2.5 );
+	m.Emission += SFRarityColor( g_flSfRarity ) * sfLootRim * g_flSfLootGlow * SFPulse();",
 		},
 
 		new ShaderBlock
@@ -385,14 +385,14 @@ float3 SFRarityColor( float tier )
 			NeedsViewDir = true,
 			Params = new[]
 			{
-				ShaderParam.Float( "g_flHighlight", "Highlight Amount", 0.0f, 0.0f, 1.0f ),
-				ShaderParam.Color( "g_vHighlightColor", "Highlight Colour", 1.0f, 0.9f, 0.45f ),
-				ShaderParam.Float( "g_flHighlightStrength", "Highlight Strength", 3.0f, 0.0f, 12.0f ),
+				ShaderParam.Float( "g_flSfHighlight", "Highlight Amount", 0.0f, 0.0f, 1.0f ),
+				ShaderParam.Color( "g_vSfHighlightColor", "Highlight Colour", 1.0f, 0.9f, 0.45f ),
+				ShaderParam.Float( "g_flSfHighlightStrength", "Highlight Strength", 3.0f, 0.0f, 12.0f ),
 			},
 			SurfaceCode = @"
 	float3 sfHighlightView = SFViewDir( i );
-	float sfHighlightRim = pow( 1.0 - saturate( dot( normalize( i.vNormalWs ), sfHighlightView ) ), 2.0 );
-	m.Emission += g_vHighlightColor * sfHighlightRim * g_flHighlightStrength * saturate( g_flHighlight ) * SFPulse();",
+	float sfHighlightRim = pow( 1.0 - saturate( dot( normalize( i.vNormalWs.xyz ), sfHighlightView ) ), 2.0 );
+	m.Emission += g_vSfHighlightColor * sfHighlightRim * g_flSfHighlightStrength * saturate( g_flSfHighlight ) * SFPulse();",
 		},
 
 		new ShaderBlock
@@ -403,8 +403,8 @@ float3 SFRarityColor( float tier )
 			Keywords = new[] { "team", "teams", "faction", "friendly", "enemy", "ally", "squad" },
 			Params = new[]
 			{
-				ShaderParam.Float( "g_flTeamIndex", "Team Index", 0.0f, 0.0f, 7.0f ),
-				ShaderParam.Float( "g_flTeamBlend", "Team Blend", 0.75f, 0.0f, 1.0f ),
+				ShaderParam.Float( "g_flSfTeamIndex", "Team Index", 0.0f, 0.0f, 7.0f ),
+				ShaderParam.Float( "g_flSfTeamBlend", "Team Blend", 0.75f, 0.0f, 1.0f ),
 			},
 			CommonCode = @"
 // Eight fixed team colours, picked to stay distinguishable for the most common colour-blindness
@@ -424,7 +424,7 @@ float3 SFTeamColor( float index )
 	return float3( 0.85, 0.85, 0.88 );
 }",
 			SurfaceCode = @"
-	m.Albedo = lerp( m.Albedo, SFTeamColor( g_flTeamIndex ), g_flTeamBlend );",
+	m.Albedo = lerp( m.Albedo, SFTeamColor( g_flSfTeamIndex ), g_flSfTeamBlend );",
 		},
 
 		new ShaderBlock
@@ -435,16 +435,16 @@ float3 SFTeamColor( float index )
 			Keywords = new[] { "snow", "snowy", "frost", "frosty", "ice coat", "iced", "winter" },
 			Params = new[]
 			{
-				ShaderParam.Float( "g_flSnowAmount", "Snow Amount", 0.6f, 0.0f, 1.0f ),
-				ShaderParam.Color( "g_vSnowColor", "Snow Colour", 0.92f, 0.95f, 1.0f ),
-				ShaderParam.Float( "g_flSnowSharpness", "Edge Sharpness", 3.0f, 0.1f, 16.0f ),
+				ShaderParam.Float( "g_flSfSnowAmount", "Snow Amount", 0.6f, 0.0f, 1.0f ),
+				ShaderParam.Color( "g_vSfSnowColor", "Snow Colour", 0.92f, 0.95f, 1.0f ),
+				ShaderParam.Float( "g_flSfSnowSharpness", "Edge Sharpness", 3.0f, 0.1f, 16.0f ),
 			},
 			SurfaceCode = @"
 	// World up, not object up: snow settles the same way however the prop was authored or rotated.
-	float sfSnowFacing = saturate( dot( normalize( i.vNormalWs ), float3( 0.0, 0.0, 1.0 ) ) );
-	float sfSnowMask = saturate( pow( sfSnowFacing, g_flSnowSharpness ) * g_flSnowAmount * 2.0 );
+	float sfSnowFacing = saturate( dot( normalize( i.vNormalWs.xyz ), float3( 0.0, 0.0, 1.0 ) ) );
+	float sfSnowMask = saturate( pow( sfSnowFacing, g_flSfSnowSharpness ) * g_flSfSnowAmount * 2.0 );
 
-	m.Albedo = lerp( m.Albedo, g_vSnowColor, sfSnowMask );
+	m.Albedo = lerp( m.Albedo, g_vSfSnowColor, sfSnowMask );
 	m.Roughness = lerp( m.Roughness, 0.85, sfSnowMask );",
 		},
 
@@ -457,18 +457,18 @@ float3 SFTeamColor( float index )
 			NeedsNoise = true,
 			Params = new[]
 			{
-				ShaderParam.Float( "g_flDistortStrength", "Distortion Strength", 0.03f, 0.0f, 0.25f ),
-				ShaderParam.Float( "g_flDistortSpeed", "Rise Speed", 0.4f, 0.0f, 4.0f ),
-				ShaderParam.Float( "g_flDistortScale", "Noise Scale", 6.0f, 0.5f, 40.0f ),
+				ShaderParam.Float( "g_flSfDistortStrength", "Distortion Strength", 0.03f, 0.0f, 0.25f ),
+				ShaderParam.Float( "g_flSfDistortSpeed", "Rise Speed", 0.4f, 0.0f, 4.0f ),
+				ShaderParam.Float( "g_flSfDistortScale", "Noise Scale", 6.0f, 0.5f, 40.0f ),
 			},
 			// Warps the surface's OWN uvs, not the frame buffer. A true screen-space heat haze
 			// samples a copy of what is behind the object, which needs a translucent pass and a
 			// frame-buffer grab - out of v1 scope. On a textured surface this reads correctly;
 			// on an untextured one there is nothing to warp and it will look like nothing.
 			UvCode = @"
-	float2 sfDistortUv = i.vTextureCoords.xy * g_flDistortScale + float2( 0.0, -g_flTime * g_flDistortSpeed );
+	float2 sfDistortUv = i.vTextureCoords.xy * g_flSfDistortScale + float2( 0.0, -g_flTime * g_flSfDistortSpeed );
 	float2 sfDistortOffset = float2( SFNoise( sfDistortUv ), SFNoise( sfDistortUv + 17.3 ) ) - 0.5;
-	i.vTextureCoords.xy += sfDistortOffset * g_flDistortStrength;",
+	i.vTextureCoords.xy += sfDistortOffset * g_flSfDistortStrength;",
 		},
 	};
 }
