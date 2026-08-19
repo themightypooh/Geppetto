@@ -90,7 +90,7 @@ internal sealed class EffigyPalette
 //  double-clicking any Effigy-related asset (if/when one exists).
 // ============================================================================
 
-[EditorApp( "Marionette", "view_in_ar", "Parametric modelling, subdivision, and rig-ready mesh export" )]
+[EditorApp( "Effigy", "view_in_ar", "Parametric modelling, subdivision, and rig-ready mesh export" )]
 public sealed class EffigyWindow : DockWindow
 {
 	// --- core state -------------------------------------------------------------------------
@@ -458,7 +458,9 @@ public sealed class EffigyWindow : DockWindow
 
 	private void BuildStatusBar()
 	{
-		_statusWidget = new StatusBar( this );
+		// StatusBar has no layout of its own until one is assigned - dropping this initialiser is
+		// what made BuildStatusBar throw on the very next line.
+		_statusWidget = new StatusBar( this ) { Layout = Layout.Row() };
 		_statusWidget.Layout.Margin = new Sandbox.UI.Margin( 8, 2 );
 		_statusWidget.Layout.Spacing = 16;
 
