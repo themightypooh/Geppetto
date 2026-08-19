@@ -10,7 +10,7 @@ namespace Marionette.ShaderForgeEditor;
 /// touches shaders yet — that starts at Phase 3 (manual preview) and Phase 4 (generation), each
 /// building on this shell rather than the other way around.
 /// </summary>
-[EditorApp( "Marionette", "auto_awesome", "Shader previewer and keyword-driven shader generator" )]
+[EditorApp( "Shader Forge", "auto_awesome", "Shader previewer and keyword-driven shader generator" )]
 public sealed class ShaderForgeWindow : DockWindow
 {
 	private ShaderForgeViewport _viewport;
