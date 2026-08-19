@@ -80,7 +80,7 @@ internal sealed class EffigyPalette
 
 // ============================================================================
 //  The main Effigy dock window — Onshape-faithful layout with:
-//    Top:    thin dark toolbar with compact feature-creation icon buttons
+//    Top:    square feature-creation icon buttons floating over the viewport's top edge
 //    Left:   flat feature tree (Default geometry → features → bodies)
 //    Center: 3D viewport with reference planes, origin, orbit camera
 //    Right:  parameter panel for the selected feature
@@ -112,6 +112,11 @@ public sealed class EffigyWindow : DockWindow
 	private EffigyFeatureTreePanel _featureTree;
 	private EffigyFeatureDialog _dialog;
 	private Widget _leftPanel;
+
+	/// <summary>The creation-tool strip of square buttons floating over the viewport. Lives on
+	/// the viewport rather than in a window toolbar row, so the tools sit on the thing they
+	/// act on.</summary>
+	private EffigyToolStrip _toolStrip;
 
 	/// <summary>The sketch toolbar - a second row that exists only while a sketch is open, the way
 	/// Onshape's does. Its tools mean nothing outside sketch mode, and leaving them visible but
@@ -183,31 +188,33 @@ public sealed class EffigyWindow : DockWindow
 		}
 	}
 
-	// --- toolbar (Onshape-style compact icon row) ------------------------------------------
+	// --- toolbar (square icon buttons floating over the viewport) -------------------------
 
 	private void BuildToolbar()
 	{
-		var bar = new ToolBar( this, "EffigyToolbar" );
-		bar.SetIconSize( 22 );
-		AddToolBar( bar, ToolbarPosition.Top );
+		// The creation tools float over the viewport's top-left edge, one square per button,
+		// instead of a window toolbar row - the same spot the sketch toolbar appears when a
+		// sketch opens. The viewport is the thing the tools act on, so they live on it.
+		_toolStrip = new EffigyToolStrip( _viewport );
+		_viewport.CompleteLayout( _toolStrip );
 
 		// --- creation tools (each adds a feature to the studio) ---
-		bar.AddOption( CreateOption( "Sketch", "edit", "Add a Sketch feature — draw lines/arcs on a plane", () => new SketchFeature() ) );
-		bar.AddSeparator();
-		bar.AddOption( CreateOption( "Primitive", "square", "Add a Primitive (Box, Cylinder, Sphere, etc.)", () => new PrimitiveFeature() ) );
-		bar.AddOption( CreateOption( "Extrude", "expand_less", "Add an Extrude — pull a sketch profile into a solid", () => new ExtrudeFeature() ) );
-		bar.AddOption( CreateOption( "Revolve", "360", "Add a Revolve — sweep a sketch profile around an axis", () => new RevolveFeature() ) );
-		bar.AddSeparator();
-		bar.AddOption( CreateOption( "Bevel", "call_made", "Add a Bevel — chamfer sharp edges", () => new BevelFeature() ) );
-		bar.AddOption( CreateOption( "Shell", "crop_square", "Add a Shell — hollow to a wall thickness", () => new ShellFeature() ) );
-		bar.AddOption( CreateOption( "Subdivide", "grid_on", "Add a Subdivide — Catmull-Clark subdivision", () => new SubdivideFeature() ) );
-		bar.AddSeparator();
-		bar.AddOption( CreateOption( "Mirror", "flip", "Add a Mirror — reflect bodies across a plane", () => new MirrorFeature() ) );
-		bar.AddOption( CreateOption( "Pattern", "content_copy", "Add a Linear Pattern — copy bodies along a direction", () => new LinearPatternFeature() ) );
-		bar.AddOption( CreateOption( "Circular Pattern", "rotate_right", "Add a Circular Pattern — copy bodies around an axis", () => new CircularPatternFeature() ) );
-		bar.AddSeparator();
-		bar.AddOption( CreateOption( "Transform", "open_with", "Add a Transform — move, rotate or scale bodies", () => new TransformFeature() ) );
-		bar.AddOption( CreateOption( "UV Project", "texture", "Add a UV Project — re-project UVs (box or planar)", () => new UVProjectFeature() ) );
+		AddCreateButton( "Sketch", "edit", "Add a Sketch feature — draw lines/arcs on a plane", () => new SketchFeature() );
+		_toolStrip.AddGap();
+		AddCreateButton( "Primitive", "square", "Add a Primitive (Box, Cylinder, Sphere, etc.)", () => new PrimitiveFeature() );
+		AddCreateButton( "Extrude", "expand_less", "Add an Extrude — pull a sketch profile into a solid", () => new ExtrudeFeature() );
+		AddCreateButton( "Revolve", "360", "Add a Revolve — sweep a sketch profile around an axis", () => new RevolveFeature() );
+		_toolStrip.AddGap();
+		AddCreateButton( "Bevel", "call_made", "Add a Bevel — chamfer sharp edges", () => new BevelFeature() );
+		AddCreateButton( "Shell", "crop_square", "Add a Shell — hollow to a wall thickness", () => new ShellFeature() );
+		AddCreateButton( "Subdivide", "grid_on", "Add a Subdivide — Catmull-Clark subdivision", () => new SubdivideFeature() );
+		_toolStrip.AddGap();
+		AddCreateButton( "Mirror", "flip", "Add a Mirror — reflect bodies across a plane", () => new MirrorFeature() );
+		AddCreateButton( "Pattern", "content_copy", "Add a Linear Pattern — copy bodies along a direction", () => new LinearPatternFeature() );
+		AddCreateButton( "Circular Pattern", "rotate_right", "Add a Circular Pattern — copy bodies around an axis", () => new CircularPatternFeature() );
+		_toolStrip.AddGap();
+		AddCreateButton( "Transform", "open_with", "Add a Transform — move, rotate or scale bodies", () => new TransformFeature() );
+		AddCreateButton( "UV Project", "texture", "Add a UV Project — re-project UVs (box or planar)", () => new UVProjectFeature() );
 
 		BuildSketchToolbar();
 	}
@@ -369,15 +376,10 @@ public sealed class EffigyWindow : DockWindow
 			_promptLabel.Text = prompt;
 	}
 
-	/// <summary>A toolbar button that appends one feature to the history. The factory runs per
-	/// click rather than the feature being built up front, so each press makes a new one.</summary>
-	private Option CreateOption( string text, string icon, string tip, Func<Feature> factory ) =>
-		new( text, icon )
-		{
-			ToolTip = tip,
-			StatusTip = tip,
-			Triggered = () => AddFeature( factory() ),
-		};
+	/// <summary>A square strip button that appends one feature to the history. The factory runs
+	/// per click rather than the feature being built up front, so each press makes a new one.</summary>
+	private void AddCreateButton( string text, string icon, string tip, Func<Feature> factory ) =>
+		_toolStrip.AddButton( icon, tip, () => AddFeature( factory() ) );
 
 	/// <summary>
 	/// Append a feature and leave it selected with its dialog open — Onshape's behaviour, and the
@@ -456,7 +458,7 @@ public sealed class EffigyWindow : DockWindow
 
 	private void BuildStatusBar()
 	{
-		_statusWidget = new StatusBar( this ) { Layout = Layout.Row() };
+		_statusWidget = new StatusBar( this );
 		_statusWidget.Layout.Margin = new Sandbox.UI.Margin( 8, 2 );
 		_statusWidget.Layout.Spacing = 16;
 
@@ -551,8 +553,25 @@ public sealed class EffigyWindow : DockWindow
 		if ( _dialog?.Feature is { } editing )
 			_featureTree?.Select( editing );
 
+		UpdateDisplaySketches();
+
 		if ( report.HasErrors )
 			Log.Warning( $"[Effigy] rebuild: {string.Join( "; ", report.Errors.Select( e => e.Message ) )}" );
+	}
+
+	/// <summary>Push all committed sketches from the feature tree into the viewport so they
+	/// remain visible after leaving sketch mode.</summary>
+	private void UpdateDisplaySketches()
+	{
+		if ( _viewport is null )
+			return;
+
+		var sketches = _studio.Features
+			.OfType<SketchFeature>()
+			.Select( f => f.Sketch )
+			.ToList();
+
+		_viewport.SetDisplaySketches( sketches );
 	}
 
 	private void NewStudio()
@@ -959,5 +978,120 @@ internal sealed class EffigyFeatureTreePanel : Widget
 				label += " (suppressed)";
 			Paint.DrawText( item.Rect.Shrink( 22, 0, 0, 0 ), label, TextFlag.LeftCenter );
 		}
+	}
+}
+
+// ============================================================================
+//  The tool strip — a row of square icon buttons sitting at the top of the
+//  viewport's Column layout, one square per creation tool. It replaces the
+//  old window toolbar row: the buttons sit on the viewport they act on, at
+//  the same edge the sketch toolbar appears when a sketch opens.
+//
+//  The strip is added to the viewport's Column layout above the 3D canvas,
+//  which fills the rest of the space. Same painting pattern as the
+//  hand-painted RigIconButton in the rig editor.
+// ============================================================================
+
+internal sealed class EffigyToolStrip : Widget
+{
+	public EffigyToolStrip( Widget parent ) : base( parent )
+	{
+		Layout = Layout.Row();
+		Layout.Spacing = 2;
+		Layout.Margin = new Sandbox.UI.Margin( 4, 4 );
+		FixedHeight = 36;
+	}
+
+	public EffigyToolButton AddButton( string icon, string tip, Action clicked )
+	{
+		var button = new EffigyToolButton( this, icon, tip, clicked );
+		Layout.Add( button );
+		AdjustSize();
+		return button;
+	}
+
+	/// <summary>A narrow spacer standing in for the old toolbar's separators, keeping the
+	/// tool groups readable.</summary>
+	public void AddGap()
+	{
+		Layout.Add( new Widget( this ) { FixedWidth = 8 } );
+		AdjustSize();
+	}
+}
+
+/// <summary>One square of the strip — a hand-painted icon button, 28x28, matching the
+/// editor's own button states so it reads as chrome rather than a foreign object.</summary>
+internal sealed class EffigyToolButton : Widget
+{
+	private readonly string _icon;
+	private readonly Action _clicked;
+	private bool _pressed;
+
+	public EffigyToolButton( Widget parent, string icon, string tip, Action clicked ) : base( parent )
+	{
+		_icon = icon;
+		_clicked = clicked;
+
+		ToolTip = tip;
+		StatusTip = tip;
+		Cursor = CursorShape.Finger;
+		MouseTracking = true;
+
+		FixedSize = new Vector2( 28, 28 );
+	}
+
+	protected override void OnPaint()
+	{
+		Paint.Antialiasing = true;
+
+		var hovered = IsUnderMouse;
+
+		Paint.ClearPen();
+		Paint.SetBrush( _pressed
+			? Theme.ControlBackground.Darken( 0.2f )
+			: hovered ? Theme.ControlBackground.Lighten( 0.4f ) : Theme.ControlBackground );
+
+		Paint.DrawRect( LocalRect, 4f );
+
+		Paint.SetPen( hovered ? Theme.Text : Theme.TextLight );
+		Paint.DrawIcon( LocalRect, _icon, 16, TextFlag.Center );
+	}
+
+	protected override void OnMousePress( MouseEvent e )
+	{
+		if ( !e.LeftMouseButton )
+			return;
+
+		_pressed = true;
+		Update();
+		e.Accepted = true;
+	}
+
+	protected override void OnMouseReleased( MouseEvent e )
+	{
+		if ( !_pressed )
+			return;
+
+		_pressed = false;
+		Update();
+
+		// Only fires if released while still over the button - dragging off to cancel is
+		// what every other button does.
+		if ( IsUnderMouse )
+			_clicked?.Invoke();
+	}
+
+	protected override void OnMouseEnter()
+	{
+		base.OnMouseEnter();
+		Update();
+	}
+
+	protected override void OnMouseLeave()
+	{
+		base.OnMouseLeave();
+
+		_pressed = false;
+		Update();
 	}
 }
