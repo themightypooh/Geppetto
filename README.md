@@ -2,7 +2,8 @@
 
 A control-rig animation editor 
 
-.
+# Effigy 
+A parametric CAD modeling tool
 
 ## Install
 
