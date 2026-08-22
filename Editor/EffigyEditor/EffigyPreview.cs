@@ -1,4 +1,4 @@
-using Effigy;
+﻿using Effigy;
 using Sandbox;
 using System;
 using System.Collections.Generic;
@@ -21,9 +21,17 @@ namespace Marionette.EditorTools;
 /// </summary>
 internal static class EffigyPreview
 {
-	/// <summary>Plain grey dev material. Effigy's material slots are integers with no binding to
-	/// real materials yet, so there is nothing better to pick per face.</summary>
-	private const string PreviewMaterial = "materials/dev/reflectivity_30.vmat";
+	/// <summary>
+	/// FLAT grey, with no pattern on it at all. Effigy's material slots are integers with no
+	/// binding to real materials yet, so there is nothing better to pick per face.
+	///
+	/// It used to be dev/reflectivity_30, and that material actively lies about scale: its texture
+	/// is a grid with the number "30" printed in every tile - the material's reflectivity, nothing
+	/// to do with size - and caps take plane coordinates straight through as UVs, so it tiles once
+	/// per sketch unit. A 30x30 face therefore came out covered in thirty-odd squares each labelled
+	/// "30", which reads as a part 900 units across. gray_50's texture is a single flat colour.
+	/// </summary>
+	private const string PreviewMaterial = "materials/dev/gray_50.vmat";
 
 	public static Model Build( PolyMesh mesh, float smoothingAngleDegrees = MeshNormals.DefaultSmoothingAngleDegrees )
 	{
@@ -60,14 +68,20 @@ internal static class EffigyPreview
 				vertices.Add( new SimpleVertex( position, normal, TangentFor( normal ), new Vector2( uv.x, uv.y ) ) );
 			}
 
-			// Fan from corner 0. Effigy's faces are convex - every one of them comes out of a
-			// primitive, an extrude cap or a subdivision step, all of which produce convex
-			// polygons - so a fan is a valid triangulation and no ear clipping is needed.
-			for ( var c = 2; c < face.Count; c++ )
+			// EAR CLIPPING, NOT A FAN. This used to fan from corner 0 on the grounds that every
+			// face the kernel produces is convex. Extrude caps are not: they are whatever closed
+			// region was drawn, and fanning a concave one fills its notches in - draw a dart and
+			// the solid came back as a quadrilateral with the concave corner swallowed.
+			var polygon = new List<Vec3>( face.Count );
+
+			for ( var k = 0; k < face.Count; k++ )
+				polygon.Add( mesh.Positions[face.Indices[k]] );
+
+			foreach ( var (a, b, cc) in Triangulate.Face( polygon ) )
 			{
-				indices.Add( first );
-				indices.Add( first + c - 1 );
-				indices.Add( first + c );
+				indices.Add( first + a );
+				indices.Add( first + b );
+				indices.Add( first + cc );
 			}
 		}
 

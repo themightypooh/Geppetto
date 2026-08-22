@@ -1,4 +1,4 @@
-using Editor;
+﻿using Editor;
 using Sandbox;
 using System;
 
@@ -32,16 +32,40 @@ internal enum EffigyIcon
 /// inside one, Mirror reflects a solid shape into an outlined one.
 ///
 /// Every icon is drawn around <c>center</c> inside a nominal 18x18 box, so they all read at the
-/// same weight in a 28px button.
+/// same weight, then scaled up as one by the <c>scale</c> argument to fit the button drawing it.
 /// </summary>
 internal static class EffigyIcons
 {
 	/// <summary>Stroke width every outline uses, so no icon looks heavier than its neighbours.</summary>
 	private const float Stroke = 1.6f;
 
-	public static void Draw( EffigyIcon icon, Vector2 center, Color color )
+	// --- the pencil's own colours -------------------------------------------------------------
+	//
+	// The ONLY icon that does not draw entirely in the colour it is handed. Sketch is the tool
+	// every part starts with and the only button in the strip carrying a text label, so it is the
+	// one worth making findable at a glance rather than another grey glyph in a row of grey
+	// glyphs. A yellow #2 is about as legible as a small object gets.
+	//
+	// Chosen against a dark viewport: the graphite is a mid grey rather than near-black, because a
+	// true graphite point disappears into the background exactly where the icon needs to read.
+
+	private static readonly Color PencilBody = new( 0.96f, 0.76f, 0.15f );
+	private static readonly Color PencilFerrule = new( 0.74f, 0.77f, 0.80f );
+	private static readonly Color PencilEraser = new( 0.91f, 0.56f, 0.58f );
+	private static readonly Color PencilWood = new( 0.87f, 0.68f, 0.44f );
+	private static readonly Color PencilGraphite = new( 0.45f, 0.47f, 0.50f );
+
+	/// <summary>Multiplier applied to every coordinate, radius and pen width for the icon being
+	/// drawn right now. Every glyph is authored against the nominal 18x18 box, so one factor set
+	/// here at the top of Draw is enough to resize all of them together — the strip's buttons grew
+	/// past the size the glyphs were drawn for and a fixed-size glyph in a big button reads as a
+	/// mistake. Painting only ever happens on the editor UI thread, so a plain static is safe.</summary>
+	private static float _scale = 1f;
+
+	public static void Draw( EffigyIcon icon, Vector2 center, Color color, float scale = 1f )
 	{
 		Editor.Paint.Antialiasing = true;
+		_scale = scale;
 
 		switch ( icon )
 		{
@@ -65,7 +89,7 @@ internal static class EffigyIcons
 	private static void Stroked( Color color, float width = Stroke )
 	{
 		Editor.Paint.ClearBrush();
-		Editor.Paint.SetPen( color, width );
+		Editor.Paint.SetPen( color, width * _scale );
 	}
 
 	private static void Filled( Color color )
@@ -92,7 +116,7 @@ internal static class EffigyIcons
 		{
 			var t = fromDegrees + (toDegrees - fromDegrees) * (i / (float)segments);
 			var radians = t * MathF.PI / 180f;
-			var point = center + new Vector2( MathF.Cos( radians ) * radius, MathF.Sin( radians ) * radius );
+			var point = center + new Vector2( MathF.Cos( radians ) * radius, MathF.Sin( radians ) * radius ) * _scale;
 
 			if ( i > 0 )
 				Editor.Paint.DrawLine( previous, point );
@@ -107,6 +131,8 @@ internal static class EffigyIcons
 		var d = direction.Normal;
 		var side = new Vector2( -d.y, d.x );
 
+		size *= _scale;
+
 		Filled( color );
 		Editor.Paint.DrawPolygon(
 			tip,
@@ -114,24 +140,71 @@ internal static class EffigyIcons
 			tip - d * size - side * size * 0.62f );
 	}
 
-	private static Vector2 At( Vector2 center, float x, float y ) => center + new Vector2( x, y );
+	private static Vector2 At( Vector2 center, float x, float y ) => center + new Vector2( x, y ) * _scale;
+
+	/// <summary>A rect in the same nominal icon space At() uses, for the glyphs that need
+	/// DrawRect/DrawCircle rather than a walked outline.</summary>
+	private static Rect Box( Vector2 center, float x, float y, float width, float height )
+		=> new Rect( center.x + x * _scale, center.y + y * _scale, width * _scale, height * _scale );
 
 	// --- the icons --------------------------------------------------------------------------
 
-	/// <summary>A sketch plane seen in perspective with a drawn curve sitting on it.</summary>
+	/// <summary>
+	/// A pencil drawing on a sheet, its point resting ON the paper's top edge.
+	///
+	/// The pencil used to be a plain parallelogram - blunt at both ends, with one of its corners
+	/// landing on the paper line. A pencil reads as a pencil because of the cone at the end, and
+	/// the mark reads as DRAWING because that cone touches the paper rather than hovering above
+	/// it or crossing through it. So: a solid tapered point that ends exactly on the line, an
+	/// outlined barrel behind it, and a band where the ferrule would be.
+	///
+	/// Every coordinate is derived from the tip and the pencil's axis, laid out along a 45 degree
+	/// diagonal, so the point cannot drift off the paper if the proportions are adjusted.
+	///
+	/// The paper keeps the colour it is handed; the pencil does not (see PencilBody and friends).
+	/// </summary>
 	private static void PaintSketch( Vector2 c, Color color )
 	{
-		Stroked( color.WithAlpha( 0.55f ) );
-		Outline( At( c, 0, -6 ), At( c, 8, 0 ), At( c, 0, 6 ), At( c, -8, 0 ) );
+		// Paper: a single flat horizontal line, matching the compact reference glyph. Everything
+		// else is placed against PaperY.
+		const float PaperY = 4.8f;
 
-		// The curve is the point of the icon, so it stays full strength over the dimmed plane.
-		Stroked( color, Stroke + 0.2f );
-		Editor.Paint.DrawLine( At( c, -4.4f, 1.6f ), At( c, -1.2f, -2.2f ) );
-		Editor.Paint.DrawLine( At( c, -1.2f, -2.2f ), At( c, 2.4f, 1.4f ) );
+		// How thick the pencil is, across the barrel.
+		const float BarrelWidth = 1.7f;
 
-		Filled( color );
-		Editor.Paint.DrawCircle( new Rect( c.x - 5.4f, c.y + 0.6f, 2.2f, 2.2f ) );
-		Editor.Paint.DrawCircle( new Rect( c.x + 1.4f, c.y + 0.4f, 2.2f, 2.2f ) );
+		Stroked( color, Stroke );
+		Editor.Paint.DrawLine( At( c, -6.6f, PaperY ), At( c, 6.4f, PaperY ) );
+
+		// The sharpened cone, sitting on the paper. Solid, because at 27px a hollow cone is a
+		// smudge - the filled wedge is what makes it read as sharpened. Its base is exactly as
+		// wide as the barrel's stroke, so the two meet without a step.
+		Filled( PencilWood );
+		Editor.Paint.DrawPolygon(
+			At( c, -4.4f, PaperY ),
+			At( c, -1.678f, 3.28f ),
+			At( c, -2.88f, 2.078f ) );
+
+		// The exposed lead, the outer 40% of that cone. Drawn over the wood rather than beside it,
+		// so the two always agree about where the point is.
+		Filled( PencilGraphite );
+		Editor.Paint.DrawPolygon(
+			At( c, -4.4f, PaperY ),
+			At( c, -3.257f, 4.161f ),
+			At( c, -3.761f, 3.657f ) );
+
+		// Barrel: ONE STROKED LINE, not an outlined shape. A pencil this slim has a body 1.7 units
+		// across, and two outline strokes inside that merge into a blob - the line IS the barrel,
+		// and it is the only way to get a thin pencil that still reads at icon size. The ferrule
+		// and eraser are further stretches of the same line, which is also why they cannot drift
+		// out of alignment with it.
+		Stroked( PencilBody, BarrelWidth );
+		Editor.Paint.DrawLine( At( c, -2.279f, 2.679f ), At( c, 4.156f, -3.756f ) );
+
+		Stroked( PencilFerrule, BarrelWidth );
+		Editor.Paint.DrawLine( At( c, 4.156f, -3.756f ), At( c, 4.948f, -4.548f ) );
+
+		Stroked( PencilEraser, BarrelWidth );
+		Editor.Paint.DrawLine( At( c, 4.948f, -4.548f ), At( c, 5.853f, -5.453f ) );
 	}
 
 	/// <summary>An isometric cube — the generic "a solid body" mark.</summary>
@@ -213,14 +286,14 @@ internal static class EffigyIcons
 	private static void PaintSubdivide( Vector2 c, Color color )
 	{
 		Stroked( color );
-		Editor.Paint.DrawRect( new Rect( c.x - 7, c.y - 7, 14, 14 ), 4.5f );
+		Editor.Paint.DrawRect( Box( c, -7, -7, 14, 14 ), 4.5f * _scale );
 
 		Stroked( color.WithAlpha( 0.7f ), 1.3f );
 		Editor.Paint.DrawLine( At( c, 0, -6.4f ), At( c, 0, 6.4f ) );
 		Editor.Paint.DrawLine( At( c, -6.4f, 0 ), At( c, 6.4f, 0 ) );
 
 		Filled( color );
-		Editor.Paint.DrawCircle( new Rect( c.x - 1.3f, c.y - 1.3f, 2.6f, 2.6f ) );
+		Editor.Paint.DrawCircle( Box( c, -1.3f, -1.3f, 2.6f, 2.6f ) );
 	}
 
 	/// <summary>A solid shape and its reflection across a dashed mirror line.</summary>
@@ -244,13 +317,13 @@ internal static class EffigyIcons
 	private static void PaintLinearPattern( Vector2 c, Color color )
 	{
 		Filled( color );
-		Editor.Paint.DrawRect( new Rect( c.x - 8.4f, c.y - 3f, 6f, 6f ), 1.2f );
+		Editor.Paint.DrawRect( Box( c, -8.4f, -3f, 6f, 6f ), 1.2f * _scale );
 
 		Stroked( color.WithAlpha( 0.8f ) );
-		Editor.Paint.DrawRect( new Rect( c.x - 1.2f, c.y - 3f, 6f, 6f ), 1.2f );
+		Editor.Paint.DrawRect( Box( c, -1.2f, -3f, 6f, 6f ), 1.2f * _scale );
 
 		Stroked( color.WithAlpha( 0.45f ) );
-		Editor.Paint.DrawRect( new Rect( c.x + 6f, c.y - 3f, 6f, 6f ), 1.2f );
+		Editor.Paint.DrawRect( Box( c, 6f, -3f, 6f, 6f ), 1.2f * _scale );
 	}
 
 	/// <summary>One body copied around an axis — copies sitting on a dashed circle.</summary>
@@ -266,18 +339,19 @@ internal static class EffigyIcons
 		for ( var i = 0; i < angles.Length; i++ )
 		{
 			var radians = angles[i] * MathF.PI / 180f;
-			var p = At( c, MathF.Cos( radians ) * 6.6f, MathF.Sin( radians ) * 6.6f );
-			var box = new Rect( p.x - 2.6f, p.y - 2.6f, 5.2f, 5.2f );
+			var box = Box( c,
+				MathF.Cos( radians ) * 6.6f - 2.6f, MathF.Sin( radians ) * 6.6f - 2.6f,
+				5.2f, 5.2f );
 
 			if ( i == 0 )
 			{
 				Filled( color );
-				Editor.Paint.DrawRect( box, 1f );
+				Editor.Paint.DrawRect( box, 1f * _scale );
 			}
 			else
 			{
 				Stroked( color.WithAlpha( 0.85f ), 1.4f );
-				Editor.Paint.DrawRect( box, 1f );
+				Editor.Paint.DrawRect( box, 1f * _scale );
 			}
 		}
 	}
@@ -311,7 +385,7 @@ internal static class EffigyIcons
 
 		// One lit texel, so the grid reads as a texture rather than a wireframe.
 		Filled( color.WithAlpha( 0.8f ) );
-		Editor.Paint.DrawRect( new Rect( c.x - 7 + 0.7f, c.y - 2 + 0.7f, 3.8f, 3.6f ), 0.6f );
+		Editor.Paint.DrawRect( Box( c, -6.3f, -1.3f, 3.8f, 3.6f ), 0.6f * _scale );
 
 		// The projection coming down onto it.
 		Stroked( color, 1.4f );

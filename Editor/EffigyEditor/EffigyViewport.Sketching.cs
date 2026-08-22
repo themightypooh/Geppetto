@@ -1,4 +1,4 @@
-using Editor;
+﻿using Editor;
 using Effigy;
 using Sandbox;
 using System;
@@ -77,6 +77,9 @@ internal sealed partial class EffigyViewport
 
 	private void HitPlane( int index, Vector3 size )
 	{
+		if ( index == 0 && !TopPlaneVisible || index == 1 && !FrontPlaneVisible || index == 2 && !RightPlaneVisible )
+			return;
+
 		using var scope = Gizmo.Scope( $"plane-pick-{index}", new Transform( OriginPosition ) );
 
 		Gizmo.Hitbox.BBox( BBox.FromPositionAndSize( Vector3.Zero, size ) );
@@ -301,6 +304,8 @@ internal sealed partial class EffigyViewport
 	/// next tool.</summary>
 	public void SetSketchTool( SketchToolKind tool )
 	{
+		ClearDimension();
+
 		if ( SketchTool == tool )
 			return;
 
@@ -312,6 +317,16 @@ internal sealed partial class EffigyViewport
 
 	/// <summary>Raised after any edit to the active sketch, so the studio can rebuild.</summary>
 	public Action SketchEdited { get; set; }
+
+	/// <summary>
+	/// Raised immediately BEFORE the active sketch changes, so the window can take an undo
+	/// snapshot while the old state still exists.
+	///
+	/// Separate from SketchEdited because "after" is useless for undo: by the time the studio
+	/// hears about an edit, the thing to go back to is gone. Fired once per user action - a
+	/// committed entity, a dragged point, a typed dimension - not once per frame.
+	/// </summary>
+	public Action SketchEditing { get; set; }
 
 	/// <summary>Raised with a one-line prompt for the status bar — "click the first corner",
 	/// and so on. A CAD tool that doesn't say what it wants next is unusable.</summary>
@@ -357,6 +372,348 @@ internal sealed partial class EffigyViewport
 	/// <summary>Sketches from finished SketchFeatures, drawn dimmer so the user can see
 	/// committed geometry without it competing with the active sketch.</summary>
 	private List<Sketch> _displaySketches = new();
+	private readonly HashSet<Sketch> _hiddenSketches = new();
+
+	// --- point dragging ---------------------------------------------------------------------
+
+	/// <summary>Index of the point being dragged, or -1. Dragging is a SELECT-tool action: while a
+	/// drawing tool is armed every click is meant to place geometry, and grabbing an existing point
+	/// instead is how you end up moving the sketch when you meant to add to it.</summary>
+	private int _dragPoint = -1;
+
+	/// <summary>The point under the cursor while the Select tool is active, or -1. Drawn larger so
+	/// there is something to aim at before you press.</summary>
+	private int _hoverPoint = -1;
+
+	/// <summary>Set once the drag has actually moved the point, so a click that grabs and releases
+	/// without moving does not push an undo step or a rebuild.</summary>
+	private bool _dragMoved;
+
+	/// <summary>Handle radius in SCREEN PIXELS, converted to sketch units per frame. Sketches can
+	/// be one unit across or a thousand; a fixed world radius is either invisible or covers the
+	/// whole sketch.</summary>
+	private const float PointHandlePixels = 7f;
+
+	/// <summary>
+	/// Hit-test, highlight and drag the active sketch's points.
+	///
+	/// The hitbox/hover/press dance is the editor's own gizmo machinery, the same as the origin
+	/// handle and RigViewport's bone handles, so a point competes for the cursor on equal terms
+	/// with everything else in the scene instead of being hit-tested by hand.
+	///
+	/// The drag itself is direct rather than a three-arrow control: a sketch point has two degrees
+	/// of freedom, both in the plane, and it follows the cursor through the same snapping every
+	/// click goes through - so a dragged point lands on the grid, lines up with its neighbours and
+	/// merges onto another point exactly the way a drawn one does.
+	/// </summary>
+	private void SketchPointHandles()
+	{
+		_hoverPoint = -1;
+
+		if ( ActiveSketch is null || SketchTool != SketchToolKind.Select )
+		{
+			EndPointDrag();
+			return;
+		}
+
+		if ( _dragPoint >= ActiveSketch.Points.Count )
+			EndPointDrag();
+
+		var radius = UnitsPerPixel() * PointHandlePixels;
+
+		if ( _dragPoint >= 0 )
+		{
+			DragPoint( radius );
+			return;
+		}
+
+		for ( var i = 0; i < ActiveSketch.Points.Count; i++ )
+		{
+			using var scope = Gizmo.Scope( $"sketch-point-{i}", new Transform( PlaneToWorld( ActiveSketch.Points[i] ) ) );
+
+			Gizmo.Hitbox.DepthBias = 0.01f;
+			Gizmo.Hitbox.Sphere( new Sphere( 0f, radius ) );
+
+			if ( !Gizmo.IsHovered )
+				continue;
+
+			_hoverPoint = i;
+
+			Gizmo.Draw.IgnoreDepth = true;
+			Gizmo.Draw.Color = SketchDragColor;
+			Gizmo.Draw.SolidSphere( 0f, radius, 10, 10 );
+			Gizmo.Draw.IgnoreDepth = false;
+
+			if ( Gizmo.WasLeftMousePressed )
+			{
+				_dragPoint = i;
+				_dragMoved = false;
+			}
+
+			break;
+		}
+	}
+
+	private void DragPoint( float radius )
+	{
+		var index = _dragPoint;
+
+		// Released: commit once, with a rebuild, rather than on every frame of the drag.
+		if ( !Gizmo.IsLeftMouseDown )
+		{
+			EndPointDrag();
+
+			if ( _dragMoved )
+				Edited();
+
+			return;
+		}
+
+		if ( _cursorOnPlaneValid )
+		{
+			// Everything else in the sketch is a snap target; the point in your hand is not, or it
+			// would snap straight back onto itself and never move.
+			_snapper.IgnorePoint = index;
+			var target = SnapPoint( _cursorOnPlane );
+			_snapper.IgnorePoint = -1;
+
+			if ( Dist( target, ActiveSketch.Points[index] ) > 1e-6f )
+			{
+				// Snapshot on the FIRST movement, before the point is written: grabbing a point
+				// and letting go without moving it should not be an undo step, and the whole drag
+				// should be one step rather than one per frame.
+				if ( !_dragMoved )
+					SketchEditing?.Invoke();
+
+				ActiveSketch.Points[index] = target;
+				_dragMoved = true;
+			}
+		}
+
+		Gizmo.Draw.IgnoreDepth = true;
+		Gizmo.Draw.Color = SketchDragColor;
+		Gizmo.Draw.SolidSphere( PlaneToWorld( ActiveSketch.Points[index] ), radius, 10, 10 );
+		Gizmo.Draw.IgnoreDepth = false;
+	}
+
+	private void EndPointDrag()
+	{
+		_dragPoint = -1;
+		_dragMoved = false;
+	}
+
+	// --- dimensions -------------------------------------------------------------------------
+
+	/// <summary>
+	/// The line the dimension box is currently attached to: the one just drawn, until the next
+	/// click replaces it or Escape dismisses it. Null means no box.
+	///
+	/// This is the second half of Onshape's dimension behaviour. The first half is the live
+	/// readout while you drag, which is drawn straight from the pending points and needs no state
+	/// at all; this is the part where the number stops being a readout and becomes an input.
+	/// </summary>
+	private SketchLine _dimensionLine;
+
+	/// <summary>What has been typed into the box so far. Empty means the box is showing the
+	/// line's measured length instead - typing the first digit is what replaces it, the same as
+	/// typing into a field whose contents were selected.</summary>
+	private string _dimensionInput = "";
+
+	/// <summary>Screen-pixel size of every dimension readout.</summary>
+	private const float DimensionTextSize = 13f;
+
+	/// <summary>The live readout while dragging: quiet, because it is only telling you what you
+	/// are already doing.</summary>
+	private static readonly Color DimensionLiveColor = new( 0.78f, 0.86f, 0.95f, 0.95f );
+
+	/// <summary>The committed dimension: bright, because it is now something you can type into.
+	/// The colour change IS the signal that the number went from readout to field.</summary>
+	private static readonly Color DimensionEditColor = new( 0.35f, 0.85f, 1f, 1f );
+
+	private static readonly Color DimensionBoxColor = new( 0.08f, 0.10f, 0.12f, 0.92f );
+
+	/// <summary>Enough digits to be useful without turning into noise. Sketch units are
+	/// dimensionless, so there is no sensible fixed precision - scale it to the value.</summary>
+	private static string FormatLength( float value ) =>
+		value >= 100f ? value.ToString( "F1" )
+		: value >= 10f ? value.ToString( "F2" )
+		: value.ToString( "F3" );
+
+	/// <summary>Text pinned to a world position but drawn at a fixed SCREEN size, so a readout is
+	/// as legible zoomed out as zoomed in. Gizmo.Draw.WorldText scales with distance and would be
+	/// unreadable at exactly the moments you need it.</summary>
+	private static void DrawDimensionText( Vector3 world, string text, Color color, float yOffset = -16f )
+	{
+		Gizmo.Draw.Color = color;
+		Gizmo.Draw.ScreenText( text, world, new Vector2( 0f, yOffset ), "Roboto", DimensionTextSize, TextFlag.Center );
+	}
+
+	private void ClearDimension()
+	{
+		_dimensionLine = null;
+		_dimensionInput = "";
+	}
+
+	/// <summary>
+	/// The boxed, editable dimension on the line that was just drawn.
+	///
+	/// The box is built from the CAMERA's right and up vectors rather than the sketch plane's, so
+	/// it faces you from any angle, and it is sized in world units converted from pixels through
+	/// UnitsPerPixel - the same conversion the snap tolerances use - so it stays one size on
+	/// screen however far in you are zoomed.
+	/// </summary>
+	private void DrawDimensionBox()
+	{
+		if ( _dimensionLine is null || ActiveSketch is null )
+			return;
+
+		if ( _dimensionLine.Start >= ActiveSketch.Points.Count || _dimensionLine.End >= ActiveSketch.Points.Count )
+		{
+			ClearDimension();
+			return;
+		}
+
+		var a = ActiveSketch.Points[_dimensionLine.Start];
+		var b = ActiveSketch.Points[_dimensionLine.End];
+		var text = _dimensionInput.Length > 0 ? _dimensionInput : FormatLength( Dist( a, b ) );
+
+		var centre = PlaneToWorld( (a + b) * 0.5f );
+		var units = UnitsPerPixel();
+		var rotation = Gizmo.CameraTransform.Rotation;
+
+		// Roughly the width of the glyphs plus padding. Paint's text metrics are not available
+		// from inside a Gizmo pass, and a box a few pixels wide of the number is not a problem.
+		var right = rotation.Right * ((text.Length * 7.5f + 16f) * 0.5f * units);
+		var up = rotation.Up * (11f * units);
+		var lift = rotation.Up * (16f * units);
+
+		var p0 = centre - right - up + lift;
+		var p1 = centre + right - up + lift;
+		var p2 = centre + right + up + lift;
+		var p3 = centre - right + up + lift;
+
+		Gizmo.Draw.IgnoreDepth = true;
+
+		Gizmo.Draw.Color = DimensionBoxColor;
+		Gizmo.Draw.SolidTriangle( p0, p1, p2 );
+		Gizmo.Draw.SolidTriangle( p0, p2, p3 );
+
+		Gizmo.Draw.Color = DimensionEditColor;
+		Gizmo.Draw.LineThickness = 1.5f;
+		Gizmo.Draw.Line( p0, p1 );
+		Gizmo.Draw.Line( p1, p2 );
+		Gizmo.Draw.Line( p2, p3 );
+		Gizmo.Draw.Line( p3, p0 );
+
+		DrawDimensionText( centre, text, DimensionEditColor );
+
+		Gizmo.Draw.LineThickness = 1f;
+		Gizmo.Draw.IgnoreDepth = false;
+	}
+
+	/// <summary>
+	/// Keys typed while a dimension box is up. Returns true when the key was consumed, so the
+	/// viewport's own Escape handling does not also see it.
+	///
+	/// Digits and a decimal point go into the box, Enter applies, Escape dismisses it - and
+	/// dismissing is a SEPARATE stage from Escape's existing back-out-of-the-tool behaviour, so
+	/// leaving the number alone does not also throw away the tool you are drawing with.
+	/// </summary>
+	public bool HandleDimensionKey( KeyEvent e )
+	{
+		if ( _dimensionLine is null || ActiveSketch is null )
+			return false;
+
+		switch ( e.Key )
+		{
+			case KeyCode.Return:
+			case KeyCode.Enter:
+				ApplyDimension();
+				e.Accepted = true;
+				return true;
+
+			case KeyCode.Backspace:
+				if ( _dimensionInput.Length > 0 )
+					_dimensionInput = _dimensionInput[..^1];
+
+				e.Accepted = true;
+				return true;
+
+			case KeyCode.Escape:
+				ClearDimension();
+				e.Accepted = true;
+				return true;
+		}
+
+		if ( string.IsNullOrEmpty( e.Text ) )
+			return false;
+
+		var c = e.Text[0];
+
+		if ( !char.IsDigit( c ) && c != '.' )
+			return false;
+
+		_dimensionInput += c;
+		e.Accepted = true;
+		return true;
+	}
+
+	/// <summary>
+	/// Set the line to the typed length by sliding its END point along its own direction, leaving
+	/// the start where it is - which is what you mean when you draw a line and then type a number.
+	///
+	/// Points are shared by index (see SketchCurve), so moving the end point moves everything else
+	/// joined to it. That is correct for the chain you are drawing: the next segment starts from
+	/// the point that just moved, and _pending has to be dragged along with it or the chain would
+	/// carry on from where the corner used to be.
+	/// </summary>
+	private void ApplyDimension()
+	{
+		if ( _dimensionLine is null || ActiveSketch is null )
+			return;
+
+		if ( !float.TryParse( _dimensionInput, System.Globalization.NumberStyles.Float,
+			System.Globalization.CultureInfo.InvariantCulture, out var length ) || length <= 0f )
+		{
+			ClearDimension();
+			return;
+		}
+
+		var start = ActiveSketch.Points[_dimensionLine.Start];
+		var end = ActiveSketch.Points[_dimensionLine.End];
+		var delta = end - start;
+
+		if ( delta.Length < 1e-5f )
+		{
+			ClearDimension();
+			return;
+		}
+
+		SketchEditing?.Invoke();
+
+		var moved = start + delta.Normal * length;
+		ActiveSketch.Points[_dimensionLine.End] = moved;
+
+		for ( var i = 0; i < _pending.Count; i++ )
+		{
+			if ( Dist( _pending[i], end ) < 1e-5f )
+				_pending[i] = moved;
+		}
+
+		ClearDimension();
+		Edited();
+	}
+
+	public void SetSketchVisibility( Sketch sketch, bool visible )
+	{
+		if ( sketch is null )
+			return;
+
+		if ( visible )
+			_hiddenSketches.Remove( sketch );
+		else
+			_hiddenSketches.Add( sketch );
+	}
 
 	/// <summary>Cursor-to-point snapping distance, in SCREEN PIXELS.</summary>
 	private const float SnapPixels = 12f;
@@ -466,14 +823,204 @@ internal sealed partial class EffigyViewport
 
 		_hoveredFaceBodyId = hit.Body.Id;
 
+		DrawHoveredFace( hit.Body, hit.Hit.FaceIndex );
+
 		if ( !Gizmo.WasLeftMousePressed )
 			return;
 
-		FacePicked?.Invoke( new FaceRef( hit.Body.Id, hit.Hit.Point, hit.Hit.Normal ) );
+		// Capture rather than the raw constructor: it records WHERE ON THE FACE the click landed,
+		// which is what lets the sketch ride the face when it later moves or resizes.
+		FacePicked?.Invoke( FacePlane.Capture( hit.Body, hit.Hit.FaceIndex, hit.Hit.Point ) );
 	}
+
+	/// <summary>Shading and outline for the ONE face under the cursor while a sketch is choosing
+	/// where to live.</summary>
+	private static readonly Color FaceHighlightColor = new( 0.35f, 0.75f, 1f, 1f );
+
+	/// <summary>
+	/// Light up the exact face the cursor is over.
+	///
+	/// The raycast already knows which face it hit - it has to, to report a normal - so the pick
+	/// was landing on a specific face while the viewport showed nothing at all. Clicking a face to
+	/// sketch on it was therefore aim-and-hope, and on a part with several faces meeting at an
+	/// angle there was no way to tell which one you were about to get.
+	///
+	/// Shaded with the same ear clipping the render mesh uses, so a concave face highlights as the
+	/// shape it actually is.
+	///
+	/// DEPTH-TESTED, but nudged a hair toward the camera first. Drawing it through the geometry
+	/// (IgnoreDepth) was worse than it sounds: a face that something else stands in front of - the
+	/// side of a block another extrude grows out of - had its highlight painted straight over the
+	/// thing in front, so it read as a rectangle passing through the model. Drawing it flat on the
+	/// surface instead z-fights with the surface itself. Pulling each corner a fraction of its own
+	/// view distance toward the camera gets both: whatever is genuinely in front occludes it, and
+	/// the face it belongs to never fights it.
+	/// </summary>
+	private void DrawHoveredFace( Body body, int faceIndex )
+	{
+		if ( body?.Mesh is not { } mesh || faceIndex < 0 || faceIndex >= mesh.Faces.Count )
+			return;
+
+		var face = mesh.Faces[faceIndex];
+
+		if ( face.Count < 3 )
+			return;
+
+		var eye = _camera.WorldPosition;
+		var corners = new List<Vector3>( face.Count );
+		var flat = new List<Vec3>( face.Count );
+
+		for ( var i = 0; i < face.Count; i++ )
+		{
+			var p = mesh.Positions[face.Indices[i]];
+			// Lifted proportionally to distance, because depth precision is: a fixed nudge that
+			// clears the surface up close is invisible across a large part, and vice versa.
+			flat.Add( p );
+			corners.Add( Lift( p, eye ) );
+		}
+
+		Gizmo.Draw.IgnoreDepth = false;
+
+		Gizmo.Draw.Color = FaceHighlightColor.WithAlpha( 0.22f );
+
+		foreach ( var (a, b, c) in Triangulate.Face( flat ) )
+			Gizmo.Draw.SolidTriangle( new Triangle( corners[a], corners[b], corners[c] ) );
+
+		Gizmo.Draw.Color = FaceHighlightColor;
+		Gizmo.Draw.LineThickness = 2.5f;
+
+		for ( var i = 0; i < corners.Count; i++ )
+			Gizmo.Draw.Line( corners[i], corners[(i + 1) % corners.Count] );
+
+		DrawFaceFootprints( body, mesh, face, flat, eye );
+
+		Gizmo.Draw.LineThickness = 1f;
+	}
+
+	/// <summary>
+	/// Outline where OTHER bodies meet this face.
+	///
+	/// A face's own perimeter is not the whole story of what is on it. Bodies are never unioned,
+	/// so a block standing on a slab leaves the slab's top face as one unbroken rectangle - and
+	/// highlighting only that rectangle says the face is clear when half of it is underneath
+	/// something. These are the lines where the other solids actually land on it.
+	///
+	/// Clipped to the face rather than drawn whole: the section of a neighbouring body runs across
+	/// the face's entire infinite plane, and the parts of it beyond this face's edges belong to
+	/// nothing being highlighted.
+	/// </summary>
+	private void DrawFaceFootprints( Body body, PolyMesh mesh, Face face, List<Vec3> flat, Vector3 eye )
+	{
+		if ( _pickableBodies.Count < 2 )
+			return;
+
+		var normal = mesh.FaceNormal( face );
+		var centroid = mesh.FaceCentroid( face );
+		var plane = FacePlane.FromPointAndNormal( centroid, normal );
+
+		var outline = new List<Vec2>( flat.Count );
+
+		foreach ( var p in flat )
+			outline.Add( plane.ToPlane( p ) );
+
+		Gizmo.Draw.LineThickness = 2f;
+
+		foreach ( var other in _pickableBodies )
+		{
+			if ( other?.Mesh is null || ReferenceEquals( other, body ) )
+				continue;
+
+			foreach ( var (a, b) in MeshSection.CrossSection( other.Mesh, centroid, normal ) )
+			{
+				foreach ( var (from, to) in ClipToPolygon( plane.ToPlane( a ), plane.ToPlane( b ), outline ) )
+					Gizmo.Draw.Line( Lift( plane.ToWorld( from ), eye ), Lift( plane.ToWorld( to ), eye ) );
+			}
+		}
+	}
+
+	/// <summary>The parts of a segment that lie inside a polygon, in plane coordinates. Split at
+	/// every edge crossing, then keep the pieces whose midpoint is inside - which needs no
+	/// special cases for a segment that enters and leaves several times.</summary>
+	private static List<(Vec2 From, Vec2 To)> ClipToPolygon( Vec2 start, Vec2 end, List<Vec2> polygon )
+	{
+		var kept = new List<(Vec2, Vec2)>();
+		var direction = end - start;
+
+		if ( direction.LengthSquared < 1e-12f || polygon.Count < 3 )
+			return kept;
+
+		var cuts = new List<float> { 0f, 1f };
+
+		for ( var i = 0; i < polygon.Count; i++ )
+		{
+			var a = polygon[i];
+			var edge = polygon[(i + 1) % polygon.Count] - a;
+			var denominator = Vec2.Cross( direction, edge );
+
+			if ( MathF.Abs( denominator ) < 1e-12f )
+				continue;
+
+			var t = Vec2.Cross( a - start, edge ) / denominator;
+			var u = Vec2.Cross( a - start, direction ) / denominator;
+
+			if ( t > 0f && t < 1f && u >= 0f && u <= 1f )
+				cuts.Add( t );
+		}
+
+		cuts.Sort();
+
+		for ( var i = 0; i + 1 < cuts.Count; i++ )
+		{
+			var from = start + direction * cuts[i];
+			var to = start + direction * cuts[i + 1];
+
+			if ( Inside( (from + to) * 0.5f, polygon ) )
+				kept.Add( (from, to) );
+		}
+
+		return kept;
+	}
+
+	/// <summary>Crossing count: a ray from the point crosses the boundary an odd number of times
+	/// exactly when the point is inside.</summary>
+	private static bool Inside( Vec2 point, List<Vec2> polygon )
+	{
+		var inside = false;
+
+		for ( int i = 0, j = polygon.Count - 1; i < polygon.Count; j = i++ )
+		{
+			var a = polygon[i];
+			var b = polygon[j];
+
+			if ( a.y > point.y != b.y > point.y
+				&& point.x < (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x )
+			{
+				inside = !inside;
+			}
+		}
+
+		return inside;
+	}
+
+	/// <summary>The same camera-ward nudge the highlight itself uses, so the footprint lines sit in
+	/// front of the face rather than fighting it.</summary>
+	private static Vector3 Lift( Vec3 point, Vector3 eye )
+	{
+		var world = new Vector3( point.x, point.y, point.z );
+		var toEye = eye - world;
+
+		return world + toEye.Normal * (toEye.Length * FaceHighlightLift);
+	}
+
+	/// <summary>How far toward the camera the highlight is pulled, as a fraction of the distance to
+	/// each corner. Small enough that it never separates visibly from the face, large enough to
+	/// clear the depth buffer.</summary>
+	private const float FaceHighlightLift = 0.0015f;
 
 	public void EndSketch()
 	{
+		ClearDimension();
+		EndPointDrag();
 		ActiveSketch = null;
 		SketchTool = SketchToolKind.Select;
 		_pending.Clear();
@@ -486,6 +1033,9 @@ internal sealed partial class EffigyViewport
 	/// two-stage Escape as Onshape.</summary>
 	public void CancelSketchTool()
 	{
+		ClearDimension();
+		EndPointDrag();
+
 		if ( _pending.Count > 0 )
 		{
 			_pending.Clear();
@@ -605,6 +1155,8 @@ internal sealed partial class EffigyViewport
 
 		DrawSketch();
 		DrawPendingPreview();
+		DrawDimensionBox();
+		SketchPointHandles();
 
 		if ( _ignoreNextSketchClick )
 		{
@@ -612,7 +1164,7 @@ internal sealed partial class EffigyViewport
 			return;
 		}
 
-		if ( _canvasHasCursor && _cursorOnPlaneValid && Gizmo.WasLeftMousePressed && SketchTool != SketchToolKind.Select )
+		if ( _canvasHasCursor && _cursorOnPlaneValid && Gizmo.WasLeftMousePressed && SketchTool != SketchToolKind.Select && _dragPoint < 0 )
 			ClickTool( _cursorOnPlane );
 	}
 
@@ -620,6 +1172,14 @@ internal sealed partial class EffigyViewport
 	/// in _pending and commits when it has them all.</summary>
 	private void ClickTool( Vec2 p )
 	{
+		// The click is about to add points or a curve, so the state to go back to is the one that
+		// exists right now.
+		SketchEditing?.Invoke();
+
+		// Any click moves on from the last dimension - the box belongs to the thing you just drew,
+		// not to the thing you are drawing now. The line tool re-arms it below.
+		ClearDimension();
+
 		_pending.Add( p );
 
 		switch ( SketchTool )
@@ -652,10 +1212,15 @@ internal sealed partial class EffigyViewport
 						ActiveSketch.AddConstraint( line, SketchConstraintKind.Vertical );
 					else if ( (_inferenceAxis & 2) != 0 )
 						ActiveSketch.AddConstraint( line, SketchConstraintKind.Horizontal );
+
+					// The line is down; its length becomes an editable dimension until the next
+					// click replaces it.
+					_dimensionLine = line;
+					_dimensionInput = "";
 				}
 
 				// Chain closes back to the start point — break the chain.
-				if ( endIdx == _chainStartIndex && _chainStartIndex >= 0 )
+				if ( to == _chainStartIndex && _chainStartIndex >= 0 )
 				{
 					_pending.Clear();
 					_chainStartIndex = -1;
@@ -954,6 +1519,10 @@ internal sealed partial class EffigyViewport
 	private static readonly Color SketchConstructionColor = new( 0.6f, 0.55f, 0.9f, 0.7f );
 	private static readonly Color SketchRegionColor = new( 0.25f, 0.65f, 1f, 0.12f );
 	private static readonly Color SketchGapColor = new( 1f, 0.35f, 0.15f, 1f );
+
+	/// <summary>A point under the cursor, or in your hand. Warm, so it reads as "grabbable" rather
+	/// than as another piece of the sketch.</summary>
+	private static readonly Color SketchDragColor = new( 1f, 0.78f, 0.25f, 1f );
 	private static readonly Color SketchConstrainedColor = new( 0.08f, 0.08f, 0.08f, 1f );
 
 	/// <summary>Draw every curve already in the sketch, plus its points.</summary>
@@ -961,9 +1530,8 @@ internal sealed partial class EffigyViewport
 	{
 		var profiles = ProfileFinder.Find( ActiveSketch );
 
-		// Closed regions are selectable areas in Onshape, not just wire loops. A fan is sufficient
-		// for the convex profiles currently supported by the sketch tools and keeps the fill behind
-		// the edge work so it never hides the actual geometry.
+		// Closed regions are selectable areas in Onshape, not just wire loops. The fill is drawn
+		// behind the edge work so it never hides the actual geometry.
 		Gizmo.Draw.IgnoreDepth = true;
 		Gizmo.Draw.Color = SketchRegionColor;
 		foreach ( var profile in profiles.Profiles )
@@ -1038,10 +1606,13 @@ internal sealed partial class EffigyViewport
 		if ( loop.Count < 3 )
 			return;
 
-		var centre = loop[0];
-		for ( var i = 1; i < loop.Count - 1; i++ )
+		// Ear clipped rather than fanned, so the shading matches the region the extrude will
+		// actually build - a fan shades a concave profile's notch as if it were part of the face.
+		foreach ( var (a, b, c) in Triangulate.Polygon( loop ) )
+		{
 			Gizmo.Draw.SolidTriangle( new Triangle(
-				PlaneToWorld( plane, centre ), PlaneToWorld( plane, loop[i] ), PlaneToWorld( plane, loop[i + 1] ) ) );
+				PlaneToWorld( plane, loop[a] ), PlaneToWorld( plane, loop[b] ), PlaneToWorld( plane, loop[c] ) ) );
+		}
 	}
 
 	/// <summary>
@@ -1054,11 +1625,16 @@ internal sealed partial class EffigyViewport
 		if ( _displaySketches.Count == 0 )
 			return;
 
-		Gizmo.Draw.IgnoreDepth = true;
+		// DEPTH-TESTED, unlike everything else this viewport overlays. A committed sketch sits in
+		// the same place as the solid built from it, so drawing it with IgnoreDepth put its curves
+		// and its shaded regions on top of the body - the part came out looking like a wireframe
+		// shell you could see the far side of. The active sketch is drawn elsewhere and keeps its
+		// draw-through behaviour; you are working on that one and it has to stay reachable.
+		Gizmo.Draw.IgnoreDepth = false;
 
 		foreach ( var sketch in _displaySketches )
 		{
-			if ( sketch == ActiveSketch )
+			if ( sketch == ActiveSketch || _hiddenSketches.Contains( sketch ) )
 				continue;
 
 			var profiles = ProfileFinder.Find( sketch );
@@ -1094,7 +1670,6 @@ internal sealed partial class EffigyViewport
 		}
 
 		Gizmo.Draw.LineThickness = 1f;
-		Gizmo.Draw.IgnoreDepth = false;
 	}
 
 	/// <summary>Highlight every non-construction point whose endpoint degree is not exactly two.
@@ -1157,16 +1732,20 @@ internal sealed partial class EffigyViewport
 			{
 				case SketchToolKind.Line:
 					Gizmo.Draw.Line( PlaneToWorld( _pending[0] ), c );
+					LiveLength( _pending[0], _cursorOnPlane );
 					break;
 
 				case SketchToolKind.Rectangle:
 					DrawLoopPreview( RectangleCorners(
 						new Vec2( MathF.Min( _pending[0].x, _cursorOnPlane.x ), MathF.Min( _pending[0].y, _cursorOnPlane.y ) ),
 						new Vec2( MathF.Max( _pending[0].x, _cursorOnPlane.x ), MathF.Max( _pending[0].y, _cursorOnPlane.y ) ) ) );
+					LiveSize( _cursorOnPlane,
+						MathF.Abs( _cursorOnPlane.x - _pending[0].x ), MathF.Abs( _cursorOnPlane.y - _pending[0].y ) );
 					break;
 
 				case SketchToolKind.Circle:
 					DrawCirclePreview( _pending[0], Dist( _pending[0], _cursorOnPlane ) );
+					LiveRadius( _pending[0], _cursorOnPlane );
 					break;
 
 				case SketchToolKind.RectangleCentre:
@@ -1174,19 +1753,25 @@ internal sealed partial class EffigyViewport
 					DrawLoopPreview( RectangleCorners(
 						new Vec2( _pending[0].x - MathF.Abs( span.x ), _pending[0].y - MathF.Abs( span.y ) ),
 						new Vec2( _pending[0].x + MathF.Abs( span.x ), _pending[0].y + MathF.Abs( span.y ) ) ) );
+					LiveSize( _cursorOnPlane, MathF.Abs( span.x ) * 2f, MathF.Abs( span.y ) * 2f );
 					break;
 
 				case SketchToolKind.CircleThreePoint when _pending.Count == 1:
 					Gizmo.Draw.Line( PlaneToWorld( _pending[0] ), c );
+					LiveLength( _pending[0], _cursorOnPlane );
 					break;
 
 				case SketchToolKind.CircleThreePoint:
 					if ( Circumcentre( _pending[0], _pending[1], _cursorOnPlane ) is { } rimCentre )
+					{
 						DrawCirclePreview( rimCentre, Dist( rimCentre, _pending[0] ) );
+						LiveRadius( rimCentre, _pending[0] );
+					}
 					break;
 
 				case SketchToolKind.ArcThreePoint when _pending.Count == 1:
 					Gizmo.Draw.Line( PlaneToWorld( _pending[0] ), c );
+					LiveLength( _pending[0], _cursorOnPlane );
 					break;
 
 				case SketchToolKind.ArcThreePoint:
@@ -1195,6 +1780,7 @@ internal sealed partial class EffigyViewport
 
 				case SketchToolKind.Slot when _pending.Count == 1:
 					Gizmo.Draw.Line( PlaneToWorld( _pending[0] ), c );
+					LiveLength( _pending[0], _cursorOnPlane );
 					break;
 
 				case SketchToolKind.Slot:
@@ -1203,14 +1789,17 @@ internal sealed partial class EffigyViewport
 
 				case SketchToolKind.PolygonCircumscribed:
 					DrawLoopPreview( RegularPolygon( _pending[0], _cursorOnPlane, PolygonSides, circumscribed: true ) );
+					LiveRadius( _pending[0], _cursorOnPlane );
 					break;
 
 				case SketchToolKind.Polygon:
 					DrawLoopPreview( RegularPolygon( _pending[0], _cursorOnPlane, PolygonSides ) );
+					LiveRadius( _pending[0], _cursorOnPlane );
 					break;
 
 				case SketchToolKind.Arc when _pending.Count == 1:
 					DrawCirclePreview( _pending[0], Dist( _pending[0], _cursorOnPlane ) );
+					LiveRadius( _pending[0], _cursorOnPlane );
 					break;
 
 				case SketchToolKind.Arc:
@@ -1223,6 +1812,18 @@ internal sealed partial class EffigyViewport
 		Gizmo.Draw.LineThickness = 1f;
 		Gizmo.Draw.IgnoreDepth = false;
 	}
+
+	/// <summary>Length of the segment being dragged, at its midpoint. THE reason this whole block
+	/// exists: a line with no number on it is a line you are guessing at.</summary>
+	private void LiveLength( Vec2 from, Vec2 to ) =>
+		DrawDimensionText( PlaneToWorld( (from + to) * 0.5f ), FormatLength( Dist( from, to ) ), DimensionLiveColor );
+
+	private void LiveRadius( Vec2 centre, Vec2 rim ) =>
+		DrawDimensionText( PlaneToWorld( (centre + rim) * 0.5f ), $"R {FormatLength( Dist( centre, rim ) )}", DimensionLiveColor );
+
+	/// <summary>Both sides of a rectangle at once, at the corner you are dragging.</summary>
+	private void LiveSize( Vec2 at, float width, float height ) =>
+		DrawDimensionText( PlaneToWorld( at ), $"{FormatLength( width )} × {FormatLength( height )}", DimensionLiveColor, -20f );
 
 	private void DrawLoopPreview( Vec2[] corners )
 	{
@@ -1328,6 +1929,7 @@ internal sealed partial class EffigyViewport
 		SketchToolKind.Slot when _pending.Count == 1 => "Slot - click the other end of the centre line",
 		SketchToolKind.Slot => "Slot - click to set the width",
 		SketchToolKind.Point => "Point - click to place",
+		SketchToolKind.Select => "Select - drag any point to move it; everything joined to it follows",
 		_ => "Sketching - pick a tool from the sketch toolbar",
 	};
 }

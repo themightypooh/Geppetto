@@ -1,4 +1,4 @@
-using Editor;
+﻿using Editor;
 using Effigy;
 using Sandbox;
 using System;
@@ -37,8 +37,24 @@ internal sealed partial class EffigyViewport : Widget
 	/// <summary>How many subdivisions along each edge of the reference planes.</summary>
 	private const int PlaneSubdivisions = 8;
 
-	/// <summary>Radius of the origin handle dot in world units.</summary>
-	private const float OriginHandleRadius = 4f;
+	/// <summary>
+	/// Radius of the origin handle dot, in SCREEN PIXELS.
+	///
+	/// It was four WORLD units, which is a different object at every scale: a boulder sitting in
+	/// the middle of a thirty-unit part, and invisible on a thousand-unit one. Onshape's origin is
+	/// a few pixels across at any zoom and that is what makes it a marker rather than geometry.
+	/// Same reasoning, and the same conversion, as the sketch snapping tolerances.
+	/// </summary>
+	private const float OriginHandlePixels = 2.5f;
+
+	/// <summary>The dot's radius in world units at its current distance from the camera.</summary>
+	private float OriginHandleRadius()
+	{
+		var distance = MathF.Max( (OriginPosition - _camera.WorldPosition).Length, 0.01f );
+		var halfHeight = MathF.Tan( _camera.FieldOfView.DegreeToRadian() * 0.5f ) * distance;
+
+		return halfHeight / MathF.Max( _canvas.Size.y * 0.5f, 1f ) * OriginHandlePixels;
+	}
 
 	// --- origin state -----------------------------------------------------------------------
 
@@ -72,6 +88,34 @@ internal sealed partial class EffigyViewport : Widget
 	/// <summary>Current model stats for the status bar.</summary>
 	public string ModelInfo { get; private set; } = "";
 
+	// --- bone selection / drag state --------------------------------------------------------
+
+	/// <summary>Index of the currently selected bone in the rig skeleton, or -1 for none.</summary>
+	private int _selectedBoneIndex = -1;
+
+	/// <summary>What dragging the selected bone does. Rotate is the default because skeletal
+	/// animation rotates joints. Move translates, Scale adjusts bone length.</summary>
+	public enum BoneDragMode { Rotate, Move, Scale }
+
+	/// <summary>Current drag mode — E flips to the other mode while held.</summary>
+	private BoneDragMode _boneDragMode = BoneDragMode.Rotate;
+
+	/// <summary>True while a drag is in progress (mouse down and control reporting).</summary>
+	private bool _boneDragging;
+
+	/// <summary>The bone's world pose when the drag started — position, rotation, and length
+	/// are all captured here so live values are never fed back into themselves.</summary>
+	private Vector3 _dragStartPos;
+	private Rotation _dragStartRot;
+	private float _dragStartLength;
+
+	/// <summary>Accumulated position delta since drag began (for Move mode).</summary>
+	private Vector3 _moveDelta;
+
+	/// <summary>Raised when the selected bone changes from viewport interaction, so the rig
+	/// panel can sync its tree selection. The int is the bone index, or -1 for deselected.</summary>
+	public Action<int> BoneSelectionChanged { get; set; }
+
 	private Color _backgroundColor = new( 0.82f, 0.84f, 0.86f, 1f );
 
 	/// <summary>
@@ -98,6 +142,11 @@ internal sealed partial class EffigyViewport : Widget
 	/// you tell them apart; it is the grid infill that has to stay legible against whatever the
 	/// background happens to be.</summary>
 	public Color PlaneColor { get; set; } = new( 0.55f, 0.58f, 0.61f, 1f );
+	public bool OriginVisible { get; set; } = true;
+	public bool TopPlaneVisible { get; set; } = true;
+	public bool FrontPlaneVisible { get; set; } = true;
+	public bool RightPlaneVisible { get; set; } = true;
+	public Effigy.Skeleton RigSkeleton { get; set; }
 
 	public EffigyViewport( Widget parent ) : base( parent )
 	{
@@ -177,6 +226,7 @@ internal sealed partial class EffigyViewport : Widget
 		_overlay = featureOverlay;
 		_overlay.Position = OverlayMargin;
 
+		_sketchOverlay = sketchOverlay;
 		sketchOverlay.Position = OverlayMargin;
 		sketchOverlay.Visible = false;
 	}
@@ -186,6 +236,7 @@ internal sealed partial class EffigyViewport : Widget
 
 	/// <summary>The floating tool strip, so the frame loop can keep camera drags out of it.</summary>
 	private Widget _overlay;
+	private Widget _sketchOverlay;
 
 	// --- model management -------------------------------------------------------------------
 
@@ -223,7 +274,11 @@ internal sealed partial class EffigyViewport : Widget
 		var meshCount = model.MeshCount;
 		var bounds = model.Bounds;
 		var size = bounds.Size;
-		ModelInfo = $"{model.ResourceName ?? model.Name ?? "model"} \u00b7 {meshCount} mesh{(meshCount != 1 ? "es" : "")} \u00b7 {size.x:F0}\u00d7{size.y:F0}\u00d7{size.z:F0}";
+		// Say "units" outright and keep the fractions. This is the only place the part's real
+		// size is stated, so it is what settles an argument with whatever the surface happens
+		// to look like it is.
+		ModelInfo = $"{meshCount} mesh{(meshCount != 1 ? "es" : "")} · "
+			+ $"{size.x:0.##} × {size.y:0.##} × {size.z:0.##} units";
 		ModelInfoChanged?.Invoke( ModelInfo );
 
 		if ( frameCamera )
@@ -292,6 +347,11 @@ internal sealed partial class EffigyViewport : Widget
 	/// </summary>
 	private void DrawOrigin()
 	{
+		if ( !OriginVisible )
+			return;
+
+		var radius = OriginHandleRadius();
+
 		using var scope = Gizmo.Scope( "origin", new Transform( OriginPosition ) );
 
 		// --- when selected: position gizmo first, so its handles take priority over the dot ---
@@ -326,7 +386,7 @@ internal sealed partial class EffigyViewport : Widget
 			// Draw the dot larger and brighter when selected
 			Gizmo.Draw.IgnoreDepth = true;
 			Gizmo.Draw.Color = new Color( 1f, 0.85f, 0.2f, 1f ); // bright yellow
-			Gizmo.Draw.SolidSphere( 0f, OriginHandleRadius * 1.4f, 12, 12 );
+			Gizmo.Draw.SolidSphere( 0f, radius * 1.4f, 12, 12 );
 			Gizmo.Draw.IgnoreDepth = false;
 
 			return;
@@ -337,19 +397,19 @@ internal sealed partial class EffigyViewport : Widget
 		// Draw origin dot — Onshape-style small circle
 		Gizmo.Draw.IgnoreDepth = true;
 		Gizmo.Draw.Color = new Color( 1f, 0.85f, 0.2f, 0.85f ); // warm yellow
-		Gizmo.Draw.SolidSphere( 0f, OriginHandleRadius, 10, 10 );
+		Gizmo.Draw.SolidSphere( 0f, radius, 10, 10 );
 		Gizmo.Draw.IgnoreDepth = false;
 
 		// Hitbox for selection — slightly larger than the visual dot for easier clicking
 		Gizmo.Hitbox.DepthBias = 0.01f;
-		Gizmo.Hitbox.Sphere( new Sphere( Vector3.Zero, OriginHandleRadius * 2.5f ) );
+		Gizmo.Hitbox.Sphere( new Sphere( Vector3.Zero, radius * 2.8f ) );
 
 		if ( Gizmo.IsHovered )
 		{
 			// Highlight on hover
 			Gizmo.Draw.IgnoreDepth = true;
 			Gizmo.Draw.Color = new Color( 1f, 0.85f, 0.2f, 0.35f );
-			Gizmo.Draw.SolidSphere( 0f, OriginHandleRadius * 2.5f, 10, 10 );
+			Gizmo.Draw.SolidSphere( 0f, radius * 2.8f, 10, 10 );
 			Gizmo.Draw.IgnoreDepth = false;
 
 			if ( Gizmo.WasLeftMousePressed )
@@ -394,29 +454,45 @@ internal sealed partial class EffigyViewport : Widget
 		var s = PlaneSize;
 		var step = (s * 2f) / PlaneSubdivisions;
 
-		Gizmo.Draw.IgnoreDepth = true;
+		// DEPTH-TESTED. The reference planes are 128 units across and were drawn straight through
+		// whatever the part is, so a finished solid had a grid laid over it and read as a glass
+		// box rather than as material. A plane behind the part now goes behind the part.
+		Gizmo.Draw.IgnoreDepth = false;
 
 		// Grid infill comes from the palette so it stays readable on a light or a dark background;
 		// outlines keep their per-axis hue so the three planes remain tellable apart.
 		var grid = PlaneColor.WithAlpha( PlaneColor.a * 0.5f );
 
 		// --- Top plane (XY at z=0) — orange edge ---
-		DrawPlaneOutline( center, Vector3.Forward, Vector3.Left, s, new Color( 0.85f, 0.55f, 0.25f, 0.55f ) );
-		DrawPlaneGrid( center, Vector3.Forward, Vector3.Left, s, step, grid );
+		if ( TopPlaneVisible )
+		{
+			DrawPlaneOutline( center, Vector3.Forward, Vector3.Left, s, new Color( 0.85f, 0.55f, 0.25f, 0.55f ) );
+			DrawPlaneGrid( center, Vector3.Forward, Vector3.Left, s, step, grid );
+		}
 
 		// --- Front plane (XZ at y=0) — blue edge ---
-		DrawPlaneOutline( center, Vector3.Forward, Vector3.Up, s, new Color( 0.25f, 0.5f, 0.85f, 0.55f ) );
-		DrawPlaneGrid( center, Vector3.Forward, Vector3.Up, s, step, grid );
+		if ( FrontPlaneVisible )
+		{
+			DrawPlaneOutline( center, Vector3.Forward, Vector3.Up, s, new Color( 0.25f, 0.5f, 0.85f, 0.55f ) );
+			DrawPlaneGrid( center, Vector3.Forward, Vector3.Up, s, step, grid );
+		}
 
 		// --- Right plane (YZ at x=0) — green edge ---
-		DrawPlaneOutline( center, Vector3.Left, Vector3.Up, s, new Color( 0.25f, 0.78f, 0.45f, 0.55f ) );
-		DrawPlaneGrid( center, Vector3.Left, Vector3.Up, s, step, grid );
+		if ( RightPlaneVisible )
+		{
+			DrawPlaneOutline( center, Vector3.Left, Vector3.Up, s, new Color( 0.25f, 0.78f, 0.45f, 0.55f ) );
+			DrawPlaneGrid( center, Vector3.Left, Vector3.Up, s, step, grid );
+		}
 
 		// An offset sketch lives on a parallel plane, not on the origin reference plane. Keep the
 		// normal reference planes visible, but draw the active sketch plane where the sketch math
 		// actually places its geometry so the user never has to infer why it appears to float.
 		if ( IsSketching && ActiveSketch?.Plane is { } sketchPlane )
 		{
+			// The one plane that still draws through everything: you are working on it, and a
+			// sketch plane you cannot see because a body is in front of it is not usable.
+			Gizmo.Draw.IgnoreDepth = true;
+
 			var sketchCenter = center + new Vector3( sketchPlane.Origin.x, sketchPlane.Origin.y, sketchPlane.Origin.z );
 			var sketchX = new Vector3( sketchPlane.XAxis.x, sketchPlane.XAxis.y, sketchPlane.XAxis.z );
 			var sketchY = new Vector3( sketchPlane.YAxis.x, sketchPlane.YAxis.y, sketchPlane.YAxis.z );
@@ -424,6 +500,16 @@ internal sealed partial class EffigyViewport : Widget
 
 			DrawPlaneOutline( sketchCenter, sketchX, sketchY, s, sketchColor );
 			DrawPlaneGrid( sketchCenter, sketchX, sketchY, s, step, sketchColor.WithAlpha( 0.3f ) );
+
+			Gizmo.Draw.IgnoreDepth = false;
+		}
+
+		if ( !OriginVisible )
+		{
+			Gizmo.Draw.IgnoreDepth = false;
+			DrawPlaneHitboxes();
+			DrawHoveredPlaneHighlight();
+			return;
 		}
 
 		// --- Origin axes (colored lines) ---
@@ -531,6 +617,12 @@ internal sealed partial class EffigyViewport : Widget
 
 		Gizmo.Draw.ScreenText( label, new Vector2( _canvas.Size.x - 52f, 18f ),
 			"Roboto", 11f, TextFlag.Center );
+
+		// What one background grid square is worth. Without it the reference grid is no better a
+		// ruler than a tiled texture - you cannot tell 32 units from 32 of anything else.
+		Gizmo.Draw.Color = PlaneColor.WithAlpha( 0.55f );
+		Gizmo.Draw.ScreenText( $"grid {(PlaneSize * 2f) / PlaneSubdivisions:0.##} u",
+			new Vector2( _canvas.Size.x - 52f, 34f ), "Roboto", 9f, TextFlag.Center );
 	}
 
 	// --- standard views ----------------------------------------------------------------------
@@ -630,10 +722,11 @@ internal sealed partial class EffigyViewport : Widget
 		if ( _canvas.Scene is { } scene )
 			scene.EditorTick( RealTime.Now, RealTime.Delta );
 
-		// The floating tool strip sits inside the canvas, so "cursor over the canvas" is true while
-		// you are aiming at a button. Without excluding it, pressing a tool also grabs the orbit
-		// camera and the click drags the view.
-		var overCanvas = _canvas.IsUnderMouse && !(_overlay?.IsUnderMouse ?? false);
+		// The floating tool strips sit inside the canvas, so "cursor over the canvas" is true while
+		// you are aiming at a button. Without excluding them, pressing a tool also grabs the orbit
+		// camera, the click drags the view, and sketch tools place points on the plane.
+		var overAnyOverlay = (_overlay?.IsUnderMouse ?? false) || (_sketchOverlay?.IsUnderMouse ?? false);
+		var overCanvas = _canvas.IsUnderMouse && !overAnyOverlay;
 
 		_gizmoInstance.Input.IsHovered = IsActiveWindow && overCanvas;
 
@@ -652,6 +745,7 @@ internal sealed partial class EffigyViewport : Widget
 		DrawCommittedSketches();
 		SketchPickFrame();
 		FacePickFrame();
+		DrawRigSkeleton();
 
 		SketchFrame();
 
@@ -672,10 +766,316 @@ internal sealed partial class EffigyViewport : Widget
 			? CursorShape.Finger : CursorShape.Arrow;
 	}
 
+	/// <summary>Draw all bones as ball-head + cone-body shapes with selection and pose gizmo.</summary>
+	private void DrawRigSkeleton()
+	{
+		if ( RigSkeleton is null || RigSkeleton.Count == 0 )
+			return;
+
+		// The selected bone's gizmo needs IgnoreDepth=false to match normal editor gizmos.
+		Gizmo.Draw.IgnoreDepth = true;
+
+		for ( var i = 0; i < RigSkeleton.Count; i++ )
+			DrawBoneHandle( i );
+
+		// The selected bone's gizmo runs after the loop, in its own scope, so its hitboxes
+		// do not fight with the bone hitboxes.
+		if ( _selectedBoneIndex >= 0 && _selectedBoneIndex < RigSkeleton.Count )
+			DrawSelectedBoneGizmo();
+
+		Gizmo.Draw.IgnoreDepth = false;
+
+		// Click empty space to deselect — AFTER the gizmo so Gizmo.HasHovered covers both
+		// our bone hitboxes AND the gizmo control's own hitboxes. Using !Gizmo.IsHovered
+		// here was the bug: IsHovered only sees Hitbox.Sphere calls, not Control hitboxes,
+		// so clicking the gizmo counted as empty space and deselected immediately.
+		if ( Gizmo.WasLeftMousePressed && !Gizmo.HasHovered && _selectedBoneIndex >= 0 && !_boneDragging )
+		{
+			_selectedBoneIndex = -1;
+			BoneSelectionChanged?.Invoke( -1 );
+		}
+	}
+
+	/// <summary>Base radius of a bone's head sphere in world units.</summary>
+	private const float BoneHandleRadius = 0.8f;
+
+	/// <summary>Draw one bone as Blender-style octahedral: small joint sphere at head,
+	/// tapering diamond body to a point at the tail.</summary>
+	private void DrawBoneHandle( int index )
+	{
+		var world = RigSkeleton.WorldBind( index );
+		var bone = RigSkeleton.Bones[index];
+
+		var head = new Vector3( world.Origin.x, world.Origin.y, world.Origin.z );
+		var tailVec = world.TransformPoint( new Vec3( 0, bone.Length, 0 ) );
+		var tail = new Vector3( tailVec.x, tailVec.y, tailVec.z );
+
+		// Cross-section axes from the Xform basis — shows roll of the bone.
+		var xAxis = new Vector3( world.X.x, world.X.y, world.X.z );
+		var zAxis = new Vector3( world.Z.x, world.Z.y, world.Z.z );
+
+		var isSelected = index == _selectedBoneIndex;
+
+		Gizmo.Draw.Color = isSelected
+			? new Color( 1f, 0.85f, 0.2f, 1f )
+			: new Color( 0.95f, 0.35f, 0.2f, 0.8f );
+
+		DrawBlenderBone( head, tail, xAxis, zAxis, isSelected );
+
+		// No hitbox on the selected bone — its own gizmo handles registration.
+		if ( isSelected )
+			return;
+
+		Gizmo.Hitbox.DepthBias = 0.01f;
+		Gizmo.Hitbox.Sphere( new Sphere( head, BoneHandleRadius * 2.5f ) );
+
+		if ( Gizmo.IsHovered )
+		{
+			Gizmo.Draw.Color = new Color( 1f, 0.85f, 0.2f, 0.35f );
+			Gizmo.Draw.SolidSphere( head, BoneHandleRadius * 2.5f, 8, 8 );
+
+			if ( Gizmo.WasLeftMousePressed )
+			{
+				_selectedBoneIndex = index;
+				BoneSelectionChanged?.Invoke( index );
+			}
+		}
+	}
+
+	/// <summary>
+	/// Pose gizmo for the selected bone. Mode is set by W (move), E (rotate), R (scale).
+	/// Follows RigViewport's pattern: Position gives per-frame delta (accumulate), Rotate
+	/// gives cumulative-since-grab (assign). The start pose is captured once and everything
+	/// is applied to that — the live transform is never fed back.
+	/// </summary>
+	private void DrawSelectedBoneGizmo()
+	{
+		var world = RigSkeleton.WorldBind( _selectedBoneIndex );
+		var bone = RigSkeleton.Bones[_selectedBoneIndex];
+		var head = new Vector3( world.Origin.x, world.Origin.y, world.Origin.z );
+		var headRot = ExtractRotation( world );
+
+		var startPos = _boneDragging ? _dragStartPos : head;
+		var startRot = _boneDragging ? _dragStartRot : headRot;
+
+		using var scope = Gizmo.Scope( $"BoneCtrl{_selectedBoneIndex}", new Transform( startPos, startRot ) );
+
+		Gizmo.Hitbox.DepthBias = 0.01f;
+
+		switch ( _boneDragMode )
+		{
+			case BoneDragMode.Rotate:
+			{
+				if ( !Gizmo.Control.Rotate( $"bone{_selectedBoneIndex}-rot", Rotation.Identity, out var rotation ) )
+				{
+					EndBoneDragIfReleased();
+					return;
+				}
+
+				BeginBoneDrag( head, headRot, bone.Length );
+				_boneDragging = true;
+
+				// Rotate is CUMULATIVE since the grab — assign, don't accumulate.
+				var newRot = rotation * _dragStartRot;
+
+				ApplyBoneTransform( _selectedBoneIndex, _dragStartPos, newRot, _dragStartLength );
+				break;
+			}
+
+			case BoneDragMode.Move:
+			{
+				if ( !Gizmo.Control.Position( $"bone{_selectedBoneIndex}-pos", Vector3.Zero, out var delta, Rotation.Identity ) )
+				{
+					EndBoneDragIfReleased();
+					return;
+				}
+
+				BeginBoneDrag( head, headRot, bone.Length );
+				_boneDragging = true;
+
+				// Position is PER-FRAME DELTA — accumulate.
+				_moveDelta += delta;
+
+				ApplyBoneTransform( _selectedBoneIndex, _dragStartPos + _moveDelta, _dragStartRot, _dragStartLength );
+				break;
+			}
+
+			case BoneDragMode.Scale:
+			{
+				// Scale adjusts bone length via a vertical drag.
+				if ( !Gizmo.Control.Position( $"bone{_selectedBoneIndex}-scl", Vector3.Zero, out var delta, Rotation.Identity ) )
+				{
+					EndBoneDragIfReleased();
+					return;
+				}
+
+				BeginBoneDrag( head, headRot, bone.Length );
+				_boneDragging = true;
+
+				// Use the vertical (Y) component of the drag as the length change.
+				var localDelta = _dragStartRot.Inverse * delta;
+				var newLength = MathF.Max( _dragStartLength + localDelta.y, 0.5f );
+
+				ApplyBoneTransform( _selectedBoneIndex, _dragStartPos, _dragStartRot, newLength );
+				break;
+			}
+		}
+	}
+
+	private void BeginBoneDrag( Vector3 head, Rotation headRot, float length )
+	{
+		if ( _boneDragging )
+			return;
+
+		_boneDragging = true;
+		_dragStartPos = head;
+		_dragStartRot = headRot;
+		_dragStartLength = length;
+		_moveDelta = Vector3.Zero;
+	}
+
+	private void EndBoneDragIfReleased()
+	{
+		if ( Gizmo.IsLeftMouseDown )
+			return;
+
+		_boneDragging = false;
+	}
+
+	/// <summary>
+	/// Blender-style octahedral bone: small joint sphere at head, diamond body tapering
+	/// to a point at the tail. The head end is wider, the tail end is a sharp point.
+	/// This is the standard bone display in Blender's edit mode.
+	/// </summary>
+	private static void DrawBlenderBone( Vector3 head, Vector3 tail,
+		Vector3 xAxis, Vector3 zAxis, bool selected )
+	{
+		var boneDir = tail - head;
+		var boneLen = boneDir.Length;
+		if ( boneLen < 0.01f )
+			return;
+
+		// Blender proportions: head radius ~12% of bone length, tail radius is a point.
+		var headR = boneLen * 0.12f;
+
+		// Small joint sphere at the head.
+		var sphereR = headR * 0.55f;
+		Gizmo.Draw.SolidSphere( head, sphereR, 8, 8 );
+
+		// Head diamond (wider square cross-section).
+		var h0 = head + xAxis * headR;
+		var h1 = head + zAxis * headR;
+		var h2 = head - xAxis * headR;
+		var h3 = head - zAxis * headR;
+
+		// Tail point.
+		Gizmo.Draw.SolidTriangle( tail, h0, h1 );
+		Gizmo.Draw.SolidTriangle( tail, h1, h2 );
+		Gizmo.Draw.SolidTriangle( tail, h2, h3 );
+		Gizmo.Draw.SolidTriangle( tail, h3, h0 );
+
+		// Four faces of the diamond body connecting head ring to tail point.
+		// These are the same triangles, wound the other way for backface.
+		Gizmo.Draw.SolidTriangle( h0, tail, h1 );
+		Gizmo.Draw.SolidTriangle( h1, tail, h2 );
+		Gizmo.Draw.SolidTriangle( h2, tail, h3 );
+		Gizmo.Draw.SolidTriangle( h3, tail, h0 );
+	}
+
+	/// <summary>Extract an s&box Rotation from an Effigy Xform's basis columns.
+	/// Xform.Y is bone forward (+Y convention), Xform.Z is bone up.</summary>
+	private static Rotation ExtractRotation( Xform xform )
+	{
+		var forward = new Vector3( xform.Y.x, xform.Y.y, xform.Y.z );
+		var up = new Vector3( xform.Z.x, xform.Z.y, xform.Z.z );
+		return Rotation.LookAt( forward, up );
+	}
+
+	/// <summary>
+	/// Write a world-space pose back into the skeleton. Updates position, orientation, and
+	/// optionally length of the bone, converting back to parent-local space. Children follow
+	/// automatically because their Local transforms are relative.
+	/// </summary>
+	private void ApplyBoneTransform( int index, Vector3 newHeadWorld, Rotation newWorldRot, float newLength )
+	{
+		var bone = RigSkeleton.Bones[index];
+
+		// Decompose the new world rotation into the Xform basis columns.
+		var fwd = newWorldRot.Forward;
+		var right = newWorldRot.Right;
+		var up = newWorldRot.Up;
+
+		var newX = new Vec3( right.x, right.y, right.z );
+		var newY = new Vec3( fwd.x, fwd.y, fwd.z );
+		var newZ = new Vec3( up.x, up.y, up.z );
+		var newOrigin = new Vec3( newHeadWorld.x, newHeadWorld.y, newHeadWorld.z );
+
+		if ( bone.Parent < 0 )
+		{
+			bone.Local = new Xform( newX, newY, newZ, newOrigin );
+		}
+		else
+		{
+			var parentWorld = RigSkeleton.WorldBind( bone.Parent );
+			var inv = parentWorld.Inverse;
+			bone.Local = new Xform(
+				inv.TransformDirection( newX ),
+				inv.TransformDirection( newY ),
+				inv.TransformDirection( newZ ),
+				inv.TransformPoint( newOrigin ) );
+		}
+
+		bone.Length = newLength;
+	}
+
+	/// <summary>Deselect the bone — called from the rig panel or Escape key.</summary>
+	public void DeselectBone()
+	{
+		if ( _selectedBoneIndex < 0 )
+			return;
+
+		_selectedBoneIndex = -1;
+		_boneDragging = false;
+		BoneSelectionChanged?.Invoke( -1 );
+	}
+
+	/// <summary>Select a bone by index — called from the rig panel's tree view. Does not
+	/// invoke the BoneSelectionChanged callback to avoid feedback loops.</summary>
+	public void SelectBone( int index )
+	{
+		_selectedBoneIndex = index >= 0 && index < RigSkeleton?.Count ? index : -1;
+	}
+
 	/// <summary>Escape backs out of the half-drawn entity, then out of the tool - the same two
-	/// stages every CAD sketcher uses.</summary>
+	/// stages every CAD sketcher uses. W/E/R switch bone drag modes when a bone is selected.</summary>
 	protected override void OnKeyPress( KeyEvent e )
 	{
+		// A dimension box up on screen owns the keyboard first - digits, Enter and its own Escape.
+		// It has to come before the Escape branch below or dismissing the number would also back
+		// out of the tool you are drawing with.
+		if ( HandleDimensionKey( e ) )
+			return;
+
+		// W/E/R switch bone drag mode while a bone is selected.
+		if ( _selectedBoneIndex >= 0 )
+		{
+			switch ( e.Key )
+			{
+				case KeyCode.W:
+					_boneDragMode = BoneDragMode.Move;
+					e.Accepted = true;
+					return;
+				case KeyCode.E:
+					_boneDragMode = BoneDragMode.Rotate;
+					e.Accepted = true;
+					return;
+				case KeyCode.R:
+					_boneDragMode = BoneDragMode.Scale;
+					e.Accepted = true;
+					return;
+			}
+		}
+
 		if ( e.Key != KeyCode.Escape )
 		{
 			base.OnKeyPress( e );
@@ -696,6 +1096,13 @@ internal sealed partial class EffigyViewport : Widget
 		{
 			PlanePickMode = false;
 			PickModeCancelled?.Invoke();
+			e.Accepted = true;
+			return;
+		}
+
+		if ( _selectedBoneIndex >= 0 )
+		{
+			DeselectBone();
 			e.Accepted = true;
 			return;
 		}
