@@ -225,6 +225,16 @@ internal sealed class EffigyFeatureDialog : Widget
 			return;
 		}
 
+		// A face material with nothing picked cannot do anything at all, so it opens asking - the
+		// same reasoning as a brand new sketch opening with its plane box armed.
+		if ( _feature is FaceMaterialFeature material )
+		{
+			if ( material.Faces.Count == 0 )
+				_activeArmable?.Arm();
+
+			return;
+		}
+
 		if ( _feature is SketchConsumingFeature consumer )
 		{
 			var hasChoice = !string.IsNullOrEmpty( consumer.SketchFeatureId )
@@ -261,6 +271,7 @@ internal sealed class EffigyFeatureDialog : Widget
 		_viewport.BodyPickMode = false;
 		_viewport.BodyPicked = null;
 		_viewport.SelectedBodyIds = null;
+		_viewport.SelectedFaces = null;
 		_viewport.SetPickPrompt( "" );
 	}
 
@@ -409,6 +420,23 @@ internal sealed class EffigyFeatureDialog : Widget
 			AddRow( planeSelector );
 			AddRow( BuildFloatRow( sketch.PlaneOffset ) );
 			AddRow( BuildSketchButtonRow( sketch ) );
+			return;
+		}
+
+		// A face material is a set of picked faces plus a slot. The faces have no IParam - a list of
+		// picked geometry has no generic control the way a float or a choice does - so the box comes
+		// first and the generic rows follow it.
+		if ( _feature is FaceMaterialFeature material )
+		{
+			_viewport.SetPickableBodies( _pickableBodiesLookup?.Invoke() );
+
+			var faceSelector = new EffigyFaceSetSelector( _body, _viewport, material, OnFaceSetChanged );
+			_activeArmable = faceSelector;
+			AddRow( faceSelector );
+
+			foreach ( var param in _feature.Parameters )
+				AddRow( BuildParamRow( param ) );
+
 			return;
 		}
 
@@ -825,6 +853,14 @@ internal sealed class EffigyFeatureDialog : Widget
 		_activeArmable ??= selector;
 
 		return selector;
+	}
+
+	/// <summary>A face was added to or removed from a face-material assignment. Same as any other
+	/// parameter edit: the feature's inputs changed, so it re-runs.</summary>
+	private void OnFaceSetChanged()
+	{
+		Edited?.Invoke();
+		Rebuild();
 	}
 
 	/// <summary>A body was added to or removed from a selection: the feature's inputs changed, so
@@ -1360,6 +1396,184 @@ internal sealed class EffigyBodySelector : Widget, IArmableSelection
 		base.OnDestroyed();
 
 		// Leaving pick mode armed would keep the bodies clickable after the dialog closed.
+		if ( _armed )
+			Disarm();
+	}
+}
+
+/// <summary>
+/// The faces a material assignment paints, picked in the viewport.
+///
+/// Multi-select and stays armed, for the same reason the body box does: "which faces" has any
+/// number of answers, so a click toggles one and the box waits for the next. Escape ends it.
+///
+/// It shows a COUNT rather than a list. A face has no name to show — it is "the third face of
+/// body2", which is exactly the kind of index-based identity FaceRef exists to avoid — so the
+/// useful readout is how many are picked, with the faces themselves lit in the viewport where they
+/// can actually be seen.
+/// </summary>
+internal sealed class EffigyFaceSetSelector : Widget, IArmableSelection
+{
+	private readonly EffigyViewport _viewport;
+	private readonly FaceMaterialFeature _feature;
+	private readonly Action _changed;
+
+	private bool _armed;
+
+	public EffigyFaceSetSelector( Widget parent, EffigyViewport viewport, FaceMaterialFeature feature,
+		Action changed ) : base( parent )
+	{
+		_viewport = viewport;
+		_feature = feature;
+		_changed = changed;
+
+		Layout = Layout.Row();
+		Layout.Margin = new Sandbox.UI.Margin( 8, 3 );
+		Layout.Spacing = 6;
+
+		FixedHeight = 46f;
+		Cursor = CursorShape.Finger;
+	}
+
+	private Rect ClearRect() => new( Width - 26f, 18f, 18f, 22f );
+
+	protected override void OnPaint()
+	{
+		var count = _feature.Faces.Count;
+
+		Paint.SetPen( Theme.TextControl.WithAlpha( 0.7f ) );
+		Paint.SetDefaultFont( 8 );
+		Paint.DrawText( new Rect( 0f, 0f, Width, 16f ).Shrink( 8f, 2f, 0f, 0f ), "Faces", TextFlag.LeftTop );
+
+		var box = new Rect( 8f, 18f, Width - 16f, 22f );
+
+		Paint.ClearPen();
+		Paint.SetBrush( _armed ? Theme.Blue.WithAlpha( 0.18f ) : Theme.ControlBackground );
+		Paint.DrawRect( box, 2f );
+
+		Paint.ClearBrush();
+
+		// Red while empty, like the plane box: a face material with no faces is a feature that
+		// cannot build, and the dialog's own IsBroken predicate agrees.
+		Paint.SetPen( _armed ? Theme.Blue : (count > 0 ? Theme.TextControl.WithAlpha( 0.35f ) : Theme.Red.WithAlpha( 0.6f )) );
+		Paint.DrawRect( box, 2f );
+
+		Paint.SetDefaultFont( 9 );
+
+		var label = count switch
+		{
+			0 when _armed => "Click the faces to paint",
+			0 => "No faces picked",
+			1 => "1 face",
+			_ => $"{count} faces"
+		};
+
+		if ( _armed && count > 0 )
+			label += " — click to add or remove";
+
+		Paint.SetPen( _armed ? Theme.Blue : (count > 0 ? Theme.TextControl : Theme.TextControl.WithAlpha( 0.45f )) );
+		Paint.DrawText( box.Shrink( 6f, 0f, 30f, 0f ), label, TextFlag.LeftCenter );
+
+		if ( count == 0 )
+			return;
+
+		Paint.SetPen( Theme.TextControl.WithAlpha( 0.55f ) );
+		Paint.DrawIcon( ClearRect(), "close", 14, TextFlag.Center );
+	}
+
+	protected override void OnMousePress( MouseEvent e )
+	{
+		base.OnMousePress( e );
+
+		if ( !e.LeftMouseButton )
+			return;
+
+		if ( _feature.Faces.Count > 0 && ClearRect().IsInside( e.LocalPosition ) )
+		{
+			_feature.Faces.Clear();
+			Push();
+			Update();
+			_changed?.Invoke();
+			return;
+		}
+
+		if ( _armed )
+			Disarm();
+		else
+			Arm();
+	}
+
+	public void Arm()
+	{
+		if ( _armed )
+			return;
+
+		_armed = true;
+		_viewport.FacePickMode = true;
+		_viewport.FacePicked = OnFacePicked;
+		Push();
+		_viewport.SetPickPrompt( "Click the faces to put on this material slot. Escape when done." );
+		Update();
+	}
+
+	public void Disarm()
+	{
+		if ( !_armed )
+			return;
+
+		_armed = false;
+		_viewport.FacePickMode = false;
+		_viewport.FacePicked = null;
+		_viewport.SelectedFaces = null;
+		_viewport.SetPickPrompt( "" );
+		Update();
+	}
+
+	/// <summary>
+	/// Toggle. Clicking a face already in the set takes it out, which is the only way to correct a
+	/// misclick without starting the whole assignment again.
+	///
+	/// Matching is by RESOLVED FACE, not by comparing stored FaceRefs. Two clicks on the same face
+	/// produce two references with slightly different hit points and anchors — they are not equal,
+	/// and comparing them would let the same face be added twice and never removed.
+	/// </summary>
+	private void OnFacePicked( FaceRef face )
+	{
+		var bodies = _viewport.PickableBodies;
+
+		if ( !FacePlane.TryResolveFace( bodies, face, out var body, out var index ) )
+			return;
+
+		for ( var i = 0; i < _feature.Faces.Count; i++ )
+		{
+			if ( !FacePlane.TryResolveFace( bodies, _feature.Faces[i], out var existing, out var existingIndex ) )
+				continue;
+
+			if ( existing.Id != body.Id || existingIndex != index )
+				continue;
+
+			_feature.Faces.RemoveAt( i );
+			Push();
+			Update();
+			_changed?.Invoke();
+			return;
+		}
+
+		_feature.Faces.Add( face );
+		Push();
+		Update();
+		_changed?.Invoke();
+	}
+
+	private void Push()
+	{
+		_viewport.SelectedFaces = _armed ? _feature.Faces.ToList() : null;
+	}
+
+	public override void OnDestroyed()
+	{
+		base.OnDestroyed();
+
 		if ( _armed )
 			Disarm();
 	}

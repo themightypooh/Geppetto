@@ -60,16 +60,23 @@ public sealed class PartStudio
 		public List<Body> Bodies;
 		public Dictionary<string, Sketch> Sketches;
 
+		/// <summary>Carried like everything else a feature can see. Left out, an incremental
+		/// rebuild that resumes from the cache would find the sketch but not what it is attached
+		/// to, and the extrude above it would quietly start making its own body again.</summary>
+		public Dictionary<string, string> SketchHostBodies;
+
 		public static Snapshot Of( FeatureContext ctx ) => new()
 		{
 			Bodies = ctx.Bodies.Select( b => b.Clone() ).ToList(),
-			Sketches = ctx.Sketches.ToDictionary( kv => kv.Key, kv => kv.Value.Clone() )
+			Sketches = ctx.Sketches.ToDictionary( kv => kv.Key, kv => kv.Value.Clone() ),
+			SketchHostBodies = new Dictionary<string, string>( ctx.SketchHostBodies )
 		};
 
 		public void RestoreInto( FeatureContext ctx )
 		{
 			ctx.Bodies = Bodies.Select( b => b.Clone() ).ToList();
 			ctx.Sketches = Sketches.ToDictionary( kv => kv.Key, kv => kv.Value.Clone() );
+			ctx.SketchHostBodies = new Dictionary<string, string>( SketchHostBodies );
 		}
 	}
 

@@ -54,6 +54,18 @@ Both put the operation **on the feature**, not in a separate boolean feature.
 rather than a separate boolean feature being invented. The parameter is trivial; the work is
 entirely the mesh boolean underneath it, which Effigy does not have.
 
+**Built, and here is the part that did not need the boolean.** `Result` now sits on both
+sketch-consuming features, with New body and Add — and Add merges the meshes rather than unioning
+them, which is enough for the thing that was actually broken: every extrude made its own body, so
+building a part up out of four extrudes listed four parts. The interface between them is left
+uncut, which costs manifoldness along the join and nothing else that matters at this stage.
+Subtract is not offered, because subtracting genuinely cannot be faked this way — there is no
+"combine and leave the interface" answer to removing material.
+
+The default is neither New nor Add but **Auto**, which reads the sketch's attachment: on a face of a
+body it adds to that body, on a global plane it starts a new one. That is the same information
+FreeCAD's Attacher carries and Solvespace's workplane groups carry, used for a second purpose.
+
 That boolean is the real cost and should not be underestimated: it is the single hardest thing on
 Effigy's roadmap, and both of these projects lean on decades of work for it (Solvespace has its own
 mesh/shell boolean; FreeCAD uses Open CASCADE). Effigy's own `ShellOperation` and `Bevel` are much
@@ -152,7 +164,8 @@ what it should act on.
 | Feature | Needs to select | State |
 |---|---|---|
 | Sketch | a plane | **works** — plane selector, and it is the affordance to copy |
-| Sketch | a face of a body | kernel supports it (`FaceRef`); no UI yet |
+| Sketch | a face of a body | **works** — the same box, one click |
+| Face material | which faces to paint | **works** — multi-select face box, tinted in the viewport |
 | Primitive | nothing | n/a |
 | Extrude | which sketch | **works** — sketch selector |
 | Extrude | which region of it | kernel supports it (`RegionSeed`); no UI yet |
@@ -188,8 +201,9 @@ feature:
 2. ~~**Derived sketch planes: offset, and from a planar face.**~~ Done, and the face reference rides
    its face when that face moves rather than being pinned to an absolute point.
 3. **Extrude taper and two-sided distances.** Small, no boolean. The cheapest thing left.
-4. **Operation parameter on Extrude (New/Add/Subtract)** — wire the parameter and the UI first,
-   erroring clearly on Add/Subtract until the boolean exists.
+4. ~~**Operation parameter on Extrude (New/Add/Subtract)**~~ — done for New and Add, with Add
+   merging rather than unioning (see section 2). Subtract still waits on the boolean and is not
+   offered until it exists.
 5. **Mesh boolean.** The big one. Everything above is useful without it; nothing below is possible
    without it.
 6. ~~**Constraint solver.**~~ Landed: Levenberg-Marquardt over the residuals, seven constraint kinds,

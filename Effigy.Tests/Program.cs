@@ -83,6 +83,10 @@ public static class Program
 
 		UntestedKernelTests.Run();
 
+		MergeTests.Run();
+
+		FaceMaterialTests.Run();
+
 		EditorFlowTests.Run();
 
 		KernelSyncTests.Run();

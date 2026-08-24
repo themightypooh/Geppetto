@@ -36,7 +36,7 @@ machine. A session that skips this ends up reasoning about the code by reading i
 is how a bug that made every parameter edit a silent no-op survived long enough to look like three
 unrelated UI faults.
 
-801 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
+845 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
 2-level-subdivided version of each. Those are the fastest way to see whether something is actually
 right: open them in Blender, or drop one into ModelDoc to find out what s&box makes of it.
 
@@ -56,7 +56,7 @@ Exit code is non-zero on failure, so it works as a pre-commit or CI check unchan
 | `Features/PartStudio.cs` | the ordered history: rollback and incremental rebuild |
 | `Features/BasicFeatures.cs` | primitive, transform, linear/circular pattern, mirror, subdivide |
 | `Features/SketchFeatures.cs` | sketch, extrude, revolve |
-| `Features/SolidFeatures.cs` | shell, bevel, UV project — the ops that reshape a solid once it exists |
+| `Features/SolidFeatures.cs` | shell, bevel, UV project, face material — the ops that act on a solid once it exists |
 | `Sketch/SketchPlane.cs` | the plane a sketch lives on, and plane↔world mapping |
 | `Sketch/Sketch.cs` | points, lines, arcs, circles, tessellation |
 | `Sketch/Profile.cs` | closed-region finding, nesting, orientation |
@@ -154,6 +154,34 @@ Proper face traversal — sort half-edges by angle at each vertex, always take t
 
 **Profiles with holes.** Detected and reported, not built. Capping around a hole is the same problem
 as a boolean subtract and is better solved once, there. Until then use the Tube primitive.
+
+### One part, built out of several extrudes
+
+Extruding off a face of an existing body **adds to that body** rather than starting a second one, so
+three bosses on a block are one part in the list and not four. The rule is the sketch's attachment,
+decided when the sketch was placed: on a face of something, it builds that thing up; on a global
+plane, it starts a new part. `Result` on Extrude and Revolve overrides it either way.
+
+**This is not a boolean.** The two meshes are combined and nothing cuts the interface between them,
+so the face a boss stands on is still in there on the inside. For what it is for — the part list
+reading correctly, the render and every exporter being right — that is the correct trade, and it
+does not wait on a robust CSG. What it costs is that the merged mesh is non-manifold along the join,
+so operations needing clean topology (shell especially) will refuse it. That refusal is the honest
+failure, and it is why merging is not forced on features that did not ask for it.
+
+Subtract is the one that genuinely needs the boolean, and is not offered rather than being offered
+and failing.
+
+### Materials per face
+
+Every face carries a material slot and every exporter groups by it, so a model can arrive in ModelDoc
+with several slots to bind. `FaceMaterialFeature` is what sets them: pick faces, give them a slot.
+
+It is a feature rather than an edit because bodies are rebuilt from scratch every rebuild — paint the
+mesh directly and the next parameter drag wipes it. In the tree it is re-applied after the geometry it
+paints is remade, and it rolls back and suppresses like anything else. Faces are held as `FaceRef`s
+and resolved through the same `FacePlane.TryResolveFace` a sketch-on-a-face uses, so the two cannot
+disagree about which face is meant.
 
 ### Constraints
 

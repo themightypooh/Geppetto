@@ -743,6 +743,7 @@ internal sealed partial class EffigyViewport : Widget
 		// Draw planes first (behind everything else)
 		DrawReferencePlanes();
 		DrawCommittedSketches();
+		ShadeMaterialSlotsFrame();
 		SketchPickFrame();
 		FacePickFrame();
 		BodyPickFrame();

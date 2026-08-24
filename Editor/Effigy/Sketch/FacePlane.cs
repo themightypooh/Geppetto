@@ -185,10 +185,20 @@ public static class FacePlane
 	/// centroid is nearest the reference point wins — which is what keeps a reference on the right
 	/// face of two coplanar ones.
 	/// </summary>
-	public static bool TryResolve( IEnumerable<Body> bodies, FaceRef reference, out SketchPlane plane,
-		float normalTolerance = 0.01f )
+	/// <summary>
+	/// Find the face a reference points at: which body, and which face of it.
+	///
+	/// Split out of TryResolve because two different things now need to re-find a face — a sketch
+	/// deriving a plane from it, and a material assignment painting it — and they must agree
+	/// exactly about which face that is. Two copies of "nearest face pointing the right way" that
+	/// drifted apart would show up as a material landing on one face while the sketch drawn on it
+	/// went somewhere else, which is not a failure anyone would enjoy diagnosing.
+	/// </summary>
+	public static bool TryResolveFace( IEnumerable<Body> bodies, FaceRef reference, out Body body,
+		out int faceIndex, float normalTolerance = 0.01f )
 	{
-		plane = null;
+		body = null;
+		faceIndex = -1;
 
 		if ( bodies is null )
 			return false;
@@ -196,8 +206,6 @@ public static class FacePlane
 		// Scoped to the body it came from. Without that, "the point is no longer on the plane"
 		// either has to fail when the face moves, or has to search the whole model and risk
 		// landing on some unrelated coplanar face.
-		Body body = null;
-
 		foreach ( var candidate in bodies )
 		{
 			if ( candidate?.Mesh is not null && candidate.Id == reference.BodyId )
@@ -211,13 +219,11 @@ public static class FacePlane
 			return false;
 
 		var bestDistance = float.MaxValue;
-		Vec3 bestOrigin = default;
-		Vec3 bestNormal = default;
-		Face bestFace = null;
-		var found = false;
 
-		foreach ( var face in body.Mesh.Faces )
+		for ( var i = 0; i < body.Mesh.Faces.Count; i++ )
 		{
+			var face = body.Mesh.Faces[i];
+
 			if ( face.Count < 3 )
 				continue;
 
@@ -228,21 +234,29 @@ public static class FacePlane
 			if ( Vec3.Dot( normal, reference.Normal ) < 1f - normalTolerance )
 				continue;
 
-			var centroid = body.Mesh.FaceCentroid( face );
-			var distance = (centroid - reference.Point).Length;
+			var distance = (body.Mesh.FaceCentroid( face ) - reference.Point).Length;
 
 			if ( distance >= bestDistance )
 				continue;
 
 			bestDistance = distance;
-			bestOrigin = centroid;
-			bestNormal = normal;
-			bestFace = face;
-			found = true;
+			faceIndex = i;
 		}
 
-		if ( !found )
+		return faceIndex >= 0;
+	}
+
+	public static bool TryResolve( IEnumerable<Body> bodies, FaceRef reference, out SketchPlane plane,
+		float normalTolerance = 0.01f )
+	{
+		plane = null;
+
+		if ( !TryResolveFace( bodies, reference, out var body, out var faceIndex, normalTolerance ) )
 			return false;
+
+		var bestFace = body.Mesh.Faces[faceIndex];
+		var bestOrigin = body.Mesh.FaceCentroid( bestFace );
+		var bestNormal = body.Mesh.FaceNormal( bestFace );
 
 		// ANCHORED TO THE FACE'S EDGES, NOT TO THE PLANE. The origin is rebuilt from the face's
 		// CURRENT extent plus the stored inset, so a sketch placed ten units in from the end of a

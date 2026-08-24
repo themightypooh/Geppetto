@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -84,6 +84,33 @@ public static class AllFeaturesTests
 
 	static Feature Create( Type t ) => (Feature)Activator.CreateInstance( t );
 
+	/// <summary>
+	/// Hand a freshly created feature the kind of input that has no parameter to set it.
+	///
+	/// Defaults cover most tools, and the studio from WithInput covers the rest — a body to act on,
+	/// a sketch to consume. A face assignment needs neither: it needs PICKED FACES, which arrive
+	/// from a click in the viewport and have no default that could be meaningful. Giving it one face
+	/// of the box is this harness keeping its own promise that every tool is judged on its real path
+	/// rather than on its input guard. The guard itself is covered by the empty-studio test.
+	/// </summary>
+	static void GivePickedInput( Feature feature, PartStudio studio )
+	{
+		if ( feature is not FaceMaterialFeature material || studio.Bodies.Count == 0 )
+			return;
+
+		var body = studio.Bodies[0];
+		var mesh = body.Mesh;
+
+		for ( var i = 0; i < mesh.Faces.Count; i++ )
+		{
+			if ( mesh.FaceNormal( mesh.Faces[i] ).z > 0.99f )
+			{
+				material.Faces.Add( FacePlane.Capture( body, i, mesh.FaceCentroid( mesh.Faces[i] ) ) );
+				return;
+			}
+		}
+	}
+
 	/// <summary>A studio holding a box and a closed sketch above it, so any feature added next has
 	/// something real to act on.</summary>
 	static PartStudio WithInput()
@@ -115,6 +142,7 @@ public static class AllFeaturesTests
 			var bodiesBefore = studio.Bodies.Count;
 
 			var feature = Create( type );
+			GivePickedInput( feature, studio );
 			studio.Add( feature );
 
 			RebuildReport report;

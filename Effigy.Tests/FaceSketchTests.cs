@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Linq;
 using Effigy;
 
@@ -94,6 +94,12 @@ public static class FaceSketchTests
 		var boss = studio.Add( new ExtrudeFeature() );
 		boss.Distance.Value = 1f;
 
+		// Kept as its own body ON PURPOSE. The default now merges a face-attached extrude into the
+		// body it grows from, which is what anyone building a part wants — but it also means the
+		// boss stops being separately measurable, and what these tests are about is where the
+		// SKETCH landed. Merging has its own tests; this one wants the boss on its own.
+		boss.Result.Index = 1;
+
 		var report = studio.Rebuild();
 
 		Report.Check( "it builds", !report.HasErrors, report.ToString() );
@@ -132,7 +138,9 @@ public static class FaceSketchTests
 		sketch.Face = TopFaceOf( studio );
 		sketch.Sketch.AddRectangle( new Vec2( -0.5f, -0.5f ), new Vec2( 0.5f, 0.5f ) );
 
-		studio.Add( new ExtrudeFeature() ).Distance.Value = 1f;
+		var riding = studio.Add( new ExtrudeFeature() );
+		riding.Distance.Value = 1f;
+		riding.Result.Index = 1; // separate body, so the boss can be measured on its own
 		studio.Rebuild();
 
 		var firstBossLow = studio.Bodies[1].Mesh.Positions.Min( p => p.z );

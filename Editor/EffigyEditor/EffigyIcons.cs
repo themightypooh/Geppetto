@@ -19,6 +19,7 @@ internal enum EffigyIcon
 	CircularPattern,
 	Transform,
 	UVProject,
+	FaceMaterial,
 }
 
 /// <summary>
@@ -81,6 +82,7 @@ internal static class EffigyIcons
 			case EffigyIcon.CircularPattern: PaintCircularPattern( center, color ); return;
 			case EffigyIcon.Transform: PaintTransform( center, color ); return;
 			case EffigyIcon.UVProject: PaintUVProject( center, color ); return;
+			case EffigyIcon.FaceMaterial: PaintFaceMaterial( center, color ); return;
 		}
 	}
 
@@ -391,5 +393,33 @@ internal static class EffigyIcons
 		Stroked( color, 1.4f );
 		Editor.Paint.DrawLine( At( c, 0, -8.4f ), At( c, 0, -4.4f ) );
 		ArrowHead( At( c, 0, -2.6f ), new Vector2( 0, 1 ), color, 3f );
+	}
+
+	/// <summary>A cube with ONE of its three visible faces filled — the operation is "this face,
+	/// not that one", so what the glyph has to show is faces being told apart. A paint pot or a
+	/// swatch would say "material" without saying "per face", which is the whole distinction.</summary>
+	private static void PaintFaceMaterial( Vector2 c, Color color )
+	{
+		// Isometric cube: top rhombus, then the two visible side quads.
+		var top = At( c, 0, -8 );
+		var right = At( c, 8, -3.5f );
+		var bottom = At( c, 0, 1 );
+		var left = At( c, -8, -3.5f );
+
+		// The lit face, filled. DrawPolygon fills, which is exactly what is wanted here and is why
+		// the other faces are walked as lines instead.
+		Filled( color.WithAlpha( 0.85f ) );
+		Editor.Paint.DrawPolygon( top, right, bottom, left );
+
+		Stroked( color );
+		Outline( top, right, bottom, left );
+
+		// The two side faces, left plain so the filled top reads as the odd one out.
+		var lowLeft = At( c, -8, 5.5f );
+		var lowMid = At( c, 0, 10 );
+		var lowRight = At( c, 8, 5.5f );
+
+		Outline( left, bottom, lowMid, lowLeft );
+		Outline( bottom, right, lowRight, lowMid );
 	}
 }

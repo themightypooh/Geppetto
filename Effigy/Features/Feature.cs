@@ -150,6 +150,17 @@ public sealed class FeatureContext
 	/// upstream and rebuilding feeds the new geometry through without any wiring to keep in sync.</summary>
 	public Dictionary<string, Sketch> Sketches = new();
 
+	/// <summary>
+	/// For a sketch drawn on a face, the id of the body that face belongs to. Keyed by sketch
+	/// feature id, same as Sketches.
+	///
+	/// This is what lets an extrude know it is growing OUT OF something rather than into thin air.
+	/// A Sketch is pure geometry and has no business knowing about bodies, and the consuming
+	/// feature never sees the SketchFeature itself — only what it published here — so the
+	/// attachment travels the same way the sketch does.
+	/// </summary>
+	public Dictionary<string, string> SketchHostBodies = new();
+
 	int _nextId = 1;
 	string _featureId;
 	int _featureBodies;
