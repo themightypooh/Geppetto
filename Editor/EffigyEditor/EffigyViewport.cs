@@ -745,13 +745,14 @@ internal sealed partial class EffigyViewport : Widget
 		DrawCommittedSketches();
 		SketchPickFrame();
 		FacePickFrame();
+		BodyPickFrame();
 		DrawRigSkeleton();
 
 		SketchFrame();
 
 		// Origin on top of the planes. Hidden while sketching or picking anything - it sits at the
 		// exact spot most first clicks land, and stealing them was the first thing that broke.
-		if ( !IsSketching && !PlanePickMode && !SketchPickMode )
+		if ( !IsSketching && !PlanePickMode && !SketchPickMode && !BodyPickMode )
 		{
 			DrawOrigin();
 
@@ -1092,9 +1093,10 @@ internal sealed partial class EffigyViewport : Widget
 		// Escape stands down an armed selection box. The viewport owns the key press; the dialog
 		// owns the boxes' painted state, so it is told through PickModeCancelled. Sketch picking
 		// itself stays live while a consumer dialog is open — the dialog turns it off.
-		if ( PlanePickMode || SketchPickMode )
+		if ( PlanePickMode || SketchPickMode || BodyPickMode )
 		{
 			PlanePickMode = false;
+			BodyPickMode = false;
 			PickModeCancelled?.Invoke();
 			e.Accepted = true;
 			return;

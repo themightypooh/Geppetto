@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -37,6 +37,31 @@ public sealed class SketchFeature : Feature
 		var basePlane = ResolveBasePlane( ctx );
 
 		Sketch.Plane = PlaneOffset.Value == 0f ? basePlane : basePlane.Offset( PlaneOffset.Value );
+
+		// Constraints are intent; points are what everything downstream reads. Solving here, before
+		// the sketch is published, is what makes the two agree — profile finding, extrude and
+		// revolve all see coordinates that already satisfy the rules, and none of them needs to
+		// know a solver exists. A sketch with no constraints costs one comparison.
+		if ( Sketch.Constraints.Count > 0 )
+		{
+			var solve = Sketch.Solve();
+
+			if ( !solve.Converged )
+			{
+				// A warning rather than an error, deliberately: the points are left at the solver's
+				// best attempt, which is still a drawable sketch. Failing the feature would blank
+				// the model the moment a sketch became momentarily over-constrained mid-edit.
+				Warning = $"Sketch constraints did not fully solve — residual {solve.Residual:0.###e0} "
+					+ $"after {solve.Iterations} iterations. The geometry is the closest fit found.";
+			}
+			else if ( solve.RedundantConstraints > 0 )
+			{
+				Warning = $"{solve.RedundantConstraints} constraint(s) repeat something already "
+					+ "implied by the others. Harmless, but removing them makes the sketch easier "
+					+ "to reason about.";
+			}
+		}
+
 		ctx.Sketches[Id] = Sketch;
 	}
 

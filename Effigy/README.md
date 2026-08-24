@@ -36,7 +36,7 @@ machine. A session that skips this ends up reasoning about the code by reading i
 is how a bug that made every parameter edit a silent no-op survived long enough to look like three
 unrelated UI faults.
 
-447 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
+801 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
 2-level-subdivided version of each. Those are the fastest way to see whether something is actually
 right: open them in Blender, or drop one into ModelDoc to find out what s&box makes of it.
 
@@ -68,7 +68,15 @@ Exit code is non-zero on failure, so it works as a pre-commit or CI check unchan
 | `Rig/SkinWeights.cs` | per-vertex influences, blending and pruning |
 | `Rig/SkinBinder.cs` | auto-binding by distance or by body, plus weight smoothing |
 | `SmdWriter.cs` | the export path — static and skinned in one writer |
+| `DmxWriter.cs` | the export ModelDoc actually accepts; SMD is not on its import list |
 | `MeshNormals.cs` | angle-thresholded corner normals, shared by every exporter |
+| `Triangulate.cs` | ear clipping, so a concave face does not fill its own notch |
+| `MeshSection.cs` | where one solid crosses a plane — the footprints another body leaves on a face |
+| `MeshRaycast.cs` | picking a face or a body in the viewport, as pure geometry |
+| `Sketch/FacePlane.cs` | referring to a face that gets rebuilt, and riding it when it moves |
+| `Sketch/IConstraint.cs` | one residual and its derivative — the solver never switches on a kind |
+| `Sketch/Constraints.cs` | the constraint set, and the derivatives that make it solvable |
+| `Sketch/SketchSolver.cs` | Levenberg-Marquardt, with degrees of freedom and redundancy reported |
 
 ## The feature tree
 
@@ -147,12 +155,37 @@ Proper face traversal — sort half-edges by angle at each vertex, always take t
 **Profiles with holes.** Detected and reported, not built. Capping around a hole is the same problem
 as a boolean subtract and is better solved once, there. Until then use the Tube primitive.
 
-### Not yet: constraints
+### Constraints
 
-There's no solver, so sketch coordinates are typed rather than derived. This was shipped first on
-purpose — the sketch→extrude loop works end to end while the solver is built, and nothing in
-`Sketch.cs` or `Profile.cs` has to change when it lands. The solver's job is to let coordinates be
-implied by constraints; the geometry and topology layers below it are already done.
+There is a solver now, and the prediction the last version of this section made held: nothing in
+`Sketch.cs` or `Profile.cs` had to change for it. Coordinates are still what everything downstream
+reads — `SketchSolver` moves the points to satisfy the rules, and profile finding, extrude and
+revolve never learn that a solver exists.
+
+Levenberg-Marquardt over the constraint residuals: each rule contributes an equation that reads zero
+when it holds, plus its derivative, and the solve is the point positions that zero them all.
+Coincident, distance, horizontal, vertical, equal length, parallel and perpendicular, with a new one
+costing one class and no change to the solver.
+
+Three things worth knowing before touching it:
+
+**One point is pinned.** Every equation is about differences between points, so the whole sketch can
+slide without changing any residual and the step is not unique. Pinning kills the slide but not
+rotation, which is why a fully dimensioned rectangle still reports one degree of freedom — it really
+can be spun. The editor should pin whatever point the user is dragging.
+
+**Degrees of freedom are counted from the Jacobian's rank, not from the number of constraints.** Two
+constraints saying the same thing remove one freedom; counting rows would claim they removed two,
+and would call a perfectly fine sketch over-constrained. Redundant rows are reported separately,
+which is the answer to "why did adding that dimension do nothing".
+
+**A sketch that will not solve warns rather than failing.** The points are left at the closest fit
+found. Erroring would blank the model every time a sketch passed through a contradictory state
+mid-edit, which is most of the time while someone is adding constraints.
+
+The derivatives are checked against finite differences in `ConstraintTests`, and that is not
+ceremony: a wrong derivative does not produce a wrong answer, it produces a slow or unstable one, so
+it presents as "the solver feels flaky" and never as a failing assert.
 
 ## Two decisions worth knowing before changing anything
 
@@ -289,7 +322,7 @@ reads `(x,y)` — all `(2,2)`. An unequal box is needed to observe a seam at all
 
 **Phase two (next)**: Skeleton editing, auto-weighting, weight painting, SMD export. Bones come before sculpt because you have bone experience.
 
-**Phase three**: The sketch constraint solver, rounded (multi-segment) fillets, then Catmull-Clark subdivision brushes, multires deltas, normal-map bake.
+**Phase three**: Rounded (multi-segment) fillets, then Catmull-Clark subdivision brushes, multires deltas, normal-map bake. The sketch constraint solver was the other item here and has landed.
 
 Boolean is the notable absence. Robust mesh CSG is a decades-old problem — coplanar faces,
 floating-point robustness, self-intersection — and a half-working one is worse than none. s&box ships

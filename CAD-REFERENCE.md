@@ -158,15 +158,18 @@ what it should act on.
 | Extrude | which region of it | kernel supports it (`RegionSeed`); no UI yet |
 | Revolve | which sketch | **works** |
 | Revolve | **an axis** | typed Vec3 only. Its default runs through the sketch origin, so the first press on a normal sketch always fails |
-| Shell, Bevel, Subdivide, Transform, UV Project, Mirror, Linear Pattern, Circular Pattern | which bodies | `BodySelectionParam` renders as a disabled "All bodies" label. **Eight features with a parameter that cannot be set.** |
+| Shell, Bevel, Subdivide, Transform, UV Project, Mirror, Linear Pattern, Circular Pattern | which bodies | **works** — selection box, multi-select, empty still means all |
 | Mirror | a mirror plane | typed Vec3 point + normal |
 | Linear Pattern | a direction | typed Vec3 |
 | Circular Pattern | an axis | typed Vec3 point + direction |
 
-The one to fix first is body selection: it is a single control that unblocks eight tools, and the
-parameter behind it already works — `BodySelectionParam.Matches` is honoured by every one of them.
+Body selection was the one to fix first — a single control unblocking eight tools, with the parameter
+behind it already working — and it is now a selection box on the same pattern as the plane and
+profile ones. Multi-select, because unlike a plane the question has any number of answers: a click
+toggles a body and the box stays armed. Empty still means every body, so no existing document
+changes meaning.
 
-Revolve's axis is second, and is the clearest case of a tool that looks broken rather than
+Revolve's axis is now first, and is the clearest case of a tool that looks broken rather than
 unfinished: the default axis passes through the sketch origin, which is where people draw, so the
 button reliably errors the first time it is pressed. The error now names how far the profile
 reaches either side, but the real fix is picking the axis in the viewport.
@@ -181,14 +184,17 @@ priority than either.
 Ranked by value against cost, given a mesh boolean is the expensive prerequisite for the headline
 feature:
 
-1. **`visible` on features** — small, and the feature list wants it.
-2. **Derived sketch planes: offset, and from a planar face.** No boolean needed. This alone gets
-   "sketch on top of the block I just made", which is most of the perceived gap.
-3. **Extrude taper and two-sided distances.** Small, no boolean.
+1. ~~**`visible` on features**~~ — done.
+2. ~~**Derived sketch planes: offset, and from a planar face.**~~ Done, and the face reference rides
+   its face when that face moves rather than being pinned to an absolute point.
+3. **Extrude taper and two-sided distances.** Small, no boolean. The cheapest thing left.
 4. **Operation parameter on Extrude (New/Add/Subtract)** — wire the parameter and the UI first,
    erroring clearly on Add/Subtract until the boolean exists.
 5. **Mesh boolean.** The big one. Everything above is useful without it; nothing below is possible
    without it.
-6. **Constraint solver.** Independent of all of the above, fully testable headlessly.
+6. ~~**Constraint solver.**~~ Landed: Levenberg-Marquardt over the residuals, seven constraint kinds,
+   degrees of freedom counted from the Jacobian's rank. What it still needs is the UI — there is no
+   way to add a constraint in the editor, so the solver currently only runs on constraints the
+   inference puts there. That, and a dimension tool, are what turn it into something a user can use.
 
-Note that 1–4 are all reachable and verifiable in this repo with no engine present.
+Note that 3 and 4 are both reachable and verifiable in this repo with no engine present.

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace Effigy;
@@ -14,6 +14,11 @@ public sealed class Body
 	/// Feature.Visible for why this is not the same thing as suppression.</summary>
 	public bool Visible = true;
 
+	/// <summary>Id of the Feature that produced this body, recorded by the rebuild alongside
+	/// Visible. Bodies are re-made from scratch every rebuild and have no identity a UI can hold
+	/// onto, so a Parts list needs this to get from a row back to the thing that owns it.</summary>
+	public string FeatureId;
+
 	public Body( string id, string name, PolyMesh mesh )
 	{
 		Id = id;
@@ -21,7 +26,7 @@ public sealed class Body
 		Mesh = mesh;
 	}
 
-	public Body Clone() => new( Id, Name, Mesh.Clone() ) { Visible = Visible };
+	public Body Clone() => new( Id, Name, Mesh.Clone() ) { Visible = Visible, FeatureId = FeatureId };
 }
 
 // --- parameters -------------------------------------------------------------------------------
@@ -146,11 +151,37 @@ public sealed class FeatureContext
 	public Dictionary<string, Sketch> Sketches = new();
 
 	int _nextId = 1;
+	string _featureId;
+	int _featureBodies;
 
-	public string NewBodyId() => $"body{_nextId++}";
+	/// <summary>
+	/// A body id belonging to the feature currently running: its feature id, plus a counter of the
+	/// bodies that feature has made this run.
+	///
+	/// IDS USED TO BE A SINGLE RUNNING COUNTER - body1, body2, body3 in creation order across the
+	/// whole rebuild - and that is the topological naming problem all over again, one level up from
+	/// the faces FaceRef was written to protect. Add a feature ANYWHERE upstream that produces a
+	/// body and every id after it shifts by one, so a sketch attached to "body1" silently lands on
+	/// whatever happens to be body1 now. Not an error, not a warning: a boss quietly reattaches
+	/// itself to an unrelated block.
+	///
+	/// Feature ids are assigned once at creation and never reused, so a body named after the
+	/// feature that made it cannot be renumbered by anything happening elsewhere in the tree.
+	/// </summary>
+	public string NewBodyId() =>
+		_featureId is null ? $"body{_nextId++}" : $"{_featureId}b{_featureBodies++}";
 
-	/// <summary>Kept across rebuilds so ids stay stable — a selection referring to "body3" must
-	/// still mean the same body after an unrelated feature is edited upstream.</summary>
+	/// <summary>Called by Feature.Run before Execute, so bodies are named after their maker. The
+	/// per-feature counter restarts, which is what makes a feature that produces three bodies -
+	/// a pattern, say - name them the same three ids on every rebuild.</summary>
+	public void BeginFeature( string featureId )
+	{
+		_featureId = featureId;
+		_featureBodies = 0;
+	}
+
+	/// <summary>Vestigial: only the fallback numbering uses it, for a context nothing has called
+	/// BeginFeature on.</summary>
 	public void SeedIdCounter( int next ) => _nextId = Math.Max( _nextId, next );
 }
 
@@ -207,6 +238,10 @@ public abstract class Feature
 	{
 		Error = null;
 		Warning = null;
+
+		// Bodies made from here on belong to this feature and are named after it. Set before the
+		// Suppressed check is pointless; set here so every path into Execute is covered.
+		ctx.BeginFeature( Id );
 
 		if ( Suppressed )
 			return;

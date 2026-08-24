@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace Effigy;
@@ -38,6 +38,31 @@ public readonly struct FaceRef
 	/// of the same body pointing the same way — not as an exact test, so the face may move.</summary>
 	public readonly Vec3 Point;
 
+	/// <summary>
+	/// Where on the face the sketch sits, as a distance IN FROM THE FACE'S NEAREST EDGE along each
+	/// of the face's own axes. This is what makes a sketch ride its face.
+	///
+	/// Three rules were possible and only this one matches what people mean. Anchoring to the
+	/// absolute point ties the sketch to the face's infinite PLANE: shorten an extrude and its own
+	/// side faces shrink away from underneath the sketch, leaving everything built on it hanging in
+	/// the air. Anchoring to the CENTROID follows the face but only halfway — a tab placed 10 units
+	/// in from the end of a 125-long face is 52.5 from the centre, and staying 52.5 from the centre
+	/// of a 75-long face puts it 15 units past the end. Anchoring in from the nearest edge keeps
+	/// "10 units in from the end" true at any length, which is the thing that was actually meant.
+	/// </summary>
+	public readonly Vec2 Anchor;
+
+	/// <summary>Which side of the face each axis of <see cref="Anchor"/> is measured from: false is
+	/// the low edge, true the high one. Whichever the sketch was nearer to when it was placed — a
+	/// tab near the end of a bar holds its distance from THAT end, not from the far one.</summary>
+	public readonly bool AnchorFromMaxX;
+	public readonly bool AnchorFromMaxY;
+
+	/// <summary>False for a reference made before an anchor was recorded, which falls back to
+	/// sitting at the centre of whatever face it resolves to. Without the distinction those
+	/// references would read a (0,0) anchor as "hard against the bottom-left corner".</summary>
+	public readonly bool Anchored;
+
 	/// <summary>The face's outward normal, which disambiguates the two faces of a thin wall that
 	/// a point alone would not tell apart.</summary>
 	public readonly Vec3 Normal;
@@ -47,6 +72,21 @@ public readonly struct FaceRef
 		BodyId = bodyId;
 		Point = point;
 		Normal = normal.Normal;
+		Anchor = Vec2.Zero;
+		AnchorFromMaxX = false;
+		AnchorFromMaxY = false;
+		Anchored = false;
+	}
+
+	public FaceRef( string bodyId, Vec3 point, Vec3 normal, Vec2 anchor, bool fromMaxX, bool fromMaxY )
+	{
+		BodyId = bodyId;
+		Point = point;
+		Normal = normal.Normal;
+		Anchor = anchor;
+		AnchorFromMaxX = fromMaxX;
+		AnchorFromMaxY = fromMaxY;
+		Anchored = true;
 	}
 }
 
@@ -80,6 +120,61 @@ public static class FacePlane
 		var y = Vec3.Cross( n, x ).Normal;
 
 		return new SketchPlane( point, x, y );
+	}
+
+	/// <summary>
+	/// Capture a reference to the face that was just clicked, recording where on that face the
+	/// click landed relative to its centroid. Use this rather than the FaceRef constructor
+	/// directly: a reference built without an anchor sits at the centre of whatever face it
+	/// resolves to, which is not where anyone clicked.
+	/// </summary>
+	public static FaceRef Capture( Body body, int faceIndex, Vec3 point )
+	{
+		if ( body?.Mesh is not { } mesh || faceIndex < 0 || faceIndex >= mesh.Faces.Count )
+			return new FaceRef( body?.Id, point, new Vec3( 0, 0, 1 ) );
+
+		var face = mesh.Faces[faceIndex];
+		var normal = mesh.FaceNormal( face );
+		var centroid = mesh.FaceCentroid( face );
+		var plane = FromPointAndNormal( centroid, normal );
+
+		var bounds = Bounds( mesh, face, plane );
+		var local = plane.ToPlane( point );
+
+		// Measured in from whichever edge it is nearer, per axis independently. A sketch near one
+		// end and centred across the width therefore holds its inset from that end and stays
+		// roughly central across the width, which is how it looks to whoever placed it.
+		var fromMaxX = local.x - bounds.MinX > bounds.MaxX - local.x;
+		var fromMaxY = local.y - bounds.MinY > bounds.MaxY - local.y;
+
+		var anchor = new Vec2(
+			fromMaxX ? bounds.MaxX - local.x : local.x - bounds.MinX,
+			fromMaxY ? bounds.MaxY - local.y : local.y - bounds.MinY );
+
+		return new FaceRef( body.Id, point, normal, anchor, fromMaxX, fromMaxY );
+	}
+
+	/// <summary>A face's extent in its own plane axes. The axes come from the normal alone (see
+	/// FromPointAndNormal), so this is the same box every rebuild for as long as the face points
+	/// the same way.</summary>
+	static (float MinX, float MaxX, float MinY, float MaxY) Bounds( PolyMesh mesh, Face face, SketchPlane plane )
+	{
+		var minX = float.MaxValue;
+		var maxX = float.MinValue;
+		var minY = float.MaxValue;
+		var maxY = float.MinValue;
+
+		for ( var i = 0; i < face.Count; i++ )
+		{
+			var p = plane.ToPlane( mesh.Positions[face.Indices[i]] );
+
+			minX = MathF.Min( minX, p.x );
+			maxX = MathF.Max( maxX, p.x );
+			minY = MathF.Min( minY, p.y );
+			maxY = MathF.Max( maxY, p.y );
+		}
+
+		return (minX, maxX, minY, maxY);
 	}
 
 	/// <summary>
@@ -118,6 +213,7 @@ public static class FacePlane
 		var bestDistance = float.MaxValue;
 		Vec3 bestOrigin = default;
 		Vec3 bestNormal = default;
+		Face bestFace = null;
 		var found = false;
 
 		foreach ( var face in body.Mesh.Faces )
@@ -141,17 +237,32 @@ public static class FacePlane
 			bestDistance = distance;
 			bestOrigin = centroid;
 			bestNormal = normal;
+			bestFace = face;
 			found = true;
 		}
 
 		if ( !found )
 			return false;
 
-		// Anchor at the stored point projected onto the face it resolved to, so sketch coordinates
-		// stay put when the face moves along its own normal - which is exactly what happens when
-		// the block underneath gets taller.
-		var offset = Vec3.Dot( reference.Point - bestOrigin, bestNormal );
-		var origin = reference.Point - bestNormal * offset;
+		// ANCHORED TO THE FACE'S EDGES, NOT TO THE PLANE. The origin is rebuilt from the face's
+		// CURRENT extent plus the stored inset, so a sketch placed ten units in from the end of a
+		// bar is ten units in from the end however long the bar becomes. Projecting the stored
+		// absolute point onto the plane instead (what this used to do) is identical whenever the
+		// plane moves, and silently wrong whenever the face moves within a plane that does not -
+		// which is exactly what shortening an extrude does to its own side faces.
+		var axes = FromPointAndNormal( bestOrigin, bestNormal );
+		var local = Vec2.Zero;
+
+		if ( reference.Anchored )
+		{
+			var bounds = Bounds( body.Mesh, bestFace, axes );
+
+			local = new Vec2(
+				reference.AnchorFromMaxX ? bounds.MaxX - reference.Anchor.x : bounds.MinX + reference.Anchor.x,
+				reference.AnchorFromMaxY ? bounds.MaxY - reference.Anchor.y : bounds.MinY + reference.Anchor.y );
+		}
+
+		var origin = bestOrigin + axes.XAxis * local.x + axes.YAxis * local.y;
 
 		plane = FromPointAndNormal( origin, bestNormal );
 		return true;

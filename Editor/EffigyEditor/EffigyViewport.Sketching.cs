@@ -1017,6 +1017,107 @@ internal sealed partial class EffigyViewport
 	/// clear the depth buffer.</summary>
 	private const float FaceHighlightLift = 0.0015f;
 
+	// --- whole-body picking -------------------------------------------------------------------
+
+	/// <summary>While true, clicking a body reports it to BodyPicked. This is the other half of
+	/// FacePickMode: the features that carry a BodySelectionParam — shell, bevel, subdivide,
+	/// transform, mirror, both patterns, UV project — act on WHOLE bodies, so the pick resolves to
+	/// the body that was hit rather than to the face.</summary>
+	public bool BodyPickMode { get; set; }
+
+	/// <summary>Fires with the id of the body clicked. The id, not the Body: bodies are rebuilt
+	/// from scratch every rebuild, so anything held across one has to be a name.</summary>
+	public Action<string> BodyPicked { get; set; }
+
+	/// <summary>Bodies already in the selection, drawn lit while picking so the box and the
+	/// viewport agree about what is chosen. Pushed by the selector on every change.</summary>
+	public IReadOnlyCollection<string> SelectedBodyIds { get; set; }
+
+	private static readonly Color BodyPickHoverColor = new( 0.35f, 0.75f, 1f, 1f );
+	private static readonly Color BodySelectedColor = new( 1f, 0.66f, 0.2f, 1f );
+
+	/// <summary>
+	/// Highlight the body under the cursor, keep the chosen ones lit, and report a click.
+	///
+	/// Same raycast as the face pick — MeshRaycast against the pickable bodies — and deliberately
+	/// the same feel, because from the user's side these are one gesture: point at a thing in the
+	/// viewport and click it. The only difference is what lights up, a whole solid instead of one
+	/// of its faces.
+	/// </summary>
+	private void BodyPickFrame()
+	{
+		if ( !BodyPickMode || _pickableBodies.Count == 0 )
+			return;
+
+		// Selected bodies stay lit whether or not the cursor is anywhere near the canvas — the
+		// selection is state, not hover feedback.
+		if ( SelectedBodyIds is { Count: > 0 } selected )
+		{
+			foreach ( var body in _pickableBodies )
+			{
+				if ( body?.Id is { } id && selected.Contains( id ) )
+					DrawBodyHighlight( body, BodySelectedColor );
+			}
+		}
+
+		if ( !_canvasHasCursor )
+			return;
+
+		var ray = Gizmo.CurrentRay;
+		var origin = new Vec3( ray.Position.x, ray.Position.y, ray.Position.z );
+		var direction = new Vec3( ray.Forward.x, ray.Forward.y, ray.Forward.z );
+
+		if ( MeshRaycast.Raycast( _pickableBodies, origin, direction ) is not { } hit )
+			return;
+
+		DrawBodyHighlight( hit.Body, BodyPickHoverColor );
+
+		if ( Gizmo.WasLeftMousePressed )
+			BodyPicked?.Invoke( hit.Body.Id );
+	}
+
+	/// <summary>Shade and outline every face of a body, with the same depth-tested lift the face
+	/// highlight uses — see DrawHoveredFace for why the lift is proportional rather than
+	/// fixed.</summary>
+	private void DrawBodyHighlight( Body body, Color color )
+	{
+		if ( body?.Mesh is not { } mesh )
+			return;
+
+		var eye = _camera.WorldPosition;
+
+		Gizmo.Draw.IgnoreDepth = false;
+
+		foreach ( var face in mesh.Faces )
+		{
+			if ( face.Count < 3 )
+				continue;
+
+			var corners = new List<Vector3>( face.Count );
+			var flat = new List<Vec3>( face.Count );
+
+			for ( var i = 0; i < face.Count; i++ )
+			{
+				var p = mesh.Positions[face.Indices[i]];
+				flat.Add( p );
+				corners.Add( Lift( p, eye ) );
+			}
+
+			Gizmo.Draw.Color = color.WithAlpha( 0.16f );
+
+			foreach ( var (a, b, c) in Triangulate.Face( flat ) )
+				Gizmo.Draw.SolidTriangle( new Triangle( corners[a], corners[b], corners[c] ) );
+
+			Gizmo.Draw.Color = color;
+			Gizmo.Draw.LineThickness = 2f;
+
+			for ( var i = 0; i < corners.Count; i++ )
+				Gizmo.Draw.Line( corners[i], corners[(i + 1) % corners.Count] );
+		}
+
+		Gizmo.Draw.LineThickness = 1f;
+	}
+
 	public void EndSketch()
 	{
 		ClearDimension();

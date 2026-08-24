@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace Effigy;
@@ -28,10 +28,11 @@ public readonly struct MeshHit
 /// everything about deciding which triangle it hit is ordinary math that can be built and proven
 /// without s&box anywhere near it.
 ///
-/// Faces are triangulated the same way EffigyPreview builds the render mesh — a fan from corner 0
+/// Faces are triangulated the same way EffigyPreview builds the render mesh — by Triangulate.Face
 /// — so a click hits exactly the triangle that would actually be drawn there. A different
-/// triangulation would occasionally pick a face whose fan diagonal put the real geometry on the
-/// other side of the click.
+/// triangulation would occasionally pick a face whose diagonal put the real geometry on the other
+/// side of the click, and a fan over a concave cap would let clicks land in the notch it wrongly
+/// filled in.
 /// </summary>
 public static class MeshRaycast
 {
@@ -55,12 +56,16 @@ public static class MeshRaycast
 			if ( face.Count < 3 )
 				continue;
 
-			var p0 = mesh.Positions[face.Indices[0]];
+			var corners = new List<Vec3>( face.Count );
 
-			for ( var c = 2; c < face.Count; c++ )
+			for ( var c = 0; c < face.Count; c++ )
+				corners.Add( mesh.Positions[face.Indices[c]] );
+
+			foreach ( var (ia, ib, ic) in Triangulate.Face( corners ) )
 			{
-				var p1 = mesh.Positions[face.Indices[c - 1]];
-				var p2 = mesh.Positions[face.Indices[c]];
+				var p0 = corners[ia];
+				var p1 = corners[ib];
+				var p2 = corners[ic];
 
 				if ( !TriangleHit( origin, dir, p0, p1, p2, out var t, out var point ) )
 					continue;
@@ -80,30 +85,105 @@ public static class MeshRaycast
 	/// Nearest hit across several bodies at once, with the winning body reported alongside it —
 	/// what a click in a multi-body studio actually needs.
 	/// </summary>
+	/// <summary>
+	/// The nearest face of any of <paramref name="bodies"/> that YOU CAN ACTUALLY SEE.
+	///
+	/// Effigy does not union bodies - two overlapping extrudes are two separate closed solids, and
+	/// the faces of one that fall inside the other are still there, still hit by a ray, and quite
+	/// invisible. Picking one is how you end up sketching on a plane buried inside your part,
+	/// which is exactly as confusing as it sounds: the highlight paints a rectangle straight
+	/// through the model and the sketch lands somewhere you never pointed at.
+	///
+	/// So a hit is discarded when the surface it landed on is inside another solid. Sorting the
+	/// candidates first means the common case - nothing overlapping - costs one containment test.
+	/// </summary>
 	public static (Body Body, MeshHit Hit)? Raycast( IEnumerable<Body> bodies, Vec3 origin, Vec3 direction )
 	{
-		(Body Body, MeshHit Hit)? best = null;
-
 		if ( bodies is null )
 			return null;
 
+		var list = new List<Body>();
+
 		foreach ( var body in bodies )
 		{
-			if ( body?.Mesh is null )
-				continue;
-
-			var hit = Raycast( body.Mesh, origin, direction );
-
-			if ( hit is not { } h )
-				continue;
-
-			if ( best is { } current && h.Distance >= current.Hit.Distance )
-				continue;
-
-			best = (body, h);
+			if ( body?.Mesh is not null )
+				list.Add( body );
 		}
 
-		return best;
+		var candidates = new List<(Body Body, MeshHit Hit)>( list.Count );
+
+		foreach ( var body in list )
+		{
+			if ( Raycast( body.Mesh, origin, direction ) is { } hit )
+				candidates.Add( (body, hit) );
+		}
+
+		candidates.Sort( ( a, b ) => a.Hit.Distance.CompareTo( b.Hit.Distance ) );
+
+		var dir = direction.Normal;
+
+		foreach ( var candidate in candidates )
+		{
+			// Step back off the surface along the ray, so the test point is in the space the ray
+			// travelled through rather than exactly on the boundary, where inside/outside is a
+			// coin flip. Scaled by the distance travelled, since a sketch can be a unit across or
+			// a thousand.
+			var epsilon = 1e-4f * (1f + candidate.Hit.Distance);
+			var probe = candidate.Hit.Point - dir * epsilon;
+			var buried = false;
+
+			foreach ( var other in list )
+			{
+				if ( ReferenceEquals( other, candidate.Body ) )
+					continue;
+
+				if ( PointInsideSolid( other.Mesh, probe ) )
+				{
+					buried = true;
+					break;
+				}
+			}
+
+			if ( !buried )
+				return candidate;
+		}
+
+		return null;
+	}
+
+	/// <summary>
+	/// Is a point inside a closed mesh? Crossing count along an arbitrary ray: odd is inside.
+	///
+	/// The direction is a fixed lopsided one rather than an axis, because an axis-aligned ray from
+	/// a point on a box lands exactly along edges and coplanar faces, and every such ray is a
+	/// coin-flip on whether a crossing gets counted once, twice or not at all.
+	/// </summary>
+	public static bool PointInsideSolid( PolyMesh mesh, Vec3 point )
+	{
+		if ( mesh is null || mesh.Faces.Count == 0 )
+			return false;
+
+		var direction = new Vec3( 0.5773f, 0.5771f, 0.5775f ).Normal;
+		var crossings = 0;
+
+		foreach ( var face in mesh.Faces )
+		{
+			if ( face.Count < 3 )
+				continue;
+
+			var corners = new List<Vec3>( face.Count );
+
+			for ( var c = 0; c < face.Count; c++ )
+				corners.Add( mesh.Positions[face.Indices[c]] );
+
+			foreach ( var (ia, ib, ic) in Triangulate.Face( corners ) )
+			{
+				if ( TriangleHit( point, direction, corners[ia], corners[ib], corners[ic], out _, out _ ) )
+					crossings++;
+			}
+		}
+
+		return (crossings & 1) == 1;
 	}
 
 	/// <summary>

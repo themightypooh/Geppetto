@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace Effigy;
@@ -54,6 +54,16 @@ public sealed class SketchSnapper
 
 	/// <summary>Grid rounding, or zero for none. See <see cref="AutoGridStep"/>.</summary>
 	public float GridStep;
+
+	/// <summary>
+	/// A point index to leave out of snapping, or -1 for none.
+	///
+	/// This exists for DRAGGING a point. Every committed point is a snap target, including the one
+	/// being dragged - so the moment you picked it up it snapped straight back onto itself and the
+	/// drag went nowhere. It still has to be excluded from the alignment pass too, or the point
+	/// lines itself up with where it used to be.
+	/// </summary>
+	public int IgnorePoint = -1;
 
 	/// <summary>
 	/// A grid step that stays about <paramref name="targetPixels"/> apart on screen, rounded to 1,
@@ -146,6 +156,9 @@ public sealed class SketchSnapper
 
 		for ( var i = 0; i < sketch.Points.Count; i++ )
 		{
+			if ( i == IgnorePoint )
+				continue;
+
 			var dist = (sketch.Points[i] - raw).LengthSquared;
 
 			if ( dist >= best )
@@ -173,8 +186,12 @@ public sealed class SketchSnapper
 		var xDistance = MathF.Abs( snapped.x );
 		var yDistance = MathF.Abs( snapped.y );
 
-		foreach ( var point in sketch.Points )
+		for ( var i = 0; i < sketch.Points.Count; i++ )
 		{
+			if ( i == IgnorePoint )
+				continue;
+
+			var point = sketch.Points[i];
 			var dx = MathF.Abs( snapped.x - point.x );
 
 			if ( dx < xDistance )

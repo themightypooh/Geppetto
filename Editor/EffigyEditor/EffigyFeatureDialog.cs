@@ -258,6 +258,9 @@ internal sealed class EffigyFeatureDialog : Widget
 		_viewport.FacePicked = null;
 		_viewport.SketchPickMode = false;
 		_viewport.SketchPicked = null;
+		_viewport.BodyPickMode = false;
+		_viewport.BodyPicked = null;
+		_viewport.SelectedBodyIds = null;
 		_viewport.SetPickPrompt( "" );
 	}
 
@@ -800,16 +803,36 @@ internal sealed class EffigyFeatureDialog : Widget
 	/// <summary>
 	/// Which bodies the feature acts on.
 	///
-	/// This was a disabled label reading "All bodies" - the parameter existed and the kernel
-	/// honoured it, and there was no way to put anything in it. Now it is a selection box like the
-	/// plane and face ones: click it, and the bodies light up in the viewport to be chosen.
+	/// This was a disabled label reading "All bodies", and had been since the parameter was added:
+	/// the kernel honoured BodySelectionParam.Matches everywhere, and there was no way to put
+	/// anything into it. Eight features carry one — shell, bevel, subdivide, transform, mirror,
+	/// linear and circular pattern, UV project — so a single missing control was the difference
+	/// between all eight acting on what you meant and all eight acting on everything.
+	///
+	/// It is now a selection box on the same pattern as the plane and profile ones, because from
+	/// the user's side these are one gesture: arm the box, click the thing in the viewport.
 	/// </summary>
 	private Widget BuildBodySelectionRow( BodySelectionParam bs )
 	{
-		var row = NewRow( out var layout );
-		layout.Add( new Editor.Label( bs.Label ) { FixedWidth = 110 } );
-		layout.Add( new Editor.Label( "All bodies" ) { Enabled = false }, 1 );
-		return row;
+		// Same reasoning as the plane box: refresh the pick list against the studio as it is now,
+		// or a click can resolve against a body that has since been rebuilt away.
+		_viewport.SetPickableBodies( _pickableBodiesLookup?.Invoke() );
+
+		var selector = new EffigyBodySelector( _body, _viewport, bs, _pickableBodiesLookup, OnBodySelectionChanged );
+
+		// The dialog tracks one armable so Escape can stand it down. A feature with a body
+		// selection never also has a plane or profile box, so there is nothing to displace.
+		_activeArmable ??= selector;
+
+		return selector;
+	}
+
+	/// <summary>A body was added to or removed from a selection: the feature's inputs changed, so
+	/// it has to be marked dirty and re-run like any other parameter edit.</summary>
+	private void OnBodySelectionChanged()
+	{
+		Edited?.Invoke();
+		Rebuild();
 	}
 }
 
@@ -1151,6 +1174,192 @@ internal sealed class EffigySketchSelector : Widget, IArmableSelection
 		base.OnDestroyed();
 
 		// Leaving pick mode armed would make the sketches stay clickable after the dialog closed.
+		if ( _armed )
+			Disarm();
+	}
+}
+
+/// <summary>
+/// Which bodies a feature acts on, chosen by clicking them.
+///
+/// Multi-select, and that is the whole reason it is not a copy of the plane box. A plane question
+/// has exactly one answer and the box closes the moment you give it; a body question has any number
+/// of answers, so a click TOGGLES a body and the box stays armed until you dismiss it. Escape or a
+/// second click on the box ends the pick.
+///
+/// Empty means every body — BodySelectionParam.Matches is written that way, and it is the sane
+/// default for a studio holding one part. So the empty box reads "All bodies" rather than looking
+/// like an unanswered question: unlike the plane box, nothing is being withheld while it is empty.
+/// </summary>
+internal sealed class EffigyBodySelector : Widget, IArmableSelection
+{
+	private readonly EffigyViewport _viewport;
+	private readonly BodySelectionParam _param;
+	private readonly Func<IEnumerable<Body>> _bodies;
+	private readonly Action _changed;
+
+	private bool _armed;
+
+	public EffigyBodySelector( Widget parent, EffigyViewport viewport, BodySelectionParam param,
+		Func<IEnumerable<Body>> bodies, Action changed ) : base( parent )
+	{
+		_viewport = viewport;
+		_param = param;
+		_bodies = bodies;
+		_changed = changed;
+
+		Layout = Layout.Row();
+		Layout.Margin = new Sandbox.UI.Margin( 8, 3 );
+		Layout.Spacing = 6;
+
+		FixedHeight = 46f;
+		Cursor = CursorShape.Finger;
+	}
+
+	/// <summary>What the box reads: the chosen bodies by name, or a count once there are too many
+	/// to fit. Names come from the studio rather than being stored, so a renamed body reads
+	/// correctly without the selection knowing anything about it.</summary>
+	private string SelectionLabel()
+	{
+		if ( _param.BodyIds.Count == 0 )
+			return "All bodies";
+
+		if ( _param.BodyIds.Count > 3 )
+			return $"{_param.BodyIds.Count} bodies";
+
+		var known = _bodies?.Invoke()?.ToList() ?? new List<Body>();
+		var names = _param.BodyIds.Select( id =>
+			known.FirstOrDefault( b => b.Id == id )?.Name ?? id );
+
+		return string.Join( ", ", names );
+	}
+
+	/// <summary>The clear affordance's hit box, and where it is painted. Only live when there is a
+	/// selection to clear.</summary>
+	private Rect ClearRect() => new( Width - 26f, 18f, 18f, 22f );
+
+	protected override void OnPaint()
+	{
+		var chosen = _param.BodyIds.Count > 0;
+
+		Paint.SetPen( Theme.TextControl.WithAlpha( 0.7f ) );
+		Paint.SetDefaultFont( 8 );
+		Paint.DrawText( new Rect( 0f, 0f, Width, 16f ).Shrink( 8f, 2f, 0f, 0f ), _param.Label, TextFlag.LeftTop );
+
+		var box = new Rect( 8f, 18f, Width - 16f, 22f );
+
+		Paint.ClearPen();
+		Paint.SetBrush( _armed ? Theme.Blue.WithAlpha( 0.18f ) : Theme.ControlBackground );
+		Paint.DrawRect( box, 2f );
+
+		Paint.ClearBrush();
+		Paint.SetPen( _armed ? Theme.Blue : Theme.TextControl.WithAlpha( 0.35f ) );
+		Paint.DrawRect( box, 2f );
+
+		Paint.SetDefaultFont( 9 );
+
+		if ( _armed )
+		{
+			Paint.SetPen( Theme.Blue );
+			Paint.DrawText( box.Shrink( 6f, 0f, 30f, 0f ),
+				chosen ? $"{SelectionLabel()} — click to add or remove" : "Click the bodies this acts on",
+				TextFlag.LeftCenter );
+		}
+		else
+		{
+			// "All bodies" is a real answer, not a blank, so it is drawn dimmed rather than in the
+			// red an unanswered required box gets.
+			Paint.SetPen( chosen ? Theme.TextControl : Theme.TextControl.WithAlpha( 0.45f ) );
+			Paint.DrawText( box.Shrink( 6f, 0f, 30f, 0f ), SelectionLabel(), TextFlag.LeftCenter );
+		}
+
+		if ( !chosen )
+			return;
+
+		// DrawIcon with a CLASSIC Material Icons name, not a literal glyph and not a Material
+		// Symbols name: s&box ships MaterialIcons-Regular.ttf, and a Symbols-only name renders as
+		// nothing at all rather than failing (RigIconButton's class comment records this).
+		Paint.SetPen( Theme.TextControl.WithAlpha( 0.55f ) );
+		Paint.DrawIcon( ClearRect(), "close", 14, TextFlag.Center );
+	}
+
+	protected override void OnMousePress( MouseEvent e )
+	{
+		base.OnMousePress( e );
+
+		if ( !e.LeftMouseButton )
+			return;
+
+		if ( _param.BodyIds.Count > 0 && ClearRect().IsInside( e.LocalPosition ) )
+		{
+			_param.BodyIds.Clear();
+			Push();
+			Update();
+			_changed?.Invoke();
+			return;
+		}
+
+		if ( _armed )
+			Disarm();
+		else
+			Arm();
+	}
+
+	public void Arm()
+	{
+		if ( _armed )
+			return;
+
+		_armed = true;
+		_viewport.BodyPickMode = true;
+		_viewport.BodyPicked = OnBodyPicked;
+		Push();
+		_viewport.SetPickPrompt( "Click the bodies this feature acts on. Escape when done." );
+		Update();
+	}
+
+	public void Disarm()
+	{
+		if ( !_armed )
+			return;
+
+		_armed = false;
+		_viewport.BodyPickMode = false;
+		_viewport.BodyPicked = null;
+		_viewport.SelectedBodyIds = null;
+		_viewport.SetPickPrompt( "" );
+		Update();
+	}
+
+	/// <summary>Toggle: clicking a chosen body takes it back out. Removing the last one returns the
+	/// feature to acting on everything, which is the same state it started in — there is no way to
+	/// select nothing, and a feature that quietly did nothing would be worse than one that does the
+	/// default.</summary>
+	private void OnBodyPicked( string bodyId )
+	{
+		if ( string.IsNullOrEmpty( bodyId ) )
+			return;
+
+		if ( !_param.BodyIds.Remove( bodyId ) )
+			_param.BodyIds.Add( bodyId );
+
+		Push();
+		Update();
+		_changed?.Invoke();
+	}
+
+	/// <summary>Keep the viewport's lit set in step with the parameter, so what is highlighted is
+	/// always what is stored.</summary>
+	private void Push()
+	{
+		_viewport.SelectedBodyIds = _armed ? _param.BodyIds.ToList() : null;
+	}
+
+	public override void OnDestroyed()
+	{
+		base.OnDestroyed();
+
+		// Leaving pick mode armed would keep the bodies clickable after the dialog closed.
 		if ( _armed )
 			Disarm();
 	}
