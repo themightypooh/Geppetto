@@ -36,7 +36,7 @@ machine. A session that skips this ends up reasoning about the code by reading i
 is how a bug that made every parameter edit a silent no-op survived long enough to look like three
 unrelated UI faults.
 
-864 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
+918 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
 2-level-subdivided version of each. Those are the fastest way to see whether something is actually
 right: open them in Blender, or drop one into ModelDoc to find out what s&box makes of it.
 
@@ -78,6 +78,33 @@ Exit code is non-zero on failure, so it works as a pre-commit or CI check unchan
 | `Sketch/Constraints.cs` | the constraint set, and the derivatives that make it solvable |
 | `Sketch/SketchSolver.cs` | Levenberg-Marquardt, with degrees of freedom and redundancy reported |
 | `MeshBoolean.cs` | what a boolean is, and where a host installs one that can actually do it |
+| `Features/StudioDocument.cs` | saving and loading the tree — the file the whole history depends on |
+
+## Saving
+
+`StudioDocument` reads and writes a `.effigy` file: hand-written text, like every other format in
+here, for the reason the kernel has no dependencies at all. It also diffs, which matters for a format
+holding someone's model — a corrupt binary is a shrug, a corrupt text file is usually one bad line
+you can see.
+
+**Fields are found by reflection rather than listed.** A feature's `Parameters` property is not
+usable as the list to save: `PrimitiveFeature` changes its parameters with the shape dropdown, so a
+box saved today would not know what to do with the radius it wants tomorrow. Public fields are
+stable, so a new feature saves the moment it is written and there is no step to forget.
+
+The risk that carries is a field of a type the writer has no case for, so `DocumentTests` sets every
+field of every feature type in the assembly to a non-default value and round-trips it. Adding state
+a save cannot carry fails the suite rather than quietly not saving — it caught `ShellFeature.OpenFaces`
+on the first run.
+
+Two things the format has to get right and is tested on:
+
+**Ids are preserved exactly.** Body ids derive from the feature that made them and a `FaceRef` holds
+a body id, so a load that reissued feature ids would break every sketch drawn on a face the moment
+the file was reopened. That is the worst thing this format could do and it is asserted against.
+
+**Unknown fields are skipped, not fatal.** A file written by a version with an extra parameter still
+opens, minus that parameter. A file from a newer format version is refused by name.
 
 ## The feature tree
 

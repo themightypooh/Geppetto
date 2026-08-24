@@ -194,6 +194,19 @@ priority than either.
 
 ---
 
+## What neither of them had to solve, because they always had it
+
+Both Solvespace and FreeCAD have had a document format since before either had most of its features,
+which is why neither codebase has anything interesting to say about it: it is not a hard problem, it
+is a load-bearing one. Effigy went the other way and had a full parametric history with nowhere to
+put it, which made every session a one-shot bake — you kept the OBJ and lost the model.
+
+`StudioDocument` closes that. Worth noting for anyone comparing: FreeCAD stores its document as a
+zipped XML of typed properties, and Solvespace writes a flat text file of group/request/constraint
+records. Effigy's is nearer Solvespace's — flat text, one record per line — with the difference that
+the field list comes from reflection rather than a hand-maintained table, so the format cannot fall
+behind the features the way a table does.
+
 ## Suggested order for Effigy
 
 Ranked by value against cost, given a mesh boolean is the expensive prerequisite for the headline

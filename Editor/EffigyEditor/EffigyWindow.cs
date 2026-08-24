@@ -154,6 +154,13 @@ public sealed class EffigyWindow : DockWindow
 		BuildStatusBar();
 
 		ApplyPalette();
+
+		// A window that has only just opened has nothing to lose, and anything during startup that
+		// went through RebuildStudio has already set the flag. Without this, closing an untouched
+		// Effigy asks whether to save an empty studio — the fastest way to teach someone to click
+		// through the very prompt that exists to save their work.
+		MarkClean();
+
 		Show();
 	}
 
@@ -164,6 +171,10 @@ public sealed class EffigyWindow : DockWindow
 		var file = MenuBar.FindOrCreateMenu( "File" );
 		file.Clear();
 		file.AddOption( "New Studio", "common/new.png", NewStudio );
+		file.AddOption( "Open...", "folder_open", Open );
+		file.AddSeparator();
+		file.AddOption( "Save", "common/save.png", Save, "editor.save" );
+		file.AddOption( "Save As...", "save_alt", SaveAs );
 		file.AddSeparator();
 		file.AddOption( "Export OBJ", "file_download", ExportObj );
 		file.AddOption( "Compile .vmdl", "build", CompileVmdl );
@@ -723,8 +734,35 @@ public sealed class EffigyWindow : DockWindow
 		RebuildStudio();
 	}
 
+	/// <summary>
+	/// Where the studio lives on disk, and whether it has been changed since it got there.
+	///
+	/// EVERY EDIT GOES THROUGH RebuildStudio, which is why the dirty flag is set there rather than
+	/// at each of the thirty-odd call sites. Marking at the funnel cannot be forgotten by whoever
+	/// adds the thirty-first; marking at the sites is a promise nobody keeps for long. Load, save
+	/// and new all rebuild too, so each of those clears the flag afterwards.
+	/// </summary>
+	private string _documentPath;
+
+	private bool _dirty;
+
+	private void MarkClean()
+	{
+		_dirty = false;
+		UpdateTitle();
+	}
+
+	private void UpdateTitle() =>
+		Title = $"Effigy - {(_documentPath is null ? "untitled" : Path.GetFileName( _documentPath ))}{(_dirty ? "*" : "")}";
+
 	private void RebuildStudio()
 	{
+		if ( !_dirty )
+		{
+			_dirty = true;
+			UpdateTitle();
+		}
+
 		var report = _studio.Rebuild();
 		_featureTree?.Rebuild();
 		_partsPanel?.Refresh();
@@ -825,7 +863,7 @@ public sealed class EffigyWindow : DockWindow
 		}
 	}
 
-	private void NewStudio()
+	private void NewStudio() => ConfirmDiscard( () =>
 	{
 		RecordUndo();
 		_studio = new PartStudio();
@@ -833,7 +871,10 @@ public sealed class EffigyWindow : DockWindow
 		_partsPanel?.SetStudio( _studio );
 		_dialog?.Close();
 		RebuildStudio();
-	}
+
+		_documentPath = null;
+		MarkClean();
+	} );
 
 	private void DeleteSelectedFeature()
 	{
@@ -1025,6 +1066,175 @@ public sealed class EffigyWindow : DockWindow
 	}
 
 	// --- export / compile (reusing EffigyTool's proven logic) -------------------------------
+
+	[Shortcut( "editor.save", "CTRL+S", ShortcutType.Window )]
+	private void Save()
+	{
+		// A studio that has never been saved has nowhere to go, so Save becomes Save As the first
+		// time. Silently doing nothing here is the shape of the bug the rig tool had.
+		if ( _documentPath is null )
+		{
+			SaveAs();
+			return;
+		}
+
+		WriteDocument( _documentPath );
+	}
+
+	private void SaveAs()
+	{
+		var fd = new FileDialog( null )
+		{
+			Title = "Save Part Studio As...",
+			DefaultSuffix = StudioDocument.Extension,
+			Directory = Project.Current?.GetAssetsPath() ?? "",
+		};
+
+		fd.SelectFile( _documentPath ?? $"untitled{StudioDocument.Extension}" );
+		fd.SetFindFile();
+		fd.SetModeSave();
+		fd.SetNameFilter( $"Effigy Part Studio (*{StudioDocument.Extension})" );
+
+		if ( !fd.Execute() )
+			return;
+
+		WriteDocument( fd.SelectedFile );
+	}
+
+	private void WriteDocument( string path )
+	{
+		try
+		{
+			StudioDocument.WriteFile( _studio, path );
+		}
+		catch ( Exception e )
+		{
+			// Saving is the one operation where failing quietly is unforgivable: the whole point of
+			// pressing it is to be able to close the window.
+			Log.Error( $"[Effigy] could not save to {path}: {e.Message}" );
+			return;
+		}
+
+		_documentPath = path;
+		MarkClean();
+
+		Log.Info( $"[Effigy] saved {path}" );
+	}
+
+	private void Open()
+	{
+		// The unsaved work belongs to the studio being replaced, so the question comes first.
+		ConfirmDiscard( () =>
+		{
+			var fd = new FileDialog( null )
+			{
+				Title = "Open Part Studio",
+				DefaultSuffix = StudioDocument.Extension,
+				Directory = Project.Current?.GetAssetsPath() ?? "",
+			};
+
+			fd.SetFindFile();
+
+			// No SetModeOpen call: SetModeSave is the only one of the pair with proven usage in this
+			// repo, and an unproven method name is a COMPILE error that takes the whole editor
+			// assembly down rather than failing at the one dialog. Not calling it leaves the dialog
+			// in its default mode, which at worst is a cosmetic wrinkle on an open dialog.
+			fd.SetNameFilter( $"Effigy Part Studio (*{StudioDocument.Extension})" );
+
+			if ( fd.Execute() )
+				LoadDocument( fd.SelectedFile );
+		} );
+	}
+
+	private void LoadDocument( string path )
+	{
+		PartStudio loaded;
+
+		try
+		{
+			loaded = StudioDocument.ReadFile( path );
+		}
+		catch ( Exception e )
+		{
+			// StudioDocument's errors name the line and what was wrong with it, so they are worth
+			// passing through rather than replacing with "could not open".
+			Log.Error( $"[Effigy] could not open {path}: {e.Message}" );
+			return;
+		}
+
+		_studio = loaded;
+		_featureTree?.SetStudio( _studio );
+		_partsPanel?.SetStudio( _studio );
+		_dialog?.Close();
+
+		// History belongs to the document that was open. Carrying it across a load would let Ctrl+Z
+		// paste the previous model's features into this one.
+		_undoStack.Clear();
+		_redoStack.Clear();
+
+		RebuildStudio();
+
+		_documentPath = path;
+		MarkClean();
+
+		// Deliberately AFTER the rebuild: a file that opens with a broken feature is exactly the
+		// file you opened it to fix, and it should be on screen rather than refused.
+		Log.Info( $"[Effigy] opened {path}" );
+	}
+
+	/// <summary>
+	/// Ask before throwing away unsaved work, then run <paramref name="proceed"/>.
+	///
+	/// Cancel does nothing at all, which is the point of it: the studio is left exactly as it was.
+	/// Modelled on the rig tool's, down to the button order — the same question should not be asked
+	/// two different ways in one editor.
+	/// </summary>
+	private void ConfirmDiscard( Action proceed )
+	{
+		if ( !_dirty )
+		{
+			proceed();
+			return;
+		}
+
+		var name = _documentPath is null ? "untitled" : Path.GetFileName( _documentPath );
+
+		var confirm = new PopupWindow( "Unsaved Changes",
+			$"\"{name}\" has unsaved changes. Would you like to save now?", "Cancel",
+			new Dictionary<string, Action>
+			{
+				{ "Don\'t Save", proceed },
+				{ "Save", () => { Save(); proceed(); } }
+			} );
+
+		confirm.Show();
+	}
+
+	/// <summary>
+	/// Closing with unsaved work asks first.
+	///
+	/// Returning false CANCELS the close, and the window is closed again from inside the popup once
+	/// the question is answered — Don't Save clears the flag first so the second Close sails past
+	/// this check rather than asking again forever.
+	/// </summary>
+	protected override bool OnClose()
+	{
+		if ( !_dirty )
+			return true;
+
+		var name = _documentPath is null ? "untitled" : Path.GetFileName( _documentPath );
+
+		var confirm = new PopupWindow( "Unsaved Changes",
+			$"\"{name}\" has unsaved changes. Would you like to save now?", "Cancel",
+			new Dictionary<string, Action>
+			{
+				{ "Don\'t Save", () => { _dirty = false; Close(); } },
+				{ "Save", () => { Save(); Close(); } }
+			} );
+
+		confirm.Show();
+		return false;
+	}
 
 	private void ExportObj()
 	{

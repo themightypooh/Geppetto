@@ -87,6 +87,8 @@ public static class Program
 
 		FaceMaterialTests.Run();
 
+		DocumentTests.Run();
+
 		EditorFlowTests.Run();
 
 		KernelSyncTests.Run();
