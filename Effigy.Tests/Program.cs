@@ -91,6 +91,8 @@ public static class Program
 
 		HoleTests.Run();
 
+		TaperTests.Run();
+
 		EditorFlowTests.Run();
 
 		KernelSyncTests.Run();
@@ -471,6 +473,17 @@ public static class Program
 		plateStudio.Rebuild();
 		ObjWriter.WriteFile( plateStudio.ToMesh(), Path.Combine( outDir, "sketch_plate_holes.obj" ), "plate_holes" );
 
+		// A drafted boss: the same square section, leaning 8 degrees. Draft is the kind of thing that
+		// reads as "looks slightly better" until you put it beside the straight version.
+		var draftStudio = new PartStudio();
+		var draftSketch = draftStudio.Add( new SketchFeature() );
+		draftSketch.Sketch.AddRectangle( new Vec2( -2, -2 ), new Vec2( 2, 2 ) );
+		var draft = draftStudio.Add( new ExtrudeFeature() );
+		draft.Distance.Value = 3f;
+		draft.Taper.Value = 8f;
+		draftStudio.Rebuild();
+		ObjWriter.WriteFile( draftStudio.ToMesh(), Path.Combine( outDir, "sketch_taper.obj" ), "taper" );
+
 		// A cube with every edge chamfered — the flat-bevel look, side by side with the sharp box.
 		var bevelStudio = new PartStudio();
 		var bevelBox = bevelStudio.Add( new PrimitiveFeature() );
@@ -524,6 +537,7 @@ public static class Program
 			new PngPreview.Tile( Load( "sketch_torus" ), "sketch revolve" ),
 			new PngPreview.Tile( Load( "sketch_cone" ), "revolve on axis" ),
 			new PngPreview.Tile( Load( "sketch_plate_holes" ), "profile with holes" ),
+			new PngPreview.Tile( Load( "sketch_taper" ), "8 degree draft" ),
 		};
 
 		PngPreview.WriteSheet( primitives, Path.Combine( outDir, "preview_primitives.png" ) );

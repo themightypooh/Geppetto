@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 460 460" width="460" height="460">
+<rect width="100%" height="100%" fill="#14161a"/>
+<polygon points="30,334.16 265.27,401.16 430,305.47 194.73,238.47" fill="rgb(51,66,83)" stroke="rgb(51,66,83)" stroke-width="0.35"/>
+<polygon points="30,334.16 194.73,238.47 202.17,58.84 72.16,134.35" fill="rgb(72,95,119)" stroke="rgb(72,95,119)" stroke-width="0.35"/>
+<polygon points="194.73,238.47 430,305.47 387.84,111.71 202.17,58.84" fill="rgb(113,154,191)" stroke="rgb(113,154,191)" stroke-width="0.35"/>
+<text x="16" y="430" fill="#8b98a8" font-family="ui-monospace,monospace" font-size="13">sketch_taper</text>
+<text x="16" y="447" fill="#5d6874" font-family="ui-monospace,monospace" font-size="11">8 verts · 6 faces · 3 drawn</text>
+</svg>

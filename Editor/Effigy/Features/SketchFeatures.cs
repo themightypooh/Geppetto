@@ -319,10 +319,32 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 	public readonly FloatParam Distance = new( "Distance", 1f, unit: "u" );
 	public readonly BoolParam Symmetric = new( "Symmetric", false );
 	public readonly BoolParam Flip = new( "Flip direction", false );
+
+	/// <summary>
+	/// How far it also goes the OTHER way. Zero means one-sided, which is what it has always been.
+	///
+	/// Onshape calls this the second end position and gives it its own depth rather than a symmetric
+	/// checkbox, because the two are not the same question: symmetric splits ONE distance in half,
+	/// while this is genuinely independent — a boss 3 up and 1 down is a thing you cannot ask a
+	/// symmetric extrude for at all. Symmetric wins when both are set, since it is the simpler
+	/// intent and silently doubling up would be worse than ignoring one.
+	/// </summary>
+	public readonly FloatParam SecondDistance = new( "Second distance", 0f, 0f, unit: "u" );
+
+	/// <summary>
+	/// Draft angle, in degrees. Positive narrows toward the far end.
+	///
+	/// A moulded or cast part needs draft to come out of its tool, and a game asset usually wants it
+	/// for the same reason it wants a bevel: a face that leans catches light instead of reading as a
+	/// flat slab. It costs no boolean — the far cap is the near one offset by distance × tan(angle),
+	/// and every wall leans by exactly that angle because both its ends are that far apart.
+	/// </summary>
+	public readonly FloatParam Taper = new( "Taper", 0f, -89f, 89f, unit: "deg" );
+
 	public readonly IntParam Material = new( "Material slot", 0, 0, 63 );
 
 	public override IReadOnlyList<IParam> Parameters =>
-		new IParam[] { Sketch, Distance, Symmetric, Flip, Result, Material };
+		new IParam[] { Sketch, Distance, SecondDistance, Symmetric, Flip, Taper, Result, Material };
 
 	protected override void Execute( FeatureContext ctx )
 	{
@@ -333,12 +355,28 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 			throw new InvalidOperationException( "Distance cannot be zero" );
 
 		var distance = Flip.Value ? -Distance.Value : Distance.Value;
-		var near = Symmetric.Value ? -distance * 0.5f : 0f;
-		var far = Symmetric.Value ? distance * 0.5f : distance;
+		var second = MathF.Abs( SecondDistance.Value );
+
+		// Three ways to place the two ends, in priority order: symmetric splits the one distance,
+		// a second distance runs back the other way from the plane, and otherwise it starts at the
+		// plane. Flip mirrors all of it, which is why `second` is applied against the sign of
+		// `distance` rather than against the plane's normal directly.
+		var near = 0f;
+		var far = distance;
+
+		if ( Symmetric.Value )
+		{
+			near = -distance * 0.5f;
+			far = distance * 0.5f;
+		}
+		else if ( second > 1e-6f )
+		{
+			near = distance >= 0f ? -second : second;
+		}
 
 		foreach ( var profile in profiles )
 		{
-			var mesh = BuildPrism( sketch.Plane, profile, near, far, Material.Clamped );
+			var mesh = BuildPrism( sketch.Plane, profile, near, far, Taper.Clamped, Material.Clamped );
 			Emit( ctx, mesh );
 		}
 	}
@@ -361,7 +399,7 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 	/// surface that rarely gets subdivided anyway. Profiles WITHOUT holes are untouched and still
 	/// get their single n-gon.
 	/// </summary>
-	static PolyMesh BuildPrism( SketchPlane plane, Profile profile, float near, float far, int material )
+	static PolyMesh BuildPrism( SketchPlane plane, Profile profile, float near, float far, float taper, int material )
 	{
 		var mesh = new PolyMesh();
 
@@ -374,27 +412,58 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 		var loops = new List<List<Vec2>> { profile.Outer };
 		loops.AddRange( profile.Holes );
 
+		// TAPER IS APPLIED FROM THE START OF THE SWEEP, so the whole solid is one frustum and every
+		// wall leans by exactly the angle asked for, whichever way the extrude runs.
+		//
+		// The alternative is worth naming rather than dismissing: measuring draft from the SKETCH
+		// PLANE would make a symmetric extrude draft away from that plane in both directions, which
+		// is what a moulded part with a parting line down its middle actually wants. Onshape does
+		// that. This does the simpler thing, because one consistent lean is easier to reason about
+		// and is what a game asset usually wants; if a parting-line draft is ever needed, it belongs
+		// as its own option rather than as a hidden difference in what Symmetric means.
+		var drawn = high - low;
+		var inset = taper == 0f ? 0f : drawn * MathF.Tan( taper * MathF.PI / 180f );
+
+		var highLoops = loops;
+
+		if ( inset != 0f )
+		{
+			highLoops = new List<List<Vec2>>( loops.Count );
+
+			foreach ( var loop in loops )
+			{
+				if ( !LoopOffset.TryOffset( loop, inset, out var offsetLoop, out var error ) )
+				{
+					throw new InvalidOperationException(
+						$"A taper of {taper:0.##} degrees over {drawn:0.###} does not fit this profile: {error}. "
+						+ "Use a shallower angle, a shorter distance, or a profile without such a narrow neck." );
+				}
+
+				highLoops.Add( offsetLoop );
+			}
+		}
+
 		// Where each loop's low ring starts. Its high ring follows immediately after it.
 		var lowStart = new int[loops.Count];
 		var highStart = new int[loops.Count];
 
-		foreach ( var (loop, index) in loops.Select( ( l, i ) => (l, i) ) )
+		for ( var index = 0; index < loops.Count; index++ )
 		{
 			lowStart[index] = mesh.Positions.Count;
 
-			foreach ( var p in loop )
+			foreach ( var p in loops[index] )
 				mesh.AddVertex( plane.ToWorld( p ) + plane.Normal * low );
 
 			highStart[index] = mesh.Positions.Count;
 
-			foreach ( var p in loop )
+			foreach ( var p in highLoops[index] )
 				mesh.AddVertex( plane.ToWorld( p ) + plane.Normal * high );
 		}
 
 		for ( var index = 0; index < loops.Count; index++ )
 			AddWalls( mesh, loops[index], lowStart[index], highStart[index], material );
 
-		AddCaps( mesh, profile, loops, lowStart, highStart, material );
+		AddCaps( mesh, profile, loops, highLoops, lowStart, highStart, material );
 
 		return mesh;
 	}
@@ -434,8 +503,8 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 	/// Top and bottom. Caps use plane coordinates directly as UVs, so a face keeps the proportions
 	/// it was drawn with instead of being squashed into a unit square.
 	/// </summary>
-	static void AddCaps( PolyMesh mesh, Profile profile, List<List<Vec2>> loops, int[] lowStart, int[] highStart,
-		int material )
+	static void AddCaps( PolyMesh mesh, Profile profile, List<List<Vec2>> loops, List<List<Vec2>> highLoops,
+		int[] lowStart, int[] highStart, int material )
 	{
 		if ( !profile.HasHoles )
 		{
@@ -448,7 +517,10 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 			for ( var i = 0; i < n; i++ )
 			{
 				topIndices[i] = highStart[0] + i;
-				topUVs[i] = loop[i];
+
+				// The TAPERED position, so a drafted face's texture follows the face it is on rather
+				// than the shape it was drawn from.
+				topUVs[i] = highLoops[0][i];
 			}
 
 			mesh.AddFace( topIndices, topUVs, material );
@@ -482,23 +554,37 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 			}
 		}
 
-		var triangles = Triangulate.WithHoles( profile.Outer, profile.Holes.Cast<IReadOnlyList<Vec2>>().ToList() );
+		// The top's own loops, which differ from the bottom's under taper. Triangulated separately
+		// rather than reusing the bottom's triples: an inset loop can need a different bridge, and
+		// forcing the bottom's onto it is how a tapered cap ends up with crossed triangles.
+		var tapered = new List<Vec2>();
 
-		if ( triangles.Count == 0 )
+		foreach ( var loop in highLoops )
+			tapered.AddRange( loop );
+
+		var bottomTriangles = Triangulate.WithHoles( loops[0], loops.Skip( 1 ).Cast<IReadOnlyList<Vec2>>().ToList() );
+		var topTriangles = ReferenceEquals( highLoops, loops )
+			? bottomTriangles
+			: Triangulate.WithHoles( highLoops[0], highLoops.Skip( 1 ).Cast<IReadOnlyList<Vec2>>().ToList() );
+
+		if ( bottomTriangles.Count == 0 || topTriangles.Count == 0 )
 		{
 			throw new InvalidOperationException(
 				$"This profile's {profile.Holes.Count} hole(s) could not be capped — the loops may cross each other. "
 				+ "Check that every inner loop lies fully inside the outer one." );
 		}
 
-		foreach ( var (a, b, c) in triangles )
+		foreach ( var (a, b, c) in topTriangles )
 		{
 			mesh.AddFace(
 				new[] { High( a ), High( b ), High( c ) },
-				new[] { flat[a], flat[b], flat[c] },
+				new[] { tapered[a], tapered[b], tapered[c] },
 				material );
+		}
 
-			// The bottom is the same triangle seen from the other side, so it is wound backwards.
+		// The bottom is the same surface seen from the other side, so it is wound backwards.
+		foreach ( var (a, b, c) in bottomTriangles )
+		{
 			mesh.AddFace(
 				new[] { Low( c ), Low( b ), Low( a ) },
 				new[] { flat[c], flat[b], flat[a] },

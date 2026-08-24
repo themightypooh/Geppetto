@@ -36,7 +36,7 @@ machine. A session that skips this ends up reasoning about the code by reading i
 is how a bug that made every parameter edit a silent no-op survived long enough to look like three
 unrelated UI faults.
 
-950 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
+980 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
 2-level-subdivided version of each. Those are the fastest way to see whether something is actually
 right: open them in Blender, or drop one into ModelDoc to find out what s&box makes of it.
 
@@ -78,6 +78,7 @@ Exit code is non-zero on failure, so it works as a pre-commit or CI check unchan
 | `Sketch/Constraints.cs` | the constraint set, and the derivatives that make it solvable |
 | `Sketch/SketchSolver.cs` | Levenberg-Marquardt, with degrees of freedom and redundancy reported |
 | `MeshBoolean.cs` | what a boolean is, and where a host installs one that can actually do it |
+| `LoopOffset.cs` | move a 2D loop in or out from its edges — what a draft angle is built on |
 | `Features/StudioDocument.cs` | saving and loading the tree — the file the whole history depends on |
 
 ## Saving
@@ -265,6 +266,29 @@ mid-edit, which is most of the time while someone is adding constraints.
 The derivatives are checked against finite differences in `ConstraintTests`, and that is not
 ceremony: a wrong derivative does not produce a wrong answer, it produces a slow or unstable one, so
 it presents as "the solver feels flaky" and never as a failing assert.
+
+## Draft, and two-sided extrudes
+
+`Taper` leans every wall by a given angle: the far cap is the near one offset by
+`distance × tan(angle)`, so the lean is exact rather than approximate. `SecondDistance` runs the
+extrude back the other way from the sketch plane by an independent amount, which a symmetric
+checkbox cannot express — a boss 3 up and 1 down is not any symmetric extrude.
+
+**The offset is measured from the EDGES, not the vertices**, and that is the whole difficulty. Push
+each vertex along its own bisector and every corner that is not a right angle ends up a different
+distance from its own edges, so the draft varies around the profile — and nothing in a render shows
+it. `LoopOffset` slides the edge LINES and intersects them, which is exact at any corner angle, and
+it is the same reasoning `PlaneOffset` carries into three dimensions for shell.
+
+Holes fall out of the winding with no special case: an outer loop is counter-clockwise so its left
+of travel points inward, a hole is clockwise so its left of travel points outward, and one rule
+shrinks the part while widening the holes in it. That is what draft does in reality.
+
+**Self-intersection is refused, not handled.** Three checks: the signed area keeps its sign, it has
+not collapsed, and no edge has reversed direction. The third is not redundant — pushing a symmetric
+profile past its own centre is a half-turn rotation, which *preserves* orientation, so an inside-out
+square passes the first two while measuring perfectly healthy. A test drafts a square at 60 degrees
+over its own width to keep that honest.
 
 ## Two decisions worth knowing before changing anything
 

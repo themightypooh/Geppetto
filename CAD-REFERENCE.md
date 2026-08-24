@@ -215,7 +215,13 @@ feature:
 1. ~~**`visible` on features**~~ — done.
 2. ~~**Derived sketch planes: offset, and from a planar face.**~~ Done, and the face reference rides
    its face when that face moves rather than being pinned to an absolute point.
-3. **Extrude taper and two-sided distances.** Small, no boolean. The cheapest thing left.
+3. ~~**Extrude taper and two-sided distances.**~~ Built. FreeCAD's list also has Offset, UseCustomVector,
+   AlongSketchNormal and ReferenceAxis; none of those has been asked for yet.
+
+   One deliberate divergence: draft is measured from the START OF THE SWEEP, so the solid is one
+   frustum. Onshape measures from the sketch plane, which makes a symmetric extrude draft away from
+   that plane in both directions — right for a moulded part with a parting line, and a separate
+   option if it is ever wanted, rather than a hidden difference in what Symmetric means.
 
    (Profiles with holes were on this list as needing the boolean. They did not: capping around a
    hole is 2D triangulation, and it is built. Worth remembering as a case where the stated reason
