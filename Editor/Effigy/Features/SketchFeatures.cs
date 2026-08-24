@@ -295,18 +295,12 @@ public abstract class SketchConsumingFeature : Feature
 				: "The sketch has no closed region" );
 		}
 
-		// Holes need the cap to be triangulated around them, which is really the same problem as
-		// a boolean subtract and is better solved once, there. Until then this refuses clearly
-		// rather than producing a cap that renders with the hole filled in.
-		var holed = found.Profiles.FirstOrDefault( p => p.HasHoles );
-
-		if ( holed is not null )
-		{
-			throw new InvalidOperationException(
-				$"Profiles with holes are not supported yet ({holed.Holes.Count} inner loop(s)). "
-				+ "Use the Tube primitive, or extrude the outer and inner shapes separately." );
-		}
-
+		// Holes used to be refused HERE, for every consumer at once, on the grounds that capping
+		// around one was "really the same problem as a boolean subtract". That was wrong: it is a
+		// 2D triangulation problem, and ear clipping has been in the kernel for a while. Extrude
+		// handles holes now; Revolve does not, and says so itself. The refusal belongs with whoever
+		// cannot do it rather than in the shared path, or one feature's limit keeps standing in for
+		// everyone's.
 		return found.Profiles;
 	}
 }
@@ -344,7 +338,7 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 
 		foreach ( var profile in profiles )
 		{
-			var mesh = BuildPrism( sketch.Plane, profile.Outer, near, far, Material.Clamped );
+			var mesh = BuildPrism( sketch.Plane, profile, near, far, Material.Clamped );
 			Emit( ctx, mesh );
 		}
 	}
@@ -353,23 +347,63 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 	/// Outer loop arrives counter-clockwise in plane coordinates, which fixes every winding
 	/// question: the far cap keeps that order, the near cap reverses, and the side quads run
 	/// bottom edge then up. Verified by the enclosed-volume test rather than by inspection.
+	///
+	/// HOLES COST EXACTLY TWO THINGS. Each hole loop gets walls of its own, built by the same code
+	/// as the outer ones — and because ProfileFinder hands holes back wound the opposite way, those
+	/// walls face into the hole with no sign handling anywhere. And the caps can no longer be single
+	/// n-gons, because a face with a hole in it is not a polygon; they are triangulated around the
+	/// holes instead.
+	///
+	/// That cap is a real tradeoff and worth stating plainly. This kernel prefers n-gons because
+	/// Catmull-Clark turns one into n clean quads, and a triangulated cap subdivides worse — the
+	/// README's whole argument about quads applies. A holed profile has no n-gon available, so the
+	/// choice is a triangulated cap or no feature at all, and a plate with bolt holes is hard
+	/// surface that rarely gets subdivided anyway. Profiles WITHOUT holes are untouched and still
+	/// get their single n-gon.
 	/// </summary>
-	static PolyMesh BuildPrism( SketchPlane plane, List<Vec2> loop, float near, float far, int material )
+	static PolyMesh BuildPrism( SketchPlane plane, Profile profile, float near, float far, int material )
 	{
-		var n = loop.Count;
 		var mesh = new PolyMesh();
 
 		// A negative extrusion puts the "far" cap behind the "near" one and flips the solid inside
 		// out. Ordering them here means the rest of the function never has to think about sign.
 		var (low, high) = near <= far ? (near, far) : (far, near);
 
-		foreach ( var p in loop )
-			mesh.AddVertex( plane.ToWorld( p ) + plane.Normal * low );
+		// Outer first, then each hole — the same order Triangulate.WithHoles indexes them in, which
+		// is what lets its triples map straight onto these vertices.
+		var loops = new List<List<Vec2>> { profile.Outer };
+		loops.AddRange( profile.Holes );
 
-		foreach ( var p in loop )
-			mesh.AddVertex( plane.ToWorld( p ) + plane.Normal * high );
+		// Where each loop's low ring starts. Its high ring follows immediately after it.
+		var lowStart = new int[loops.Count];
+		var highStart = new int[loops.Count];
 
-		// Side walls. Cumulative perimeter drives U so the texture does not stretch on long edges.
+		foreach ( var (loop, index) in loops.Select( ( l, i ) => (l, i) ) )
+		{
+			lowStart[index] = mesh.Positions.Count;
+
+			foreach ( var p in loop )
+				mesh.AddVertex( plane.ToWorld( p ) + plane.Normal * low );
+
+			highStart[index] = mesh.Positions.Count;
+
+			foreach ( var p in loop )
+				mesh.AddVertex( plane.ToWorld( p ) + plane.Normal * high );
+		}
+
+		for ( var index = 0; index < loops.Count; index++ )
+			AddWalls( mesh, loops[index], lowStart[index], highStart[index], material );
+
+		AddCaps( mesh, profile, loops, lowStart, highStart, material );
+
+		return mesh;
+	}
+
+	/// <summary>One loop's side wall. Cumulative perimeter drives U so the texture does not stretch
+	/// on long edges.</summary>
+	static void AddWalls( PolyMesh mesh, List<Vec2> loop, int lowStart, int highStart, int material )
+	{
+		var n = loop.Count;
 		var perimeter = 0f;
 		var distances = new float[n + 1];
 
@@ -390,36 +424,89 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 			var u1 = perimeter > 0f ? distances[i + 1] / perimeter : 1f;
 
 			mesh.AddFace(
-				new[] { i, j, n + j, n + i },
+				new[] { lowStart + i, lowStart + j, highStart + j, highStart + i },
 				new[] { new Vec2( u0, 0 ), new Vec2( u1, 0 ), new Vec2( u1, 1 ), new Vec2( u0, 1 ) },
 				material );
 		}
+	}
 
-		// Caps use plane coordinates directly as UVs, so a face keeps the proportions it was drawn
-		// with instead of being squashed into a unit square.
-		var topIndices = new int[n];
-		var topUVs = new Vec2[n];
-
-		for ( var i = 0; i < n; i++ )
+	/// <summary>
+	/// Top and bottom. Caps use plane coordinates directly as UVs, so a face keeps the proportions
+	/// it was drawn with instead of being squashed into a unit square.
+	/// </summary>
+	static void AddCaps( PolyMesh mesh, Profile profile, List<List<Vec2>> loops, int[] lowStart, int[] highStart,
+		int material )
+	{
+		if ( !profile.HasHoles )
 		{
-			topIndices[i] = n + i;
-			topUVs[i] = loop[i];
+			var loop = profile.Outer;
+			var n = loop.Count;
+
+			var topIndices = new int[n];
+			var topUVs = new Vec2[n];
+
+			for ( var i = 0; i < n; i++ )
+			{
+				topIndices[i] = highStart[0] + i;
+				topUVs[i] = loop[i];
+			}
+
+			mesh.AddFace( topIndices, topUVs, material );
+
+			var bottomIndices = new int[n];
+			var bottomUVs = new Vec2[n];
+
+			for ( var i = 0; i < n; i++ )
+			{
+				bottomIndices[i] = lowStart[0] + n - 1 - i;
+				bottomUVs[i] = loop[n - 1 - i];
+			}
+
+			mesh.AddFace( bottomIndices, bottomUVs, material );
+			return;
 		}
 
-		mesh.AddFace( topIndices, topUVs, material );
+		// Flatten the loops into the one list WithHoles indexes against, so a triple it returns can
+		// be read as "the nth point, counting outer first then each hole in turn".
+		var flat = new List<Vec2>();
+		var loopOf = new List<int>();
+		var withinLoop = new List<int>();
 
-		var bottomIndices = new int[n];
-		var bottomUVs = new Vec2[n];
-
-		for ( var i = 0; i < n; i++ )
+		for ( var index = 0; index < loops.Count; index++ )
 		{
-			bottomIndices[i] = n - 1 - i;
-			bottomUVs[i] = loop[n - 1 - i];
+			for ( var i = 0; i < loops[index].Count; i++ )
+			{
+				flat.Add( loops[index][i] );
+				loopOf.Add( index );
+				withinLoop.Add( i );
+			}
 		}
 
-		mesh.AddFace( bottomIndices, bottomUVs, material );
+		var triangles = Triangulate.WithHoles( profile.Outer, profile.Holes.Cast<IReadOnlyList<Vec2>>().ToList() );
 
-		return mesh;
+		if ( triangles.Count == 0 )
+		{
+			throw new InvalidOperationException(
+				$"This profile's {profile.Holes.Count} hole(s) could not be capped — the loops may cross each other. "
+				+ "Check that every inner loop lies fully inside the outer one." );
+		}
+
+		foreach ( var (a, b, c) in triangles )
+		{
+			mesh.AddFace(
+				new[] { High( a ), High( b ), High( c ) },
+				new[] { flat[a], flat[b], flat[c] },
+				material );
+
+			// The bottom is the same triangle seen from the other side, so it is wound backwards.
+			mesh.AddFace(
+				new[] { Low( c ), Low( b ), Low( a ) },
+				new[] { flat[c], flat[b], flat[a] },
+				material );
+		}
+
+		int High( int flatIndex ) => highStart[loopOf[flatIndex]] + withinLoop[flatIndex];
+		int Low( int flatIndex ) => lowStart[loopOf[flatIndex]] + withinLoop[flatIndex];
 	}
 }
 
@@ -460,6 +547,17 @@ public sealed class RevolveFeature : SketchConsumingFeature
 
 		if ( MathF.Abs( Angle.Value ) < 1e-4f )
 			throw new InvalidOperationException( "Angle cannot be zero" );
+
+		// Revolve has no answer for a hole: sweeping an inner loop makes a second closed surface
+		// inside the first, and joining them where the profile touches the axis is a different
+		// problem from extrude's flat cap. Refused here rather than in the shared profile finder,
+		// so Extrude — which CAN do it — is not held back by this limit.
+		if ( profiles.FirstOrDefault( p => p.HasHoles ) is { } holed )
+		{
+			throw new InvalidOperationException(
+				$"Revolve cannot use a profile with holes ({holed.Holes.Count} inner loop(s)). "
+				+ "Extrude handles holes; for a revolve, draw the section you actually want swept." );
+		}
 
 		var plane = sketch.Plane;
 

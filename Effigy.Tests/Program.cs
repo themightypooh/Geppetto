@@ -89,6 +89,8 @@ public static class Program
 
 		DocumentTests.Run();
 
+		HoleTests.Run();
+
 		EditorFlowTests.Run();
 
 		KernelSyncTests.Run();
@@ -456,6 +458,19 @@ public static class Program
 		coneStudio.Rebuild();
 		ObjWriter.WriteFile( coneStudio.ToMesh(), Path.Combine( outDir, "sketch_cone.obj" ), "cone" );
 
+		// A plate with four bolt holes — the profile that was unbuildable until holes landed, and the
+		// fastest way to see whether the caps really are open rather than filled in.
+		var plateStudio = new PartStudio();
+		var plateSketch = plateStudio.Add( new SketchFeature() );
+		plateSketch.Sketch.AddRectangle( new Vec2( -5, -3 ), new Vec2( 5, 3 ) );
+
+		foreach ( var centre in new[] { (-3.5f, -1.5f), (3.5f, -1.5f), (3.5f, 1.5f), (-3.5f, 1.5f) } )
+			plateSketch.Sketch.AddCircle( new Vec2( centre.Item1, centre.Item2 ), 0.6f );
+
+		plateStudio.Add( new ExtrudeFeature() ).Distance.Value = 0.8f;
+		plateStudio.Rebuild();
+		ObjWriter.WriteFile( plateStudio.ToMesh(), Path.Combine( outDir, "sketch_plate_holes.obj" ), "plate_holes" );
+
 		// A cube with every edge chamfered — the flat-bevel look, side by side with the sharp box.
 		var bevelStudio = new PartStudio();
 		var bevelBox = bevelStudio.Add( new PrimitiveFeature() );
@@ -508,6 +523,7 @@ public static class Program
 			new PngPreview.Tile( Load( "sketch_slot" ), "sketch extrude" ),
 			new PngPreview.Tile( Load( "sketch_torus" ), "sketch revolve" ),
 			new PngPreview.Tile( Load( "sketch_cone" ), "revolve on axis" ),
+			new PngPreview.Tile( Load( "sketch_plate_holes" ), "profile with holes" ),
 		};
 
 		PngPreview.WriteSheet( primitives, Path.Combine( outDir, "preview_primitives.png" ) );

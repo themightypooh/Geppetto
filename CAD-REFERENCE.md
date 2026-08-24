@@ -216,6 +216,11 @@ feature:
 2. ~~**Derived sketch planes: offset, and from a planar face.**~~ Done, and the face reference rides
    its face when that face moves rather than being pinned to an absolute point.
 3. **Extrude taper and two-sided distances.** Small, no boolean. The cheapest thing left.
+
+   (Profiles with holes were on this list as needing the boolean. They did not: capping around a
+   hole is 2D triangulation, and it is built. Worth remembering as a case where the stated reason
+   for a limitation outlived the limitation itself — the refusal message was still quoting the
+   boolean long after ear clipping arrived.)
 4. ~~**Operation parameter on Extrude (New/Add/Subtract)**~~ — done for New and Add, with Add
    merging rather than unioning (see section 2). Subtract still waits on the boolean and is not
    offered until it exists.

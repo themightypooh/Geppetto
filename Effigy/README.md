@@ -36,7 +36,7 @@ machine. A session that skips this ends up reasoning about the code by reading i
 is how a bug that made every parameter edit a silent no-op survived long enough to look like three
 unrelated UI faults.
 
-918 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
+950 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
 2-level-subdivided version of each. Those are the fastest way to see whether something is actually
 right: open them in Blender, or drop one into ModelDoc to find out what s&box makes of it.
 
@@ -180,8 +180,24 @@ than guessed at. That still covers rectangles, polygons, circles, slots and roun
 Proper face traversal — sort half-edges by angle at each vertex, always take the next one clockwise
 — is the upgrade, and doesn't change `ProfileFinder`'s interface.
 
-**Profiles with holes.** Detected and reported, not built. Capping around a hole is the same problem
-as a boolean subtract and is better solved once, there. Until then use the Tube primitive.
+**Profiles with holes.** Built. This section used to say they were "the same problem as a boolean
+subtract and better solved once, there", which was wrong and cost the feature a long time: capping
+around a hole is a 2D TRIANGULATION problem and never needed CSG at all.
+
+Each hole is spliced into the outer loop along a bridge — a segment out to the hole and back, which
+turns a ring-with-a-hole into one boundary — and then it is an ordinary ear clip. The doubled bridge
+edge needs no special handling because `IsEar` already refuses a zero-area corner. Hole walls come
+for free: `ProfileFinder` hands holes back wound the opposite way, so the same wall code faces them
+into the hole with no sign handling anywhere.
+
+The cost is the cap. A face with a hole in it is not a polygon, so it cannot be the single n-gon this
+kernel prefers, and a holed cap is triangulated instead — which subdivides worse, exactly as the
+quads argument below predicts. That is a real tradeoff and the honest one: a plate with bolt holes is
+hard surface that rarely gets subdivided, and the alternative was no feature. **Profiles without
+holes are untouched and still get their single n-gon**, which is pinned by a test.
+
+Revolve still refuses holes, and now says so itself rather than through a shared check — sweeping an
+inner loop is a different problem from capping one.
 
 ### One part, built out of several extrudes
 

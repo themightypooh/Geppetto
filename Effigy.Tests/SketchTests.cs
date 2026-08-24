@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Effigy;
@@ -222,6 +222,27 @@ public static class SketchTests
 		Check( "a seed that matches nothing reports an error", report.HasErrors, report.ToString() );
 		Check( "and produces no body from that feature", studio.Bodies.Count == 0,
 			$"{studio.Bodies.Count} bodies" );
+	}
+
+	/// <summary>Shoelace area of a curve as the extrude actually tessellates it. Comparing against
+	/// pi r squared instead would be comparing against a circle the mesh never contained.</summary>
+	static float TessellatedArea( Sketch sketch, SketchCurve curve )
+	{
+		var points = curve.Tessellate( sketch, sketch.Tolerance );
+
+		// Tessellate returns both endpoints, so the closing point repeats the first and is dropped
+		// rather than counted twice.
+		var n = points.Count - 1;
+		var sum = 0f;
+
+		for ( var i = 0; i < n; i++ )
+		{
+			var a = points[i];
+			var b = points[(i + 1) % n];
+			sum += a.x * b.y - b.x * a.y;
+		}
+
+		return MathF.Abs( sum * 0.5f );
 	}
 
 	static float Volume( PolyMesh m ) =>
@@ -505,16 +526,53 @@ public static class SketchTests
 		Check( "extrude on XZ has volume 8",
 			MathF.Abs( Volume( front.Bodies[0].Mesh ) - 8f ) < 1e-3f );
 
-		// Holes are refused clearly rather than silently capped over.
+		// A plate with a hole in it. This used to be refused outright on the grounds that capping
+		// around a hole was "the same problem as a boolean subtract"; it is a 2D triangulation
+		// problem, and it builds now.
 		var holed = new PartStudio();
 		var hs = holed.Add( new SketchFeature() );
 		hs.Sketch.AddRectangle( new Vec2( -5, -5 ), new Vec2( 5, 5 ) );
-		hs.Sketch.AddCircle( new Vec2( 0, 0 ), 1f );
+		var holeCircle = hs.Sketch.AddCircle( new Vec2( 0, 0 ), 1f );
 		var holedExtrude = holed.Add( new ExtrudeFeature() );
+		holedExtrude.Distance.Value = 2f;
 		holed.Rebuild();
 
-		Check( "extruding a holed profile reports an error", holedExtrude.Error is not null );
-		Check( "the error explains why", holedExtrude.Error?.Contains( "holes" ) == true, holedExtrude.Error );
+		Check( "a profile with a hole extrudes", holedExtrude.Error is null, holedExtrude.Error );
+
+		if ( holedExtrude.Error is null )
+		{
+			var plate = holed.Bodies[0].Mesh;
+
+			// 100 minus the circle, times 2 deep. The circle is tessellated, so the comparison is
+			// against the polygon's area rather than pi r squared — otherwise the tolerance would
+			// have to be loose enough to also pass a plate with no hole at all.
+			var holeArea = TessellatedArea( hs.Sketch, holeCircle );
+			var expected = (100f - holeArea) * 2f;
+
+			Check( "and its volume is the plate minus the hole",
+				MathF.Abs( Volume( plate ) - expected ) < 0.05f,
+				$"{Volume( plate ):0.####}, expected {expected:0.####}" );
+
+			// GENUS 1, the same as the Tube primitive. A cap that quietly filled the hole in could
+			// slip past a volume check with a small enough hole; it cannot slip past this.
+			var x = MeshValidator.EulerCharacteristic( plate );
+			Check( "a plate with one hole is genus 1, so X = 0", x == 0, $"X = {x}" );
+
+			var validation = MeshValidator.Validate( plate );
+			Check( "it is a valid closed mesh", validation.IsValid && validation.IsClosed, validation.ToString() );
+		}
+
+		// Revolve has no answer for a hole and says so itself, now that the shared refusal is gone.
+		var revolvedHole = new PartStudio();
+		var rhs = revolvedHole.Add( new SketchFeature() );
+		rhs.Sketch.AddRectangle( new Vec2( 2, 2 ), new Vec2( 6, 6 ) );
+		rhs.Sketch.AddCircle( new Vec2( 4, 4 ), 1f );
+		var holedRevolve = revolvedHole.Add( new RevolveFeature() );
+		revolvedHole.Rebuild();
+
+		Check( "revolving a holed profile still reports an error", holedRevolve.Error is not null );
+		Check( "and points at the feature that can do it",
+			holedRevolve.Error?.Contains( "Extrude" ) == true, holedRevolve.Error );
 
 		// Two disjoint regions extrude to two bodies.
 		var twoStudio = new PartStudio();
