@@ -35,6 +35,245 @@ public static class MergeTests
 
 		Report.Section( "merge: identity survives it" );
 		TestIdentity();
+
+		Report.Section( "remove: the cut goes through the boolean seam" );
+		TestRemove();
+	}
+
+	/// <summary>
+	/// Removing material.
+	///
+	/// There is no boolean in the kernel and there is not going to be one — the plan of record is
+	/// the engine's, installed at startup inside the s&box editor (see MeshBoolean). So what can be
+	/// verified here is everything EXCEPT the cut arithmetic: that Remove asks for a subtract, that
+	/// it hands over the right two solids the right way round, that the answer replaces the target
+	/// without disturbing its identity, and that every way this can go wrong produces something a
+	/// user can act on.
+	///
+	/// A stub provider is what makes that testable. It is not a boolean and does not pretend to be
+	/// one — it records what it was asked and returns a mesh it was told to return.
+	/// </summary>
+	static void TestRemove()
+	{
+		var previous = MeshBoolean.Provider;
+
+		try
+		{
+			TestRemoveWithoutProvider();
+			TestRemoveThroughProvider();
+			TestRemoveFailures();
+		}
+		finally
+		{
+			// Restored whatever happens: a provider left installed would leak into every test that
+			// runs after this one, and the ones that assert Remove is unavailable would start
+			// passing for the wrong reason.
+			MeshBoolean.Provider = previous;
+		}
+	}
+
+	static void TestRemoveWithoutProvider()
+	{
+		MeshBoolean.Provider = null;
+
+		Report.Check( "with nothing installed, the kernel reports no boolean", !MeshBoolean.Available );
+
+		var studio = CutSetup( out var cut );
+		var report = studio.Rebuild();
+
+		Report.Check( "asking for a cut without a provider is an error, not a silent no-op",
+			report.HasErrors, "it built something" );
+
+		Report.Check( "and the error names what is missing",
+			cut.Error is not null && cut.Error.Contains( "mesh boolean" ), cut.Error ?? "no error" );
+
+		// A host that knows more gets to say more. The editor knows the engine has a boolean and
+		// what is needed to reach it; the kernel only knows there is none here.
+		MeshBoolean.UnavailableReason = "Run effigy_probe_boolean to dump the engine's API.";
+
+		var hosted = CutSetup( out var hostedCut );
+		hosted.Rebuild();
+
+		Report.Check( "and a host can replace that with something actionable",
+			hostedCut.Error is not null && hostedCut.Error.Contains( "effigy_probe_boolean" ),
+			hostedCut.Error ?? "no error" );
+
+		MeshBoolean.UnavailableReason = null;
+
+		// The part it could not cut is still there. A failed feature must not take the model with
+		// it — the geometry above the failure is exactly what you need to see to fix it.
+		Report.Check( "the part being cut survives the failure", studio.Bodies.Count == 1,
+			$"{studio.Bodies.Count} bodies" );
+	}
+
+	static void TestRemoveThroughProvider()
+	{
+		var stub = new StubBoolean();
+		MeshBoolean.Provider = stub;
+
+		var studio = CutSetup( out _ );
+		var idBefore = studio.Bodies.Single().Id;
+
+		// What the stub returns stands in for the cut result. A box of a known size means the
+		// assertion below is about the result being ADOPTED, not about what a boolean would compute.
+		stub.Result = Primitives.Box( 1, 1, 1 );
+
+		var report = studio.Rebuild();
+
+		Report.Check( "the cut builds", !report.HasErrors, report.ToString() );
+
+		Report.Check( "it asked for a subtract", stub.LastOp == BooleanOp.Subtract, $"{stub.LastOp}" );
+
+		Report.Check( "exactly once", stub.Calls == 1, $"{stub.Calls} calls" );
+
+		// THE OPERANDS, THE RIGHT WAY ROUND. Subtract is not commutative, and swapping them is the
+		// kind of mistake that produces a plausible-looking solid rather than an error: the target
+		// is the part being cut, the tool is the shape of the hole.
+		Report.Check( "the part is the target and the extrusion is the tool",
+			MathF.Abs( EnclosedVolume( stub.LastTarget ) - 48f ) < 1e-2f
+			&& MathF.Abs( EnclosedVolume( stub.LastTool ) - 2f ) < 1e-2f,
+			$"target {EnclosedVolume( stub.LastTarget ):0.##} (block is 48), tool {EnclosedVolume( stub.LastTool ):0.##} (cut is 2)" );
+
+		Report.Check( "the result replaces the part rather than adding another",
+			studio.Bodies.Count == 1, $"{studio.Bodies.Count} bodies" );
+
+		Report.Check( "and the part keeps its id, so anything built on it still resolves",
+			studio.Bodies.Single().Id == idBefore, $"{idBefore} became {studio.Bodies.Single().Id}" );
+
+		Report.Check( "the body now holds what the boolean returned",
+			MathF.Abs( EnclosedVolume( studio.Bodies.Single().Mesh ) - 1f ) < 1e-2f,
+			$"volume {EnclosedVolume( studio.Bodies.Single().Mesh ):0.####}" );
+	}
+
+	static void TestRemoveFailures()
+	{
+		var stub = new StubBoolean();
+		MeshBoolean.Provider = stub;
+
+		// A provider that cannot do it says so, and the reason has to reach the user rather than
+		// being swallowed into a generic failure.
+		stub.Fail = "the solids do not overlap";
+
+		var studio = CutSetup( out var cut );
+		studio.Rebuild();
+
+		Report.Check( "a refused boolean surfaces the provider's own reason",
+			cut.Error is not null && cut.Error.Contains( "do not overlap" ), cut.Error ?? "no error" );
+
+		// A provider that throws is a failed boolean, not a failed rebuild.
+		stub.Fail = null;
+		stub.Throw = true;
+
+		var throwing = CutSetup( out var thrown );
+		var throwingReport = throwing.Rebuild();
+
+		Report.Check( "a provider that throws is caught and reported",
+			throwingReport.HasErrors && thrown.Error is not null && thrown.Error.Contains( "failed" ),
+			thrown.Error ?? "no error" );
+
+		Report.Check( "and the rebuild carries on rather than dying", throwing.Bodies.Count == 1 );
+
+		// An empty result is a real answer to "cut this with something that swallows it", and it is
+		// never a useful one — a body with no faces is indistinguishable from a broken feature
+		// everywhere downstream, so it is refused where it happens.
+		stub.Throw = false;
+		stub.Result = new PolyMesh();
+
+		var emptied = CutSetup( out var vanished );
+		emptied.Rebuild();
+
+		Report.Check( "a cut that leaves nothing behind explains itself",
+			vanished.Error is not null && vanished.Error.Contains( "nothing" ), vanished.Error ?? "no error" );
+
+		// Nothing to cut into at all.
+		stub.Result = Primitives.Box( 1, 1, 1 );
+
+		var lonely = new PartStudio();
+		lonely.Add( new SketchFeature() ).Sketch.AddRectangle( new Vec2( 0, 0 ), new Vec2( 1, 1 ) );
+		var nothing = lonely.Add( new ExtrudeFeature() );
+		nothing.Distance.Value = 1f;
+		nothing.Result.Index = 3;
+
+		lonely.Rebuild();
+
+		Report.Check( "removing with no body to remove from says what to do instead",
+			nothing.Error is not null && nothing.Error.Contains( "remove from" ), nothing.Error ?? "no error" );
+
+		// Auto must never cut. Adding and removing are indistinguishable from the geometry, so a
+		// rule that guessed would eventually guess a hole into someone's part.
+		stub.Calls = 0;
+
+		var auto = CutSetup( out var automatic );
+		automatic.Result.Index = 0;
+		auto.Rebuild();
+
+		Report.Check( "Auto never reaches for the boolean", stub.Calls == 0, $"{stub.Calls} calls" );
+	}
+
+	/// <summary>A block with a sketch on its top face set to cut into it: the shape of every Remove
+	/// test, so each one differs only in what the provider does.</summary>
+	static PartStudio CutSetup( out ExtrudeFeature cut )
+	{
+		var studio = new PartStudio();
+
+		var block = studio.Add( new PrimitiveFeature() );
+		block.SizeX.Value = 6f;
+		block.SizeY.Value = 4f;
+		block.SizeZ.Value = 2f;
+		studio.Rebuild();
+
+		var sketch = studio.Add( new SketchFeature() );
+		sketch.Face = TopFaceOf( studio, studio.Bodies[0].Id );
+		sketch.Sketch.AddRectangle( new Vec2( -1f, -1f ), new Vec2( 1f, 0f ) );
+
+		cut = studio.Add( new ExtrudeFeature() );
+		cut.Distance.Value = 1f;
+		cut.Result.Index = 3; // Remove
+
+		return studio;
+	}
+
+	/// <summary>
+	/// Stands in for the engine's boolean. Records what it was asked and returns what it was told
+	/// to return — it performs no geometry at all, on purpose, because a half-real boolean in a test
+	/// would be a second implementation to be wrong in its own way.
+	/// </summary>
+	sealed class StubBoolean : IMeshBoolean
+	{
+		public int Calls;
+		public BooleanOp LastOp;
+		public PolyMesh LastTarget, LastTool;
+
+		/// <summary>What to hand back. Null means "refuse", via Fail.</summary>
+		public PolyMesh Result = Primitives.Box( 1, 1, 1 );
+
+		/// <summary>Set to refuse with this reason.</summary>
+		public string Fail;
+
+		/// <summary>Set to throw instead, which is what a misbehaving engine call looks like.</summary>
+		public bool Throw;
+
+		public bool TryApply( BooleanOp op, PolyMesh target, PolyMesh tool, out PolyMesh result, out string error )
+		{
+			Calls++;
+			LastOp = op;
+			LastTarget = target;
+			LastTool = tool;
+
+			if ( Throw )
+				throw new InvalidOperationException( "the engine said no" );
+
+			if ( Fail is not null )
+			{
+				result = null;
+				error = Fail;
+				return false;
+			}
+
+			result = Result;
+			error = null;
+			return true;
+		}
 	}
 
 	static void TestBossesMergeIn()

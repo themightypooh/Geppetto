@@ -141,6 +141,13 @@ public sealed class EffigyWindow : DockWindow
 
 		_studio = new PartStudio();
 
+		// Remove is wired all the way through the kernel and has nowhere to land yet: the engine has
+		// a boolean and nothing here knows its API. Saying so at the one place a user meets it beats
+		// the kernel's generic "none installed", which is true and useless.
+		MeshBoolean.UnavailableReason ??=
+			"The engine has one, but Effigy has no adapter for it yet. Run effigy_probe_boolean in the "
+			+ "console to dump its API — that is what the adapter gets written from.";
+
 		BuildMenuBar();
 		BuildDocks();
 		BuildToolbar();

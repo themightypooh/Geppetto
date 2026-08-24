@@ -36,7 +36,7 @@ machine. A session that skips this ends up reasoning about the code by reading i
 is how a bug that made every parameter edit a silent no-op survived long enough to look like three
 unrelated UI faults.
 
-845 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
+864 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
 2-level-subdivided version of each. Those are the fastest way to see whether something is actually
 right: open them in Blender, or drop one into ModelDoc to find out what s&box makes of it.
 
@@ -77,6 +77,7 @@ Exit code is non-zero on failure, so it works as a pre-commit or CI check unchan
 | `Sketch/IConstraint.cs` | one residual and its derivative — the solver never switches on a kind |
 | `Sketch/Constraints.cs` | the constraint set, and the derivatives that make it solvable |
 | `Sketch/SketchSolver.cs` | Levenberg-Marquardt, with degrees of freedom and redundancy reported |
+| `MeshBoolean.cs` | what a boolean is, and where a host installs one that can actually do it |
 
 ## The feature tree
 
@@ -169,8 +170,15 @@ does not wait on a robust CSG. What it costs is that the merged mesh is non-mani
 so operations needing clean topology (shell especially) will refuse it. That refusal is the honest
 failure, and it is why merging is not forced on features that did not ask for it.
 
-Subtract is the one that genuinely needs the boolean, and is not offered rather than being offered
-and failing.
+**Remove is the fourth option and it is a real boolean**, because a cut cannot be faked the way Add
+can — taking material away means genuinely recomputing the surface. It goes through `MeshBoolean`,
+which is an interface and a provider slot rather than an implementation: the kernel knows what a
+boolean IS without knowing how to do one, which keeps the engine-free promise intact. With no
+provider installed, Remove fails with a message saying so instead of producing something plausible.
+
+Auto never removes. Adding and removing look identical from the geometry — the same profile pulled
+the same distance off the same face — so there is nothing for Auto to read, and a rule that guessed
+would eventually guess a hole into someone's part.
 
 ### Materials per face
 
@@ -352,7 +360,17 @@ reads `(x,y)` — all `(2,2)`. An unequal box is needed to observe a seam at all
 
 **Phase three**: Rounded (multi-segment) fillets, then Catmull-Clark subdivision brushes, multires deltas, normal-map bake. The sketch constraint solver was the other item here and has landed.
 
-Boolean is the notable absence. Robust mesh CSG is a decades-old problem — coplanar faces,
-floating-point robustness, self-intersection — and a half-working one is worse than none. s&box ships
-`PolygonMesh.PerformBoolean`, so the plan is to put booleans behind an interface with an engine-backed
-implementation there and our own only if a portable one is ever genuinely needed.
+Boolean is still the notable absence, but it now has a shape. Robust mesh CSG is a decades-old
+problem — coplanar faces, floating-point robustness, self-intersection — and a half-working one is
+worse than none, so the plan was always an interface with an engine-backed implementation behind it.
+
+The interface exists (`MeshBoolean`, `IMeshBoolean`) and Extrude and Revolve reach for it when
+Result is Remove. What does not exist is the adapter between `PolyMesh` and s&box's `PolygonMesh`,
+because that is the one piece that cannot be written without the engine in front of you — and a
+guessed member name is a compile error that takes the whole editor assembly down, not a polite
+runtime failure. `effigy_probe_boolean` in the editor console dumps the real API to write it from.
+
+Everything on this side of that adapter is done and tested: the operand order (target is the part,
+tool is the shape of the hole), the result replacing the body without changing its id, a provider
+that refuses or throws being reported rather than crashing the rebuild, and a cut that would leave
+nothing behind being refused.

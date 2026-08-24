@@ -59,8 +59,10 @@ sketch-consuming features, with New body and Add — and Add merges the meshes r
 them, which is enough for the thing that was actually broken: every extrude made its own body, so
 building a part up out of four extrudes listed four parts. The interface between them is left
 uncut, which costs manifoldness along the join and nothing else that matters at this stage.
-Subtract is not offered, because subtracting genuinely cannot be faked this way — there is no
-"combine and leave the interface" answer to removing material.
+Remove is offered as well, and it is the honest kind: subtracting genuinely cannot be faked this way
+— there is no "combine and leave the interface" answer to taking material away — so it goes through
+a boolean provider (`MeshBoolean`) and says plainly when none is installed rather than producing
+something plausible.
 
 The default is neither New nor Add but **Auto**, which reads the sketch's attachment: on a face of a
 body it adds to that body, on a global plane it starts a new one. That is the same information
@@ -204,8 +206,11 @@ feature:
 4. ~~**Operation parameter on Extrude (New/Add/Subtract)**~~ — done for New and Add, with Add
    merging rather than unioning (see section 2). Subtract still waits on the boolean and is not
    offered until it exists.
-5. **Mesh boolean.** The big one. Everything above is useful without it; nothing below is possible
-   without it.
+5. **Mesh boolean.** The big one, and now the only thing between Remove and working: the seam, the
+   dropdown, the operand order and every failure path are built and tested. What is missing is the
+   adapter from PolyMesh to the engine's PolygonMesh, which cannot be written without the engine in
+   front of you — `effigy_probe_boolean` dumps the API it gets written from. A portable
+   implementation stays off the table until something genuinely needs one.
 6. ~~**Constraint solver.**~~ Landed: Levenberg-Marquardt over the residuals, seven constraint kinds,
    degrees of freedom counted from the Jacobian's rank. What it still needs is the UI — there is no
    way to add a constraint in the editor, so the solver currently only runs on constraints the

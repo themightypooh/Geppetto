@@ -121,8 +121,7 @@ public abstract class SketchConsumingFeature : Feature
 
 	/// <summary>
 	/// What the result does to the model: start a new part, or become part of the one it grows out
-	/// of. Onshape calls this Result and puts New / Add / Remove / Intersect in it; the last two
-	/// need a mesh boolean and are not offered rather than being offered and failing.
+	/// of, or cut into it. Onshape calls this Result and puts New / Add / Remove / Intersect in it.
 	///
 	/// AUTO IS THE DEFAULT AND IT IS THE INTERESTING ONE. Extruding three bosses off the same block
 	/// used to leave four separate parts in the list, which is not what "I built this up out of four
@@ -130,8 +129,24 @@ public abstract class SketchConsumingFeature : Feature
 	/// starts a new part when the sketch is on a global plane instead. So building on something
 	/// keeps one part, and sketching in space starts another, with no parameter to set for either.
 	/// </summary>
+	/// AUTO NEVER REMOVES. Adding and removing look identical from the geometry — the same profile
+	/// pulled the same distance off the same face — so there is nothing for Auto to read that would
+	/// tell them apart, and a rule that guessed would eventually guess a hole into someone's part.
+	/// Removing is always asked for.
+	///
+	/// Add and Remove are also not two flavours of one thing. Add merges the meshes and leaves the
+	/// interface between them uncut, which is cheap and right for a boss standing on a face. There
+	/// is no equivalent shortcut for a cut: taking material away means genuinely recomputing the
+	/// surface, so Remove goes through MeshBoolean and needs a provider installed — the engine's,
+	/// inside the s&box editor. Intersect is not offered because nothing has asked for it yet.
+	/// </summary>
 	public readonly ChoiceParam Result = new( "Result",
-		new[] { "Auto", "New body", "Add to the body it grows from" } );
+		new[] { "Auto", "New body", "Add to the body it grows from", "Remove from the body it cuts into" } );
+
+	/// <summary>Index into Result for the cut. Named rather than written as a bare 3 at each use,
+	/// since these options are also the dropdown a user reads and reordering them is a live
+	/// possibility.</summary>
+	protected const int ResultRemove = 3;
 
 	/// <summary>Which sketch feature this consumes, resolved the same way ResolveSketch resolves
 	/// the sketch itself. Both have to agree about what "the most recent one" means, so they read
@@ -172,16 +187,29 @@ public abstract class SketchConsumingFeature : Feature
 	/// </summary>
 	protected void Emit( FeatureContext ctx, PolyMesh mesh )
 	{
-		if ( ResolveTarget( ctx ) is { } target )
+		var target = ResolveTarget( ctx );
+
+		if ( target is null )
 		{
-			MeshTransform.Append( target.Mesh, mesh );
+			ctx.Bodies.Add( new Body( ctx.NewBodyId(), Name, mesh ) );
 			return;
 		}
 
-		ctx.Bodies.Add( new Body( ctx.NewBodyId(), Name, mesh ) );
+		if ( Result.Index == ResultRemove )
+		{
+			// The built solid is the TOOL here, not the result: it is the shape of the hole, and
+			// what stays in the studio is the target with that shape taken out of it. Replacing the
+			// mesh rather than the Body keeps the body's id, which everything built on this part is
+			// holding — a cut must not invalidate the face a later sketch sits on.
+			target.Mesh = MeshBoolean.Apply( BooleanOp.Subtract, target.Mesh, mesh );
+			return;
+		}
+
+		MeshTransform.Append( target.Mesh, mesh );
 	}
 
-	/// <summary>The body this result merges into, or null to start a new one.</summary>
+	/// <summary>The body this result acts on — merges into, or cuts into — or null to start a new
+	/// one.</summary>
 	Body ResolveTarget( FeatureContext ctx )
 	{
 		if ( Result.Index == 1 )
@@ -194,18 +222,23 @@ public abstract class SketchConsumingFeature : Feature
 		if ( host is not null )
 			return host;
 
-		if ( Result.Index != 2 )
+		// Auto with no host starts a new part. Add and Remove were asked for explicitly, so they
+		// have to find something to act on.
+		if ( Result.Index is not (2 or ResultRemove) )
 			return null;
 
-		// Explicit Add with nothing to add to. One body in the studio is unambiguous, so use it —
-		// that is the sketch-on-a-global-plane-over-the-only-part case. More than one and there is
-		// no way to tell which was meant, so say so instead of picking.
+		// One body in the studio is unambiguous, so use it — that is the sketch-drawn-on-a-global-
+		// plane-over-the-only-part case, which is how most cuts get drawn. More than one and there
+		// is no way to tell which was meant, so say so instead of picking: a cut landing on the
+		// wrong part is worse than a cut that did not happen.
 		if ( ctx.Bodies.Count == 1 )
 			return ctx.Bodies[0];
 
+		var verb = Result.Index == ResultRemove ? "remove from" : "add to";
+
 		throw new InvalidOperationException( ctx.Bodies.Count == 0
-			? "There is no body to add to. Set Result to New body, or draw the sketch on a face of an existing part."
-			: "There is more than one body and nothing says which to add to. Draw the sketch on a face of the part you mean, or set Result to New body." );
+			? $"There is no body to {verb}. Set Result to New body, or draw the sketch on a face of an existing part."
+			: $"There is more than one body and nothing says which to {verb}. Draw the sketch on a face of the part you mean, or set Result to New body." );
 	}
 
 	/// <summary>
