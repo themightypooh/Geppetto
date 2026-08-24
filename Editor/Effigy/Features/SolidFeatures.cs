@@ -107,3 +107,69 @@ public sealed class UVProjectFeature : Feature
 	}
 }
 
+
+/// <summary>
+/// Assigns a material slot to picked faces.
+///
+/// Faces have carried a material slot since the beginning and every exporter groups by it — OBJ
+/// writes usemtl, SMD and DMX name a material per face — so a model has always been able to arrive
+/// in ModelDoc with several slots to bind. What was missing was any way to say which faces. Extrude
+/// puts its whole solid on one slot and nothing could change it afterwards, so in practice every
+/// model was single-material whatever the exporters were prepared to do.
+///
+/// A FEATURE, NOT AN EDIT. Painting the mesh directly would be undone by the next rebuild, since
+/// bodies are rebuilt from scratch every time. Sitting in the tree means the assignment is re-applied
+/// after the geometry it paints is remade, and it can be rolled back, suppressed and reordered like
+/// anything else.
+///
+/// Faces are held as FaceRefs, so the reference survives the rebuild that recreates them — the same
+/// machinery a sketch drawn on a face uses, resolved through the same function so the two cannot
+/// disagree about which face is meant.
+/// </summary>
+public sealed class FaceMaterialFeature : Feature
+{
+	public override string TypeName => "Face material";
+
+	/// <summary>The faces to paint. Not an IParam: a list of picked geometry has no generic control
+	/// to render it, the way a float or a choice does, and the dialog builds it a selection box of
+	/// its own.</summary>
+	public List<FaceRef> Faces = new();
+
+	public readonly IntParam Material = new( "Material slot", 1, 0, 63 );
+
+	public override IReadOnlyList<IParam> Parameters => new IParam[] { Material };
+
+	protected override void Execute( FeatureContext ctx )
+	{
+		if ( Faces.Count == 0 )
+			throw new InvalidOperationException( "No faces picked — click the faces to assign this material to." );
+
+		var painted = 0;
+		var lost = 0;
+
+		foreach ( var reference in Faces )
+		{
+			if ( !FacePlane.TryResolveFace( ctx.Bodies, reference, out var body, out var faceIndex ) )
+			{
+				lost++;
+				continue;
+			}
+
+			body.Mesh.Faces[faceIndex].Material = Material.Clamped;
+			painted++;
+		}
+
+		// Losing SOME faces is a warning: an upstream edit that removes one face out of twelve is
+		// ordinary, and failing the feature over it would blank the other eleven. Losing ALL of them
+		// means the geometry moved out from under the whole assignment, which is worth stopping for
+		// rather than leaving a feature in the tree that silently does nothing.
+		if ( painted == 0 )
+		{
+			throw new InvalidOperationException(
+				$"None of the {Faces.Count} picked face(s) still exist — the geometry changed underneath them. Pick them again." );
+		}
+
+		if ( lost > 0 )
+			Warning = $"{lost} of {Faces.Count} picked faces no longer exist and were skipped.";
+	}
+}

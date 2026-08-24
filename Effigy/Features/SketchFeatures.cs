@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -37,7 +37,40 @@ public sealed class SketchFeature : Feature
 		var basePlane = ResolveBasePlane( ctx );
 
 		Sketch.Plane = PlaneOffset.Value == 0f ? basePlane : basePlane.Offset( PlaneOffset.Value );
+
+		// Constraints are intent; points are what everything downstream reads. Solving here, before
+		// the sketch is published, is what makes the two agree — profile finding, extrude and
+		// revolve all see coordinates that already satisfy the rules, and none of them needs to
+		// know a solver exists. A sketch with no constraints costs one comparison.
+		if ( Sketch.Constraints.Count > 0 )
+		{
+			var solve = Sketch.Solve();
+
+			if ( !solve.Converged )
+			{
+				// A warning rather than an error, deliberately: the points are left at the solver's
+				// best attempt, which is still a drawable sketch. Failing the feature would blank
+				// the model the moment a sketch became momentarily over-constrained mid-edit.
+				Warning = $"Sketch constraints did not fully solve — residual {solve.Residual:0.###e0} "
+					+ $"after {solve.Iterations} iterations. The geometry is the closest fit found.";
+			}
+			else if ( solve.RedundantConstraints > 0 )
+			{
+				Warning = $"{solve.RedundantConstraints} constraint(s) repeat something already "
+					+ "implied by the others. Harmless, but removing them makes the sketch easier "
+					+ "to reason about.";
+			}
+		}
+
 		ctx.Sketches[Id] = Sketch;
+
+		// Publish what this sketch is growing out of, so a consumer can add to that body instead of
+		// starting a new one. Cleared when there is no face, or a sketch moved back onto a global
+		// plane would keep merging into whatever it used to sit on.
+		if ( Face is { } attached )
+			ctx.SketchHostBodies[Id] = attached.BodyId;
+		else
+			ctx.SketchHostBodies.Remove( Id );
 	}
 
 	SketchPlane ResolveBasePlane( FeatureContext ctx )
@@ -86,6 +119,46 @@ public abstract class SketchConsumingFeature : Feature
 	/// </summary>
 	public Vec2? RegionSeed;
 
+	/// <summary>
+	/// What the result does to the model: start a new part, or become part of the one it grows out
+	/// of, or cut into it. Onshape calls this Result and puts New / Add / Remove / Intersect in it.
+	///
+	/// AUTO IS THE DEFAULT AND IT IS THE INTERESTING ONE. Extruding three bosses off the same block
+	/// used to leave four separate parts in the list, which is not what "I built this up out of four
+	/// extrudes" means to anyone. Auto adds to the body whose face the sketch was drawn on, and
+	/// starts a new part when the sketch is on a global plane instead. So building on something
+	/// keeps one part, and sketching in space starts another, with no parameter to set for either.
+	/// </summary>
+	/// AUTO NEVER REMOVES. Adding and removing look identical from the geometry — the same profile
+	/// pulled the same distance off the same face — so there is nothing for Auto to read that would
+	/// tell them apart, and a rule that guessed would eventually guess a hole into someone's part.
+	/// Removing is always asked for.
+	///
+	/// Add and Remove are also not two flavours of one thing. Add merges the meshes and leaves the
+	/// interface between them uncut, which is cheap and right for a boss standing on a face. There
+	/// is no equivalent shortcut for a cut: taking material away means genuinely recomputing the
+	/// surface, so Remove goes through MeshBoolean and needs a provider installed — the engine's,
+	/// inside the s&box editor. Intersect is not offered because nothing has asked for it yet.
+	/// </summary>
+	public readonly ChoiceParam Result = new( "Result",
+		new[] { "Auto", "New body", "Add to the body it grows from", "Remove from the body it cuts into" } );
+
+	/// <summary>Index into Result for the cut. Named rather than written as a bare 3 at each use,
+	/// since these options are also the dropdown a user reads and reordering them is a live
+	/// possibility.</summary>
+	protected const int ResultRemove = 3;
+
+	/// <summary>Which sketch feature this consumes, resolved the same way ResolveSketch resolves
+	/// the sketch itself. Both have to agree about what "the most recent one" means, so they read
+	/// the same dictionary in the same order.</summary>
+	protected string ResolveSketchId( FeatureContext ctx )
+	{
+		if ( ctx.Sketches.Count == 0 )
+			return null;
+
+		return string.IsNullOrEmpty( SketchFeatureId ) ? ctx.Sketches.Keys.Last() : SketchFeatureId;
+	}
+
 	protected Sketch ResolveSketch( FeatureContext ctx )
 	{
 		if ( ctx.Sketches.Count == 0 )
@@ -98,6 +171,74 @@ public abstract class SketchConsumingFeature : Feature
 			throw new InvalidOperationException( $"Sketch '{SketchFeatureId}' is not available at this point in the tree" );
 
 		return sketch;
+	}
+
+	/// <summary>
+	/// Put a built solid into the model: as its own body, or merged into the one it grows from.
+	///
+	/// WHAT MERGING IS AND IS NOT. The two meshes are combined into one body. It is not a boolean
+	/// union — nothing cuts the interface between them, so the face the boss stands on is still in
+	/// there, now on the inside where it is never seen. For what this is for, that is the right
+	/// trade: the part list reads as one part, the render and every exporter are correct, and none
+	/// of it waits on a robust CSG. What it costs is that the merged mesh is non-manifold along
+	/// that interface, so the operations that need clean topology — shell especially — will refuse
+	/// it rather than produce something wrong. That refusal is the honest failure and it is why
+	/// merging is not silently forced on features that never asked for it.
+	/// </summary>
+	protected void Emit( FeatureContext ctx, PolyMesh mesh )
+	{
+		var target = ResolveTarget( ctx );
+
+		if ( target is null )
+		{
+			ctx.Bodies.Add( new Body( ctx.NewBodyId(), Name, mesh ) );
+			return;
+		}
+
+		if ( Result.Index == ResultRemove )
+		{
+			// The built solid is the TOOL here, not the result: it is the shape of the hole, and
+			// what stays in the studio is the target with that shape taken out of it. Replacing the
+			// mesh rather than the Body keeps the body's id, which everything built on this part is
+			// holding — a cut must not invalidate the face a later sketch sits on.
+			target.Mesh = MeshBoolean.Apply( BooleanOp.Subtract, target.Mesh, mesh );
+			return;
+		}
+
+		MeshTransform.Append( target.Mesh, mesh );
+	}
+
+	/// <summary>The body this result acts on — merges into, or cuts into — or null to start a new
+	/// one.</summary>
+	Body ResolveTarget( FeatureContext ctx )
+	{
+		if ( Result.Index == 1 )
+			return null;
+
+		var host = ResolveSketchId( ctx ) is { } id && ctx.SketchHostBodies.TryGetValue( id, out var bodyId )
+			? ctx.Bodies.FirstOrDefault( b => b.Id == bodyId )
+			: null;
+
+		if ( host is not null )
+			return host;
+
+		// Auto with no host starts a new part. Add and Remove were asked for explicitly, so they
+		// have to find something to act on.
+		if ( Result.Index is not (2 or ResultRemove) )
+			return null;
+
+		// One body in the studio is unambiguous, so use it — that is the sketch-drawn-on-a-global-
+		// plane-over-the-only-part case, which is how most cuts get drawn. More than one and there
+		// is no way to tell which was meant, so say so instead of picking: a cut landing on the
+		// wrong part is worse than a cut that did not happen.
+		if ( ctx.Bodies.Count == 1 )
+			return ctx.Bodies[0];
+
+		var verb = Result.Index == ResultRemove ? "remove from" : "add to";
+
+		throw new InvalidOperationException( ctx.Bodies.Count == 0
+			? $"There is no body to {verb}. Set Result to New body, or draw the sketch on a face of an existing part."
+			: $"There is more than one body and nothing says which to {verb}. Draw the sketch on a face of the part you mean, or set Result to New body." );
 	}
 
 	/// <summary>
@@ -187,7 +328,7 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 	public readonly IntParam Material = new( "Material slot", 0, 0, 63 );
 
 	public override IReadOnlyList<IParam> Parameters =>
-		new IParam[] { Sketch, Distance, Symmetric, Flip, Material };
+		new IParam[] { Sketch, Distance, Symmetric, Flip, Result, Material };
 
 	protected override void Execute( FeatureContext ctx )
 	{
@@ -204,7 +345,7 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 		foreach ( var profile in profiles )
 		{
 			var mesh = BuildPrism( sketch.Plane, profile.Outer, near, far, Material.Clamped );
-			ctx.Bodies.Add( new Body( ctx.NewBodyId(), Name, mesh ) );
+			Emit( ctx, mesh );
 		}
 	}
 
@@ -302,7 +443,7 @@ public sealed class RevolveFeature : SketchConsumingFeature
 	public readonly IntParam Material = new( "Material slot", 0, 0, 63 );
 
 	public override IReadOnlyList<IParam> Parameters =>
-		new IParam[] { Sketch, AxisPoint, AxisDirection, Angle, Segments, Material };
+		new IParam[] { Sketch, AxisPoint, AxisDirection, Angle, Segments, Result, Material };
 
 	protected override void Execute( FeatureContext ctx )
 	{
@@ -341,7 +482,7 @@ public sealed class RevolveFeature : SketchConsumingFeature
 
 			OrientOutward( mesh );
 
-			ctx.Bodies.Add( new Body( ctx.NewBodyId(), Name, mesh ) );
+			Emit( ctx, mesh );
 		}
 	}
 

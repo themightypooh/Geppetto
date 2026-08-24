@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -112,17 +112,21 @@ public static class SmdWriter
 			var face = mesh.Faces[fi];
 			var material = materialName( face.Material );
 
-			// Fan triangulation about corner 0, matching how PolyMesh measures area elsewhere. Valid
-			// for the convex, mildly non-planar faces this kernel produces; a general n-gon
-			// triangulator is only needed once booleans start making concave faces.
-			for ( var i = 1; i < face.Count - 1; i++ )
+			// Ear clipping, same as the render mesh and the raycaster - an extrude cap is whatever
+			// region the user drew, and a fan over a concave one exports the notch filled in.
+			var polygon = new List<Vec3>( face.Count );
+
+			for ( var k = 0; k < face.Count; k++ )
+				polygon.Add( mesh.Positions[face.Indices[k]] );
+
+			foreach ( var (ia, ib, ic) in Triangulate.Face( polygon ) )
 			{
 				sb.Append( material );
 				sb.Append( '\n' );
 
-				AppendVertex( sb, c, mesh, face, cornerNormals[fi], normals, skin, skeleton, 0 );
-				AppendVertex( sb, c, mesh, face, cornerNormals[fi], normals, skin, skeleton, i );
-				AppendVertex( sb, c, mesh, face, cornerNormals[fi], normals, skin, skeleton, i + 1 );
+				AppendVertex( sb, c, mesh, face, cornerNormals[fi], normals, skin, skeleton, ia );
+				AppendVertex( sb, c, mesh, face, cornerNormals[fi], normals, skin, skeleton, ib );
+				AppendVertex( sb, c, mesh, face, cornerNormals[fi], normals, skin, skeleton, ic );
 			}
 		}
 

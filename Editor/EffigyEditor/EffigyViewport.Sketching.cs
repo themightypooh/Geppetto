@@ -790,6 +790,19 @@ internal sealed partial class EffigyViewport
 
 	private List<Body> _pickableBodies = new();
 
+	/// <summary>The bodies a pick can currently land on. Exposed because a selection box has to
+	/// resolve a FaceRef back to a face to know whether it already holds it, and the pick list is
+	/// the same set the click was resolved against.</summary>
+	public IReadOnlyList<Body> PickableBodies => _pickableBodies;
+
+	/// <summary>Faces already chosen, drawn lit while a face selection is being made. Pushed by the
+	/// selector on every change, the same way SelectedBodyIds is.</summary>
+	public IReadOnlyList<FaceRef> SelectedFaces { get; set; }
+
+	/// <summary>Chosen faces are amber against the blue of the one under the cursor, so "already
+	/// picked" and "about to pick" never look like the same thing.</summary>
+	private static readonly Color FaceSelectedColor = new( 1f, 0.66f, 0.2f, 1f );
+
 	/// <summary>Body id under the cursor this frame, or null — drawn brighter and reported to the
 	/// status prompt, the same treatment PlanePickMode gives a hovered reference plane.</summary>
 	private string _hoveredFaceBodyId;
@@ -805,7 +818,22 @@ internal sealed partial class EffigyViewport
 	{
 		_hoveredFaceBodyId = null;
 
-		if ( !FacePickMode || _pickableBodies.Count == 0 || !_canvasHasCursor )
+		if ( !FacePickMode || _pickableBodies.Count == 0 )
+			return;
+
+		// Chosen faces stay lit whether or not the cursor is over the canvas - a selection is state,
+		// not hover feedback. Resolved through the same function the assignment itself uses, so what
+		// lights up is exactly what will be painted.
+		if ( SelectedFaces is { Count: > 0 } chosen )
+		{
+			foreach ( var reference in chosen )
+			{
+				if ( FacePlane.TryResolveFace( _pickableBodies, reference, out var body, out var index ) )
+					DrawFace( body, index, FaceSelectedColor );
+			}
+		}
+
+		if ( !_canvasHasCursor )
 			return;
 
 		var ray = Gizmo.CurrentRay;
@@ -856,7 +884,11 @@ internal sealed partial class EffigyViewport
 	/// view distance toward the camera gets both: whatever is genuinely in front occludes it, and
 	/// the face it belongs to never fights it.
 	/// </summary>
-	private void DrawHoveredFace( Body body, int faceIndex )
+	private void DrawHoveredFace( Body body, int faceIndex ) => DrawFace( body, faceIndex, FaceHighlightColor );
+
+	/// <summary>As DrawHoveredFace, in a given colour - the hover blue, or the amber of a face
+	/// already chosen.</summary>
+	private void DrawFace( Body body, int faceIndex, Color color )
 	{
 		if ( body?.Mesh is not { } mesh || faceIndex < 0 || faceIndex >= mesh.Faces.Count )
 			return;
@@ -881,12 +913,12 @@ internal sealed partial class EffigyViewport
 
 		Gizmo.Draw.IgnoreDepth = false;
 
-		Gizmo.Draw.Color = FaceHighlightColor.WithAlpha( 0.22f );
+		Gizmo.Draw.Color = color.WithAlpha( 0.22f );
 
 		foreach ( var (a, b, c) in Triangulate.Face( flat ) )
 			Gizmo.Draw.SolidTriangle( new Triangle( corners[a], corners[b], corners[c] ) );
 
-		Gizmo.Draw.Color = FaceHighlightColor;
+		Gizmo.Draw.Color = color;
 		Gizmo.Draw.LineThickness = 2.5f;
 
 		for ( var i = 0; i < corners.Count; i++ )
@@ -1016,6 +1048,198 @@ internal sealed partial class EffigyViewport
 	/// each corner. Small enough that it never separates visibly from the face, large enough to
 	/// clear the depth buffer.</summary>
 	private const float FaceHighlightLift = 0.0015f;
+
+	// --- material slot shading ------------------------------------------------------------------
+
+	/// <summary>Every body currently in the studio, pushed on each rebuild. Separate from the
+	/// pickable list, which only exists while a dialog is open and is scoped to what THAT feature
+	/// may act on.</summary>
+	private List<Body> _displayBodies = new();
+
+	public void SetDisplayBodies( IEnumerable<Body> bodies )
+	{
+		_displayBodies = bodies?.ToList() ?? new List<Body>();
+	}
+
+	/// <summary>Whether faces carrying a non-zero material slot are tinted. On by default; the View
+	/// menu turns it off.</summary>
+	public bool ShadeMaterialSlots { get; set; } = true;
+
+	/// <summary>
+	/// Distinct, and distinct FROM the pick colours — a tint has to be readable next to the blue of
+	/// a hovered face and the amber of a chosen one without being mistaken for either. Slot 0 is
+	/// deliberately absent: it is the default every face starts on, and tinting it would paint the
+	/// whole model the moment one face was assigned anything.
+	/// </summary>
+	private static readonly Color[] SlotColors =
+	{
+		new( 0.30f, 0.85f, 0.45f, 1f ),
+		new( 0.85f, 0.35f, 0.75f, 1f ),
+		new( 0.95f, 0.80f, 0.25f, 1f ),
+		new( 0.40f, 0.60f, 0.95f, 1f ),
+		new( 0.95f, 0.50f, 0.25f, 1f ),
+		new( 0.35f, 0.85f, 0.85f, 1f ),
+		new( 0.70f, 0.45f, 0.95f, 1f ),
+	};
+
+	/// <summary>
+	/// Tint each face that has been put on a material slot.
+	///
+	/// THE PREVIEW CANNOT SHOW THIS. EffigyPreview builds one Mesh with one flat dev material,
+	/// because Effigy's slots are integers with no binding to real materials — there is no vmat to
+	/// load per slot, and inventing paths for materials that may not exist in the project is how you
+	/// get a model that renders as nothing. Drawing the tint here uses only what the rest of this
+	/// file already draws with, and says the one thing the user needs to know: which faces are on
+	/// which slot.
+	///
+	/// Slot number to colour is by index into a fixed list, wrapping. Two slots twelve apart sharing
+	/// a colour is a real limitation and a mild one — nobody is eyeballing thirty slots at once —
+	/// and it beats generating colours per slot, which lands two adjacent slots on near-identical
+	/// hues about as often as not.
+	/// </summary>
+	private void ShadeMaterialSlotsFrame()
+	{
+		if ( !ShadeMaterialSlots || _displayBodies.Count == 0 )
+			return;
+
+		var eye = _camera.WorldPosition;
+
+		Gizmo.Draw.IgnoreDepth = false;
+
+		foreach ( var body in _displayBodies )
+		{
+			if ( body?.Mesh is not { } mesh || !body.Visible )
+				continue;
+
+			for ( var i = 0; i < mesh.Faces.Count; i++ )
+			{
+				var face = mesh.Faces[i];
+
+				if ( face.Material <= 0 || face.Count < 3 )
+					continue;
+
+				var color = SlotColors[(face.Material - 1) % SlotColors.Length];
+
+				var corners = new List<Vector3>( face.Count );
+				var flat = new List<Vec3>( face.Count );
+
+				for ( var c = 0; c < face.Count; c++ )
+				{
+					var p = mesh.Positions[face.Indices[c]];
+					flat.Add( p );
+					corners.Add( Lift( p, eye ) );
+				}
+
+				// Lighter than a pick highlight on purpose. This is standing information about the
+				// model rather than a response to the cursor, and it is on screen the whole time.
+				Gizmo.Draw.Color = color.WithAlpha( 0.28f );
+
+				foreach ( var (a, b, cc) in Triangulate.Face( flat ) )
+					Gizmo.Draw.SolidTriangle( new Triangle( corners[a], corners[b], corners[cc] ) );
+			}
+		}
+	}
+
+	// --- whole-body picking -------------------------------------------------------------------
+
+	/// <summary>While true, clicking a body reports it to BodyPicked. This is the other half of
+	/// FacePickMode: the features that carry a BodySelectionParam — shell, bevel, subdivide,
+	/// transform, mirror, both patterns, UV project — act on WHOLE bodies, so the pick resolves to
+	/// the body that was hit rather than to the face.</summary>
+	public bool BodyPickMode { get; set; }
+
+	/// <summary>Fires with the id of the body clicked. The id, not the Body: bodies are rebuilt
+	/// from scratch every rebuild, so anything held across one has to be a name.</summary>
+	public Action<string> BodyPicked { get; set; }
+
+	/// <summary>Bodies already in the selection, drawn lit while picking so the box and the
+	/// viewport agree about what is chosen. Pushed by the selector on every change.</summary>
+	public IReadOnlyCollection<string> SelectedBodyIds { get; set; }
+
+	private static readonly Color BodyPickHoverColor = new( 0.35f, 0.75f, 1f, 1f );
+	private static readonly Color BodySelectedColor = new( 1f, 0.66f, 0.2f, 1f );
+
+	/// <summary>
+	/// Highlight the body under the cursor, keep the chosen ones lit, and report a click.
+	///
+	/// Same raycast as the face pick — MeshRaycast against the pickable bodies — and deliberately
+	/// the same feel, because from the user's side these are one gesture: point at a thing in the
+	/// viewport and click it. The only difference is what lights up, a whole solid instead of one
+	/// of its faces.
+	/// </summary>
+	private void BodyPickFrame()
+	{
+		if ( !BodyPickMode || _pickableBodies.Count == 0 )
+			return;
+
+		// Selected bodies stay lit whether or not the cursor is anywhere near the canvas — the
+		// selection is state, not hover feedback.
+		if ( SelectedBodyIds is { Count: > 0 } selected )
+		{
+			foreach ( var body in _pickableBodies )
+			{
+				if ( body?.Id is { } id && selected.Contains( id ) )
+					DrawBodyHighlight( body, BodySelectedColor );
+			}
+		}
+
+		if ( !_canvasHasCursor )
+			return;
+
+		var ray = Gizmo.CurrentRay;
+		var origin = new Vec3( ray.Position.x, ray.Position.y, ray.Position.z );
+		var direction = new Vec3( ray.Forward.x, ray.Forward.y, ray.Forward.z );
+
+		if ( MeshRaycast.Raycast( _pickableBodies, origin, direction ) is not { } hit )
+			return;
+
+		DrawBodyHighlight( hit.Body, BodyPickHoverColor );
+
+		if ( Gizmo.WasLeftMousePressed )
+			BodyPicked?.Invoke( hit.Body.Id );
+	}
+
+	/// <summary>Shade and outline every face of a body, with the same depth-tested lift the face
+	/// highlight uses — see DrawHoveredFace for why the lift is proportional rather than
+	/// fixed.</summary>
+	private void DrawBodyHighlight( Body body, Color color )
+	{
+		if ( body?.Mesh is not { } mesh )
+			return;
+
+		var eye = _camera.WorldPosition;
+
+		Gizmo.Draw.IgnoreDepth = false;
+
+		foreach ( var face in mesh.Faces )
+		{
+			if ( face.Count < 3 )
+				continue;
+
+			var corners = new List<Vector3>( face.Count );
+			var flat = new List<Vec3>( face.Count );
+
+			for ( var i = 0; i < face.Count; i++ )
+			{
+				var p = mesh.Positions[face.Indices[i]];
+				flat.Add( p );
+				corners.Add( Lift( p, eye ) );
+			}
+
+			Gizmo.Draw.Color = color.WithAlpha( 0.16f );
+
+			foreach ( var (a, b, c) in Triangulate.Face( flat ) )
+				Gizmo.Draw.SolidTriangle( new Triangle( corners[a], corners[b], corners[c] ) );
+
+			Gizmo.Draw.Color = color;
+			Gizmo.Draw.LineThickness = 2f;
+
+			for ( var i = 0; i < corners.Count; i++ )
+				Gizmo.Draw.Line( corners[i], corners[(i + 1) % corners.Count] );
+		}
+
+		Gizmo.Draw.LineThickness = 1f;
+	}
 
 	public void EndSketch()
 	{

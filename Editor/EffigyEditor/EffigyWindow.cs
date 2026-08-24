@@ -141,6 +141,13 @@ public sealed class EffigyWindow : DockWindow
 
 		_studio = new PartStudio();
 
+		// Remove is wired all the way through the kernel and has nowhere to land yet: the engine has
+		// a boolean and nothing here knows its API. Saying so at the one place a user meets it beats
+		// the kernel's generic "none installed", which is true and useless.
+		MeshBoolean.UnavailableReason ??=
+			"The engine has one, but Effigy has no adapter for it yet. Run effigy_probe_boolean in the "
+			+ "console to dump its API — that is what the adapter gets written from.";
+
 		BuildMenuBar();
 		BuildDocks();
 		BuildToolbar();
@@ -178,6 +185,7 @@ public sealed class EffigyWindow : DockWindow
 		view.Clear();
 		view.AddOption( "Frame Camera", "center_focus_strong", () => _viewport?.FrameCamera() );
 		view.AddOption( "Normal to Sketch Plane\tN", "straighten", () => _viewport?.ViewNormalToSketchPlane() );
+		view.AddOption( "Shade Material Slots", "palette", ToggleMaterialShading );
 
 		// "restart_alt" is a Material SYMBOLS name and s&box ships classic Material Icons, so it
 		// was drawing nothing at all - see EffigyIcons for why that whole class of name is unsafe.
@@ -256,6 +264,7 @@ public sealed class EffigyWindow : DockWindow
 		_toolStrip.AddGap();
 		AddCreateButton( EffigyIcon.Transform, "Add a Transform — move, rotate or scale bodies", () => new TransformFeature() );
 		AddCreateButton( EffigyIcon.UVProject, "Add a UV Project — re-project UVs (box or planar)", () => new UVProjectFeature() );
+		AddCreateButton( EffigyIcon.FaceMaterial, "Add a Face Material — put picked faces on a material slot", () => new FaceMaterialFeature() );
 
 		BuildSketchToolbar();
 
@@ -733,6 +742,11 @@ public sealed class EffigyWindow : DockWindow
 		_viewport?.SetModel( preview, frameCamera: preview is not null && !_hasPreview );
 		_hasPreview = preview is not null;
 
+		// The preview model is one flat grey, so a material slot is invisible in it. The viewport
+		// tints the faces that carry one instead, and needs the bodies to do it - the mesh handed to
+		// EffigyPreview above has already been flattened into one and lost which body it came from.
+		_viewport?.SetDisplayBodies( _studio.Bodies );
+
 		// Rebuild() above discarded every tree node, taking the highlight with it. The feature
 		// being edited has to stay visibly selected or the tree and the dialog disagree about
 		// what you are working on.
@@ -754,6 +768,17 @@ public sealed class EffigyWindow : DockWindow
 	/// allowed to pick — only sketches standing before it in the history, since a feature cannot
 	/// consume a sketch that has not run yet.</summary>
 	private void UpdateDisplaySketches() => UpdatePickTargets( _dialog?.Feature );
+
+	/// <summary>Turn the material-slot tint on and off. On by default: a slot you cannot see is a
+	/// slot you cannot check, and slot 0 - which is every face until someone says otherwise - is
+	/// not tinted at all, so a model with no materials assigned looks exactly as it did.</summary>
+	private void ToggleMaterialShading()
+	{
+		if ( _viewport is null )
+			return;
+
+		_viewport.ShadeMaterialSlots = !_viewport.ShadeMaterialSlots;
+	}
 
 	/// <summary>Rebuild both sketch lists against the feature a dialog is open on. Called by the
 	/// dialog the moment it opens, because the pick list and the auto-arm decision are only

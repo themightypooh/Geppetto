@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -78,6 +78,14 @@ public static class Program
 		AllFeaturesTests.Run();
 
 		FaceSketchTests.Run();
+
+		ConstraintTests.Run();
+
+		UntestedKernelTests.Run();
+
+		MergeTests.Run();
+
+		FaceMaterialTests.Run();
 
 		EditorFlowTests.Run();
 

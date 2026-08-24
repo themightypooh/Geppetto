@@ -54,6 +54,20 @@ Both put the operation **on the feature**, not in a separate boolean feature.
 rather than a separate boolean feature being invented. The parameter is trivial; the work is
 entirely the mesh boolean underneath it, which Effigy does not have.
 
+**Built, and here is the part that did not need the boolean.** `Result` now sits on both
+sketch-consuming features, with New body and Add — and Add merges the meshes rather than unioning
+them, which is enough for the thing that was actually broken: every extrude made its own body, so
+building a part up out of four extrudes listed four parts. The interface between them is left
+uncut, which costs manifoldness along the join and nothing else that matters at this stage.
+Remove is offered as well, and it is the honest kind: subtracting genuinely cannot be faked this way
+— there is no "combine and leave the interface" answer to taking material away — so it goes through
+a boolean provider (`MeshBoolean`) and says plainly when none is installed rather than producing
+something plausible.
+
+The default is neither New nor Add but **Auto**, which reads the sketch's attachment: on a face of a
+body it adds to that body, on a global plane it starts a new one. That is the same information
+FreeCAD's Attacher carries and Solvespace's workplane groups carry, used for a second purpose.
+
 That boolean is the real cost and should not be underestimated: it is the single hardest thing on
 Effigy's roadmap, and both of these projects lean on decades of work for it (Solvespace has its own
 mesh/shell boolean; FreeCAD uses Open CASCADE). Effigy's own `ShellOperation` and `Bevel` are much
@@ -152,21 +166,25 @@ what it should act on.
 | Feature | Needs to select | State |
 |---|---|---|
 | Sketch | a plane | **works** — plane selector, and it is the affordance to copy |
-| Sketch | a face of a body | kernel supports it (`FaceRef`); no UI yet |
+| Sketch | a face of a body | **works** — the same box, one click |
+| Face material | which faces to paint | **works** — multi-select face box, tinted in the viewport |
 | Primitive | nothing | n/a |
 | Extrude | which sketch | **works** — sketch selector |
 | Extrude | which region of it | kernel supports it (`RegionSeed`); no UI yet |
 | Revolve | which sketch | **works** |
 | Revolve | **an axis** | typed Vec3 only. Its default runs through the sketch origin, so the first press on a normal sketch always fails |
-| Shell, Bevel, Subdivide, Transform, UV Project, Mirror, Linear Pattern, Circular Pattern | which bodies | `BodySelectionParam` renders as a disabled "All bodies" label. **Eight features with a parameter that cannot be set.** |
+| Shell, Bevel, Subdivide, Transform, UV Project, Mirror, Linear Pattern, Circular Pattern | which bodies | **works** — selection box, multi-select, empty still means all |
 | Mirror | a mirror plane | typed Vec3 point + normal |
 | Linear Pattern | a direction | typed Vec3 |
 | Circular Pattern | an axis | typed Vec3 point + direction |
 
-The one to fix first is body selection: it is a single control that unblocks eight tools, and the
-parameter behind it already works — `BodySelectionParam.Matches` is honoured by every one of them.
+Body selection was the one to fix first — a single control unblocking eight tools, with the parameter
+behind it already working — and it is now a selection box on the same pattern as the plane and
+profile ones. Multi-select, because unlike a plane the question has any number of answers: a click
+toggles a body and the box stays armed. Empty still means every body, so no existing document
+changes meaning.
 
-Revolve's axis is second, and is the clearest case of a tool that looks broken rather than
+Revolve's axis is now first, and is the clearest case of a tool that looks broken rather than
 unfinished: the default axis passes through the sketch origin, which is where people draw, so the
 button reliably errors the first time it is pressed. The error now names how far the profile
 reaches either side, but the real fix is picking the axis in the viewport.
@@ -181,14 +199,21 @@ priority than either.
 Ranked by value against cost, given a mesh boolean is the expensive prerequisite for the headline
 feature:
 
-1. **`visible` on features** — small, and the feature list wants it.
-2. **Derived sketch planes: offset, and from a planar face.** No boolean needed. This alone gets
-   "sketch on top of the block I just made", which is most of the perceived gap.
-3. **Extrude taper and two-sided distances.** Small, no boolean.
-4. **Operation parameter on Extrude (New/Add/Subtract)** — wire the parameter and the UI first,
-   erroring clearly on Add/Subtract until the boolean exists.
-5. **Mesh boolean.** The big one. Everything above is useful without it; nothing below is possible
-   without it.
-6. **Constraint solver.** Independent of all of the above, fully testable headlessly.
+1. ~~**`visible` on features**~~ — done.
+2. ~~**Derived sketch planes: offset, and from a planar face.**~~ Done, and the face reference rides
+   its face when that face moves rather than being pinned to an absolute point.
+3. **Extrude taper and two-sided distances.** Small, no boolean. The cheapest thing left.
+4. ~~**Operation parameter on Extrude (New/Add/Subtract)**~~ — done for New and Add, with Add
+   merging rather than unioning (see section 2). Subtract still waits on the boolean and is not
+   offered until it exists.
+5. **Mesh boolean.** The big one, and now the only thing between Remove and working: the seam, the
+   dropdown, the operand order and every failure path are built and tested. What is missing is the
+   adapter from PolyMesh to the engine's PolygonMesh, which cannot be written without the engine in
+   front of you — `effigy_probe_boolean` dumps the API it gets written from. A portable
+   implementation stays off the table until something genuinely needs one.
+6. ~~**Constraint solver.**~~ Landed: Levenberg-Marquardt over the residuals, seven constraint kinds,
+   degrees of freedom counted from the Jacobian's rank. What it still needs is the UI — there is no
+   way to add a constraint in the editor, so the solver currently only runs on constraints the
+   inference puts there. That, and a dimension tool, are what turn it into something a user can use.
 
-Note that 1–4 are all reachable and verifiable in this repo with no engine present.
+Note that 3 and 4 are both reachable and verifiable in this repo with no engine present.

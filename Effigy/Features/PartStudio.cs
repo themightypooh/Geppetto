@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -60,16 +60,23 @@ public sealed class PartStudio
 		public List<Body> Bodies;
 		public Dictionary<string, Sketch> Sketches;
 
+		/// <summary>Carried like everything else a feature can see. Left out, an incremental
+		/// rebuild that resumes from the cache would find the sketch but not what it is attached
+		/// to, and the extrude above it would quietly start making its own body again.</summary>
+		public Dictionary<string, string> SketchHostBodies;
+
 		public static Snapshot Of( FeatureContext ctx ) => new()
 		{
 			Bodies = ctx.Bodies.Select( b => b.Clone() ).ToList(),
-			Sketches = ctx.Sketches.ToDictionary( kv => kv.Key, kv => kv.Value.Clone() )
+			Sketches = ctx.Sketches.ToDictionary( kv => kv.Key, kv => kv.Value.Clone() ),
+			SketchHostBodies = new Dictionary<string, string>( ctx.SketchHostBodies )
 		};
 
 		public void RestoreInto( FeatureContext ctx )
 		{
 			ctx.Bodies = Bodies.Select( b => b.Clone() ).ToList();
 			ctx.Sketches = Sketches.ToDictionary( kv => kv.Key, kv => kv.Value.Clone() );
+			ctx.SketchHostBodies = new Dictionary<string, string>( SketchHostBodies );
 		}
 	}
 
@@ -208,7 +215,10 @@ public sealed class PartStudio
 			feature.Run( ctx );
 
 			for ( var b = bodiesBefore; b < ctx.Bodies.Count; b++ )
+			{
 				ctx.Bodies[b].Visible = feature.Visible;
+				ctx.Bodies[b].FeatureId = feature.Id;
+			}
 
 			if ( feature.Suppressed )
 				report.FeaturesSuppressed++;
@@ -298,6 +308,57 @@ public sealed class PartStudio
 		}
 
 		return (merged, ranges);
+	}
+
+	/// <summary>
+	/// Which SketchFeature a sketch-consuming feature actually builds from, resolving the empty
+	/// "most recent one" case the same way SketchConsumingFeature.ResolveSketch does at rebuild
+	/// time - the nearest running SketchFeature ABOVE it in the tree. Null when there is none.
+	/// </summary>
+	public string ResolveSketchFeatureId( SketchConsumingFeature consumer )
+	{
+		if ( consumer is null )
+			return null;
+
+		if ( !string.IsNullOrEmpty( consumer.SketchFeatureId ) )
+			return consumer.SketchFeatureId;
+
+		var index = Features.IndexOf( consumer );
+
+		if ( index < 0 )
+			index = Features.Count;
+
+		for ( var i = Math.Min( index, EffectiveCount ) - 1; i >= 0; i-- )
+		{
+			if ( Features[i] is SketchFeature sketch && !sketch.Suppressed )
+				return sketch.Id;
+		}
+
+		return null;
+	}
+
+	/// <summary>
+	/// The sketches some later feature has already turned into geometry.
+	///
+	/// Onshape hides these as soon as they are consumed, and it is not decoration: a sketch left
+	/// on screen sits in exactly the same place as the solid built from it, so the part reads as a
+	/// wireframe shell rather than as a finished body. Rolled-back and suppressed features are
+	/// excluded - a feature that is not running has not consumed anything.
+	/// </summary>
+	public HashSet<string> ConsumedSketchIds()
+	{
+		var consumed = new HashSet<string>();
+
+		for ( var i = 0; i < EffectiveCount; i++ )
+		{
+			if ( Features[i].Suppressed || Features[i] is not SketchConsumingFeature consumer )
+				continue;
+
+			if ( ResolveSketchFeatureId( consumer ) is { Length: > 0 } id )
+				consumed.Add( id );
+		}
+
+		return consumed;
 	}
 
 	public int TotalFaceCount => Bodies.Sum( b => b.Mesh.FaceCount );

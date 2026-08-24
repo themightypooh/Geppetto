@@ -18,6 +18,15 @@ described behaviour that was never actually wired up.
 > strip. They exist in this branch's history (`7fcb45f`, `c67e544`) and are meant to be re-applied
 > onto the merged base deliberately, one at a time. Sections below that describe them describe
 > INTENT, not current behaviour.
+>
+> **Since delivered:** the rollback bar, the parts list, the feature context menu, the sketch tools
+> in the floating strip, and the body selection box. Still outstanding from that list: the face-pull
+> gizmo and the region selection box.
+>
+> **Still unbuilt, and worth naming because the solver changed what is possible:** there is no way to
+> ADD a constraint in the editor. `SketchSolver` is in the kernel and runs on every rebuild, but the
+> only constraints reaching it are the ones inference records while drawing. A constraint tool and a
+> dimension tool are what make the solver reachable by a user.
 
 **Sources.** Onshape help — Feature Basics, Sketch Basics, Feature and Part Lists, Numeric Fields,
 Dialogs, Keyboard Shortcuts and Hotkeys, View Navigation and the View Cube. Fetched via search
@@ -113,8 +122,12 @@ Inferencing covers horizontal/vertical against existing points and the active li
 `ViewNormalToSketchPlane`, bound to `N`, and deliberately *not* called on sketch entry, per the
 Onshape behaviour above.
 
-Not built, because there is no kernel behind them: spline, trim, extend, offset, dimensions, and
-the constraint solver. Those buttons are absent rather than present and dead.
+Not built, because there is no kernel behind them: spline, trim, extend and offset. Those buttons
+are absent rather than present and dead.
+
+Dimensions and constraints are now the other case — the kernel IS there (`SketchSolver`, and seven
+constraint kinds), and the editor has no tool to put a constraint into a sketch. That makes them the
+highest-value sketch tools to build next, since the hard half is already done and tested.
 
 ## 5. The rollback bar
 

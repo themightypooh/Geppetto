@@ -36,7 +36,7 @@ machine. A session that skips this ends up reasoning about the code by reading i
 is how a bug that made every parameter edit a silent no-op survived long enough to look like three
 unrelated UI faults.
 
-447 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
+864 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
 2-level-subdivided version of each. Those are the fastest way to see whether something is actually
 right: open them in Blender, or drop one into ModelDoc to find out what s&box makes of it.
 
@@ -56,7 +56,7 @@ Exit code is non-zero on failure, so it works as a pre-commit or CI check unchan
 | `Features/PartStudio.cs` | the ordered history: rollback and incremental rebuild |
 | `Features/BasicFeatures.cs` | primitive, transform, linear/circular pattern, mirror, subdivide |
 | `Features/SketchFeatures.cs` | sketch, extrude, revolve |
-| `Features/SolidFeatures.cs` | shell, bevel, UV project — the ops that reshape a solid once it exists |
+| `Features/SolidFeatures.cs` | shell, bevel, UV project, face material — the ops that act on a solid once it exists |
 | `Sketch/SketchPlane.cs` | the plane a sketch lives on, and plane↔world mapping |
 | `Sketch/Sketch.cs` | points, lines, arcs, circles, tessellation |
 | `Sketch/Profile.cs` | closed-region finding, nesting, orientation |
@@ -68,7 +68,16 @@ Exit code is non-zero on failure, so it works as a pre-commit or CI check unchan
 | `Rig/SkinWeights.cs` | per-vertex influences, blending and pruning |
 | `Rig/SkinBinder.cs` | auto-binding by distance or by body, plus weight smoothing |
 | `SmdWriter.cs` | the export path — static and skinned in one writer |
+| `DmxWriter.cs` | the export ModelDoc actually accepts; SMD is not on its import list |
 | `MeshNormals.cs` | angle-thresholded corner normals, shared by every exporter |
+| `Triangulate.cs` | ear clipping, so a concave face does not fill its own notch |
+| `MeshSection.cs` | where one solid crosses a plane — the footprints another body leaves on a face |
+| `MeshRaycast.cs` | picking a face or a body in the viewport, as pure geometry |
+| `Sketch/FacePlane.cs` | referring to a face that gets rebuilt, and riding it when it moves |
+| `Sketch/IConstraint.cs` | one residual and its derivative — the solver never switches on a kind |
+| `Sketch/Constraints.cs` | the constraint set, and the derivatives that make it solvable |
+| `Sketch/SketchSolver.cs` | Levenberg-Marquardt, with degrees of freedom and redundancy reported |
+| `MeshBoolean.cs` | what a boolean is, and where a host installs one that can actually do it |
 
 ## The feature tree
 
@@ -147,12 +156,72 @@ Proper face traversal — sort half-edges by angle at each vertex, always take t
 **Profiles with holes.** Detected and reported, not built. Capping around a hole is the same problem
 as a boolean subtract and is better solved once, there. Until then use the Tube primitive.
 
-### Not yet: constraints
+### One part, built out of several extrudes
 
-There's no solver, so sketch coordinates are typed rather than derived. This was shipped first on
-purpose — the sketch→extrude loop works end to end while the solver is built, and nothing in
-`Sketch.cs` or `Profile.cs` has to change when it lands. The solver's job is to let coordinates be
-implied by constraints; the geometry and topology layers below it are already done.
+Extruding off a face of an existing body **adds to that body** rather than starting a second one, so
+three bosses on a block are one part in the list and not four. The rule is the sketch's attachment,
+decided when the sketch was placed: on a face of something, it builds that thing up; on a global
+plane, it starts a new part. `Result` on Extrude and Revolve overrides it either way.
+
+**This is not a boolean.** The two meshes are combined and nothing cuts the interface between them,
+so the face a boss stands on is still in there on the inside. For what it is for — the part list
+reading correctly, the render and every exporter being right — that is the correct trade, and it
+does not wait on a robust CSG. What it costs is that the merged mesh is non-manifold along the join,
+so operations needing clean topology (shell especially) will refuse it. That refusal is the honest
+failure, and it is why merging is not forced on features that did not ask for it.
+
+**Remove is the fourth option and it is a real boolean**, because a cut cannot be faked the way Add
+can — taking material away means genuinely recomputing the surface. It goes through `MeshBoolean`,
+which is an interface and a provider slot rather than an implementation: the kernel knows what a
+boolean IS without knowing how to do one, which keeps the engine-free promise intact. With no
+provider installed, Remove fails with a message saying so instead of producing something plausible.
+
+Auto never removes. Adding and removing look identical from the geometry — the same profile pulled
+the same distance off the same face — so there is nothing for Auto to read, and a rule that guessed
+would eventually guess a hole into someone's part.
+
+### Materials per face
+
+Every face carries a material slot and every exporter groups by it, so a model can arrive in ModelDoc
+with several slots to bind. `FaceMaterialFeature` is what sets them: pick faces, give them a slot.
+
+It is a feature rather than an edit because bodies are rebuilt from scratch every rebuild — paint the
+mesh directly and the next parameter drag wipes it. In the tree it is re-applied after the geometry it
+paints is remade, and it rolls back and suppresses like anything else. Faces are held as `FaceRef`s
+and resolved through the same `FacePlane.TryResolveFace` a sketch-on-a-face uses, so the two cannot
+disagree about which face is meant.
+
+### Constraints
+
+There is a solver now, and the prediction the last version of this section made held: nothing in
+`Sketch.cs` or `Profile.cs` had to change for it. Coordinates are still what everything downstream
+reads — `SketchSolver` moves the points to satisfy the rules, and profile finding, extrude and
+revolve never learn that a solver exists.
+
+Levenberg-Marquardt over the constraint residuals: each rule contributes an equation that reads zero
+when it holds, plus its derivative, and the solve is the point positions that zero them all.
+Coincident, distance, horizontal, vertical, equal length, parallel and perpendicular, with a new one
+costing one class and no change to the solver.
+
+Three things worth knowing before touching it:
+
+**One point is pinned.** Every equation is about differences between points, so the whole sketch can
+slide without changing any residual and the step is not unique. Pinning kills the slide but not
+rotation, which is why a fully dimensioned rectangle still reports one degree of freedom — it really
+can be spun. The editor should pin whatever point the user is dragging.
+
+**Degrees of freedom are counted from the Jacobian's rank, not from the number of constraints.** Two
+constraints saying the same thing remove one freedom; counting rows would claim they removed two,
+and would call a perfectly fine sketch over-constrained. Redundant rows are reported separately,
+which is the answer to "why did adding that dimension do nothing".
+
+**A sketch that will not solve warns rather than failing.** The points are left at the closest fit
+found. Erroring would blank the model every time a sketch passed through a contradictory state
+mid-edit, which is most of the time while someone is adding constraints.
+
+The derivatives are checked against finite differences in `ConstraintTests`, and that is not
+ceremony: a wrong derivative does not produce a wrong answer, it produces a slow or unstable one, so
+it presents as "the solver feels flaky" and never as a failing assert.
 
 ## Two decisions worth knowing before changing anything
 
@@ -289,9 +358,19 @@ reads `(x,y)` — all `(2,2)`. An unequal box is needed to observe a seam at all
 
 **Phase two (next)**: Skeleton editing, auto-weighting, weight painting, SMD export. Bones come before sculpt because you have bone experience.
 
-**Phase three**: The sketch constraint solver, rounded (multi-segment) fillets, then Catmull-Clark subdivision brushes, multires deltas, normal-map bake.
+**Phase three**: Rounded (multi-segment) fillets, then Catmull-Clark subdivision brushes, multires deltas, normal-map bake. The sketch constraint solver was the other item here and has landed.
 
-Boolean is the notable absence. Robust mesh CSG is a decades-old problem — coplanar faces,
-floating-point robustness, self-intersection — and a half-working one is worse than none. s&box ships
-`PolygonMesh.PerformBoolean`, so the plan is to put booleans behind an interface with an engine-backed
-implementation there and our own only if a portable one is ever genuinely needed.
+Boolean is still the notable absence, but it now has a shape. Robust mesh CSG is a decades-old
+problem — coplanar faces, floating-point robustness, self-intersection — and a half-working one is
+worse than none, so the plan was always an interface with an engine-backed implementation behind it.
+
+The interface exists (`MeshBoolean`, `IMeshBoolean`) and Extrude and Revolve reach for it when
+Result is Remove. What does not exist is the adapter between `PolyMesh` and s&box's `PolygonMesh`,
+because that is the one piece that cannot be written without the engine in front of you — and a
+guessed member name is a compile error that takes the whole editor assembly down, not a polite
+runtime failure. `effigy_probe_boolean` in the editor console dumps the real API to write it from.
+
+Everything on this side of that adapter is done and tested: the operand order (target is the part,
+tool is the shape of the hole), the result replacing the body without changing its id, a provider
+that refuses or throws being reported rather than crashing the rebuild, and a cut that would leave
+nothing behind being refused.

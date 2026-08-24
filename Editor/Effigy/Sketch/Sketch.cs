@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -41,19 +41,136 @@ public enum SketchConstraintKind
 {
 	Horizontal,
 	Vertical,
+	Coincident,
+	Distance,
+	EqualLength,
+	Parallel,
+	Perpendicular,
 }
 
-/// <summary>A persistent geometric rule attached to a sketch curve.</summary>
+/// <summary>
+/// A persistent geometric rule on a sketch. Storage only — the residual and its derivative live in
+/// an IConstraint that Build() produces, so this stays a plain record that a file format or an undo
+/// snapshot can round-trip.
+///
+/// Two addressing forms, for one historical reason. Horizontal and Vertical were stored against a
+/// CURVE id before there was a solver, because that was all the inference needed to draw a glyph
+/// next to a line. Everything since is stored against POINT indices, which is what the solver
+/// actually operates on and what lets one constraint span two curves. Build() resolves the old form
+/// through the curve list, so sketches saved before the solver landed still solve.
+/// </summary>
 public sealed class SketchConstraint
 {
 	public SketchConstraintKind Kind;
+
+	/// <summary>The old H/V-on-a-curve form. Prefer the point indices below.</summary>
 	public string CurveId;
+
+	/// <summary>Point indices this acts on. Two for coincident and distance; four for the ones
+	/// that relate a pair of lines. Unused slots stay -1.</summary>
+	public int PointA = -1, PointB = -1, PointC = -1, PointD = -1;
+
+	/// <summary>The driven value, for the kinds that carry one. Only Distance uses it today.</summary>
+	public float Value;
 
 	public SketchConstraint( SketchConstraintKind kind, string curveId )
 	{
 		Kind = kind;
 		CurveId = curveId;
 	}
+
+	public SketchConstraint( SketchConstraintKind kind, int a, int b, float value = 0f )
+	{
+		Kind = kind;
+		PointA = a;
+		PointB = b;
+		Value = value;
+	}
+
+	public SketchConstraint( SketchConstraintKind kind, int a0, int a1, int b0, int b1 )
+	{
+		Kind = kind;
+		PointA = a0;
+		PointB = a1;
+		PointC = b0;
+		PointD = b1;
+	}
+
+	/// <summary>Build the runtime evaluator. Null when the constraint cannot be resolved — an old
+	/// curve-id H/V whose curve has since been deleted, or point indices that no longer exist. The
+	/// solver drops those rather than failing the solve, so deleting one line cannot wedge a whole
+	/// sketch.</summary>
+	public IConstraint Build( Sketch sketch )
+	{
+		switch ( Kind )
+		{
+			case SketchConstraintKind.Coincident:
+				return Valid( sketch, 2 ) ? new CoincidentConstraint( PointA, PointB ) : null;
+
+			case SketchConstraintKind.Distance:
+				return Valid( sketch, 2 ) ? new DistanceConstraint( PointA, PointB, Value ) : null;
+
+			case SketchConstraintKind.Horizontal:
+				if ( Valid( sketch, 2 ) )
+					return new HorizontalConstraint( PointA, PointB );
+				return ResolveLineConstraint( sketch, horizontal: true );
+
+			case SketchConstraintKind.Vertical:
+				if ( Valid( sketch, 2 ) )
+					return new VerticalConstraint( PointA, PointB );
+				return ResolveLineConstraint( sketch, horizontal: false );
+
+			case SketchConstraintKind.EqualLength:
+				return Valid( sketch, 4 ) ? new EqualLengthConstraint( PointA, PointB, PointC, PointD ) : null;
+
+			case SketchConstraintKind.Parallel:
+				return Valid( sketch, 4 ) ? new ParallelConstraint( PointA, PointB, PointC, PointD ) : null;
+
+			case SketchConstraintKind.Perpendicular:
+				return Valid( sketch, 4 ) ? new PerpendicularConstraint( PointA, PointB, PointC, PointD ) : null;
+
+			default:
+				return null;
+		}
+	}
+
+	/// <summary>Every index this kind needs is present in the sketch. Checked here rather than in
+	/// the solver so a stale constraint is dropped at exactly one place.</summary>
+	bool Valid( Sketch sketch, int count )
+	{
+		var n = sketch.Points.Count;
+		var refs = count == 2 ? new[] { PointA, PointB } : new[] { PointA, PointB, PointC, PointD };
+
+		foreach ( var i in refs )
+		{
+			if ( i < 0 || i >= n )
+				return false;
+		}
+
+		return true;
+	}
+
+	IConstraint ResolveLineConstraint( Sketch sketch, bool horizontal )
+	{
+		if ( string.IsNullOrEmpty( CurveId ) )
+			return null;
+
+		if ( sketch.Curves.Find( c => c.Id == CurveId ) is not SketchLine line )
+			return null;
+
+		return horizontal
+			? new HorizontalConstraint( line.Start, line.End )
+			: new VerticalConstraint( line.Start, line.End );
+	}
+
+	public SketchConstraint Clone() => new( Kind, CurveId )
+	{
+		PointA = PointA,
+		PointB = PointB,
+		PointC = PointC,
+		PointD = PointD,
+		Value = Value
+	};
 }
 
 public sealed class SketchLine : SketchCurve
@@ -207,10 +324,11 @@ public sealed class SketchCircle : SketchCurve
 /// <summary>
 /// A 2D sketch on a plane. The thing Extrude and Revolve consume.
 ///
-/// Constraints are not here yet — this is the geometry and topology layer, deliberately shipped
-/// before the solver so the sketch-to-extrude loop works end to end while the solver is being
-/// built. Typed coordinates go in, profiles come out. The solver's job when it lands is to let
-/// those coordinates be derived rather than typed; nothing in this file has to change for it.
+/// Geometry and topology; constraints sit alongside as a list of rules rather than being baked into
+/// the coordinates. Points always hold a concrete position — SketchSolver moves them to satisfy the
+/// constraints, and everything downstream reads the same Points list either way. That is what let
+/// the sketch-to-extrude loop ship before the solver did, and why nothing here had to change when
+/// the solver landed.
 /// </summary>
 public sealed class Sketch
 {
@@ -247,6 +365,27 @@ public sealed class Sketch
 		return constraint;
 	}
 
+	/// <summary>A constraint between two points — coincident, or a driven distance.</summary>
+	public SketchConstraint AddConstraint( SketchConstraintKind kind, int a, int b, float value = 0f )
+	{
+		var constraint = new SketchConstraint( kind, a, b, value );
+		Constraints.Add( constraint );
+		return constraint;
+	}
+
+	/// <summary>A constraint relating two lines, given as their four endpoints: equal length,
+	/// parallel, perpendicular.</summary>
+	public SketchConstraint AddConstraint( SketchConstraintKind kind, SketchLine a, SketchLine b )
+	{
+		var constraint = new SketchConstraint( kind, a.Start, a.End, b.Start, b.End );
+		Constraints.Add( constraint );
+		return constraint;
+	}
+
+	/// <summary>Solve the constraints, moving points to satisfy them. Convenience for
+	/// SketchSolver.Solve( this ); a sketch with no constraints is a no-op.</summary>
+	public SolveResult Solve() => SketchSolver.Solve( this );
+
 	/// <summary>Line between two new points, the common case when typing coordinates.</summary>
 	public SketchLine AddLine( Vec2 a, Vec2 b ) => Add( new SketchLine( AddPoint( a ), AddPoint( b ) ) );
 
@@ -280,7 +419,7 @@ public sealed class Sketch
 		Plane = Plane.Clone(),
 		Points = new List<Vec2>( Points ),
 		Curves = Curves.Select( c => c.Clone() ).ToList(),
-		Constraints = Constraints.Select( c => new SketchConstraint( c.Kind, c.CurveId ) ).ToList(),
+		Constraints = Constraints.Select( c => c.Clone() ).ToList(),
 		Tolerance = Tolerance
 	};
 }
