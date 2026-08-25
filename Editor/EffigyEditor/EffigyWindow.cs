@@ -198,6 +198,7 @@ public sealed class EffigyWindow : DockWindow
 		view.AddOption( "Frame Camera", "center_focus_strong", () => _viewport?.FrameCamera() );
 		view.AddOption( "Normal to Sketch Plane\tN", "straighten", () => _viewport?.ViewNormalToSketchPlane() );
 		view.AddOption( "Shade Material Slots", "palette", ToggleMaterialShading );
+		view.AddOption( "Show Sketch Constraints", "rule", ToggleConstraintMarks );
 
 		// "restart_alt" is a Material SYMBOLS name and s&box ships classic Material Icons, so it
 		// was drawing nothing at all - see EffigyIcons for why that whole class of name is unsafe.
@@ -835,6 +836,17 @@ public sealed class EffigyWindow : DockWindow
 			return;
 
 		_viewport.ShadeMaterialSlots = !_viewport.ShadeMaterialSlots;
+	}
+
+	/// <summary>Whether the rules holding a sketch together are drawn on it. On by default — a
+	/// constraint you cannot see is a constraint you fight, and until now there were none to see
+	/// because there was no way to add one.</summary>
+	private void ToggleConstraintMarks()
+	{
+		if ( _viewport is null )
+			return;
+
+		_viewport.ShowConstraintMarks = !_viewport.ShowConstraintMarks;
 	}
 
 	/// <summary>Rebuild both sketch lists against the feature a dialog is open on. Called by the

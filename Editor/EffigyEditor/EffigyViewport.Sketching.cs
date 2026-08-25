@@ -1382,8 +1382,11 @@ internal sealed partial class EffigyViewport
 		DrawDimensionBox();
 		SketchPointHandles();
 
-		// AFTER the point handles, which have had first refusal on the cursor: a point sitting on a
-		// curve has to select the point, not the curve underneath it.
+		// ORDER MATTERS THROUGH ALL THREE. The point handles get first refusal on the cursor, because
+		// a point sitting on a curve has to select the point. The constraint marks come next, since
+		// they are drawn on top of the geometry and a click on one means "delete this rule" rather
+		// than "select what is underneath". Selection is last and takes what is left.
+		ConstraintMarkFrame();
 		SketchSelectionFrame();
 
 		if ( _ignoreNextSketchClick )

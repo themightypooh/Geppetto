@@ -267,7 +267,7 @@ Note that 3 and 4 are both reachable and verifiable in this repo with no engine 
 
 ## Where this left off
 
-Everything below the line is kernel-side and verified by `tools/test.sh` (1258 checks). Everything
+Everything below the line is kernel-side and verified by `tools/test.sh` (1275 checks). Everything
 in `Editor/EffigyEditor` is written and syntax-checked but **has never been compiled** — there is no
 s&box assembly in this repo, so nothing there resolves names. That is the standing risk and the
 reason the split below is drawn where it is: anything that could be moved into the kernel and tested
@@ -324,9 +324,11 @@ proven elsewhere. And selection accumulates on plain clicks rather than Ctrl-cli
 modifier-key API is proven in this corpus and an unproven member name takes the whole editor
 assembly down.
 
-Still missing from it: constraint GLYPHS on the sketch (the little marks showing which rules hold
-where) and a way to delete one rule by clicking it. `ConstraintTools.Touching` already answers "what
-holds this point", so the kernel side of both is there.
+Constraint GLYPHS are drawn too, and clicking one removes that rule — "why will this line not move"
+is a question about a specific place on the drawing, so the answer sits there next to it. A rule
+relating two segments marks BOTH of them, since one glyph in the middle would leave you guessing
+which pair it meant on a sketch with six lines in it; an angle is marked where its two lines
+actually cross, out in space if that is where the extended lines would meet.
 
 **A render-based half of the test suite — built.** `RenderCheck` rasterises a mesh and reduces it to
 coverage, island count and front/back parity, which catch the mistakes counting cannot: a vertex in

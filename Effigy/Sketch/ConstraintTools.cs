@@ -54,6 +54,42 @@ public sealed class ConstraintOffer
 	public SketchConstraint Constraint;
 }
 
+
+/// <summary>
+/// One mark to draw on the sketch, saying that a rule holds here.
+///
+/// The kernel decides WHERE and WHAT, and stops there. It does not decide how far off the geometry
+/// the mark sits, because that is a screen distance — a sketch can be one unit across or a thousand,
+/// and a glyph pushed a fixed number of sketch units away is either buried in the line or somewhere
+/// off in the next county. So this gives an anchor on the geometry and a UNIT direction to leave
+/// along, and the viewport scales it by its own pixels-to-units.
+/// </summary>
+public sealed class ConstraintMarker
+{
+	/// <summary>The rule this marks. Clicking the glyph is how a rule gets deleted, so the caller
+	/// needs the object itself, not a copy of its contents.</summary>
+	public SketchConstraint Constraint;
+
+	public SketchConstraintKind Kind;
+
+	/// <summary>Where on the geometry the mark belongs.</summary>
+	public Vec2 Anchor;
+
+	/// <summary>Unit direction to push the glyph clear of the geometry. Zero when there is no
+	/// meaningful "off to one side" — a coincidence is a point, and a point has no sides.</summary>
+	public Vec2 Away;
+
+	/// <summary>What to write. Short and ASCII-safe on purpose: this is drawn with the viewport's
+	/// screen-text call in whatever font the editor has, and a glyph that renders as a box says
+	/// less than nothing.</summary>
+	public string Label;
+
+	/// <summary>Whether the label is a NUMBER the user chose rather than a rule they named. Worth
+	/// telling apart on screen — a dimension is a thing you double-click to change, a rule is a
+	/// thing you delete.</summary>
+	public bool IsDimension;
+}
+
 /// <summary>What happened when a constraint was applied.</summary>
 public sealed class ApplyResult
 {
@@ -361,6 +397,208 @@ public static class ConstraintTools
 
 		return false;
 	}
+
+
+	// --- marks on the sketch -----------------------------------------------------------------
+
+	/// <summary>
+	/// Every mark to draw for a sketch's constraints.
+	///
+	/// A rule that relates two segments gets a mark on EACH of them, which is the only way to read
+	/// "these two are parallel" off a drawing — one glyph in the middle would leave you guessing
+	/// which pair it meant on a sketch with six lines in it.
+	///
+	/// A constraint whose points no longer exist yields nothing and does not throw. That state is
+	/// ordinary rather than exceptional: deleting a curve leaves rules behind referring to points
+	/// that went with it, and Build() already drops them at solve time for the same reason.
+	/// </summary>
+	public static List<ConstraintMarker> Markers( Sketch sketch )
+	{
+		var markers = new List<ConstraintMarker>();
+
+		if ( sketch is null )
+			return markers;
+
+		foreach ( var c in sketch.Constraints )
+			AddMarkers( sketch, c, markers );
+
+		return markers;
+	}
+
+	static void AddMarkers( Sketch sketch, SketchConstraint c, List<ConstraintMarker> markers )
+	{
+		// The old curve-id form, from before there was a solver: resolve it to the line's endpoints
+		// so it marks up the same as everything else.
+		var a = c.PointA;
+		var b = c.PointB;
+
+		if ( a < 0 && c.CurveId is not null )
+		{
+			if ( sketch.Curves.FirstOrDefault( x => x.Id == c.CurveId ) is not SketchLine line )
+				return;
+
+			a = line.Start;
+			b = line.End;
+		}
+
+		switch ( c.Kind )
+		{
+			case SketchConstraintKind.Horizontal:
+				OnSegment( sketch, c, a, b, "H", markers );
+				return;
+
+			case SketchConstraintKind.Vertical:
+				OnSegment( sketch, c, a, b, "V", markers );
+				return;
+
+			case SketchConstraintKind.Coincident:
+				if ( !InRange( sketch, a ) )
+					return;
+
+				markers.Add( new ConstraintMarker
+				{
+					Constraint = c,
+					Kind = c.Kind,
+					Anchor = sketch.Points[a],
+					Away = Vec2.Zero,
+					Label = "\u2022",
+				} );
+				return;
+
+			case SketchConstraintKind.Distance:
+				OnSegment( sketch, c, a, b, Number( c.Value ), markers, dimension: true );
+				return;
+
+			case SketchConstraintKind.Radius:
+				OnSegment( sketch, c, a, b, $"R {Number( c.Value )}", markers, dimension: true );
+				return;
+
+			case SketchConstraintKind.EqualLength:
+				OnSegment( sketch, c, c.PointA, c.PointB, "=", markers );
+				OnSegment( sketch, c, c.PointC, c.PointD, "=", markers );
+				return;
+
+			case SketchConstraintKind.Parallel:
+				OnSegment( sketch, c, c.PointA, c.PointB, "//", markers );
+				OnSegment( sketch, c, c.PointC, c.PointD, "//", markers );
+				return;
+
+			case SketchConstraintKind.Perpendicular:
+				// "90" rather than the perpendicular sign. This is drawn in whatever font the editor
+				// has and U+22A5 is not something to bet the readability of a glyph on; a right angle
+				// written as a number is unmistakable and is Latin-1.
+				OnSegment( sketch, c, c.PointA, c.PointB, "90\u00b0", markers );
+				OnSegment( sketch, c, c.PointC, c.PointD, "90\u00b0", markers );
+				return;
+
+			case SketchConstraintKind.Angle:
+				AtCrossing( sketch, c, markers );
+				return;
+
+			case SketchConstraintKind.PointOnLine:
+				if ( !InRange( sketch, c.PointA ) )
+					return;
+
+				markers.Add( new ConstraintMarker
+				{
+					Constraint = c,
+					Kind = c.Kind,
+					Anchor = sketch.Points[c.PointA],
+					Away = Vec2.Zero,
+					Label = "ON",
+				} );
+				return;
+
+			case SketchConstraintKind.Symmetric:
+				// The two points being mirrored, not the mirror. Marking the axis would say "this
+				// line is involved in a symmetry" without saying what is symmetric about it.
+				foreach ( var point in new[] { c.PointA, c.PointB } )
+				{
+					if ( !InRange( sketch, point ) )
+						continue;
+
+					markers.Add( new ConstraintMarker
+					{
+						Constraint = c,
+						Kind = c.Kind,
+						Anchor = sketch.Points[point],
+						Away = Vec2.Zero,
+						Label = "><",
+					} );
+				}
+				return;
+		}
+	}
+
+	/// <summary>A mark at a segment's midpoint, pushed off to its left. Left every time rather than
+	/// "away from the other line", so two marks on the same line never land on top of each other and
+	/// the glyph does not jump sides when the geometry is dragged past straight.</summary>
+	static void OnSegment( Sketch sketch, SketchConstraint c, int a, int b, string label,
+		List<ConstraintMarker> markers, bool dimension = false )
+	{
+		if ( !InRange( sketch, a ) || !InRange( sketch, b ) )
+			return;
+
+		var from = sketch.Points[a];
+		var to = sketch.Points[b];
+		var along = to - from;
+
+		markers.Add( new ConstraintMarker
+		{
+			Constraint = c,
+			Kind = c.Kind,
+			Anchor = (from + to) * 0.5f,
+			Away = along.Length < 1e-9f ? Vec2.Zero : new Vec2( -along.y, along.x ).Normal,
+			Label = label,
+			IsDimension = dimension,
+		} );
+	}
+
+	/// <summary>
+	/// An angle is marked where its two lines actually cross, which is where a person looks for it.
+	///
+	/// Two lines that meet at a corner have that crossing at the corner; two that do not touch have
+	/// it out in space where the extended lines would meet, which is still the right place — that is
+	/// what the angle between them means. Only genuinely parallel lines have no crossing at all, and
+	/// then the mark falls back to sitting between the two midpoints.
+	/// </summary>
+	static void AtCrossing( Sketch sketch, SketchConstraint c, List<ConstraintMarker> markers )
+	{
+		if ( !InRange( sketch, c.PointA ) || !InRange( sketch, c.PointB )
+			|| !InRange( sketch, c.PointC ) || !InRange( sketch, c.PointD ) )
+			return;
+
+		var p = sketch.Points[c.PointA];
+		var r = sketch.Points[c.PointB] - p;
+		var q = sketch.Points[c.PointC];
+		var s = sketch.Points[c.PointD] - q;
+
+		var denominator = Vec2.Cross( r, s );
+
+		var anchor = MathF.Abs( denominator ) < 1e-9f
+			? ((p + sketch.Points[c.PointB]) * 0.5f + (q + sketch.Points[c.PointD]) * 0.5f) * 0.5f
+			: p + r * (Vec2.Cross( q - p, s ) / denominator);
+
+		markers.Add( new ConstraintMarker
+		{
+			Constraint = c,
+			Kind = c.Kind,
+			Anchor = anchor,
+			Away = Vec2.Zero,
+			Label = $"{Number( c.Value )}\u00b0",
+			IsDimension = true,
+		} );
+	}
+
+	static bool InRange( Sketch sketch, int point ) => point >= 0 && point < sketch.Points.Count;
+
+	/// <summary>Enough digits to be useful without becoming noise. Sketch units are dimensionless,
+	/// so there is no sensible fixed precision — it scales to the value, the same way the viewport's
+	/// live readouts do.</summary>
+	static string Number( float value ) =>
+		MathF.Abs( value ) >= 100f ? value.ToString( "F1" )
+		: MathF.Abs( value ) >= 10f ? value.ToString( "F2" )
+		: value.ToString( "F3" );
 
 	// --- the equality that matters ---------------------------------------------------------------
 

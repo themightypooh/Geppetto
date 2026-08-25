@@ -38,6 +38,9 @@ public static class ConstraintToolTests
 		Report.Section( "constraint tools: a rule that cannot hold is taken back out" );
 		TestRefused();
 
+		Report.Section( "constraint tools: marks to draw on the sketch" );
+		TestMarkers();
+
 		Report.Section( "constraint tools: finding what holds a point" );
 		TestTouching();
 	}
@@ -469,6 +472,126 @@ public static class ConstraintToolTests
 
 		Report.Check( "with the degrees of freedom left to report",
 			applied.Solve.DegreesOfFreedom > 0, $"{applied.Solve.DegreesOfFreedom}" );
+	}
+
+	/// <summary>
+	/// Where each rule's glyph goes.
+	///
+	/// This is geometry, so it is testable, and it is worth testing because getting it slightly
+	/// wrong produces a sketch covered in marks that are all in nearly the right place — which is
+	/// the kind of wrong nobody reports as a bug and everybody works around.
+	/// </summary>
+	static void TestMarkers()
+	{
+		var sketch = new Sketch();
+		var line = sketch.AddLine( new Vec2( 0, 0 ), new Vec2( 4, 0 ) );
+
+		Apply( sketch, new SketchSelection( null, new[] { line.Id } ), "Horizontal" );
+
+		var marks = ConstraintTools.Markers( sketch );
+
+		Report.Check( "one rule on one line makes one mark", marks.Count == 1 );
+
+		Report.Check( "at the middle of the line it holds",
+			(marks[0].Anchor - new Vec2( 2, 0 )).Length < 1e-4f,
+			$"({marks[0].Anchor.x:0.##},{marks[0].Anchor.y:0.##})" );
+
+		Report.Check( "labelled for what it is", marks[0].Label == "H", marks[0].Label );
+
+		Report.Check( "and it points off the line rather than along it",
+			MathF.Abs( Vec2.Dot( marks[0].Away, new Vec2( 1, 0 ) ) ) < 1e-4f
+			&& MathF.Abs( marks[0].Away.Length - 1f ) < 1e-4f,
+			$"({marks[0].Away.x:0.##},{marks[0].Away.y:0.##})" );
+
+		Report.Check( "and carries the rule itself, so clicking it can delete it",
+			ReferenceEquals( marks[0].Constraint, sketch.Constraints[0] ) );
+
+		Report.Check( "a plain rule is not a dimension", !marks[0].IsDimension );
+
+		// A RULE ABOUT TWO SEGMENTS MARKS BOTH. One glyph between them would leave you guessing
+		// which pair it meant on a sketch with six lines in it.
+		var second = sketch.AddLine( new Vec2( 0, 3 ), new Vec2( 4, 3 ) );
+
+		Apply( sketch, new SketchSelection( null, new[] { line.Id, second.Id } ), "Equal length" );
+
+		var equals = ConstraintTools.Markers( sketch ).Where( m => m.Label == "=" ).ToList();
+
+		Report.Check( "equal length marks both lines", equals.Count == 2 );
+
+		Report.Check( "one on each, at their middles",
+			equals.Any( m => (m.Anchor - new Vec2( 2, 0 )).Length < 1e-4f )
+			&& equals.Any( m => (m.Anchor - new Vec2( 2, 3 )).Length < 1e-4f ) );
+
+		// A DIMENSION READS ITS VALUE.
+		var dim = new Sketch();
+		var bar = dim.AddLine( new Vec2( 0, 0 ), new Vec2( 7.5f, 0 ) );
+
+		Apply( dim, new SketchSelection( null, new[] { bar.Id } ), "Length" );
+
+		var length = ConstraintTools.Markers( dim ).Single();
+
+		Report.Check( "a dimension is labelled with its number",
+			length.Label == "7.500", length.Label );
+
+		Report.Check( "and says it is a dimension", length.IsDimension );
+
+		// AN ANGLE IS MARKED WHERE ITS LINES CROSS, which is where a person looks for it.
+		var corner = new Sketch();
+		var across = corner.AddLine( new Vec2( -4, 0 ), new Vec2( 4, 0 ) );
+		var up = corner.AddLine( new Vec2( 0, -3 ), new Vec2( 0, 5 ) );
+
+		Apply( corner, new SketchSelection( null, new[] { across.Id, up.Id } ), "Angle" );
+
+		var angle = ConstraintTools.Markers( corner ).Single();
+
+		Report.Check( "an angle sits at the crossing, not between the midpoints",
+			angle.Anchor.Length < 1e-4f, $"({angle.Anchor.x:0.###},{angle.Anchor.y:0.###})" );
+
+		Report.Check( "labelled in degrees", angle.Label.EndsWith( "\u00b0" ), angle.Label );
+
+		// Two lines that never touch still have an angle, out where the extended lines would meet —
+		// which is what the angle between them means.
+		var apart = new Sketch();
+		var flat = apart.AddLine( new Vec2( 0, 0 ), new Vec2( 4, 0 ) );
+		var slanted = apart.AddLine( new Vec2( 6, 2 ), new Vec2( 10, 6 ) );
+
+		Apply( apart, new SketchSelection( null, new[] { flat.Id, slanted.Id } ), "Angle" );
+
+		var extended = ConstraintTools.Markers( apart ).Single();
+
+		Report.Check( "two lines that do not touch are marked where they would meet",
+			(extended.Anchor - new Vec2( 4, 0 )).Length < 1e-3f,
+			$"({extended.Anchor.x:0.###},{extended.Anchor.y:0.###})" );
+
+		// Parallel lines have no crossing at all, and must not produce a NaN.
+		var parallel = new Sketch();
+		var one = parallel.AddLine( new Vec2( 0, 0 ), new Vec2( 4, 0 ) );
+		var two = parallel.AddLine( new Vec2( 0, 2 ), new Vec2( 4, 2 ) );
+
+		parallel.Constraints.Add( new SketchConstraint( SketchConstraintKind.Angle,
+			one.Start, one.End, two.Start, two.End ) { Value = 0f } );
+
+		var noCrossing = ConstraintTools.Markers( parallel ).Single();
+
+		Report.Check( "parallel lines fall back to a real position rather than a NaN",
+			float.IsFinite( noCrossing.Anchor.x ) && float.IsFinite( noCrossing.Anchor.y ),
+			$"({noCrossing.Anchor.x},{noCrossing.Anchor.y})" );
+
+		// A RULE LEFT BEHIND BY A DELETED CURVE MARKS NOTHING, and must not throw. This is ordinary
+		// rather than exceptional — deleting a curve leaves its rules pointing at points that went
+		// with it, which is why the solver drops them too.
+		var stale = new Sketch();
+		stale.AddPoint( new Vec2( 0, 0 ) );
+		stale.Constraints.Add( new SketchConstraint( SketchConstraintKind.Distance, 0, 99, 5f ) );
+
+		Report.Check( "a rule pointing at a point that is gone marks nothing",
+			ConstraintTools.Markers( stale ).Count == 0 );
+
+		Report.Check( "an empty sketch marks nothing",
+			ConstraintTools.Markers( new Sketch() ).Count == 0 );
+
+		Report.Check( "and a null one does not throw",
+			ConstraintTools.Markers( null ).Count == 0 );
 	}
 
 	// --- helpers ------------------------------------------------------------------------------

@@ -113,6 +113,11 @@ internal sealed partial class EffigyViewport
 		if ( !_canvasHasCursor || !_cursorOnPlaneValid )
 			return;
 
+		// A glyph under the cursor owns the click — it is drawn on top of the geometry, so without
+		// this, removing a rule would also select whatever line the mark was sitting over.
+		if ( CursorOnConstraintMark )
+			return;
+
 		if ( _hoverPoint >= 0 )
 		{
 			// The point handles own this cursor. Remember the press so the release can classify it.
@@ -281,6 +286,128 @@ internal sealed partial class EffigyViewport
 
 		return true;
 	}
+
+
+	// --- the marks on the sketch ------------------------------------------------------------------
+
+	/// <summary>Where each glyph ended up this frame, so a click can find one. Rebuilt every frame
+	/// rather than cached: the geometry moves under them constantly, and a stale hit box that
+	/// deletes the wrong rule is worse than no hit box at all.</summary>
+	private readonly List<(ConstraintMarker Marker, Vec2 At)> _markerHits = new();
+
+	private ConstraintMarker _hoverMarker;
+
+	/// <summary>How far off the geometry a glyph sits, and how close a click has to land, both in
+	/// SCREEN PIXELS — the kernel gives an anchor and a direction and deliberately leaves the
+	/// distance alone, because a sketch can be one unit across or a thousand.</summary>
+	private const float MarkerOffsetPixels = 14f;
+	private const float MarkerPickPixels = 9f;
+
+	private static readonly Color ConstraintMarkColor = new( 0.45f, 0.85f, 0.6f, 1f );
+	private static readonly Color DimensionMarkColor = new( 1f, 0.82f, 0.35f, 1f );
+	private static readonly Color MarkHoverColor = new( 1f, 0.42f, 0.38f, 1f );
+
+	/// <summary>Whether the rules that hold the sketch together are drawn on it. On by default —
+	/// a constraint you cannot see is a constraint you fight.</summary>
+	public bool ShowConstraintMarks { get; set; } = true;
+
+	/// <summary>
+	/// Draw a glyph per rule, and let one be clicked away.
+	///
+	/// DELETING IS ON THE GLYPH rather than in a list somewhere, because "why will this line not
+	/// move" is a question about a specific place on the drawing, and the answer should be sitting
+	/// there next to it.
+	/// </summary>
+	private void ConstraintMarkFrame()
+	{
+		_markerHits.Clear();
+		_hoverMarker = null;
+
+		if ( ActiveSketch is null || !ShowConstraintMarks )
+			return;
+
+		var units = UnitsPerPixel();
+		var offset = units * MarkerOffsetPixels;
+		var reach = units * MarkerPickPixels;
+
+		var hoverable = SketchTool == SketchToolKind.Select && _canvasHasCursor && _cursorOnPlaneValid;
+
+		foreach ( var marker in ConstraintTools.Markers( ActiveSketch ) )
+		{
+			var at = marker.Anchor + marker.Away * offset;
+
+			// A mark with no side to sit on — a coincidence, a symmetry — is nudged up and right so
+			// it clears the point it belongs to instead of being drawn on top of it.
+			if ( marker.Away.Length < 1e-6f )
+				at = marker.Anchor + new Vec2( 1f, 1f ).Normal * offset;
+
+			_markerHits.Add( (marker, at) );
+
+			if ( hoverable && _hoverMarker is null && (_cursorOnPlane - at).Length < reach )
+				_hoverMarker = marker;
+
+			var color = _hoverMarker == marker ? MarkHoverColor
+				: marker.IsDimension ? DimensionMarkColor : ConstraintMarkColor;
+
+			DrawDimensionText( PlaneToWorld( at ), marker.Label, color, 0f );
+		}
+
+		if ( _hoverMarker is null )
+			return;
+
+		// Only once it is actually under the cursor, so the prompt is not shouting the whole time.
+		SketchPromptChanged?.Invoke( $"{Name( _hoverMarker.Kind )} — click to remove it" );
+
+		if ( Gizmo.WasLeftMousePressed )
+			RemoveConstraint( _hoverMarker.Constraint );
+	}
+
+	/// <summary>
+	/// Delete one rule and re-solve.
+	///
+	/// The sketch does NOT spring back to where it was before the rule was added — nothing recorded
+	/// that, and inventing it would be worse than leaving the geometry alone. Removing a constraint
+	/// only ever gives freedom back; what the shape does with that freedom is up to the next drag.
+	/// </summary>
+	private void RemoveConstraint( SketchConstraint constraint )
+	{
+		if ( ActiveSketch is null || constraint is null )
+			return;
+
+		SketchEditing?.Invoke();
+
+		if ( !ActiveSketch.Constraints.Remove( constraint ) )
+			return;
+
+		var result = SketchSolver.Solve( ActiveSketch );
+
+		SketchConstraintApplied?.Invoke();
+
+		SketchPromptChanged?.Invoke( result.DegreesOfFreedom == 0
+			? "Constraint removed — the sketch is still fully defined"
+			: $"Constraint removed — {result.DegreesOfFreedom} degree{(result.DegreesOfFreedom == 1 ? "" : "s")} of freedom" );
+	}
+
+	/// <summary>Whether a click this frame landed on a glyph, so the selection code can leave it
+	/// alone. Without this, clicking a mark to delete it would ALSO clear the selection, or pick
+	/// whatever curve happened to be under the glyph.</summary>
+	private bool CursorOnConstraintMark => _hoverMarker is not null;
+
+	static string Name( SketchConstraintKind kind ) => kind switch
+	{
+		SketchConstraintKind.Horizontal => "Horizontal",
+		SketchConstraintKind.Vertical => "Vertical",
+		SketchConstraintKind.Coincident => "Coincident",
+		SketchConstraintKind.Distance => "Distance",
+		SketchConstraintKind.EqualLength => "Equal length",
+		SketchConstraintKind.Parallel => "Parallel",
+		SketchConstraintKind.Perpendicular => "Perpendicular",
+		SketchConstraintKind.Angle => "Angle",
+		SketchConstraintKind.PointOnLine => "Point on line",
+		SketchConstraintKind.Symmetric => "Symmetric",
+		SketchConstraintKind.Radius => "Radius",
+		_ => "Constraint",
+	};
 
 	/// <summary>What the status bar says about the selection, appended to the tool's own prompt.</summary>
 	private string SelectionPrompt()
