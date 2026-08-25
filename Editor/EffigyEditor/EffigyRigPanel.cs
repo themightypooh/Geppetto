@@ -236,6 +236,13 @@ internal sealed class EffigyRigPanel : Widget
 		{
 			DisarmAssign();
 
+			// If a feature dialog's own body/plane picker is armed, hand it back the same way
+			// Escape would: clear the modes it owns and tell it to disarm, so its box repaints as
+			// disarmed instead of silently losing the clicks it thinks it is still getting.
+			_viewport.PlanePickMode = false;
+			_viewport.BodyPickMode = false;
+			_viewport.PickModeCancelled?.Invoke();
+
 			var branchFrom = _selectedBone;
 
 			_viewport.DeselectBone();
@@ -345,6 +352,12 @@ internal sealed class EffigyRigPanel : Widget
 
 		if ( _selectedBone < 0 || _selectedBone >= Skeleton.Count )
 			return;
+
+		// Same hand-back as the bone tool's: if a feature dialog's own picker is armed, tell it to
+		// disarm rather than silently steal BodyPickMode out from under it.
+		_viewport.PlanePickMode = false;
+		_viewport.BodyPickMode = false;
+		_viewport.PickModeCancelled?.Invoke();
 
 		_assigningBody = true;
 
