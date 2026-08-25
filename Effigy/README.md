@@ -36,7 +36,7 @@ machine. A session that skips this ends up reasoning about the code by reading i
 is how a bug that made every parameter edit a silent no-op survived long enough to look like three
 unrelated UI faults.
 
-1006 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
+1024 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
 2-level-subdivided version of each. Those are the fastest way to see whether something is actually
 right: open them in Blender, or drop one into ModelDoc to find out what s&box makes of it.
 
@@ -264,8 +264,21 @@ revolve never learn that a solver exists.
 
 Levenberg-Marquardt over the constraint residuals: each rule contributes an equation that reads zero
 when it holds, plus its derivative, and the solve is the point positions that zero them all.
-Coincident, distance, horizontal, vertical, equal length, parallel and perpendicular, with a new one
-costing one class and no change to the solver.
+Coincident, distance, horizontal, vertical, equal length, parallel, perpendicular, angle,
+point-on-line, symmetric and radius — with a new one costing one class and no change to the solver.
+
+Angle is worth a note: its residual is `cross·cos θ − dot·sin θ` rather than an angle difference,
+because an angle computed with `atan2` carries a branch cut, and a residual that jumps by 2π
+somewhere in its domain sends the solver the wrong way the moment a line crosses it. Parallel and
+perpendicular are the same rule at 0 and 90, kept as their own types because that is what a user
+asks for.
+
+**Arcs carry an implicit constraint.** An arc reads its radius off the centre-to-*start* distance,
+and tessellation snaps its last sample onto the end point wherever that is — so an end that drifts
+off the circle produces an arc at the wrong radius with a kink in its final segment, which looks like
+a rendering glitch. Nothing enforced it while coordinates were only typed. A solver moves points for
+a living, so every arc now contributes "both my endpoints are equidistant from my centre" whether the
+user asked or not. It is not design intent, it is what an arc *is*.
 
 Three things worth knowing before touching it:
 
@@ -278,6 +291,12 @@ can be spun. The editor should pin whatever point the user is dragging.
 constraints saying the same thing remove one freedom; counting rows would claim they removed two,
 and would call a perfectly fine sketch over-constrained. Redundant rows are reported separately,
 which is the answer to "why did adding that dimension do nothing".
+
+**An under-constrained sketch moves whatever is cheapest.** "These three points are collinear" is
+equally satisfied by swinging the line onto the point as by moving the point onto the line, and with
+nothing holding the line down the solver will do some of both. That is correct and it surprises
+people — including the first version of the test for it. To get a specific answer, constrain the
+reference geometry.
 
 **A sketch that will not solve warns rather than failing.** The points are left at the closest fit
 found. Erroring would blank the model every time a sketch passed through a contradictory state

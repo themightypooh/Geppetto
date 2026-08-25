@@ -247,7 +247,10 @@ feature:
    adapter from PolyMesh to the engine's PolygonMesh, which cannot be written without the engine in
    front of you — `effigy_probe_boolean` dumps the API it gets written from. A portable
    implementation stays off the table until something genuinely needs one.
-6. ~~**Constraint solver.**~~ Landed: Levenberg-Marquardt over the residuals, seven constraint kinds,
+6. ~~**Constraint solver.**~~ Landed, and since extended with angle, point-on-line, symmetric and
+   radius — the set a dimension tool needs underneath it. Solvespace's DOF reporting turned out to be
+   the valuable part, exactly as this document guessed: counting the Jacobian's RANK rather than its
+   rows is what separates "under defined by two" from "four constraints that say three things": Levenberg-Marquardt over the residuals, seven constraint kinds,
    degrees of freedom counted from the Jacobian's rank. What it still needs is the UI — there is no
    way to add a constraint in the editor, so the solver currently only runs on constraints the
    inference puts there. That, and a dimension tool, are what turn it into something a user can use.

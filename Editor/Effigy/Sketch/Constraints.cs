@@ -234,3 +234,152 @@ public sealed class PerpendicularConstraint : IConstraint
 		} );
 	}
 }
+
+/// <summary>
+/// Two segments meet at a fixed angle.
+///
+/// The residual is |u||v| sin(φ − θ), written as cross·cos θ − dot·sin θ so that neither an atan2
+/// nor a normalisation appears in it. That matters more than it looks: an angle computed with atan2
+/// has a branch cut, and a residual that jumps by 2π somewhere in its domain will send a solver off
+/// in the wrong direction the moment a line crosses it. This form is smooth everywhere and zero at
+/// exactly the states wanted.
+///
+/// Parallel and Perpendicular are this at 0 and 90 degrees. They stay separate types because they
+/// are what a user asks for, and because neither needs a value stored alongside it.
+/// </summary>
+public sealed class AngleConstraint : IConstraint
+{
+	public readonly int A0, A1, B0, B1;
+	public readonly double Degrees;
+
+	public AngleConstraint( int a0, int a1, int b0, int b1, double degrees )
+	{
+		A0 = a0;
+		A1 = a1;
+		B0 = b0;
+		B1 = b1;
+		Degrees = degrees;
+	}
+
+	public int ResidualCount => 1;
+
+	public void Evaluate( ReadOnlySpan<Vec2> points, Span<ConstraintResult> output )
+	{
+		var ux = (double)points[A1].x - points[A0].x;
+		var uy = (double)points[A1].y - points[A0].y;
+		var vx = (double)points[B1].x - points[B0].x;
+		var vy = (double)points[B1].y - points[B0].y;
+
+		var radians = Degrees * Math.PI / 180.0;
+		var cos = Math.Cos( radians );
+		var sin = Math.Sin( radians );
+
+		var cross = ux * vy - uy * vx;
+		var dot = ux * vx + uy * vy;
+
+		// d(residual)/du and /dv, from which the four point derivatives follow by u = A1 - A0.
+		var dUx = vy * cos - vx * sin;
+		var dUy = -vx * cos - vy * sin;
+		var dVx = -uy * cos - ux * sin;
+		var dVy = ux * cos - uy * sin;
+
+		output[0] = new ConstraintResult( cross * cos - dot * sin, new[]
+		{
+			(A0, -dUx, -dUy),
+			(A1,  dUx,  dUy),
+			(B0, -dVx, -dVy),
+			(B1,  dVx,  dVy)
+		} );
+	}
+}
+
+/// <summary>
+/// A point lies on the infinite line through two others.
+///
+/// The residual is the cross product of the line's direction with the vector to the point, which is
+/// twice the area of the triangle they make — zero exactly when they are collinear. Not the
+/// perpendicular DISTANCE, which would need a division by the line's length and blow up as the two
+/// defining points approach each other; the unnormalised form is smooth everywhere and vanishes at
+/// the same states.
+/// </summary>
+public sealed class PointOnLineConstraint : IConstraint
+{
+	public readonly int Point, A, B;
+
+	public PointOnLineConstraint( int point, int a, int b )
+	{
+		Point = point;
+		A = a;
+		B = b;
+	}
+
+	public int ResidualCount => 1;
+
+	public void Evaluate( ReadOnlySpan<Vec2> points, Span<ConstraintResult> output )
+	{
+		var dx = (double)points[B].x - points[A].x;
+		var dy = (double)points[B].y - points[A].y;
+		var wx = (double)points[Point].x - points[A].x;
+		var wy = (double)points[Point].y - points[A].y;
+
+		output[0] = new ConstraintResult( dx * wy - dy * wx, new[]
+		{
+			(Point, -dy, dx),
+			(A, dy - wy, wx - dx),
+			(B, wy, -wx)
+		} );
+	}
+}
+
+/// <summary>
+/// Two points mirror each other across the line through two others.
+///
+/// Two rows, because symmetry is two independent statements and collapsing them into one distance
+/// would let the solver satisfy it by putting both points in the same place. Their midpoint has to
+/// sit ON the line, and the segment between them has to cross it at a right angle.
+/// </summary>
+public sealed class SymmetricConstraint : IConstraint
+{
+	public readonly int P, Q, A, B;
+
+	public SymmetricConstraint( int p, int q, int a, int b )
+	{
+		P = p;
+		Q = q;
+		A = a;
+		B = b;
+	}
+
+	public int ResidualCount => 2;
+
+	public void Evaluate( ReadOnlySpan<Vec2> points, Span<ConstraintResult> output )
+	{
+		var dx = (double)points[B].x - points[A].x;
+		var dy = (double)points[B].y - points[A].y;
+
+		// Midpoint of P and Q, relative to A.
+		var mx = ((double)points[P].x + points[Q].x) * 0.5 - points[A].x;
+		var my = ((double)points[P].y + points[Q].y) * 0.5 - points[A].y;
+
+		// Row one: the midpoint is on the line. Each of P and Q moves it by a half.
+		output[0] = new ConstraintResult( dx * my - dy * mx, new[]
+		{
+			(P, -dy * 0.5, dx * 0.5),
+			(Q, -dy * 0.5, dx * 0.5),
+			(A, dy - my, mx - dx),
+			(B, my, -mx)
+		} );
+
+		// Row two: PQ is perpendicular to the line.
+		var qx = (double)points[Q].x - points[P].x;
+		var qy = (double)points[Q].y - points[P].y;
+
+		output[1] = new ConstraintResult( dx * qx + dy * qy, new[]
+		{
+			(P, -dx, -dy),
+			(Q, dx, dy),
+			(A, -qx, -qy),
+			(B, qx, qy)
+		} );
+	}
+}
