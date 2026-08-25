@@ -810,7 +810,18 @@ internal sealed class EffigyRigPanel : Widget
 		var menu = new Menu( this );
 		menu.AddOption( "Rename", "edit", () => BeginRename( index ) );
 		menu.AddSeparator();
-		menu.AddOption( "Delete", "delete", () => DeleteBone( index ) );
+
+		// Deleting reindexes every bone after it in Skeleton.Bones. _chainParent (see
+		// OnBonePointPicked) is an index into that same list, captured when the bone tool armed —
+		// a delete mid-chain would either reparent the next placed bone onto the wrong bone, or
+		// throw outright if the deleted bone was the last one. Renaming carries no such risk: it
+		// never moves anything, only the Name string.
+		var delete = menu.AddOption( "Delete", "delete", () => DeleteBone( index ) );
+		delete.Enabled = !_viewport.BoneToolActive;
+
+		if ( !delete.Enabled )
+			delete.StatusTip = "Finish placing bones first — Escape twice, or click Add Bone again.";
+
 		menu.OpenAtCursor();
 	}
 
