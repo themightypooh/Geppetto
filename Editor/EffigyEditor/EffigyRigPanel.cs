@@ -85,9 +85,12 @@ internal sealed class EffigyRigPanel : Widget
 
 		Layout = Layout.Column();
 
+		// Margin(8,4) + Spacing 8 matches the Parts and Features panel headers in this same
+		// window — the outer rhythm should feel identical even though this header stacks two
+		// button rows instead of one label row.
 		var header = new Widget( this ) { Layout = Layout.Column() };
 		header.Layout.Margin = new Sandbox.UI.Margin( 8, 4 );
-		header.Layout.Spacing = 6;
+		header.Layout.Spacing = 8;
 
 		var toolRow = new Widget( header ) { Layout = Layout.Row() };
 		toolRow.Layout.Spacing = 6;
@@ -758,11 +761,15 @@ internal sealed class EffigyRigPanel : Widget
 
 			var bodyCount = _panel._bodyBoneMap.Values.Count( v => v == Value );
 
+			// Icon size 14 and a 22px left margin for the label — Effigy's own Features and Parts
+			// trees both use this pairing (RigControlEditor's separate bone tree uses a smaller
+			// 12/20 that has no business bleeding into this window), and this tree sits in docks
+			// right next to those two.
 			Paint.SetPen( Theme.Blue );
-			Paint.DrawIcon( item.Rect, "fiber_manual_record", 12, TextFlag.LeftCenter );
+			Paint.DrawIcon( item.Rect, "fiber_manual_record", 14, TextFlag.LeftCenter );
 
 			Paint.SetPen( Theme.Text );
-			Paint.DrawText( item.Rect.Shrink( 20, 0, bodyCount > 0 ? 62 : 0, 0 ), Value, TextFlag.LeftCenter );
+			Paint.DrawText( item.Rect.Shrink( 22, 0, bodyCount > 0 ? 62 : 0, 0 ), Value, TextFlag.LeftCenter );
 
 			if ( bodyCount == 0 )
 				return;
@@ -793,8 +800,9 @@ internal sealed class EffigyRigPanel : Widget
 
 		public override void OnPaint( VirtualWidget item )
 		{
+			// 8px left margin, matching EmptyPartsNode's empty-state row in the same window.
 			Paint.SetPen( Theme.TextLight.WithAlpha( 0.6f ) );
-			Paint.DrawText( item.Rect.Shrink( 4, 0, 0, 0 ), Value, TextFlag.LeftCenter );
+			Paint.DrawText( item.Rect.Shrink( 8, 0, 0, 0 ), Value, TextFlag.LeftCenter );
 		}
 	}
 }
