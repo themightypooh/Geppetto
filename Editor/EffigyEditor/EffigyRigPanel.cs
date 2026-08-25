@@ -95,7 +95,12 @@ internal sealed class EffigyRigPanel : Widget
 		var toolRow = new Widget( header ) { Layout = Layout.Row() };
 		toolRow.Layout.Spacing = 6;
 
-		_addBoneButton = new Button( "Add Bone", "add" ) { Clicked = () => SetBoneToolActive( !_viewport.BoneToolActive ) };
+		_addBoneButton = new Button( "Add Bone", "add" )
+		{
+			ToolTip = "Click the model to place a bone. Click again to extend a chain from it — "
+				+ "select a bone first to branch a new chain from ITS tail instead of starting a new root.",
+			Clicked = () => SetBoneToolActive( !_viewport.BoneToolActive ),
+		};
 		toolRow.Layout.Add( _addBoneButton, 1 );
 		header.Layout.Add( toolRow );
 
@@ -105,6 +110,8 @@ internal sealed class EffigyRigPanel : Widget
 		_assignBodyButton = new Button( "Assign Body", "link" )
 		{
 			Enabled = false,
+			ToolTip = "Select a bone, then click bodies in the viewport to pin them to it. "
+				+ "Optional — unassigned bodies still skin, to whichever bone is nearest.",
 			Clicked = ToggleAssignBody,
 		};
 		secondRow.Layout.Add( _assignBodyButton, 1 );
@@ -518,9 +525,11 @@ internal sealed class EffigyRigPanel : Widget
 			var name = _studio?.Bodies.FirstOrDefault( b => b.Id == bodyId )?.Name ?? bodyId;
 			row.Layout.Add( new Editor.Label( name ) { Color = Theme.TextLight }, 1 );
 
+			// IconSize 16 matches every other IconButton in this window (the feature dialog's
+			// Accept/Cancel, the tree eye's own icon) rather than inventing a smaller one here.
 			row.Layout.Add( new IconButton( "close", () => UnassignBody( bodyId ) )
 			{
-				IconSize = 12,
+				IconSize = 16,
 				Background = Color.Transparent,
 				ToolTip = $"Unassign from '{boneName}'",
 			} );
