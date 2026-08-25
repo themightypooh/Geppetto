@@ -47,6 +47,8 @@ internal sealed class EffigyRigPanel : Widget
 	private Editor.Label _inspectorName;
 	private EffigyNumericField _headX, _headY, _headZ;
 	private EffigyNumericField _tailX, _tailY, _tailZ;
+	private Editor.Label _bodyListHeader;
+	private Widget _bodyList;
 
 	/// <summary>True while RefreshInspector is pushing values into the six fields — on a selection
 	/// change, mainly. EffigyNumericField.SetValue does not fire ValueEdited on its own, but
@@ -373,6 +375,7 @@ internal sealed class EffigyRigPanel : Widget
 
 		_viewport.SelectedBodyIds = BodiesOnBone( boneName );
 		RebuildTree();
+		RefreshBodyList();
 	}
 
 	private List<string> BodiesOnBone( string boneName ) =>
@@ -434,6 +437,16 @@ internal sealed class EffigyRigPanel : Widget
 		_tailY = AddVectorField( tailRow, OnTailFieldEdited );
 		_tailZ = AddVectorField( tailRow, OnTailFieldEdited );
 		_inspector.Layout.Add( tailRow );
+
+		// A count on the tree row is enough to notice a bone has bodies; fixing a WRONG one from
+		// there means re-arming Assign Body and hunting for it in the viewport. Naming each one
+		// here, with its own remove button, is the actual undo-a-mistake path.
+		_bodyListHeader = new Editor.Label( "" ) { Color = Theme.TextControl.WithAlpha( 0.6f ) };
+		_inspector.Layout.Add( _bodyListHeader );
+
+		_bodyList = new Widget( _inspector ) { Layout = Layout.Column() };
+		_bodyList.Layout.Spacing = 2;
+		_inspector.Layout.Add( _bodyList );
 	}
 
 	private static EffigyNumericField AddVectorField( Widget row, Action<float> edited )
@@ -471,6 +484,63 @@ internal sealed class EffigyRigPanel : Widget
 		_tailZ.SetValue( tail.z );
 
 		_editingInspector = false;
+
+		RefreshBodyList();
+	}
+
+	/// <summary>Named rows for every body assigned to the selected bone, each with its own remove
+	/// button — the count on the tree row says a bone has assignments, this is what lets a wrong
+	/// one be found and undone without re-arming Assign Body and hunting in the viewport.</summary>
+	private void RefreshBodyList()
+	{
+		_bodyList.Layout.Clear( true );
+
+		if ( _selectedBone < 0 || _selectedBone >= Skeleton.Count )
+		{
+			_bodyListHeader.Visible = false;
+			return;
+		}
+
+		var boneName = Skeleton.Bones[_selectedBone].Name;
+		var bodies = BodiesOnBone( boneName );
+
+		_bodyListHeader.Visible = bodies.Count > 0;
+		_bodyListHeader.Text = bodies.Count == 0 ? "" : "Assigned bodies";
+
+		foreach ( var bodyId in bodies )
+		{
+			var row = new Widget( _bodyList ) { Layout = Layout.Row() };
+			row.Layout.Spacing = 4;
+
+			var name = _studio?.Bodies.FirstOrDefault( b => b.Id == bodyId )?.Name ?? bodyId;
+			row.Layout.Add( new Editor.Label( name ) { Color = Theme.TextLight }, 1 );
+
+			row.Layout.Add( new IconButton( "close", () => UnassignBody( bodyId ) )
+			{
+				IconSize = 12,
+				Background = Color.Transparent,
+				ToolTip = $"Unassign from '{boneName}'",
+			} );
+
+			_bodyList.Layout.Add( row );
+		}
+	}
+
+	private void UnassignBody( string bodyId )
+	{
+		if ( _selectedBone < 0 || _selectedBone >= Skeleton.Count )
+			return;
+
+		RigChanging?.Invoke();
+		_bodyBoneMap.Remove( bodyId );
+
+		// Keep the viewport's highlight honest if Assign Body is still armed — otherwise the body
+		// just removed stays lit as if it were still assigned.
+		if ( _assigningBody )
+			_viewport.SelectedBodyIds = BodiesOnBone( Skeleton.Bones[_selectedBone].Name );
+
+		RebuildTree();
+		RefreshBodyList();
 	}
 
 	private void OnHeadFieldEdited( float _ )
