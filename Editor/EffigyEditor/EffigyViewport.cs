@@ -1059,7 +1059,17 @@ internal sealed partial class EffigyViewport : Widget
 		}
 
 		bone.Length = newLength;
+
+		// Fires every frame of a drag, not just on release — a numeric inspector reading these
+		// same bones live is the reason: without this it goes stale the instant a drag starts and
+		// stays wrong until the bone is reselected, which is worse than not showing numbers at all.
+		BonePosed?.Invoke( index );
 	}
+
+	/// <summary>Raised whenever the pose gizmo writes a new transform into a bone — see
+	/// ApplyBoneTransform. Carries the bone's index so a listener only watching one bone (an
+	/// inspector panel, say) can ignore edits to any other.</summary>
+	public Action<int> BonePosed { get; set; }
 
 	/// <summary>Deselect the bone — called from the rig panel or Escape key.</summary>
 	public void DeselectBone()

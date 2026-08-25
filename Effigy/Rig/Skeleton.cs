@@ -82,16 +82,46 @@ public sealed class Skeleton
 	///
 	/// The bone's +Y is aimed head→tail; the other two axes are any stable perpendicular pair,
 	/// since nothing here has a concept of roll yet. If roll ever matters — it will, the moment
-	/// anyone hand-authors a twist — this is the function that grows a parameter, and nothing else
-	/// has to change.
+	/// anyone hand-authors a twist — LocalFromWorldPoints is the function that grows a parameter,
+	/// and nothing else has to change.
 	/// </summary>
 	public int AddBoneFromPoints( string name, int parent, Vec3 head, Vec3 tail )
+	{
+		var (local, length) = LocalFromWorldPoints( parent, head, tail, name );
+		return AddBone( name, parent, local, length );
+	}
+
+	/// <summary>
+	/// Move an existing bone's head and tail in WORLD bind space — a numeric edit standing in for
+	/// the click that placed it, or a correction after the fact. Recomputes Local the same way a
+	/// fresh placement would, against the bone's CURRENT parent.
+	///
+	/// Children are not touched here, and do not need to be: their own Local is relative to THIS
+	/// bone, and WorldBind always walks the parent chain fresh rather than caching a result, so
+	/// they follow automatically the moment this bone's Local changes underneath them.
+	/// </summary>
+	public void SetHeadTail( int index, Vec3 head, Vec3 tail )
+	{
+		if ( index < 0 || index >= Bones.Count )
+			throw new ArgumentOutOfRangeException( nameof( index ) );
+
+		var (local, length) = LocalFromWorldPoints( Bones[index].Parent, head, tail, Bones[index].Name );
+
+		Bones[index].Local = local;
+		Bones[index].Length = length;
+	}
+
+	/// <summary>Shared math behind AddBoneFromPoints and SetHeadTail — a bone's Local and Length
+	/// from a head/tail pair in world space and the parent it will sit under. One copy so a future
+	/// change (roll, most likely) cannot land in one caller and not the other.</summary>
+	(Xform local, float length) LocalFromWorldPoints( int parent, Vec3 head, Vec3 tail, string boneNameForError )
 	{
 		var along = tail - head;
 		var length = along.Length;
 
 		if ( length < 1e-6f )
-			throw new ArgumentException( $"Bone '{name}' has zero length — head and tail are the same point" );
+			throw new ArgumentException(
+				$"Bone '{boneNameForError}' has zero length — head and tail are the same point" );
 
 		var y = along / length;
 
@@ -104,7 +134,7 @@ public sealed class Skeleton
 		var world = new Xform( x, y, z, head );
 		var local = parent < 0 ? world : WorldBind( parent ).Inverse * world;
 
-		return AddBone( name, parent, local, length );
+		return (local, length);
 	}
 
 	public int IndexOf( string name )

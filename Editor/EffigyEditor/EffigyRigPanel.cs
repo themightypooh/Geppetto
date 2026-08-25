@@ -41,6 +41,19 @@ internal sealed class EffigyRigPanel : Widget
 	private Button _assignBodyButton;
 	private Button _mirrorButton;
 
+	// --- numeric inspector ------------------------------------------------------------------
+
+	private Widget _inspector;
+	private Editor.Label _inspectorName;
+	private EffigyNumericField _headX, _headY, _headZ;
+	private EffigyNumericField _tailX, _tailY, _tailZ;
+
+	/// <summary>True while RefreshInspector is pushing values into the six fields — on a selection
+	/// change, mainly. EffigyNumericField.SetValue does not fire ValueEdited on its own, but
+	/// without this guard a stray re-entrant call would still read _selectedBone mid-refresh and
+	/// write a half-updated bone back into the skeleton.</summary>
+	private bool _editingInspector;
+
 	public Skeleton Skeleton { get; } = new();
 
 	public bool HasBones => Skeleton.Count > 0;
@@ -113,10 +126,14 @@ internal sealed class EffigyRigPanel : Widget
 		};
 		Layout.Add( _tree, 1 );
 
+		BuildInspector();
+		Layout.Add( _inspector );
+
 		_viewport.RigSkeleton = Skeleton;
 		_viewport.BoneSelectionChanged = OnViewportBoneSelectionChanged;
+		_viewport.BonePosed = OnBonePosed;
 
-		RebuildTree();
+		Refresh();
 	}
 
 	/// <summary>A different studio entirely — New Studio or Load Document — not a rebuild of the
@@ -138,7 +155,11 @@ internal sealed class EffigyRigPanel : Widget
 		Refresh();
 	}
 
-	public void Refresh() => RebuildTree();
+	public void Refresh()
+	{
+		RebuildTree();
+		RefreshInspector();
+	}
 
 	// --- bone placement -------------------------------------------------------------------
 
@@ -342,6 +363,131 @@ internal sealed class EffigyRigPanel : Widget
 		OnViewportBoneSelectionChanged( newRoot );
 	}
 
+	// --- numeric inspector -----------------------------------------------------------------
+
+	/// <summary>
+	/// Head and tail as typeable X/Y/Z, the same "type it rather than eyeball it off a drag"
+	/// escape hatch the CAD side's EffigyNumericField exists for — placing a bone is a raycast
+	/// against the mesh, which is precise about WHAT it hit and nowhere near precise enough for a
+	/// joint that needs to land at, say, exactly X=0 on a spine.
+	/// </summary>
+	private void BuildInspector()
+	{
+		_inspector = new Widget( this ) { Layout = Layout.Column(), Visible = false };
+		_inspector.Layout.Margin = new Sandbox.UI.Margin( 8, 6 );
+		_inspector.Layout.Spacing = 4;
+
+		_inspectorName = new Editor.Label( "" ) { Color = Theme.TextControl };
+		_inspector.Layout.Add( _inspectorName );
+
+		var headRow = new Widget( _inspector ) { Layout = Layout.Row() };
+		headRow.Layout.Spacing = 4;
+		headRow.Layout.Add( new Editor.Label( "Head" ) { FixedWidth = 36 } );
+		_headX = AddVectorField( headRow, OnHeadFieldEdited );
+		_headY = AddVectorField( headRow, OnHeadFieldEdited );
+		_headZ = AddVectorField( headRow, OnHeadFieldEdited );
+		_inspector.Layout.Add( headRow );
+
+		var tailRow = new Widget( _inspector ) { Layout = Layout.Row() };
+		tailRow.Layout.Spacing = 4;
+		tailRow.Layout.Add( new Editor.Label( "Tail" ) { FixedWidth = 36 } );
+		_tailX = AddVectorField( tailRow, OnTailFieldEdited );
+		_tailY = AddVectorField( tailRow, OnTailFieldEdited );
+		_tailZ = AddVectorField( tailRow, OnTailFieldEdited );
+		_inspector.Layout.Add( tailRow );
+	}
+
+	private static EffigyNumericField AddVectorField( Widget row, Action<float> edited )
+	{
+		var field = new EffigyNumericField( row, 0f ) { FixedWidth = 60, ValueEdited = edited };
+		row.Layout.Add( field );
+		return field;
+	}
+
+	/// <summary>Reload all six fields from the skeleton — on a selection change, a rename, or a
+	/// live pose drag (OnBonePosed). Never called after a field's own edit: head and tail are
+	/// independent, so nothing else needs to move, and re-reading the field just typed into would
+	/// fight the cursor and reformat a mid-keystroke expression back to a plain number.</summary>
+	private void RefreshInspector()
+	{
+		if ( _selectedBone < 0 || _selectedBone >= Skeleton.Count )
+		{
+			_inspector.Visible = false;
+			return;
+		}
+
+		_editingInspector = true;
+
+		_inspector.Visible = true;
+		_inspectorName.Text = Skeleton.Bones[_selectedBone].Name;
+
+		var head = Skeleton.HeadWorld( _selectedBone );
+		_headX.SetValue( head.x );
+		_headY.SetValue( head.y );
+		_headZ.SetValue( head.z );
+
+		var tail = Skeleton.TailWorld( _selectedBone );
+		_tailX.SetValue( tail.x );
+		_tailY.SetValue( tail.y );
+		_tailZ.SetValue( tail.z );
+
+		_editingInspector = false;
+	}
+
+	private void OnHeadFieldEdited( float _ )
+	{
+		if ( _editingInspector || _selectedBone < 0 || _selectedBone >= Skeleton.Count )
+			return;
+
+		var head = new Vec3( _headX.Value, _headY.Value, _headZ.Value );
+		var tail = Skeleton.TailWorld( _selectedBone );
+
+		ApplyHeadTailEdit( head, tail );
+	}
+
+	private void OnTailFieldEdited( float _ )
+	{
+		if ( _editingInspector || _selectedBone < 0 || _selectedBone >= Skeleton.Count )
+			return;
+
+		var head = Skeleton.HeadWorld( _selectedBone );
+		var tail = new Vec3( _tailX.Value, _tailY.Value, _tailZ.Value );
+
+		ApplyHeadTailEdit( head, tail );
+	}
+
+	/// <summary>
+	/// SetHeadTail throws on a zero-length bone, which a field mid-edit passes through constantly
+	/// — typing "-1.5" one character at a time crosses zero if the tail happens to share that
+	/// axis's value. Swallowed the same way EffigyNumericField itself treats an unparseable
+	/// string: the model just stops agreeing with the field until the text makes sense again,
+	/// rather than an exception reaching the user over a keystroke.
+	///
+	/// Deliberately does NOT call RefreshInspector after a successful edit: head and tail are
+	/// independent (moving one never changes the other's stored value), so the other five fields
+	/// have nothing new to show, and re-reading the field just typed into would reformat whatever
+	/// expression is mid-keystroke back to a plain number — the same trap BuildFloatRow's own
+	/// comment warns about on the CAD side.
+	/// </summary>
+	private void ApplyHeadTailEdit( Vec3 head, Vec3 tail )
+	{
+		try
+		{
+			Skeleton.SetHeadTail( _selectedBone, head, tail );
+		}
+		catch ( ArgumentException )
+		{
+			// Momentarily zero-length mid-edit — leave the model alone until the text means
+			// something again, same as EffigyNumericField's own "?" readout for unparsed text.
+		}
+	}
+
+	private void OnBonePosed( int index )
+	{
+		if ( index == _selectedBone )
+			RefreshInspector();
+	}
+
 	// --- selection sync (viewport <-> tree) -------------------------------------------------
 
 	/// <summary>Called both from the tree's own selection callback and from the viewport when a
@@ -359,6 +505,8 @@ internal sealed class EffigyRigPanel : Widget
 
 		if ( index >= 0 && index < Skeleton.Count && _nodes.TryGetValue( Skeleton.Bones[index].Name, out var node ) )
 			_tree.SelectItem( node );
+
+		RefreshInspector();
 	}
 
 	// --- rename / delete ---------------------------------------------------------------------
@@ -398,6 +546,7 @@ internal sealed class EffigyRigPanel : Widget
 
 			menu.Close();
 			RebuildTree();
+			RefreshInspector();
 		};
 
 		menu.AddWidget( edit );
@@ -428,6 +577,7 @@ internal sealed class EffigyRigPanel : Widget
 		DisarmAssign();
 
 		RebuildTree();
+		RefreshInspector();
 	}
 
 	private void OpenBoneMenu( int index )

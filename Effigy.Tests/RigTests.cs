@@ -28,6 +28,9 @@ public static class RigTests
 		Section( "mirroring a bone subtree" );
 		TestMirrorSubtree();
 
+		Section( "editing a bone's head/tail numerically" );
+		TestSetHeadTail();
+
 		Section( "Euler conversion round-trips" );
 		TestEuler();
 
@@ -239,6 +242,60 @@ public static class RigTests
 		threw = false;
 		try { s.MirrorSubtree( upperL, Vec3.Zero ); } catch ( ArgumentException ) { threw = true; }
 		Check( "a zero-length mirror normal is refused", threw );
+	}
+
+	static void TestSetHeadTail()
+	{
+		var s = ThreeBoneChain(); // root(0) -> mid(1) -> tip(2)
+
+		var rootHeadBefore = s.HeadWorld( 0 );
+		var rootTailBefore = s.TailWorld( 0 );
+		var midHeadBefore = s.HeadWorld( 1 );
+		var tipHeadBefore = s.HeadWorld( 2 );
+		var tipTailBefore = s.TailWorld( 2 );
+
+		// A PURE TRANSLATION of the root — same direction and length, just moved — has to carry
+		// every descendant by the identical rigid delta. This is not a Blender-style "connected"
+		// bone that stretches to chase a moving tail: a child's Local is frozen relative to its
+		// parent's BASIS, and a translation leaves that basis's rotation untouched, so the whole
+		// subtree rides along exactly.
+		var delta = new Vec3( 3, -1, 2 );
+		s.SetHeadTail( 0, rootHeadBefore + delta, rootTailBefore + delta );
+
+		Check( "root moved by the delta", Near( s.HeadWorld( 0 ), rootHeadBefore + delta ), s.HeadWorld( 0 ).ToString() );
+		Check( "root's length is unchanged by a pure translation", MathF.Abs( s.Bones[0].Length - 2f ) < 1e-4f );
+		Check( "mid carried by the same rigid delta", Near( s.HeadWorld( 1 ), midHeadBefore + delta ), s.HeadWorld( 1 ).ToString() );
+		Check( "tip carried by the same rigid delta", Near( s.HeadWorld( 2 ), tipHeadBefore + delta ), s.HeadWorld( 2 ).ToString() );
+		Check( "tip's tail carried too", Near( s.TailWorld( 2 ), tipTailBefore + delta ), s.TailWorld( 2 ).ToString() );
+
+		// Editing the MIDDLE of the chain must not disturb the root above it. It also does NOT drag
+		// the tip's head along to chase mid's new tail — the tip's own Local is frozen relative to
+		// mid's basis at whatever length mid had when the tip was placed, exactly the same "not
+		// connected" rule the translation case above relies on, just now visible because THIS edit
+		// also changes mid's length. What WorldBind guarantees is that the tip is recomputed fresh,
+		// not stale — its world position has to move even though nothing about the tip itself was
+		// touched, because it composes against mid's new Local.
+		var rootHeadNow = s.HeadWorld( 0 );
+		var tipHeadBeforeMidEdit = s.HeadWorld( 2 );
+		var newMidTail = new Vec3( 1, 8, 2 );
+		s.SetHeadTail( 1, s.HeadWorld( 1 ), newMidTail );
+
+		Check( "editing mid leaves root alone", Near( s.HeadWorld( 0 ), rootHeadNow ), s.HeadWorld( 0 ).ToString() );
+		Check( "mid's own head/tail land exactly where requested",
+			Near( s.HeadWorld( 1 ), midHeadBefore + delta ) && Near( s.TailWorld( 1 ), newMidTail ),
+			s.TailWorld( 1 ).ToString() );
+		Check( "mid's length is measured from the new tail, not left stale",
+			MathF.Abs( s.Bones[1].Length - (newMidTail - ( midHeadBefore + delta )).Length ) < 1e-3f );
+		Check( "the tip is recomputed fresh rather than cached",
+			(s.HeadWorld( 2 ) - tipHeadBeforeMidEdit).Length > 0.5f, s.HeadWorld( 2 ).ToString() );
+
+		var threw = false;
+		try { s.SetHeadTail( 0, Vec3.Zero, Vec3.Zero ); } catch ( ArgumentException ) { threw = true; }
+		Check( "a zero-length edit is refused", threw );
+
+		threw = false;
+		try { s.SetHeadTail( 99, Vec3.Zero, new Vec3( 0, 1, 0 ) ); } catch ( ArgumentOutOfRangeException ) { threw = true; }
+		Check( "editing an out-of-range index is refused", threw );
 	}
 
 	static void TestEuler()
