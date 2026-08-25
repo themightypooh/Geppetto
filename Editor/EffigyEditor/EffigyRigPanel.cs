@@ -744,6 +744,7 @@ internal sealed class EffigyRigPanel : Widget
 		edit.ReturnPressed += () =>
 		{
 			var name = edit.Text?.Trim();
+			var renamed = false;
 
 			if ( !string.IsNullOrWhiteSpace( name ) )
 			{
@@ -758,6 +759,8 @@ internal sealed class EffigyRigPanel : Widget
 
 						foreach ( var body in BodiesOnBone( oldName ) )
 							_bodyBoneMap[body] = name;
+
+						renamed = true;
 					}
 					catch ( ArgumentException )
 					{
@@ -767,8 +770,15 @@ internal sealed class EffigyRigPanel : Widget
 			}
 
 			menu.Close();
-			RebuildTree();
-			RefreshInspector();
+
+			// Blank text, the unchanged name, or a name already taken all leave the bone exactly
+			// as it was — nothing for the tree to redraw, and rebuilding it anyway would collapse
+			// whatever chain was expanded over a rename that never happened.
+			if ( renamed )
+			{
+				RebuildTree();
+				RefreshInspector();
+			}
 		};
 
 		menu.AddWidget( edit );
