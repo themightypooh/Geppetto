@@ -86,6 +86,7 @@ public static class Program
 		MergeTests.Run();
 
 		FaceMaterialTests.Run();
+		FaceMenuTests.Run();
 
 		DocumentTests.Run();
 

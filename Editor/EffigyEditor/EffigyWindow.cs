@@ -595,6 +595,7 @@ public sealed class EffigyWindow : DockWindow
 		_leftPanel.Layout.Add( _partsPanel );
 
 		_viewport.SketchEdited = OnSketchEdited;
+		_viewport.FaceContextMenuRequested = OpenFaceMaterialMenu;
 
 		// Fired BEFORE the viewport changes a sketch, which is the only moment a useful "before"
 		// exists to snapshot.
@@ -1466,6 +1467,20 @@ public sealed class EffigyWindow : DockWindow
 		/// </summary>
 		public Dictionary<SketchFeature, Sketch> Sketches;
 
+		/// <summary>
+		/// The faces each material assignment holds, which are not parameters either and so were
+		/// invisible to undo for the same reason sketch geometry was.
+		///
+		/// This mattered little while the only way to pick faces was a dialog you could cancel. It
+		/// matters now that right-clicking a face assigns one: without it, Ctrl+Z after a right-click
+		/// took away a feature it had just added and left a face added to an existing one exactly
+		/// where it was.
+		/// </summary>
+		public Dictionary<FaceMaterialFeature, List<FaceRef>> FaceSets;
+
+		/// <summary>Slot names, renamed from the same menu.</summary>
+		public Dictionary<int, string> MaterialNames;
+
 		public int RollbackIndex;
 	}
 
@@ -1490,11 +1505,18 @@ public sealed class EffigyWindow : DockWindow
 		foreach ( var feature in _studio.Features.OfType<SketchFeature>() )
 			sketches[feature] = feature.Sketch.Clone();
 
+		var faceSets = new Dictionary<FaceMaterialFeature, List<FaceRef>>();
+
+		foreach ( var feature in _studio.Features.OfType<FaceMaterialFeature>() )
+			faceSets[feature] = new List<FaceRef>( feature.Faces );
+
 		return new StudioSnapshot
 		{
 			Features = _studio.Features.ToList(),
 			Values = values,
 			Sketches = sketches,
+			FaceSets = faceSets,
+			MaterialNames = new Dictionary<int, string>( _studio.MaterialNames ),
 			RollbackIndex = _studio.RollbackIndex,
 		};
 	}
@@ -1537,6 +1559,19 @@ public sealed class EffigyWindow : DockWindow
 			feature.Sketch.Constraints = sketch.Constraints
 				.Select( c => new SketchConstraint( c.Kind, c.CurveId ) ).ToList();
 		}
+
+		// Put back INTO the existing lists, for the same reason sketch geometry is: the dialog's
+		// selection box holds a direct reference to the feature it is editing.
+		foreach ( var (feature, faces) in snapshot.FaceSets )
+		{
+			feature.Faces.Clear();
+			feature.Faces.AddRange( faces );
+		}
+
+		_studio.MaterialNames.Clear();
+
+		foreach ( var (slot, name) in snapshot.MaterialNames )
+			_studio.MaterialNames[slot] = name;
 
 		_studio.MarkAllDirty();
 
@@ -1610,6 +1645,28 @@ public sealed class EffigyWindow : DockWindow
 		foreach ( var (feature, sketch) in a.Sketches )
 		{
 			if ( !b.Sketches.TryGetValue( feature, out var other ) || !SameSketch( sketch, other ) )
+				return false;
+		}
+
+		if ( a.FaceSets.Count != b.FaceSets.Count )
+			return false;
+
+		foreach ( var (feature, faces) in a.FaceSets )
+		{
+			// By COUNT, not by comparing references. Two captures of the same face are not equal, so
+			// a per-element comparison would call every snapshot different and put a step on the undo
+			// stack for clicks that changed nothing. A count is enough for what this decides: whether
+			// a face went in or came out.
+			if ( !b.FaceSets.TryGetValue( feature, out var others ) || faces.Count != others.Count )
+				return false;
+		}
+
+		if ( a.MaterialNames.Count != b.MaterialNames.Count )
+			return false;
+
+		foreach ( var (slot, name) in a.MaterialNames )
+		{
+			if ( !b.MaterialNames.TryGetValue( slot, out var other ) || name != other )
 				return false;
 		}
 
@@ -1843,6 +1900,124 @@ internal sealed class EffigyFeatureTreePanel : Widget
 		_studio is not null
 		&& _studio.RollbackIndex < _studio.Features.Count
 		&& _studio.Features.IndexOf( feature ) == _studio.EffectiveCount;
+
+	// --- right-click a face -------------------------------------------------------------------
+
+	/// <summary>
+	/// The material menu on a face of the model.
+	///
+	/// The Face Material feature on the toolbar is how you paint a SET of faces in one go, and it is
+	/// the wrong shape for the common case: one face, one slot, now. Opening a dialog, arming a
+	/// selection box, clicking the face, closing the dialog is five actions for a thing you were
+	/// already pointing at.
+	///
+	/// It still goes through the history. Writing the slot straight onto the mesh would work until
+	/// the next rebuild and then quietly revert — bodies are rebuilt from scratch, which is the whole
+	/// reason FaceMaterialFeature exists (see FaceMaterialTests: "the reason this is a feature").
+	/// </summary>
+	private void OpenFaceMaterialMenu( EffigyFaceHit hit )
+	{
+		if ( _studio is null || _viewport is null || hit.Body is null )
+			return;
+
+		var menu = new Menu( _viewport );
+
+		menu.AddHeading( $"Face — {_studio.NameForSlot( hit.Material )}" );
+
+		foreach ( var slot in MenuMaterialSlots() )
+		{
+			var value = slot;
+
+			// Slot 0 is the default every face starts on and the one the viewport deliberately does
+			// not tint, so it gets the hollow marker — "no material" rather than "material zero".
+			var option = menu.AddOption( _studio.NameForSlot( value ),
+				value == 0 ? "panorama_fish_eye" : "lens",
+				() => AssignFaceMaterial( hit, value ) );
+
+			option.Checkable = true;
+			option.Checked = hit.Material == value;
+		}
+
+		menu.AddSeparator();
+
+		var rename = menu.AddOption( $"Rename {_studio.NameForSlot( hit.Material )}…", "edit",
+			() => BeginMaterialSlotRename( hit.Material ) );
+
+		rename.StatusTip = "The name every exporter writes for this slot";
+
+		var shade = menu.AddOption( "Shade Material Slots", "palette",
+			() => _viewport.ShadeMaterialSlots = !_viewport.ShadeMaterialSlots );
+
+		shade.Checkable = true;
+		shade.Checked = _viewport.ShadeMaterialSlots;
+
+		menu.OpenAtCursor();
+	}
+
+	/// <summary>
+	/// Which slots the menu offers: zero through seven, plus anything the document already uses.
+	///
+	/// Seven is not arbitrary — it is how many colours the viewport tints with, so every slot on the
+	/// menu is one you can tell apart on screen. The kernel allows 0..63 and nobody picks slot 40 off
+	/// a list, but a document that arrived with one must not be unreachable, so the slots already in
+	/// use are added back in however high they are.
+	/// </summary>
+	private IEnumerable<int> MenuMaterialSlots()
+	{
+		var slots = new SortedSet<int>();
+
+		for ( var i = 0; i <= 7; i++ )
+			slots.Add( i );
+
+		foreach ( var slot in FaceMaterialEdit.UsedSlots( _studio ) )
+			slots.Add( slot );
+
+		return slots;
+	}
+
+	/// <summary>Name a slot, in the one-field popup the feature tree renames with.</summary>
+	private void BeginMaterialSlotRename( int slot )
+	{
+		var menu = new Menu( this );
+		var edit = new LineEdit( _studio.NameForSlot( slot ), menu ) { FixedWidth = 190 };
+
+		edit.ReturnPressed += () =>
+		{
+			RecordUndo();
+
+			var name = edit.Text?.Trim();
+
+			// Clearing it puts the slot back on its numbered default rather than leaving it blank.
+			// Every exporter has to write SOMETHING per slot, and an empty usemtl is not it.
+			if ( string.IsNullOrWhiteSpace( name ) || name == $"material_{slot}" )
+				_studio.MaterialNames.Remove( slot );
+			else
+				_studio.MaterialNames[slot] = name;
+
+			menu.Close();
+			RebuildStudio();
+		};
+
+		menu.AddWidget( edit );
+		menu.OpenAtCursor();
+
+		edit.Focus();
+		edit.SelectAll();
+	}
+
+	/// <summary>Put one face on one slot. The bookkeeping — which assignment to reuse, what happens
+	/// to the one the face is leaving, where a new one goes in a rolled-back tree — is
+	/// FaceMaterialEdit in the kernel, where FaceMenuTests can hold it to account.</summary>
+	private void AssignFaceMaterial( EffigyFaceHit hit, int slot )
+	{
+		if ( _studio is null || hit.Body is null || hit.Material == slot )
+			return;
+
+		RecordUndo();
+
+		if ( FaceMaterialEdit.Assign( _studio, hit.Body.Id, hit.FaceIndex, hit.Reference, slot ) )
+			RebuildStudio();
+	}
 
 	/// <summary>
 	/// Rename in place: a one-field popup at the cursor, which is what Menu.AddWidget is for.

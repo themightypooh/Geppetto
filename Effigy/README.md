@@ -57,6 +57,7 @@ Exit code is non-zero on failure, so it works as a pre-commit or CI check unchan
 | `Features/BasicFeatures.cs` | primitive, transform, linear/circular pattern, mirror, subdivide |
 | `Features/SketchFeatures.cs` | sketch, extrude, revolve |
 | `Features/SolidFeatures.cs` | shell, bevel, UV project, face material — the ops that act on a solid once it exists |
+| `Features/FaceMaterialEdit.cs` | putting one face on a slot, for the editor's right-click menu — which assignment to reuse, and what happens to the one the face is leaving |
 | `Sketch/SketchPlane.cs` | the plane a sketch lives on, and plane↔world mapping |
 | `Sketch/Sketch.cs` | points, lines, arcs, circles, tessellation |
 | `Sketch/Profile.cs` | closed-region finding, nesting, orientation |

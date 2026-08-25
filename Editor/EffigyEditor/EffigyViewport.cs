@@ -730,8 +730,14 @@ internal sealed partial class EffigyViewport : Widget
 
 		_gizmoInstance.Input.IsHovered = IsActiveWindow && overCanvas;
 
-		if ( _gizmoInstance.FirstPersonCamera( _camera, _canvas ) )
+		var flying = _gizmoInstance.FirstPersonCamera( _camera, _canvas );
+
+		if ( flying )
 			_gizmoInstance.Input.IsHovered = false;
+
+		// Whether this right-press has actually moved the view yet — see EffigyViewport.FaceMenu.cs,
+		// which uses it to tell a right-click apart from the end of an orbit.
+		NoteCameraFlight( flying );
 
 		// After FirstPersonCamera has had its say this means "the cursor is over the canvas and we
 		// are not flying the camera" - which is exactly the condition a sketch click needs. Without
@@ -739,6 +745,9 @@ internal sealed partial class EffigyViewport : Widget
 		_canvasHasCursor = _gizmoInstance.Input.IsHovered;
 
 		_canvas.UpdateGizmoInputs( _gizmoInstance.Input.IsHovered );
+
+		// Held for the right-click menu, which has no frame of its own to build a ray in.
+		CaptureCursorRay();
 
 		// Draw planes first (behind everything else)
 		DrawReferencePlanes();

@@ -264,3 +264,51 @@ feature:
    inference puts there. That, and a dimension tool, are what turn it into something a user can use.
 
 Note that 3 and 4 are both reachable and verifiable in this repo with no engine present.
+
+## Where this left off
+
+Everything below the line is kernel-side and verified by `tools/test.sh` (1104 checks). Everything
+in `Editor/EffigyEditor` is written and syntax-checked but **has never been compiled** — there is no
+s&box assembly in this repo, so nothing there resolves names. That is the standing risk and the
+reason the split below is drawn where it is: anything that could be moved into the kernel and tested
+was.
+
+**Just landed.** Right-clicking a face of the model opens a material menu — the slots, a rename for
+the one it is on, and the viewport's slot-shading toggle. The toolbar's Face Material feature is
+still there for painting a set of faces deliberately; this is for the common case of one face, one
+slot, now.
+
+- `Effigy/Features/FaceMaterialEdit.cs` — the bookkeeping, and the tested half. Which assignment to
+  reuse, what happens to the one a face is leaving, where a new one goes in a rolled-back tree.
+  Covered by `Effigy.Tests/FaceMenuTests.cs`.
+- `Editor/EffigyEditor/EffigyViewport.FaceMenu.cs` — the raycast and the right-click. Holds last
+  frame's cursor ray, because `Gizmo.CurrentRay` means nothing inside a menu callback, and refuses
+  the menu for a quarter second after the fly camera last actually moved, because the context-menu
+  event arrives on the button RELEASE and every orbit ends over the model.
+- `EffigyWindow.OpenFaceMaterialMenu` — the menu itself. Undo now snapshots face sets and slot names,
+  which it did not before; without that, Ctrl+Z after a right-click removed the feature it had added
+  and left a face added to an existing one exactly where it was.
+
+**Two things still need the user's machine, and only the user's machine.**
+
+1. A compile of the editor half. Nothing in `Editor/EffigyEditor` has been through a compiler.
+2. `effigy_probe_boolean`, which dumps s&box's `PolygonMesh` API. That is the whole of what stands
+   between the built-and-tested cut/Remove path and it working — see item 5 above.
+
+**In progress when this stopped.** The feature toolbar's icons. The sketch row was redrawn and
+pushed (`EffigyIcons.cs`, sketch-tool section); the feature row was rendered and read but not yet
+redrawn. What the render showed: Extrude reads as a plumb bob and its arrow points away from the
+profile, Revolve collapses into a bar and a blob, Bevel reads as a file icon, Subdivide reads as
+"add", and Circular pattern's dashed ring vanishes at 18px. Mirror and Linear pattern are fine as
+they are. The preview harness that produced that judgement is not in the repo — it is a small PIL
+mock of `Editor.Paint` that renders a glyph at 18/28/48px, and rebuilding it is an hour that pays
+for itself, because the only way to know whether an icon reads is to look at it at size.
+
+**Not started, and no longer blocked on anything.** Dimension and constraint UI. The solver has had
+angle, point-on-line, symmetric and radius for a while now and there is still no way to add a
+constraint in the editor, so it only ever runs on what the inference puts there.
+
+**A habit worth keeping.** Three separate limitations in this file were documented as needing the
+mesh boolean and none of them did — profiles with holes, revolve with holes, and up-to-face
+termination. Treat every remaining "not supported yet" string in the kernel as suspect until it has
+been re-derived rather than re-read.
