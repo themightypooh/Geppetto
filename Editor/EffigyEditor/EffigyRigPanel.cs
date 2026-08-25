@@ -252,6 +252,16 @@ internal sealed class EffigyRigPanel : Widget
 			return;
 		}
 
+		// SketchPickMode is a second, separate case: an open Extrude/Revolve dialog leaves it true
+		// for the dialog's whole editing session — see EffigySketchSelector, whose Disarm only
+		// toggles its own highlight, not this — so PickModeCancelled below never touches it. Same
+		// refusal, same reason: closing that dialog isn't this tool's call to make.
+		if ( active && _viewport.SketchPickMode )
+		{
+			_viewport.SetPickPrompt( "Close the open feature's dialog first." );
+			return;
+		}
+
 		if ( active )
 		{
 			DisarmAssign();
