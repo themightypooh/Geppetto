@@ -774,7 +774,12 @@ internal sealed partial class EffigyViewport : Widget
 
 		DrawViewCube();
 
+		// BoneToolActive and BodyPickMode: the same "you can click here" signal every other live
+		// pick mode already gets from Gizmo.HasHovered/_hoveredSketchId/_hoveredFaceBodyId. Without
+		// it, placing a bone or assigning a body was the only click-to-act mode in the whole tool
+		// that left the cursor a plain arrow the entire time.
 		Cursor = Gizmo.HasHovered || IsSketching || _hoveredSketchId is not null || _hoveredFaceBodyId is not null
+			|| BoneToolActive || BodyPickMode
 			? CursorShape.Finger : CursorShape.Arrow;
 	}
 
