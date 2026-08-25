@@ -710,6 +710,13 @@ public sealed class EffigyWindow : DockWindow
 		if ( _viewport.IsSketching && feature != _dialog?.Feature )
 			FinishSketch();
 
+		// Same reasoning as FinishSketch above, for the bone tool: opening a dialog that may set
+		// SketchPickMode (Extrude/Revolve) or arm a body/plane picker of its own would otherwise
+		// collide with it exactly the way an open sketch would. Cheap to cancel outright — all
+		// that's lost is an empty pending-chain state, not a feature mid-edit.
+		if ( _viewport.BoneToolActive && feature != _dialog?.Feature )
+			_rigPanel?.CancelBoneTool();
+
 		if ( _dialog is null || (_dialog.IsOpen && _dialog.Feature == feature) )
 			return;
 
