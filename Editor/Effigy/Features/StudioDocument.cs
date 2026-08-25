@@ -58,6 +58,14 @@ public static class StudioDocument
 		sb.Append( "effigy " ).Append( Version ).Append( '\n' );
 		sb.Append( "rollback " ).Append( studio.RollbackIndex ).Append( '\n' );
 
+		// Sorted, so two saves of the same document are the same bytes. A dictionary's order is not
+		// promised, and a format that reshuffles itself makes every diff useless.
+		foreach ( var (slot, name) in studio.MaterialNames.OrderBy( kv => kv.Key ) )
+		{
+			if ( !string.IsNullOrWhiteSpace( name ) )
+				sb.Append( "material " ).Append( slot ).Append( ' ' ).Append( OneLine( name ) ).Append( '\n' );
+		}
+
 		foreach ( var feature in studio.Features )
 			WriteFeature( sb, feature );
 
@@ -264,6 +272,13 @@ public static class StudioDocument
 			if ( line.StartsWith( "rollback " ) )
 			{
 				rollback = ParseInt( line[9..], int.MaxValue );
+				continue;
+			}
+
+			if ( line.StartsWith( "material " ) )
+			{
+				var (slot, name) = Split( line[9..] );
+				studio.MaterialNames[ParseInt( slot, 0 )] = name;
 				continue;
 			}
 

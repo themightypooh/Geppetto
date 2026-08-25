@@ -316,6 +316,18 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 {
 	public override string TypeName => "Extrude";
 
+	/// <summary>
+	/// Where the extrude stops.
+	///
+	/// Blind is a typed distance and is what it has always done. The other two ask the model instead:
+	/// UP TO NEXT stops at the first thing in the way, and THROUGH ALL goes past everything. Neither
+	/// needs a boolean — both are questions about DISTANCE, answered by a raycast, and the solid they
+	/// produce is an ordinary prism. That is worth saying because "up to face" sits next to "cut" in
+	/// every CAD tool and reads like it must need one.
+	/// </summary>
+	public readonly ChoiceParam Termination = new( "Termination",
+		new[] { "Blind", "Up to next", "Through all" } );
+
 	public readonly FloatParam Distance = new( "Distance", 1f, unit: "u" );
 	public readonly BoolParam Symmetric = new( "Symmetric", false );
 	public readonly BoolParam Flip = new( "Flip direction", false );
@@ -343,18 +355,21 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 
 	public readonly IntParam Material = new( "Material slot", 0, 0, 63 );
 
-	public override IReadOnlyList<IParam> Parameters =>
-		new IParam[] { Sketch, Distance, SecondDistance, Symmetric, Flip, Taper, Result, Material };
+	public override IReadOnlyList<IParam> Parameters => Termination.Index == 0
+		? new IParam[] { Sketch, Termination, Distance, SecondDistance, Symmetric, Flip, Taper, Result, Material }
+		: new IParam[] { Sketch, Termination, Flip, Taper, Result, Material };
 
 	protected override void Execute( FeatureContext ctx )
 	{
 		var sketch = ResolveSketch( ctx );
 		var profiles = ResolveProfiles( sketch );
 
-		if ( MathF.Abs( Distance.Value ) < 1e-6f )
+		var reach = Termination.Index == 0 ? Distance.Value : MeasuredDistance( ctx, sketch, profiles );
+
+		if ( MathF.Abs( reach ) < 1e-6f )
 			throw new InvalidOperationException( "Distance cannot be zero" );
 
-		var distance = Flip.Value ? -Distance.Value : Distance.Value;
+		var distance = Flip.Value ? -reach : reach;
 		var second = MathF.Abs( SecondDistance.Value );
 
 		// Three ways to place the two ends, in priority order: symmetric splits the one distance,
@@ -378,6 +393,127 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 		{
 			var mesh = BuildPrism( sketch.Plane, profile, near, far, Taper.Clamped, Material.Clamped );
 			Emit( ctx, mesh );
+		}
+	}
+
+	/// <summary>
+	/// How far the extrude reaches when the model is what decides, rather than a typed number.
+	///
+	/// Rays are cast from inside the profile along the extrude direction and the NEAREST hit wins.
+	/// Nearest rather than furthest because the solid has to stop at the first thing in the way; a
+	/// further hit is something the first surface is already hiding.
+	///
+	/// THE CAP STAYS FLAT, and that is the honest limitation of doing this without a boolean. A real
+	/// "up to face" trims the new solid against the target surface, so a boss meeting an angled face
+	/// ends in a matching slope. This ends flat, at the nearest point of contact — exactly right when
+	/// the target is parallel to the sketch, and short of it by a visible gap when it is not. Visible
+	/// rather than silent, and warned about besides: if the sample rays disagree about the distance,
+	/// the target is not parallel and the feature says so.
+	/// </summary>
+	float MeasuredDistance( FeatureContext ctx, Sketch sketch, List<Profile> profiles )
+	{
+		var direction = Flip.Value ? -sketch.Plane.Normal : sketch.Plane.Normal;
+
+		// Everything already built. A sketch drawn on a face of one of these starts ON it, which is
+		// what the epsilon below is for.
+		var targets = ctx.Bodies.Where( b => b.Mesh is { FaceCount: > 0 } ).ToList();
+
+		if ( targets.Count == 0 )
+		{
+			throw new InvalidOperationException( Termination.Index == 1
+				? "Up to next needs something to stop at, and there is nothing else in the studio yet."
+				: "Through all needs something to pass through, and there is nothing else in the studio yet." );
+		}
+
+		if ( Termination.Index == 2 )
+			return ThroughAll( targets, sketch, direction );
+
+		var nearest = float.MaxValue;
+		var furthest = 0f;
+		var hits = 0;
+
+		foreach ( var origin in SampleOrigins( sketch, profiles ) )
+		{
+			if ( MeshRaycast.Raycast( targets, origin, direction ) is not { } hit )
+				continue;
+
+			// A sketch ON a face starts flush with it, and that face is not something to stop at —
+			// it is where the extrude begins.
+			if ( hit.Hit.Distance < 1e-4f )
+				continue;
+
+			nearest = MathF.Min( nearest, hit.Hit.Distance );
+			furthest = MathF.Max( furthest, hit.Hit.Distance );
+			hits++;
+		}
+
+		if ( hits == 0 )
+		{
+			throw new InvalidOperationException(
+				"Up to next found nothing in the way — no face lies ahead of this profile. Use a blind "
+				+ "distance, or flip the direction." );
+		}
+
+		if ( furthest - nearest > 1e-3f )
+		{
+			Warning = $"The face ahead is not parallel to the sketch: it is between {nearest:0.###} and "
+				+ $"{furthest:0.###} away. The extrude stops flat at the nearest point, so it will not "
+				+ "meet the far side.";
+		}
+
+		return nearest;
+	}
+
+	/// <summary>Far enough to clear everything: the furthest any target reaches along the direction,
+	/// plus a margin. A prism that stops exactly on a surface is a coplanar face waiting to confuse
+	/// whatever consumes it next.</summary>
+	static float ThroughAll( List<Body> targets, Sketch sketch, Vec3 direction )
+	{
+		var origin = sketch.Plane.Origin;
+		var reach = 0f;
+
+		foreach ( var body in targets )
+		{
+			foreach ( var p in body.Mesh.Positions )
+				reach = MathF.Max( reach, Vec3.Dot( p - origin, direction ) );
+		}
+
+		if ( reach <= 0f )
+		{
+			throw new InvalidOperationException(
+				"Through all found nothing ahead of this profile — everything is behind it. Flip the direction." );
+		}
+
+		// Ten percent past the last thing it has to clear, and never less than a whole unit, so a
+		// tiny model does not end up with a margin too small to matter.
+		return reach + MathF.Max( reach * 0.1f, 1f );
+	}
+
+	/// <summary>
+	/// Points inside the profile to cast from: its centroid plus each corner pulled toward that
+	/// centroid.
+	///
+	/// The corners matter. Casting from the centroid alone reads one point of the target and calls
+	/// it the answer, which is how a profile that overhangs an edge — or sits over a hole — measures
+	/// against something it barely touches. Pulling each corner inward keeps every ray inside the
+	/// material rather than balanced on its boundary.
+	/// </summary>
+	static IEnumerable<Vec3> SampleOrigins( Sketch sketch, List<Profile> profiles )
+	{
+		foreach ( var profile in profiles )
+		{
+			var loop = profile.Outer;
+			var centroid = Vec2.Zero;
+
+			foreach ( var p in loop )
+				centroid += p;
+
+			centroid /= loop.Count;
+
+			yield return sketch.Plane.ToWorld( centroid );
+
+			foreach ( var p in loop )
+				yield return sketch.Plane.ToWorld( p + (centroid - p) * 0.05f );
 		}
 	}
 

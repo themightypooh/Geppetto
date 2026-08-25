@@ -36,7 +36,7 @@ machine. A session that skips this ends up reasoning about the code by reading i
 is how a bug that made every parameter edit a silent no-op survived long enough to look like three
 unrelated UI faults.
 
-1040 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
+1066 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
 2-level-subdivided version of each. Those are the fastest way to see whether something is actually
 right: open them in Blender, or drop one into ModelDoc to find out what s&box makes of it.
 
@@ -256,6 +256,13 @@ would eventually guess a hole into someone's part.
 
 ### Materials per face
 
+**Slots can be named.** `PartStudio.MaterialNames` maps a slot to whatever a person called it, and
+`NameForSlot` hands that to any of the three exporters — falling back to `material_0`, `material_1`
+for anything unnamed. A number is all the geometry needs and it is not what someone binding the model
+in ModelDoc wants to look at. Names live on the studio rather than the mesh because a slot means the
+same thing across every body in the document: slot 2 is "rubber" everywhere or it is nothing.
+
+
 Every face carries a material slot and every exporter groups by it, so a model can arrive in ModelDoc
 with several slots to bind. `FaceMaterialFeature` is what sets them: pick faces, give them a slot.
 
@@ -315,6 +322,29 @@ mid-edit, which is most of the time while someone is adding constraints.
 The derivatives are checked against finite differences in `ConstraintTests`, and that is not
 ceremony: a wrong derivative does not produce a wrong answer, it produces a slow or unstable one, so
 it presents as "the solver feels flaky" and never as a failing assert.
+
+## Extrudes that measure instead of being told
+
+`Termination` is Blind (a typed distance, as always), **Up to next** or **Through all**. Neither of
+the last two needs a boolean, which is worth saying because "up to face" sits next to "cut" in every
+CAD tool and reads like it must: both are questions about *distance*, answered by a raycast against
+what is already built, and the solid they produce is an ordinary prism.
+
+Rays go out from inside the profile — its centroid plus every corner pulled slightly in, because
+casting from the centroid alone reads one point of the target and calls it the answer. The **nearest**
+hit wins: a solid has to stop at the first thing in the way, and anything beyond that is already
+hidden behind it. A hit at zero distance is ignored, which is what lets a sketch drawn *on* a face
+measure past the face it starts on.
+
+**The cap stays flat, and that is the honest limit of doing this without a boolean.** A real up-to-face
+trims the new solid against the target *surface*, so a boss meeting an angled face ends in a matching
+slope. This ends flat at the nearest point of contact — exactly right when the target is parallel,
+and short of it by a visible gap when it is not. Visible rather than silent, and warned about besides:
+if the sample rays disagree about the distance, the feature says so and names both numbers.
+
+Through all deliberately clears the far surface rather than stopping flush with it. A prism ending
+exactly on a face leaves two coplanar faces touching, which is the case every downstream operation
+finds hardest — and precisely what a boolean would then have to resolve.
 
 ## Draft, and two-sided extrudes
 

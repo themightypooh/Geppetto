@@ -139,6 +139,14 @@ to face, up to shape, symmetric), `Length`/`Length2`, `TaperAngle`, `Offset`, `U
 **For Effigy**, the cheap wins that need no boolean are taper angle and a second, independent
 distance for the other side. "Up to face" and "through all" need the boolean and belong with it.
 
+**Correction, from building them.** They do not. Both are questions about DISTANCE — how far to the
+first thing in the way, how far past the last — and a raycast answers each without any CSG at all.
+What the boolean would add is trimming the new solid against the target SURFACE, so a boss meeting an
+angled face ends in a matching slope instead of a flat cap short of it. That is a real difference and
+a much smaller one than "needs the boolean" implied: it is the difference between exact and
+approximate on angled targets, not between working and not working. Both are built, and the flat cap
+is warned about whenever the sample rays disagree.
+
 ## 7. The constraint solver
 
 Effigy's sketcher has inference (horizontal/vertical/point snapping) and stores

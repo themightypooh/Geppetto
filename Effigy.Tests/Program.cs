@@ -95,6 +95,8 @@ public static class Program
 
 		BranchTests.Run();
 
+		TerminationTests.Run();
+
 		EditorFlowTests.Run();
 
 		KernelSyncTests.Run();

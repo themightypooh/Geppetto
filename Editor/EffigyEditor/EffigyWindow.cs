@@ -1249,7 +1249,11 @@ public sealed class EffigyWindow : DockWindow
 		Directory.CreateDirectory( folder );
 
 		var objPath = Path.Combine( folder, "export.obj" );
-		ObjWriter.WriteFile( _studio.ToMesh(), objPath, "effigy_export" );
+
+		// Slot names go through so the file names its materials the way the user did, rather than
+		// material_0..63. NameForSlot falls back to the numbers for anything unnamed.
+		ObjWriter.WriteFile( _studio.ToMesh(), objPath, "effigy_export",
+			materialName: _studio.NameForSlot );
 		Log.Info( $"[Effigy] exported {objPath}" );
 	}
 
@@ -1284,10 +1288,11 @@ public sealed class EffigyWindow : DockWindow
 			// carries a skeleton and per-vertex weights. The .smd is still written alongside it
 			// because every DCC reads one and it costs nothing to keep.
 			var smdPath = Path.Combine( folder, "export.smd" );
-			SmdWriter.WriteFile( mesh, smdPath, skeleton );
+			SmdWriter.WriteFile( mesh, smdPath, skeleton, materialName: _studio.NameForSlot );
 
 			var dmxPath = Path.Combine( folder, "export.dmx" );
-			DmxWriter.WriteFile( mesh, dmxPath, skeleton, modelName: "effigy_export" );
+			DmxWriter.WriteFile( mesh, dmxPath, skeleton, materialName: _studio.NameForSlot,
+				modelName: "effigy_export" );
 
 			Log.Info( $"[Effigy] wrote {dmxPath} - {skeleton.Count} bones, {mesh.VertexCount} vertices" );
 
@@ -1321,7 +1326,8 @@ public sealed class EffigyWindow : DockWindow
 
 		// STATIC PATH: no bones — export a weightless OBJ.
 		var staticObjPath = Path.Combine( folder, "export.obj" );
-		ObjWriter.WriteFile( _studio.ToMesh(), staticObjPath, "effigy_export" );
+		ObjWriter.WriteFile( _studio.ToMesh(), staticObjPath, "effigy_export",
+			materialName: _studio.NameForSlot );
 
 		var staticVmdlPath = Path.Combine( folder, "export.vmdl" );
 		File.WriteAllText( staticVmdlPath, BuildVmdl( "models/effigy/export.obj" ) );

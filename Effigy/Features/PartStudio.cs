@@ -51,6 +51,25 @@ public sealed class PartStudio
 	/// the rollback bar sitting above feature RollbackIndex.</summary>
 	public int RollbackIndex = int.MaxValue;
 
+	/// <summary>
+	/// What each material slot is called, for the slots someone has bothered to name.
+	///
+	/// Faces carry a slot NUMBER, which is all the geometry needs and all it should know. But a
+	/// number is what the exporters were writing out too — material_0, material_3 — so binding a
+	/// model in ModelDoc meant remembering which number meant what. A name travels with the file.
+	///
+	/// On the studio rather than on the mesh because a slot means the same thing across every body
+	/// in the document: slot 2 is "rubber" everywhere or it is nothing.
+	/// </summary>
+	public Dictionary<int, string> MaterialNames = new();
+
+	/// <summary>The name for a slot, falling back to the numbered default. Pass this straight to any
+	/// of the exporters.</summary>
+	public string NameForSlot( int slot ) =>
+		MaterialNames.TryGetValue( slot, out var name ) && !string.IsNullOrWhiteSpace( name )
+			? name
+			: ObjWriter.DefaultMaterialName( slot );
+
 	/// <summary>Result of the last rebuild.</summary>
 	public List<Body> Bodies { get; private set; } = new();
 

@@ -67,6 +67,13 @@ public static class DocumentTests
 		Report.Check( "the rollback bar comes back", back.RollbackIndex == studio.RollbackIndex,
 			$"{studio.RollbackIndex} became {back.RollbackIndex}" );
 
+		Report.Check( "material slot names come back, spaces and all",
+			back.NameForSlot( 3 ) == "brushed steel" && back.NameForSlot( 7 ) == "rubber",
+			$"{back.NameForSlot( 3 )} / {back.NameForSlot( 7 )}" );
+
+		Report.Check( "and an unnamed slot still falls back to its number",
+			back.NameForSlot( 5 ) == "material_5", back.NameForSlot( 5 ) );
+
 		var box = (PrimitiveFeature)back.Features[0];
 
 		Report.Check( "float parameters come back exactly",
@@ -346,6 +353,9 @@ public static class DocumentTests
 		shell.Suppressed = true;
 
 		studio.RollbackIndex = 6;
+
+		studio.MaterialNames[3] = "brushed steel";
+		studio.MaterialNames[7] = "rubber";
 
 		return studio;
 	}

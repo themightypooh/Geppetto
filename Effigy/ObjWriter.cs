@@ -1,3 +1,4 @@
+﻿using System;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -31,12 +32,21 @@ public static class ObjWriter
 	/// <summary>Kept as an alias so existing callers do not have to know where this moved to.</summary>
 	public const float DefaultSmoothingAngleDegrees = MeshNormals.DefaultSmoothingAngleDegrees;
 
-	public static void WriteFile( PolyMesh mesh, string path, string objectName = "model", float smoothingAngleDegrees = DefaultSmoothingAngleDegrees )
+	/// <summary>What an unnamed slot is called. Shared with SmdWriter and DmxWriter so a model
+	/// exported three ways names its materials the same three times.</summary>
+	public static string DefaultMaterialName( int slot ) => $"material_{slot}";
+
+	public static void WriteFile( PolyMesh mesh, string path, string objectName = "model",
+		float smoothingAngleDegrees = DefaultSmoothingAngleDegrees, Func<int, string> materialName = null )
 	{
-		File.WriteAllText( path, Write( mesh, objectName, smoothingAngleDegrees ) );
+		File.WriteAllText( path, Write( mesh, objectName, smoothingAngleDegrees, materialName ) );
 	}
 
-	public static string Write( PolyMesh mesh, string objectName = "model", float smoothingAngleDegrees = DefaultSmoothingAngleDegrees )
+	/// <param name="materialName">What to call each material slot. Defaults to material_0, material_1
+	/// and so on — a name a person chose is the difference between binding by meaning and binding by
+	/// number in whatever the model lands in.</param>
+	public static string Write( PolyMesh mesh, string objectName = "model",
+		float smoothingAngleDegrees = DefaultSmoothingAngleDegrees, Func<int, string> materialName = null )
 	{
 		var sb = new StringBuilder();
 		var c = CultureInfo.InvariantCulture;
@@ -88,7 +98,7 @@ public static class ObjWriter
 			if ( f.Material != currentMaterial )
 			{
 				currentMaterial = f.Material;
-				sb.Append( $"usemtl material_{currentMaterial}\n" );
+				sb.Append( $"usemtl {(materialName ?? DefaultMaterialName)( currentMaterial )}\n" );
 			}
 
 			sb.Append( 'f' );
