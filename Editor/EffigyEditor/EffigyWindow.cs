@@ -425,6 +425,12 @@ public sealed class EffigyWindow : DockWindow
 		_toolStrip.Visible = false;
 		_sketchStrip.Visible = true;
 
+		// Sketching and the bone tool both drive left-clicks in the viewport; only one may own
+		// them. The bone tool refuses to arm on top of an open sketch (see SetBoneToolActive), so
+		// the only direction this needs covering is the other one - entering a sketch while the
+		// bone tool happened to be armed.
+		_rigPanel?.CancelBoneTool();
+
 		RebuildStudio();
 
 		_viewport.BeginSketch( feature.Sketch );

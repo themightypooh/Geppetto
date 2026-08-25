@@ -230,8 +230,28 @@ internal sealed class EffigyRigPanel : Widget
 	/// Escape closes the current chain (so the next click starts a new, unparented root); Escape
 	/// again turns the tool off.
 	/// </summary>
+	/// <summary>Turn the bone tool off if it happens to be on — called from EffigyWindow when
+	/// entering a sketch, since IsSketching and BoneToolActive both drive left-clicks in the
+	/// viewport and nothing before this stopped them from being true at once. Safe to call any
+	/// time: a no-op when the tool is already off.</summary>
+	public void CancelBoneTool()
+	{
+		if ( _viewport.BoneToolActive )
+			SetBoneToolActive( false );
+	}
+
 	private void SetBoneToolActive( bool active )
 	{
+		// Sketching owns left-clicks in the viewport while it's open, the same way this tool
+		// does — arming on top of it would mean one click tries to do both. Refuse rather than
+		// force sketch mode closed: unlike this tool's own pending-chain state, a sketch mid-edit
+		// is a whole feature that closing behind the user's back could discard cleanly or not.
+		if ( active && _viewport.IsSketching )
+		{
+			_viewport.SetPickPrompt( "Finish or cancel the sketch first — Escape backs out of it." );
+			return;
+		}
+
 		if ( active )
 		{
 			DisarmAssign();
