@@ -562,17 +562,100 @@ public static class SketchTests
 			Check( "it is a valid closed mesh", validation.IsValid && validation.IsClosed, validation.ToString() );
 		}
 
-		// Revolve has no answer for a hole and says so itself, now that the shared refusal is gone.
+		// Revolve handles holes too, now that a holed cap exists for it to borrow. PAPPUS' THEOREM is
+		// the check: a region of area A whose centroid sits distance d from the axis sweeps a volume
+		// of 2*pi*d*A through a full turn, holes and all.
 		var revolvedHole = new PartStudio();
 		var rhs = revolvedHole.Add( new SketchFeature() );
 		rhs.Sketch.AddRectangle( new Vec2( 2, 2 ), new Vec2( 6, 6 ) );
-		rhs.Sketch.AddCircle( new Vec2( 4, 4 ), 1f );
+		var boreCircle = rhs.Sketch.AddCircle( new Vec2( 4, 4 ), 1f );
 		var holedRevolve = revolvedHole.Add( new RevolveFeature() );
 		revolvedHole.Rebuild();
 
-		Check( "revolving a holed profile still reports an error", holedRevolve.Error is not null );
-		Check( "and points at the feature that can do it",
-			holedRevolve.Error?.Contains( "Extrude" ) == true, holedRevolve.Error );
+		Check( "revolving a holed profile builds", holedRevolve.Error is null, holedRevolve.Error );
+
+		if ( holedRevolve.Error is null )
+		{
+			var ring = revolvedHole.Bodies[0].Mesh;
+
+			// The square and the bore share a centroid, so the composite one is still at y = 4.
+			var area = 16f - TessellatedArea( rhs.Sketch, boreCircle );
+			var expected = 2f * MathF.PI * 4f * area;
+
+			// MEASURED AGAINST THE SAME SQUARE WITH NO HOLE, not against Pappus directly.
+			//
+			// A revolve is faceted — 24 segments by default — so its volume runs about 1.1% under
+			// the true solid of revolution whether or not there is a hole in it. Comparing the holed
+			// result to Pappus therefore measures the faceting, and needs a tolerance loose enough to
+			// hide a real error in the hole. Comparing it to the UNHOLED sweep of the same square
+			// cancels the faceting exactly: both are approximated identically, so what is left is
+			// purely the proportion the hole removed. That ratio came out identical to five decimal
+			// places, which is what says the hole is handled exactly rather than approximately.
+			var control = new PartStudio();
+			var controlSketch = control.Add( new SketchFeature() );
+			controlSketch.Sketch.AddRectangle( new Vec2( 2, 2 ), new Vec2( 6, 6 ) );
+			control.Add( new RevolveFeature() );
+			control.Rebuild();
+
+			var solidVolume = Volume( control.Bodies[0].Mesh );
+
+			Check( "the hole removes exactly its share of the solid",
+				MathF.Abs( Volume( ring ) / solidVolume - area / 16f ) < 1e-4f,
+				$"removed {1f - Volume( ring ) / solidVolume:0.#####}, expected {1f - area / 16f:0.#####}" );
+
+			// And a loose absolute check, so a systematically wrong sweep cannot hide behind a ratio
+			// that is right for the wrong reason.
+			Check( "and Pappus agrees to within the faceting",
+				MathF.Abs( Volume( ring ) - expected ) < expected * 0.02f,
+				$"{Volume( ring ):0.####}, expected about {expected:0.####}" );
+
+			// Two disjoint torus surfaces, one inside the other: X = 0 + 0.
+			Check( "its boundary is two tori, so X = 0",
+				MeshValidator.EulerCharacteristic( ring ) == 0,
+				$"X = {MeshValidator.EulerCharacteristic( ring )}" );
+
+			Check( "and it is closed and valid",
+				MeshValidator.Validate( ring ) is { IsValid: true, IsClosed: true } );
+		}
+
+		// A PARTIAL revolution is the case that needs the holed cap, since a full one has no caps at
+		// all. Ninety degrees is a quarter of the volume above.
+		var quarter = new PartStudio();
+		var qs = quarter.Add( new SketchFeature() );
+		qs.Sketch.AddRectangle( new Vec2( 2, 2 ), new Vec2( 6, 6 ) );
+		var quarterBore = qs.Sketch.AddCircle( new Vec2( 4, 4 ), 1f );
+		var quarterRevolve = quarter.Add( new RevolveFeature() );
+		quarterRevolve.Angle.Value = 90f;
+		quarter.Rebuild();
+
+		Check( "a partial revolve with a hole builds", quarterRevolve.Error is null, quarterRevolve.Error );
+
+		if ( quarterRevolve.Error is null )
+		{
+			var arc = quarter.Bodies[0].Mesh;
+			var expected = 2f * MathF.PI * 4f * (16f - TessellatedArea( qs.Sketch, quarterBore )) * 0.25f;
+
+			Check( "at a quarter of the full volume",
+				MathF.Abs( Volume( arc ) - expected ) < expected * 0.02f,
+				$"{Volume( arc ):0.####}, expected about {expected:0.####}" );
+
+			Check( "capped closed at both ends",
+				MeshValidator.Validate( arc ) is { IsValid: true, IsClosed: true },
+				MeshValidator.Validate( arc ).ToString() );
+		}
+
+		// A hole crossing the axis is as meaningless as an outer loop doing it, and is refused for
+		// the same reason: each half would sweep the same surface.
+		var crossing = new PartStudio();
+		var crossingSketch = crossing.Add( new SketchFeature() );
+		crossingSketch.Sketch.AddRectangle( new Vec2( -6, -6 ), new Vec2( 6, 6 ) );
+		crossingSketch.Sketch.AddCircle( new Vec2( 0, 0 ), 1f );
+		var crossingRevolve = crossing.Add( new RevolveFeature() );
+		crossing.Rebuild();
+
+		Check( "a hole straddling the axis is refused", crossingRevolve.Error is not null );
+		Check( "and says which way to move it",
+			crossingRevolve.Error?.Contains( "crosses the axis" ) == true, crossingRevolve.Error );
 
 		// Two disjoint regions extrude to two bodies.
 		var twoStudio = new PartStudio();

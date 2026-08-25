@@ -36,7 +36,7 @@ machine. A session that skips this ends up reasoning about the code by reading i
 is how a bug that made every parameter edit a silent no-op survived long enough to look like three
 unrelated UI faults.
 
-1032 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
+1040 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
 2-level-subdivided version of each. Those are the fastest way to see whether something is actually
 right: open them in Blender, or drop one into ModelDoc to find out what s&box makes of it.
 
@@ -217,8 +217,18 @@ quads argument below predicts. That is a real tradeoff and the honest one: a pla
 hard surface that rarely gets subdivided, and the alternative was no feature. **Profiles without
 holes are untouched and still get their single n-gon**, which is pinned by a test.
 
-Revolve still refuses holes, and now says so itself rather than through a shared check — sweeping an
-inner loop is a different problem from capping one.
+**Revolve handles them too**, and for less than it looked. Every loop sweeps rather than just the
+outer one, and because holes arrive wound the opposite way their quads face into the hole with no
+sign handling anywhere — the same free ride the extrude walls get. A partial revolution's two end
+caps are the profile, so they borrow the holed cap above; a full revolution has no caps at all and
+pays nothing for its holes beyond the extra sweep. A hole straddling the axis is refused exactly as
+an outer loop straddling it is, and for the same reason.
+
+Worth stealing as a test technique: a revolve is faceted, so its volume runs about 1.1% under the
+true solid whether or not it has a hole, and checking a holed revolve against Pappus directly needs
+a tolerance loose enough to hide a real error. Checking it against the UNHOLED sweep of the same
+profile cancels the faceting exactly — both are approximated identically — and what is left measures
+only the hole. The two ratios matched to five decimal places.
 
 ### One part, built out of several extrudes
 

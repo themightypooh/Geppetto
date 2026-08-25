@@ -634,17 +634,6 @@ public sealed class RevolveFeature : SketchConsumingFeature
 		if ( MathF.Abs( Angle.Value ) < 1e-4f )
 			throw new InvalidOperationException( "Angle cannot be zero" );
 
-		// Revolve has no answer for a hole: sweeping an inner loop makes a second closed surface
-		// inside the first, and joining them where the profile touches the axis is a different
-		// problem from extrude's flat cap. Refused here rather than in the shared profile finder,
-		// so Extrude — which CAN do it — is not held back by this limit.
-		if ( profiles.FirstOrDefault( p => p.HasHoles ) is { } holed )
-		{
-			throw new InvalidOperationException(
-				$"Revolve cannot use a profile with holes ({holed.Holes.Count} inner loop(s)). "
-				+ "Extrude handles holes; for a revolve, draw the section you actually want swept." );
-		}
-
 		var plane = sketch.Plane;
 
 		// The axis is authored in sketch coordinates and lifted into world space, so it moves with
@@ -659,9 +648,14 @@ public sealed class RevolveFeature : SketchConsumingFeature
 
 		foreach ( var profile in profiles )
 		{
+			// Every loop, not just the outer one. A hole straddling the axis is as meaningless as an
+			// outer loop doing it, and for the same reason — each half sweeps the same surface.
 			RejectIfCrossingAxis( profile.Outer );
 
-			var mesh = BuildRevolve( plane, profile.Outer, axisOrigin, axisDir,
+			foreach ( var hole in profile.Holes )
+				RejectIfCrossingAxis( hole );
+
+			var mesh = BuildRevolve( plane, profile, axisOrigin, axisDir,
 				Angle.Value, Segments.Clamped, full, Material.Clamped );
 
 			OrientOutward( mesh );
@@ -737,60 +731,94 @@ public sealed class RevolveFeature : SketchConsumingFeature
 		}
 	}
 
+	/// <summary>
+	/// Sweep a profile around the axis.
+	///
+	/// HOLES COST THE SAME TWO THINGS THEY COST AN EXTRUDE. Every loop sweeps, not just the outer
+	/// one — and because ProfileFinder hands holes back wound the opposite way, the hole's quads come
+	/// out facing into the hole with no sign handling anywhere. And a partial revolution's two end
+	/// caps stop being single n-gons, because a face with a hole in it is not a polygon; they are
+	/// triangulated around the holes instead, exactly as BuildPrism's are, with the same tradeoff
+	/// against subdivision quality and the same guarantee that unholed profiles keep their n-gons.
+	///
+	/// A FULL revolution needs no caps at all, so a holed profile revolved all the way round pays
+	/// nothing for its holes beyond the extra sweep.
+	/// </summary>
 	static PolyMesh BuildRevolve(
-		SketchPlane plane, List<Vec2> loop, Vec3 axisOrigin, Vec3 axisDir,
+		SketchPlane plane, Profile profile, Vec3 axisOrigin, Vec3 axisDir,
 		float angleDegrees, int segments, bool full, int material )
 	{
-		var n = loop.Count;
 		var mesh = new PolyMesh();
 		var weld = new VertexWelder( mesh );
 
-		var rings = full ? segments : segments;
+		// Outer first, then each hole — the order Triangulate.WithHoles indexes them in, so its
+		// triples map straight onto the rings built below.
+		var loops = new List<List<Vec2>> { profile.Outer };
+		loops.AddRange( profile.Holes );
+
+		var rings = segments;
 		var step = angleDegrees / segments * MathF.PI / 180f;
 
-		// ring[k][i] is loop point i rotated by k steps. A full turn reuses ring 0 as the last
+		// ring[loop][k][i] is loop point i rotated by k steps. A full turn reuses ring 0 as the last
 		// ring, which the welder achieves on its own by landing on identical positions.
-		var ring = new int[rings + 1][];
+		var ring = new int[loops.Count][][];
 
-		for ( var k = 0; k <= rings; k++ )
+		for ( var li = 0; li < loops.Count; li++ )
 		{
-			ring[k] = new int[n];
-			var xform = Xform.RotateAbout( axisOrigin, axisDir, step * k );
+			var loop = loops[li];
+			ring[li] = new int[rings + 1][];
 
-			for ( var i = 0; i < n; i++ )
-				ring[k][i] = weld.Add( xform.TransformPoint( plane.ToWorld( loop[i] ) ) );
+			for ( var k = 0; k <= rings; k++ )
+			{
+				ring[li][k] = new int[loop.Count];
+				var xform = Xform.RotateAbout( axisOrigin, axisDir, step * k );
+
+				for ( var i = 0; i < loop.Count; i++ )
+					ring[li][k][i] = weld.Add( xform.TransformPoint( plane.ToWorld( loop[i] ) ) );
+			}
 		}
 
-		for ( var k = 0; k < rings; k++ )
+		for ( var li = 0; li < loops.Count; li++ )
 		{
-			for ( var i = 0; i < n; i++ )
+			var n = loops[li].Count;
+
+			for ( var k = 0; k < rings; k++ )
 			{
-				var j = (i + 1) % n;
-
-				var quad = new[] { ring[k][i], ring[k][j], ring[k + 1][j], ring[k + 1][i] };
-
-				var uvs = new[]
+				for ( var i = 0; i < n; i++ )
 				{
-					new Vec2( k / (float)rings, i / (float)n ),
-					new Vec2( k / (float)rings, (i + 1) / (float)n ),
-					new Vec2( (k + 1) / (float)rings, (i + 1) / (float)n ),
-					new Vec2( (k + 1) / (float)rings, i / (float)n )
-				};
+					var j = (i + 1) % n;
 
-				AddNonDegenerate( mesh, quad, uvs, material );
+					var quad = new[] { ring[li][k][i], ring[li][k][j], ring[li][k + 1][j], ring[li][k + 1][i] };
+
+					var uvs = new[]
+					{
+						new Vec2( k / (float)rings, i / (float)n ),
+						new Vec2( k / (float)rings, (i + 1) / (float)n ),
+						new Vec2( (k + 1) / (float)rings, (i + 1) / (float)n ),
+						new Vec2( (k + 1) / (float)rings, i / (float)n )
+					};
+
+					AddNonDegenerate( mesh, quad, uvs, material );
+				}
 			}
 		}
 
 		// A partial revolution is open at both ends and needs capping; a full one is already
 		// closed, and adding caps would leave two faces buried inside the solid.
-		if ( !full )
+		if ( full )
+			return mesh;
+
+		if ( !profile.HasHoles )
 		{
+			var loop = profile.Outer;
+			var n = loop.Count;
+
 			var startCap = new int[n];
 			var startUVs = new Vec2[n];
 
 			for ( var i = 0; i < n; i++ )
 			{
-				startCap[i] = ring[0][n - 1 - i];
+				startCap[i] = ring[0][0][n - 1 - i];
 				startUVs[i] = loop[n - 1 - i];
 			}
 
@@ -801,14 +829,55 @@ public sealed class RevolveFeature : SketchConsumingFeature
 
 			for ( var i = 0; i < n; i++ )
 			{
-				endCap[i] = ring[rings][i];
+				endCap[i] = ring[0][rings][i];
 				endUVs[i] = loop[i];
 			}
 
 			AddNonDegenerate( mesh, endCap, endUVs, material );
+
+			return mesh;
+		}
+
+		// Flatten the loops into the single list WithHoles indexes against, so a triple it returns
+		// reads as "the nth point, counting outer first then each hole in turn".
+		var flat = new List<Vec2>();
+		var loopOf = new List<int>();
+		var withinLoop = new List<int>();
+
+		for ( var li = 0; li < loops.Count; li++ )
+		{
+			for ( var i = 0; i < loops[li].Count; i++ )
+			{
+				flat.Add( loops[li][i] );
+				loopOf.Add( li );
+				withinLoop.Add( i );
+			}
+		}
+
+		var triangles = Triangulate.WithHoles( profile.Outer, profile.Holes.Cast<IReadOnlyList<Vec2>>().ToList() );
+
+		if ( triangles.Count == 0 )
+		{
+			throw new InvalidOperationException(
+				$"This profile's {profile.Holes.Count} hole(s) could not be capped — the loops may cross each other. "
+				+ "Check that every inner loop lies fully inside the outer one." );
+		}
+
+		foreach ( var (a, b, c) in triangles )
+		{
+			// The two caps are the same surface seen from opposite sides, so one is wound backwards.
+			AddNonDegenerate( mesh,
+				new[] { At( 0, c ), At( 0, b ), At( 0, a ) },
+				new[] { flat[c], flat[b], flat[a] }, material );
+
+			AddNonDegenerate( mesh,
+				new[] { At( rings, a ), At( rings, b ), At( rings, c ) },
+				new[] { flat[a], flat[b], flat[c] }, material );
 		}
 
 		return mesh;
+
+		int At( int k, int flatIndex ) => ring[loopOf[flatIndex]][k][withinLoop[flatIndex]];
 	}
 
 	/// <summary>
