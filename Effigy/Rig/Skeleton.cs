@@ -82,16 +82,46 @@ public sealed class Skeleton
 	///
 	/// The bone's +Y is aimed head→tail; the other two axes are any stable perpendicular pair,
 	/// since nothing here has a concept of roll yet. If roll ever matters — it will, the moment
-	/// anyone hand-authors a twist — this is the function that grows a parameter, and nothing else
-	/// has to change.
+	/// anyone hand-authors a twist — LocalFromWorldPoints is the function that grows a parameter,
+	/// and nothing else has to change.
 	/// </summary>
 	public int AddBoneFromPoints( string name, int parent, Vec3 head, Vec3 tail )
+	{
+		var (local, length) = LocalFromWorldPoints( parent, head, tail, name );
+		return AddBone( name, parent, local, length );
+	}
+
+	/// <summary>
+	/// Move an existing bone's head and tail in WORLD bind space — a numeric edit standing in for
+	/// the click that placed it, or a correction after the fact. Recomputes Local the same way a
+	/// fresh placement would, against the bone's CURRENT parent.
+	///
+	/// Children are not touched here, and do not need to be: their own Local is relative to THIS
+	/// bone, and WorldBind always walks the parent chain fresh rather than caching a result, so
+	/// they follow automatically the moment this bone's Local changes underneath them.
+	/// </summary>
+	public void SetHeadTail( int index, Vec3 head, Vec3 tail )
+	{
+		if ( index < 0 || index >= Bones.Count )
+			throw new ArgumentOutOfRangeException( nameof( index ) );
+
+		var (local, length) = LocalFromWorldPoints( Bones[index].Parent, head, tail, Bones[index].Name );
+
+		Bones[index].Local = local;
+		Bones[index].Length = length;
+	}
+
+	/// <summary>Shared math behind AddBoneFromPoints and SetHeadTail — a bone's Local and Length
+	/// from a head/tail pair in world space and the parent it will sit under. One copy so a future
+	/// change (roll, most likely) cannot land in one caller and not the other.</summary>
+	(Xform local, float length) LocalFromWorldPoints( int parent, Vec3 head, Vec3 tail, string boneNameForError )
 	{
 		var along = tail - head;
 		var length = along.Length;
 
 		if ( length < 1e-6f )
-			throw new ArgumentException( $"Bone '{name}' has zero length — head and tail are the same point" );
+			throw new ArgumentException(
+				$"Bone '{boneNameForError}' has zero length — head and tail are the same point" );
 
 		var y = along / length;
 
@@ -104,7 +134,7 @@ public sealed class Skeleton
 		var world = new Xform( x, y, z, head );
 		var local = parent < 0 ? world : WorldBind( parent ).Inverse * world;
 
-		return AddBone( name, parent, local, length );
+		return (local, length);
 	}
 
 	public int IndexOf( string name )
@@ -160,6 +190,159 @@ public sealed class Skeleton
 			s.Bones.Add( b.Clone() );
 
 		return s;
+	}
+
+	/// <summary>
+	/// Remove a bone, reparenting its direct children to ITS parent so deleting one from the
+	/// middle of a chain does not orphan everything past it — a mis-click while placing bones is
+	/// the common case this exists for.
+	///
+	/// Every surviving bone keeps its WORLD bind transform; only the stored Local of the removed
+	/// bone's children changes, recomputed against their new parent. Topological order (parent
+	/// index &lt; child index) is preserved because indices only ever shift down to fill the gap.
+	/// </summary>
+	public void RemoveBone( int index )
+	{
+		if ( index < 0 || index >= Bones.Count )
+			throw new ArgumentOutOfRangeException( nameof( index ) );
+
+		var removedParent = Bones[index].Parent;
+
+		// Captured before anything is rebuilt, so reparenting reads world transforms rather than
+		// composing through a partially-rebuilt list.
+		var worlds = new Xform[Bones.Count];
+		for ( var i = 0; i < Bones.Count; i++ )
+			worlds[i] = WorldBind( i );
+
+		var newBones = new List<Bone>( Bones.Count - 1 );
+		var oldToNew = new int[Bones.Count];
+
+		for ( var i = 0; i < Bones.Count; i++ )
+		{
+			if ( i == index )
+				continue;
+
+			var bone = Bones[i];
+			var oldParent = bone.Parent;
+
+			// A direct child of the removed bone re-parents to what the removed bone's parent
+			// was; everything else keeps its parent unchanged.
+			var newParent = oldParent == index ? removedParent : oldParent;
+
+			// newParent, when not -1, is always an index already visited — it is either less
+			// than `index`, or it is `removedParent` which is itself less than `index` — so its
+			// mapping exists by now.
+			var mappedParent = newParent < 0 ? -1 : oldToNew[newParent];
+
+			var local = mappedParent < 0 ? worlds[i] : worlds[mappedParent].Inverse * worlds[i];
+
+			newBones.Add( new Bone( bone.Name, mappedParent, local, bone.Length ) );
+			oldToNew[i] = newBones.Count - 1;
+		}
+
+		Bones = newBones;
+	}
+
+	/// <summary>
+	/// Mirror a bone and everything beneath it across the plane through the origin with the given
+	/// normal, appended as new bones under `newParent` (-1 for a new root, or an existing bone —
+	/// mirroring an arm should graft onto the spine bone the original arm hangs from, not become
+	/// its own root).
+	///
+	/// Reflects the WORLD head and tail of each bone and rebuilds it from those two points, the
+	/// same way AddBoneFromPoints always builds a bone. That sidesteps the usual mirrored-bone
+	/// handedness problem entirely: there is no roll stored anywhere in this format to come out
+	/// backwards, so reflecting the two points a bone is defined by is exactly right rather than a
+	/// shortcut that happens to work.
+	///
+	/// Naming swaps a trailing _L/_R, _l/_r, .L/.R (Blender's own convention); anything else gets
+	/// "_mirrored" appended. A collision with an existing name — mirroring twice, or a name that
+	/// already looks mirrored — gets a numeric suffix rather than throwing, since this is meant to
+	/// be safe to lean on while roughing out a rig.
+	///
+	/// Returns the index of the new mirrored root.
+	/// </summary>
+	public int MirrorSubtree( int root, Vec3 planeNormal, int newParent = -1 )
+	{
+		if ( root < 0 || root >= Bones.Count )
+			throw new ArgumentOutOfRangeException( nameof( root ) );
+
+		if ( newParent < -1 || newParent >= Bones.Count )
+			throw new ArgumentOutOfRangeException( nameof( newParent ) );
+
+		var n = planeNormal.Normal;
+
+		if ( n.LengthSquared < 0.5f )
+			throw new ArgumentException( "A mirror plane needs a normal", nameof( planeNormal ) );
+
+		Vec3 Reflect( Vec3 p ) => p - n * (2f * Vec3.Dot( p, n ));
+
+		var newRootIndex = -1;
+
+		void Walk( int sourceIndex, int mirroredParent )
+		{
+			var bone = Bones[sourceIndex];
+			var head = Reflect( HeadWorld( sourceIndex ) );
+			var tail = Reflect( TailWorld( sourceIndex ) );
+
+			var newIndex = AddBoneFromPoints( UniqueName( MirroredName( bone.Name ) ), mirroredParent, head, tail );
+
+			if ( sourceIndex == root )
+				newRootIndex = newIndex;
+
+			// Snapshotted before recursing: Children scans live off Bones, which is growing with
+			// every mirrored bone Walk adds, and the source subtree's children are exactly the set
+			// this reads once, up front.
+			var kids = new List<int>();
+			foreach ( var child in Children( sourceIndex ) )
+				kids.Add( child );
+
+			foreach ( var child in kids )
+				Walk( child, newIndex );
+		}
+
+		Walk( root, newParent );
+		return newRootIndex;
+	}
+
+	static string MirroredName( string name )
+	{
+		if ( name.EndsWith( "_L" ) ) return name[..^2] + "_R";
+		if ( name.EndsWith( "_R" ) ) return name[..^2] + "_L";
+		if ( name.EndsWith( "_l" ) ) return name[..^2] + "_r";
+		if ( name.EndsWith( "_r" ) ) return name[..^2] + "_l";
+		if ( name.EndsWith( ".L" ) ) return name[..^2] + ".R";
+		if ( name.EndsWith( ".R" ) ) return name[..^2] + ".L";
+		return name + "_mirrored";
+	}
+
+	string UniqueName( string baseName )
+	{
+		if ( IndexOf( baseName ) < 0 )
+			return baseName;
+
+		var n = 1;
+		while ( IndexOf( $"{baseName}_{n}" ) >= 0 )
+			n++;
+
+		return $"{baseName}_{n}";
+	}
+
+	/// <summary>Rename a bone in place, with the same validation AddBone applies to a new one.</summary>
+	public void RenameBone( int index, string name )
+	{
+		if ( index < 0 || index >= Bones.Count )
+			throw new ArgumentOutOfRangeException( nameof( index ) );
+
+		if ( string.IsNullOrWhiteSpace( name ) )
+			throw new ArgumentException( "A bone needs a name — every consuming format keys on it" );
+
+		var existing = IndexOf( name );
+
+		if ( existing >= 0 && existing != index )
+			throw new ArgumentException( $"A bone called '{name}' already exists" );
+
+		Bones[index].Name = name;
 	}
 
 	/// <summary>

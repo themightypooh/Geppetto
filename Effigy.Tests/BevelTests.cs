@@ -37,6 +37,85 @@ public static class BevelTests
 
 		Section( "bevel carries skin weights" );
 		TestRigSurvives();
+
+		Section( "bevel stays local on a collinear corner" );
+		TestCollinearCornersStayLocal();
+	}
+
+	/// <summary>
+	/// A bevelled corner must not fly off into space.
+	///
+	/// THE BUG THIS EXISTS FOR, because every other check in this file passed while it was live:
+	/// a corner lands at roughly width/sin(turn) from its vertex, so a corner that is nearly
+	/// straight throws it arbitrarily far. Ear clipping a thin annulus — which is what a sketch
+	/// with a hole extrudes into — produces collinear corners (turn 180°, sin 1.5e-5), and those
+	/// put vertices 15000 units away on a model 20 across.
+	///
+	/// It stayed invisible because the result is still finite, still closed, still manifold and
+	/// still has the right Euler characteristic. Only a render showed it, as the whole model
+	/// collapsing to a speck while the view stretched to fit one stray vertex. So the assertion
+	/// here is the one nothing else was making: the geometry has to stay near where it started.
+	/// </summary>
+	static void TestCollinearCornersStayLocal()
+	{
+		var studio = new PartStudio();
+		var sketch = studio.Add( new SketchFeature() );
+		sketch.Sketch.AddCircle( new Vec2( 0, 0 ), 10f );
+		sketch.Sketch.AddCircle( new Vec2( 0, 0 ), 8.4f );
+		studio.Add( new ExtrudeFeature() ).Distance.Value = 2.6f;
+		studio.Rebuild();
+
+		var tube = studio.Bodies.Single().Mesh;
+		var before = tube.Positions.Max( p => p.Length );
+
+		// Confirms the mesh really does contain the degenerate corners, so this test cannot quietly
+		// stop exercising the fix if the tessellation changes.
+		Check( "the annulus really does have a collinear corner", StraightestCorner( tube ) < 1e-3f,
+			$"straightest |sin| = {StraightestCorner( tube ):E3}" );
+
+		foreach ( var width in new[] { 0.05f, 0.22f, 0.5f } )
+		{
+			var beveled = Bevel.Apply( tube, width, 20f );
+			var after = beveled.Positions.Max( p => p.Length );
+
+			// Generous: a chamfer can only move a corner outward by a small multiple of its own
+			// width, so anything past the original radius plus a few widths is the runaway case.
+			var limit = before + width * 20f;
+
+			Check( $"width {width}: no corner escapes the model", after <= limit,
+				$"furthest vertex {after:0.##}, allowed {limit:0.##} (was {before:0.##} before)" );
+
+			var validation = MeshValidator.Validate( beveled );
+			Check( $"width {width}: still closed and manifold", validation is { IsValid: true, IsClosed: true },
+				validation.ToString() );
+		}
+	}
+
+	/// <summary>The smallest |sin(turn)| over every corner of every face — the quantity
+	/// Bevel.IntersectCoplanarLines divides by.</summary>
+	static float StraightestCorner( PolyMesh mesh )
+	{
+		var smallest = float.MaxValue;
+
+		for ( var fi = 0; fi < mesh.FaceCount; fi++ )
+		{
+			var f = mesh.Faces[fi];
+			var n = mesh.FaceNormal( f );
+
+			for ( var i = 0; i < f.Count; i++ )
+			{
+				var prev = mesh.Positions[f.Indices[(i - 1 + f.Count) % f.Count]];
+				var v = mesh.Positions[f.Indices[i]];
+				var next = mesh.Positions[f.Indices[(i + 1) % f.Count]];
+
+				var d = MathF.Abs( Vec3.Dot( Vec3.Cross( (v - prev).Normal, (next - v).Normal ), n ) );
+
+				if ( d < smallest )
+					smallest = d;
+			}
+		}
+
+		return smallest;
 	}
 
 	static float Volume( PolyMesh m ) =>

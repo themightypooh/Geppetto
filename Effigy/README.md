@@ -36,7 +36,7 @@ machine. A session that skips this ends up reasoning about the code by reading i
 is how a bug that made every parameter edit a silent no-op survived long enough to look like three
 unrelated UI faults.
 
-1066 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
+1145 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
 2-level-subdivided version of each. Those are the fastest way to see whether something is actually
 right: open them in Blender, or drop one into ModelDoc to find out what s&box makes of it.
 
@@ -65,7 +65,7 @@ Exit code is non-zero on failure, so it works as a pre-commit or CI check unchan
 | `Bevel.cs` | flat chamfer by angle threshold: corner cutting, edge bridging, vertex caps |
 | `PlaneOffset.cs` | the offset solve shell uses |
 | `UVProjection.cs` | box and planar UV projection |
-| `Rig/Skeleton.cs` | bones, bind pose, world transforms from the parent chain |
+| `Rig/Skeleton.cs` | bones, bind pose, world transforms from the parent chain — add, remove, rename, edit a bone's head/tail, mirror a subtree |
 | `Rig/SkinWeights.cs` | per-vertex influences, blending and pruning |
 | `Rig/SkinBinder.cs` | auto-binding by distance or by body, plus weight smoothing |
 | `SmdWriter.cs` | the export path — static and skinned in one writer |
@@ -499,6 +499,21 @@ Skin weights come along if the body is rigged: every new corner point is a genui
 original vertex, so it inherits that vertex's weights outright rather than an average of its
 neighbours.
 
+**A corner is capped at 20x width from its original vertex**, and that cap is load-bearing. A corner
+lands at roughly `width / sin(turn)` from its vertex, so a nearly-straight corner throws it
+arbitrarily far — and ear clipping a thin annulus (what a sketch with a hole extrudes into) produces
+genuinely collinear corners, turn 180°, sin 1.5e-5. Those put vertices **15000 units away on a model
+20 across**. Past the cap the intersection has stopped meaning anything and the corner falls back to
+the one answer that is still well defined: the vertex moved inward by `width`.
+
+Worth knowing how long that hid. The result stayed finite, closed, manifold and Euler-correct, so
+every numeric check in BevelTests passed while it was live; the guard that was supposed to catch it
+tested `|sin| < 1e-9`, which reads as a floating-point epsilon but actually means "only reject
+corners straighter than 6e-8 degrees" — no mesh is ever that straight, so it never fired once. What
+found it was a **render**: the model collapsed to a speck because the view had to stretch to fit one
+stray vertex a thousand diameters out. That is the case PngPreview's own class comment is about —
+the suite proves the numbers, an image proves the shape, and they catch different mistakes.
+
 ## UV projection
 
 Box projection picks, per face, whichever of the six axis directions it most faces and projects onto
@@ -517,7 +532,19 @@ reads `(x,y)` — all `(2,2)`. An unequal box is needed to observe a seam at all
 
 ## Not here yet
 
-**Phase two (next)**: Skeleton editing, auto-weighting, weight painting, SMD export. Bones come before sculpt because you have bone experience.
+**Phase two**: skeleton editing (add/remove/rename/edit/mirror a bone), auto-weighting
+(`SkinBinder.BindRigid`/`BindBodies` plus `SmoothWeights`), and export with the 4-influence cap
+engines expect (`SkinWeights.Prune`, applied by both `SmdWriter` and `DmxWriter`) are all done and
+tested. The editor-side authoring panel (place bones by clicking the model, a tree, undo, a numeric
+inspector) lives in `Editor/EffigyEditor/EffigyRigPanel.cs` — outside this folder's scope since it
+touches engine types, but it is what actually builds a `Skeleton` in practice.
+
+Weight painting — fixing what auto-weighting gets wrong by hand — is the one piece of the original
+phase-two list still missing. `AnimBindPose`, the node ModelDoc's docs say a non-static model needs
+or morph targets and IK data silently break, is unverified rather than missing outright: nothing
+in this repo demonstrates its KV3 shape, and a guessed one risks breaking a compile that currently
+works. Needs a real s&box editor session against `citizen.vmdl` or the Model Editor's own sequence
+UI, not a guess from here.
 
 **Phase three**: Rounded (multi-segment) fillets, then Catmull-Clark subdivision brushes, multires deltas, normal-map bake. The sketch constraint solver was the other item here and has landed.
 

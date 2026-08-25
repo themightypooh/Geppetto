@@ -216,7 +216,7 @@ turns out to be the actual point.
 
 ## Phase one — the parametric base
 
-Much of this now exists in `Effigy/`, engine-free and with 417 checks behind it. See that
+Much of this now exists in `Effigy/`, engine-free and with 1145 checks behind it. See that
 folder's README for the design decisions; the status here is what remains.
 
 1. **Parametric primitives** — box, plane, cylinder, quad sphere, wedge, tube. **Done.**
@@ -227,7 +227,10 @@ folder's README for the design decisions; the status here is what remains.
    The constraint solver is not: coordinates are typed rather than derived.
 4. **Modifiers** — array, mirror, bevel (flat chamfer by angle threshold with skin-weight passthrough)
    and shell are **done**.
-5. **Boolean subtract**, which also unlocks profiles with holes. Not started.
+5. **Boolean subtract**, which also unlocks profiles with holes. The kernel side is **done and
+   tested** — `MeshBoolean`/`IMeshBoolean`, and Extrude/Revolve reach for it when Result is Remove.
+   What's missing is the adapter to s&box's own `PolygonMesh`, which needs a real editor session to
+   write (see Effigy's README, "Not here yet").
 6. **Planar/box-projection auto-UV per face cluster.** **Done** — `UVProjectFeature` re-projects box
    or planar per selected bodies.
 7. **Export** — OBJ works for static geometry. Collision from the primitive list rather than from 
@@ -240,14 +243,35 @@ Live tree throughout: change any number, the model rebuilds.
 Bones come before sculpt because you have bone experience and can iterate faster. Sculpt is deferred
 until phase three.
 
-1. **Skeleton in the kernel** — bones, hierarchy, orientation, bind pose
-2. **Skinning weights**, **capped at 4 influences per vertex** because the compiler culls beyond that
-3. **Auto-weighting** so a first result is not hand-painted; heat diffusion or bone-glow
-4. **Weight painting** to fix what auto-weighting gets wrong
-5. **Export as SMD** (or DMX), with an `AnimBindPose` node in the `.vmdl`
+1. **Skeleton in the kernel** — bones, hierarchy, orientation, bind pose. **Done**, and no longer
+   read-only: add, remove, rename, edit a bone's head/tail, mirror a subtree across a plane.
+2. **Skinning weights**, **capped at 4 influences per vertex** because the compiler culls beyond
+   that. **Done** — `SkinWeights.Prune`, applied by both `SmdWriter` and `DmxWriter` at export.
+3. **Auto-weighting** so a first result is not hand-painted. **Done**, not via heat diffusion —
+   nearest-bone rigid weighting (`SkinBinder.BindRigid`) smoothed across mesh adjacency
+   (`SmoothWeights`), with an optional per-body-to-bone pin (`BindBodies`) for anything that should
+   be rigid rather than smoothed.
+4. **Weight painting** to fix what auto-weighting gets wrong. Still not started — the one item on
+   this list with no progress at all.
+5. **Export as SMD** (or DMX), with an `AnimBindPose` node in the `.vmdl`. The writers are done and
+   wired into the real compile path (DMX is what ModelDoc actually imports; SMD is written
+   alongside for any DCC that wants one). `AnimBindPose` itself is **unverified, not built** —
+   ModelDoc's docs say a non-static model needs one or morph targets and IK data silently break,
+   but nothing in this repo has ever seen its real KV3 shape, and a guessed one risks breaking a
+   compile that currently works. Needs a real editor session against `citizen.vmdl` or the Model
+   Editor's own sequence UI.
+6. **The editor-side authoring panel** — place bones by clicking the model (chaining, and branching
+   from a selected bone), rename/delete with correct re-parenting, mirror one side of a rig onto
+   the other, a numeric inspector for exact head/tail values, optional body-to-bone assignment, and
+   full undo/redo. **Done** — `Editor/EffigyEditor/EffigyRigPanel.cs` — this is what actually
+   builds a `Skeleton` in practice; nothing above happens without it.
 
 Skinning targets the cage produced by phase one. This is the same cage that sculpting (phase three)
 and editor integration (phase four) will later use — it has to survive every stage between.
+
+**The pipeline this phase set out to prove — place bones on a model, export a real skinned `.vmdl`,
+bring it into Marionette to pose — works end to end today**, `AnimBindPose` aside. That was not
+true when this document's phase list was first written.
 
 ## Phase three — subdivide and sculpt
 
@@ -273,6 +297,16 @@ separate from the editor. Phases three and four are optimizations and integratio
 ---
 
 ## Open questions, in priority order
+
+**Superseded — kept for the history, not as live questions.** The tool ended up on a different
+path than these assumed: no `PolygonMesh`/`EditorMeshComponent` reflection-dump, no
+`AssetSystem.CreateResource("vmdl", …)`. The actual export writes plain KV3 text for the `.vmdl`
+by hand (`EffigyWindow.BuildSkinnedVmdl`/`BuildVmdl`) alongside a DMX (or OBJ for static geometry)
+written by this repo's own writers, then registers and compiles the folder through
+`ExternalAssetTools`/`AssetSystem.FindByPath` — a route none of questions 1–4 anticipated, and
+which made them moot rather than answered. Question 6 is answered the other direction: DMX, not
+SMD, is the format actually used for a rigged export (see Effigy's README — ModelDoc's import list
+doesn't include SMD), for exactly the reason this question worried about.
 
 1. **Reflection-dump `Editor.MeshEditor.PolygonMesh` and `EditorMeshComponent`** from a throwaway
    `[ConCmd]` — the technique that found `LocalTransform`. Constructible from tool code? Exposes

@@ -757,12 +757,13 @@ internal sealed partial class EffigyViewport : Widget
 		FacePickFrame();
 		BodyPickFrame();
 		DrawRigSkeleton();
+		BoneToolFrame();
 
 		SketchFrame();
 
 		// Origin on top of the planes. Hidden while sketching or picking anything - it sits at the
 		// exact spot most first clicks land, and stealing them was the first thing that broke.
-		if ( !IsSketching && !PlanePickMode && !SketchPickMode && !BodyPickMode )
+		if ( !IsSketching && !PlanePickMode && !SketchPickMode && !BodyPickMode && !BoneToolActive )
 		{
 			DrawOrigin();
 
@@ -773,11 +774,16 @@ internal sealed partial class EffigyViewport : Widget
 
 		DrawViewCube();
 
+		// BoneToolActive and BodyPickMode: the same "you can click here" signal every other live
+		// pick mode already gets from Gizmo.HasHovered/_hoveredSketchId/_hoveredFaceBodyId. Without
+		// it, placing a bone or assigning a body was the only click-to-act mode in the whole tool
+		// that left the cursor a plain arrow the entire time.
 		Cursor = Gizmo.HasHovered || IsSketching || _hoveredSketchId is not null || _hoveredFaceBodyId is not null
+			|| BoneToolActive || BodyPickMode
 			? CursorShape.Finger : CursorShape.Arrow;
 	}
 
-	/// <summary>Draw all bones as ball-head + cone-body shapes with selection and pose gizmo.</summary>
+	/// <summary>Draw all bones as dog-bone shapes with selection and pose gizmo.</summary>
 	private void DrawRigSkeleton()
 	{
 		if ( RigSkeleton is null || RigSkeleton.Count == 0 )
@@ -810,8 +816,8 @@ internal sealed partial class EffigyViewport : Widget
 	/// <summary>Base radius of a bone's head sphere in world units.</summary>
 	private const float BoneHandleRadius = 0.8f;
 
-	/// <summary>Draw one bone as Blender-style octahedral: small joint sphere at head,
-	/// tapering diamond body to a point at the tail.</summary>
+	/// <summary>Draw one bone as a dog-bone: a knobby ball at the head, a knobby ball at the
+	/// tail, and a thin shaft between them.</summary>
 	private void DrawBoneHandle( int index )
 	{
 		var world = RigSkeleton.WorldBind( index );
@@ -831,10 +837,15 @@ internal sealed partial class EffigyViewport : Widget
 			? new Color( 1f, 0.85f, 0.2f, 1f )
 			: new Color( 0.95f, 0.35f, 0.2f, 0.8f );
 
-		DrawBlenderBone( head, tail, xAxis, zAxis, isSelected );
+		DrawDogBone( head, tail, xAxis, zAxis );
 
 		// No hitbox on the selected bone — its own gizmo handles registration.
 		if ( isSelected )
+			return;
+
+		// While placing new bones, an existing bone's hitbox would steal the click instead of
+		// letting it land on the mesh underneath.
+		if ( BoneToolActive )
 			return;
 
 		Gizmo.Hitbox.DepthBias = 0.01f;
@@ -954,43 +965,59 @@ internal sealed partial class EffigyViewport : Widget
 	}
 
 	/// <summary>
-	/// Blender-style octahedral bone: small joint sphere at head, diamond body tapering
-	/// to a point at the tail. The head end is wider, the tail end is a sharp point.
-	/// This is the standard bone display in Blender's edit mode.
+	/// A literal dog-bone: a knobby ball at each end, joined by a thin shaft. This is the
+	/// shape a "bone" reads as at a glance, unlike Blender's tapering-diamond convention
+	/// which this replaces.
 	/// </summary>
-	private static void DrawBlenderBone( Vector3 head, Vector3 tail,
-		Vector3 xAxis, Vector3 zAxis, bool selected )
+	private static void DrawDogBone( Vector3 head, Vector3 tail, Vector3 xAxis, Vector3 zAxis )
 	{
 		var boneDir = tail - head;
 		var boneLen = boneDir.Length;
 		if ( boneLen < 0.01f )
 			return;
 
-		// Blender proportions: head radius ~12% of bone length, tail radius is a point.
-		var headR = boneLen * 0.12f;
+		var axis = boneDir / boneLen;
 
-		// Small joint sphere at the head.
-		var sphereR = headR * 0.55f;
-		Gizmo.Draw.SolidSphere( head, sphereR, 8, 8 );
+		// The knobs are wider than the shaft — that contrast is what makes the shape read
+		// as a bone rather than a dumbbell bar. Inset the shaft so it disappears inside the
+		// knobs rather than poking out past them.
+		var knobR = boneLen * 0.16f;
+		var shaftR = knobR * 0.35f;
+		var inset = knobR * 0.6f;
 
-		// Head diamond (wider square cross-section).
-		var h0 = head + xAxis * headR;
-		var h1 = head + zAxis * headR;
-		var h2 = head - xAxis * headR;
-		var h3 = head - zAxis * headR;
+		Gizmo.Draw.SolidSphere( head, knobR, 8, 8 );
+		Gizmo.Draw.SolidSphere( tail, knobR, 8, 8 );
 
-		// Tail point.
-		Gizmo.Draw.SolidTriangle( tail, h0, h1 );
-		Gizmo.Draw.SolidTriangle( tail, h1, h2 );
-		Gizmo.Draw.SolidTriangle( tail, h2, h3 );
-		Gizmo.Draw.SolidTriangle( tail, h3, h0 );
+		var shaftStart = head + axis * inset;
+		var shaftEnd = tail - axis * inset;
 
-		// Four faces of the diamond body connecting head ring to tail point.
-		// These are the same triangles, wound the other way for backface.
-		Gizmo.Draw.SolidTriangle( h0, tail, h1 );
-		Gizmo.Draw.SolidTriangle( h1, tail, h2 );
-		Gizmo.Draw.SolidTriangle( h2, tail, h3 );
-		Gizmo.Draw.SolidTriangle( h3, tail, h0 );
+		if ( (shaftEnd - shaftStart).Length > 0.01f )
+			DrawShaft( shaftStart, shaftEnd, xAxis, zAxis, shaftR );
+	}
+
+	/// <summary>A thin cylinder between two points, wound both ways per face so it reads
+	/// solid from either side — same trick the old diamond body used.</summary>
+	private static void DrawShaft( Vector3 a, Vector3 b, Vector3 xAxis, Vector3 zAxis, float radius, int segments = 8 )
+	{
+		for ( var i = 0; i < segments; i++ )
+		{
+			var t0 = i / (float)segments * MathF.Tau;
+			var t1 = (i + 1) / (float)segments * MathF.Tau;
+
+			var o0 = xAxis * (MathF.Cos( t0 ) * radius) + zAxis * (MathF.Sin( t0 ) * radius);
+			var o1 = xAxis * (MathF.Cos( t1 ) * radius) + zAxis * (MathF.Sin( t1 ) * radius);
+
+			var a0 = a + o0;
+			var a1 = a + o1;
+			var b0 = b + o0;
+			var b1 = b + o1;
+
+			Gizmo.Draw.SolidTriangle( a0, b0, a1 );
+			Gizmo.Draw.SolidTriangle( a1, b0, b1 );
+
+			Gizmo.Draw.SolidTriangle( a0, a1, b0 );
+			Gizmo.Draw.SolidTriangle( a1, b1, b0 );
+		}
 	}
 
 	/// <summary>Extract an s&box Rotation from an Effigy Xform's basis columns.
@@ -1037,7 +1064,17 @@ internal sealed partial class EffigyViewport : Widget
 		}
 
 		bone.Length = newLength;
+
+		// Fires every frame of a drag, not just on release — a numeric inspector reading these
+		// same bones live is the reason: without this it goes stale the instant a drag starts and
+		// stays wrong until the bone is reselected, which is worse than not showing numbers at all.
+		BonePosed?.Invoke( index );
 	}
+
+	/// <summary>Raised whenever the pose gizmo writes a new transform into a bone — see
+	/// ApplyBoneTransform. Carries the bone's index so a listener only watching one bone (an
+	/// inspector panel, say) can ignore edits to any other.</summary>
+	public Action<int> BonePosed { get; set; }
 
 	/// <summary>Deselect the bone — called from the rig panel or Escape key.</summary>
 	public void DeselectBone()
@@ -1108,6 +1145,15 @@ internal sealed partial class EffigyViewport : Widget
 			PlanePickMode = false;
 			BodyPickMode = false;
 			PickModeCancelled?.Invoke();
+			e.Accepted = true;
+			return;
+		}
+
+		// Same two-stage back-out as the sketch tools: the panel owns which stage it is, since it
+		// is the one holding whether a chain is currently open.
+		if ( BoneToolActive )
+		{
+			BoneToolEscape?.Invoke();
 			e.Accepted = true;
 			return;
 		}

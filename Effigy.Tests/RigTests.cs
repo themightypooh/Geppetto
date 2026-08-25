@@ -22,6 +22,15 @@ public static class RigTests
 		Section( "skeleton hierarchy and bind pose" );
 		TestSkeleton();
 
+		Section( "removing and renaming a bone" );
+		TestRemoveRenameBone();
+
+		Section( "mirroring a bone subtree" );
+		TestMirrorSubtree();
+
+		Section( "editing a bone's head/tail numerically" );
+		TestSetHeadTail();
+
 		Section( "Euler conversion round-trips" );
 		TestEuler();
 
@@ -106,6 +115,187 @@ public static class RigTests
 		threw = false;
 		try { angled.AddBoneFromPoints( "z", -1, Vec3.Zero, Vec3.Zero ); } catch ( ArgumentException ) { threw = true; }
 		Check( "a zero-length bone is refused", threw );
+	}
+
+	/// <summary>Three-bone chain: root -> mid -> tip. Deleting the middle one is the case that
+	/// matters — it is the one where a naive delete would either orphan the tip or move it.</summary>
+	static Skeleton ThreeBoneChain()
+	{
+		var s = new Skeleton();
+		s.AddBoneFromPoints( "root", -1, new Vec3( 0, 0, 0 ), new Vec3( 0, 2, 0 ) );
+		s.AddBoneFromPoints( "mid", 0, new Vec3( 0, 2, 0 ), new Vec3( 0, 4, 0 ) );
+		s.AddBoneFromPoints( "tip", 1, new Vec3( 0, 4, 0 ), new Vec3( 0, 5, 0 ) );
+		return s;
+	}
+
+	static void TestRemoveRenameBone()
+	{
+		var s = ThreeBoneChain();
+		var tipHeadBefore = s.HeadWorld( 2 );
+		var tipTailBefore = s.TailWorld( 2 );
+
+		s.RemoveBone( 1 ); // delete "mid"
+
+		Check( "one bone gone", s.Count == 2 );
+		Check( "root survives at 0", s.IndexOf( "root" ) == 0 );
+		Check( "mid is gone", s.IndexOf( "mid" ) < 0 );
+
+		var tipIndex = s.IndexOf( "tip" );
+		Check( "tip survives", tipIndex >= 0 );
+		Check( "tip re-parents to root", s.Bones[tipIndex].Parent == s.IndexOf( "root" ) );
+		Check( "tip keeps its world head", Near( s.HeadWorld( tipIndex ), tipHeadBefore ),
+			s.HeadWorld( tipIndex ).ToString() );
+		Check( "tip keeps its world tail", Near( s.TailWorld( tipIndex ), tipTailBefore ),
+			s.TailWorld( tipIndex ).ToString() );
+
+		// A root with no parent at all — removing it should not throw reaching for Parent -1.
+		var rootOnly = new Skeleton();
+		rootOnly.AddBoneFromPoints( "only", -1, Vec3.Zero, new Vec3( 0, 1, 0 ) );
+		rootOnly.RemoveBone( 0 );
+		Check( "removing the only bone leaves an empty skeleton", rootOnly.Count == 0 );
+
+		var threw = false;
+		try { s.RemoveBone( 99 ) ; } catch ( ArgumentOutOfRangeException ) { threw = true; }
+		Check( "removing an out-of-range index is refused", threw );
+
+		// Rename.
+		var chain = ThreeBoneChain();
+		chain.RenameBone( 1, "elbow" );
+		Check( "renamed bone is found under its new name", chain.IndexOf( "elbow" ) == 1 );
+		Check( "old name is gone", chain.IndexOf( "mid" ) < 0 );
+
+		threw = false;
+		try { chain.RenameBone( 0, "elbow" ); } catch ( ArgumentException ) { threw = true; }
+		Check( "renaming onto an existing name is refused", threw );
+
+		// Renaming a bone onto ITS OWN existing name is not a collision.
+		chain.RenameBone( 1, "elbow" );
+		Check( "renaming onto its own name is a no-op, not an error", chain.IndexOf( "elbow" ) == 1 );
+
+		threw = false;
+		try { chain.RenameBone( 0, "  " ); } catch ( ArgumentException ) { threw = true; }
+		Check( "a blank name is refused", threw );
+	}
+
+	/// <summary>A spine root with one arm off to the +X side — the shape mirroring an arm across
+	/// the character's centreline actually has to handle.</summary>
+	static Skeleton SpineWithOneArm()
+	{
+		var s = new Skeleton();
+		s.AddBoneFromPoints( "spine", -1, new Vec3( 0, 0, 0 ), new Vec3( 0, 0, 2 ) );
+		s.AddBoneFromPoints( "upper_arm_L", 0, new Vec3( 1, 0, 2 ), new Vec3( 3, 0, 2 ) );
+		s.AddBoneFromPoints( "forearm_L", 1, new Vec3( 3, 0, 2 ), new Vec3( 5, 0, 1 ) );
+		return s;
+	}
+
+	static void TestMirrorSubtree()
+	{
+		var s = SpineWithOneArm();
+		var spine = s.IndexOf( "spine" );
+		var upperL = s.IndexOf( "upper_arm_L" );
+
+		var newRoot = s.MirrorSubtree( upperL, new Vec3( 1, 0, 0 ), spine );
+
+		Check( "mirror returns a valid index", newRoot >= 0 && newRoot < s.Count );
+		Check( "five bones total now", s.Count == 5 );
+		Check( "_L became _R", s.Bones[newRoot].Name == "upper_arm_R" );
+		Check( "mirrored bone grafts onto the requested parent", s.Bones[newRoot].Parent == spine );
+
+		var headL = s.HeadWorld( upperL );
+		var headR = s.HeadWorld( newRoot );
+		Check( "X is negated", MathF.Abs( headR.x + headL.x ) < 1e-4f, $"{headL} vs {headR}" );
+		Check( "Y and Z untouched by an X-normal mirror",
+			MathF.Abs( headR.y - headL.y ) < 1e-4f && MathF.Abs( headR.z - headL.z ) < 1e-4f );
+
+		var tailL = s.TailWorld( upperL );
+		var tailR = s.TailWorld( newRoot );
+		Check( "tail is mirrored too", Near( tailR, new Vec3( -tailL.x, tailL.y, tailL.z ) ), tailR.ToString() );
+
+		Check( "length survives the mirror",
+			MathF.Abs( s.Bones[newRoot].Length - s.Bones[upperL].Length ) < 1e-4f );
+
+		var forearmR = s.IndexOf( "forearm_R" );
+		Check( "the child came along", forearmR >= 0 );
+		Check( "the child re-parents to the mirrored parent, not the original", s.Bones[forearmR].Parent == newRoot );
+
+		var forearmL = s.IndexOf( "forearm_L" );
+		Check( "the original subtree is untouched",
+			Near( s.HeadWorld( forearmL ), new Vec3( 3, 0, 2 ) ) && s.Bones[forearmL].Parent == upperL );
+
+		// Mirroring again must not collide with the name it just made.
+		var second = s.MirrorSubtree( upperL, new Vec3( 1, 0, 0 ), spine );
+		Check( "a second mirror gets a de-duplicated name, not a crash",
+			s.Bones[second].Name != s.Bones[newRoot].Name, s.Bones[second].Name );
+
+		// A bone with no _L/_R convention in its name.
+		var plain = new Skeleton();
+		plain.AddBoneFromPoints( "antenna", -1, Vec3.Zero, new Vec3( 1, 0, 0 ) );
+		var mirroredPlain = plain.MirrorSubtree( 0, new Vec3( 1, 0, 0 ) );
+		Check( "a name with no L/R convention gets _mirrored appended",
+			plain.Bones[mirroredPlain].Name == "antenna_mirrored" );
+		Check( "newParent -1 makes a new root", plain.Bones[mirroredPlain].Parent == -1 );
+
+		var threw = false;
+		try { s.MirrorSubtree( 99, new Vec3( 1, 0, 0 ) ); } catch ( ArgumentOutOfRangeException ) { threw = true; }
+		Check( "mirroring an out-of-range bone is refused", threw );
+
+		threw = false;
+		try { s.MirrorSubtree( upperL, Vec3.Zero ); } catch ( ArgumentException ) { threw = true; }
+		Check( "a zero-length mirror normal is refused", threw );
+	}
+
+	static void TestSetHeadTail()
+	{
+		var s = ThreeBoneChain(); // root(0) -> mid(1) -> tip(2)
+
+		var rootHeadBefore = s.HeadWorld( 0 );
+		var rootTailBefore = s.TailWorld( 0 );
+		var midHeadBefore = s.HeadWorld( 1 );
+		var tipHeadBefore = s.HeadWorld( 2 );
+		var tipTailBefore = s.TailWorld( 2 );
+
+		// A PURE TRANSLATION of the root — same direction and length, just moved — has to carry
+		// every descendant by the identical rigid delta. This is not a Blender-style "connected"
+		// bone that stretches to chase a moving tail: a child's Local is frozen relative to its
+		// parent's BASIS, and a translation leaves that basis's rotation untouched, so the whole
+		// subtree rides along exactly.
+		var delta = new Vec3( 3, -1, 2 );
+		s.SetHeadTail( 0, rootHeadBefore + delta, rootTailBefore + delta );
+
+		Check( "root moved by the delta", Near( s.HeadWorld( 0 ), rootHeadBefore + delta ), s.HeadWorld( 0 ).ToString() );
+		Check( "root's length is unchanged by a pure translation", MathF.Abs( s.Bones[0].Length - 2f ) < 1e-4f );
+		Check( "mid carried by the same rigid delta", Near( s.HeadWorld( 1 ), midHeadBefore + delta ), s.HeadWorld( 1 ).ToString() );
+		Check( "tip carried by the same rigid delta", Near( s.HeadWorld( 2 ), tipHeadBefore + delta ), s.HeadWorld( 2 ).ToString() );
+		Check( "tip's tail carried too", Near( s.TailWorld( 2 ), tipTailBefore + delta ), s.TailWorld( 2 ).ToString() );
+
+		// Editing the MIDDLE of the chain must not disturb the root above it. It also does NOT drag
+		// the tip's head along to chase mid's new tail — the tip's own Local is frozen relative to
+		// mid's basis at whatever length mid had when the tip was placed, exactly the same "not
+		// connected" rule the translation case above relies on, just now visible because THIS edit
+		// also changes mid's length. What WorldBind guarantees is that the tip is recomputed fresh,
+		// not stale — its world position has to move even though nothing about the tip itself was
+		// touched, because it composes against mid's new Local.
+		var rootHeadNow = s.HeadWorld( 0 );
+		var tipHeadBeforeMidEdit = s.HeadWorld( 2 );
+		var newMidTail = new Vec3( 1, 8, 2 );
+		s.SetHeadTail( 1, s.HeadWorld( 1 ), newMidTail );
+
+		Check( "editing mid leaves root alone", Near( s.HeadWorld( 0 ), rootHeadNow ), s.HeadWorld( 0 ).ToString() );
+		Check( "mid's own head/tail land exactly where requested",
+			Near( s.HeadWorld( 1 ), midHeadBefore + delta ) && Near( s.TailWorld( 1 ), newMidTail ),
+			s.TailWorld( 1 ).ToString() );
+		Check( "mid's length is measured from the new tail, not left stale",
+			MathF.Abs( s.Bones[1].Length - (newMidTail - ( midHeadBefore + delta )).Length ) < 1e-3f );
+		Check( "the tip is recomputed fresh rather than cached",
+			(s.HeadWorld( 2 ) - tipHeadBeforeMidEdit).Length > 0.5f, s.HeadWorld( 2 ).ToString() );
+
+		var threw = false;
+		try { s.SetHeadTail( 0, Vec3.Zero, Vec3.Zero ); } catch ( ArgumentException ) { threw = true; }
+		Check( "a zero-length edit is refused", threw );
+
+		threw = false;
+		try { s.SetHeadTail( 99, Vec3.Zero, new Vec3( 0, 1, 0 ) ); } catch ( ArgumentOutOfRangeException ) { threw = true; }
+		Check( "editing an out-of-range index is refused", threw );
 	}
 
 	static void TestEuler()
