@@ -36,7 +36,7 @@ machine. A session that skips this ends up reasoning about the code by reading i
 is how a bug that made every parameter edit a silent no-op survived long enough to look like three
 unrelated UI faults.
 
-1024 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
+1032 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
 2-level-subdivided version of each. Those are the fastest way to see whether something is actually
 right: open them in Blender, or drop one into ModelDoc to find out what s&box makes of it.
 
@@ -413,8 +413,22 @@ and not along the rim.
 
 Known limits, stated rather than discovered:
 
-- **No self-intersection handling.** Shell a shape by more than its thinnest feature and the inner
-  surface passes through itself.
+- **Self-intersection is refused, not handled.** Shell a shape by more than its thinnest feature and
+  the inner surface passes through itself. Building the offset surface properly, so the overlap is
+  trimmed away instead, is a much larger algorithm and is still not here — but it is caught and
+  refused rather than returned as a closed mesh that measures negative volume in places and looks
+  fine from outside.
+
+  Two checks, because one does not do it. **Enclosed volume** catches the common case: shell a
+  1-thick plate by 0.6 and its two walls pass straight through each other, while neither *face*
+  inverts — each is translated inward, and a translation preserves a normal, so nothing local goes
+  wrong. Only the surface as a whole turns inside out. **A flipped face** catches the other kind: a
+  cylinder shelled past its radius has its side faces invert around the axis, which is the same
+  signature `LoopOffset` looks for one dimension down. The volume check applies only while nothing is
+  opened, since an opened inner surface is genuinely not a closed volume.
+
+  Still not caught, and named so the next person knows the difference between "checked" and "not
+  possible": two distant walls closing on each other with no single face inverting.
 - **Openings must form simple loops.** Two opened faces meeting at only a vertex would put four rim
   quads on one outer-to-inner edge — non-manifold, and nothing downstream accepts it. That case is
   refused with an explanation rather than returned broken.

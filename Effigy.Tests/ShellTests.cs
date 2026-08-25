@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Effigy;
@@ -32,6 +32,76 @@ public static class ShellTests
 
 		Section( "shell: regressions from review" );
 		TestReviewRegressions();
+
+		Section( "shell: thicker than the shape itself" );
+		TestTooThick();
+	}
+
+	/// <summary>
+	/// Shelling a shape by more than it is thick.
+	///
+	/// This used to produce a closed mesh with its inner surface passed through itself: negative
+	/// volume in places, entirely normal from outside, and nothing said a word. It is refused now,
+	/// by two checks that catch different failures — see RefuseIfFolded for why one is not enough.
+	/// </summary>
+	static void TestTooThick()
+	{
+		// A 4x4x1 plate, shelled by 0.6. The top and bottom walls pass straight through each other.
+		//
+		// NOTE WHAT DOES NOT HAPPEN HERE: neither face inverts. Each is translated inward by 0.6 and
+		// a translation preserves a normal, so a per-face check sees nothing wrong. The surface as a
+		// whole is what turns inside out, and only the enclosed volume sees that.
+		var plate = Primitives.Box( 4, 4, 1 );
+		var message = Refused( () => ShellOperation.Shell( plate, 0.6f ) );
+
+		Check( "shelling a plate by more than half its thickness is refused", message is not null,
+			"it produced a mesh" );
+
+		Check( "and the message names the thickness that failed",
+			message is not null && message.Contains( "0.6" ), message ?? "" );
+
+		// Exactly half is the boundary: the two walls meet with no cavity between them. Zero
+		// volume is as useless as negative and is refused the same way.
+		Check( "so is shelling it by exactly half", Refused( () => ShellOperation.Shell( plate, 0.5f ) ) is not null,
+			"it produced a mesh" );
+
+		// Just under has to still work, or the guard is too eager and the parameter is unusable near
+		// the values anyone would actually pick.
+		var thin = ShellOperation.Shell( plate, 0.45f );
+
+		Check( "while just under it still shells", thin is not null && thin.FaceCount > 0 );
+
+		Check( "into a valid closed mesh",
+			MeshValidator.Validate( thin ) is { IsValid: true, IsClosed: true } );
+
+		// A CYLINDER SHELLED PAST ITS RADIUS is the other failure, and the one the per-face check is
+		// there for: the side faces invert around the axis rather than the surface flipping bodily.
+		var cylinder = Primitives.Cylinder( 0.5f, 4f, 16 );
+
+		Check( "shelling a cylinder by more than its radius is refused",
+			Refused( () => ShellOperation.Shell( cylinder, 0.8f ) ) is not null, "it produced a mesh" );
+
+		Check( "and a sane wall on the same cylinder still works",
+			ShellOperation.Shell( cylinder, 0.1f ) is { FaceCount: > 0 } );
+
+		// An opened shell skips the volume check, since its inner surface is genuinely not closed.
+		// It must still shell normally rather than being caught by the remaining per-face test.
+		var room = ShellOperation.Shell( Primitives.Box( 4, 4, 4 ), 0.3f, new[] { 0 } );
+
+		Check( "opening a face still shells normally", room is not null && room.FaceCount > 0 );
+	}
+
+	static string Refused( Func<PolyMesh> action )
+	{
+		try
+		{
+			action();
+			return null;
+		}
+		catch ( InvalidOperationException e )
+		{
+			return e.Message;
+		}
 	}
 
 	/// <summary>
