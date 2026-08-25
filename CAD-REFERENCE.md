@@ -267,13 +267,13 @@ Note that 3 and 4 are both reachable and verifiable in this repo with no engine 
 
 ## Where this left off
 
-Everything below the line is kernel-side and verified by `tools/test.sh` (1104 checks). Everything
+Everything below the line is kernel-side and verified by `tools/test.sh` (1152 checks). Everything
 in `Editor/EffigyEditor` is written and syntax-checked but **has never been compiled** — there is no
 s&box assembly in this repo, so nothing there resolves names. That is the standing risk and the
 reason the split below is drawn where it is: anything that could be moved into the kernel and tested
 was.
 
-**Just landed.** Right-clicking a face of the model opens a material menu — the slots, a rename for
+**Face materials by right-click** (merged in #12). Right-clicking a face of the model opens a material menu — the slots, a rename for
 the one it is on, and the viewport's slot-shading toggle. The toolbar's Face Material feature is
 still there for painting a set of faces deliberately; this is for the common case of one face, one
 slot, now.
@@ -294,6 +294,12 @@ slot, now.
 1. A compile of the editor half. Nothing in `Editor/EffigyEditor` has been through a compiler.
 2. `effigy_probe_boolean`, which dumps s&box's `PolygonMesh` API. That is the whole of what stands
    between the built-and-tested cut/Remove path and it working — see item 5 above.
+
+**Since then**, #13 landed the bone-authoring panel (`EffigyRigPanel.cs`), made `Skeleton` editable
+rather than read-only, and fixed Bevel flinging corners thousands of units out on collinear edges —
+found by a *render*, not by the suite, which stayed green throughout because the result was still
+closed, manifold and Euler-correct. The bone tool also took ownership of the right button, so the
+face menu's guard now includes `BoneToolActive`.
 
 **In progress when this stopped.** The feature toolbar's icons. The sketch row was redrawn and
 pushed (`EffigyIcons.cs`, sketch-tool section); the feature row was rendered and read but not yet
