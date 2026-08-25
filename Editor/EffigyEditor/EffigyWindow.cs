@@ -1910,6 +1910,53 @@ public sealed class EffigyWindow : DockWindow
 //  Uses TreeView + TreeNode<T> — the same pattern as RigBonesPanel.
 // ============================================================================
 
+/// <summary>
+/// The hover-reveal "eye" a tree row uses to toggle visibility — one implementation shared by the
+/// Features tree (sketches, default geometry) and the Parts tree (bodies).
+///
+/// Before this they were two independent copies of the same idea that had quietly drifted: the
+/// Features tree reserved 34px of right margin for its secondary text and never hid it, the Parts
+/// tree reserved only 30px and hid its face count on hover instead — two different answers to the
+/// same "don't let anything sit under the eye" problem, which is exactly the kind of thing that
+/// reads as the eye behaving inconsistently between the two trees even though neither was wrong on
+/// its own. One rect, one show/hide rule, one click test, everywhere a row has an eye — and
+/// SecondaryTextRightMargin so a row's own text picks a margin that is provably wide enough
+/// rather than tracking Width by memory in a second place.
+/// </summary>
+internal static class TreeEyeIcon
+{
+	/// <summary>Width of the eye's own hit/paint rect, right-aligned to the tree.</summary>
+	public const float Width = 24f;
+
+	/// <summary>Gap kept clear between the eye and its own left edge.</summary>
+	public const float Padding = 4f;
+
+	/// <summary>How far from the row's right edge a row's OTHER text needs to stay clear of,
+	/// whether or not the eye is actually drawn on this frame — the eye still needs the room the
+	/// instant the row is hovered, so the margin cannot depend on hover state.</summary>
+	public const float SecondaryTextRightMargin = Width + Padding + 6f;
+
+	public static Rect Rect( TreeView tree, VirtualWidget item ) =>
+		new( tree.LocalRect.Right - Width - Padding, item.Rect.Top, Width, item.Rect.Height );
+
+	/// <summary>Shown on hover always, and whether or not hovered when the row is hidden — a
+	/// hidden row stays obviously hidden rather than only announcing it while the mouse happens to
+	/// be there.</summary>
+	public static bool ShouldShow( VirtualWidget item, bool visible ) => item.Hovered || !visible;
+
+	public static void Draw( TreeView tree, VirtualWidget item, bool visible )
+	{
+		if ( !ShouldShow( item, visible ) )
+			return;
+
+		Paint.SetPen( visible ? Theme.TextLight : Theme.Text );
+		Paint.DrawIcon( Rect( tree, item ), visible ? "visibility" : "visibility_off", 16, TextFlag.Center );
+	}
+
+	public static bool WasClicked( TreeView tree, VirtualWidget item, MouseEvent e ) =>
+		Rect( tree, item ).IsInside( e.LocalPosition );
+}
+
 /// <summary>What the feature tree's context menu asked the window to do. The panel knows what was
 /// clicked; the window owns the studio, the dialog and the undo stack, so it does the doing.</summary>
 internal enum EffigyFeatureCommand
@@ -1938,7 +1985,7 @@ internal sealed class EffigyFeatureTreePanel : Widget
 		public VisibilityTreeView( Widget parent ) : base( parent ) { }
 		protected override bool OnItemPressed( VirtualWidget item, MouseEvent e )
 		{
-			if ( item.Object is IVisibilityNode node && new Rect( LocalRect.Right - 28, item.Rect.Top, 24, item.Rect.Height ).IsInside( e.LocalPosition ) )
+			if ( item.Object is IVisibilityNode node && TreeEyeIcon.WasClicked( this, item, e ) )
 			{
 				node.ToggleVisibility();
 				return false;
@@ -2227,13 +2274,7 @@ internal sealed class EffigyFeatureTreePanel : Widget
 		VisibilityToggled?.Invoke( key, visible );
 		_tree.Update();
 	}
-	private Rect IsEyeRect( VirtualWidget item ) => new( _tree.LocalRect.Right - 28, item.Rect.Top, 24, item.Rect.Height );
-	private void PaintEye( VirtualWidget item, string key )
-	{
-		if ( !item.Hovered && IsVisible( key ) ) return;
-		Paint.SetPen( IsVisible( key ) ? Theme.TextLight : Theme.Text );
-		Paint.DrawIcon( IsEyeRect( item ), IsVisible( key ) ? "visibility" : "visibility_off", 16, TextFlag.Center );
-	}
+	private void PaintEye( VirtualWidget item, string key ) => TreeEyeIcon.Draw( _tree, item, IsVisible( key ) );
 
 	public EffigyFeatureTreePanel( Widget parent, PartStudio studio ) : base( parent )
 	{
@@ -2431,12 +2472,13 @@ internal sealed class EffigyFeatureTreePanel : Widget
 			if ( Value.Suppressed )
 				label += " (suppressed)";
 			Paint.DrawText( item.Rect.Shrink( 22, 0, 0, 0 ), label, TextFlag.LeftCenter );
-			// Right-aligned, clear of the eye's 28px strip: what this sketch is attached to, and
+			// Right-aligned, clear of the eye's strip: what this sketch is attached to, and
 			// therefore whether anything built from it will follow an edit upstream.
 			if ( Value is SketchFeature attached )
 			{
 				Paint.SetPen( Theme.TextLight.WithAlpha( 0.55f ) );
-				Paint.DrawText( item.Rect.Shrink( 0, 0, 34, 0 ), _panel.AttachmentLabel( attached ), TextFlag.RightCenter );
+				Paint.DrawText( item.Rect.Shrink( 0, 0, TreeEyeIcon.SecondaryTextRightMargin, 0 ),
+					_panel.AttachmentLabel( attached ), TextFlag.RightCenter );
 			}
 
 			if ( Value is SketchFeature ) _panel.PaintEye( item, VisibilityKey );
@@ -3074,16 +3116,13 @@ internal sealed class EffigyPartsPanel : Widget
 			_tree.AddItem( new PartNode( this, body ) );
 	}
 
-	private static Rect EyeRect( TreeView tree, VirtualWidget item )
-		=> new( tree.LocalRect.Right - 28, item.Rect.Top, 24, item.Rect.Height );
-
 	private sealed class PartsTreeView : TreeView
 	{
 		public PartsTreeView( Widget parent ) : base( parent ) { }
 
 		protected override bool OnItemPressed( VirtualWidget item, MouseEvent e )
 		{
-			if ( item.Object is PartNode node && EyeRect( this, item ).IsInside( e.LocalPosition ) )
+			if ( item.Object is PartNode node && TreeEyeIcon.WasClicked( this, item, e ) )
 			{
 				node.ToggleVisibility();
 				return false;
@@ -3116,21 +3155,17 @@ internal sealed class EffigyPartsPanel : Widget
 			Paint.DrawIcon( item.Rect, "view_in_ar", 14, TextFlag.LeftCenter );
 
 			Paint.SetPen( visible ? Theme.Text : Theme.TextLight );
-			Paint.DrawText( item.Rect.Shrink( 22, 0, 34, 0 ), Value.Name ?? "Part", TextFlag.LeftCenter );
+			Paint.DrawText( item.Rect.Shrink( 22, 0, TreeEyeIcon.SecondaryTextRightMargin, 0 ),
+				Value.Name ?? "Part", TextFlag.LeftCenter );
 
-			// Face count sits where the eye is not, so the row still says something about the part
-			// when the eye is hidden.
-			if ( !item.Hovered )
-			{
-				Paint.SetPen( Theme.TextLight.WithAlpha( 0.6f ) );
-				Paint.DrawText( item.Rect.Shrink( 0, 0, 30, 0 ), $"{Value.Mesh?.FaceCount ?? 0}", TextFlag.RightCenter );
-			}
+			// Always drawn, same as the Features tree's attachment label — the shared margin
+			// already keeps it clear of the eye, so there is no need to make it vanish and
+			// reappear on hover the way this row used to.
+			Paint.SetPen( Theme.TextLight.WithAlpha( 0.6f ) );
+			Paint.DrawText( item.Rect.Shrink( 0, 0, TreeEyeIcon.SecondaryTextRightMargin, 0 ),
+				$"{Value.Mesh?.FaceCount ?? 0}", TextFlag.RightCenter );
 
-			if ( !item.Hovered && visible )
-				return;
-
-			Paint.SetPen( visible ? Theme.TextLight : Theme.Text );
-			Paint.DrawIcon( EyeRect( _panel._tree, item ), visible ? "visibility" : "visibility_off", 16, TextFlag.Center );
+			TreeEyeIcon.Draw( _panel._tree, item, visible );
 		}
 	}
 
