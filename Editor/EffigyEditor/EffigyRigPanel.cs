@@ -145,6 +145,13 @@ internal sealed class EffigyRigPanel : Widget
 		_viewport.BoneSelectionChanged = OnViewportBoneSelectionChanged;
 		_viewport.BonePosed = OnBonePosed;
 
+		// += rather than =: EffigyFeatureDialog already set this to its own body-picker's Escape
+		// handler. Escape is generic per BodyPickMode in EffigyViewport.OnKeyPress — it has no
+		// idea which of the two ever armed it — so both listeners have to run, not just whichever
+		// assigned last. DisarmAssign already no-ops when this panel wasn't the one armed, the
+		// same way the dialog's own handler already no-ops when IT wasn't.
+		_viewport.PickModeCancelled += DisarmAssign;
+
 		Refresh();
 	}
 
@@ -252,10 +259,8 @@ internal sealed class EffigyRigPanel : Widget
 			_viewport.BonePointPicked = OnBonePointPicked;
 			_viewport.BoneToolEscape = OnBoneToolEscape;
 			_viewport.SetPickPrompt( branchFrom >= 0
-				? $"Click to extend a new bone from '{Skeleton.Bones[branchFrom].Name}'. "
-					+ "Escape to end the chain, Escape again to stop."
-				: "Click the model to place a bone. Click again to extend the chain. "
-					+ "Escape to end the chain, Escape again to stop." );
+				? $"Click to extend a bone from '{Skeleton.Bones[branchFrom].Name}'. Escape when done."
+				: "Click to place a bone. Click again to extend the chain. Escape when done." );
 		}
 		else
 		{
@@ -352,7 +357,8 @@ internal sealed class EffigyRigPanel : Widget
 		_viewport.BodyPicked = OnBodyPicked;
 		_viewport.SelectedBodyIds = BodiesOnBone( Skeleton.Bones[_selectedBone].Name );
 		_viewport.SetPickPrompt(
-			$"Click bodies to assign to '{Skeleton.Bones[_selectedBone].Name}'. Click again to unassign." );
+			$"Click bodies to assign to '{Skeleton.Bones[_selectedBone].Name}' — click again to unassign one. "
+				+ "Escape when done." );
 		_assignBodyButton.Text = "Done Assigning";
 	}
 
