@@ -314,6 +314,11 @@ internal sealed class EffigyRigPanel : Widget
 
 		_viewport.BoneToolActive = active;
 		_addBoneButton.Text = active ? "Placing… (Esc to stop)" : "Add Bone";
+
+		// Selecting a different bone in the tree while placing is harmless (see the comment in
+		// ToggleAssignBody), but arming Assign Body on top of it isn't — disabled rather than a
+		// silent refusal on click, so it's obvious before you try.
+		_assignBodyButton.Enabled = !active;
 	}
 
 	private void OnBonePointPicked( Vec3 point )
@@ -384,6 +389,14 @@ internal sealed class EffigyRigPanel : Widget
 		}
 
 		if ( _selectedBone < 0 || _selectedBone >= Skeleton.Count )
+			return;
+
+		// The tree stays clickable while the bone tool is armed (selecting a different bone mid-
+		// chain doesn't disturb it — see OnBonePointPicked, which never reads _selectedBone after
+		// arming), so a selection can exist here even though BoneToolActive is also true. Refuse
+		// rather than arm BodyPickMode on top of it, same reasoning as SetBoneToolActive refusing
+		// the reverse — one click cannot be both a body pick and a bone placement.
+		if ( _viewport.BoneToolActive )
 			return;
 
 		// Same hand-back as the bone tool's: if a feature dialog's own picker is armed, tell it to
@@ -679,8 +692,11 @@ internal sealed class EffigyRigPanel : Widget
 
 		var hasSelection = index >= 0 && index < Skeleton.Count;
 
-		if ( !hasSelection )
-			DisarmAssign();
+		// Assign Body is scoped to whichever bone was selected when it was armed. Without this,
+		// switching to a different bone mid-assign left the prompt and the viewport's highlighted
+		// bodies both still naming the OLD bone while a click would silently start assigning to
+		// the new one instead — the exact kind of thing this session keeps finding and fixing.
+		DisarmAssign();
 
 		// Teaches the branch gesture: pick a bone, and the button that would otherwise just say
 		// "Add Bone" tells you what clicking it will actually do. Only while the tool itself isn't
