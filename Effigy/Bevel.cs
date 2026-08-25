@@ -290,17 +290,59 @@ public static class Bevel
 		if ( nextSelected )
 			p2 += Vec3.Cross( faceNormal, dirNext ).Normal * width;
 
-		return IntersectCoplanarLines( p1, d1, p2, d2, faceNormal ) ?? v;
+		// WHERE THE CORNER GOES WHEN THE TWO LINES WILL NOT INTERSECT USEFULLY.
+		//
+		// At a straight corner the two boundary lines are the same line, slid inward by the same
+		// width in the same direction, so their "intersection" is undefined while the corner
+		// itself is not: it is just the original vertex moved inward by width. That is this
+		// fallback, and it is the right answer for the clamp below too — both are the case where
+		// the intersection has stopped meaning anything.
+		//
+		// Taken from whichever edge was actually selected; when both are, they agree to within
+		// the angle that made the intersection useless in the first place.
+		var inward = prevSelected
+			? Vec3.Cross( faceNormal, dirPrev ).Normal
+			: Vec3.Cross( faceNormal, dirNext ).Normal;
+
+		var fallback = v + inward * width;
+
+		if ( IntersectCoplanarLines( p1, d1, p2, d2, faceNormal ) is not { } hit )
+			return fallback;
+
+		// A CHAMFER IS A LOCAL CUT, SO A CORNER THAT TRAVELS MILES IS THE DEGENERATE CASE.
+		//
+		// The offset point sits at roughly width/sin(turn) from the vertex, so a corner that is
+		// nearly straight throws it arbitrarily far. Ear clipping a thin annulus produces exactly
+		// that: collinear corners (turn 180°, sin 1.5e-5) that put the point 15000 units away on a
+		// model 20 units across. Those vertices are finite and the mesh still validates as closed
+		// and manifold, which is why only a render ever showed it — the model collapses to a
+		// speck because the view has to fit a stray vertex a thousand diameters out.
+		//
+		// Every honest chamfer lands within a few multiples of width: a square corner is about
+		// 1.4x, and even a 5° needle only reaches ~11x. Past this it is degeneracy, not sharpness.
+		return (hit - v).Length > width * MaxCornerOffset ? fallback : hit;
 	}
 
-	/// <summary>Where two lines meet, given they both lie in the plane with this normal. Null if
-	/// they are (near) parallel — a straight 180° corner, which a real mesh should not produce but
-	/// a malformed one might.</summary>
+	/// <summary>How far a bevelled corner may travel from its original vertex, as a multiple of
+	/// width. See CutCorner for why a cap is needed at all and why this value is generous.</summary>
+	const float MaxCornerOffset = 20f;
+
+	/// <summary>
+	/// Where two lines meet, given they both lie in the plane with this normal. Null if they are
+	/// (near) parallel — a straight 180° corner, which ear clipping a thin ring produces routinely.
+	///
+	/// `denom` IS sin(angle between the two directions): d1, d2 and planeNormal are all unit
+	/// vectors, so the triple product reduces to it exactly. That is worth stating because the
+	/// epsilon is otherwise impossible to reason about — the previous 1e-9 read as a floating
+	/// point guard but actually meant "only reject corners straighter than 6e-8 degrees", which no
+	/// mesh ever is, so it never once fired. CutCorner's clamp is what makes the result robust;
+	/// this threshold only avoids handing it a division that has already lost all its precision.
+	/// </summary>
 	static Vec3? IntersectCoplanarLines( Vec3 p1, Vec3 d1, Vec3 p2, Vec3 d2, Vec3 planeNormal )
 	{
 		var denom = Vec3.Dot( Vec3.Cross( d1, d2 ), planeNormal );
 
-		if ( MathF.Abs( denom ) < 1e-9f )
+		if ( MathF.Abs( denom ) < 1e-6f )
 			return null;
 
 		var w = p2 - p1;
