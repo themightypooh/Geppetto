@@ -784,7 +784,7 @@ public sealed class EffigyWindow : DockWindow
 		var report = _studio.Rebuild();
 		_featureTree?.Rebuild();
 		_partsPanel?.Refresh();
-		_rigPanel?.Refresh();
+		_rigPanel?.RefreshBodyNames();
 
 		// Show whatever DID build, errors or not. A broken feature halfway down the tree should
 		// leave the part above it on screen — going blank hides the very geometry you need to

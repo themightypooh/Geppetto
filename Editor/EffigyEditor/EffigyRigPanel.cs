@@ -219,6 +219,16 @@ internal sealed class EffigyRigPanel : Widget
 		RefreshInspector();
 	}
 
+	/// <summary>
+	/// Called after the studio rebuilds for a reason that has nothing to do with the rig — any CAD
+	/// parameter edit, which is to say constantly. A body a bone is pinned to might have gone away
+	/// or been renamed, so the inspector's body-name lookups are worth refreshing; nothing about
+	/// which BONES exist ever changes from a studio rebuild, so the tree is deliberately left
+	/// alone. RebuildTree collapses every chain back to just its roots — fine on a genuine rig
+	/// edit, not something a totally unrelated parameter drag should ever trigger.
+	/// </summary>
+	public void RefreshBodyNames() => RefreshInspector();
+
 	// --- bone placement -------------------------------------------------------------------
 
 	/// <summary>Turn the bone tool off if it happens to be on — called from EffigyWindow when
@@ -449,7 +459,13 @@ internal sealed class EffigyRigPanel : Widget
 			_bodyBoneMap[bodyId] = boneName;
 
 		_viewport.SelectedBodyIds = BodiesOnBone( boneName );
-		RebuildTree();
+
+		// Update, not RebuildTree: nothing about which bones exist or how they're nested changed,
+		// only a count a couple of rows will paint differently. RebuildTree tears down and
+		// re-creates every node, which only re-opens ROOT bones — a full rebuild here would
+		// collapse whatever chain you'd drilled into every single time you assigned a body, which
+		// is the most repetitive action this tool has.
+		_tree.Update();
 		RefreshBodyList();
 	}
 
@@ -622,7 +638,8 @@ internal sealed class EffigyRigPanel : Widget
 		if ( _assigningBody )
 			_viewport.SelectedBodyIds = BodiesOnBone( Skeleton.Bones[_selectedBone].Name );
 
-		RebuildTree();
+		// See OnBodyPicked — only a displayed count changed, not the tree's shape.
+		_tree.Update();
 		RefreshBodyList();
 	}
 
