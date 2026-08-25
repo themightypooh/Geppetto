@@ -35,11 +35,14 @@ internal sealed partial class EffigyViewport
 	/// of which, since PendingBoneHead is the panel's state mirrored here for drawing only.</summary>
 	public Action BoneToolEscape { get; set; }
 
-	private static readonly Color BoneToolPreviewColor = new( 1f, 0.85f, 0.2f, 0.9f );
+	private static readonly Color BoneToolPreviewColor = new( 1f, 0.85f, 0.2f, 0.55f );
 
-	/// <summary>Highlight the point under the cursor, draw a line back to the pending head if a
-	/// chain is open, and report a click. Same raycast MeshRaycast/_displayBodies pairing as the
-	/// face and body picks — bones are placed ON the model, not in empty space.</summary>
+	/// <summary>
+	/// Highlight the point under the cursor, and if a chain is open draw the actual dog-bone shape
+	/// the click would commit — not a placeholder line, the real DrawDogBone — so what you see
+	/// before clicking is what you get after. Same raycast MeshRaycast/_displayBodies pairing as
+	/// the face and body picks — bones are placed ON the model, not in empty space.
+	/// </summary>
 	private void BoneToolFrame()
 	{
 		if ( !BoneToolActive || !_canvasHasCursor )
@@ -56,12 +59,39 @@ internal sealed partial class EffigyViewport
 		var world = new Vector3( point.x, point.y, point.z );
 
 		Gizmo.Draw.Color = BoneToolPreviewColor;
-		Gizmo.Draw.SolidSphere( world, BoneHandleRadius * 0.4f, 8, 8 );
 
-		if ( PendingBoneHead is { } head )
-			Gizmo.Draw.Line( new Vector3( head.x, head.y, head.z ), world );
+		if ( PendingBoneHead is { } head && (point - head).Length > 0.01f )
+		{
+			var headWorld = new Vector3( head.x, head.y, head.z );
+			var (xAxis, zAxis) = PreviewBasis( head, point );
+			DrawDogBone( headWorld, world, xAxis, zAxis );
+		}
+		else
+		{
+			Gizmo.Draw.SolidSphere( world, BoneHandleRadius * 0.4f, 8, 8 );
+		}
 
 		if ( Gizmo.WasLeftMousePressed )
 			BonePointPicked?.Invoke( point );
+	}
+
+	/// <summary>
+	/// The same head→tail aim-and-perpendicular construction Skeleton.LocalFromWorldPoints uses,
+	/// kept here only far enough to get two axes for the PREVIEW's cross-section — the kernel
+	/// owns the real thing once the click commits. Not shared code because it can't be: the kernel
+	/// has no notion of a Vector3/Gizmo and shouldn't grow one for a rendering concern. Copied
+	/// exactly, including the same seed-axis threshold, so the preview's roll matches the bone
+	/// AddBoneFromPoints actually creates rather than merely resembling it.
+	/// </summary>
+	private static (Vector3 xAxis, Vector3 zAxis) PreviewBasis( Vec3 head, Vec3 tail )
+	{
+		var along = tail - head;
+		var y = along / along.Length;
+
+		var seed = MathF.Abs( y.x ) < 0.9f ? new Vec3( 1, 0, 0 ) : new Vec3( 0, 0, 1 );
+		var x = Vec3.Cross( seed, y ).Normal;
+		var z = Vec3.Cross( x, y );
+
+		return (new Vector3( x.x, x.y, x.z ), new Vector3( z.x, z.y, z.z ));
 	}
 }
