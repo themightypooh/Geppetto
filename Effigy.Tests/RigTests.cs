@@ -25,6 +25,9 @@ public static class RigTests
 		Section( "removing and renaming a bone" );
 		TestRemoveRenameBone();
 
+		Section( "mirroring a bone subtree" );
+		TestMirrorSubtree();
+
 		Section( "Euler conversion round-trips" );
 		TestEuler();
 
@@ -169,6 +172,73 @@ public static class RigTests
 		threw = false;
 		try { chain.RenameBone( 0, "  " ); } catch ( ArgumentException ) { threw = true; }
 		Check( "a blank name is refused", threw );
+	}
+
+	/// <summary>A spine root with one arm off to the +X side — the shape mirroring an arm across
+	/// the character's centreline actually has to handle.</summary>
+	static Skeleton SpineWithOneArm()
+	{
+		var s = new Skeleton();
+		s.AddBoneFromPoints( "spine", -1, new Vec3( 0, 0, 0 ), new Vec3( 0, 0, 2 ) );
+		s.AddBoneFromPoints( "upper_arm_L", 0, new Vec3( 1, 0, 2 ), new Vec3( 3, 0, 2 ) );
+		s.AddBoneFromPoints( "forearm_L", 1, new Vec3( 3, 0, 2 ), new Vec3( 5, 0, 1 ) );
+		return s;
+	}
+
+	static void TestMirrorSubtree()
+	{
+		var s = SpineWithOneArm();
+		var spine = s.IndexOf( "spine" );
+		var upperL = s.IndexOf( "upper_arm_L" );
+
+		var newRoot = s.MirrorSubtree( upperL, new Vec3( 1, 0, 0 ), spine );
+
+		Check( "mirror returns a valid index", newRoot >= 0 && newRoot < s.Count );
+		Check( "five bones total now", s.Count == 5 );
+		Check( "_L became _R", s.Bones[newRoot].Name == "upper_arm_R" );
+		Check( "mirrored bone grafts onto the requested parent", s.Bones[newRoot].Parent == spine );
+
+		var headL = s.HeadWorld( upperL );
+		var headR = s.HeadWorld( newRoot );
+		Check( "X is negated", MathF.Abs( headR.x + headL.x ) < 1e-4f, $"{headL} vs {headR}" );
+		Check( "Y and Z untouched by an X-normal mirror",
+			MathF.Abs( headR.y - headL.y ) < 1e-4f && MathF.Abs( headR.z - headL.z ) < 1e-4f );
+
+		var tailL = s.TailWorld( upperL );
+		var tailR = s.TailWorld( newRoot );
+		Check( "tail is mirrored too", Near( tailR, new Vec3( -tailL.x, tailL.y, tailL.z ) ), tailR.ToString() );
+
+		Check( "length survives the mirror",
+			MathF.Abs( s.Bones[newRoot].Length - s.Bones[upperL].Length ) < 1e-4f );
+
+		var forearmR = s.IndexOf( "forearm_R" );
+		Check( "the child came along", forearmR >= 0 );
+		Check( "the child re-parents to the mirrored parent, not the original", s.Bones[forearmR].Parent == newRoot );
+
+		var forearmL = s.IndexOf( "forearm_L" );
+		Check( "the original subtree is untouched",
+			Near( s.HeadWorld( forearmL ), new Vec3( 3, 0, 2 ) ) && s.Bones[forearmL].Parent == upperL );
+
+		// Mirroring again must not collide with the name it just made.
+		var second = s.MirrorSubtree( upperL, new Vec3( 1, 0, 0 ), spine );
+		Check( "a second mirror gets a de-duplicated name, not a crash",
+			s.Bones[second].Name != s.Bones[newRoot].Name, s.Bones[second].Name );
+
+		// A bone with no _L/_R convention in its name.
+		var plain = new Skeleton();
+		plain.AddBoneFromPoints( "antenna", -1, Vec3.Zero, new Vec3( 1, 0, 0 ) );
+		var mirroredPlain = plain.MirrorSubtree( 0, new Vec3( 1, 0, 0 ) );
+		Check( "a name with no L/R convention gets _mirrored appended",
+			plain.Bones[mirroredPlain].Name == "antenna_mirrored" );
+		Check( "newParent -1 makes a new root", plain.Bones[mirroredPlain].Parent == -1 );
+
+		var threw = false;
+		try { s.MirrorSubtree( 99, new Vec3( 1, 0, 0 ) ); } catch ( ArgumentOutOfRangeException ) { threw = true; }
+		Check( "mirroring an out-of-range bone is refused", threw );
+
+		threw = false;
+		try { s.MirrorSubtree( upperL, Vec3.Zero ); } catch ( ArgumentException ) { threw = true; }
+		Check( "a zero-length mirror normal is refused", threw );
 	}
 
 	static void TestEuler()

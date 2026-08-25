@@ -8,9 +8,11 @@ using System.Linq;
 namespace Marionette.EditorTools;
 
 /// <summary>
-/// Authoring a skeleton on top of the studio's mesh: place bones by clicking the model, rename
-/// or delete them from a tree, and optionally pin a body to a bone so skinning does not rely
-/// entirely on nearest-bone weighting.
+/// Authoring a skeleton on top of the studio's mesh: place bones by clicking the model —
+/// branching from a selected bone rather than only ever chaining in a straight line, which is
+/// what a spine growing into two arms and two legs needs — rename or delete them from a tree,
+/// mirror one side of a rig onto the other, and optionally pin a body to a bone so skinning does
+/// not rely entirely on nearest-bone weighting.
 ///
 /// This is the panel EffigyWindow has referenced since the day the rigged export path was
 /// written — HasBones, Skeleton, BodyBoneMap and Refresh() are its contract with the window,
@@ -37,6 +39,7 @@ internal sealed class EffigyRigPanel : Widget
 
 	private Button _addBoneButton;
 	private Button _assignBodyButton;
+	private Button _mirrorButton;
 
 	public Skeleton Skeleton { get; } = new();
 
@@ -78,12 +81,26 @@ internal sealed class EffigyRigPanel : Widget
 		toolRow.Layout.Add( _addBoneButton, 1 );
 		header.Layout.Add( toolRow );
 
+		var secondRow = new Widget( header ) { Layout = Layout.Row() };
+		secondRow.Layout.Spacing = 6;
+
 		_assignBodyButton = new Button( "Assign Body", "link" )
 		{
 			Enabled = false,
 			Clicked = ToggleAssignBody,
 		};
-		header.Layout.Add( _assignBodyButton );
+		secondRow.Layout.Add( _assignBodyButton, 1 );
+
+		_mirrorButton = new Button( "Mirror", "flip" )
+		{
+			Enabled = false,
+			ToolTip = "Mirror the selected bone (and everything under it) across Y=0 — this "
+				+ "project's left/right axis — onto the same parent it already hangs from.",
+			Clicked = MirrorSelectedBone,
+		};
+		secondRow.Layout.Add( _mirrorButton, 1 );
+
+		header.Layout.Add( secondRow );
 
 		Layout.Add( header );
 
@@ -128,25 +145,50 @@ internal sealed class EffigyRigPanel : Widget
 	/// <summary>
 	/// Arm or disarm the click-to-place tool. Each click extends the current chain from the last
 	/// point to the new one, parented to the bone that segment just made — Blender's
-	/// armature-extrude gesture. Escape closes the current chain (so the next click starts a new
-	/// root); Escape again turns the tool off.
+	/// armature-extrude gesture.
+	///
+	/// If a bone was selected when the tool was armed, the chain starts from THAT bone's tail,
+	/// parented to it, instead of starting fresh — the same "extrude from the selected tip"
+	/// gesture Blender uses, and the only way this tool can build anything but one straight chain.
+	/// Without it there would be no way to grow a spine into two arms and two legs: every new
+	/// chain would have to start over as its own disconnected root.
+	///
+	/// Escape closes the current chain (so the next click starts a new, unparented root); Escape
+	/// again turns the tool off.
 	/// </summary>
 	private void SetBoneToolActive( bool active )
 	{
 		if ( active )
 		{
 			DisarmAssign();
+
+			var branchFrom = _selectedBone;
+
 			_viewport.DeselectBone();
 			_selectedBone = -1;
 			_assignBodyButton.Enabled = false;
-			_chainHead = null;
-			_chainParent = -1;
-			_viewport.PendingBoneHead = null;
+			_mirrorButton.Enabled = false;
+
+			if ( branchFrom >= 0 && branchFrom < Skeleton.Count )
+			{
+				_chainHead = Skeleton.TailWorld( branchFrom );
+				_chainParent = branchFrom;
+				_viewport.PendingBoneHead = _chainHead;
+			}
+			else
+			{
+				_chainHead = null;
+				_chainParent = -1;
+				_viewport.PendingBoneHead = null;
+			}
+
 			_viewport.BonePointPicked = OnBonePointPicked;
 			_viewport.BoneToolEscape = OnBoneToolEscape;
-			_viewport.SetPickPrompt(
-				"Click the model to place a bone. Click again to extend the chain. "
-				+ "Escape to end the chain, Escape again to stop." );
+			_viewport.SetPickPrompt( branchFrom >= 0
+				? $"Click to extend a new bone from '{Skeleton.Bones[branchFrom].Name}'. "
+					+ "Escape to end the chain, Escape again to stop."
+				: "Click the model to place a bone. Click again to extend the chain. "
+					+ "Escape to end the chain, Escape again to stop." );
 		}
 		else
 		{
@@ -278,6 +320,28 @@ internal sealed class EffigyRigPanel : Widget
 	private List<string> BodiesOnBone( string boneName ) =>
 		_bodyBoneMap.Where( kv => kv.Value == boneName ).Select( kv => kv.Key ).ToList();
 
+	// --- mirroring -----------------------------------------------------------------------
+
+	/// <summary>
+	/// Mirror the selected bone and everything beneath it across Y=0 — this tool's own left/right
+	/// axis (EffigyViewport's header comment: "+x forward, +y left, +z up") — grafted onto the
+	/// same parent the original hangs from. That default covers the ordinary case, an arm or a leg
+	/// mirrored onto the spine bone it already shares, without asking first; nothing stops running
+	/// it again on a different selection for a less usual split.
+	/// </summary>
+	private void MirrorSelectedBone()
+	{
+		if ( _selectedBone < 0 || _selectedBone >= Skeleton.Count )
+			return;
+
+		var parent = Skeleton.Bones[_selectedBone].Parent;
+		var newRoot = Skeleton.MirrorSubtree( _selectedBone, new Vec3( 0, 1, 0 ), parent );
+
+		RebuildTree();
+		_viewport.SelectBone( newRoot );
+		OnViewportBoneSelectionChanged( newRoot );
+	}
+
 	// --- selection sync (viewport <-> tree) -------------------------------------------------
 
 	/// <summary>Called both from the tree's own selection callback and from the viewport when a
@@ -288,6 +352,7 @@ internal sealed class EffigyRigPanel : Widget
 	{
 		_selectedBone = index;
 		_assignBodyButton.Enabled = index >= 0 && index < Skeleton.Count;
+		_mirrorButton.Enabled = _assignBodyButton.Enabled;
 
 		if ( !_assignBodyButton.Enabled )
 			DisarmAssign();
@@ -359,6 +424,7 @@ internal sealed class EffigyRigPanel : Widget
 		_viewport.DeselectBone();
 		_selectedBone = -1;
 		_assignBodyButton.Enabled = false;
+		_mirrorButton.Enabled = false;
 		DisarmAssign();
 
 		RebuildTree();

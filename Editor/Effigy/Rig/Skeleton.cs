@@ -213,6 +213,91 @@ public sealed class Skeleton
 		Bones = newBones;
 	}
 
+	/// <summary>
+	/// Mirror a bone and everything beneath it across the plane through the origin with the given
+	/// normal, appended as new bones under `newParent` (-1 for a new root, or an existing bone —
+	/// mirroring an arm should graft onto the spine bone the original arm hangs from, not become
+	/// its own root).
+	///
+	/// Reflects the WORLD head and tail of each bone and rebuilds it from those two points, the
+	/// same way AddBoneFromPoints always builds a bone. That sidesteps the usual mirrored-bone
+	/// handedness problem entirely: there is no roll stored anywhere in this format to come out
+	/// backwards, so reflecting the two points a bone is defined by is exactly right rather than a
+	/// shortcut that happens to work.
+	///
+	/// Naming swaps a trailing _L/_R, _l/_r, .L/.R (Blender's own convention); anything else gets
+	/// "_mirrored" appended. A collision with an existing name — mirroring twice, or a name that
+	/// already looks mirrored — gets a numeric suffix rather than throwing, since this is meant to
+	/// be safe to lean on while roughing out a rig.
+	///
+	/// Returns the index of the new mirrored root.
+	/// </summary>
+	public int MirrorSubtree( int root, Vec3 planeNormal, int newParent = -1 )
+	{
+		if ( root < 0 || root >= Bones.Count )
+			throw new ArgumentOutOfRangeException( nameof( root ) );
+
+		if ( newParent < -1 || newParent >= Bones.Count )
+			throw new ArgumentOutOfRangeException( nameof( newParent ) );
+
+		var n = planeNormal.Normal;
+
+		if ( n.LengthSquared < 0.5f )
+			throw new ArgumentException( "A mirror plane needs a normal", nameof( planeNormal ) );
+
+		Vec3 Reflect( Vec3 p ) => p - n * (2f * Vec3.Dot( p, n ));
+
+		var newRootIndex = -1;
+
+		void Walk( int sourceIndex, int mirroredParent )
+		{
+			var bone = Bones[sourceIndex];
+			var head = Reflect( HeadWorld( sourceIndex ) );
+			var tail = Reflect( TailWorld( sourceIndex ) );
+
+			var newIndex = AddBoneFromPoints( UniqueName( MirroredName( bone.Name ) ), mirroredParent, head, tail );
+
+			if ( sourceIndex == root )
+				newRootIndex = newIndex;
+
+			// Snapshotted before recursing: Children scans live off Bones, which is growing with
+			// every mirrored bone Walk adds, and the source subtree's children are exactly the set
+			// this reads once, up front.
+			var kids = new List<int>();
+			foreach ( var child in Children( sourceIndex ) )
+				kids.Add( child );
+
+			foreach ( var child in kids )
+				Walk( child, newIndex );
+		}
+
+		Walk( root, newParent );
+		return newRootIndex;
+	}
+
+	static string MirroredName( string name )
+	{
+		if ( name.EndsWith( "_L" ) ) return name[..^2] + "_R";
+		if ( name.EndsWith( "_R" ) ) return name[..^2] + "_L";
+		if ( name.EndsWith( "_l" ) ) return name[..^2] + "_r";
+		if ( name.EndsWith( "_r" ) ) return name[..^2] + "_l";
+		if ( name.EndsWith( ".L" ) ) return name[..^2] + ".R";
+		if ( name.EndsWith( ".R" ) ) return name[..^2] + ".L";
+		return name + "_mirrored";
+	}
+
+	string UniqueName( string baseName )
+	{
+		if ( IndexOf( baseName ) < 0 )
+			return baseName;
+
+		var n = 1;
+		while ( IndexOf( $"{baseName}_{n}" ) >= 0 )
+			n++;
+
+		return $"{baseName}_{n}";
+	}
+
 	/// <summary>Rename a bone in place, with the same validation AddBone applies to a new one.</summary>
 	public void RenameBone( int index, string name )
 	{
