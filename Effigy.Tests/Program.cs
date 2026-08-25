@@ -88,6 +88,7 @@ public static class Program
 		FaceMaterialTests.Run();
 		FaceMenuTests.Run();
 		RenderTests.Run();
+		ConstraintToolTests.Run();
 
 		DocumentTests.Run();
 
