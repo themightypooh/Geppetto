@@ -93,6 +93,8 @@ public static class Program
 
 		TaperTests.Run();
 
+		BranchTests.Run();
+
 		EditorFlowTests.Run();
 
 		KernelSyncTests.Run();

@@ -207,6 +207,18 @@ records. Effigy's is nearer Solvespace's — flat text, one record per line — 
 the field list comes from reflection rather than a hand-maintained table, so the format cannot fall
 behind the features the way a table does.
 
+## Planar face traversal, which is where both of them ended up
+
+Solvespace and FreeCAD both do region-finding by proper planar face traversal, and neither treats it
+as notable — it is simply what you do once a sketch can branch. Effigy followed only degree-2 points
+for a long time, which covers a rectangle and refuses a rectangle with a line across it.
+
+That is built now, and the shape of it is the textbook one: half-edges, sorted by leaving tangent at
+each point, next-face-edge is the clockwise neighbour of the reverse. The one detail worth writing
+down for anyone porting this reasoning: the sort key must be the TANGENT the curve leaves in, not the
+direction to its far endpoint. An arc and a line sharing a point sort wrongly under the second, and a
+wrong sort silently returns the wrong faces rather than failing.
+
 ## Suggested order for Effigy
 
 Ranked by value against cost, given a mesh boolean is the expensive prerequisite for the headline

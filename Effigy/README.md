@@ -36,7 +36,7 @@ machine. A session that skips this ends up reasoning about the code by reading i
 is how a bug that made every parameter edit a silent no-op survived long enough to look like three
 unrelated UI faults.
 
-980 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
+1006 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
 2-level-subdivided version of each. Those are the fastest way to see whether something is actually
 right: open them in Blender, or drop one into ModelDoc to find out what s&box makes of it.
 
@@ -173,13 +173,33 @@ faceted.
 **Caps are single n-gons, not triangle fans** — Catmull-Clark turns an n-gon into n clean quads, so
 a sketched profile subdivides properly.
 
-### Two known limits, both deliberate
+### Two limits that used to be here, and are not
 
-**Branching sketches.** Only points where exactly two curves meet are followed. A line drawn across
-a rectangle is ambiguous without full planar face traversal, so it's reported as a warning rather
-than guessed at. That still covers rectangles, polygons, circles, slots and rounded profiles.
-Proper face traversal — sort half-edges by angle at each vertex, always take the next one clockwise
-— is the upgrade, and doesn't change `ProfileFinder`'s interface.
+Both of the "deliberate limits" this section used to describe have been built, and both are worth
+keeping a note of because in each case the stated reason for the limit outlived the limit itself.
+
+**Branching sketches.** Built. Only points where exactly two curves met were followed, so a line
+drawn across a rectangle — which is how anyone divides a shape — was reported as "not supported yet"
+instead of split into the two regions it plainly is.
+
+The fix is exactly the upgrade path this section used to describe: every curve becomes two directed
+half-edges, the outgoing ones at each point are sorted by the direction they actually leave in, and
+walking a face means arriving along one, turning onto its reverse, and leaving along whichever
+half-edge sits immediately clockwise. Each half-edge belongs to exactly one face, so the walk always
+terminates and always covers everything. Faces that come out counter-clockwise are regions; each
+connected piece of the sketch also produces one clockwise face — the infinite one around it — and
+dropping those is the whole of the special-case handling.
+
+Two things it depends on. The angle has to be the **tangent**, not the bearing of the far endpoint,
+or an arc and a line leaving the same point sort the wrong way round and the walk takes the wrong
+curve. And dangling curves are pruned first, **repeatedly**, because removing one can leave the next
+one dangling — they are reported rather than silently dropped, since building the good regions while
+quietly discarding someone's geometry is the failure that looks like success.
+
+Worth knowing when a junction seems not to work: **touching is not joining**. A line whose end sits
+geometrically on an arc but shares no point index with it is not connected, and its free end gets
+pruned. That is coincidence-as-identity working as designed, and it caught out the first version of
+the test for this.
 
 **Profiles with holes.** Built. This section used to say they were "the same problem as a boolean
 subtract and better solved once, there", which was wrong and cost the feature a long time: capping

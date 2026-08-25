@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Linq;
 using Effigy;
 
@@ -56,8 +56,10 @@ public static class EditorFlowTests
 		// A clean rectangle...
 		sketch.Sketch.AddRectangle( new Vec2( 0, 0 ), new Vec2( 2, 2 ) );
 
-		// ...plus a stray line spliced onto one of its corners, which makes that corner join three
-		// curves. ProfileFinder will not guess at a branch like that.
+		// ...plus a stray line spliced onto one of its corners. Branching is handled now, so this is
+		// no longer about the corner joining three curves — it is that the line's far end is loose,
+		// so the line encloses nothing and gets pruned. What must not happen is it being pruned
+		// SILENTLY.
 		var corner = sketch.Sketch.Points
 			.Select( ( p, i ) => (p, i) )
 			.First( t => MathF.Abs( t.p.x ) < 1e-6f && MathF.Abs( t.p.y ) < 1e-6f ).i;
@@ -69,7 +71,8 @@ public static class EditorFlowTests
 		extrude.Distance.Value = 1f;
 		var report = EditAndRebuild( studio, extrude );
 
-		Check( "ProfileFinder does flag the branch", ProfileFinder.Find( sketch.Sketch ).Warnings.Count > 0 );
+		Check( "ProfileFinder reports the dangling line rather than dropping it",
+			ProfileFinder.Find( sketch.Sketch ).Warnings.Count > 0 );
 
 		Check( "the extrude still builds a body rather than failing outright",
 			!report.HasErrors && studio.Bodies.Count >= 1,
