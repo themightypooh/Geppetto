@@ -37,11 +37,30 @@ internal sealed partial class EffigyViewport
 
 	private static readonly Color BoneToolPreviewColor = new( 1f, 0.85f, 0.2f, 0.55f );
 
+	/// <summary>Length of the ghost bone shown before the first click of a chain has a real tail to
+	/// aim at — a guess, since nothing here knows the model's scale. Matches DogBone's own knob
+	/// math (knobR = boneLen * 0.16) against BoneHandleRadius (0.8) closely enough that the ghost
+	/// reads as the same size class as a committed bone rather than conspicuously different.</summary>
+	private const float PendingBonePreviewLength = 5f;
+
 	/// <summary>
-	/// Highlight the point under the cursor, and if a chain is open draw the actual dog-bone shape
-	/// the click would commit — not a placeholder line, the real DrawDogBone — so what you see
-	/// before clicking is what you get after. Same raycast MeshRaycast/_displayBodies pairing as
-	/// the face and body picks — bones are placed ON the model, not in empty space.
+	/// Highlight the point under the cursor with the actual dog-bone shape the click would commit
+	/// — not a placeholder dot, the real DrawDogBone — so what you see before clicking is what you
+	/// get after, for BOTH clicks of the gesture:
+	///
+	/// - Second click of a segment: head is the pending point from the first click, tail is the
+	///   cursor. Exact preview — the real head, the real tail, the real orientation.
+	/// - First click of a chain: there is no head yet, so the tail is a guess — a fixed length
+	///   standing off the surface along its normal. Direction and exact length are not meaningful
+	///   yet (only the second click fixes those); what this answers is "a bone will appear roughly
+	///   here, roughly this size," which a bare dot didn't.
+	///
+	/// Drawn depth-ignoring like the committed skeleton (DrawRigSkeleton) so the preview reads
+	/// through the mesh the same way placed bones already do, rather than disappearing the moment
+	/// it points away from the camera.
+	///
+	/// Same raycast MeshRaycast/_displayBodies pairing as the face and body picks — bones are
+	/// placed ON the model, not in empty space.
 	/// </summary>
 	private void BoneToolFrame()
 	{
@@ -59,6 +78,7 @@ internal sealed partial class EffigyViewport
 		var world = new Vector3( point.x, point.y, point.z );
 
 		Gizmo.Draw.Color = BoneToolPreviewColor;
+		Gizmo.Draw.IgnoreDepth = true;
 
 		if ( PendingBoneHead is { } head && (point - head).Length > 0.01f )
 		{
@@ -66,10 +86,23 @@ internal sealed partial class EffigyViewport
 			var (xAxis, zAxis) = PreviewBasis( head, point );
 			DrawDogBone( headWorld, world, xAxis, zAxis );
 		}
+		else if ( PendingBoneHead is null )
+		{
+			var tailGuess = point + hit.Hit.Normal * PendingBonePreviewLength;
+
+			if ( (tailGuess - point).Length > 0.01f )
+			{
+				var tailWorld = new Vector3( tailGuess.x, tailGuess.y, tailGuess.z );
+				var (xAxis, zAxis) = PreviewBasis( point, tailGuess );
+				DrawDogBone( world, tailWorld, xAxis, zAxis );
+			}
+		}
 		else
 		{
 			Gizmo.Draw.SolidSphere( world, BoneHandleRadius * 0.4f, 8, 8 );
 		}
+
+		Gizmo.Draw.IgnoreDepth = false;
 
 		if ( Gizmo.WasLeftMousePressed )
 			BonePointPicked?.Invoke( point );
