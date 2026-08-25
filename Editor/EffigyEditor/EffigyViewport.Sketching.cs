@@ -1382,6 +1382,10 @@ internal sealed partial class EffigyViewport
 		DrawDimensionBox();
 		SketchPointHandles();
 
+		// AFTER the point handles, which have had first refusal on the cursor: a point sitting on a
+		// curve has to select the point, not the curve underneath it.
+		SketchSelectionFrame();
+
 		if ( _ignoreNextSketchClick )
 		{
 			_ignoreNextSketchClick = false;
@@ -2124,7 +2128,9 @@ internal sealed partial class EffigyViewport
 
 	private void PushPrompt()
 	{
-		SketchPromptChanged?.Invoke( CurrentPrompt() );
+		// The selection outranks the tool's own prompt. While something is selected the next useful
+		// thing to know is what can be done with it, not how to draw another line.
+		SketchPromptChanged?.Invoke( SelectionPrompt() ?? CurrentPrompt() );
 	}
 
 	private string CurrentPrompt() => SketchTool switch
@@ -2153,7 +2159,7 @@ internal sealed partial class EffigyViewport
 		SketchToolKind.Slot when _pending.Count == 1 => "Slot - click the other end of the centre line",
 		SketchToolKind.Slot => "Slot - click to set the width",
 		SketchToolKind.Point => "Point - click to place",
-		SketchToolKind.Select => "Select - drag any point to move it; everything joined to it follows",
+		SketchToolKind.Select => "Select - drag a point to move it, or click points and curves to constrain them",
 		_ => "Sketching - pick a tool from the sketch toolbar",
 	};
 }

@@ -152,10 +152,21 @@ internal sealed partial class EffigyViewport
 		if ( RealTime.Now - _cameraMovedAt < 0.25f )
 			return;
 
-		// Anything with a click of its own owns the mouse while it is armed. Opening a material menu
-		// in the middle of choosing a sketch plane would act on a body the dialog may not even be
-		// allowed to touch.
-		if ( IsSketching || PlanePickMode || SketchPickMode || FacePickMode || BodyPickMode || BoneToolActive )
+		// Inside a sketch the right button means something else: constrain what is selected. The
+		// bodies are not what you are pointing at in there, and a material menu over a half-drawn
+		// profile would be answering a question nobody asked.
+		if ( IsSketching )
+		{
+			if ( HasSketchSelection )
+				SketchConstraintMenuRequested?.Invoke();
+
+			return;
+		}
+
+		// Anything else with a click of its own owns the mouse while it is armed. Opening a material
+		// menu in the middle of choosing a sketch plane would act on a body the dialog may not even
+		// be allowed to touch.
+		if ( PlanePickMode || SketchPickMode || FacePickMode || BodyPickMode || BoneToolActive )
 			return;
 
 		if ( FaceContextMenuRequested is null )

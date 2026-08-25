@@ -267,7 +267,7 @@ Note that 3 and 4 are both reachable and verifiable in this repo with no engine 
 
 ## Where this left off
 
-Everything below the line is kernel-side and verified by `tools/test.sh` (1152 checks). Everything
+Everything below the line is kernel-side and verified by `tools/test.sh` (1258 checks). Everything
 in `Editor/EffigyEditor` is written and syntax-checked but **has never been compiled** — there is no
 s&box assembly in this repo, so nothing there resolves names. That is the standing risk and the
 reason the split below is drawn where it is: anything that could be moved into the kernel and tested
@@ -310,9 +310,29 @@ they are. The preview harness that produced that judgement is not in the repo �
 mock of `Editor.Paint` that renders a glyph at 18/28/48px, and rebuilding it is an hour that pays
 for itself, because the only way to know whether an icon reads is to look at it at size.
 
-**Not started, and no longer blocked on anything.** Dimension and constraint UI. The solver has had
-angle, point-on-line, symmetric and radius for a while now and there is still no way to add a
-constraint in the editor, so it only ever runs on what the inference puts there.
+**Constraint UI — built.** `ConstraintTools` in the kernel turns a selection into the constraints it
+allows, measured and ready; the editor adds a persistent sketch selection (click to accumulate,
+click empty space to clear) and a right-click menu over it. Dimensions open pre-filled with what the
+sketch currently is, and go through the same expression evaluator as every other numeric field, so
+"25/2" works. A rule that cannot be satisfied is taken back out and the geometry restored exactly,
+rather than left contradicting the sketch forever.
+
+Two things it does NOT do, both deliberate. There is no constraint TOOLBAR — offers change with
+every click, so a strip of buttons would relabel and re-enable itself per frame, and that is widget
+code this repo cannot compile to check; a menu is built fresh each time from machinery already
+proven elsewhere. And selection accumulates on plain clicks rather than Ctrl-clicks, because no
+modifier-key API is proven in this corpus and an unproven member name takes the whole editor
+assembly down.
+
+Still missing from it: constraint GLYPHS on the sketch (the little marks showing which rules hold
+where) and a way to delete one rule by clicking it. `ConstraintTools.Touching` already answers "what
+holds this point", so the kernel side of both is there.
+
+**A render-based half of the test suite — built.** `RenderCheck` rasterises a mesh and reduces it to
+coverage, island count and front/back parity, which catch the mistakes counting cannot: a vertex in
+the wrong place, a detached fragment, and a face wound backwards. That last one leaves a mesh closed,
+manifold and Euler-correct, so every other oracle in the suite calls it fine. The Bevel bug is what
+prompted this; the tests damage good models three ways and fail if a check stays quiet.
 
 **A habit worth keeping.** Three separate limitations in this file were documented as needing the
 mesh boolean and none of them did — profiles with holes, revolve with holes, and up-to-face

@@ -54,6 +54,19 @@ public sealed class ConstraintOffer
 	public SketchConstraint Constraint;
 }
 
+/// <summary>What happened when a constraint was applied.</summary>
+public sealed class ApplyResult
+{
+	/// <summary>It went on and the sketch still solves.</summary>
+	public bool Applied;
+
+	/// <summary>Why not, when it did not. Null on success.</summary>
+	public string Message;
+
+	/// <summary>The solve it produced — where the degrees of freedom left come from.</summary>
+	public SolveResult Solve;
+}
+
 /// <summary>
 /// The layer between "what the user has selected" and "which constraints that allows".
 ///
@@ -217,10 +230,58 @@ public static class ConstraintTools
 	}
 
 	/// <summary>
+	/// Apply a constraint and re-solve, putting everything back if it cannot be met.
+	///
+	/// THE SOLVER KEEPS ITS CLOSEST FIT ON A FAILED SOLVE, which is right while a sketch is being
+	/// dragged through contradictory states mid-edit and wrong for a deliberate request. The user
+	/// asked for one specific rule; if it cannot hold, leaving it on the sketch means every later
+	/// solve carries a contradiction they never see, and leaving the half-converged POSITIONS means
+	/// their geometry moved to nearly satisfy a rule that was then reported as failed.
+	///
+	/// So a failure restores the point positions from before the attempt, exactly, rather than
+	/// removing the rule and solving again — solving again converges to *a* valid answer, which is
+	/// not necessarily the one that was on screen a moment ago.
+	///
+	/// The pin is the caller's, because it decides what visibly stays put: the editor pins whatever
+	/// the user just selected, so the sketch resolves around their attention rather than around
+	/// point 0, which is wherever they happened to click first.
+	/// </summary>
+	public static ApplyResult ApplyAndSolve( Sketch sketch, ConstraintOffer offer, int pinnedPoint = 0 )
+	{
+		if ( sketch is null || offer?.Constraint is null )
+			return new ApplyResult { Message = "Nothing to apply." };
+
+		if ( Has( sketch, offer.Constraint ) )
+			return new ApplyResult { Message = $"The sketch already says {offer.Label.ToLowerInvariant()}." };
+
+		var before = new List<Vec2>( sketch.Points );
+
+		offer.Constraint.Value = offer.Value;
+		sketch.Constraints.Add( offer.Constraint );
+
+		var solve = SketchSolver.Solve( sketch, pinnedPoint );
+
+		if ( solve.Converged )
+			return new ApplyResult { Applied = true, Solve = solve };
+
+		sketch.Constraints.Remove( offer.Constraint );
+
+		for ( var i = 0; i < sketch.Points.Count && i < before.Count; i++ )
+			sketch.Points[i] = before[i];
+
+		return new ApplyResult
+		{
+			Solve = solve,
+			Message = $"{offer.Label} could not be satisfied — it contradicts something already on the sketch.",
+		};
+	}
+
+	/// <summary>
 	/// Add a constraint to the sketch, unless it is already there.
 	///
 	/// Returns whether it landed, so a caller can tell "done" from "you already have that" without
-	/// comparing constraint lists itself.
+	/// comparing constraint lists itself. Does NOT solve — ApplyAndSolve is the one to reach for
+	/// when the result has to be checked.
 	/// </summary>
 	public static bool Apply( Sketch sketch, ConstraintOffer offer )
 	{

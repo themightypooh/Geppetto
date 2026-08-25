@@ -603,6 +603,7 @@ public sealed class EffigyWindow : DockWindow
 
 		_viewport.SketchEdited = OnSketchEdited;
 		_viewport.FaceContextMenuRequested = OpenFaceMaterialMenu;
+		_viewport.SketchConstraintMenuRequested = OpenSketchConstraintMenu;
 
 		// Fired BEFORE the viewport changes a sketch, which is the only moment a useful "before"
 		// exists to snapshot.
@@ -2062,6 +2063,148 @@ internal sealed class EffigyFeatureTreePanel : Widget
 		_studio is not null
 		&& _studio.RollbackIndex < _studio.Features.Count
 		&& _studio.Features.IndexOf( feature ) == _studio.EffectiveCount;
+
+	// --- constraining a sketch selection --------------------------------------------------------
+
+	/// <summary>
+	/// The constraint menu, on a right-click inside a sketch.
+	///
+	/// A MENU RATHER THAN A TOOLBAR, which is not what Onshape does. The reason is what the offers
+	/// are: they change with every click, so a strip of buttons would have to relabel, enable and
+	/// disable itself per frame, and every bit of that is widget code this repo cannot compile to
+	/// check. A menu is built fresh each time it opens, from machinery already proven in the feature
+	/// tree and the face menu, and it puts the choices where the cursor already is.
+	///
+	/// What may be applied is ConstraintTools' answer, not this method's — it knows a point and a
+	/// line make a point-on-line and two lines do not, and it knows what the sketch already says.
+	/// </summary>
+	private void OpenSketchConstraintMenu()
+	{
+		if ( _viewport?.ActiveSketch is not { } sketch )
+			return;
+
+		var offers = ConstraintTools.Offers( sketch, _viewport.SketchSelection );
+
+		var menu = new Menu( _viewport );
+
+		if ( offers.Count == 0 )
+		{
+			// SAYING SO IS THE POINT. An empty menu, or no menu at all, reads as a broken right
+			// button — the user has selected something and is entitled to know why it buys them
+			// nothing.
+			menu.AddHeading( "Nothing to constrain from this selection" );
+
+			menu.AddOption( "Clear selection", "backspace", () => _viewport.ClearSketchSelection() );
+
+			menu.OpenAtCursor();
+			return;
+		}
+
+		menu.AddHeading( Describe( _viewport.SketchSelection ) );
+
+		foreach ( var offer in offers )
+		{
+			var it = offer;
+
+			var option = menu.AddOption( it.NeedsValue ? $"{it.Label}…" : it.Label, IconFor( it.Kind ),
+				() =>
+				{
+					if ( it.NeedsValue )
+						AskForDimension( it );
+					else
+						ApplyConstraint( it );
+				} );
+
+			option.StatusTip = it.Hint;
+		}
+
+		menu.AddSeparator();
+
+		menu.AddOption( "Clear selection", "backspace", () => _viewport.ClearSketchSelection() );
+
+		menu.OpenAtCursor();
+	}
+
+	/// <summary>
+	/// A dimension asks for its number before it is applied, in the one-field popup the feature tree
+	/// renames with — pre-filled with what the sketch currently measures.
+	///
+	/// Pre-filled matters more than it looks. Most dimensions are added to LOCK something where it
+	/// already is, and an empty box turns that into measuring by hand and typing a rounded version,
+	/// which moves the geometry by however much the rounding was.
+	/// </summary>
+	private void AskForDimension( ConstraintOffer offer )
+	{
+		var menu = new Menu( _viewport );
+
+		var edit = new LineEdit( Expression.Format( offer.Value ), menu ) { FixedWidth = 140 };
+
+		edit.ReturnPressed += () =>
+		{
+			menu.Close();
+
+			// Through the expression evaluator, the same as every numeric field in the dialog, so a
+			// dimension can be typed as "25/2" or "3*8" like any other number in this editor.
+			// The offer's own unit, so an angle typed as "45" reads as degrees and a length as units —
+			// the same evaluator every numeric field in the dialog goes through.
+			if ( !Expression.TryEvaluate( edit.Text, string.IsNullOrEmpty( offer.Unit ) ? null : offer.Unit, out var value ) )
+			{
+				SetPrompt( $"'{edit.Text}' is not a number" );
+				return;
+			}
+
+			offer.Value = value;
+			ApplyConstraint( offer );
+		};
+
+		menu.AddWidget( edit );
+		menu.OpenAtCursor();
+
+		edit.Focus();
+		edit.SelectAll();
+	}
+
+	/// <summary>Apply, and treat it as an edit of the sketch — an undo step, and a rebuild, because
+	/// the solve has moved geometry that features downstream are standing on.</summary>
+	private void ApplyConstraint( ConstraintOffer offer )
+	{
+		RecordUndo();
+
+		if ( !_viewport.ApplySketchConstraint( offer ) )
+			return;
+
+		OnSketchEdited();
+	}
+
+	static string Describe( SketchSelection selection )
+	{
+		var parts = new List<string>();
+
+		if ( selection.Points.Count > 0 )
+			parts.Add( $"{selection.Points.Count} point{(selection.Points.Count == 1 ? "" : "s")}" );
+
+		if ( selection.Curves.Count > 0 )
+			parts.Add( $"{selection.Curves.Count} curve{(selection.Curves.Count == 1 ? "" : "s")}" );
+
+		return string.Join( " and ", parts );
+	}
+
+	/// <summary>Classic Material Icons only — the set this editor's other menus draw from.</summary>
+	static string IconFor( SketchConstraintKind kind ) => kind switch
+	{
+		SketchConstraintKind.Horizontal => "horizontal_rule",
+		SketchConstraintKind.Vertical => "straighten",
+		SketchConstraintKind.Coincident => "adjust",
+		SketchConstraintKind.Distance => "straighten",
+		SketchConstraintKind.EqualLength => "drag_handle",
+		SketchConstraintKind.Parallel => "menu",
+		SketchConstraintKind.Perpendicular => "square_foot",
+		SketchConstraintKind.Angle => "square_foot",
+		SketchConstraintKind.PointOnLine => "linear_scale",
+		SketchConstraintKind.Symmetric => "flip",
+		SketchConstraintKind.Radius => "radio_button_unchecked",
+		_ => "rule",
+	};
 
 	// --- right-click a face -------------------------------------------------------------------
 

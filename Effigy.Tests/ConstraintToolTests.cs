@@ -35,6 +35,9 @@ public static class ConstraintToolTests
 		Report.Section( "constraint tools: what a circle's radius really is" );
 		TestCircleRadius();
 
+		Report.Section( "constraint tools: a rule that cannot hold is taken back out" );
+		TestRefused();
+
 		Report.Section( "constraint tools: finding what holds a point" );
 		TestTouching();
 	}
@@ -384,6 +387,88 @@ public static class ConstraintToolTests
 
 		Report.Check( "the sketch still solves with one taken away",
 			SketchSolver.Solve( sketch ).Converged );
+	}
+
+	/// <summary>
+	/// A contradictory constraint must leave NOTHING behind — not the rule, and not the positions
+	/// the failed solve dragged the sketch through on its way to giving up.
+	///
+	/// The second half is the part that is easy to get wrong. Removing the rule and solving again
+	/// converges to *a* valid answer, which need not be the one that was on screen a moment ago, so
+	/// the user watches their geometry shift in response to an operation that reported failure.
+	/// </summary>
+	static void TestRefused()
+	{
+		var sketch = new Sketch();
+		var line = sketch.AddLine( new Vec2( 0, 0 ), new Vec2( 4, 0 ) );
+
+		var length = ConstraintTools.Offers( sketch, new SketchSelection( null, new[] { line.Id } ) )
+			.Single( o => o.Label == "Length" );
+
+		length.Value = 6f;
+
+		Report.Check( "a first dimension applies", ConstraintTools.ApplyAndSolve( sketch, length ).Applied );
+
+		var settled = sketch.Points.Select( p => p ).ToList();
+
+		// A second length on the same line, saying something else. Both cannot be true.
+		var contradiction = new ConstraintOffer
+		{
+			Kind = SketchConstraintKind.Distance,
+			Label = "Length",
+			NeedsValue = true,
+			Value = 9f,
+			Constraint = new SketchConstraint( SketchConstraintKind.Distance, line.Start, line.End ),
+		};
+
+		var refused = ConstraintTools.ApplyAndSolve( sketch, contradiction );
+
+		Report.Check( "a contradictory dimension is refused", !refused.Applied );
+
+		Report.Check( "and says why", refused.Message is not null, refused.Message ?? "no message" );
+
+		Report.Check( "the rule is not left on the sketch", sketch.Constraints.Count == 1,
+			$"{sketch.Constraints.Count} constraints" );
+
+		Report.Check( "and the geometry is exactly where it was",
+			sketch.Points.Zip( settled, ( a, b ) => (a - b).Length ).All( d => d < 1e-6f ),
+			$"line is now {(sketch.Points[line.End] - sketch.Points[line.Start]).Length:0.####} long" );
+
+		Report.Check( "so the first dimension still holds",
+			MathF.Abs( (sketch.Points[line.End] - sketch.Points[line.Start]).Length - 6f ) < 1e-3f );
+
+		// A duplicate is refused too, and differently — it is not a contradiction, it is already true.
+		var duplicate = new ConstraintOffer
+		{
+			Kind = SketchConstraintKind.Distance,
+			Label = "Length",
+			Value = 6f,
+			Constraint = new SketchConstraint( SketchConstraintKind.Distance, line.End, line.Start ),
+		};
+
+		var already = ConstraintTools.ApplyAndSolve( sketch, duplicate );
+
+		Report.Check( "a duplicate is refused", !already.Applied );
+
+		Report.Check( "and says the sketch already has it",
+			already.Message is not null && already.Message.Contains( "already" ), already.Message ?? "" );
+
+		Report.Check( "without adding a second copy", sketch.Constraints.Count == 1 );
+
+		// A successful apply reports the freedom left, which is what a UI shows next.
+		var fresh = new Sketch();
+		var only = fresh.AddLine( new Vec2( 0, 0 ), new Vec2( 3, 1 ) );
+
+		var horizontal = ConstraintTools.Offers( fresh, new SketchSelection( null, new[] { only.Id } ) )
+			.Single( o => o.Label == "Horizontal" );
+
+		var applied = ConstraintTools.ApplyAndSolve( fresh, horizontal );
+
+		Report.Check( "a successful apply carries the solve with it",
+			applied.Applied && applied.Solve is not null );
+
+		Report.Check( "with the degrees of freedom left to report",
+			applied.Solve.DegreesOfFreedom > 0, $"{applied.Solve.DegreesOfFreedom}" );
 	}
 
 	// --- helpers ------------------------------------------------------------------------------
