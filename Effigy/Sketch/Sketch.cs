@@ -46,6 +46,22 @@ public enum SketchConstraintKind
 	EqualLength,
 	Parallel,
 	Perpendicular,
+
+	/// <summary>A fixed angle between two lines, in degrees. Parallel and Perpendicular are the
+	/// same rule at 0 and 90, kept separate because a user asking for "parallel" is not asking for
+	/// "0 degrees" and should not have to see it that way.</summary>
+	Angle,
+
+	/// <summary>A point lies somewhere on the infinite line through two others.</summary>
+	PointOnLine,
+
+	/// <summary>Two points mirror each other across the line through two others.</summary>
+	Symmetric,
+
+	/// <summary>An arc's radius: the distance from its centre to an endpoint. Stored as its own
+	/// kind rather than as a Distance because that is what the user asked for and what a dimension
+	/// should read back as, even though it solves identically.</summary>
+	Radius,
 }
 
 /// <summary>
@@ -84,6 +100,15 @@ public sealed class SketchConstraint
 		Kind = kind;
 		PointA = a;
 		PointB = b;
+		Value = value;
+	}
+
+	public SketchConstraint( SketchConstraintKind kind, int a, int b, int c, float value = 0f )
+	{
+		Kind = kind;
+		PointA = a;
+		PointB = b;
+		PointC = c;
 		Value = value;
 	}
 
@@ -129,6 +154,18 @@ public sealed class SketchConstraint
 			case SketchConstraintKind.Perpendicular:
 				return Valid( sketch, 4 ) ? new PerpendicularConstraint( PointA, PointB, PointC, PointD ) : null;
 
+			case SketchConstraintKind.Angle:
+				return Valid( sketch, 4 ) ? new AngleConstraint( PointA, PointB, PointC, PointD, Value ) : null;
+
+			case SketchConstraintKind.PointOnLine:
+				return Valid( sketch, 3 ) ? new PointOnLineConstraint( PointA, PointB, PointC ) : null;
+
+			case SketchConstraintKind.Symmetric:
+				return Valid( sketch, 4 ) ? new SymmetricConstraint( PointA, PointB, PointC, PointD ) : null;
+
+			case SketchConstraintKind.Radius:
+				return Valid( sketch, 2 ) ? new DistanceConstraint( PointA, PointB, Value ) : null;
+
 			default:
 				return null;
 		}
@@ -139,11 +176,11 @@ public sealed class SketchConstraint
 	bool Valid( Sketch sketch, int count )
 	{
 		var n = sketch.Points.Count;
-		var refs = count == 2 ? new[] { PointA, PointB } : new[] { PointA, PointB, PointC, PointD };
+		var refs = new[] { PointA, PointB, PointC, PointD };
 
-		foreach ( var i in refs )
+		for ( var i = 0; i < count; i++ )
 		{
-			if ( i < 0 || i >= n )
+			if ( refs[i] < 0 || refs[i] >= n )
 				return false;
 		}
 

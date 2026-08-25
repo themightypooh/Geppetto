@@ -154,6 +154,13 @@ public sealed class EffigyWindow : DockWindow
 		BuildStatusBar();
 
 		ApplyPalette();
+
+		// A window that has only just opened has nothing to lose, and anything during startup that
+		// went through RebuildStudio has already set the flag. Without this, closing an untouched
+		// Effigy asks whether to save an empty studio — the fastest way to teach someone to click
+		// through the very prompt that exists to save their work.
+		MarkClean();
+
 		Show();
 	}
 
@@ -164,6 +171,10 @@ public sealed class EffigyWindow : DockWindow
 		var file = MenuBar.FindOrCreateMenu( "File" );
 		file.Clear();
 		file.AddOption( "New Studio", "common/new.png", NewStudio );
+		file.AddOption( "Open...", "folder_open", Open );
+		file.AddSeparator();
+		file.AddOption( "Save", "common/save.png", Save, "editor.save" );
+		file.AddOption( "Save As...", "save_alt", SaveAs );
 		file.AddSeparator();
 		file.AddOption( "Export OBJ", "file_download", ExportObj );
 		file.AddOption( "Compile .vmdl", "build", CompileVmdl );
@@ -287,59 +298,59 @@ public sealed class EffigyWindow : DockWindow
 	/// </summary>
 	private void BuildSketchToolbar()
 	{
-		AddSketchTool( "near_me", "Select", "Select - drag a point to move it", SketchToolKind.Select );
+		AddSketchTool( EffigyIcon.SelectTool, "Select", "Select - drag a point to move it", SketchToolKind.Select );
 		_sketchStrip.AddGap();
 
-		AddSketchTool( "show_chart", "Line", "Line - click start, click end; keeps chaining until Escape", SketchToolKind.Line );
+		AddSketchTool( EffigyIcon.LineTool, "Line", "Line - click start, click end; keeps chaining until Escape", SketchToolKind.Line );
 
 		// The four families that have more than one way to place them. Each is ONE button with the
 		// alternatives behind its chevron, which is how Onshape's sketch row is arranged.
 		AddSketchGroup(
-			new SketchToolVariant( "crop_square", "Corner rectangle",
+			new SketchToolVariant( EffigyIcon.RectangleTool, "Corner rectangle",
 				"Corner rectangle - click two opposite corners", SketchToolKind.Rectangle ),
-			new SketchToolVariant( "crop_free", "Centre point rectangle",
+			new SketchToolVariant( EffigyIcon.RectangleCentreTool, "Centre point rectangle",
 				"Centre rectangle - click the centre, then a corner", SketchToolKind.RectangleCentre ) );
 
 		AddSketchGroup(
-			new SketchToolVariant( "panorama_fish_eye", "Centre circle",
+			new SketchToolVariant( EffigyIcon.CircleTool, "Centre circle",
 				"Centre circle - click the centre, then a point on the rim", SketchToolKind.Circle ),
-			new SketchToolVariant( "trip_origin", "3 point circle",
+			new SketchToolVariant( EffigyIcon.CircleThreePointTool, "3 point circle",
 				"3-point circle - click three points on the rim", SketchToolKind.CircleThreePoint ) );
 
 		AddSketchGroup(
-			new SketchToolVariant( "cached", "Centre arc",
+			new SketchToolVariant( EffigyIcon.ArcTool, "Centre arc",
 				"Centre arc - click the centre, the start, then the end direction", SketchToolKind.Arc ),
-			new SketchToolVariant( "timeline", "3 point arc",
+			new SketchToolVariant( EffigyIcon.ArcThreePointTool, "3 point arc",
 				"3-point arc - click start, end, then a point it passes through", SketchToolKind.ArcThreePoint ) );
 
 		AddSketchGroup(
-			new SketchToolVariant( "change_history", "Inscribed polygon",
+			new SketchToolVariant( EffigyIcon.PolygonTool, "Inscribed polygon",
 				"Inscribed polygon - click the centre, then a corner", SketchToolKind.Polygon ),
-			new SketchToolVariant( "details", "Circumscribed polygon",
+			new SketchToolVariant( EffigyIcon.PolygonCircumscribedTool, "Circumscribed polygon",
 				"Circumscribed polygon - click the centre, then an edge midpoint", SketchToolKind.PolygonCircumscribed ) );
 
-		AddSketchTool( "linear_scale", "Slot", "Slot - click both ends of the centre line, then the width", SketchToolKind.Slot );
-		AddSketchTool( "fiber_manual_record", "Point", "Point - click to place", SketchToolKind.Point );
+		AddSketchTool( EffigyIcon.SlotTool, "Slot", "Slot - click both ends of the centre line, then the width", SketchToolKind.Slot );
+		AddSketchTool( EffigyIcon.PointTool, "Point", "Point - click to place", SketchToolKind.Point );
 
 		_sketchStrip.AddGap();
 
 		// Construction geometry is a modifier on whatever tool is active, not a tool of its own -
 		// same as Onshape's toggle. SketchCurve.Construction and ProfileFinder's handling of it
 		// were already in the kernel with nothing in the UI able to set them.
-		_constructionButton = _sketchStrip.AddButton( "gesture",
+		_constructionButton = _sketchStrip.AddButton( EffigyIcon.ConstructionTool,
 			"Construction geometry - reference lines that never become part of a profile",
 			checkable: true, clicked: null );
 		_constructionButton.Clicked = () => _viewport.ConstructionMode = _constructionButton.Checked;
 
 		_sketchStrip.AddGap();
 
-		var inspector = _sketchStrip.AddButton( "select_all",
+		var inspector = _sketchStrip.AddButton( EffigyIcon.ProfileInspectorTool,
 			"Profile Inspector - shade closed regions and highlight loose ends",
 			checkable: true, clicked: null );
 		inspector.Checked = true;
 		inspector.Clicked = () => _viewport.ProfileInspector = inspector.Checked;
 
-		var finish = _sketchStrip.AddButton( "check",
+		var finish = _sketchStrip.AddButton( EffigyIcon.FinishSketchTool,
 			"Finish Sketch - leave sketch mode and go back to the feature tree",
 			checkable: false, clicked: FinishSketch );
 
@@ -347,7 +358,7 @@ public sealed class EffigyWindow : DockWindow
 	}
 
 	/// <summary>A tool with only one way to place it: one variant, so no chevron appears.</summary>
-	private void AddSketchTool( string icon, string label, string tip, SketchToolKind kind ) =>
+	private void AddSketchTool( EffigyIcon icon, string label, string tip, SketchToolKind kind ) =>
 		AddSketchGroup( new SketchToolVariant( icon, label, tip, kind ) );
 
 	/// <summary>
@@ -584,6 +595,7 @@ public sealed class EffigyWindow : DockWindow
 		_leftPanel.Layout.Add( _partsPanel );
 
 		_viewport.SketchEdited = OnSketchEdited;
+		_viewport.FaceContextMenuRequested = OpenFaceMaterialMenu;
 
 		// Fired BEFORE the viewport changes a sketch, which is the only moment a useful "before"
 		// exists to snapshot.
@@ -723,8 +735,35 @@ public sealed class EffigyWindow : DockWindow
 		RebuildStudio();
 	}
 
+	/// <summary>
+	/// Where the studio lives on disk, and whether it has been changed since it got there.
+	///
+	/// EVERY EDIT GOES THROUGH RebuildStudio, which is why the dirty flag is set there rather than
+	/// at each of the thirty-odd call sites. Marking at the funnel cannot be forgotten by whoever
+	/// adds the thirty-first; marking at the sites is a promise nobody keeps for long. Load, save
+	/// and new all rebuild too, so each of those clears the flag afterwards.
+	/// </summary>
+	private string _documentPath;
+
+	private bool _dirty;
+
+	private void MarkClean()
+	{
+		_dirty = false;
+		UpdateTitle();
+	}
+
+	private void UpdateTitle() =>
+		Title = $"Effigy - {(_documentPath is null ? "untitled" : Path.GetFileName( _documentPath ))}{(_dirty ? "*" : "")}";
+
 	private void RebuildStudio()
 	{
+		if ( !_dirty )
+		{
+			_dirty = true;
+			UpdateTitle();
+		}
+
 		var report = _studio.Rebuild();
 		_featureTree?.Rebuild();
 		_partsPanel?.Refresh();
@@ -825,7 +864,7 @@ public sealed class EffigyWindow : DockWindow
 		}
 	}
 
-	private void NewStudio()
+	private void NewStudio() => ConfirmDiscard( () =>
 	{
 		RecordUndo();
 		_studio = new PartStudio();
@@ -833,7 +872,10 @@ public sealed class EffigyWindow : DockWindow
 		_partsPanel?.SetStudio( _studio );
 		_dialog?.Close();
 		RebuildStudio();
-	}
+
+		_documentPath = null;
+		MarkClean();
+	} );
 
 	private void DeleteSelectedFeature()
 	{
@@ -1026,6 +1068,175 @@ public sealed class EffigyWindow : DockWindow
 
 	// --- export / compile (reusing EffigyTool's proven logic) -------------------------------
 
+	[Shortcut( "editor.save", "CTRL+S", ShortcutType.Window )]
+	private void Save()
+	{
+		// A studio that has never been saved has nowhere to go, so Save becomes Save As the first
+		// time. Silently doing nothing here is the shape of the bug the rig tool had.
+		if ( _documentPath is null )
+		{
+			SaveAs();
+			return;
+		}
+
+		WriteDocument( _documentPath );
+	}
+
+	private void SaveAs()
+	{
+		var fd = new FileDialog( null )
+		{
+			Title = "Save Part Studio As...",
+			DefaultSuffix = StudioDocument.Extension,
+			Directory = Project.Current?.GetAssetsPath() ?? "",
+		};
+
+		fd.SelectFile( _documentPath ?? $"untitled{StudioDocument.Extension}" );
+		fd.SetFindFile();
+		fd.SetModeSave();
+		fd.SetNameFilter( $"Effigy Part Studio (*{StudioDocument.Extension})" );
+
+		if ( !fd.Execute() )
+			return;
+
+		WriteDocument( fd.SelectedFile );
+	}
+
+	private void WriteDocument( string path )
+	{
+		try
+		{
+			StudioDocument.WriteFile( _studio, path );
+		}
+		catch ( Exception e )
+		{
+			// Saving is the one operation where failing quietly is unforgivable: the whole point of
+			// pressing it is to be able to close the window.
+			Log.Error( $"[Effigy] could not save to {path}: {e.Message}" );
+			return;
+		}
+
+		_documentPath = path;
+		MarkClean();
+
+		Log.Info( $"[Effigy] saved {path}" );
+	}
+
+	private void Open()
+	{
+		// The unsaved work belongs to the studio being replaced, so the question comes first.
+		ConfirmDiscard( () =>
+		{
+			var fd = new FileDialog( null )
+			{
+				Title = "Open Part Studio",
+				DefaultSuffix = StudioDocument.Extension,
+				Directory = Project.Current?.GetAssetsPath() ?? "",
+			};
+
+			fd.SetFindFile();
+
+			// No SetModeOpen call: SetModeSave is the only one of the pair with proven usage in this
+			// repo, and an unproven method name is a COMPILE error that takes the whole editor
+			// assembly down rather than failing at the one dialog. Not calling it leaves the dialog
+			// in its default mode, which at worst is a cosmetic wrinkle on an open dialog.
+			fd.SetNameFilter( $"Effigy Part Studio (*{StudioDocument.Extension})" );
+
+			if ( fd.Execute() )
+				LoadDocument( fd.SelectedFile );
+		} );
+	}
+
+	private void LoadDocument( string path )
+	{
+		PartStudio loaded;
+
+		try
+		{
+			loaded = StudioDocument.ReadFile( path );
+		}
+		catch ( Exception e )
+		{
+			// StudioDocument's errors name the line and what was wrong with it, so they are worth
+			// passing through rather than replacing with "could not open".
+			Log.Error( $"[Effigy] could not open {path}: {e.Message}" );
+			return;
+		}
+
+		_studio = loaded;
+		_featureTree?.SetStudio( _studio );
+		_partsPanel?.SetStudio( _studio );
+		_dialog?.Close();
+
+		// History belongs to the document that was open. Carrying it across a load would let Ctrl+Z
+		// paste the previous model's features into this one.
+		_undoStack.Clear();
+		_redoStack.Clear();
+
+		RebuildStudio();
+
+		_documentPath = path;
+		MarkClean();
+
+		// Deliberately AFTER the rebuild: a file that opens with a broken feature is exactly the
+		// file you opened it to fix, and it should be on screen rather than refused.
+		Log.Info( $"[Effigy] opened {path}" );
+	}
+
+	/// <summary>
+	/// Ask before throwing away unsaved work, then run <paramref name="proceed"/>.
+	///
+	/// Cancel does nothing at all, which is the point of it: the studio is left exactly as it was.
+	/// Modelled on the rig tool's, down to the button order — the same question should not be asked
+	/// two different ways in one editor.
+	/// </summary>
+	private void ConfirmDiscard( Action proceed )
+	{
+		if ( !_dirty )
+		{
+			proceed();
+			return;
+		}
+
+		var name = _documentPath is null ? "untitled" : Path.GetFileName( _documentPath );
+
+		var confirm = new PopupWindow( "Unsaved Changes",
+			$"\"{name}\" has unsaved changes. Would you like to save now?", "Cancel",
+			new Dictionary<string, Action>
+			{
+				{ "Don\'t Save", proceed },
+				{ "Save", () => { Save(); proceed(); } }
+			} );
+
+		confirm.Show();
+	}
+
+	/// <summary>
+	/// Closing with unsaved work asks first.
+	///
+	/// Returning false CANCELS the close, and the window is closed again from inside the popup once
+	/// the question is answered — Don't Save clears the flag first so the second Close sails past
+	/// this check rather than asking again forever.
+	/// </summary>
+	protected override bool OnClose()
+	{
+		if ( !_dirty )
+			return true;
+
+		var name = _documentPath is null ? "untitled" : Path.GetFileName( _documentPath );
+
+		var confirm = new PopupWindow( "Unsaved Changes",
+			$"\"{name}\" has unsaved changes. Would you like to save now?", "Cancel",
+			new Dictionary<string, Action>
+			{
+				{ "Don\'t Save", () => { _dirty = false; Close(); } },
+				{ "Save", () => { Save(); Close(); } }
+			} );
+
+		confirm.Show();
+		return false;
+	}
+
 	private void ExportObj()
 	{
 		var report = _studio.Rebuild();
@@ -1039,7 +1250,11 @@ public sealed class EffigyWindow : DockWindow
 		Directory.CreateDirectory( folder );
 
 		var objPath = Path.Combine( folder, "export.obj" );
-		ObjWriter.WriteFile( _studio.ToMesh(), objPath, "effigy_export" );
+
+		// Slot names go through so the file names its materials the way the user did, rather than
+		// material_0..63. NameForSlot falls back to the numbers for anything unnamed.
+		ObjWriter.WriteFile( _studio.ToMesh(), objPath, "effigy_export",
+			materialName: _studio.NameForSlot );
 		Log.Info( $"[Effigy] exported {objPath}" );
 	}
 
@@ -1074,10 +1289,11 @@ public sealed class EffigyWindow : DockWindow
 			// carries a skeleton and per-vertex weights. The .smd is still written alongside it
 			// because every DCC reads one and it costs nothing to keep.
 			var smdPath = Path.Combine( folder, "export.smd" );
-			SmdWriter.WriteFile( mesh, smdPath, skeleton );
+			SmdWriter.WriteFile( mesh, smdPath, skeleton, materialName: _studio.NameForSlot );
 
 			var dmxPath = Path.Combine( folder, "export.dmx" );
-			DmxWriter.WriteFile( mesh, dmxPath, skeleton, modelName: "effigy_export" );
+			DmxWriter.WriteFile( mesh, dmxPath, skeleton, materialName: _studio.NameForSlot,
+				modelName: "effigy_export" );
 
 			Log.Info( $"[Effigy] wrote {dmxPath} - {skeleton.Count} bones, {mesh.VertexCount} vertices" );
 
@@ -1111,7 +1327,8 @@ public sealed class EffigyWindow : DockWindow
 
 		// STATIC PATH: no bones — export a weightless OBJ.
 		var staticObjPath = Path.Combine( folder, "export.obj" );
-		ObjWriter.WriteFile( _studio.ToMesh(), staticObjPath, "effigy_export" );
+		ObjWriter.WriteFile( _studio.ToMesh(), staticObjPath, "effigy_export",
+			materialName: _studio.NameForSlot );
 
 		var staticVmdlPath = Path.Combine( folder, "export.vmdl" );
 		File.WriteAllText( staticVmdlPath, BuildVmdl( "models/effigy/export.obj" ) );
@@ -1250,6 +1467,20 @@ public sealed class EffigyWindow : DockWindow
 		/// </summary>
 		public Dictionary<SketchFeature, Sketch> Sketches;
 
+		/// <summary>
+		/// The faces each material assignment holds, which are not parameters either and so were
+		/// invisible to undo for the same reason sketch geometry was.
+		///
+		/// This mattered little while the only way to pick faces was a dialog you could cancel. It
+		/// matters now that right-clicking a face assigns one: without it, Ctrl+Z after a right-click
+		/// took away a feature it had just added and left a face added to an existing one exactly
+		/// where it was.
+		/// </summary>
+		public Dictionary<FaceMaterialFeature, List<FaceRef>> FaceSets;
+
+		/// <summary>Slot names, renamed from the same menu.</summary>
+		public Dictionary<int, string> MaterialNames;
+
 		public int RollbackIndex;
 	}
 
@@ -1274,11 +1505,18 @@ public sealed class EffigyWindow : DockWindow
 		foreach ( var feature in _studio.Features.OfType<SketchFeature>() )
 			sketches[feature] = feature.Sketch.Clone();
 
+		var faceSets = new Dictionary<FaceMaterialFeature, List<FaceRef>>();
+
+		foreach ( var feature in _studio.Features.OfType<FaceMaterialFeature>() )
+			faceSets[feature] = new List<FaceRef>( feature.Faces );
+
 		return new StudioSnapshot
 		{
 			Features = _studio.Features.ToList(),
 			Values = values,
 			Sketches = sketches,
+			FaceSets = faceSets,
+			MaterialNames = new Dictionary<int, string>( _studio.MaterialNames ),
 			RollbackIndex = _studio.RollbackIndex,
 		};
 	}
@@ -1321,6 +1559,19 @@ public sealed class EffigyWindow : DockWindow
 			feature.Sketch.Constraints = sketch.Constraints
 				.Select( c => new SketchConstraint( c.Kind, c.CurveId ) ).ToList();
 		}
+
+		// Put back INTO the existing lists, for the same reason sketch geometry is: the dialog's
+		// selection box holds a direct reference to the feature it is editing.
+		foreach ( var (feature, faces) in snapshot.FaceSets )
+		{
+			feature.Faces.Clear();
+			feature.Faces.AddRange( faces );
+		}
+
+		_studio.MaterialNames.Clear();
+
+		foreach ( var (slot, name) in snapshot.MaterialNames )
+			_studio.MaterialNames[slot] = name;
 
 		_studio.MarkAllDirty();
 
@@ -1394,6 +1645,28 @@ public sealed class EffigyWindow : DockWindow
 		foreach ( var (feature, sketch) in a.Sketches )
 		{
 			if ( !b.Sketches.TryGetValue( feature, out var other ) || !SameSketch( sketch, other ) )
+				return false;
+		}
+
+		if ( a.FaceSets.Count != b.FaceSets.Count )
+			return false;
+
+		foreach ( var (feature, faces) in a.FaceSets )
+		{
+			// By COUNT, not by comparing references. Two captures of the same face are not equal, so
+			// a per-element comparison would call every snapshot different and put a step on the undo
+			// stack for clicks that changed nothing. A count is enough for what this decides: whether
+			// a face went in or came out.
+			if ( !b.FaceSets.TryGetValue( feature, out var others ) || faces.Count != others.Count )
+				return false;
+		}
+
+		if ( a.MaterialNames.Count != b.MaterialNames.Count )
+			return false;
+
+		foreach ( var (slot, name) in a.MaterialNames )
+		{
+			if ( !b.MaterialNames.TryGetValue( slot, out var other ) || name != other )
 				return false;
 		}
 
@@ -1627,6 +1900,124 @@ internal sealed class EffigyFeatureTreePanel : Widget
 		_studio is not null
 		&& _studio.RollbackIndex < _studio.Features.Count
 		&& _studio.Features.IndexOf( feature ) == _studio.EffectiveCount;
+
+	// --- right-click a face -------------------------------------------------------------------
+
+	/// <summary>
+	/// The material menu on a face of the model.
+	///
+	/// The Face Material feature on the toolbar is how you paint a SET of faces in one go, and it is
+	/// the wrong shape for the common case: one face, one slot, now. Opening a dialog, arming a
+	/// selection box, clicking the face, closing the dialog is five actions for a thing you were
+	/// already pointing at.
+	///
+	/// It still goes through the history. Writing the slot straight onto the mesh would work until
+	/// the next rebuild and then quietly revert — bodies are rebuilt from scratch, which is the whole
+	/// reason FaceMaterialFeature exists (see FaceMaterialTests: "the reason this is a feature").
+	/// </summary>
+	private void OpenFaceMaterialMenu( EffigyFaceHit hit )
+	{
+		if ( _studio is null || _viewport is null || hit.Body is null )
+			return;
+
+		var menu = new Menu( _viewport );
+
+		menu.AddHeading( $"Face — {_studio.NameForSlot( hit.Material )}" );
+
+		foreach ( var slot in MenuMaterialSlots() )
+		{
+			var value = slot;
+
+			// Slot 0 is the default every face starts on and the one the viewport deliberately does
+			// not tint, so it gets the hollow marker — "no material" rather than "material zero".
+			var option = menu.AddOption( _studio.NameForSlot( value ),
+				value == 0 ? "panorama_fish_eye" : "lens",
+				() => AssignFaceMaterial( hit, value ) );
+
+			option.Checkable = true;
+			option.Checked = hit.Material == value;
+		}
+
+		menu.AddSeparator();
+
+		var rename = menu.AddOption( $"Rename {_studio.NameForSlot( hit.Material )}…", "edit",
+			() => BeginMaterialSlotRename( hit.Material ) );
+
+		rename.StatusTip = "The name every exporter writes for this slot";
+
+		var shade = menu.AddOption( "Shade Material Slots", "palette",
+			() => _viewport.ShadeMaterialSlots = !_viewport.ShadeMaterialSlots );
+
+		shade.Checkable = true;
+		shade.Checked = _viewport.ShadeMaterialSlots;
+
+		menu.OpenAtCursor();
+	}
+
+	/// <summary>
+	/// Which slots the menu offers: zero through seven, plus anything the document already uses.
+	///
+	/// Seven is not arbitrary — it is how many colours the viewport tints with, so every slot on the
+	/// menu is one you can tell apart on screen. The kernel allows 0..63 and nobody picks slot 40 off
+	/// a list, but a document that arrived with one must not be unreachable, so the slots already in
+	/// use are added back in however high they are.
+	/// </summary>
+	private IEnumerable<int> MenuMaterialSlots()
+	{
+		var slots = new SortedSet<int>();
+
+		for ( var i = 0; i <= 7; i++ )
+			slots.Add( i );
+
+		foreach ( var slot in FaceMaterialEdit.UsedSlots( _studio ) )
+			slots.Add( slot );
+
+		return slots;
+	}
+
+	/// <summary>Name a slot, in the one-field popup the feature tree renames with.</summary>
+	private void BeginMaterialSlotRename( int slot )
+	{
+		var menu = new Menu( this );
+		var edit = new LineEdit( _studio.NameForSlot( slot ), menu ) { FixedWidth = 190 };
+
+		edit.ReturnPressed += () =>
+		{
+			RecordUndo();
+
+			var name = edit.Text?.Trim();
+
+			// Clearing it puts the slot back on its numbered default rather than leaving it blank.
+			// Every exporter has to write SOMETHING per slot, and an empty usemtl is not it.
+			if ( string.IsNullOrWhiteSpace( name ) || name == $"material_{slot}" )
+				_studio.MaterialNames.Remove( slot );
+			else
+				_studio.MaterialNames[slot] = name;
+
+			menu.Close();
+			RebuildStudio();
+		};
+
+		menu.AddWidget( edit );
+		menu.OpenAtCursor();
+
+		edit.Focus();
+		edit.SelectAll();
+	}
+
+	/// <summary>Put one face on one slot. The bookkeeping — which assignment to reuse, what happens
+	/// to the one the face is leaving, where a new one goes in a rolled-back tree — is
+	/// FaceMaterialEdit in the kernel, where FaceMenuTests can hold it to account.</summary>
+	private void AssignFaceMaterial( EffigyFaceHit hit, int slot )
+	{
+		if ( _studio is null || hit.Body is null || hit.Material == slot )
+			return;
+
+		RecordUndo();
+
+		if ( FaceMaterialEdit.Assign( _studio, hit.Body.Id, hit.FaceIndex, hit.Reference, slot ) )
+			RebuildStudio();
+	}
 
 	/// <summary>
 	/// Rename in place: a one-field popup at the cursor, which is what Menu.AddWidget is for.
@@ -2126,12 +2517,12 @@ internal sealed class EffigyToolStrip : Widget
 /// A corner rectangle and a centre rectangle are one button in Onshape, not two.</summary>
 internal sealed class SketchToolVariant
 {
-	public readonly string Icon;
+	public readonly EffigyIcon Icon;
 	public readonly string Label;
 	public readonly string Tip;
 	public readonly SketchToolKind Kind;
 
-	public SketchToolVariant( string icon, string label, string tip, SketchToolKind kind )
+	public SketchToolVariant( EffigyIcon icon, string label, string tip, SketchToolKind kind )
 	{
 		Icon = icon;
 		Label = label;
@@ -2142,7 +2533,7 @@ internal sealed class SketchToolVariant
 
 internal sealed class EffigySketchToolButton : Widget
 {
-	private string _icon;
+	private EffigyIcon _icon;
 	private readonly bool _checkable;
 	private bool _pressed;
 	private bool _pressedChevron;
@@ -2276,7 +2667,10 @@ internal sealed class EffigySketchToolButton : Widget
 		var glyphRect = HasMenu ? LocalRect.Shrink( 0, 0, ChevronWidth, 0 ) : LocalRect;
 
 		Paint.SetPen( IconColor ?? Theme.Text );
-		Paint.DrawIcon( glyphRect, _icon, 28, TextFlag.Center );
+		// Drawn rather than looked up in a font, same as the feature strip. See EffigyIcons for what
+		// the font names were costing: half this row was showing a Material glyph that had nothing to
+		// do with the operation behind it.
+		EffigyIcons.Draw( _icon, glyphRect.Center, IconColor ?? Theme.Text, EffigyToolStrip.IconScale );
 
 		if ( !HasMenu )
 			return;
@@ -2391,7 +2785,7 @@ internal sealed class EffigySketchStrip : Widget
 		FixedWidth = _contentWidth;
 	}
 
-	public EffigySketchToolButton AddButton( string icon, string tip, bool checkable, Action clicked )
+	public EffigySketchToolButton AddButton( EffigyIcon icon, string tip, bool checkable, Action clicked )
 	{
 		var button = new EffigySketchToolButton( this, icon, tip, checkable ) { Clicked = clicked };
 

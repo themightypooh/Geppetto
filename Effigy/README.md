@@ -36,7 +36,7 @@ machine. A session that skips this ends up reasoning about the code by reading i
 is how a bug that made every parameter edit a silent no-op survived long enough to look like three
 unrelated UI faults.
 
-864 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
+1066 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
 2-level-subdivided version of each. Those are the fastest way to see whether something is actually
 right: open them in Blender, or drop one into ModelDoc to find out what s&box makes of it.
 
@@ -57,6 +57,7 @@ Exit code is non-zero on failure, so it works as a pre-commit or CI check unchan
 | `Features/BasicFeatures.cs` | primitive, transform, linear/circular pattern, mirror, subdivide |
 | `Features/SketchFeatures.cs` | sketch, extrude, revolve |
 | `Features/SolidFeatures.cs` | shell, bevel, UV project, face material — the ops that act on a solid once it exists |
+| `Features/FaceMaterialEdit.cs` | putting one face on a slot, for the editor's right-click menu — which assignment to reuse, and what happens to the one the face is leaving |
 | `Sketch/SketchPlane.cs` | the plane a sketch lives on, and plane↔world mapping |
 | `Sketch/Sketch.cs` | points, lines, arcs, circles, tessellation |
 | `Sketch/Profile.cs` | closed-region finding, nesting, orientation |
@@ -78,6 +79,34 @@ Exit code is non-zero on failure, so it works as a pre-commit or CI check unchan
 | `Sketch/Constraints.cs` | the constraint set, and the derivatives that make it solvable |
 | `Sketch/SketchSolver.cs` | Levenberg-Marquardt, with degrees of freedom and redundancy reported |
 | `MeshBoolean.cs` | what a boolean is, and where a host installs one that can actually do it |
+| `LoopOffset.cs` | move a 2D loop in or out from its edges — what a draft angle is built on |
+| `Features/StudioDocument.cs` | saving and loading the tree — the file the whole history depends on |
+
+## Saving
+
+`StudioDocument` reads and writes a `.effigy` file: hand-written text, like every other format in
+here, for the reason the kernel has no dependencies at all. It also diffs, which matters for a format
+holding someone's model — a corrupt binary is a shrug, a corrupt text file is usually one bad line
+you can see.
+
+**Fields are found by reflection rather than listed.** A feature's `Parameters` property is not
+usable as the list to save: `PrimitiveFeature` changes its parameters with the shape dropdown, so a
+box saved today would not know what to do with the radius it wants tomorrow. Public fields are
+stable, so a new feature saves the moment it is written and there is no step to forget.
+
+The risk that carries is a field of a type the writer has no case for, so `DocumentTests` sets every
+field of every feature type in the assembly to a non-default value and round-trips it. Adding state
+a save cannot carry fails the suite rather than quietly not saving — it caught `ShellFeature.OpenFaces`
+on the first run.
+
+Two things the format has to get right and is tested on:
+
+**Ids are preserved exactly.** Body ids derive from the feature that made them and a `FaceRef` holds
+a body id, so a load that reissued feature ids would break every sketch drawn on a face the moment
+the file was reopened. That is the worst thing this format could do and it is asserted against.
+
+**Unknown fields are skipped, not fatal.** A file written by a version with an extra parameter still
+opens, minus that parameter. A file from a newer format version is refused by name.
 
 ## The feature tree
 
@@ -145,16 +174,62 @@ faceted.
 **Caps are single n-gons, not triangle fans** — Catmull-Clark turns an n-gon into n clean quads, so
 a sketched profile subdivides properly.
 
-### Two known limits, both deliberate
+### Two limits that used to be here, and are not
 
-**Branching sketches.** Only points where exactly two curves meet are followed. A line drawn across
-a rectangle is ambiguous without full planar face traversal, so it's reported as a warning rather
-than guessed at. That still covers rectangles, polygons, circles, slots and rounded profiles.
-Proper face traversal — sort half-edges by angle at each vertex, always take the next one clockwise
-— is the upgrade, and doesn't change `ProfileFinder`'s interface.
+Both of the "deliberate limits" this section used to describe have been built, and both are worth
+keeping a note of because in each case the stated reason for the limit outlived the limit itself.
 
-**Profiles with holes.** Detected and reported, not built. Capping around a hole is the same problem
-as a boolean subtract and is better solved once, there. Until then use the Tube primitive.
+**Branching sketches.** Built. Only points where exactly two curves met were followed, so a line
+drawn across a rectangle — which is how anyone divides a shape — was reported as "not supported yet"
+instead of split into the two regions it plainly is.
+
+The fix is exactly the upgrade path this section used to describe: every curve becomes two directed
+half-edges, the outgoing ones at each point are sorted by the direction they actually leave in, and
+walking a face means arriving along one, turning onto its reverse, and leaving along whichever
+half-edge sits immediately clockwise. Each half-edge belongs to exactly one face, so the walk always
+terminates and always covers everything. Faces that come out counter-clockwise are regions; each
+connected piece of the sketch also produces one clockwise face — the infinite one around it — and
+dropping those is the whole of the special-case handling.
+
+Two things it depends on. The angle has to be the **tangent**, not the bearing of the far endpoint,
+or an arc and a line leaving the same point sort the wrong way round and the walk takes the wrong
+curve. And dangling curves are pruned first, **repeatedly**, because removing one can leave the next
+one dangling — they are reported rather than silently dropped, since building the good regions while
+quietly discarding someone's geometry is the failure that looks like success.
+
+Worth knowing when a junction seems not to work: **touching is not joining**. A line whose end sits
+geometrically on an arc but shares no point index with it is not connected, and its free end gets
+pruned. That is coincidence-as-identity working as designed, and it caught out the first version of
+the test for this.
+
+**Profiles with holes.** Built. This section used to say they were "the same problem as a boolean
+subtract and better solved once, there", which was wrong and cost the feature a long time: capping
+around a hole is a 2D TRIANGULATION problem and never needed CSG at all.
+
+Each hole is spliced into the outer loop along a bridge — a segment out to the hole and back, which
+turns a ring-with-a-hole into one boundary — and then it is an ordinary ear clip. The doubled bridge
+edge needs no special handling because `IsEar` already refuses a zero-area corner. Hole walls come
+for free: `ProfileFinder` hands holes back wound the opposite way, so the same wall code faces them
+into the hole with no sign handling anywhere.
+
+The cost is the cap. A face with a hole in it is not a polygon, so it cannot be the single n-gon this
+kernel prefers, and a holed cap is triangulated instead — which subdivides worse, exactly as the
+quads argument below predicts. That is a real tradeoff and the honest one: a plate with bolt holes is
+hard surface that rarely gets subdivided, and the alternative was no feature. **Profiles without
+holes are untouched and still get their single n-gon**, which is pinned by a test.
+
+**Revolve handles them too**, and for less than it looked. Every loop sweeps rather than just the
+outer one, and because holes arrive wound the opposite way their quads face into the hole with no
+sign handling anywhere — the same free ride the extrude walls get. A partial revolution's two end
+caps are the profile, so they borrow the holed cap above; a full revolution has no caps at all and
+pays nothing for its holes beyond the extra sweep. A hole straddling the axis is refused exactly as
+an outer loop straddling it is, and for the same reason.
+
+Worth stealing as a test technique: a revolve is faceted, so its volume runs about 1.1% under the
+true solid whether or not it has a hole, and checking a holed revolve against Pappus directly needs
+a tolerance loose enough to hide a real error. Checking it against the UNHOLED sweep of the same
+profile cancels the faceting exactly — both are approximated identically — and what is left measures
+only the hole. The two ratios matched to five decimal places.
 
 ### One part, built out of several extrudes
 
@@ -182,6 +257,13 @@ would eventually guess a hole into someone's part.
 
 ### Materials per face
 
+**Slots can be named.** `PartStudio.MaterialNames` maps a slot to whatever a person called it, and
+`NameForSlot` hands that to any of the three exporters — falling back to `material_0`, `material_1`
+for anything unnamed. A number is all the geometry needs and it is not what someone binding the model
+in ModelDoc wants to look at. Names live on the studio rather than the mesh because a slot means the
+same thing across every body in the document: slot 2 is "rubber" everywhere or it is nothing.
+
+
 Every face carries a material slot and every exporter groups by it, so a model can arrive in ModelDoc
 with several slots to bind. `FaceMaterialFeature` is what sets them: pick faces, give them a slot.
 
@@ -200,8 +282,21 @@ revolve never learn that a solver exists.
 
 Levenberg-Marquardt over the constraint residuals: each rule contributes an equation that reads zero
 when it holds, plus its derivative, and the solve is the point positions that zero them all.
-Coincident, distance, horizontal, vertical, equal length, parallel and perpendicular, with a new one
-costing one class and no change to the solver.
+Coincident, distance, horizontal, vertical, equal length, parallel, perpendicular, angle,
+point-on-line, symmetric and radius — with a new one costing one class and no change to the solver.
+
+Angle is worth a note: its residual is `cross·cos θ − dot·sin θ` rather than an angle difference,
+because an angle computed with `atan2` carries a branch cut, and a residual that jumps by 2π
+somewhere in its domain sends the solver the wrong way the moment a line crosses it. Parallel and
+perpendicular are the same rule at 0 and 90, kept as their own types because that is what a user
+asks for.
+
+**Arcs carry an implicit constraint.** An arc reads its radius off the centre-to-*start* distance,
+and tessellation snaps its last sample onto the end point wherever that is — so an end that drifts
+off the circle produces an arc at the wrong radius with a kink in its final segment, which looks like
+a rendering glitch. Nothing enforced it while coordinates were only typed. A solver moves points for
+a living, so every arc now contributes "both my endpoints are equidistant from my centre" whether the
+user asked or not. It is not design intent, it is what an arc *is*.
 
 Three things worth knowing before touching it:
 
@@ -215,6 +310,12 @@ constraints saying the same thing remove one freedom; counting rows would claim 
 and would call a perfectly fine sketch over-constrained. Redundant rows are reported separately,
 which is the answer to "why did adding that dimension do nothing".
 
+**An under-constrained sketch moves whatever is cheapest.** "These three points are collinear" is
+equally satisfied by swinging the line onto the point as by moving the point onto the line, and with
+nothing holding the line down the solver will do some of both. That is correct and it surprises
+people — including the first version of the test for it. To get a specific answer, constrain the
+reference geometry.
+
 **A sketch that will not solve warns rather than failing.** The points are left at the closest fit
 found. Erroring would blank the model every time a sketch passed through a contradictory state
 mid-edit, which is most of the time while someone is adding constraints.
@@ -222,6 +323,52 @@ mid-edit, which is most of the time while someone is adding constraints.
 The derivatives are checked against finite differences in `ConstraintTests`, and that is not
 ceremony: a wrong derivative does not produce a wrong answer, it produces a slow or unstable one, so
 it presents as "the solver feels flaky" and never as a failing assert.
+
+## Extrudes that measure instead of being told
+
+`Termination` is Blind (a typed distance, as always), **Up to next** or **Through all**. Neither of
+the last two needs a boolean, which is worth saying because "up to face" sits next to "cut" in every
+CAD tool and reads like it must: both are questions about *distance*, answered by a raycast against
+what is already built, and the solid they produce is an ordinary prism.
+
+Rays go out from inside the profile — its centroid plus every corner pulled slightly in, because
+casting from the centroid alone reads one point of the target and calls it the answer. The **nearest**
+hit wins: a solid has to stop at the first thing in the way, and anything beyond that is already
+hidden behind it. A hit at zero distance is ignored, which is what lets a sketch drawn *on* a face
+measure past the face it starts on.
+
+**The cap stays flat, and that is the honest limit of doing this without a boolean.** A real up-to-face
+trims the new solid against the target *surface*, so a boss meeting an angled face ends in a matching
+slope. This ends flat at the nearest point of contact — exactly right when the target is parallel,
+and short of it by a visible gap when it is not. Visible rather than silent, and warned about besides:
+if the sample rays disagree about the distance, the feature says so and names both numbers.
+
+Through all deliberately clears the far surface rather than stopping flush with it. A prism ending
+exactly on a face leaves two coplanar faces touching, which is the case every downstream operation
+finds hardest — and precisely what a boolean would then have to resolve.
+
+## Draft, and two-sided extrudes
+
+`Taper` leans every wall by a given angle: the far cap is the near one offset by
+`distance × tan(angle)`, so the lean is exact rather than approximate. `SecondDistance` runs the
+extrude back the other way from the sketch plane by an independent amount, which a symmetric
+checkbox cannot express — a boss 3 up and 1 down is not any symmetric extrude.
+
+**The offset is measured from the EDGES, not the vertices**, and that is the whole difficulty. Push
+each vertex along its own bisector and every corner that is not a right angle ends up a different
+distance from its own edges, so the draft varies around the profile — and nothing in a render shows
+it. `LoopOffset` slides the edge LINES and intersects them, which is exact at any corner angle, and
+it is the same reasoning `PlaneOffset` carries into three dimensions for shell.
+
+Holes fall out of the winding with no special case: an outer loop is counter-clockwise so its left
+of travel points inward, a hole is clockwise so its left of travel points outward, and one rule
+shrinks the part while widening the holes in it. That is what draft does in reality.
+
+**Self-intersection is refused, not handled.** Three checks: the signed area keeps its sign, it has
+not collapsed, and no edge has reversed direction. The third is not redundant — pushing a symmetric
+profile past its own centre is a half-turn rotation, which *preserves* orientation, so an inside-out
+square passes the first two while measuring perfectly healthy. A test drafts a square at 60 degrees
+over its own width to keep that honest.
 
 ## Two decisions worth knowing before changing anything
 
@@ -307,8 +454,22 @@ and not along the rim.
 
 Known limits, stated rather than discovered:
 
-- **No self-intersection handling.** Shell a shape by more than its thinnest feature and the inner
-  surface passes through itself.
+- **Self-intersection is refused, not handled.** Shell a shape by more than its thinnest feature and
+  the inner surface passes through itself. Building the offset surface properly, so the overlap is
+  trimmed away instead, is a much larger algorithm and is still not here — but it is caught and
+  refused rather than returned as a closed mesh that measures negative volume in places and looks
+  fine from outside.
+
+  Two checks, because one does not do it. **Enclosed volume** catches the common case: shell a
+  1-thick plate by 0.6 and its two walls pass straight through each other, while neither *face*
+  inverts — each is translated inward, and a translation preserves a normal, so nothing local goes
+  wrong. Only the surface as a whole turns inside out. **A flipped face** catches the other kind: a
+  cylinder shelled past its radius has its side faces invert around the axis, which is the same
+  signature `LoopOffset` looks for one dimension down. The volume check applies only while nothing is
+  opened, since an opened inner surface is genuinely not a closed volume.
+
+  Still not caught, and named so the next person knows the difference between "checked" and "not
+  possible": two distant walls closing on each other with no single face inverting.
 - **Openings must form simple loops.** Two opened faces meeting at only a vertex would put four rim
   quads on one outer-to-inner edge — non-manifold, and nothing downstream accepts it. That case is
   refused with an explanation rather than returned broken.

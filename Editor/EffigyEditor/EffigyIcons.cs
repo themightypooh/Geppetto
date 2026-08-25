@@ -20,6 +20,26 @@ internal enum EffigyIcon
 	Transform,
 	UVProject,
 	FaceMaterial,
+
+	// --- sketch tools -------------------------------------------------------------------------
+	// These were Material Icon NAMES until now, and generic ones: show_chart (a zigzag line chart)
+	// for Line, cached (two refresh arrows) for Arc, crop_square for Rectangle. They said nothing
+	// about the operation, and half of them said something actively misleading.
+	SelectTool,
+	LineTool,
+	RectangleTool,
+	RectangleCentreTool,
+	CircleTool,
+	CircleThreePointTool,
+	ArcTool,
+	ArcThreePointTool,
+	PolygonTool,
+	PolygonCircumscribedTool,
+	SlotTool,
+	PointTool,
+	ConstructionTool,
+	ProfileInspectorTool,
+	FinishSketchTool,
 }
 
 /// <summary>
@@ -83,6 +103,22 @@ internal static class EffigyIcons
 			case EffigyIcon.Transform: PaintTransform( center, color ); return;
 			case EffigyIcon.UVProject: PaintUVProject( center, color ); return;
 			case EffigyIcon.FaceMaterial: PaintFaceMaterial( center, color ); return;
+
+			case EffigyIcon.SelectTool: PaintSelectTool( center, color ); return;
+			case EffigyIcon.LineTool: PaintLineTool( center, color ); return;
+			case EffigyIcon.RectangleTool: PaintRectangleTool( center, color ); return;
+			case EffigyIcon.RectangleCentreTool: PaintRectangleCentreTool( center, color ); return;
+			case EffigyIcon.CircleTool: PaintCircleTool( center, color ); return;
+			case EffigyIcon.CircleThreePointTool: PaintCircleThreePointTool( center, color ); return;
+			case EffigyIcon.ArcTool: PaintArcTool( center, color ); return;
+			case EffigyIcon.ArcThreePointTool: PaintArcThreePointTool( center, color ); return;
+			case EffigyIcon.PolygonTool: PaintPolygonTool( center, color ); return;
+			case EffigyIcon.PolygonCircumscribedTool: PaintPolygonCircumscribedTool( center, color ); return;
+			case EffigyIcon.SlotTool: PaintSlotTool( center, color ); return;
+			case EffigyIcon.PointTool: PaintPointTool( center, color ); return;
+			case EffigyIcon.ConstructionTool: PaintConstructionTool( center, color ); return;
+			case EffigyIcon.ProfileInspectorTool: PaintProfileInspectorTool( center, color ); return;
+			case EffigyIcon.FinishSketchTool: PaintFinishSketchTool( center, color ); return;
 		}
 	}
 
@@ -421,5 +457,269 @@ internal static class EffigyIcons
 
 		Outline( left, bottom, lowMid, lowLeft );
 		Outline( bottom, right, lowRight, lowMid );
+	}
+
+	// --- sketch tools ---------------------------------------------------------------------------
+	//
+	// One rule for the whole row: SHOW THE SHAPE THE TOOL MAKES, AND SHOW HOW IT IS PLACED.
+	//
+	// The second half is what earns its keep. Every family behind a chevron draws the identical
+	// shape and differs only in which points you click — a corner rectangle and a centre rectangle
+	// are the same rectangle — so the shape alone cannot tell them apart. The shape is the body of
+	// the glyph and the click points are accent dots on it, which makes the pair legible side by
+	// side without either needing a label.
+	//
+	// The dots are annotation and must never outweigh the shape. They were half again this size to
+	// begin with, which looked right on a large preview and swallowed the geometry at the size these
+	// are actually seen at.
+
+	/// <summary>The colour of a click point. Deliberately the one warm accent in a monochrome row,
+	/// so "this is where you press" reads before anything else does.</summary>
+	private static readonly Color ClickColor = new( 1f, 0.77f, 0.24f, 1f );
+
+	/// <summary>An end that does not join up. Warm rather than red — this is information, not an
+	/// error, and a sketch mid-draw is full of them.</summary>
+	private static readonly Color LooseEndColor = new( 1f, 0.48f, 0.36f, 1f );
+
+	/// <summary>A guide line — a radius, a diagonal, a centre line. Something the tool uses to place
+	/// the shape rather than part of the shape itself.</summary>
+	private static Color GuideColor( Color color ) => color.WithAlpha( 0.35f );
+
+	/// <summary>A filled dot in the nominal icon space. DrawRect with a corner radius of half its
+	/// own size, since Paint has no circle of its own and this is exact.</summary>
+	private static void Dot( Vector2 center, float radius, Color color )
+	{
+		Filled( color );
+		Editor.Paint.DrawRect( Box( center, -radius, -radius, radius * 2f, radius * 2f ), radius * _scale );
+	}
+
+	private static void ClickDot( Vector2 p, float radius = 1.8f ) => Dot( p, radius, ClickColor );
+
+	/// <summary>The corners of a regular hexagon, for the two polygon tools.</summary>
+	private static Vector2[] Hexagon( Vector2 c, float radius, float rotationDegrees )
+	{
+		var points = new Vector2[6];
+
+		for ( var i = 0; i < 6; i++ )
+		{
+			var a = (rotationDegrees + i * 60f) * MathF.PI / 180f;
+			points[i] = At( c, MathF.Cos( a ) * radius, MathF.Sin( a ) * radius );
+		}
+
+		return points;
+	}
+
+	/// <summary>A cursor with a point caught under it. Select drags sketch POINTS, which is what the
+	/// dot says and a bare arrow would not.</summary>
+	private static void PaintSelectTool( Vector2 c, Color color )
+	{
+		Filled( color );
+		Editor.Paint.DrawPolygon(
+			At( c, -4, -8 ), At( c, -4, 4 ), At( c, -1, 1 ), At( c, 1.5f, 6 ),
+			At( c, 4, 5 ), At( c, 1.5f, 0.2f ), At( c, 5, -0.5f ) );
+
+		ClickDot( At( c, 5, 5 ), 2.2f );
+	}
+
+	private static void PaintLineTool( Vector2 c, Color color )
+	{
+		Stroked( color, 1.8f );
+		Editor.Paint.DrawLine( At( c, -6.5f, 6 ), At( c, 6.5f, -6 ) );
+
+		ClickDot( At( c, -6.5f, 6 ) );
+		ClickDot( At( c, 6.5f, -6 ) );
+	}
+
+	/// <summary>Two opposite corners marked: click one, then the other.</summary>
+	private static void PaintRectangleTool( Vector2 c, Color color )
+	{
+		Stroked( color );
+		Outline( At( c, -6.5f, -5 ), At( c, 6.5f, -5 ), At( c, 6.5f, 5 ), At( c, -6.5f, 5 ) );
+
+		ClickDot( At( c, -6.5f, -5 ) );
+		ClickDot( At( c, 6.5f, 5 ) );
+	}
+
+	/// <summary>The same rectangle, marked at its CENTRE instead — with the half-diagonal it is
+	/// dragged out along.</summary>
+	private static void PaintRectangleCentreTool( Vector2 c, Color color )
+	{
+		Stroked( color );
+		Outline( At( c, -6.5f, -5 ), At( c, 6.5f, -5 ), At( c, 6.5f, 5 ), At( c, -6.5f, 5 ) );
+
+		Stroked( GuideColor( color ), 1f );
+		Editor.Paint.DrawLine( c, At( c, 6.5f, 5 ) );
+
+		ClickDot( c, 1.9f );
+	}
+
+	private static void PaintCircleTool( Vector2 c, Color color )
+	{
+		Stroked( color );
+		Arc( c, 6.2f, 0, 360, 28 );
+
+		Stroked( GuideColor( color ), 1f );
+		Editor.Paint.DrawLine( c, At( c, 6.2f, 0 ) );
+
+		ClickDot( c, 1.9f );
+	}
+
+	/// <summary>The same circle with three points ON the rim and no centre — which is precisely the
+	/// difference between the two ways of placing it.</summary>
+	private static void PaintCircleThreePointTool( Vector2 c, Color color )
+	{
+		Stroked( color );
+		Arc( c, 6.2f, 0, 360, 28 );
+
+		foreach ( var degrees in new[] { -90f, 30f, 150f } )
+		{
+			var a = degrees * MathF.PI / 180f;
+			ClickDot( At( c, MathF.Cos( a ) * 6.2f, MathF.Sin( a ) * 6.2f ) );
+		}
+	}
+
+	/// <summary>
+	/// An arc standing on its centre, with both radii drawn.
+	///
+	/// It was drawn small and off to one side first, and at the size these are actually used it read
+	/// as a tick mark rather than a curve. An arc has to span the box to look like an arc.
+	/// </summary>
+	private static void PaintArcTool( Vector2 c, Color color )
+	{
+		var hub = At( c, 0, 5.5f );
+
+		Stroked( color, 1.9f );
+		Arc( hub, 10.5f, 180, 360, 20 );
+
+		Stroked( GuideColor( color ), 1f );
+		Editor.Paint.DrawLine( hub, At( c, -10.5f, 5.5f ) );
+		Editor.Paint.DrawLine( hub, At( c, 10.5f, 5.5f ) );
+
+		ClickDot( hub, 1.9f );
+	}
+
+	/// <summary>The same arc with no centre at all, marked instead at both ends and the point it
+	/// passes through.</summary>
+	private static void PaintArcThreePointTool( Vector2 c, Color color )
+	{
+		var hub = At( c, 0, 5.5f );
+
+		Stroked( color, 1.9f );
+		Arc( hub, 10.5f, 180, 360, 20 );
+
+		ClickDot( At( c, -10.5f, 5.5f ) );
+		ClickDot( At( c, 0, -5f ) );
+		ClickDot( At( c, 10.5f, 5.5f ) );
+	}
+
+	/// <summary>
+	/// A polygon with its corners ON the circle.
+	///
+	/// The circle is drawn brighter than a guide normally would be, because where it sits relative
+	/// to the polygon IS the whole difference between this and the circumscribed version. Draw it at
+	/// guide strength and the two glyphs become the same hexagon.
+	/// </summary>
+	private static void PaintPolygonTool( Vector2 c, Color color )
+	{
+		Stroked( color.WithAlpha( 0.6f ), 1.2f );
+		Arc( c, 7f, 0, 360, 28 );
+
+		Stroked( color, 1.7f );
+		Outline( Hexagon( c, 7f, -90f ) );
+
+		ClickDot( c, 1.7f );
+	}
+
+	/// <summary>Edges on the circle instead, so it sits visibly inside the polygon — the apothem is
+	/// 0.866 of the radius, a gap wide enough to read small.</summary>
+	private static void PaintPolygonCircumscribedTool( Vector2 c, Color color )
+	{
+		Stroked( color, 1.7f );
+		Outline( Hexagon( c, 7.6f, -90f ) );
+
+		Stroked( color.WithAlpha( 0.6f ), 1.2f );
+		Arc( c, 6.6f, 0, 360, 28 );
+
+		ClickDot( c, 1.7f );
+	}
+
+	/// <summary>A slot, with the centre line you actually click marked at both ends.</summary>
+	private static void PaintSlotTool( Vector2 c, Color color )
+	{
+		const float r = 4.6f;
+
+		Stroked( color );
+		Editor.Paint.DrawLine( At( c, -3, -r ), At( c, 3, -r ) );
+		Editor.Paint.DrawLine( At( c, -3, r ), At( c, 3, r ) );
+		Arc( At( c, 3, 0 ), r, -90, 90, 12 );
+		Arc( At( c, -3, 0 ), r, 90, 270, 12 );
+
+		Stroked( GuideColor( color ), 1f );
+		Editor.Paint.DrawLine( At( c, -3, 0 ), At( c, 3, 0 ) );
+
+		ClickDot( At( c, -3, 0 ) );
+		ClickDot( At( c, 3, 0 ) );
+	}
+
+	/// <summary>Crosshairs around a point. The gap at the centre is what stops it reading as a plus
+	/// sign.</summary>
+	private static void PaintPointTool( Vector2 c, Color color )
+	{
+		Stroked( color, 1.4f );
+		Editor.Paint.DrawLine( At( c, -7, 0 ), At( c, -2.5f, 0 ) );
+		Editor.Paint.DrawLine( At( c, 2.5f, 0 ), At( c, 7, 0 ) );
+		Editor.Paint.DrawLine( At( c, 0, -7 ), At( c, 0, -2.5f ) );
+		Editor.Paint.DrawLine( At( c, 0, 2.5f ), At( c, 0, 7 ) );
+
+		ClickDot( c, 2.2f );
+	}
+
+	/// <summary>A dashed line: geometry that guides and never becomes part of a profile. Dashed
+	/// because that is how construction geometry is drawn in the viewport, so the button and the
+	/// thing it makes look like each other.</summary>
+	private static void PaintConstructionTool( Vector2 c, Color color )
+	{
+		Stroked( color, 1.7f );
+
+		foreach ( var (from, to) in new[] { (0f, 0.22f), (0.39f, 0.61f), (0.78f, 1f) } )
+		{
+			Editor.Paint.DrawLine(
+				At( c, -7 + 14 * from, 6 - 12 * from ),
+				At( c, -7 + 14 * to, 6 - 12 * to ) );
+		}
+	}
+
+	/// <summary>
+	/// A shaded region with a gap in its outline, and the two loose ends called out.
+	///
+	/// This is exactly what the inspector shows: which regions closed, and where a chain did not.
+	/// Drawn first as a stub with a dot on it, which at the size these are seen reads as a box with
+	/// a speck in the corner and says nothing. The fill has to be solid enough to read as shading and
+	/// the gap has to be a real hole in the outline.
+	/// </summary>
+	private static void PaintProfileInspectorTool( Vector2 c, Color color )
+	{
+		Filled( color.WithAlpha( 0.41f ) );
+		Editor.Paint.DrawPolygon( At( c, -6.5f, -5 ), At( c, 6.5f, -5 ), At( c, 6.5f, 5 ), At( c, -6.5f, 5 ) );
+
+		// Walked as an open polyline rather than an outline, because the gap is the point.
+		Stroked( color, 1.7f );
+		Editor.Paint.DrawLine( At( c, 6.5f, -1.6f ), At( c, 6.5f, -5 ) );
+		Editor.Paint.DrawLine( At( c, 6.5f, -5 ), At( c, -6.5f, -5 ) );
+		Editor.Paint.DrawLine( At( c, -6.5f, -5 ), At( c, -6.5f, 5 ) );
+		Editor.Paint.DrawLine( At( c, -6.5f, 5 ), At( c, 6.5f, 5 ) );
+		Editor.Paint.DrawLine( At( c, 6.5f, 5 ), At( c, 6.5f, 1.6f ) );
+
+		Dot( At( c, 6.5f, -1.6f ), 1.9f, LooseEndColor );
+		Dot( At( c, 6.5f, 1.6f ), 1.9f, LooseEndColor );
+	}
+
+	/// <summary>A plain tick. The one glyph in the row that must not be clever: it ends the mode,
+	/// and the confirm colour it is painted in already carries the meaning.</summary>
+	private static void PaintFinishSketchTool( Vector2 c, Color color )
+	{
+		Stroked( color, 2.2f );
+		Editor.Paint.DrawLine( At( c, -6, 0.5f ), At( c, -1.5f, 5 ) );
+		Editor.Paint.DrawLine( At( c, -1.5f, 5 ), At( c, 6.5f, -5 ) );
 	}
 }

@@ -38,7 +38,205 @@ public static class ConstraintTests
 
 		Report.Section( "solver: constraints run as part of a rebuild" );
 		TestInFeatureTree();
+
+		Report.Section( "solver: the constraints a dimension tool needs" );
+		TestDimensionConstraints();
+
+		Report.Section( "solver: an arc's endpoints stay on its own circle" );
+		TestArcStaysAnArc();
 	}
+
+	static void TestDimensionConstraints()
+	{
+		// ANGLE. Two lines off a shared corner, told to meet at 60 degrees. Asserted as an angle
+		// rather than as coordinates, because the solver is free to reach it by turning either line.
+		var angle = new Sketch();
+		var pivot = angle.AddPoint( 0f, 0f );
+		var armA = angle.AddPoint( 2f, 0f );
+		var armB = angle.AddPoint( 1.4f, 1.4f );
+
+		var first = angle.Add( new SketchLine( pivot, armA ) );
+		var second = angle.Add( new SketchLine( pivot, armB ) );
+
+		angle.Constraints.Add( new SketchConstraint( SketchConstraintKind.Angle, pivot, armA, pivot, armB ) { Value = 60f } );
+
+		var angleResult = angle.Solve();
+		var measured = Angle( angle.Points[armA] - angle.Points[pivot], angle.Points[armB] - angle.Points[pivot] );
+
+		Report.Check( "an angle constraint solves", angleResult.Converged,
+			$"residual {angleResult.Residual:0.###e0}" );
+
+		Report.Check( "to exactly the angle asked for", MathF.Abs( measured - 60f ) < 0.01f,
+			$"got {measured:0.###}" );
+
+		// A right angle through the same constraint has to agree with the dedicated perpendicular
+		// one, or two ways of saying the same thing give two different shapes.
+		var right = new Sketch();
+		var r0 = right.AddPoint( 0f, 0f );
+		var r1 = right.AddPoint( 2f, 0f );
+		var r2 = right.AddPoint( 1.6f, 1.2f );
+		right.Add( new SketchLine( r0, r1 ) );
+		right.Add( new SketchLine( r0, r2 ) );
+		right.Constraints.Add( new SketchConstraint( SketchConstraintKind.Angle, r0, r1, r0, r2 ) { Value = 90f } );
+		right.Solve();
+
+		Report.Check( "and 90 degrees means perpendicular",
+			MathF.Abs( Angle( right.Points[r1] - right.Points[r0], right.Points[r2] - right.Points[r0] ) - 90f ) < 0.01f );
+
+		// POINT ON LINE.
+		//
+		// WORTH READING BEFORE WRITING A TEST LIKE THIS. The first version asserted that the point
+		// moved onto the line and the line stayed put — and it failed, because the solver is under no
+		// obligation to move the point. "These three are collinear" is equally satisfied by swinging
+		// the LINE onto the point, and with nothing holding the line down that is part of what the
+		// least-norm step does. It converged perfectly and to a shape the test did not expect, which
+		// is the solver being right and the test being wrong.
+		//
+		// So: assert the relation, and where a specific answer is wanted, hold the reference geometry
+		// down first.
+		var onLine = new Sketch();
+		var lineA = onLine.AddPoint( 0f, 0f );
+		var lineB = onLine.AddPoint( 4f, 0f );
+		var loose = onLine.AddPoint( 2f, 1.5f );
+
+		var baseLine = onLine.Add( new SketchLine( lineA, lineB ) );
+		onLine.Constraints.Add( new SketchConstraint( SketchConstraintKind.PointOnLine, loose, lineA, lineB, 0f ) );
+
+		var looseResult = onLine.Solve();
+
+		Report.Check( "a point-on-line constraint solves", looseResult.Converged,
+			$"residual {looseResult.Residual:0.###e0}" );
+
+		Report.Check( "leaving the three genuinely collinear",
+			MathF.Abs( Vec2.Cross( onLine.Points[lineB] - onLine.Points[lineA],
+				onLine.Points[loose] - onLine.Points[lineA] ) ) < 1e-3f,
+			$"cross {Vec2.Cross( onLine.Points[lineB] - onLine.Points[lineA], onLine.Points[loose] - onLine.Points[lineA] ):0.#####}" );
+
+		// Now hold the line horizontal. Point 0 is pinned at the origin, so the line becomes the x
+		// axis and the answer is no longer a choice: the point has to come to y = 0.
+		onLine.AddConstraint( baseLine, SketchConstraintKind.Horizontal );
+		onLine.Points[loose] = new Vec2( 2f, 1.5f );
+		onLine.Solve();
+
+		Report.Check( "and with the line held down, the point is the thing that moves",
+			MathF.Abs( onLine.Points[loose].y ) < 1e-3f, $"y = {onLine.Points[loose].y:0.#####}" );
+
+		// SYMMETRIC. Two points mirrored about a line, from a start where neither is.
+		var mirror = new Sketch();
+		var axisA = mirror.AddPoint( 0f, 0f );
+		var axisB = mirror.AddPoint( 0f, 4f );
+		var leftPoint = mirror.AddPoint( -2f, 1f );
+		var rightPoint = mirror.AddPoint( 3f, 2.5f );
+
+		var axis = mirror.Add( new SketchLine( axisA, axisB ) );
+
+		// The axis is held vertical for the same reason the line above is held horizontal: otherwise
+		// the cheapest way to make two points symmetric is to swing the axis between them, and the
+		// test would be asserting about an axis that had moved.
+		mirror.AddConstraint( axis, SketchConstraintKind.Vertical );
+		mirror.Constraints.Add( new SketchConstraint( SketchConstraintKind.Symmetric,
+			leftPoint, rightPoint, axisA, axisB ) );
+
+		var mirrorResult = mirror.Solve();
+
+		Report.Check( "a symmetry constraint solves", mirrorResult.Converged,
+			$"residual {mirrorResult.Residual:0.###e0}" );
+
+		var l = mirror.Points[leftPoint];
+		var r = mirror.Points[rightPoint];
+
+		Report.Check( "the two points end up mirrored across the axis",
+			MathF.Abs( l.x + r.x ) < 1e-3f && MathF.Abs( l.y - r.y ) < 1e-3f,
+			$"{l} and {r}" );
+
+		// AND NOT BY COLLAPSING ONTO THE AXIS, which satisfies "mirrored" in the most useless way
+		// available and is what a single-row version of this constraint would allow.
+		Report.Check( "rather than both collapsing onto it",
+			MathF.Abs( l.x ) > 0.5f, $"they ended up {MathF.Abs( l.x ):0.###} from the axis" );
+
+		// RADIUS on an arc. Its centre-to-endpoint distance is what a radius IS here, and the
+		// implicit arc constraint carries the far end along with it.
+		var arc = new Sketch();
+		var centre = arc.AddPoint( 0f, 0f );
+		var start = arc.AddPoint( 2f, 0f );
+		var end = arc.AddPoint( 0f, 2f );
+
+		arc.Add( new SketchArc( centre, start, end ) );
+		arc.Constraints.Add( new SketchConstraint( SketchConstraintKind.Radius, centre, start, 3f ) );
+
+		arc.Solve();
+
+		Report.Check( "a radius dimension sets the arc's radius",
+			MathF.Abs( (arc.Points[start] - arc.Points[centre]).Length - 3f ) < 1e-3f,
+			$"{(arc.Points[start] - arc.Points[centre]).Length:0.####}" );
+
+		Report.Check( "and the other end comes with it",
+			MathF.Abs( (arc.Points[end] - arc.Points[centre]).Length - 3f ) < 1e-3f,
+			$"{(arc.Points[end] - arc.Points[centre]).Length:0.####}" );
+	}
+
+	/// <summary>
+	/// The invariant nothing used to enforce.
+	///
+	/// An arc reads its radius off the centre-to-START distance, and Tessellate snaps its last sample
+	/// onto End wherever End is. So an End that drifts off the circle does not produce an error — it
+	/// produces an arc at the wrong radius with a kink in its final segment, which reads as a
+	/// rendering glitch. Nothing moved points apart while coordinates were only typed; a solver moves
+	/// points for a living.
+	/// </summary>
+	static void TestArcStaysAnArc()
+	{
+		var sketch = new Sketch();
+		var centre = sketch.AddPoint( 0f, 0f );
+		var start = sketch.AddPoint( 2f, 0f );
+		var end = sketch.AddPoint( 0f, 2f );
+		var far = sketch.AddPoint( 5f, 5f );
+
+		sketch.Add( new SketchArc( centre, start, end ) );
+		var pull = sketch.Add( new SketchLine( end, far ) );
+
+		// A constraint that has every reason to drag End off its circle: it says nothing about the
+		// arc, only about the line hanging off its end.
+		sketch.Constraints.Add( new SketchConstraint( SketchConstraintKind.Distance, end, far, 6f ) );
+		sketch.AddConstraint( pull, SketchConstraintKind.Horizontal );
+
+		var result = sketch.Solve();
+
+		Report.Check( "the sketch solves", result.Converged, $"residual {result.Residual:0.###e0}" );
+
+		var startRadius = (sketch.Points[start] - sketch.Points[centre]).Length;
+		var endRadius = (sketch.Points[end] - sketch.Points[centre]).Length;
+
+		Report.Check( "and the arc's two ends are still the same distance from its centre",
+			MathF.Abs( startRadius - endRadius ) < 1e-3f,
+			$"start {startRadius:0.#####}, end {endRadius:0.#####}" );
+
+		// The tessellation is where the damage would show: its last sample is snapped onto End, so a
+		// broken invariant leaves a step between the second-to-last point and the last one.
+		var points = sketch.Curves.OfType<SketchArc>().First().Tessellate( sketch, sketch.Tolerance );
+		var lastStep = (points[^1] - points[^2]).Length;
+		var typicalStep = (points[1] - points[0]).Length;
+
+		Report.Check( "so the arc has no kink in its last segment",
+			lastStep < typicalStep * 3f + 1e-4f,
+			$"last step {lastStep:0.#####} against a typical {typicalStep:0.#####}" );
+
+		// An arc with no constraints anywhere in the sketch is still untouched: the implicit rule
+		// exists to stop a solve breaking an arc, not to move arcs nobody asked about.
+		var untouched = new Sketch();
+		var uc = untouched.AddPoint( 0f, 0f );
+		var us = untouched.AddPoint( 2f, 0f );
+		var ue = untouched.AddPoint( 0f, 3f ); // deliberately NOT on the same circle
+
+		untouched.Add( new SketchArc( uc, us, ue ) );
+		untouched.Solve();
+
+		Report.Check( "an arc in a sketch with no constraints is left exactly as drawn",
+			untouched.Points[ue].y == 3f, $"{untouched.Points[ue]}" );
+	}
+
+	static float Angle( Vec2 a, Vec2 b ) =>
+		MathF.Acos( Math.Clamp( Vec2.Dot( a.Normal, b.Normal ), -1f, 1f ) ) * 180f / MathF.PI;
 
 	// --- derivatives --------------------------------------------------------------------------
 
@@ -66,7 +264,10 @@ public static class ConstraintTests
 			("vertical", new VerticalConstraint( 2, 3 )),
 			("equal length", new EqualLengthConstraint( 0, 1, 2, 3 )),
 			("parallel", new ParallelConstraint( 0, 1, 2, 3 )),
-			("perpendicular", new PerpendicularConstraint( 0, 1, 3, 4 ))
+			("perpendicular", new PerpendicularConstraint( 0, 1, 3, 4 )),
+			("angle", new AngleConstraint( 0, 1, 2, 3, 37.5 )),
+			("point on line", new PointOnLineConstraint( 4, 0, 2 )),
+			("symmetric", new SymmetricConstraint( 0, 1, 2, 3 ))
 		};
 
 		foreach ( var (name, constraint) in cases )

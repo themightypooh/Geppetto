@@ -1,5 +1,6 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace Effigy;
 
@@ -93,7 +94,29 @@ public static class SketchSolver
 				constraints.Add( c );
 		}
 
-		if ( constraints.Count == 0 )
+		// IMPLICIT, AND NOT OPTIONAL. An arc is a centre and two endpoints, and its radius is read
+		// off the centre-to-START distance — Tessellate then snaps its last sample onto End wherever
+		// End happens to be. Nothing has ever required the two endpoints to be the same distance from
+		// the centre, and while coordinates were only ever typed, nothing moved them apart.
+		//
+		// A solver moves points. Constrain anything touching one end of an arc and the other end
+		// drifts off its own circle, and what comes back is not a bad arc that complains — it is an
+		// arc drawn at the wrong radius with a kink in the last segment, which looks like a rendering
+		// glitch and is nothing of the kind.
+		//
+		// So every arc contributes "both endpoints are equidistant from my centre" whether the user
+		// asked for it or not. It is not design intent, it is what an arc IS, and a user who never
+		// adds a constraint never pays for it because the whole solve is skipped below.
+		foreach ( var curve in sketch.Curves.OfType<SketchArc>() )
+		{
+			if ( curve.Center != curve.Start && curve.Center != curve.End )
+				constraints.Add( new EqualLengthConstraint( curve.Center, curve.Start, curve.Center, curve.End ) );
+		}
+
+		// Only the STORED constraints decide whether there is anything to do. A sketch with arcs and
+		// no constraints is one nobody has asked anything of, and solving it would move points that
+		// were placed deliberately.
+		if ( sketch.Constraints.Count == 0 || constraints.Count == 0 )
 			return result;
 
 		var nPts = sketch.Points.Count;

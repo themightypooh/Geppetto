@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Effigy;
@@ -222,6 +222,27 @@ public static class SketchTests
 		Check( "a seed that matches nothing reports an error", report.HasErrors, report.ToString() );
 		Check( "and produces no body from that feature", studio.Bodies.Count == 0,
 			$"{studio.Bodies.Count} bodies" );
+	}
+
+	/// <summary>Shoelace area of a curve as the extrude actually tessellates it. Comparing against
+	/// pi r squared instead would be comparing against a circle the mesh never contained.</summary>
+	static float TessellatedArea( Sketch sketch, SketchCurve curve )
+	{
+		var points = curve.Tessellate( sketch, sketch.Tolerance );
+
+		// Tessellate returns both endpoints, so the closing point repeats the first and is dropped
+		// rather than counted twice.
+		var n = points.Count - 1;
+		var sum = 0f;
+
+		for ( var i = 0; i < n; i++ )
+		{
+			var a = points[i];
+			var b = points[(i + 1) % n];
+			sum += a.x * b.y - b.x * a.y;
+		}
+
+		return MathF.Abs( sum * 0.5f );
 	}
 
 	static float Volume( PolyMesh m ) =>
@@ -505,16 +526,136 @@ public static class SketchTests
 		Check( "extrude on XZ has volume 8",
 			MathF.Abs( Volume( front.Bodies[0].Mesh ) - 8f ) < 1e-3f );
 
-		// Holes are refused clearly rather than silently capped over.
+		// A plate with a hole in it. This used to be refused outright on the grounds that capping
+		// around a hole was "the same problem as a boolean subtract"; it is a 2D triangulation
+		// problem, and it builds now.
 		var holed = new PartStudio();
 		var hs = holed.Add( new SketchFeature() );
 		hs.Sketch.AddRectangle( new Vec2( -5, -5 ), new Vec2( 5, 5 ) );
-		hs.Sketch.AddCircle( new Vec2( 0, 0 ), 1f );
+		var holeCircle = hs.Sketch.AddCircle( new Vec2( 0, 0 ), 1f );
 		var holedExtrude = holed.Add( new ExtrudeFeature() );
+		holedExtrude.Distance.Value = 2f;
 		holed.Rebuild();
 
-		Check( "extruding a holed profile reports an error", holedExtrude.Error is not null );
-		Check( "the error explains why", holedExtrude.Error?.Contains( "holes" ) == true, holedExtrude.Error );
+		Check( "a profile with a hole extrudes", holedExtrude.Error is null, holedExtrude.Error );
+
+		if ( holedExtrude.Error is null )
+		{
+			var plate = holed.Bodies[0].Mesh;
+
+			// 100 minus the circle, times 2 deep. The circle is tessellated, so the comparison is
+			// against the polygon's area rather than pi r squared — otherwise the tolerance would
+			// have to be loose enough to also pass a plate with no hole at all.
+			var holeArea = TessellatedArea( hs.Sketch, holeCircle );
+			var expected = (100f - holeArea) * 2f;
+
+			Check( "and its volume is the plate minus the hole",
+				MathF.Abs( Volume( plate ) - expected ) < 0.05f,
+				$"{Volume( plate ):0.####}, expected {expected:0.####}" );
+
+			// GENUS 1, the same as the Tube primitive. A cap that quietly filled the hole in could
+			// slip past a volume check with a small enough hole; it cannot slip past this.
+			var x = MeshValidator.EulerCharacteristic( plate );
+			Check( "a plate with one hole is genus 1, so X = 0", x == 0, $"X = {x}" );
+
+			var validation = MeshValidator.Validate( plate );
+			Check( "it is a valid closed mesh", validation.IsValid && validation.IsClosed, validation.ToString() );
+		}
+
+		// Revolve handles holes too, now that a holed cap exists for it to borrow. PAPPUS' THEOREM is
+		// the check: a region of area A whose centroid sits distance d from the axis sweeps a volume
+		// of 2*pi*d*A through a full turn, holes and all.
+		var revolvedHole = new PartStudio();
+		var rhs = revolvedHole.Add( new SketchFeature() );
+		rhs.Sketch.AddRectangle( new Vec2( 2, 2 ), new Vec2( 6, 6 ) );
+		var boreCircle = rhs.Sketch.AddCircle( new Vec2( 4, 4 ), 1f );
+		var holedRevolve = revolvedHole.Add( new RevolveFeature() );
+		revolvedHole.Rebuild();
+
+		Check( "revolving a holed profile builds", holedRevolve.Error is null, holedRevolve.Error );
+
+		if ( holedRevolve.Error is null )
+		{
+			var ring = revolvedHole.Bodies[0].Mesh;
+
+			// The square and the bore share a centroid, so the composite one is still at y = 4.
+			var area = 16f - TessellatedArea( rhs.Sketch, boreCircle );
+			var expected = 2f * MathF.PI * 4f * area;
+
+			// MEASURED AGAINST THE SAME SQUARE WITH NO HOLE, not against Pappus directly.
+			//
+			// A revolve is faceted — 24 segments by default — so its volume runs about 1.1% under
+			// the true solid of revolution whether or not there is a hole in it. Comparing the holed
+			// result to Pappus therefore measures the faceting, and needs a tolerance loose enough to
+			// hide a real error in the hole. Comparing it to the UNHOLED sweep of the same square
+			// cancels the faceting exactly: both are approximated identically, so what is left is
+			// purely the proportion the hole removed. That ratio came out identical to five decimal
+			// places, which is what says the hole is handled exactly rather than approximately.
+			var control = new PartStudio();
+			var controlSketch = control.Add( new SketchFeature() );
+			controlSketch.Sketch.AddRectangle( new Vec2( 2, 2 ), new Vec2( 6, 6 ) );
+			control.Add( new RevolveFeature() );
+			control.Rebuild();
+
+			var solidVolume = Volume( control.Bodies[0].Mesh );
+
+			Check( "the hole removes exactly its share of the solid",
+				MathF.Abs( Volume( ring ) / solidVolume - area / 16f ) < 1e-4f,
+				$"removed {1f - Volume( ring ) / solidVolume:0.#####}, expected {1f - area / 16f:0.#####}" );
+
+			// And a loose absolute check, so a systematically wrong sweep cannot hide behind a ratio
+			// that is right for the wrong reason.
+			Check( "and Pappus agrees to within the faceting",
+				MathF.Abs( Volume( ring ) - expected ) < expected * 0.02f,
+				$"{Volume( ring ):0.####}, expected about {expected:0.####}" );
+
+			// Two disjoint torus surfaces, one inside the other: X = 0 + 0.
+			Check( "its boundary is two tori, so X = 0",
+				MeshValidator.EulerCharacteristic( ring ) == 0,
+				$"X = {MeshValidator.EulerCharacteristic( ring )}" );
+
+			Check( "and it is closed and valid",
+				MeshValidator.Validate( ring ) is { IsValid: true, IsClosed: true } );
+		}
+
+		// A PARTIAL revolution is the case that needs the holed cap, since a full one has no caps at
+		// all. Ninety degrees is a quarter of the volume above.
+		var quarter = new PartStudio();
+		var qs = quarter.Add( new SketchFeature() );
+		qs.Sketch.AddRectangle( new Vec2( 2, 2 ), new Vec2( 6, 6 ) );
+		var quarterBore = qs.Sketch.AddCircle( new Vec2( 4, 4 ), 1f );
+		var quarterRevolve = quarter.Add( new RevolveFeature() );
+		quarterRevolve.Angle.Value = 90f;
+		quarter.Rebuild();
+
+		Check( "a partial revolve with a hole builds", quarterRevolve.Error is null, quarterRevolve.Error );
+
+		if ( quarterRevolve.Error is null )
+		{
+			var arc = quarter.Bodies[0].Mesh;
+			var expected = 2f * MathF.PI * 4f * (16f - TessellatedArea( qs.Sketch, quarterBore )) * 0.25f;
+
+			Check( "at a quarter of the full volume",
+				MathF.Abs( Volume( arc ) - expected ) < expected * 0.02f,
+				$"{Volume( arc ):0.####}, expected about {expected:0.####}" );
+
+			Check( "capped closed at both ends",
+				MeshValidator.Validate( arc ) is { IsValid: true, IsClosed: true },
+				MeshValidator.Validate( arc ).ToString() );
+		}
+
+		// A hole crossing the axis is as meaningless as an outer loop doing it, and is refused for
+		// the same reason: each half would sweep the same surface.
+		var crossing = new PartStudio();
+		var crossingSketch = crossing.Add( new SketchFeature() );
+		crossingSketch.Sketch.AddRectangle( new Vec2( -6, -6 ), new Vec2( 6, 6 ) );
+		crossingSketch.Sketch.AddCircle( new Vec2( 0, 0 ), 1f );
+		var crossingRevolve = crossing.Add( new RevolveFeature() );
+		crossing.Rebuild();
+
+		Check( "a hole straddling the axis is refused", crossingRevolve.Error is not null );
+		Check( "and says which way to move it",
+			crossingRevolve.Error?.Contains( "crosses the axis" ) == true, crossingRevolve.Error );
 
 		// Two disjoint regions extrude to two bodies.
 		var twoStudio = new PartStudio();

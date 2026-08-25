@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -33,13 +33,146 @@ namespace Effigy;
 /// face plane. At a box corner it returns exactly (0.1, 0.1, 0.1): the vertex travels t*sqrt(3),
 /// not t.
 ///
-/// WHAT THIS DOES NOT DO, stated plainly rather than discovered later: no self-intersection
-/// handling. Shell a shape by more than its own thinnest feature and the inner surface passes
-/// through itself. Detecting that needs the offset surface computed properly, which is a different
-/// and much larger algorithm.
+/// SELF-INTERSECTION IS REFUSED, NOT HANDLED. Shell a shape by more than its own thinnest feature
+/// and the inner surface passes through itself — the two walls of a plate shelled by more than half
+/// its thickness cross over, and what comes back is a closed mesh that measures negative volume in
+/// places and looks entirely normal from outside.
+///
+/// Building the offset surface properly, so that the overlap is trimmed away instead, is a much
+/// larger algorithm and is still not here. What IS here is a check that catches every practical
+/// case: a face whose inner copy has FLIPPED relative to its outer one has been pushed through
+/// itself, and that is a local signature no amount of symmetry can hide. It is the same reasoning
+/// LoopOffset uses one dimension down, where a reversed edge means the profile folded.
+///
+/// A shape can still self-intersect somewhere no single face flipped — two distant walls closing on
+/// each other rather than one wall inverting. That case is not caught and is named here so the next
+/// person knows the difference between "checked" and "not possible".
 /// </summary>
 public static class ShellOperation
 {
+	/// <summary>
+	/// Refuse a thickness that pushes the inner surface through itself.
+	///
+	/// Each inner face is the outer one displaced inward, so as long as the wall is thinner than the
+	/// shape it keeps its orientation. Push past that and the face turns over: its normal reverses,
+	/// its area passes through zero on the way, and the solid it bounds starts enclosing negative
+	/// space. Comparing each face's inner normal against its outer one catches that exactly, and
+	/// costs one cross product per face.
+	///
+	/// The message names the thickness and the face, because "too thick" without a number is not
+	/// something anyone can act on — the useful question is always "thicker than what".
+	/// </summary>
+	static void RefuseIfFolded( PolyMesh mesh, Vec3[] inner, HashSet<int> open, float thickness )
+	{
+		// THE CHECK THAT CATCHES THE COMMON CASE, and the reason the per-face one below is not
+		// enough on its own. Shell a 1-thick plate by 0.6 and its top and bottom walls pass straight
+		// through each other — but neither FACE inverts, because each is simply translated inward and
+		// a translation preserves a normal. Nothing local goes wrong; the surface as a whole turns
+		// inside out.
+		//
+		// Enclosed volume sees it immediately: the inner surface ends up with its top below its
+		// bottom and measures negative. Exact only while the surface is closed, which is why it is
+		// skipped once faces are opened — there the inner surface is genuinely not a closed volume,
+		// and the per-face check is what remains.
+		//
+		// Opening a face also makes this failure much less likely in that direction, since an opened
+		// face does not constrain the solve and so cannot push the opposite wall through anything.
+		if ( open.Count == 0 )
+		{
+			var innerVolume = EnclosedVolume( mesh, inner );
+
+			if ( innerVolume <= 0f )
+			{
+				throw new InvalidOperationException(
+					$"A wall thickness of {thickness:0.###} is more than this shape is thick — the inner "
+					+ "surface turns inside out, leaving no cavity. Use a smaller thickness." );
+			}
+		}
+
+		for ( var fi = 0; fi < mesh.FaceCount; fi++ )
+		{
+			if ( open.Contains( fi ) )
+				continue;
+
+			var face = mesh.Faces[fi];
+
+			if ( face.Count < 3 )
+				continue;
+
+			var outerNormal = mesh.FaceNormal( face );
+			var innerNormal = NewellNormal( face, inner );
+
+			// Zero area means the face has been squeezed to nothing — the exact boundary of the fold
+			// rather than past it, and just as unusable.
+			if ( innerNormal.LengthSquared < 1e-16f )
+			{
+				throw new InvalidOperationException(
+					$"A wall thickness of {thickness:0.###} collapses this shape: face {fi} has no inner surface left. "
+					+ "The shape is that thin somewhere — use a smaller thickness." );
+			}
+
+			if ( Vec3.Dot( outerNormal, innerNormal.Normal ) < 0f )
+			{
+				throw new InvalidOperationException(
+					$"A wall thickness of {thickness:0.###} is more than this shape is thick: the inner surface "
+					+ $"passes through itself at face {fi}. Use a smaller thickness, or open that face." );
+			}
+		}
+	}
+
+	/// <summary>Divergence theorem over a face list read against a different position array: the
+	/// volume the surface would enclose. Negative means it is inside out.</summary>
+	static float EnclosedVolume( PolyMesh mesh, Vec3[] positions )
+	{
+		var total = 0f;
+
+		foreach ( var face in mesh.Faces )
+		{
+			if ( face.Count < 3 )
+				continue;
+
+			var normal = NewellNormal( face, positions );
+
+			if ( normal.LengthSquared < 1e-20f )
+				continue;
+
+			// Newell's vector has twice the polygon's area as its length, so the area falls out of
+			// it rather than needing a second pass.
+			var area = normal.Length * 0.5f;
+			var centroid = Vec3.Zero;
+
+			foreach ( var index in face.Indices )
+				centroid += positions[index];
+
+			centroid /= face.Count;
+
+			total += Vec3.Dot( centroid, normal.Normal ) * area;
+		}
+
+		return total / 3f;
+	}
+
+	/// <summary>Newell's method, over a face read against a different position array. The same
+	/// reasoning as Triangulate's: three consecutive corners of a real face are often nearly
+	/// collinear, and their cross product is then noise pointing anywhere.</summary>
+	static Vec3 NewellNormal( Face face, Vec3[] positions )
+	{
+		var n = Vec3.Zero;
+
+		for ( var i = 0; i < face.Count; i++ )
+		{
+			var a = positions[face.Indices[i]];
+			var b = positions[face.Indices[(i + 1) % face.Count]];
+
+			n = new Vec3(
+				n.x + (a.y - b.y) * (a.z + b.z),
+				n.y + (a.z - b.z) * (a.x + b.x),
+				n.z + (a.x - b.x) * (a.y + b.y) );
+		}
+
+		return n;
+	}
+
 	public static PolyMesh Shell( PolyMesh mesh, float thickness, IEnumerable<int> openFaces = null )
 		=> Shell( mesh, thickness, openFaces, out _ );
 
@@ -109,6 +242,8 @@ public static class ShellOperation
 
 			inner[vi] = mesh.Positions[vi] - displacement;
 		}
+
+		RefuseIfFolded( mesh, inner, open, thickness );
 
 		// --- assemble ----------------------------------------------------------------------
 		// Layout: [0 .. V) the outer surface, [V .. 2V) the inner one.

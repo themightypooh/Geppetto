@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -170,6 +170,25 @@ public static class FaceMaterialTests
 		var dmx = DmxWriter.Write( mesh, modelName: "painted" );
 
 		Report.Check( "DMX carries it too", dmx.Contains( "material_2" ), "no material_2 in the DMX" );
+
+		// NAMED SLOTS. A number is all the geometry needs and it is not what a person binding the
+		// model in ModelDoc wants to see — every exporter takes a name function, and the studio has
+		// one that falls back to the numbered default for slots nobody has named.
+		studio.MaterialNames[2] = "anodised";
+
+		var namedObj = ObjWriter.Write( mesh, "painted", materialName: studio.NameForSlot );
+
+		Report.Check( "OBJ writes the name a slot was given",
+			namedObj.Contains( "usemtl anodised" ), "no usemtl anodised" );
+
+		Report.Check( "and still numbers the slots nobody named",
+			namedObj.Contains( "usemtl material_0" ), "slot 0 lost its default name" );
+
+		Report.Check( "SMD takes the same names",
+			SmdWriter.Write( mesh, Skeleton.SingleRoot(), materialName: studio.NameForSlot ).Contains( "anodised" ) );
+
+		Report.Check( "and so does DMX",
+			DmxWriter.Write( mesh, modelName: "painted", materialName: studio.NameForSlot ).Contains( "anodised" ) );
 	}
 
 	static void TestLostFaces()

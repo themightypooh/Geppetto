@@ -295,18 +295,12 @@ public abstract class SketchConsumingFeature : Feature
 				: "The sketch has no closed region" );
 		}
 
-		// Holes need the cap to be triangulated around them, which is really the same problem as
-		// a boolean subtract and is better solved once, there. Until then this refuses clearly
-		// rather than producing a cap that renders with the hole filled in.
-		var holed = found.Profiles.FirstOrDefault( p => p.HasHoles );
-
-		if ( holed is not null )
-		{
-			throw new InvalidOperationException(
-				$"Profiles with holes are not supported yet ({holed.Holes.Count} inner loop(s)). "
-				+ "Use the Tube primitive, or extrude the outer and inner shapes separately." );
-		}
-
+		// Holes used to be refused HERE, for every consumer at once, on the grounds that capping
+		// around one was "really the same problem as a boolean subtract". That was wrong: it is a
+		// 2D triangulation problem, and ear clipping has been in the kernel for a while. Extrude
+		// handles holes now; Revolve does not, and says so itself. The refusal belongs with whoever
+		// cannot do it rather than in the shared path, or one feature's limit keeps standing in for
+		// everyone's.
 		return found.Profiles;
 	}
 }
@@ -322,30 +316,204 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 {
 	public override string TypeName => "Extrude";
 
+	/// <summary>
+	/// Where the extrude stops.
+	///
+	/// Blind is a typed distance and is what it has always done. The other two ask the model instead:
+	/// UP TO NEXT stops at the first thing in the way, and THROUGH ALL goes past everything. Neither
+	/// needs a boolean — both are questions about DISTANCE, answered by a raycast, and the solid they
+	/// produce is an ordinary prism. That is worth saying because "up to face" sits next to "cut" in
+	/// every CAD tool and reads like it must need one.
+	/// </summary>
+	public readonly ChoiceParam Termination = new( "Termination",
+		new[] { "Blind", "Up to next", "Through all" } );
+
 	public readonly FloatParam Distance = new( "Distance", 1f, unit: "u" );
 	public readonly BoolParam Symmetric = new( "Symmetric", false );
 	public readonly BoolParam Flip = new( "Flip direction", false );
+
+	/// <summary>
+	/// How far it also goes the OTHER way. Zero means one-sided, which is what it has always been.
+	///
+	/// Onshape calls this the second end position and gives it its own depth rather than a symmetric
+	/// checkbox, because the two are not the same question: symmetric splits ONE distance in half,
+	/// while this is genuinely independent — a boss 3 up and 1 down is a thing you cannot ask a
+	/// symmetric extrude for at all. Symmetric wins when both are set, since it is the simpler
+	/// intent and silently doubling up would be worse than ignoring one.
+	/// </summary>
+	public readonly FloatParam SecondDistance = new( "Second distance", 0f, 0f, unit: "u" );
+
+	/// <summary>
+	/// Draft angle, in degrees. Positive narrows toward the far end.
+	///
+	/// A moulded or cast part needs draft to come out of its tool, and a game asset usually wants it
+	/// for the same reason it wants a bevel: a face that leans catches light instead of reading as a
+	/// flat slab. It costs no boolean — the far cap is the near one offset by distance × tan(angle),
+	/// and every wall leans by exactly that angle because both its ends are that far apart.
+	/// </summary>
+	public readonly FloatParam Taper = new( "Taper", 0f, -89f, 89f, unit: "deg" );
+
 	public readonly IntParam Material = new( "Material slot", 0, 0, 63 );
 
-	public override IReadOnlyList<IParam> Parameters =>
-		new IParam[] { Sketch, Distance, Symmetric, Flip, Result, Material };
+	public override IReadOnlyList<IParam> Parameters => Termination.Index == 0
+		? new IParam[] { Sketch, Termination, Distance, SecondDistance, Symmetric, Flip, Taper, Result, Material }
+		: new IParam[] { Sketch, Termination, Flip, Taper, Result, Material };
 
 	protected override void Execute( FeatureContext ctx )
 	{
 		var sketch = ResolveSketch( ctx );
 		var profiles = ResolveProfiles( sketch );
 
-		if ( MathF.Abs( Distance.Value ) < 1e-6f )
+		var reach = Termination.Index == 0 ? Distance.Value : MeasuredDistance( ctx, sketch, profiles );
+
+		if ( MathF.Abs( reach ) < 1e-6f )
 			throw new InvalidOperationException( "Distance cannot be zero" );
 
-		var distance = Flip.Value ? -Distance.Value : Distance.Value;
-		var near = Symmetric.Value ? -distance * 0.5f : 0f;
-		var far = Symmetric.Value ? distance * 0.5f : distance;
+		var distance = Flip.Value ? -reach : reach;
+		var second = MathF.Abs( SecondDistance.Value );
+
+		// Three ways to place the two ends, in priority order: symmetric splits the one distance,
+		// a second distance runs back the other way from the plane, and otherwise it starts at the
+		// plane. Flip mirrors all of it, which is why `second` is applied against the sign of
+		// `distance` rather than against the plane's normal directly.
+		var near = 0f;
+		var far = distance;
+
+		if ( Symmetric.Value )
+		{
+			near = -distance * 0.5f;
+			far = distance * 0.5f;
+		}
+		else if ( second > 1e-6f )
+		{
+			near = distance >= 0f ? -second : second;
+		}
 
 		foreach ( var profile in profiles )
 		{
-			var mesh = BuildPrism( sketch.Plane, profile.Outer, near, far, Material.Clamped );
+			var mesh = BuildPrism( sketch.Plane, profile, near, far, Taper.Clamped, Material.Clamped );
 			Emit( ctx, mesh );
+		}
+	}
+
+	/// <summary>
+	/// How far the extrude reaches when the model is what decides, rather than a typed number.
+	///
+	/// Rays are cast from inside the profile along the extrude direction and the NEAREST hit wins.
+	/// Nearest rather than furthest because the solid has to stop at the first thing in the way; a
+	/// further hit is something the first surface is already hiding.
+	///
+	/// THE CAP STAYS FLAT, and that is the honest limitation of doing this without a boolean. A real
+	/// "up to face" trims the new solid against the target surface, so a boss meeting an angled face
+	/// ends in a matching slope. This ends flat, at the nearest point of contact — exactly right when
+	/// the target is parallel to the sketch, and short of it by a visible gap when it is not. Visible
+	/// rather than silent, and warned about besides: if the sample rays disagree about the distance,
+	/// the target is not parallel and the feature says so.
+	/// </summary>
+	float MeasuredDistance( FeatureContext ctx, Sketch sketch, List<Profile> profiles )
+	{
+		var direction = Flip.Value ? -sketch.Plane.Normal : sketch.Plane.Normal;
+
+		// Everything already built. A sketch drawn on a face of one of these starts ON it, which is
+		// what the epsilon below is for.
+		var targets = ctx.Bodies.Where( b => b.Mesh is { FaceCount: > 0 } ).ToList();
+
+		if ( targets.Count == 0 )
+		{
+			throw new InvalidOperationException( Termination.Index == 1
+				? "Up to next needs something to stop at, and there is nothing else in the studio yet."
+				: "Through all needs something to pass through, and there is nothing else in the studio yet." );
+		}
+
+		if ( Termination.Index == 2 )
+			return ThroughAll( targets, sketch, direction );
+
+		var nearest = float.MaxValue;
+		var furthest = 0f;
+		var hits = 0;
+
+		foreach ( var origin in SampleOrigins( sketch, profiles ) )
+		{
+			if ( MeshRaycast.Raycast( targets, origin, direction ) is not { } hit )
+				continue;
+
+			// A sketch ON a face starts flush with it, and that face is not something to stop at —
+			// it is where the extrude begins.
+			if ( hit.Hit.Distance < 1e-4f )
+				continue;
+
+			nearest = MathF.Min( nearest, hit.Hit.Distance );
+			furthest = MathF.Max( furthest, hit.Hit.Distance );
+			hits++;
+		}
+
+		if ( hits == 0 )
+		{
+			throw new InvalidOperationException(
+				"Up to next found nothing in the way — no face lies ahead of this profile. Use a blind "
+				+ "distance, or flip the direction." );
+		}
+
+		if ( furthest - nearest > 1e-3f )
+		{
+			Warning = $"The face ahead is not parallel to the sketch: it is between {nearest:0.###} and "
+				+ $"{furthest:0.###} away. The extrude stops flat at the nearest point, so it will not "
+				+ "meet the far side.";
+		}
+
+		return nearest;
+	}
+
+	/// <summary>Far enough to clear everything: the furthest any target reaches along the direction,
+	/// plus a margin. A prism that stops exactly on a surface is a coplanar face waiting to confuse
+	/// whatever consumes it next.</summary>
+	static float ThroughAll( List<Body> targets, Sketch sketch, Vec3 direction )
+	{
+		var origin = sketch.Plane.Origin;
+		var reach = 0f;
+
+		foreach ( var body in targets )
+		{
+			foreach ( var p in body.Mesh.Positions )
+				reach = MathF.Max( reach, Vec3.Dot( p - origin, direction ) );
+		}
+
+		if ( reach <= 0f )
+		{
+			throw new InvalidOperationException(
+				"Through all found nothing ahead of this profile — everything is behind it. Flip the direction." );
+		}
+
+		// Ten percent past the last thing it has to clear, and never less than a whole unit, so a
+		// tiny model does not end up with a margin too small to matter.
+		return reach + MathF.Max( reach * 0.1f, 1f );
+	}
+
+	/// <summary>
+	/// Points inside the profile to cast from: its centroid plus each corner pulled toward that
+	/// centroid.
+	///
+	/// The corners matter. Casting from the centroid alone reads one point of the target and calls
+	/// it the answer, which is how a profile that overhangs an edge — or sits over a hole — measures
+	/// against something it barely touches. Pulling each corner inward keeps every ray inside the
+	/// material rather than balanced on its boundary.
+	/// </summary>
+	static IEnumerable<Vec3> SampleOrigins( Sketch sketch, List<Profile> profiles )
+	{
+		foreach ( var profile in profiles )
+		{
+			var loop = profile.Outer;
+			var centroid = Vec2.Zero;
+
+			foreach ( var p in loop )
+				centroid += p;
+
+			centroid /= loop.Count;
+
+			yield return sketch.Plane.ToWorld( centroid );
+
+			foreach ( var p in loop )
+				yield return sketch.Plane.ToWorld( p + (centroid - p) * 0.05f );
 		}
 	}
 
@@ -353,23 +521,94 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 	/// Outer loop arrives counter-clockwise in plane coordinates, which fixes every winding
 	/// question: the far cap keeps that order, the near cap reverses, and the side quads run
 	/// bottom edge then up. Verified by the enclosed-volume test rather than by inspection.
+	///
+	/// HOLES COST EXACTLY TWO THINGS. Each hole loop gets walls of its own, built by the same code
+	/// as the outer ones — and because ProfileFinder hands holes back wound the opposite way, those
+	/// walls face into the hole with no sign handling anywhere. And the caps can no longer be single
+	/// n-gons, because a face with a hole in it is not a polygon; they are triangulated around the
+	/// holes instead.
+	///
+	/// That cap is a real tradeoff and worth stating plainly. This kernel prefers n-gons because
+	/// Catmull-Clark turns one into n clean quads, and a triangulated cap subdivides worse — the
+	/// README's whole argument about quads applies. A holed profile has no n-gon available, so the
+	/// choice is a triangulated cap or no feature at all, and a plate with bolt holes is hard
+	/// surface that rarely gets subdivided anyway. Profiles WITHOUT holes are untouched and still
+	/// get their single n-gon.
 	/// </summary>
-	static PolyMesh BuildPrism( SketchPlane plane, List<Vec2> loop, float near, float far, int material )
+	static PolyMesh BuildPrism( SketchPlane plane, Profile profile, float near, float far, float taper, int material )
 	{
-		var n = loop.Count;
 		var mesh = new PolyMesh();
 
 		// A negative extrusion puts the "far" cap behind the "near" one and flips the solid inside
 		// out. Ordering them here means the rest of the function never has to think about sign.
 		var (low, high) = near <= far ? (near, far) : (far, near);
 
-		foreach ( var p in loop )
-			mesh.AddVertex( plane.ToWorld( p ) + plane.Normal * low );
+		// Outer first, then each hole — the same order Triangulate.WithHoles indexes them in, which
+		// is what lets its triples map straight onto these vertices.
+		var loops = new List<List<Vec2>> { profile.Outer };
+		loops.AddRange( profile.Holes );
 
-		foreach ( var p in loop )
-			mesh.AddVertex( plane.ToWorld( p ) + plane.Normal * high );
+		// TAPER IS APPLIED FROM THE START OF THE SWEEP, so the whole solid is one frustum and every
+		// wall leans by exactly the angle asked for, whichever way the extrude runs.
+		//
+		// The alternative is worth naming rather than dismissing: measuring draft from the SKETCH
+		// PLANE would make a symmetric extrude draft away from that plane in both directions, which
+		// is what a moulded part with a parting line down its middle actually wants. Onshape does
+		// that. This does the simpler thing, because one consistent lean is easier to reason about
+		// and is what a game asset usually wants; if a parting-line draft is ever needed, it belongs
+		// as its own option rather than as a hidden difference in what Symmetric means.
+		var drawn = high - low;
+		var inset = taper == 0f ? 0f : drawn * MathF.Tan( taper * MathF.PI / 180f );
 
-		// Side walls. Cumulative perimeter drives U so the texture does not stretch on long edges.
+		var highLoops = loops;
+
+		if ( inset != 0f )
+		{
+			highLoops = new List<List<Vec2>>( loops.Count );
+
+			foreach ( var loop in loops )
+			{
+				if ( !LoopOffset.TryOffset( loop, inset, out var offsetLoop, out var error ) )
+				{
+					throw new InvalidOperationException(
+						$"A taper of {taper:0.##} degrees over {drawn:0.###} does not fit this profile: {error}. "
+						+ "Use a shallower angle, a shorter distance, or a profile without such a narrow neck." );
+				}
+
+				highLoops.Add( offsetLoop );
+			}
+		}
+
+		// Where each loop's low ring starts. Its high ring follows immediately after it.
+		var lowStart = new int[loops.Count];
+		var highStart = new int[loops.Count];
+
+		for ( var index = 0; index < loops.Count; index++ )
+		{
+			lowStart[index] = mesh.Positions.Count;
+
+			foreach ( var p in loops[index] )
+				mesh.AddVertex( plane.ToWorld( p ) + plane.Normal * low );
+
+			highStart[index] = mesh.Positions.Count;
+
+			foreach ( var p in highLoops[index] )
+				mesh.AddVertex( plane.ToWorld( p ) + plane.Normal * high );
+		}
+
+		for ( var index = 0; index < loops.Count; index++ )
+			AddWalls( mesh, loops[index], lowStart[index], highStart[index], material );
+
+		AddCaps( mesh, profile, loops, highLoops, lowStart, highStart, material );
+
+		return mesh;
+	}
+
+	/// <summary>One loop's side wall. Cumulative perimeter drives U so the texture does not stretch
+	/// on long edges.</summary>
+	static void AddWalls( PolyMesh mesh, List<Vec2> loop, int lowStart, int highStart, int material )
+	{
+		var n = loop.Count;
 		var perimeter = 0f;
 		var distances = new float[n + 1];
 
@@ -390,36 +629,106 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 			var u1 = perimeter > 0f ? distances[i + 1] / perimeter : 1f;
 
 			mesh.AddFace(
-				new[] { i, j, n + j, n + i },
+				new[] { lowStart + i, lowStart + j, highStart + j, highStart + i },
 				new[] { new Vec2( u0, 0 ), new Vec2( u1, 0 ), new Vec2( u1, 1 ), new Vec2( u0, 1 ) },
 				material );
 		}
+	}
 
-		// Caps use plane coordinates directly as UVs, so a face keeps the proportions it was drawn
-		// with instead of being squashed into a unit square.
-		var topIndices = new int[n];
-		var topUVs = new Vec2[n];
-
-		for ( var i = 0; i < n; i++ )
+	/// <summary>
+	/// Top and bottom. Caps use plane coordinates directly as UVs, so a face keeps the proportions
+	/// it was drawn with instead of being squashed into a unit square.
+	/// </summary>
+	static void AddCaps( PolyMesh mesh, Profile profile, List<List<Vec2>> loops, List<List<Vec2>> highLoops,
+		int[] lowStart, int[] highStart, int material )
+	{
+		if ( !profile.HasHoles )
 		{
-			topIndices[i] = n + i;
-			topUVs[i] = loop[i];
+			var loop = profile.Outer;
+			var n = loop.Count;
+
+			var topIndices = new int[n];
+			var topUVs = new Vec2[n];
+
+			for ( var i = 0; i < n; i++ )
+			{
+				topIndices[i] = highStart[0] + i;
+
+				// The TAPERED position, so a drafted face's texture follows the face it is on rather
+				// than the shape it was drawn from.
+				topUVs[i] = highLoops[0][i];
+			}
+
+			mesh.AddFace( topIndices, topUVs, material );
+
+			var bottomIndices = new int[n];
+			var bottomUVs = new Vec2[n];
+
+			for ( var i = 0; i < n; i++ )
+			{
+				bottomIndices[i] = lowStart[0] + n - 1 - i;
+				bottomUVs[i] = loop[n - 1 - i];
+			}
+
+			mesh.AddFace( bottomIndices, bottomUVs, material );
+			return;
 		}
 
-		mesh.AddFace( topIndices, topUVs, material );
+		// Flatten the loops into the one list WithHoles indexes against, so a triple it returns can
+		// be read as "the nth point, counting outer first then each hole in turn".
+		var flat = new List<Vec2>();
+		var loopOf = new List<int>();
+		var withinLoop = new List<int>();
 
-		var bottomIndices = new int[n];
-		var bottomUVs = new Vec2[n];
-
-		for ( var i = 0; i < n; i++ )
+		for ( var index = 0; index < loops.Count; index++ )
 		{
-			bottomIndices[i] = n - 1 - i;
-			bottomUVs[i] = loop[n - 1 - i];
+			for ( var i = 0; i < loops[index].Count; i++ )
+			{
+				flat.Add( loops[index][i] );
+				loopOf.Add( index );
+				withinLoop.Add( i );
+			}
 		}
 
-		mesh.AddFace( bottomIndices, bottomUVs, material );
+		// The top's own loops, which differ from the bottom's under taper. Triangulated separately
+		// rather than reusing the bottom's triples: an inset loop can need a different bridge, and
+		// forcing the bottom's onto it is how a tapered cap ends up with crossed triangles.
+		var tapered = new List<Vec2>();
 
-		return mesh;
+		foreach ( var loop in highLoops )
+			tapered.AddRange( loop );
+
+		var bottomTriangles = Triangulate.WithHoles( loops[0], loops.Skip( 1 ).Cast<IReadOnlyList<Vec2>>().ToList() );
+		var topTriangles = ReferenceEquals( highLoops, loops )
+			? bottomTriangles
+			: Triangulate.WithHoles( highLoops[0], highLoops.Skip( 1 ).Cast<IReadOnlyList<Vec2>>().ToList() );
+
+		if ( bottomTriangles.Count == 0 || topTriangles.Count == 0 )
+		{
+			throw new InvalidOperationException(
+				$"This profile's {profile.Holes.Count} hole(s) could not be capped — the loops may cross each other. "
+				+ "Check that every inner loop lies fully inside the outer one." );
+		}
+
+		foreach ( var (a, b, c) in topTriangles )
+		{
+			mesh.AddFace(
+				new[] { High( a ), High( b ), High( c ) },
+				new[] { tapered[a], tapered[b], tapered[c] },
+				material );
+		}
+
+		// The bottom is the same surface seen from the other side, so it is wound backwards.
+		foreach ( var (a, b, c) in bottomTriangles )
+		{
+			mesh.AddFace(
+				new[] { Low( c ), Low( b ), Low( a ) },
+				new[] { flat[c], flat[b], flat[a] },
+				material );
+		}
+
+		int High( int flatIndex ) => highStart[loopOf[flatIndex]] + withinLoop[flatIndex];
+		int Low( int flatIndex ) => lowStart[loopOf[flatIndex]] + withinLoop[flatIndex];
 	}
 }
 
@@ -475,9 +784,14 @@ public sealed class RevolveFeature : SketchConsumingFeature
 
 		foreach ( var profile in profiles )
 		{
+			// Every loop, not just the outer one. A hole straddling the axis is as meaningless as an
+			// outer loop doing it, and for the same reason — each half sweeps the same surface.
 			RejectIfCrossingAxis( profile.Outer );
 
-			var mesh = BuildRevolve( plane, profile.Outer, axisOrigin, axisDir,
+			foreach ( var hole in profile.Holes )
+				RejectIfCrossingAxis( hole );
+
+			var mesh = BuildRevolve( plane, profile, axisOrigin, axisDir,
 				Angle.Value, Segments.Clamped, full, Material.Clamped );
 
 			OrientOutward( mesh );
@@ -553,60 +867,94 @@ public sealed class RevolveFeature : SketchConsumingFeature
 		}
 	}
 
+	/// <summary>
+	/// Sweep a profile around the axis.
+	///
+	/// HOLES COST THE SAME TWO THINGS THEY COST AN EXTRUDE. Every loop sweeps, not just the outer
+	/// one — and because ProfileFinder hands holes back wound the opposite way, the hole's quads come
+	/// out facing into the hole with no sign handling anywhere. And a partial revolution's two end
+	/// caps stop being single n-gons, because a face with a hole in it is not a polygon; they are
+	/// triangulated around the holes instead, exactly as BuildPrism's are, with the same tradeoff
+	/// against subdivision quality and the same guarantee that unholed profiles keep their n-gons.
+	///
+	/// A FULL revolution needs no caps at all, so a holed profile revolved all the way round pays
+	/// nothing for its holes beyond the extra sweep.
+	/// </summary>
 	static PolyMesh BuildRevolve(
-		SketchPlane plane, List<Vec2> loop, Vec3 axisOrigin, Vec3 axisDir,
+		SketchPlane plane, Profile profile, Vec3 axisOrigin, Vec3 axisDir,
 		float angleDegrees, int segments, bool full, int material )
 	{
-		var n = loop.Count;
 		var mesh = new PolyMesh();
 		var weld = new VertexWelder( mesh );
 
-		var rings = full ? segments : segments;
+		// Outer first, then each hole — the order Triangulate.WithHoles indexes them in, so its
+		// triples map straight onto the rings built below.
+		var loops = new List<List<Vec2>> { profile.Outer };
+		loops.AddRange( profile.Holes );
+
+		var rings = segments;
 		var step = angleDegrees / segments * MathF.PI / 180f;
 
-		// ring[k][i] is loop point i rotated by k steps. A full turn reuses ring 0 as the last
+		// ring[loop][k][i] is loop point i rotated by k steps. A full turn reuses ring 0 as the last
 		// ring, which the welder achieves on its own by landing on identical positions.
-		var ring = new int[rings + 1][];
+		var ring = new int[loops.Count][][];
 
-		for ( var k = 0; k <= rings; k++ )
+		for ( var li = 0; li < loops.Count; li++ )
 		{
-			ring[k] = new int[n];
-			var xform = Xform.RotateAbout( axisOrigin, axisDir, step * k );
+			var loop = loops[li];
+			ring[li] = new int[rings + 1][];
 
-			for ( var i = 0; i < n; i++ )
-				ring[k][i] = weld.Add( xform.TransformPoint( plane.ToWorld( loop[i] ) ) );
+			for ( var k = 0; k <= rings; k++ )
+			{
+				ring[li][k] = new int[loop.Count];
+				var xform = Xform.RotateAbout( axisOrigin, axisDir, step * k );
+
+				for ( var i = 0; i < loop.Count; i++ )
+					ring[li][k][i] = weld.Add( xform.TransformPoint( plane.ToWorld( loop[i] ) ) );
+			}
 		}
 
-		for ( var k = 0; k < rings; k++ )
+		for ( var li = 0; li < loops.Count; li++ )
 		{
-			for ( var i = 0; i < n; i++ )
+			var n = loops[li].Count;
+
+			for ( var k = 0; k < rings; k++ )
 			{
-				var j = (i + 1) % n;
-
-				var quad = new[] { ring[k][i], ring[k][j], ring[k + 1][j], ring[k + 1][i] };
-
-				var uvs = new[]
+				for ( var i = 0; i < n; i++ )
 				{
-					new Vec2( k / (float)rings, i / (float)n ),
-					new Vec2( k / (float)rings, (i + 1) / (float)n ),
-					new Vec2( (k + 1) / (float)rings, (i + 1) / (float)n ),
-					new Vec2( (k + 1) / (float)rings, i / (float)n )
-				};
+					var j = (i + 1) % n;
 
-				AddNonDegenerate( mesh, quad, uvs, material );
+					var quad = new[] { ring[li][k][i], ring[li][k][j], ring[li][k + 1][j], ring[li][k + 1][i] };
+
+					var uvs = new[]
+					{
+						new Vec2( k / (float)rings, i / (float)n ),
+						new Vec2( k / (float)rings, (i + 1) / (float)n ),
+						new Vec2( (k + 1) / (float)rings, (i + 1) / (float)n ),
+						new Vec2( (k + 1) / (float)rings, i / (float)n )
+					};
+
+					AddNonDegenerate( mesh, quad, uvs, material );
+				}
 			}
 		}
 
 		// A partial revolution is open at both ends and needs capping; a full one is already
 		// closed, and adding caps would leave two faces buried inside the solid.
-		if ( !full )
+		if ( full )
+			return mesh;
+
+		if ( !profile.HasHoles )
 		{
+			var loop = profile.Outer;
+			var n = loop.Count;
+
 			var startCap = new int[n];
 			var startUVs = new Vec2[n];
 
 			for ( var i = 0; i < n; i++ )
 			{
-				startCap[i] = ring[0][n - 1 - i];
+				startCap[i] = ring[0][0][n - 1 - i];
 				startUVs[i] = loop[n - 1 - i];
 			}
 
@@ -617,14 +965,55 @@ public sealed class RevolveFeature : SketchConsumingFeature
 
 			for ( var i = 0; i < n; i++ )
 			{
-				endCap[i] = ring[rings][i];
+				endCap[i] = ring[0][rings][i];
 				endUVs[i] = loop[i];
 			}
 
 			AddNonDegenerate( mesh, endCap, endUVs, material );
+
+			return mesh;
+		}
+
+		// Flatten the loops into the single list WithHoles indexes against, so a triple it returns
+		// reads as "the nth point, counting outer first then each hole in turn".
+		var flat = new List<Vec2>();
+		var loopOf = new List<int>();
+		var withinLoop = new List<int>();
+
+		for ( var li = 0; li < loops.Count; li++ )
+		{
+			for ( var i = 0; i < loops[li].Count; i++ )
+			{
+				flat.Add( loops[li][i] );
+				loopOf.Add( li );
+				withinLoop.Add( i );
+			}
+		}
+
+		var triangles = Triangulate.WithHoles( profile.Outer, profile.Holes.Cast<IReadOnlyList<Vec2>>().ToList() );
+
+		if ( triangles.Count == 0 )
+		{
+			throw new InvalidOperationException(
+				$"This profile's {profile.Holes.Count} hole(s) could not be capped — the loops may cross each other. "
+				+ "Check that every inner loop lies fully inside the outer one." );
+		}
+
+		foreach ( var (a, b, c) in triangles )
+		{
+			// The two caps are the same surface seen from opposite sides, so one is wound backwards.
+			AddNonDegenerate( mesh,
+				new[] { At( 0, c ), At( 0, b ), At( 0, a ) },
+				new[] { flat[c], flat[b], flat[a] }, material );
+
+			AddNonDegenerate( mesh,
+				new[] { At( rings, a ), At( rings, b ), At( rings, c ) },
+				new[] { flat[a], flat[b], flat[c] }, material );
 		}
 
 		return mesh;
+
+		int At( int k, int flatIndex ) => ring[loopOf[flatIndex]][k][withinLoop[flatIndex]];
 	}
 
 	/// <summary>
