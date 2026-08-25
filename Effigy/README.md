@@ -36,7 +36,7 @@ machine. A session that skips this ends up reasoning about the code by reading i
 is how a bug that made every parameter edit a silent no-op survived long enough to look like three
 unrelated UI faults.
 
-1066 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
+1145 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
 2-level-subdivided version of each. Those are the fastest way to see whether something is actually
 right: open them in Blender, or drop one into ModelDoc to find out what s&box makes of it.
 
@@ -65,7 +65,7 @@ Exit code is non-zero on failure, so it works as a pre-commit or CI check unchan
 | `Bevel.cs` | flat chamfer by angle threshold: corner cutting, edge bridging, vertex caps |
 | `PlaneOffset.cs` | the offset solve shell uses |
 | `UVProjection.cs` | box and planar UV projection |
-| `Rig/Skeleton.cs` | bones, bind pose, world transforms from the parent chain |
+| `Rig/Skeleton.cs` | bones, bind pose, world transforms from the parent chain — add, remove, rename, edit a bone's head/tail, mirror a subtree |
 | `Rig/SkinWeights.cs` | per-vertex influences, blending and pruning |
 | `Rig/SkinBinder.cs` | auto-binding by distance or by body, plus weight smoothing |
 | `SmdWriter.cs` | the export path — static and skinned in one writer |
@@ -517,7 +517,19 @@ reads `(x,y)` — all `(2,2)`. An unequal box is needed to observe a seam at all
 
 ## Not here yet
 
-**Phase two (next)**: Skeleton editing, auto-weighting, weight painting, SMD export. Bones come before sculpt because you have bone experience.
+**Phase two**: skeleton editing (add/remove/rename/edit/mirror a bone), auto-weighting
+(`SkinBinder.BindRigid`/`BindBodies` plus `SmoothWeights`), and export with the 4-influence cap
+engines expect (`SkinWeights.Prune`, applied by both `SmdWriter` and `DmxWriter`) are all done and
+tested. The editor-side authoring panel (place bones by clicking the model, a tree, undo, a numeric
+inspector) lives in `Editor/EffigyEditor/EffigyRigPanel.cs` — outside this folder's scope since it
+touches engine types, but it is what actually builds a `Skeleton` in practice.
+
+Weight painting — fixing what auto-weighting gets wrong by hand — is the one piece of the original
+phase-two list still missing. `AnimBindPose`, the node ModelDoc's docs say a non-static model needs
+or morph targets and IK data silently break, is unverified rather than missing outright: nothing
+in this repo demonstrates its KV3 shape, and a guessed one risks breaking a compile that currently
+works. Needs a real s&box editor session against `citizen.vmdl` or the Model Editor's own sequence
+UI, not a guess from here.
 
 **Phase three**: Rounded (multi-segment) fillets, then Catmull-Clark subdivision brushes, multires deltas, normal-map bake. The sketch constraint solver was the other item here and has landed.
 
