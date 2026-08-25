@@ -155,6 +155,40 @@ internal sealed class EffigyRigPanel : Widget
 		Refresh();
 	}
 
+	/// <summary>
+	/// Fired right before a bone is placed, deleted, renamed, or mirrored — the same "before"
+	/// moment EffigyViewport.SketchEditing exists for on the sketch side, wired to the window's own
+	/// RecordUndo the same way. Deliberately NOT fired from the numeric inspector's fields: those
+	/// fire on every keystroke that still parses, and putting one undo step per character on the
+	/// stack is exactly what RecordUndo's own doc comment says a parameter drag must not do either.
+	/// </summary>
+	public Action RigChanging { get; set; }
+
+	/// <summary>
+	/// Replace the skeleton and body-bone map wholesale — the undo/redo restore path. Unlike
+	/// SetStudio, the mesh underneath hasn't changed, only the rig; still clears any in-progress
+	/// placement or body-assign tool state, since neither survives meaningfully across a jump to a
+	/// different point in history.
+	/// </summary>
+	public void RestoreRig( Skeleton snapshot, IReadOnlyDictionary<string, string> bodyBoneMap )
+	{
+		SetBoneToolActive( false );
+		DisarmAssign();
+
+		Skeleton.Bones.Clear();
+		Skeleton.Bones.AddRange( snapshot.Bones.Select( b => b.Clone() ) );
+
+		_bodyBoneMap.Clear();
+
+		foreach ( var (body, bone) in bodyBoneMap )
+			_bodyBoneMap[body] = bone;
+
+		_viewport.DeselectBone();
+		_selectedBone = -1;
+
+		Refresh();
+	}
+
 	public void Refresh()
 	{
 		RebuildTree();
@@ -240,6 +274,7 @@ internal sealed class EffigyRigPanel : Widget
 		if ( (point - head).Length < 0.01f )
 			return;
 
+		RigChanging?.Invoke();
 		var index = Skeleton.AddBoneFromPoints( NextBoneName(), _chainParent, head, point );
 
 		_chainHead = point;
@@ -329,6 +364,8 @@ internal sealed class EffigyRigPanel : Widget
 
 		var boneName = Skeleton.Bones[_selectedBone].Name;
 
+		RigChanging?.Invoke();
+
 		if ( _bodyBoneMap.TryGetValue( bodyId, out var current ) && current == boneName )
 			_bodyBoneMap.Remove( bodyId );
 		else
@@ -356,6 +393,8 @@ internal sealed class EffigyRigPanel : Widget
 			return;
 
 		var parent = Skeleton.Bones[_selectedBone].Parent;
+
+		RigChanging?.Invoke();
 		var newRoot = Skeleton.MirrorSubtree( _selectedBone, new Vec3( 0, 1, 0 ), parent );
 
 		RebuildTree();
@@ -531,16 +570,20 @@ internal sealed class EffigyRigPanel : Widget
 			{
 				var oldName = Skeleton.Bones[index].Name;
 
-				try
+				if ( name != oldName )
 				{
-					Skeleton.RenameBone( index, name );
+					try
+					{
+						RigChanging?.Invoke();
+						Skeleton.RenameBone( index, name );
 
-					foreach ( var body in BodiesOnBone( oldName ) )
-						_bodyBoneMap[body] = name;
-				}
-				catch ( ArgumentException )
-				{
-					// Blank or a name already in use — leave the old one rather than crash.
+						foreach ( var body in BodiesOnBone( oldName ) )
+							_bodyBoneMap[body] = name;
+					}
+					catch ( ArgumentException )
+					{
+						// Blank or a name already in use — leave the old one rather than crash.
+					}
 				}
 			}
 
@@ -565,6 +608,8 @@ internal sealed class EffigyRigPanel : Widget
 			return;
 
 		var name = Skeleton.Bones[index].Name;
+
+		RigChanging?.Invoke();
 		Skeleton.RemoveBone( index );
 
 		foreach ( var body in BodiesOnBone( name ) )

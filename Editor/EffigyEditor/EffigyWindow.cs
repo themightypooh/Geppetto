@@ -603,6 +603,9 @@ public sealed class EffigyWindow : DockWindow
 		_viewport.SketchEditing = RecordUndo;
 		_viewport.SketchPromptChanged = SetPrompt;
 
+		// Same "before" moment, for the rig: a bone placed, deleted, renamed, or mirrored.
+		_rigPanel.RigChanging = RecordUndo;
+
 		_centralDock = DockManager.SetCentralWidget( _viewport );
 
 		DockManager.RegisterDock( new() { Title = "Features", Icon = "account_tree", Area = DockArea.Left, CreateAction = () => _leftPanel } );
@@ -1532,6 +1535,13 @@ public sealed class EffigyWindow : DockWindow
 		public Dictionary<int, string> MaterialNames;
 
 		public int RollbackIndex;
+
+		/// <summary>A full clone (Skeleton.Clone) rather than a reference — the rig panel mutates
+		/// its own Skeleton in place, so holding the same instance would make every snapshot equal
+		/// the current state by the time anyone looked at it again.</summary>
+		public Skeleton RigSkeleton;
+
+		public Dictionary<string, string> BodyBoneMap;
 	}
 
 	private readonly List<StudioSnapshot> _undoStack = new();
@@ -1568,6 +1578,10 @@ public sealed class EffigyWindow : DockWindow
 			FaceSets = faceSets,
 			MaterialNames = new Dictionary<int, string>( _studio.MaterialNames ),
 			RollbackIndex = _studio.RollbackIndex,
+			RigSkeleton = _rigPanel?.Skeleton.Clone() ?? new Skeleton(),
+			BodyBoneMap = _rigPanel is null
+				? new Dictionary<string, string>()
+				: new Dictionary<string, string>( _rigPanel.BodyBoneMap ),
 		};
 	}
 
@@ -1622,6 +1636,8 @@ public sealed class EffigyWindow : DockWindow
 
 		foreach ( var (slot, name) in snapshot.MaterialNames )
 			_studio.MaterialNames[slot] = name;
+
+		_rigPanel?.RestoreRig( snapshot.RigSkeleton, snapshot.BodyBoneMap );
 
 		_studio.MarkAllDirty();
 
@@ -1717,6 +1733,42 @@ public sealed class EffigyWindow : DockWindow
 		foreach ( var (slot, name) in a.MaterialNames )
 		{
 			if ( !b.MaterialNames.TryGetValue( slot, out var other ) || name != other )
+				return false;
+		}
+
+		if ( !SameSkeleton( a.RigSkeleton, b.RigSkeleton ) )
+			return false;
+
+		if ( a.BodyBoneMap.Count != b.BodyBoneMap.Count )
+			return false;
+
+		foreach ( var (body, bone) in a.BodyBoneMap )
+		{
+			if ( !b.BodyBoneMap.TryGetValue( body, out var other ) || bone != other )
+				return false;
+		}
+
+		return true;
+	}
+
+	/// <summary>Exact comparison, same reasoning as SameSketch's point-by-point check: a bone
+	/// nudged by a millionth of a unit through the numeric inspector was still moved on purpose,
+	/// and a tolerance here would silently swallow a fine adjustment instead of recording it.</summary>
+	private static bool SameSkeleton( Skeleton a, Skeleton b )
+	{
+		if ( a.Count != b.Count )
+			return false;
+
+		for ( var i = 0; i < a.Count; i++ )
+		{
+			var ba = a.Bones[i];
+			var bb = b.Bones[i];
+
+			if ( ba.Name != bb.Name || ba.Parent != bb.Parent || ba.Length != bb.Length )
+				return false;
+
+			if ( !ba.Local.X.Equals( bb.Local.X ) || !ba.Local.Y.Equals( bb.Local.Y )
+				|| !ba.Local.Z.Equals( bb.Local.Z ) || !ba.Local.Origin.Equals( bb.Local.Origin ) )
 				return false;
 		}
 
