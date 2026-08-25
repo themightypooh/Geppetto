@@ -216,6 +216,16 @@ internal sealed class EffigyRigPanel : Widget
 
 	// --- bone placement -------------------------------------------------------------------
 
+	/// <summary>Turn the bone tool off if it happens to be on — called from EffigyWindow when
+	/// entering a sketch, since IsSketching and BoneToolActive both drive left-clicks in the
+	/// viewport and nothing before this stopped them from being true at once. Safe to call any
+	/// time: a no-op when the tool is already off.</summary>
+	public void CancelBoneTool()
+	{
+		if ( _viewport.BoneToolActive )
+			SetBoneToolActive( false );
+	}
+
 	/// <summary>
 	/// Arm or disarm the click-to-place tool. Each click extends the current chain from the last
 	/// point to the new one, parented to the bone that segment just made — Blender's
@@ -230,16 +240,6 @@ internal sealed class EffigyRigPanel : Widget
 	/// Escape closes the current chain (so the next click starts a new, unparented root); Escape
 	/// again turns the tool off.
 	/// </summary>
-	/// <summary>Turn the bone tool off if it happens to be on — called from EffigyWindow when
-	/// entering a sketch, since IsSketching and BoneToolActive both drive left-clicks in the
-	/// viewport and nothing before this stopped them from being true at once. Safe to call any
-	/// time: a no-op when the tool is already off.</summary>
-	public void CancelBoneTool()
-	{
-		if ( _viewport.BoneToolActive )
-			SetBoneToolActive( false );
-	}
-
 	private void SetBoneToolActive( bool active )
 	{
 		// Sketching owns left-clicks in the viewport while it's open, the same way this tool
