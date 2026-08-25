@@ -298,59 +298,59 @@ public sealed class EffigyWindow : DockWindow
 	/// </summary>
 	private void BuildSketchToolbar()
 	{
-		AddSketchTool( "near_me", "Select", "Select - drag a point to move it", SketchToolKind.Select );
+		AddSketchTool( EffigyIcon.SelectTool, "Select", "Select - drag a point to move it", SketchToolKind.Select );
 		_sketchStrip.AddGap();
 
-		AddSketchTool( "show_chart", "Line", "Line - click start, click end; keeps chaining until Escape", SketchToolKind.Line );
+		AddSketchTool( EffigyIcon.LineTool, "Line", "Line - click start, click end; keeps chaining until Escape", SketchToolKind.Line );
 
 		// The four families that have more than one way to place them. Each is ONE button with the
 		// alternatives behind its chevron, which is how Onshape's sketch row is arranged.
 		AddSketchGroup(
-			new SketchToolVariant( "crop_square", "Corner rectangle",
+			new SketchToolVariant( EffigyIcon.RectangleTool, "Corner rectangle",
 				"Corner rectangle - click two opposite corners", SketchToolKind.Rectangle ),
-			new SketchToolVariant( "crop_free", "Centre point rectangle",
+			new SketchToolVariant( EffigyIcon.RectangleCentreTool, "Centre point rectangle",
 				"Centre rectangle - click the centre, then a corner", SketchToolKind.RectangleCentre ) );
 
 		AddSketchGroup(
-			new SketchToolVariant( "panorama_fish_eye", "Centre circle",
+			new SketchToolVariant( EffigyIcon.CircleTool, "Centre circle",
 				"Centre circle - click the centre, then a point on the rim", SketchToolKind.Circle ),
-			new SketchToolVariant( "trip_origin", "3 point circle",
+			new SketchToolVariant( EffigyIcon.CircleThreePointTool, "3 point circle",
 				"3-point circle - click three points on the rim", SketchToolKind.CircleThreePoint ) );
 
 		AddSketchGroup(
-			new SketchToolVariant( "cached", "Centre arc",
+			new SketchToolVariant( EffigyIcon.ArcTool, "Centre arc",
 				"Centre arc - click the centre, the start, then the end direction", SketchToolKind.Arc ),
-			new SketchToolVariant( "timeline", "3 point arc",
+			new SketchToolVariant( EffigyIcon.ArcThreePointTool, "3 point arc",
 				"3-point arc - click start, end, then a point it passes through", SketchToolKind.ArcThreePoint ) );
 
 		AddSketchGroup(
-			new SketchToolVariant( "change_history", "Inscribed polygon",
+			new SketchToolVariant( EffigyIcon.PolygonTool, "Inscribed polygon",
 				"Inscribed polygon - click the centre, then a corner", SketchToolKind.Polygon ),
-			new SketchToolVariant( "details", "Circumscribed polygon",
+			new SketchToolVariant( EffigyIcon.PolygonCircumscribedTool, "Circumscribed polygon",
 				"Circumscribed polygon - click the centre, then an edge midpoint", SketchToolKind.PolygonCircumscribed ) );
 
-		AddSketchTool( "linear_scale", "Slot", "Slot - click both ends of the centre line, then the width", SketchToolKind.Slot );
-		AddSketchTool( "fiber_manual_record", "Point", "Point - click to place", SketchToolKind.Point );
+		AddSketchTool( EffigyIcon.SlotTool, "Slot", "Slot - click both ends of the centre line, then the width", SketchToolKind.Slot );
+		AddSketchTool( EffigyIcon.PointTool, "Point", "Point - click to place", SketchToolKind.Point );
 
 		_sketchStrip.AddGap();
 
 		// Construction geometry is a modifier on whatever tool is active, not a tool of its own -
 		// same as Onshape's toggle. SketchCurve.Construction and ProfileFinder's handling of it
 		// were already in the kernel with nothing in the UI able to set them.
-		_constructionButton = _sketchStrip.AddButton( "gesture",
+		_constructionButton = _sketchStrip.AddButton( EffigyIcon.ConstructionTool,
 			"Construction geometry - reference lines that never become part of a profile",
 			checkable: true, clicked: null );
 		_constructionButton.Clicked = () => _viewport.ConstructionMode = _constructionButton.Checked;
 
 		_sketchStrip.AddGap();
 
-		var inspector = _sketchStrip.AddButton( "select_all",
+		var inspector = _sketchStrip.AddButton( EffigyIcon.ProfileInspectorTool,
 			"Profile Inspector - shade closed regions and highlight loose ends",
 			checkable: true, clicked: null );
 		inspector.Checked = true;
 		inspector.Clicked = () => _viewport.ProfileInspector = inspector.Checked;
 
-		var finish = _sketchStrip.AddButton( "check",
+		var finish = _sketchStrip.AddButton( EffigyIcon.FinishSketchTool,
 			"Finish Sketch - leave sketch mode and go back to the feature tree",
 			checkable: false, clicked: FinishSketch );
 
@@ -358,7 +358,7 @@ public sealed class EffigyWindow : DockWindow
 	}
 
 	/// <summary>A tool with only one way to place it: one variant, so no chevron appears.</summary>
-	private void AddSketchTool( string icon, string label, string tip, SketchToolKind kind ) =>
+	private void AddSketchTool( EffigyIcon icon, string label, string tip, SketchToolKind kind ) =>
 		AddSketchGroup( new SketchToolVariant( icon, label, tip, kind ) );
 
 	/// <summary>
@@ -2342,12 +2342,12 @@ internal sealed class EffigyToolStrip : Widget
 /// A corner rectangle and a centre rectangle are one button in Onshape, not two.</summary>
 internal sealed class SketchToolVariant
 {
-	public readonly string Icon;
+	public readonly EffigyIcon Icon;
 	public readonly string Label;
 	public readonly string Tip;
 	public readonly SketchToolKind Kind;
 
-	public SketchToolVariant( string icon, string label, string tip, SketchToolKind kind )
+	public SketchToolVariant( EffigyIcon icon, string label, string tip, SketchToolKind kind )
 	{
 		Icon = icon;
 		Label = label;
@@ -2358,7 +2358,7 @@ internal sealed class SketchToolVariant
 
 internal sealed class EffigySketchToolButton : Widget
 {
-	private string _icon;
+	private EffigyIcon _icon;
 	private readonly bool _checkable;
 	private bool _pressed;
 	private bool _pressedChevron;
@@ -2492,7 +2492,10 @@ internal sealed class EffigySketchToolButton : Widget
 		var glyphRect = HasMenu ? LocalRect.Shrink( 0, 0, ChevronWidth, 0 ) : LocalRect;
 
 		Paint.SetPen( IconColor ?? Theme.Text );
-		Paint.DrawIcon( glyphRect, _icon, 28, TextFlag.Center );
+		// Drawn rather than looked up in a font, same as the feature strip. See EffigyIcons for what
+		// the font names were costing: half this row was showing a Material glyph that had nothing to
+		// do with the operation behind it.
+		EffigyIcons.Draw( _icon, glyphRect.Center, IconColor ?? Theme.Text, EffigyToolStrip.IconScale );
 
 		if ( !HasMenu )
 			return;
@@ -2607,7 +2610,7 @@ internal sealed class EffigySketchStrip : Widget
 		FixedWidth = _contentWidth;
 	}
 
-	public EffigySketchToolButton AddButton( string icon, string tip, bool checkable, Action clicked )
+	public EffigySketchToolButton AddButton( EffigyIcon icon, string tip, bool checkable, Action clicked )
 	{
 		var button = new EffigySketchToolButton( this, icon, tip, checkable ) { Clicked = clicked };
 
