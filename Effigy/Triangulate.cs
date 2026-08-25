@@ -14,8 +14,10 @@ namespace Effigy;
 /// its notches in: draw a dart and the extrude comes back as a quadrilateral with the concave
 /// corner swallowed. Ear clipping handles any simple polygon, convex or not.
 ///
-/// Holes are still not supported — SketchConsumingFeature refuses profiles with inner loops
-/// before they ever reach here.
+/// Holes ARE supported, by WithHoles below — inner loops are spliced into the outer one along a
+/// bridge and the whole thing is ear clipped as a single ring. This comment said the opposite for
+/// some time after that landed, which is the failure mode this repo keeps hitting: a stated
+/// limitation outliving the limitation itself.
 /// </summary>
 public static class Triangulate
 {
