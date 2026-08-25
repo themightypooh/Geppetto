@@ -22,6 +22,9 @@ public static class RigTests
 		Section( "skeleton hierarchy and bind pose" );
 		TestSkeleton();
 
+		Section( "removing and renaming a bone" );
+		TestRemoveRenameBone();
+
 		Section( "Euler conversion round-trips" );
 		TestEuler();
 
@@ -106,6 +109,66 @@ public static class RigTests
 		threw = false;
 		try { angled.AddBoneFromPoints( "z", -1, Vec3.Zero, Vec3.Zero ); } catch ( ArgumentException ) { threw = true; }
 		Check( "a zero-length bone is refused", threw );
+	}
+
+	/// <summary>Three-bone chain: root -> mid -> tip. Deleting the middle one is the case that
+	/// matters — it is the one where a naive delete would either orphan the tip or move it.</summary>
+	static Skeleton ThreeBoneChain()
+	{
+		var s = new Skeleton();
+		s.AddBoneFromPoints( "root", -1, new Vec3( 0, 0, 0 ), new Vec3( 0, 2, 0 ) );
+		s.AddBoneFromPoints( "mid", 0, new Vec3( 0, 2, 0 ), new Vec3( 0, 4, 0 ) );
+		s.AddBoneFromPoints( "tip", 1, new Vec3( 0, 4, 0 ), new Vec3( 0, 5, 0 ) );
+		return s;
+	}
+
+	static void TestRemoveRenameBone()
+	{
+		var s = ThreeBoneChain();
+		var tipHeadBefore = s.HeadWorld( 2 );
+		var tipTailBefore = s.TailWorld( 2 );
+
+		s.RemoveBone( 1 ); // delete "mid"
+
+		Check( "one bone gone", s.Count == 2 );
+		Check( "root survives at 0", s.IndexOf( "root" ) == 0 );
+		Check( "mid is gone", s.IndexOf( "mid" ) < 0 );
+
+		var tipIndex = s.IndexOf( "tip" );
+		Check( "tip survives", tipIndex >= 0 );
+		Check( "tip re-parents to root", s.Bones[tipIndex].Parent == s.IndexOf( "root" ) );
+		Check( "tip keeps its world head", Near( s.HeadWorld( tipIndex ), tipHeadBefore ),
+			s.HeadWorld( tipIndex ).ToString() );
+		Check( "tip keeps its world tail", Near( s.TailWorld( tipIndex ), tipTailBefore ),
+			s.TailWorld( tipIndex ).ToString() );
+
+		// A root with no parent at all — removing it should not throw reaching for Parent -1.
+		var rootOnly = new Skeleton();
+		rootOnly.AddBoneFromPoints( "only", -1, Vec3.Zero, new Vec3( 0, 1, 0 ) );
+		rootOnly.RemoveBone( 0 );
+		Check( "removing the only bone leaves an empty skeleton", rootOnly.Count == 0 );
+
+		var threw = false;
+		try { s.RemoveBone( 99 ) ; } catch ( ArgumentOutOfRangeException ) { threw = true; }
+		Check( "removing an out-of-range index is refused", threw );
+
+		// Rename.
+		var chain = ThreeBoneChain();
+		chain.RenameBone( 1, "elbow" );
+		Check( "renamed bone is found under its new name", chain.IndexOf( "elbow" ) == 1 );
+		Check( "old name is gone", chain.IndexOf( "mid" ) < 0 );
+
+		threw = false;
+		try { chain.RenameBone( 0, "elbow" ); } catch ( ArgumentException ) { threw = true; }
+		Check( "renaming onto an existing name is refused", threw );
+
+		// Renaming a bone onto ITS OWN existing name is not a collision.
+		chain.RenameBone( 1, "elbow" );
+		Check( "renaming onto its own name is a no-op, not an error", chain.IndexOf( "elbow" ) == 1 );
+
+		threw = false;
+		try { chain.RenameBone( 0, "  " ); } catch ( ArgumentException ) { threw = true; }
+		Check( "a blank name is refused", threw );
 	}
 
 	static void TestEuler()

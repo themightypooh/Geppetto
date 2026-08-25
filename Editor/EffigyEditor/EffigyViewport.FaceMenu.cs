@@ -155,7 +155,7 @@ internal sealed partial class EffigyViewport
 		// Anything with a click of its own owns the mouse while it is armed. Opening a material menu
 		// in the middle of choosing a sketch plane would act on a body the dialog may not even be
 		// allowed to touch.
-		if ( IsSketching || PlanePickMode || SketchPickMode || FacePickMode || BodyPickMode )
+		if ( IsSketching || PlanePickMode || SketchPickMode || FacePickMode || BodyPickMode || BoneToolActive )
 			return;
 
 		if ( FaceContextMenuRequested is null )

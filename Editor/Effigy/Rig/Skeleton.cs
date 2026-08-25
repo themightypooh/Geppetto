@@ -163,6 +163,74 @@ public sealed class Skeleton
 	}
 
 	/// <summary>
+	/// Remove a bone, reparenting its direct children to ITS parent so deleting one from the
+	/// middle of a chain does not orphan everything past it — a mis-click while placing bones is
+	/// the common case this exists for.
+	///
+	/// Every surviving bone keeps its WORLD bind transform; only the stored Local of the removed
+	/// bone's children changes, recomputed against their new parent. Topological order (parent
+	/// index &lt; child index) is preserved because indices only ever shift down to fill the gap.
+	/// </summary>
+	public void RemoveBone( int index )
+	{
+		if ( index < 0 || index >= Bones.Count )
+			throw new ArgumentOutOfRangeException( nameof( index ) );
+
+		var removedParent = Bones[index].Parent;
+
+		// Captured before anything is rebuilt, so reparenting reads world transforms rather than
+		// composing through a partially-rebuilt list.
+		var worlds = new Xform[Bones.Count];
+		for ( var i = 0; i < Bones.Count; i++ )
+			worlds[i] = WorldBind( i );
+
+		var newBones = new List<Bone>( Bones.Count - 1 );
+		var oldToNew = new int[Bones.Count];
+
+		for ( var i = 0; i < Bones.Count; i++ )
+		{
+			if ( i == index )
+				continue;
+
+			var bone = Bones[i];
+			var oldParent = bone.Parent;
+
+			// A direct child of the removed bone re-parents to what the removed bone's parent
+			// was; everything else keeps its parent unchanged.
+			var newParent = oldParent == index ? removedParent : oldParent;
+
+			// newParent, when not -1, is always an index already visited — it is either less
+			// than `index`, or it is `removedParent` which is itself less than `index` — so its
+			// mapping exists by now.
+			var mappedParent = newParent < 0 ? -1 : oldToNew[newParent];
+
+			var local = mappedParent < 0 ? worlds[i] : worlds[mappedParent].Inverse * worlds[i];
+
+			newBones.Add( new Bone( bone.Name, mappedParent, local, bone.Length ) );
+			oldToNew[i] = newBones.Count - 1;
+		}
+
+		Bones = newBones;
+	}
+
+	/// <summary>Rename a bone in place, with the same validation AddBone applies to a new one.</summary>
+	public void RenameBone( int index, string name )
+	{
+		if ( index < 0 || index >= Bones.Count )
+			throw new ArgumentOutOfRangeException( nameof( index ) );
+
+		if ( string.IsNullOrWhiteSpace( name ) )
+			throw new ArgumentException( "A bone needs a name — every consuming format keys on it" );
+
+		var existing = IndexOf( name );
+
+		if ( existing >= 0 && existing != index )
+			throw new ArgumentException( $"A bone called '{name}' already exists" );
+
+		Bones[index].Name = name;
+	}
+
+	/// <summary>
 	/// A single root bone at the origin. Every static model exported as a skinned format needs
 	/// one — a mesh with no bones at all is not something SMD can express, so "static" is really
 	/// "everything weighted to one root".

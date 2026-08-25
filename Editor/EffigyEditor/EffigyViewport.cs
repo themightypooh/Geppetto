@@ -757,12 +757,13 @@ internal sealed partial class EffigyViewport : Widget
 		FacePickFrame();
 		BodyPickFrame();
 		DrawRigSkeleton();
+		BoneToolFrame();
 
 		SketchFrame();
 
 		// Origin on top of the planes. Hidden while sketching or picking anything - it sits at the
 		// exact spot most first clicks land, and stealing them was the first thing that broke.
-		if ( !IsSketching && !PlanePickMode && !SketchPickMode && !BodyPickMode )
+		if ( !IsSketching && !PlanePickMode && !SketchPickMode && !BodyPickMode && !BoneToolActive )
 		{
 			DrawOrigin();
 
@@ -835,6 +836,11 @@ internal sealed partial class EffigyViewport : Widget
 
 		// No hitbox on the selected bone — its own gizmo handles registration.
 		if ( isSelected )
+			return;
+
+		// While placing new bones, an existing bone's hitbox would steal the click instead of
+		// letting it land on the mesh underneath.
+		if ( BoneToolActive )
 			return;
 
 		Gizmo.Hitbox.DepthBias = 0.01f;
@@ -1124,6 +1130,15 @@ internal sealed partial class EffigyViewport : Widget
 			PlanePickMode = false;
 			BodyPickMode = false;
 			PickModeCancelled?.Invoke();
+			e.Accepted = true;
+			return;
+		}
+
+		// Same two-stage back-out as the sketch tools: the panel owns which stage it is, since it
+		// is the one holding whether a chain is currently open.
+		if ( BoneToolActive )
+		{
+			BoneToolEscape?.Invoke();
 			e.Accepted = true;
 			return;
 		}

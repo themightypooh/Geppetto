@@ -870,6 +870,7 @@ public sealed class EffigyWindow : DockWindow
 		_studio = new PartStudio();
 		_featureTree?.SetStudio( _studio );
 		_partsPanel?.SetStudio( _studio );
+		_rigPanel?.SetStudio( _studio );
 		_dialog?.Close();
 		RebuildStudio();
 
@@ -1166,6 +1167,7 @@ public sealed class EffigyWindow : DockWindow
 		_studio = loaded;
 		_featureTree?.SetStudio( _studio );
 		_partsPanel?.SetStudio( _studio );
+		_rigPanel?.SetStudio( _studio );
 		_dialog?.Close();
 
 		// History belongs to the document that was open. Carrying it across a load would let Ctrl+Z
