@@ -301,14 +301,18 @@ found by a *render*, not by the suite, which stayed green throughout because the
 closed, manifold and Euler-correct. The bone tool also took ownership of the right button, so the
 face menu's guard now includes `BoneToolActive`.
 
-**In progress when this stopped.** The feature toolbar's icons. The sketch row was redrawn and
-pushed (`EffigyIcons.cs`, sketch-tool section); the feature row was rendered and read but not yet
-redrawn. What the render showed: Extrude reads as a plumb bob and its arrow points away from the
-profile, Revolve collapses into a bar and a blob, Bevel reads as a file icon, Subdivide reads as
-"add", and Circular pattern's dashed ring vanishes at 18px. Mirror and Linear pattern are fine as
-they are. The preview harness that produced that judgement is not in the repo — it is a small PIL
-mock of `Editor.Paint` that renders a glyph at 18/28/48px, and rebuilding it is an hour that pays
-for itself, because the only way to know whether an icon reads is to look at it at size.
+**The toolbar's icons — done.** Both rows are drawn rather than borrowed from a font. The six the
+first render condemned were redrawn: Extrude now grows UP off its profile instead of reading as a
+plumb bob, Revolve draws the turned SHAPE rather than the operation (three attempts at profile +
+axis + sweep arrow all collapsed — one came out as a bar and a blob, another as an eye), Bevel is a
+filled block with a deep bright chamfer instead of a page icon, Shell fills the WALL and leaves the
+void out instead of being a square-in-square frame, Subdivide shows one quadrant genuinely denser
+instead of reading as "add", and Circular pattern's dashed ring is a solid one because twelve dashes
+at toolbar size are a smudge.
+
+One correction worth keeping: the first pass judged everything at 18px. The real size is
+`ButtonSize` 54 with `IconScale` 1.5, so the ±8-unit glyph box lands at about **24 pixels**. Judge
+at 24; 18 is more pessimistic than anything the toolbar actually does.
 
 **Constraint UI — built.** `ConstraintTools` in the kernel turns a selection into the constraints it
 allows, measured and ready; the editor adds a persistent sketch selection (click to accumulate,
