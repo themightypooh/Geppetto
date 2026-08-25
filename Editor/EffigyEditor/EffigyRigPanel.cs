@@ -86,8 +86,7 @@ internal sealed class EffigyRigPanel : Widget
 		Layout = Layout.Column();
 
 		// Margin(8,4) + Spacing 8 matches the Parts and Features panel headers in this same
-		// window — the outer rhythm should feel identical even though this header stacks two
-		// button rows instead of one label row.
+		// window.
 		var header = new Widget( this ) { Layout = Layout.Column() };
 		header.Layout.Margin = new Sandbox.UI.Margin( 8, 4 );
 		header.Layout.Spacing = 8;
@@ -95,39 +94,39 @@ internal sealed class EffigyRigPanel : Widget
 		var toolRow = new Widget( header ) { Layout = Layout.Row() };
 		toolRow.Layout.Spacing = 6;
 
+		// Text updates with the selection (see OnViewportBoneSelectionChanged) — "Branch from
+		// 'upper_arm'" when a bone is selected, plain "Add Bone" when nothing is, so the tool
+		// teaches its own branching behaviour instead of hiding it in a tooltip nobody reads
+		// before their first click.
 		_addBoneButton = new Button( "Add Bone", "add" )
 		{
-			ToolTip = "Click the model to place a bone. Click again to extend a chain from it — "
-				+ "select a bone first to branch a new chain from ITS tail instead of starting a new root.",
+			ToolTip = "Click the model to place a bone. Click again to extend a chain from it. "
+				+ "Select a bone first to branch a new chain from ITS tail instead of starting a new root.",
 			Clicked = () => SetBoneToolActive( !_viewport.BoneToolActive ),
 		};
 		toolRow.Layout.Add( _addBoneButton, 1 );
 		header.Layout.Add( toolRow );
 
-		var secondRow = new Widget( header ) { Layout = Layout.Row() };
-		secondRow.Layout.Spacing = 6;
+		Layout.Add( header );
 
+		// Assign Body and Mirror both act on "the selected bone" and are built here but laid out
+		// inside the inspector, next to the name of the bone they would act on — see
+		// BuildInspector. They used to sit up here, disabled and out of context until you scrolled
+		// past the tree to see which bone was even selected; grouping them with the thing they
+		// act on is the whole fix.
 		_assignBodyButton = new Button( "Assign Body", "link" )
 		{
-			Enabled = false,
-			ToolTip = "Select a bone, then click bodies in the viewport to pin them to it. "
+			ToolTip = "Click bodies in the viewport to pin them to this bone. "
 				+ "Optional — unassigned bodies still skin, to whichever bone is nearest.",
 			Clicked = ToggleAssignBody,
 		};
-		secondRow.Layout.Add( _assignBodyButton, 1 );
 
 		_mirrorButton = new Button( "Mirror", "flip" )
 		{
-			Enabled = false,
-			ToolTip = "Mirror the selected bone (and everything under it) across Y=0 — this "
-				+ "project's left/right axis — onto the same parent it already hangs from.",
+			ToolTip = "Mirror this bone (and everything under it) across Y=0 — this project's "
+				+ "left/right axis — onto the same parent it already hangs from.",
 			Clicked = MirrorSelectedBone,
 		};
-		secondRow.Layout.Add( _mirrorButton, 1 );
-
-		header.Layout.Add( secondRow );
-
-		Layout.Add( header );
 
 		_tree = new TreeView( this );
 		_tree.OnSelectionChanged = objs =>
@@ -171,6 +170,11 @@ internal sealed class EffigyRigPanel : Widget
 		_selectedBone = -1;
 		_viewport.DeselectBone();
 
+		// DeselectBone is a no-op when nothing was selected, so it cannot be trusted alone to
+		// reset this — a stale "Branch from 'X'" would otherwise survive into a model that no
+		// longer has a bone by that name.
+		_addBoneButton.Text = "Add Bone";
+
 		Refresh();
 	}
 
@@ -204,6 +208,7 @@ internal sealed class EffigyRigPanel : Widget
 
 		_viewport.DeselectBone();
 		_selectedBone = -1;
+		_addBoneButton.Text = "Add Bone";
 
 		Refresh();
 	}
@@ -277,8 +282,6 @@ internal sealed class EffigyRigPanel : Widget
 
 			_viewport.DeselectBone();
 			_selectedBone = -1;
-			_assignBodyButton.Enabled = false;
-			_mirrorButton.Enabled = false;
 
 			if ( branchFrom >= 0 && branchFrom < Skeleton.Count )
 			{
@@ -481,6 +484,12 @@ internal sealed class EffigyRigPanel : Widget
 		_inspectorName = new Editor.Label( "" ) { Color = Theme.TextControl };
 		_inspector.Layout.Add( _inspectorName );
 
+		var actionRow = new Widget( _inspector ) { Layout = Layout.Row() };
+		actionRow.Layout.Spacing = 6;
+		actionRow.Layout.Add( _assignBodyButton, 1 );
+		actionRow.Layout.Add( _mirrorButton, 1 );
+		_inspector.Layout.Add( actionRow );
+
 		var headRow = new Widget( _inspector ) { Layout = Layout.Row() };
 		headRow.Layout.Spacing = 4;
 		headRow.Layout.Add( new Editor.Label( "Head" ) { FixedWidth = 36 } );
@@ -667,11 +676,17 @@ internal sealed class EffigyRigPanel : Widget
 	private void OnViewportBoneSelectionChanged( int index )
 	{
 		_selectedBone = index;
-		_assignBodyButton.Enabled = index >= 0 && index < Skeleton.Count;
-		_mirrorButton.Enabled = _assignBodyButton.Enabled;
 
-		if ( !_assignBodyButton.Enabled )
+		var hasSelection = index >= 0 && index < Skeleton.Count;
+
+		if ( !hasSelection )
 			DisarmAssign();
+
+		// Teaches the branch gesture: pick a bone, and the button that would otherwise just say
+		// "Add Bone" tells you what clicking it will actually do. Only while the tool itself isn't
+		// already armed — SetBoneToolActive owns the text once it is ("Placing…").
+		if ( !_viewport.BoneToolActive )
+			_addBoneButton.Text = hasSelection ? $"Branch from '{Skeleton.Bones[index].Name}'" : "Add Bone";
 
 		if ( index >= 0 && index < Skeleton.Count && _nodes.TryGetValue( Skeleton.Bones[index].Name, out var node ) )
 			_tree.SelectItem( node );
@@ -748,8 +763,6 @@ internal sealed class EffigyRigPanel : Widget
 
 		_viewport.DeselectBone();
 		_selectedBone = -1;
-		_assignBodyButton.Enabled = false;
-		_mirrorButton.Enabled = false;
 		DisarmAssign();
 
 		RebuildTree();
