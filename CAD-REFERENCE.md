@@ -267,13 +267,13 @@ Note that 3 and 4 are both reachable and verifiable in this repo with no engine 
 
 ## Where this left off
 
-Everything below the line is kernel-side and verified by `tools/test.sh` (1104 checks). Everything
+Everything below the line is kernel-side and verified by `tools/test.sh` (1275 checks). Everything
 in `Editor/EffigyEditor` is written and syntax-checked but **has never been compiled** — there is no
 s&box assembly in this repo, so nothing there resolves names. That is the standing risk and the
 reason the split below is drawn where it is: anything that could be moved into the kernel and tested
 was.
 
-**Just landed.** Right-clicking a face of the model opens a material menu — the slots, a rename for
+**Face materials by right-click** (merged in #12). Right-clicking a face of the model opens a material menu — the slots, a rename for
 the one it is on, and the viewport's slot-shading toggle. The toolbar's Face Material feature is
 still there for painting a set of faces deliberately; this is for the common case of one face, one
 slot, now.
@@ -295,18 +295,50 @@ slot, now.
 2. `effigy_probe_boolean`, which dumps s&box's `PolygonMesh` API. That is the whole of what stands
    between the built-and-tested cut/Remove path and it working — see item 5 above.
 
-**In progress when this stopped.** The feature toolbar's icons. The sketch row was redrawn and
-pushed (`EffigyIcons.cs`, sketch-tool section); the feature row was rendered and read but not yet
-redrawn. What the render showed: Extrude reads as a plumb bob and its arrow points away from the
-profile, Revolve collapses into a bar and a blob, Bevel reads as a file icon, Subdivide reads as
-"add", and Circular pattern's dashed ring vanishes at 18px. Mirror and Linear pattern are fine as
-they are. The preview harness that produced that judgement is not in the repo — it is a small PIL
-mock of `Editor.Paint` that renders a glyph at 18/28/48px, and rebuilding it is an hour that pays
-for itself, because the only way to know whether an icon reads is to look at it at size.
+**Since then**, #13 landed the bone-authoring panel (`EffigyRigPanel.cs`), made `Skeleton` editable
+rather than read-only, and fixed Bevel flinging corners thousands of units out on collinear edges —
+found by a *render*, not by the suite, which stayed green throughout because the result was still
+closed, manifold and Euler-correct. The bone tool also took ownership of the right button, so the
+face menu's guard now includes `BoneToolActive`.
 
-**Not started, and no longer blocked on anything.** Dimension and constraint UI. The solver has had
-angle, point-on-line, symmetric and radius for a while now and there is still no way to add a
-constraint in the editor, so it only ever runs on what the inference puts there.
+**The toolbar's icons — done.** Both rows are drawn rather than borrowed from a font. The six the
+first render condemned were redrawn: Extrude now grows UP off its profile instead of reading as a
+plumb bob, Revolve draws the turned SHAPE rather than the operation (three attempts at profile +
+axis + sweep arrow all collapsed — one came out as a bar and a blob, another as an eye), Bevel is a
+filled block with a deep bright chamfer instead of a page icon, Shell fills the WALL and leaves the
+void out instead of being a square-in-square frame, Subdivide shows one quadrant genuinely denser
+instead of reading as "add", and Circular pattern's dashed ring is a solid one because twelve dashes
+at toolbar size are a smudge.
+
+One correction worth keeping: the first pass judged everything at 18px. The real size is
+`ButtonSize` 54 with `IconScale` 1.5, so the ±8-unit glyph box lands at about **24 pixels**. Judge
+at 24; 18 is more pessimistic than anything the toolbar actually does.
+
+**Constraint UI — built.** `ConstraintTools` in the kernel turns a selection into the constraints it
+allows, measured and ready; the editor adds a persistent sketch selection (click to accumulate,
+click empty space to clear) and a right-click menu over it. Dimensions open pre-filled with what the
+sketch currently is, and go through the same expression evaluator as every other numeric field, so
+"25/2" works. A rule that cannot be satisfied is taken back out and the geometry restored exactly,
+rather than left contradicting the sketch forever.
+
+Two things it does NOT do, both deliberate. There is no constraint TOOLBAR — offers change with
+every click, so a strip of buttons would relabel and re-enable itself per frame, and that is widget
+code this repo cannot compile to check; a menu is built fresh each time from machinery already
+proven elsewhere. And selection accumulates on plain clicks rather than Ctrl-clicks, because no
+modifier-key API is proven in this corpus and an unproven member name takes the whole editor
+assembly down.
+
+Constraint GLYPHS are drawn too, and clicking one removes that rule — "why will this line not move"
+is a question about a specific place on the drawing, so the answer sits there next to it. A rule
+relating two segments marks BOTH of them, since one glyph in the middle would leave you guessing
+which pair it meant on a sketch with six lines in it; an angle is marked where its two lines
+actually cross, out in space if that is where the extended lines would meet.
+
+**A render-based half of the test suite — built.** `RenderCheck` rasterises a mesh and reduces it to
+coverage, island count and front/back parity, which catch the mistakes counting cannot: a vertex in
+the wrong place, a detached fragment, and a face wound backwards. That last one leaves a mesh closed,
+manifold and Euler-correct, so every other oracle in the suite calls it fine. The Bevel bug is what
+prompted this; the tests damage good models three ways and fail if a check stays quiet.
 
 **A habit worth keeping.** Three separate limitations in this file were documented as needing the
 mesh boolean and none of them did — profiles with holes, revolve with holes, and up-to-face

@@ -260,78 +260,138 @@ internal static class EffigyIcons
 		Editor.Paint.DrawLine( At( c, 0, 0 ), At( c, -7, -3.6f ) );
 	}
 
-	/// <summary>A flat profile with an arrow pulling it upward into a solid.</summary>
+	/// <summary>
+	/// A profile lying flat, and the solid pulled UP off it.
+	///
+	/// The old glyph had the profile on top with the arrow pointing down, which reads as something
+	/// falling rather than as something being drawn out — and at toolbar size the whole thing came
+	/// out looking like a plumb bob. Arrow and profile now agree about which way an extrude goes.
+	/// </summary>
 	private static void PaintExtrude( Vector2 c, Color color )
 	{
-		Stroked( color );
-		Outline( At( c, 0, 2.4f ), At( c, 7, 5.6f ), At( c, 0, 8.8f ), At( c, -7, 5.6f ) );
+		// The sketch, in plan, dimmed: it is what the operation starts FROM, not what it makes.
+		Stroked( color.WithAlpha( 0.55f ), 1.5f );
+		Outline( At( c, -7.5f, 6.5f ), At( c, 0, 9.4f ), At( c, 7.5f, 6.5f ), At( c, 0, 3.6f ) );
 
-		Editor.Paint.DrawLine( At( c, 0, 1.8f ), At( c, 0, -5f ) );
-		ArrowHead( At( c, 0, -8f ), new Vector2( 0, -1 ), color );
+		Stroked( color, 2.6f );
+		Editor.Paint.DrawLine( At( c, 0, 6.5f ), At( c, 0, -4.2f ) );
+
+		ArrowHead( At( c, 0, -8.6f ), new Vector2( 0, -1 ), color, 4.2f );
 	}
 
-	/// <summary>A profile swept around an axis: the axis line, the swept arc, and its direction.</summary>
+	/// <summary>
+	/// A turned shape and the axis it was turned about — the lathe reading.
+	///
+	/// Three earlier attempts drew the OPERATION: a profile, an axis and a sweeping arrow. All three
+	/// collapsed at toolbar size, because three marks that have to be told apart is two too many at
+	/// twenty-four pixels — one came out as a bar and a blob, another as an eye. Drawing the RESULT
+	/// works, because a silhouette survives being small in a way an arrow does not, and nothing else
+	/// on this strip is a curved profile.
+	/// </summary>
 	private static void PaintRevolve( Vector2 c, Color color )
 	{
-		// Axis.
-		Stroked( color.WithAlpha( 0.55f ) );
-		Editor.Paint.DrawLine( At( c, -7.5f, -8f ), At( c, -7.5f, 8f ) );
+		// Axis of revolution, dashed, straight through it.
+		Stroked( color.WithAlpha( 0.55f ), 1.3f );
 
-		// Profile standing off the axis.
-		Stroked( color );
-		Outline( At( c, -3.6f, -5f ), At( c, 0.4f, -5f ), At( c, 0.4f, 5f ), At( c, -3.6f, 5f ) );
+		for ( var y = -9.5f; y < 9.5f; y += 4f )
+			Editor.Paint.DrawLine( At( c, 0, y ), At( c, 0, MathF.Min( y + 2.4f, 9.5f ) ) );
 
-		// The sweep, coming round the back of the axis.
-		Arc( At( c, -1.6f, 0 ), 7.4f, -70f, 70f );
-		ArrowHead( At( c, 0.9f, 7f ), new Vector2( -0.55f, 0.83f ), color );
+		// One half of the profile, mirrored — so the shape cannot come out lopsided, which is the
+		// one thing a body of revolution can never be.
+		var half = new[]
+		{
+			new Vector2( -3.0f, -8f ),
+			new Vector2( -5.8f, -3.5f ),
+			new Vector2( -6.6f, 2.0f ),
+			new Vector2( -4.2f, 7.5f ),
+		};
+
+		Stroked( color, 1.8f );
+
+		for ( var i = 0; i < half.Length - 1; i++ )
+		{
+			Editor.Paint.DrawLine( At( c, half[i].x, half[i].y ), At( c, half[i + 1].x, half[i + 1].y ) );
+			Editor.Paint.DrawLine( At( c, -half[i].x, half[i].y ), At( c, -half[i + 1].x, half[i + 1].y ) );
+		}
+
+		Editor.Paint.DrawLine( At( c, -4.2f, 7.5f ), At( c, 4.2f, 7.5f ) );
+
+		// The open top as an arc rather than a straight line: it is a rim seen in perspective, and
+		// that is what says the shape is round rather than flat.
+		Stroked( color, 1.5f );
+		Arc( At( c, 0, -8f ), 3.0f, 0f, 180f, 12 );
 	}
 
-	/// <summary>A square with one corner chamfered away, the cut edge drawn heaviest.</summary>
+	/// <summary>
+	/// A solid block with its corner cut away, the cut face called out.
+	///
+	/// The old glyph was an outlined square with a small nick in one corner, which at toolbar size
+	/// is a page icon and nothing else. Two changes fix it: fill the body, so it reads as a solid
+	/// rather than as a sheet, and cut deep enough that the chamfer is a face rather than a nick.
+	/// The faint lines show the corner that was removed.
+	/// </summary>
 	private static void PaintBevel( Vector2 c, Color color )
 	{
-		Stroked( color );
-		Outline(
-			At( c, -7, -7 ), At( c, 1.6f, -7 ), At( c, 7, -1.6f ),
-			At( c, 7, 7 ), At( c, -7, 7 ) );
+		Filled( color.WithAlpha( 0.22f ) );
+		Editor.Paint.DrawPolygon(
+			At( c, -7, -1.5f ), At( c, -1.5f, -7 ), At( c, 7, -7 ), At( c, 7, 7 ), At( c, -7, 7 ) );
 
-		// The chamfer itself, redrawn thicker — it is the whole operation.
-		Stroked( color, Stroke + 1f );
-		Editor.Paint.DrawLine( At( c, 1.6f, -7 ), At( c, 7, -1.6f ) );
+		Stroked( color, 1.5f );
+		Outline( At( c, -7, -1.5f ), At( c, -1.5f, -7 ), At( c, 7, -7 ), At( c, 7, 7 ), At( c, -7, 7 ) );
 
-		// Ghost of the corner that was removed.
-		Stroked( color.WithAlpha( 0.35f ), 1f );
-		Editor.Paint.DrawLine( At( c, 1.6f, -7 ), At( c, 7, -7 ) );
-		Editor.Paint.DrawLine( At( c, 7, -7 ), At( c, 7, -1.6f ) );
+		// The cut face, in the same amber the sketch pencil draws with — the accent on this strip
+		// means "the thing this operation did".
+		Stroked( ClickColor, 2.8f );
+		Editor.Paint.DrawLine( At( c, -7, -1.5f ), At( c, -1.5f, -7 ) );
+
+		Stroked( color.WithAlpha( 0.3f ), 1f );
+		Editor.Paint.DrawLine( At( c, -7, -1.5f ), At( c, -7, -7 ) );
+		Editor.Paint.DrawLine( At( c, -7, -7 ), At( c, -1.5f, -7 ) );
 	}
 
-	/// <summary>A solid hollowed out to a wall thickness — outer box, inner void.</summary>
+	/// <summary>
+	/// A hollowed solid in section: material on three sides, opening at the top.
+	///
+	/// A square inside a square is a frame, a border, a picture — it was never going to say
+	/// "hollowed to a wall thickness". THE WALL IS THE OBJECT, so the wall is what gets filled and
+	/// the void is what gets left out, which is how a section drawing says it.
+	/// </summary>
 	private static void PaintShell( Vector2 c, Color color )
 	{
-		Stroked( color );
-		Outline( At( c, -7, -7 ), At( c, 7, -7 ), At( c, 7, 7 ), At( c, -7, 7 ) );
+		Filled( color.WithAlpha( 0.9f ) );
+		Editor.Paint.DrawPolygon(
+			At( c, -7.8f, -7f ), At( c, -3.6f, -7f ), At( c, -3.6f, 3.2f ),
+			At( c, 3.6f, 3.2f ), At( c, 3.6f, -7f ), At( c, 7.8f, -7f ),
+			At( c, 7.8f, 7.4f ), At( c, -7.8f, 7.4f ) );
 
-		Stroked( color.WithAlpha( 0.75f ) );
-		Outline( At( c, -3.4f, -3.4f ), At( c, 3.4f, -3.4f ), At( c, 3.4f, 3.4f ), At( c, -3.4f, 3.4f ) );
-
-		// Wall hatching on the left, so the ring reads as material rather than a second box.
-		Stroked( color.WithAlpha( 0.5f ), 1f );
-		Editor.Paint.DrawLine( At( c, -7, -1.4f ), At( c, -3.4f, -1.4f ) );
-		Editor.Paint.DrawLine( At( c, -7, 1.4f ), At( c, -3.4f, 1.4f ) );
+		// The opening, as a faint lid line, so the U reads as a container rather than as a letter.
+		Stroked( color.WithAlpha( 0.45f ), 1.1f );
+		Editor.Paint.DrawLine( At( c, -3.6f, -7f ), At( c, 3.6f, -7f ) );
 	}
 
-	/// <summary>A face split into quarters, corners rounding off — subdivision toward the limit
-	/// surface.</summary>
+	/// <summary>
+	/// A quad split into four, with one of those four split again — subdivision, drawn literally.
+	///
+	/// The old glyph was a rounded square with a cross and a dot in the middle, which is the
+	/// universal "add" icon and was read as one. Showing one quadrant DENSER than its neighbours is
+	/// what the operation actually does, and the density is carried by a tint as well as by lines so
+	/// it survives being small — at twenty-four pixels a 4x4 of hairlines is a grey smear.
+	/// </summary>
 	private static void PaintSubdivide( Vector2 c, Color color )
 	{
-		Stroked( color );
-		Editor.Paint.DrawRect( Box( c, -7, -7, 14, 14 ), 4.5f * _scale );
+		Stroked( color, 1.6f );
+		Outline( At( c, -8, -8 ), At( c, 8, -8 ), At( c, 8, 8 ), At( c, -8, 8 ) );
 
-		Stroked( color.WithAlpha( 0.7f ), 1.3f );
-		Editor.Paint.DrawLine( At( c, 0, -6.4f ), At( c, 0, 6.4f ) );
-		Editor.Paint.DrawLine( At( c, -6.4f, 0 ), At( c, 6.4f, 0 ) );
+		Filled( color.WithAlpha( 0.3f ) );
+		Editor.Paint.DrawPolygon( At( c, -8, -8 ), At( c, 0, -8 ), At( c, 0, 0 ), At( c, -8, 0 ) );
 
-		Filled( color );
-		Editor.Paint.DrawCircle( Box( c, -1.3f, -1.3f, 2.6f, 2.6f ) );
+		Stroked( color.WithAlpha( 0.9f ), 1.5f );
+		Editor.Paint.DrawLine( At( c, 0, -8 ), At( c, 0, 8 ) );
+		Editor.Paint.DrawLine( At( c, -8, 0 ), At( c, 8, 0 ) );
+
+		Stroked( color.WithAlpha( 0.85f ), 1.2f );
+		Editor.Paint.DrawLine( At( c, -4, -8 ), At( c, -4, 0 ) );
+		Editor.Paint.DrawLine( At( c, -8, -4 ), At( c, 0, -4 ) );
 	}
 
 	/// <summary>A solid shape and its reflection across a dashed mirror line.</summary>
@@ -364,23 +424,34 @@ internal static class EffigyIcons
 		Editor.Paint.DrawRect( Box( c, 6f, -3f, 6f, 6f ), 1.2f * _scale );
 	}
 
-	/// <summary>One body copied around an axis — copies sitting on a dashed circle.</summary>
+	/// <summary>
+	/// Copies stepped around an axis, on a ring that can actually be seen.
+	///
+	/// The old glyph drew the ring as twelve dashes, and at toolbar size twelve dashes are a faint
+	/// smudge — which left three small squares floating with nothing to explain them. A solid thin
+	/// ring and a dot at the centre cost less ink and say more, and the copies are smaller than they
+	/// were so they sit ON the ring instead of swallowing it.
+	/// </summary>
 	private static void PaintCircularPattern( Vector2 c, Color color )
 	{
-		Stroked( color.WithAlpha( 0.45f ), 1.2f );
-		for ( var a = 0f; a < 360f; a += 30f )
-			Arc( c, 6.6f, a, a + 16f, 3 );
+		Stroked( color.WithAlpha( 0.7f ), 1.4f );
+		Arc( c, 6.6f, 0f, 360f, 40 );
 
-		// Three instances round the circle, the first solid like the linear pattern's source.
+		Filled( color.WithAlpha( 0.8f ) );
+		Editor.Paint.DrawRect( Box( c, -1.3f, -1.3f, 2.6f, 2.6f ), 1.3f * _scale );
+
 		var angles = new[] { -90f, 30f, 150f };
 
 		for ( var i = 0; i < angles.Length; i++ )
 		{
 			var radians = angles[i] * MathF.PI / 180f;
-			var box = Box( c,
-				MathF.Cos( radians ) * 6.6f - 2.6f, MathF.Sin( radians ) * 6.6f - 2.6f,
-				5.2f, 5.2f );
 
+			var box = Box( c,
+				MathF.Cos( radians ) * 6.6f - 2.5f,
+				MathF.Sin( radians ) * 6.6f - 2.5f, 5f, 5f );
+
+			// One filled, the rest outlined — the same "this is the original, these are the copies"
+			// grammar the linear pattern uses, so the pair read as a family.
 			if ( i == 0 )
 			{
 				Filled( color );
@@ -388,7 +459,7 @@ internal static class EffigyIcons
 			}
 			else
 			{
-				Stroked( color.WithAlpha( 0.85f ), 1.4f );
+				Stroked( color.WithAlpha( 0.9f ), 1.5f );
 				Editor.Paint.DrawRect( box, 1f * _scale );
 			}
 		}

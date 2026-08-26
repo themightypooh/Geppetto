@@ -87,6 +87,8 @@ public static class Program
 
 		FaceMaterialTests.Run();
 		FaceMenuTests.Run();
+		RenderTests.Run();
+		ConstraintToolTests.Run();
 
 		DocumentTests.Run();
 
@@ -115,7 +117,7 @@ public static class Program
 
 	// ---------------------------------------------------------------------------------------
 
-	static Dictionary<string, PolyMesh> Closed() => new()
+	internal static Dictionary<string, PolyMesh> Closed() => new()
 	{
 		["box"] = Primitives.Box( 2, 2, 2 ),
 		["cylinder"] = Primitives.Cylinder( 0.5f, 1f, 16 ),

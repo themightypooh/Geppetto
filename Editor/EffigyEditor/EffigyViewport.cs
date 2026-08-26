@@ -1132,7 +1132,14 @@ internal sealed partial class EffigyViewport : Widget
 
 		if ( IsSketching )
 		{
-			CancelSketchTool();
+			// A selection is the shallower thing to back out of, so Escape drops it first and only
+			// cancels the tool on a second press. Otherwise picking three things and hitting Escape
+			// to undo the third would abandon the tool as well.
+			if ( HasSketchSelection )
+				ClearSketchSelection();
+			else
+				CancelSketchTool();
+
 			e.Accepted = true;
 			return;
 		}
