@@ -463,13 +463,5 @@ public static class DocumentTests
 		}
 	}
 
-	static float Volume( PolyMesh mesh )
-	{
-		var acc = 0f;
-
-		foreach ( var f in mesh.Faces )
-			acc += Vec3.Dot( mesh.FaceCentroid( f ), mesh.FaceNormal( f ) ) * mesh.FaceArea( f );
-
-		return acc / 3f;
-	}
+	static float Volume( PolyMesh mesh ) => mesh.SignedVolume();
 }

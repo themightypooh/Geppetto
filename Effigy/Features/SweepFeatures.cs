@@ -257,7 +257,13 @@ public sealed class SweepFeature : SketchConsumingFeature
 		var path = ResolvePath( ctx, sketch );
 
 		if ( path.Count < 2 )
-			throw new InvalidOperationException( "The path needs at least two points to sweep along." );
+		{
+			Fail(
+				"The path needs at least two points to sweep along.",
+				$"The path resolved to {path.Count} point(s), which is not a curve.",
+				"Draw a path sketch with at least one line or arc",
+				"Pick a different sketch as the path" );
+		}
 
 		// A path that returns to where it started is a closed tube: no ends to cap, and the last
 		// station is the first one again rather than a station of its own. The comparison is
@@ -270,7 +276,11 @@ public sealed class SweepFeature : SketchConsumingFeature
 			path.RemoveAt( path.Count - 1 );
 
 			if ( path.Count < 3 )
-				throw new InvalidOperationException( "A closed path needs at least three stations to sweep along." );
+				Fail(
+					"A closed path needs at least three stations to sweep along.",
+					"The path returns to its start, so the closing point was dropped, and fewer than three stations remain.",
+					"Add another point to the path",
+					"Leave the path open" );
 		}
 
 		foreach ( var profile in profiles )
@@ -405,17 +415,32 @@ public sealed class SweepFeature : SketchConsumingFeature
 		var pathSketch = ResolvePathSketch( ctx, profileSketch );
 
 		if ( pathSketch is null )
-			throw new InvalidOperationException( "A sweep needs a second sketch for its path." );
+		{
+			Fail(
+				"A sweep needs a second sketch for its path.",
+				"A sweep takes a closed profile and an open path, and only one sketch is in the tree.",
+				"Add a second Sketch and draw the path",
+				"Move this feature below both sketches" );
+		}
 
 		if ( ReferenceEquals( pathSketch, profileSketch ) )
-			throw new InvalidOperationException( "The path and the profile cannot be the same sketch." );
+		{
+			Fail(
+				"The path and the profile cannot be the same sketch.",
+				"Both roles resolved to one sketch, so there is nothing to sweep along.",
+				"Add a second Sketch for the path",
+				"Draw the path as an open chain, not a closed region" );
+		}
 
 		var chain = SketchChain.Walk( pathSketch );
 
 		if ( chain.Count < 2 )
 		{
-			throw new InvalidOperationException(
-				"The path sketch has no connected chain of curves to sweep along." );
+			Fail(
+				"The path sketch has no connected chain of curves to sweep along.",
+				"The path sketch's curves do not join into a walk of two or more points.",
+				"Join the path curves end to end",
+				"Draw a single line or polyline as the path" );
 		}
 
 		return chain.Select( pathSketch.Plane.ToWorld ).ToList();
@@ -440,7 +465,13 @@ public sealed class SweepFeature : SketchConsumingFeature
 			return ResolveSketch( ctx );
 
 		if ( ctx.Sketches.Count == 0 )
-			throw new InvalidOperationException( "There is no sketch to use — add a Sketch feature first" );
+		{
+			Fail(
+				"There is no sketch to use — add a Sketch feature first",
+				"A sweep needs a profile sketch, and the tree has none at this point.",
+				"Add a Sketch feature and draw a closed region",
+				"Move this feature below an existing Sketch in the tree" );
+		}
 
 		var closed = ctx.Sketches.Values.LastOrDefault( s => ProfileFinder.Find( s ).Profiles.Count > 0 );
 
@@ -498,7 +529,13 @@ public sealed class LoftFeature : SketchConsumingFeature
 		var sketches = ResolveSections( ctx );
 
 		if ( sketches.Count < 2 )
-			throw new InvalidOperationException( "A loft needs at least two sections." );
+		{
+			Fail(
+				"A loft needs at least two sections.",
+				$"Only {sketches.Count} section sketch(es) are available at this point in the tree.",
+				"Add a second Sketch for the other section",
+				"Move this feature below both section sketches" );
+		}
 
 		var count = Segments.Clamped;
 		var rings = new List<List<Vec3>>( sketches.Count );
@@ -509,8 +546,11 @@ public sealed class LoftFeature : SketchConsumingFeature
 
 			if ( found.Profiles.Count == 0 )
 			{
-				throw new InvalidOperationException(
-					"One of the loft's sections has no closed region in it." );
+				Fail(
+					"One of the loft's sections has no closed region in it.",
+					"Every loft section has to be a closed loop so it can be skinned to the next.",
+					"Close that section's curves into a loop",
+					"Remove that sketch from the loft" );
 			}
 
 			if ( found.Profiles[0].HasHoles )
@@ -539,8 +579,11 @@ public sealed class LoftFeature : SketchConsumingFeature
 		{
 			if ( !ctx.Sketches.TryGetValue( id, out var sketch ) )
 			{
-				throw new InvalidOperationException(
-					$"Sketch '{id}' is not available at this point in the tree" );
+				Fail(
+					$"Sketch '{id}' is not available at this point in the tree",
+					"A section this loft was pointed at has been deleted, suppressed, or sits below this feature.",
+					"Pick a sketch that sits above this feature",
+					"Move this feature below that sketch" );
 			}
 
 			result.Add( sketch );

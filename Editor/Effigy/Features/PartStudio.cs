@@ -258,6 +258,7 @@ public sealed class PartStudio
 		{
 			Features[i].Error = null;
 			Features[i].Warning = null;
+			Features[i].Diagnostic = null;
 		}
 
 		Bodies = ctx.Bodies;

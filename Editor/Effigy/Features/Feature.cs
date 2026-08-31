@@ -1,5 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
+using System.Linq;
 
 namespace Effigy;
 
@@ -240,6 +242,15 @@ public abstract class Feature
 	/// </summary>
 	public string Warning { get; internal set; }
 
+	/// <summary>
+	/// Structured form of Error or Warning. Null when the feature ran clean.
+	///
+	/// Error and Warning stay as strings because PartStudio, RebuildReport, the feature tree and
+	/// several tests already read them. They are set alongside this: Error = Diagnostic.Problem
+	/// on a failure, Warning = Diagnostic.Problem on a warning.
+	/// </summary>
+	public FeatureDiagnostic Diagnostic { get; internal set; }
+
 	public abstract string TypeName { get; }
 	public abstract IReadOnlyList<IParam> Parameters { get; }
 
@@ -249,6 +260,7 @@ public abstract class Feature
 	{
 		Error = null;
 		Warning = null;
+		Diagnostic = null;
 
 		// Bodies made from here on belong to this feature and are named after it. Set before the
 		// Suppressed check is pointless; set here so every path into Execute is covered.
@@ -261,11 +273,124 @@ public abstract class Feature
 		{
 			Execute( ctx );
 		}
+		catch ( FeatureException e )
+		{
+			ApplyDiagnostic( e.Diagnostic );
+		}
 		catch ( Exception e )
 		{
-			Error = e.Message;
+			ApplyDiagnostic( new FeatureDiagnostic( DiagnosticSeverity.Error, e.Message ) );
 		}
 	}
+
+	/// <summary>Refuse to proceed. The three arguments are the three things the dialog shows.</summary>
+	[DoesNotReturn]
+	protected static void Fail( string problem, string cause, params string[] remedies ) =>
+		throw new FeatureException( new FeatureDiagnostic( DiagnosticSeverity.Error, problem, cause, remedies: remedies ) );
+
+	/// <summary>Refuse, and name the control the dialog should highlight.</summary>
+	[DoesNotReturn]
+	protected static void FailOn( string parameterLabel, string problem, string cause, params string[] remedies ) =>
+		throw new FeatureException( new FeatureDiagnostic( DiagnosticSeverity.Error, problem, cause, parameterLabel, remedies: remedies ) );
+
+	/// <summary>Refuse, highlight the control, and offer a button that writes <paramref name="suggested"/>
+	/// into it.</summary>
+	[DoesNotReturn]
+	protected static void FailOn( string parameterLabel, float suggested, string problem, string cause, params string[] remedies ) =>
+		throw new FeatureException( new FeatureDiagnostic( DiagnosticSeverity.Error, problem, cause, parameterLabel, suggested, remedies ) );
+
+	/// <summary>The feature built, but not from what was asked. Geometry stays; the dialog goes yellow.</summary>
+	protected void Warn( string problem, string cause, params string[] remedies ) =>
+		ApplyDiagnostic( new FeatureDiagnostic( DiagnosticSeverity.Warning, problem, cause, remedies: remedies ) );
+
+	protected void ApplyDiagnostic( FeatureDiagnostic diagnostic )
+	{
+		if ( diagnostic is null )
+			return;
+
+		Diagnostic = diagnostic;
+
+		if ( diagnostic.Severity == DiagnosticSeverity.Error )
+			Error = diagnostic.Problem;
+		else
+			Warning = diagnostic.Problem;
+	}
+
+	/// <summary>The bodies this feature acts on, or a refusal if there are none. A feature that
+	/// did nothing is never a success.</summary>
+	protected List<Body> RequireBodies( FeatureContext ctx, BodySelectionParam selection )
+	{
+		var bodies = new List<Body>();
+
+		foreach ( var b in ctx.Bodies )
+		{
+			if ( selection.Matches( b ) )
+				bodies.Add( b );
+		}
+
+		if ( bodies.Count > 0 )
+			return bodies;
+
+		if ( ctx.Bodies.Count == 0 )
+		{
+			Fail(
+				"This studio has no bodies yet",
+				"There is nothing to act on — the feature list has not produced a solid.",
+				"Add a Primitive, or extrude a sketch first" );
+		}
+
+		Fail(
+			"No matching body is selected",
+			$"The studio has {ctx.Bodies.Count} body/bodies but none match this feature's selection.",
+			"Clear the body selection to act on every body",
+			"Pick a body that is still in the studio" );
+
+		return bodies;
+	}
+
+	/// <summary>Assign blended meshes, or refuse, only after every body has been tried — so a
+	/// failure leaves the studio as it was, which is Feature.Run's contract.</summary>
+	protected void CommitBlend( List<(Body Body, BlendReport Report)> reports, string sizeLabel )
+	{
+		foreach ( var ( _, report ) in reports )
+		{
+			if ( report.Failure is null )
+				continue;
+
+			report.Failure.ParameterLabel ??= sizeLabel;
+
+			if ( report.SuggestedSize > 0f )
+				report.Failure.SuggestedValue ??= FloorThousandths( report.SuggestedSize );
+
+			throw new FeatureException( report.Failure );
+		}
+
+		foreach ( var ( body, report ) in reports )
+			body.Mesh = report.Mesh;
+
+		var warnings = new List<FeatureDiagnostic>();
+
+		foreach ( var ( _, report ) in reports )
+			warnings.AddRange( report.Warnings );
+
+		if ( warnings.Count == 0 )
+			return;
+
+		if ( warnings.Count == 1 )
+		{
+			ApplyDiagnostic( warnings[0] );
+			return;
+		}
+
+		Warn(
+			warnings[0].Problem,
+			string.Join( " ", warnings.Select( w => w.Cause ).Where( c => !string.IsNullOrEmpty( c ) ) ),
+			warnings.SelectMany( w => w.Remedies ).Distinct().ToArray() );
+	}
+
+	/// <summary>A number the user can type that is never larger than the true fit, so suggesting
+	/// it cannot immediately fail again to rounding.</summary>
+	protected static float FloorThousandths( float value ) => MathF.Floor( value * 1000f ) / 1000f;
 
 	public override string ToString() => $"{TypeName} '{Name ?? Id}'{(Suppressed ? " (suppressed)" : "")}";
 }

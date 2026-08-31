@@ -259,14 +259,18 @@ public static class AllFeaturesTests
 			if ( feature.Error is null )
 				continue;   // it coped with nothing to work on, which is fine
 
+			var diagnostic = feature.Diagnostic;
 			var message = feature.Error;
 
-			var useful = message.Length > 15
+			var useful = diagnostic is not null
+				&& !string.IsNullOrEmpty( diagnostic.Cause )
+				&& diagnostic.Remedies.Count > 0
 				&& !message.Contains( "Object reference" )
 				&& !message.Contains( "Index was out of range" )
 				&& !message.Contains( "NullReference" );
 
-			Report.Check( $"{type.Name}'s empty-studio error explains itself", useful, message );
+			Report.Check( $"{type.Name}'s empty-studio error has a cause and a remedy", useful,
+				$"{message} | cause={diagnostic?.Cause} | remedies={diagnostic?.Remedies.Count ?? 0}" );
 		}
 	}
 }

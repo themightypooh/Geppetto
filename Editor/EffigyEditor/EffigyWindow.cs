@@ -3060,6 +3060,16 @@ internal sealed class EffigyFeatureTreePanel : Widget
 
 		public FeatureNode( EffigyFeatureTreePanel panel, Feature feature ) : base( feature ) { _panel = panel; }
 
+		/// <summary>The problem line, so a broken feature is readable without opening it. A red
+		/// icon with no words is the Onshape behaviour this dialog exists to beat.</summary>
+		public override string GetTooltip()
+		{
+			if ( Value.Diagnostic is { } diagnostic && !string.IsNullOrEmpty( diagnostic.Tooltip ) )
+				return diagnostic.Tooltip.Replace( "\n", "<br/>" );
+
+			return Value.Error ?? Value.Warning;
+		}
+
 		/// <summary>Double click renames, which is where every tree in the editor puts it.</summary>
 		public override void OnActivated() => _panel.BeginRename( Feature );
 
@@ -3087,11 +3097,13 @@ internal sealed class EffigyFeatureTreePanel : Widget
 				Paint.DrawRect( new Rect( item.Rect.Left, item.Rect.Top, item.Rect.Width, 2f ) );
 			}
 
-			// Icon color: blue for active, grey for suppressed, red for error
+			// Icon color: blue for active, grey for suppressed, red for error, yellow for warning
 			if ( Value.Suppressed || rolled )
 				Paint.SetPen( Theme.TextLight.WithAlpha( 0.5f ) );
 			else if ( Value.Error is not null )
 				Paint.SetPen( Theme.Red );
+			else if ( Value.Warning is not null )
+				Paint.SetPen( Theme.Yellow );
 			else
 				Paint.SetPen( Theme.Blue );
 

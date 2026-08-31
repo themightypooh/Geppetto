@@ -466,23 +466,7 @@ public static class ShellTests
 		return studio.Bodies[0].Mesh;
 	}
 
-	static float Volume( PolyMesh mesh )
-	{
-		var total = 0f;
-
-		foreach ( var f in mesh.Faces )
-		{
-			for ( var i = 1; i < f.Count - 1; i++ )
-			{
-				var a = mesh.Positions[f.Indices[0]];
-				var b = mesh.Positions[f.Indices[i]];
-				var c = mesh.Positions[f.Indices[i + 1]];
-				total += Vec3.Dot( a, Vec3.Cross( b, c ) ) / 6f;
-			}
-		}
-
-		return total;
-	}
+	static float Volume( PolyMesh mesh ) => mesh.SignedVolume();
 
 	static bool Near( float a, float b, float tolerance = 1e-4f ) => MathF.Abs( a - b ) < tolerance;
 

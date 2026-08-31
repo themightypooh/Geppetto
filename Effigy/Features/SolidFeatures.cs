@@ -37,7 +37,7 @@ public sealed class ShellFeature : Feature
 
 	protected override void Execute( FeatureContext ctx )
 	{
-		var targets = ctx.Bodies.Where( Bodies.Matches ).ToList();
+		var targets = RequireBodies( ctx, Bodies );
 
 		// Shell everything before assigning anything. Feature.Run promises that a failed feature
 		// leaves the bodies as they were, and mutating in place breaks that promise the moment the
@@ -45,10 +45,116 @@ public sealed class ShellFeature : Feature
 		var shelled = new List<PolyMesh>( targets.Count );
 
 		foreach ( var body in targets )
-			shelled.Add( ShellOperation.Shell( body.Mesh, Thickness.Clamped, OpenFaces ) );
+		{
+			try
+			{
+				shelled.Add( ShellOperation.Shell( body.Mesh, Thickness.Clamped, OpenFaces ) );
+			}
+			catch ( ArgumentOutOfRangeException e )
+			{
+				Fail(
+					"An opening names a face that is not on this body",
+					e.Message,
+					"Pick faces that exist on the selected body" );
+			}
+			catch ( InvalidOperationException e )
+			{
+				RefuseShell( e.Message, body.Mesh );
+			}
+		}
 
 		for ( var i = 0; i < targets.Count; i++ )
 			targets[i].Mesh = shelled[i];
+	}
+
+	void RefuseShell( string message, PolyMesh mesh )
+	{
+		if ( message.Contains( "pinch" ) )
+		{
+			Fail(
+				"The opened faces pinch to a point",
+				message,
+				"Open faces that share an edge",
+				"Leave a face between the openings" );
+		}
+
+		if ( message.Contains( "every face" ) )
+		{
+			Fail(
+				"Cannot open every face — there would be nothing left",
+				"Every face was marked as an opening, so the shell has no wall to keep.",
+				"Leave at least one face closed" );
+		}
+
+		if ( message.Contains( "open mesh" ) )
+		{
+			Fail(
+				"Cannot shell an open mesh",
+				message,
+				"Close the mesh first" );
+		}
+
+		var fit = SuggestThickness( mesh, Thickness.Clamped, OpenFaces );
+
+		if ( fit > 0f )
+		{
+			var suggestion = FloorThousandths( fit );
+			FailOn( "Wall thickness", suggestion,
+				"This wall thickness does not fit this part",
+				message,
+				$"Reduce wall thickness to {suggestion:0.###}",
+				"Open a face so the offset has room to move" );
+		}
+
+		FailOn( "Wall thickness",
+			"This shell cannot be built",
+			message,
+			"Reduce the wall thickness",
+			"Open a face so the offset has room to move" );
+	}
+
+	static float SuggestThickness( PolyMesh mesh, float size, List<int> open )
+	{
+		if ( size <= 0f )
+			return 0f;
+
+		if ( Fits( mesh, size, open ) )
+			return size;
+
+		var lo = 0.0001f;
+		var hi = size;
+
+		if ( !Fits( mesh, lo, open ) )
+			return 0f;
+
+		for ( var i = 0; i < 12; i++ )
+		{
+			var mid = ( lo + hi ) * 0.5f;
+
+			if ( Fits( mesh, mid, open ) )
+				lo = mid;
+			else
+				hi = mid;
+		}
+
+		return lo;
+	}
+
+	static bool Fits( PolyMesh mesh, float thickness, List<int> open )
+	{
+		try
+		{
+			ShellOperation.Shell( mesh, thickness, open );
+			return true;
+		}
+		catch ( InvalidOperationException )
+		{
+			return false;
+		}
+		catch ( ArgumentOutOfRangeException )
+		{
+			return false;
+		}
 	}
 }
 
@@ -73,8 +179,12 @@ public sealed class ChamferFeature : Feature
 
 	protected override void Execute( FeatureContext ctx )
 	{
-		foreach ( var body in ctx.Bodies.Where( Bodies.Matches ) )
-			body.Mesh = EdgeBlend.Chamfer( body.Mesh, Width.Clamped, AngleThreshold.Clamped );
+		var reports = new List<(Body Body, BlendReport Report)>();
+
+		foreach ( var body in RequireBodies( ctx, Bodies ) )
+			reports.Add( (body, EdgeBlend.ChamferReport( body.Mesh, Width.Clamped, AngleThreshold.Clamped )) );
+
+		CommitBlend( reports, "Distance" );
 	}
 }
 
@@ -105,8 +215,12 @@ public sealed class FilletFeature : Feature
 
 	protected override void Execute( FeatureContext ctx )
 	{
-		foreach ( var body in ctx.Bodies.Where( Bodies.Matches ) )
-			body.Mesh = EdgeBlend.Fillet( body.Mesh, Radius.Clamped, AngleThreshold.Clamped, Segments.Clamped );
+		var reports = new List<(Body Body, BlendReport Report)>();
+
+		foreach ( var body in RequireBodies( ctx, Bodies ) )
+			reports.Add( (body, EdgeBlend.FilletReport( body.Mesh, Radius.Clamped, AngleThreshold.Clamped, Segments.Clamped )) );
+
+		CommitBlend( reports, "Radius" );
 	}
 }
 
@@ -133,7 +247,15 @@ public sealed class UVProjectFeature : Feature
 
 	protected override void Execute( FeatureContext ctx )
 	{
-		foreach ( var body in ctx.Bodies.Where( Bodies.Matches ) )
+		if ( Mode.Value == "Planar" && Direction.Value.LengthSquared < 1e-12f )
+		{
+			FailOn( "Direction",
+				"Projection direction has no length",
+				"A planar projection needs a direction, and this one is (0, 0, 0).",
+				"Set Direction to the axis you want the texture to face" );
+		}
+
+		foreach ( var body in RequireBodies( ctx, Bodies ) )
 		{
 			if ( Mode.Value == "Planar" )
 				UVProjection.PlanarProject( body.Mesh, Direction.Value, Scale.Clamped );
@@ -178,7 +300,12 @@ public sealed class FaceMaterialFeature : Feature
 	protected override void Execute( FeatureContext ctx )
 	{
 		if ( Faces.Count == 0 )
-			throw new InvalidOperationException( "No faces picked — click the faces to assign this material to." );
+		{
+			Fail(
+				"No faces picked — click the faces to assign this material to.",
+				"A face-material feature paints faces, and none have been chosen yet.",
+				"Click faces in the viewport to assign this material" );
+		}
 
 		var painted = 0;
 		var lost = 0;
@@ -201,11 +328,18 @@ public sealed class FaceMaterialFeature : Feature
 		// rather than leaving a feature in the tree that silently does nothing.
 		if ( painted == 0 )
 		{
-			throw new InvalidOperationException(
-				$"None of the {Faces.Count} picked face(s) still exist — the geometry changed underneath them. Pick them again." );
+			Fail(
+				$"None of the {Faces.Count} picked face(s) still exist — the geometry changed underneath them. Pick them again.",
+				$"All {Faces.Count} stored face(s) failed to resolve against the bodies as they are now.",
+				"Pick the faces again on the current geometry" );
 		}
 
 		if ( lost > 0 )
-			Warning = $"{lost} of {Faces.Count} picked faces no longer exist and were skipped.";
+		{
+			Warn(
+				$"{lost} of {Faces.Count} picked faces no longer exist and were skipped.",
+				$"{painted} face(s) still painted; {lost} could not be found after an upstream edit.",
+				"Pick the missing faces again if they still matter" );
+		}
 	}
 }

@@ -48,12 +48,17 @@ kind of unknown: Sweep and Loft now have buttons and hand-drawn glyphs, and the 
 offers Diameter, Midpoint, Concentric, Fix and both tangencies. All of it compiles and the kernel half
 is tested; none of it has been looked at. See 2.1 and 2.2 for what to check.
 
+**7. The diagnostic panel and the tree tooltip.** Open a fillet on a 2×2×2 cube, drag radius past
+0.85, and read the dialog: problem in red, cause with the volumes, a button that sets the radius to
+the largest that fits. The tree row should show the problem on hover, and a warning (fillet at 0.8)
+should colour the icon yellow. Kernel half is tested; this is the sitting.
+
 ---
 
 ## 1. Effigy kernel
 
 The kernel is roughly **93% of phase one**. All of it is headless-testable — no s&box anywhere, and
-1555 checks say so.
+1609 checks say so.
 
 ### 1.1 Exercise the boolean past the one case that works
 
@@ -112,20 +117,12 @@ Two things the plan did not anticipate, both now in `EdgeBlend`'s comments:
 all satisfied just as well by a chamfer cut into n flat strips, which is what a slerp silently
 degrading to a lerp would produce. It measures every strip point against the edge's axis instead.
 
-### 1.2b Diagnostics — why a feature refused, and what to do instead
+### 1.2b ~~Diagnostics — why a feature refused, and what to do instead~~ — **done**
 
-*po's request, and the highest-value item in this section. See **`DIAGNOSTICS-BRIEF.md`** for the
-full design, the measurements behind it and the order of work.*
-
-The short version: a fillet with too large a radius currently produces an **inverted solid** — the
-2×2×2 cube goes to negative volume somewhere between r=0.80 and r=0.85 — and reports nothing at all.
-Same face count, Euler 2, `valid, closed`, at every radius up to 3.0. Effigy is presently worse than
-the Onshape behaviour po was complaining about, which at least goes red.
-
-The work is a structured `FeatureDiagnostic` (problem / cause-with-numbers / remedies), a pre-flight
-feasibility check that can report *"largest radius that fits: 0.31"*, a post-flight volume check that
-catches what the pre-flight cannot see, and turning `EdgeBlend`'s five silent degradations into
-warnings. Plus a dialog that can show more than one line — today it is a single `Editor.Label`.
+Kernel half is tested (`DiagnosticTests`, 1609 checks). `Fillet(cube, 0.85)` is an error; the
+inverted-solid table from the brief cannot happen silently any more. The dialog panel (problem /
+cause / remedy-as-button) and the tree tooltip / yellow warning icon are **written, not seen** —
+they belong in section 0 the next time the editor is open.
 
 ### 1.3 Collision from the primitive history
 

@@ -46,8 +46,7 @@ public static class FeatureTests
 		TestParameterVisibility();
 	}
 
-	static float Volume( PolyMesh m ) =>
-		m.Faces.Sum( f => Vec3.Dot( m.FaceCentroid( f ), m.FaceNormal( f ) ) * m.FaceArea( f ) ) / 3f;
+	static float Volume( PolyMesh m ) => m.SignedVolume();
 
 	static PartStudio StudioWithBox( float size = 2f )
 	{

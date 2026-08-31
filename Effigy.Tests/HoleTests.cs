@@ -513,15 +513,7 @@ public static class HoleTests
 		return MathF.Abs( sum * 0.5f );
 	}
 
-	static float Volume( PolyMesh mesh )
-	{
-		var acc = 0f;
-
-		foreach ( var f in mesh.Faces )
-			acc += Vec3.Dot( mesh.FaceCentroid( f ), mesh.FaceNormal( f ) ) * mesh.FaceArea( f );
-
-		return acc / 3f;
-	}
+	static float Volume( PolyMesh mesh ) => mesh.SignedVolume();
 
 	/// <summary>
 	/// The regression this exists for: a cut left the face it went through as 29 TRIANGLES.

@@ -285,8 +285,7 @@ public static class CoplanarMergeTests
 			mesh.AddFace( new[] { corners[i], corners[(i + 1) % corners.Length], centre }, null, material );
 	}
 
-	static float Volume( PolyMesh m ) =>
-		m.Faces.Sum( f => Vec3.Dot( m.FaceCentroid( f ), m.FaceNormal( f ) ) * m.FaceArea( f ) ) / 3f;
+	static float Volume( PolyMesh m ) => m.SignedVolume();
 
 	static bool Close( float a, float b, float eps = 1e-3f ) => MathF.Abs( a - b ) <= eps;
 }

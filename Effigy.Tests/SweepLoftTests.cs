@@ -301,22 +301,5 @@ public static class SweepLoftTests
 	/// Signed volume by the divergence theorem, summed over a fan of each face. Positive when the
 	/// faces wind so their normals point out of the solid.
 	/// </summary>
-	static float Volume( PolyMesh mesh )
-	{
-		var total = 0f;
-
-		foreach ( var face in mesh.Faces )
-		{
-			for ( var i = 1; i + 1 < face.Count; i++ )
-			{
-				var a = mesh.Positions[face.Indices[0]];
-				var b = mesh.Positions[face.Indices[i]];
-				var c = mesh.Positions[face.Indices[i + 1]];
-
-				total += Vec3.Dot( a, Vec3.Cross( b, c ) ) / 6f;
-			}
-		}
-
-		return total;
-	}
+	static float Volume( PolyMesh mesh ) => mesh.SignedVolume();
 }

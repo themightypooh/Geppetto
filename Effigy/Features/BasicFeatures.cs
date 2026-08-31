@@ -70,13 +70,23 @@ public sealed class PrimitiveFeature : Feature
 			"Wedge" => Primitives.Wedge( SizeX.Clamped, SizeY.Clamped, SizeZ.Clamped, Material.Clamped ),
 			"Tube" => BuildTube(),
 			"Plane" => Primitives.Plane( SizeX.Clamped, SizeY.Clamped, Segments.Clamped, Segments.Clamped, Material.Clamped ),
-			_ => throw new InvalidOperationException( $"unknown shape '{Shape.Value}'" )
+			_ => throw new FeatureException( new FeatureDiagnostic(
+				DiagnosticSeverity.Error,
+				$"unknown shape '{Shape.Value}'",
+				"The shape dropdown has a value this feature does not build.",
+				"Shape",
+				remedies: new[] { "Pick Box, Cylinder, Sphere, Wedge, Tube or Plane" } ) )
 		};
 
 		var scale = Scale.Value;
 
 		if ( scale.x == 0f || scale.y == 0f || scale.z == 0f )
-			throw new InvalidOperationException( "Scale cannot be zero on any axis" );
+		{
+			FailOn( "Scale",
+				"Scale cannot be zero on any axis",
+				$"Scale is ({scale.x:0.###}, {scale.y:0.###}, {scale.z:0.###}). A zero axis flattens the solid to nothing.",
+				"Set every scale axis to a non-zero value" );
+		}
 
 		// SCALE FIRST, ABOUT THE PRIMITIVE'S OWN ORIGIN. Applied after the translate it would
 		// multiply the position too, so nudging a scaled box would move it by the scale factor and
@@ -95,7 +105,13 @@ public sealed class PrimitiveFeature : Feature
 		// Caught here rather than left to Primitives, so the message names the parameter the user
 		// can actually see in the dialog.
 		if ( InnerRadius.Clamped >= Radius.Clamped )
-			throw new InvalidOperationException( "Inner radius must be smaller than radius" );
+		{
+			FailOn( "Inner radius",
+				"Inner radius must be smaller than radius",
+				$"Inner radius is {InnerRadius.Clamped:0.###} and radius is {Radius.Clamped:0.###}.",
+				"Reduce Inner radius",
+				"Increase Radius" );
+		}
 
 		return Primitives.Tube( Radius.Clamped, InnerRadius.Clamped, SizeZ.Clamped, Segments.Clamped, Material.Clamped );
 	}
@@ -120,7 +136,12 @@ public sealed class TransformFeature : Feature
 		var scale = Scale.Value;
 
 		if ( scale.x == 0f || scale.y == 0f || scale.z == 0f )
-			throw new InvalidOperationException( "Scale cannot be zero on any axis" );
+		{
+			FailOn( "Scale",
+				"Scale cannot be zero on any axis",
+				$"Scale is ({scale.x:0.###}, {scale.y:0.###}, {scale.z:0.###}). A zero axis flattens the solid to nothing.",
+				"Set every scale axis to a non-zero value" );
+		}
 
 		// Scale, then rotate, then translate — the order a user expects, and the one that keeps a
 		// rotation about the origin from being skewed by a non-uniform scale applied after it.
@@ -129,7 +150,7 @@ public sealed class TransformFeature : Feature
 			* Xform.Rotate( RotationAxis.Value, RotationAngle.Value * MathF.PI / 180f )
 			* Xform.Scale( scale );
 
-		foreach ( var body in ctx.Bodies.Where( Bodies.Matches ) )
+		foreach ( var body in RequireBodies( ctx, Bodies ) )
 			MeshTransform.Apply( body.Mesh, xform );
 	}
 }
@@ -151,13 +172,15 @@ public sealed class LinearPatternFeature : Feature
 	protected override void Execute( FeatureContext ctx )
 	{
 		if ( Direction.Value.LengthSquared < 1e-12f )
-			throw new InvalidOperationException( "Direction cannot be zero" );
+		{
+			FailOn( "Direction",
+				"Direction cannot be zero",
+				"A linear pattern copies along a direction, and this one has no length, so there is nowhere to put the copies.",
+				"Set Direction to the axis you want the copies to run along" );
+		}
 
 		var dir = Direction.Value.Normal;
-		var sources = ctx.Bodies.Where( Bodies.Matches ).ToList();
-
-		if ( sources.Count == 0 )
-			throw new InvalidOperationException( "No bodies selected" );
+		var sources = RequireBodies( ctx, Bodies );
 
 		// Instance 0 is the original, so a count of 3 means the original plus two copies — which
 		// is what Onshape's instance count means too.
@@ -199,12 +222,14 @@ public sealed class CircularPatternFeature : Feature
 	protected override void Execute( FeatureContext ctx )
 	{
 		if ( AxisDirection.Value.LengthSquared < 1e-12f )
-			throw new InvalidOperationException( "Axis cannot be zero" );
+		{
+			FailOn( "Axis",
+				"Axis cannot be zero",
+				"A circular pattern spins around an axis, and this one has no length.",
+				"Set Axis to the direction to spin around" );
+		}
 
-		var sources = ctx.Bodies.Where( Bodies.Matches ).ToList();
-
-		if ( sources.Count == 0 )
-			throw new InvalidOperationException( "No bodies selected" );
+		var sources = RequireBodies( ctx, Bodies );
 
 		var count = Count.Clamped;
 
@@ -251,13 +276,15 @@ public sealed class MirrorFeature : Feature
 	protected override void Execute( FeatureContext ctx )
 	{
 		if ( PlaneNormal.Value.LengthSquared < 1e-12f )
-			throw new InvalidOperationException( "Plane normal cannot be zero" );
+		{
+			FailOn( "Plane normal",
+				"Plane normal cannot be zero",
+				"A mirror needs a plane to reflect across, and a zero normal does not define one.",
+				"Set Plane normal to the direction the mirror should face" );
+		}
 
 		var xform = Xform.Mirror( PlanePoint.Value, PlaneNormal.Value );
-		var sources = ctx.Bodies.Where( Bodies.Matches ).ToList();
-
-		if ( sources.Count == 0 )
-			throw new InvalidOperationException( "No bodies selected" );
+		var sources = RequireBodies( ctx, Bodies );
 
 		foreach ( var source in sources )
 		{
@@ -319,7 +346,7 @@ public sealed class SubdivideFeature : Feature
 		if ( Levels.Clamped == 0 )
 			return;
 
-		foreach ( var body in ctx.Bodies.Where( Bodies.Matches ) )
+		foreach ( var body in RequireBodies( ctx, Bodies ) )
 			body.Mesh = CatmullClark.Subdivide( body.Mesh, Levels.Clamped );
 	}
 }

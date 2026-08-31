@@ -4,12 +4,17 @@ Everything here is done and verified unless it says otherwise, and where somethi
 method is named — because on this project the difference between "the tests pass" and "I looked at
 it" has repeatedly been the difference between right and wrong.
 
-**The standing rule:** a mesh can be closed, manifold, Euler-correct and valid while being visibly
-wrong. Every hard bug in this repo passed most of its checks. Measure enclosed volume, covered
-area, or boundary-edge count — not "it renders and looks fine".
+**The standing rules:**
 
-Verified as of 31 August 2026: **1555 kernel checks, 0 failing** (`./tools/test.sh`), and the whole
-project **compiles clean in the s&box editor**, 0 errors, 61 tools registered.
+- A mesh can be closed, manifold, Euler-correct and valid while being visibly wrong. Every hard
+  bug in this repo passed most of its checks. Measure enclosed volume, covered area, or
+  boundary-edge count — not "it renders and looks fine".
+- A feature that cannot do what was asked says what it was asked, what stopped it, with this
+  model's numbers, and what would work instead. A feature that did nothing is never a success.
+
+Verified as of 31 August 2026: **1609 kernel checks, 0 failing** (`./tools/test.sh`). The diagnostic
+dialog and tree tooltip are written against the shipped `Editor.Label.WordWrap` and
+`TreeNode.GetTooltip` APIs; they have not been judged on screen.
 
 ---
 
@@ -59,6 +64,45 @@ error and the rebuild carries on, so one upstream mistake doesn't cascade.
 
 Tested: editing feature 4 of 6 reuses exactly 3 and re-runs exactly 3; a clean rebuild does no work;
 rollback and roll-forward round-trip; a broken feature doesn't stop the ones after it.
+
+### Diagnostics
+
+A feature that fails or degrades produces a `FeatureDiagnostic`: a one-line **problem**, a **cause
+with this model's numbers**, and a list of **remedies**. `Feature.Error` / `Feature.Warning` stay as
+strings (`Error = diagnostic.Problem`) so PartStudio, RebuildReport and existing tests keep working.
+`Fail` / `Warn` make the shape hard to get wrong. A plain `InvalidOperationException` still becomes
+a diagnostic with only a problem line, so every existing throw keeps working.
+
+`PolyMesh.SignedVolume` is the kernel quantity a refusal can rest on — the eleven private `Volume()`
+copies in the test project are gone.
+
+**Fillet and Chamfer** are the case this exists for. On a 2×2×2 cube, `Fillet(cube, 0.85, 15, 4)`
+used to return an inverted solid (`volume −0.43`, Euler 2, `valid, closed`) and report success.
+It is now an error, and the diagnostic names the largest radius that still fits. `Fillet(cube, 0.2)`
+still builds. A blend that removes more than half the solid warns rather than fails. A no-op
+(`Fillet(cube, 0.1, 179)`) is an error, not a silent success. The five silent EdgeBlend degradations
+(clamped setbacks, squared corners, flattened arcs, uncapped boundary vertices, empty selection)
+speak as warnings, except the empty selection which is an error.
+
+**The boolean** no longer stops at *"the engine's boolean rejected these two solids"*. Before
+handing that up, `MeshBoolean.Apply` says whether either solid is open and whether their bounds
+even overlap — including the gap along which axis, as a number.
+
+**Shell** refuses a thickness that turns the inner surface inside out, and the diagnostic names a
+thickness that still fits, computed by the same bisection fillet uses. Pinched openings and
+"open every face" are named as themselves, not as a thickness problem.
+
+**A selection naming a body that no longer exists is an error**, not a warning and not a silent
+no-op. The geometry upstream is left alone.
+
+The empty-studio sweep (`AllFeaturesTests.TestEmptyStudioErrors`) now requires a `Cause` and a
+non-empty `Remedies` list, so every new feature is held to it.
+
+Tested: `DiagnosticTests` — oversized fillet/chamfer error and do not invert, small fillet still
+builds, no-op is an error, too-thick shell offers a thickness under half the plate, boolean miss
+names the gap along X, boolean on a plane names the boundary, missing-body selection is an error,
+empty-studio fillet has a cause and a remedy, signed volume of a 2×2×2 box is 8. The kernel half is
+headless; the dialog panel and the yellow warning icon on the tree are written and not yet seen.
 
 ### The sketcher
 

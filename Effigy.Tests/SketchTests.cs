@@ -245,8 +245,7 @@ public static class SketchTests
 		return MathF.Abs( sum * 0.5f );
 	}
 
-	static float Volume( PolyMesh m ) =>
-		m.Faces.Sum( f => Vec3.Dot( m.FaceCentroid( f ), m.FaceNormal( f ) ) * m.FaceArea( f ) ) / 3f;
+	static float Volume( PolyMesh m ) => m.SignedVolume();
 
 	static void TestPlanes()
 	{

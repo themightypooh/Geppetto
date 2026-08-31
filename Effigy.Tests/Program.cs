@@ -77,6 +77,8 @@ public static class Program
 
 		AllFeaturesTests.Run();
 
+		DiagnosticTests.Run();
+
 		FaceSketchTests.Run();
 
 		ConstraintTests.Run();
@@ -185,18 +187,13 @@ public static class Program
 		// anywhere flips the sign or cancels it toward zero.
 		foreach ( var (name, mesh) in Closed() )
 		{
-			var acc = 0f;
-
-			foreach ( var f in mesh.Faces )
-				acc += Vec3.Dot( mesh.FaceCentroid( f ), mesh.FaceNormal( f ) ) * mesh.FaceArea( f );
-
-			var volume = acc / 3f;
+			var volume = mesh.SignedVolume();
 			Check( $"{name} winds outward (volume {volume:0.####} > 0)", volume > 0.001f );
 		}
 
 		// Spot-check the box exactly: a 2x2x2 box encloses 8.
 		var box = Primitives.Box( 2, 2, 2 );
-		var boxVol = box.Faces.Sum( f => Vec3.Dot( box.FaceCentroid( f ), box.FaceNormal( f ) ) * box.FaceArea( f ) ) / 3f;
+		var boxVol = box.SignedVolume();
 		Check( "box volume is 8", MathF.Abs( boxVol - 8f ) < 1e-3f, $"got {boxVol:0.####}" );
 	}
 

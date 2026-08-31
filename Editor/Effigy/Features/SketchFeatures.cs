@@ -88,9 +88,12 @@ public sealed class SketchFeature : Feature
 
 		if ( !FacePlane.TryResolve( ctx.Bodies, face, out var resolved ) )
 		{
-			throw new InvalidOperationException(
+			Fail(
 				"The face this sketch was placed on is gone — nothing at that point faces that way "
-				+ "any more. Move the sketch to another face, or back to one of the global planes." );
+				+ "any more. Move the sketch to another face, or back to one of the global planes.",
+				"The stored face reference no longer matches any face of any body at this point in the tree.",
+				"Move the sketch to another face",
+				"Switch the sketch back to one of the global planes" );
 		}
 
 		return resolved;
@@ -162,13 +165,25 @@ public abstract class SketchConsumingFeature : Feature
 	protected Sketch ResolveSketch( FeatureContext ctx )
 	{
 		if ( ctx.Sketches.Count == 0 )
-			throw new InvalidOperationException( "There is no sketch to use — add a Sketch feature first" );
+		{
+			Fail(
+				"There is no sketch to use — add a Sketch feature first",
+				"This feature builds from a sketch profile, and the tree has none at this point.",
+				"Add a Sketch feature and draw a closed region",
+				"Move this feature below an existing Sketch in the tree" );
+		}
 
 		if ( string.IsNullOrEmpty( SketchFeatureId ) )
 			return ctx.Sketches.Values.Last();
 
 		if ( !ctx.Sketches.TryGetValue( SketchFeatureId, out var sketch ) )
-			throw new InvalidOperationException( $"Sketch '{SketchFeatureId}' is not available at this point in the tree" );
+		{
+			Fail(
+				$"Sketch '{SketchFeatureId}' is not available at this point in the tree",
+				"The sketch this feature was pointed at has been deleted, suppressed, or sits below this feature, so it has not run yet.",
+				"Pick a sketch that sits above this feature",
+				"Move this feature below the sketch it should consume" );
+		}
 
 		return sketch;
 	}
@@ -254,10 +269,13 @@ public abstract class SketchConsumingFeature : Feature
 			? $"it clears the part by {worst:0.###} along {axis}"
 			: $"it only touches the part along {axis}, enclosing none of it";
 
-		throw new InvalidOperationException(
+		Fail(
 			$"This cut does not reach into the part — {how}, so there is nothing to take away. "
 			+ "A profile drawn on a face extrudes into that face by default; check Flip direction, "
-			+ "or increase the distance." );
+			+ "or increase the distance.",
+			how,
+			"Check Flip direction",
+			"Increase the distance" );
 	}
 
 	/// <summary>How far two spans are apart. Zero or negative means they overlap.</summary>
@@ -304,9 +322,22 @@ public abstract class SketchConsumingFeature : Feature
 
 		var verb = Result.Index == ResultRemove ? "remove from" : "add to";
 
-		throw new InvalidOperationException( ctx.Bodies.Count == 0
-			? $"There is no body to {verb}. Set Result to New body, or draw the sketch on a face of an existing part."
-			: $"There is more than one body and nothing says which to {verb}. Draw the sketch on a face of the part you mean, or set Result to New body." );
+		if ( ctx.Bodies.Count == 0 )
+		{
+			Fail(
+				$"There is no body to {verb}. Set Result to New body, or draw the sketch on a face of an existing part.",
+				"Result is set to act on an existing part, and the studio has none.",
+				"Set Result to New body",
+				"Add a Primitive or extrude a sketch first" );
+		}
+
+		Fail(
+			$"There is more than one body and nothing says which to {verb}. Draw the sketch on a face of the part you mean, or set Result to New body.",
+			$"The studio has {ctx.Bodies.Count} bodies and this sketch is not attached to any of them.",
+			"Draw the sketch on a face of the part you mean",
+			"Set Result to New body" );
+
+		return null;
 	}
 
 	/// <summary>
@@ -329,9 +360,12 @@ public abstract class SketchConsumingFeature : Feature
 
 		if ( picked.Count == 0 )
 		{
-			throw new InvalidOperationException(
+			Fail(
 				"The selected region no longer exists — the sketch changed underneath it. "
-				+ "Pick a region again, or clear the selection to use every closed region." );
+				+ "Pick a region again, or clear the selection to use every closed region.",
+				"RegionSeed no longer falls inside any closed profile of this sketch.",
+				"Pick a region again",
+				"Clear the selection to use every closed region" );
 		}
 
 		return picked;
@@ -358,9 +392,15 @@ public abstract class SketchConsumingFeature : Feature
 
 		if ( found.Profiles.Count == 0 )
 		{
-			throw new InvalidOperationException( found.OpenChains > 0
-				? "The sketch has no closed region — its curves do not join up"
-				: "The sketch has no closed region" );
+			Fail(
+				found.OpenChains > 0
+					? "The sketch has no closed region — its curves do not join up"
+					: "The sketch has no closed region",
+				found.OpenChains > 0
+					? $"The sketch has {found.OpenChains} open chain(s) and no loop that could be a solid."
+					: "There are curves, but none of them enclose an area.",
+				"Join the curves into a closed loop",
+				"Draw a rectangle or circle to start" );
 		}
 
 		// Holes used to be refused HERE, for every consumer at once, on the grounds that capping
@@ -479,7 +519,12 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 		var reach = Termination.Index == 0 ? Distance.Value : MeasuredDistance( ctx, sketch, profiles, sign );
 
 		if ( MathF.Abs( reach ) < 1e-6f )
-			throw new InvalidOperationException( "Distance cannot be zero" );
+		{
+			FailOn( "Distance",
+				"Distance cannot be zero",
+				"An extrude with no distance produces no solid.",
+				"Enter a distance greater than zero" );
+		}
 
 		var distance = reach * sign;
 		var second = MathF.Abs( SecondDistance.Value );
@@ -532,9 +577,13 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 
 		if ( targets.Count == 0 )
 		{
-			throw new InvalidOperationException( Termination.Index == 1
-				? "Up to next needs something to stop at, and there is nothing else in the studio yet."
-				: "Through all needs something to pass through, and there is nothing else in the studio yet." );
+			Fail(
+				Termination.Index == 1
+					? "Up to next needs something to stop at, and there is nothing else in the studio yet."
+					: "Through all needs something to pass through, and there is nothing else in the studio yet.",
+				"This termination measures against bodies already in the studio, and there are none.",
+				"Add a Primitive or extrude a sketch first",
+				"Switch termination to a blind distance" );
 		}
 
 		if ( Termination.Index == 2 )
@@ -561,9 +610,12 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 
 		if ( hits == 0 )
 		{
-			throw new InvalidOperationException(
+			Fail(
 				"Up to next found nothing in the way — no face lies ahead of this profile. Use a blind "
-				+ "distance, or flip the direction." );
+				+ "distance, or flip the direction.",
+				"Every ray from the profile missed every body in the studio.",
+				"Flip the direction",
+				"Switch termination to a blind distance" );
 		}
 
 		if ( furthest - nearest > 1e-3f )
@@ -592,8 +644,10 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 
 		if ( reach <= 0f )
 		{
-			throw new InvalidOperationException(
-				"Through all found nothing ahead of this profile — everything is behind it. Flip the direction." );
+			Fail(
+				"Through all found nothing ahead of this profile — everything is behind it. Flip the direction.",
+				"Every body in the studio sits on the other side of the sketch plane.",
+				"Flip the direction" );
 		}
 
 		// Ten percent past the last thing it has to clear, and never less than a whole unit, so a
@@ -682,9 +736,13 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 			{
 				if ( !LoopOffset.TryOffset( loop, inset, out var offsetLoop, out var error ) )
 				{
-					throw new InvalidOperationException(
+					FailOn( "Taper",
 						$"A taper of {taper:0.##} degrees over {drawn:0.###} does not fit this profile: {error}. "
-						+ "Use a shallower angle, a shorter distance, or a profile without such a narrow neck." );
+						+ "Use a shallower angle, a shorter distance, or a profile without such a narrow neck.",
+						$"The offset over {drawn:0.###} at {taper:0.##}° inverts or collapses a loop.",
+						"Use a shallower angle",
+						"Shorten the distance",
+						"Widen the narrow neck of the profile" );
 				}
 
 				highLoops.Add( offsetLoop );
@@ -817,9 +875,12 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 
 		if ( bottomTriangles.Count == 0 || topTriangles.Count == 0 )
 		{
-			throw new InvalidOperationException(
+			Fail(
 				$"This profile's {profile.Holes.Count} hole(s) could not be capped — the loops may cross each other. "
-				+ "Check that every inner loop lies fully inside the outer one." );
+				+ "Check that every inner loop lies fully inside the outer one.",
+				$"Ear clipping returned no triangles for a profile with {profile.Holes.Count} hole(s).",
+				"Check that every inner loop lies fully inside the outer one",
+				"Redraw the hole so it does not cross the outer loop" );
 		}
 
 		// TWO N-GONS WHERE THE SPLITTER WILL GIVE THEM, triangles where it will not.
@@ -912,11 +973,18 @@ public sealed class RevolveFeature : SketchConsumingFeature
 		// treated as a full revolution, so 720 was never going to mean "twice round" - it meant
 		// "a broken mesh, quietly".
 		if ( MathF.Abs( Angle.Value ) > 360f + 1e-3f )
-			throw new InvalidOperationException(
-				$"A revolve cannot exceed a full turn ({Angle.Value} degrees) — past 360 the sweep passes through itself." );
+			FailOn( "Angle",
+				$"A revolve cannot exceed a full turn ({Angle.Value} degrees) — past 360 the sweep passes through itself.",
+				$"{Angle.Value:0.###} degrees is more than one turn, and the extra overlap welds into a non-manifold solid.",
+				"Set Angle to 360 or less" );
 
 		if ( MathF.Abs( Angle.Value ) < 1e-4f )
-			throw new InvalidOperationException( "Angle cannot be zero" );
+		{
+			FailOn( "Angle",
+				"Angle cannot be zero",
+				"A revolve with no angle produces no solid.",
+				"Enter an angle greater than zero" );
+		}
 
 		var plane = sketch.Plane;
 
@@ -926,7 +994,12 @@ public sealed class RevolveFeature : SketchConsumingFeature
 		var axisDir = plane.XAxis * AxisDirection.Value.x + plane.YAxis * AxisDirection.Value.y;
 
 		if ( axisDir.LengthSquared < 1e-12f )
-			throw new InvalidOperationException( "Axis direction cannot be zero" );
+		{
+			FailOn( "Axis",
+				"Axis direction cannot be zero",
+				"A revolve needs an axis to spin around, and this one has no length.",
+				"Set Axis to a non-zero direction in the sketch plane" );
+		}
 
 		var full = MathF.Abs( MathF.Abs( Angle.Value ) - 360f ) < 1e-3f;
 
@@ -983,10 +1056,13 @@ public sealed class RevolveFeature : SketchConsumingFeature
 			// Name the numbers. The default axis runs through the sketch origin, and people draw
 			// around the origin, so this is the FIRST thing most Revolves hit - a message that just
 			// says "move it" leaves you guessing which way and how far.
-			throw new InvalidOperationException(
+			Fail(
 				$"The profile crosses the axis of revolution - it reaches {MathF.Abs( minSide ):0.###} "
 				+ $"one side and {maxSide:0.###} the other. Move the axis at least {MathF.Abs( minSide ):0.###} "
-				+ "so the whole profile sits on one side of it, or move the profile." );
+				+ "so the whole profile sits on one side of it, or move the profile.",
+				$"The profile reaches {MathF.Abs( minSide ):0.###} past the axis on one side and {maxSide:0.###} on the other, so each half would sweep the same solid twice.",
+				$"Move the axis at least {MathF.Abs( minSide ):0.###} so the whole profile sits on one side",
+				"Move the profile off the axis" );
 		}
 	}
 
@@ -1142,9 +1218,12 @@ public sealed class RevolveFeature : SketchConsumingFeature
 
 		if ( triangles.Count == 0 )
 		{
-			throw new InvalidOperationException(
+			Fail(
 				$"This profile's {profile.Holes.Count} hole(s) could not be capped — the loops may cross each other. "
-				+ "Check that every inner loop lies fully inside the outer one." );
+				+ "Check that every inner loop lies fully inside the outer one.",
+				$"Ear clipping returned no triangles for a profile with {profile.Holes.Count} hole(s).",
+				"Check that every inner loop lies fully inside the outer one",
+				"Redraw the hole so it does not cross the outer loop" );
 		}
 
 		// Two n-gons per cap where the splitter will give them - see AddCaps, which does the same

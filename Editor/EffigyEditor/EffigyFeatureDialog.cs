@@ -51,9 +51,10 @@ internal sealed class EffigyFeatureDialog : Widget
 	// --- widgets ---
 	private Widget _header;
 	private LineEdit _nameEdit;
-	private Editor.Label _statusLabel;
+	private Widget _statusSlot;
 	private Widget _body;
 	private readonly List<Widget> _rows = new();
+	private readonly Dictionary<string, HighlightBox> _paramHighlights = new();
 
 	/// <summary>
 	/// One per editable row: pushes the parameter's CURRENT value back into that row's widgets.
@@ -166,11 +167,11 @@ internal sealed class EffigyFeatureDialog : Widget
 
 		Layout.Add( _header );
 
-		// Why the feature is unhappy, in words. A feature that quietly built from half its input,
-		// or refused entirely, is the thing people spend evenings hunting.
-		_statusLabel = new Editor.Label( "" );
-		_statusLabel.Visible = false;
-		Layout.Add( _statusLabel );
+		// Why the feature is unhappy, in three parts: problem, cause with this model's numbers,
+		// and what to do. Built on open and rebuilt on every live edit, because the numbers change
+		// as you drag.
+		_statusSlot = new Widget( this ) { Layout = Layout.Column() };
+		Layout.Add( _statusSlot );
 	}
 
 	private void OnNameEdited( string text )
@@ -373,6 +374,7 @@ internal sealed class EffigyFeatureDialog : Widget
 
 		_rows.Clear();
 		_valueRefreshers.Clear();
+		_paramHighlights.Clear();
 
 		_materialRow = null;
 		_materialRowSlot = -1;
@@ -400,16 +402,122 @@ internal sealed class EffigyFeatureDialog : Widget
 	public void RefreshState()
 	{
 		SyncMaterialRow();
+		RebuildStatus();
 
-		if ( !_statusLabel.IsValid() )
+		foreach ( var box in _paramHighlights.Values )
+			box.Highlighted = false;
+
+		var diagnostic = _feature?.Diagnostic;
+
+		if ( diagnostic?.ParameterLabel is { } label
+			&& _paramHighlights.TryGetValue( label, out var highlight ) )
+		{
+			highlight.Highlighted = true;
+			highlight.Color = diagnostic.Severity == DiagnosticSeverity.Error ? Theme.Red : Theme.Yellow;
+		}
+	}
+
+	void RebuildStatus()
+	{
+		if ( !_statusSlot.IsValid() )
 			return;
+
+		_statusSlot.Layout.Clear( true );
+
+		var diagnostic = _feature?.Diagnostic;
+
+		if ( diagnostic is not null && !string.IsNullOrEmpty( diagnostic.Problem ) )
+		{
+			FillDiagnostic( diagnostic );
+			_statusSlot.Visible = true;
+			return;
+		}
 
 		var error = _feature?.Error;
 		var warning = _feature?.Warning;
+		var text = error ?? warning ?? "";
 
-		_statusLabel.Text = error ?? warning ?? "";
-		_statusLabel.Color = error is not null ? Theme.Red : Theme.Yellow;
-		_statusLabel.Visible = _statusLabel.Text.Length > 0;
+		if ( text.Length == 0 )
+		{
+			_statusSlot.Visible = false;
+			return;
+		}
+
+		var label = new Editor.Label( text ) { WordWrap = true };
+		label.Color = error is not null ? Theme.Red : Theme.Yellow;
+		_statusSlot.Layout.Add( label );
+		_statusSlot.Visible = true;
+	}
+
+	void FillDiagnostic( FeatureDiagnostic diagnostic )
+	{
+		_statusSlot.Layout.Margin = new Sandbox.UI.Margin( 8, 4, 8, 6 );
+		_statusSlot.Layout.Spacing = 3;
+
+		var severity = diagnostic.Severity == DiagnosticSeverity.Error ? Theme.Red : Theme.Yellow;
+
+		var problem = new Editor.Label( diagnostic.Problem ) { WordWrap = true };
+		problem.Color = severity;
+		problem.SetStyles( "font-weight: bold;" );
+		_statusSlot.Layout.Add( problem );
+
+		if ( !string.IsNullOrEmpty( diagnostic.Cause ) )
+		{
+			var cause = new Editor.Label( diagnostic.Cause ) { WordWrap = true };
+			cause.Color = Theme.TextLight;
+			_statusSlot.Layout.Add( cause );
+		}
+
+		var firstRemedyIsButton = diagnostic.SuggestedValue is not null
+			&& !string.IsNullOrEmpty( diagnostic.ParameterLabel )
+			&& diagnostic.Remedies.Count > 0;
+
+		for ( var i = 0; i < diagnostic.Remedies.Count; i++ )
+		{
+			var remedy = diagnostic.Remedies[i];
+
+			if ( i == 0 && firstRemedyIsButton )
+			{
+				var captured = diagnostic;
+				_statusSlot.Layout.Add( new Button( remedy )
+				{
+					Clicked = () => ApplySuggested( captured )
+				} );
+				continue;
+			}
+
+			var item = new Editor.Label( "• " + remedy ) { WordWrap = true };
+			item.Color = Theme.TextLight;
+			_statusSlot.Layout.Add( item );
+		}
+	}
+
+	void ApplySuggested( FeatureDiagnostic diagnostic )
+	{
+		if ( _feature is null || diagnostic.SuggestedValue is not float value )
+			return;
+
+		foreach ( var p in _feature.Parameters )
+		{
+			if ( p.Label != diagnostic.ParameterLabel )
+				continue;
+
+			switch ( p )
+			{
+				case FloatParam fp:
+					fp.Value = value;
+					break;
+				case IntParam ip:
+					ip.Value = (int)MathF.Round( value );
+					break;
+				default:
+					return;
+			}
+
+			Edited?.Invoke();
+			RefreshValues();
+			return;
+		}
 	}
 
 	public void Rebuild()
@@ -671,12 +779,16 @@ internal sealed class EffigyFeatureDialog : Widget
 		}
 	}
 
-	private Widget NewRow( out Layout layout, bool column = false )
+	private Widget NewRow( out Layout layout, bool column = false, string highlightLabel = null )
 	{
-		var row = new Widget( _body ) { Layout = column ? Layout.Column() : Layout.Row() };
+		var row = new HighlightBox( _body ) { Layout = column ? Layout.Column() : Layout.Row() };
 		row.Layout.Margin = new Sandbox.UI.Margin( 8, 3 );
 		row.Layout.Spacing = 6;
 		layout = row.Layout;
+
+		if ( highlightLabel is not null )
+			_paramHighlights[highlightLabel] = row;
+
 		return row;
 	}
 
@@ -698,7 +810,7 @@ internal sealed class EffigyFeatureDialog : Widget
 
 	private Widget BuildFloatRow( FloatParam fp )
 	{
-		var row = NewRow( out var layout );
+		var row = NewRow( out var layout, highlightLabel: fp.Label );
 		layout.Add( new Editor.Label( fp.Label ) { FixedWidth = 110 } );
 
 		var draggable = Draggable( fp.Min, fp.Max );
@@ -770,7 +882,7 @@ internal sealed class EffigyFeatureDialog : Widget
 
 	private Widget BuildIntRow( IntParam ip )
 	{
-		var row = NewRow( out var layout );
+		var row = NewRow( out var layout, highlightLabel: ip.Label );
 		layout.Add( new Editor.Label( ip.Label ) { FixedWidth = 110 } );
 
 		var draggable = Draggable( ip.Min, ip.Max );
@@ -913,7 +1025,7 @@ internal sealed class EffigyFeatureDialog : Widget
 
 	private Widget BuildVec3Row( Vec3Param vp )
 	{
-		var row = NewRow( out var layout, column: true );
+		var row = NewRow( out var layout, column: true, highlightLabel: vp.Label );
 		layout.Add( new Editor.Label( vp.Label ) );
 
 		var sub = new Widget( row ) { Layout = Layout.Row() };
@@ -1039,6 +1151,25 @@ internal sealed class EffigyFeatureDialog : Widget
 	{
 		Edited?.Invoke();
 		Rebuild();
+	}
+}
+
+/// <summary>A parameter row that can draw a ring when its diagnostic names this control.</summary>
+internal sealed class HighlightBox : Widget
+{
+	public bool Highlighted;
+	public Color Color = Theme.Red;
+
+	public HighlightBox( Widget parent ) : base( parent ) { }
+
+	protected override void OnPaint()
+	{
+		if ( !Highlighted )
+			return;
+
+		Paint.SetPen( Color, 1.5f );
+		Paint.ClearBrush();
+		Paint.DrawRect( LocalRect, 2f );
 	}
 }
 

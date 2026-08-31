@@ -80,14 +80,26 @@ public static class MeshBoolean
 	public static PolyMesh Apply( BooleanOp op, PolyMesh target, PolyMesh tool )
 	{
 		if ( target is null || tool is null )
-			throw new InvalidOperationException( "A boolean needs two solids" );
+		{
+			throw new FeatureException( new FeatureDiagnostic(
+				DiagnosticSeverity.Error,
+				"A boolean needs two solids",
+				"One of the inputs was missing, so there is nothing to combine.",
+				remedies: new[] { "Make sure both the target body and the tool solid exist" } ) );
+		}
 
 		if ( Provider is null )
 		{
-			throw new InvalidOperationException( UnavailableReason is { Length: > 0 } reason
+			var problem = UnavailableReason is { Length: > 0 } reason
 				? $"{Name( op )} needs a mesh boolean. {reason}"
 				: $"{Name( op )} needs a mesh boolean, and none is installed in this build. The kernel does "
-					+ "not carry its own — see MeshBoolean for why." );
+					+ "not carry its own — see MeshBoolean for why.";
+
+			throw new FeatureException( new FeatureDiagnostic(
+				DiagnosticSeverity.Error,
+				problem,
+				"This build has no boolean provider, so cuts and unions cannot run.",
+				remedies: new[] { "Run this in the s&box editor, where the engine boolean is installed" } ) );
 		}
 
 		bool ok;
@@ -102,22 +114,111 @@ public static class MeshBoolean
 		{
 			// An engine call throwing is a failed boolean, not a failed rebuild. Everything else in
 			// the tree should still build and still be on screen while this one feature complains.
-			throw new InvalidOperationException( $"{Name( op )} failed: {e.Message}" );
+			throw DiagnoseBoolean( op, target, tool, e.Message, engineThrew: true );
 		}
 
 		if ( !ok )
-			throw new InvalidOperationException( $"{Name( op )} failed: {error ?? "the solids could not be combined"}" );
+			throw DiagnoseBoolean( op, target, tool, error, engineThrew: false );
 
 		if ( result is null || result.FaceCount == 0 )
 		{
 			// An empty result is a real answer to some inputs — cutting a solid with something that
 			// swallows it whole — and it is never a useful one, because a body with no faces is
 			// indistinguishable from a broken feature everywhere downstream.
-			throw new InvalidOperationException(
-				$"{Name( op )} left nothing behind. The cut probably covers the whole part — check the profile and the distance." );
+			throw new FeatureException( new FeatureDiagnostic(
+				DiagnosticSeverity.Error,
+				$"{Name( op )} left nothing behind. The cut probably covers the whole part — check the profile and the distance.",
+				"The boolean returned a mesh with no faces, which would blank every feature below this one.",
+				remedies: new[] { "Reduce the distance so the cut does not swallow the part", "Check the profile sits inside the body" } ) );
 		}
 
 		return result;
+	}
+
+	/// <summary>
+	/// The engine's refusal is a dead end on its own. Before handing it up, say whether the two
+	/// bodies even overlap, and whether either is open — those are things we can see without
+	/// asking the engine, and they are the usual reasons it says no.
+	/// </summary>
+	static FeatureException DiagnoseBoolean( BooleanOp op, PolyMesh target, PolyMesh tool, string error, bool engineThrew )
+	{
+		var targetCheck = MeshValidator.Validate( target );
+		var toolCheck = MeshValidator.Validate( tool );
+		var targetOpen = !targetCheck.IsClosed;
+		var toolOpen = !toolCheck.IsClosed;
+
+		if ( targetOpen || toolOpen )
+		{
+			var which = targetOpen && toolOpen ? "both solids are open"
+				: targetOpen ? $"the target has {targetCheck.BoundaryEdges} boundary edge(s)"
+				: $"the tool has {toolCheck.BoundaryEdges} boundary edge(s)";
+
+			return new FeatureException( new FeatureDiagnostic(
+				DiagnosticSeverity.Error,
+				$"{Name( op )} failed: one of the solids is not closed",
+				$"{which}, so there is no inside to {Name( op ).ToLowerInvariant()}. {error ?? ""}".Trim(),
+				remedies: new[] { "Close the open mesh first", "Avoid cutting with a surface that has a boundary" } ) );
+		}
+
+		if ( BoundsGap( target, tool, out var axis, out var gap ) )
+		{
+			var how = gap > 1e-6f
+				? $"they miss each other by {gap:0.###} along {axis}"
+				: $"they only touch along {axis}, enclosing no common volume";
+
+			return new FeatureException( new FeatureDiagnostic(
+				DiagnosticSeverity.Error,
+				$"{Name( op )} failed: the two solids do not overlap",
+				$"{how}. {error ?? ""}".Trim(),
+				remedies: new[] { "Move the tool so it cuts into the part", "Increase the distance", "Check Flip direction" } ) );
+		}
+
+		return new FeatureException( new FeatureDiagnostic(
+			DiagnosticSeverity.Error,
+			$"{Name( op )} failed: {error ?? "the solids could not be combined"}",
+			engineThrew
+				? "The boolean engine threw rather than returning a mesh."
+				: "The solids overlap and are closed, so the refusal is in the geometry — self-intersection, or a case the engine cannot cut.",
+			remedies: new[] { "Check neither solid self-intersects", "Try a slightly different position or distance" } ) );
+	}
+
+	static bool BoundsGap( PolyMesh a, PolyMesh b, out string axis, out float gap )
+	{
+		axis = "X";
+		gap = 0f;
+
+		if ( a.VertexCount == 0 || b.VertexCount == 0 )
+			return false;
+
+		Extent( a, out var aMin, out var aMax );
+		Extent( b, out var bMin, out var bMax );
+
+		var gapX = SpanGap( aMin.x, aMax.x, bMin.x, bMax.x );
+		var gapY = SpanGap( aMin.y, aMax.y, bMin.y, bMax.y );
+		var gapZ = SpanGap( aMin.z, aMax.z, bMin.z, bMax.z );
+		var worst = MathF.Max( gapX, MathF.Max( gapY, gapZ ) );
+
+		if ( worst < -1e-6f )
+			return false;
+
+		axis = worst == gapX ? "X" : worst == gapY ? "Y" : "Z";
+		gap = worst;
+		return true;
+	}
+
+	static float SpanGap( float aMin, float aMax, float bMin, float bMax ) =>
+		MathF.Max( bMin - aMax, aMin - bMax );
+
+	static void Extent( PolyMesh mesh, out Vec3 min, out Vec3 max )
+	{
+		min = new Vec3( float.MaxValue, float.MaxValue, float.MaxValue );
+		max = new Vec3( float.MinValue, float.MinValue, float.MinValue );
+
+		foreach ( var p in mesh.Positions )
+		{
+			min = new Vec3( MathF.Min( min.x, p.x ), MathF.Min( min.y, p.y ), MathF.Min( min.z, p.z ) );
+			max = new Vec3( MathF.Max( max.x, p.x ), MathF.Max( max.y, p.y ), MathF.Max( max.z, p.z ) );
+		}
 	}
 
 	static string Name( BooleanOp op ) => op switch

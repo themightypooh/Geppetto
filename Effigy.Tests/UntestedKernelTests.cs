@@ -488,15 +488,16 @@ public static class UntestedKernelTests
 			studio.Bodies.All( b => b.Mesh.FaceCount == 24 ),
 			string.Join( ", ", studio.Bodies.Select( b => $"{b.Id}:{b.Mesh.FaceCount}" ) ) );
 
-		// A selection naming a body that no longer exists must not take the whole feature down —
-		// deleting a body upstream is an ordinary edit, and Matches on an empty result set means
-		// the feature simply does nothing.
+		// A selection naming a body that no longer exists used to silently do nothing. Deleting a
+		// body upstream is an ordinary edit, but a feature that then acts on nobody is a no-op, and
+		// a no-op is never a success.
 		subdivide.Bodies.BodyIds.Add( "body-that-was-deleted" );
 		studio.MarkDirty( 2 );
 		var report = studio.Rebuild();
 
-		Report.Check( "a selection naming a missing body is not an error",
-			!report.HasErrors, report.ToString() );
+		Report.Check( "a selection naming a missing body is an error, not a silent no-op",
+			report.HasErrors && subdivide.Diagnostic is { Remedies.Count: > 0 },
+			report.ToString() );
 
 		Report.Check( "and leaves every real body alone",
 			studio.Bodies.All( b => b.Mesh.FaceCount == 6 ),
@@ -508,7 +509,7 @@ public static class UntestedKernelTests
 		{
 			new SubdivideFeature(), new TransformFeature(), new MirrorFeature(),
 			new LinearPatternFeature(), new CircularPatternFeature(),
-			new ShellFeature(), new ChamferFeature(), new UVProjectFeature()
+			new ShellFeature(), new ChamferFeature(), new FilletFeature(), new UVProjectFeature()
 		};
 
 		foreach ( var feature in carriers )

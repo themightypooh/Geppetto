@@ -264,6 +264,25 @@ public sealed class PolyMesh
 		return MathF.Abs( area );
 	}
 
+	/// <summary>
+	/// Enclosed volume with sign. Positive when face windings put normals outward, negative when
+	/// the solid is inside-out.
+	///
+	/// Divergence theorem: sum over faces of (centroid · normal) * area equals three times the
+	/// enclosed volume. A mesh can be closed, manifold, Euler-correct and still inverted — this
+	/// is the quantity that sees it. Used as a refusal, so it lives on the mesh rather than as a
+	/// private copy in every test file.
+	/// </summary>
+	public float SignedVolume()
+	{
+		var acc = 0f;
+
+		foreach ( var f in Faces )
+			acc += Vec3.Dot( FaceCentroid( f ), FaceNormal( f ) ) * FaceArea( f );
+
+		return acc / 3f;
+	}
+
 	public PolyMesh Clone()
 	{
 		var m = new PolyMesh { Positions = new List<Vec3>( Positions ), Skin = Skin?.Clone() };

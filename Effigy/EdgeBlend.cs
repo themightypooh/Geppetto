@@ -49,6 +49,9 @@ public static class EdgeBlend
 	/// which is what Onshape's chamfer means by distance.
 	/// </summary>
 	public static PolyMesh Chamfer( PolyMesh mesh, float distance, float angleThresholdDegrees )
+		=> ChamferReport( mesh, distance, angleThresholdDegrees ).Mesh;
+
+	public static BlendReport ChamferReport( PolyMesh mesh, float distance, float angleThresholdDegrees )
 		=> Apply( mesh, distance, angleThresholdDegrees, 1, rounded: false );
 
 	/// <summary>
@@ -61,6 +64,9 @@ public static class EdgeBlend
 	/// chamfer, which is the right answer to asking for a one-segment arc.
 	/// </summary>
 	public static PolyMesh Fillet( PolyMesh mesh, float radius, float angleThresholdDegrees, int segments = 4 )
+		=> FilletReport( mesh, radius, angleThresholdDegrees, segments ).Mesh;
+
+	public static BlendReport FilletReport( PolyMesh mesh, float radius, float angleThresholdDegrees, int segments = 4 )
 		=> Apply( mesh, radius, angleThresholdDegrees, Math.Max( 1, segments ), rounded: true );
 
 	/// <summary>
@@ -75,34 +81,232 @@ public static class EdgeBlend
 	/// doesn't move far enough from its source to warrant one. An arc point between two corners cut
 	/// from the same vertex is that vertex's cut too, so it takes the same weights.
 	/// </summary>
-	static PolyMesh Apply( PolyMesh mesh, float size, float angleThresholdDegrees, int segments, bool rounded )
+	static BlendReport Apply( PolyMesh mesh, float size, float angleThresholdDegrees, int segments, bool rounded )
+	{
+		var report = new BlendReport { OriginalVolume = mesh.SignedVolume() };
+		var noun = rounded ? "radius" : "distance";
+		var sizeLabel = rounded ? "Radius" : "Distance";
+
+		if ( size <= 0f )
+		{
+			report.Mesh = mesh.Clone();
+			report.Failure = new FeatureDiagnostic(
+				DiagnosticSeverity.Error,
+				$"This {noun} is zero, so the feature has nothing to cut",
+				$"{sizeLabel} is {size:0.###}. A blend that does not move any edge is a no-op, not a success.",
+				sizeLabel,
+				remedies: new[] { $"Enter a {noun} greater than zero" } );
+			return report;
+		}
+
+		var work = Cut( mesh, size, angleThresholdDegrees, rounded );
+		report.SelectedEdges = work.Selected.Count;
+		report.SharpestDegrees = work.SharpestDegrees;
+
+		if ( work.Selected.Count == 0 )
+		{
+			report.Mesh = mesh.Clone();
+			report.Failure = new FeatureDiagnostic(
+				DiagnosticSeverity.Error,
+				$"No edge on this body is sharper than {angleThresholdDegrees:0.#}°",
+				$"The sharpest edge opens at {work.SharpestDegrees:0.#}°, so nothing was selected and the solid is unchanged.",
+				"Angle threshold",
+				work.SharpestDegrees > 0f ? MathF.Max( 0f, work.SharpestDegrees - 1f ) : (float?)null,
+				$"Lower the angle threshold below {work.SharpestDegrees:0.#}°",
+				"Pick a body with sharper edges" );
+			return report;
+		}
+
+		var shrunk = BuildShrunkFaces( work );
+		var collapsed = CountCollapsed( mesh, shrunk, work.FaceNormals );
+
+		if ( collapsed > 0 )
+		{
+			var fit = Bisect( size, s => FitsAll( mesh, s, angleThresholdDegrees, segments, rounded ) );
+			report.SuggestedSize = fit;
+			report.Mesh = mesh.Clone();
+			report.Failure = new FeatureDiagnostic(
+				DiagnosticSeverity.Error,
+				$"This {noun} collapses {collapsed} face(s) of the solid",
+				$"{sizeLabel} {size:0.###} eats at least one face entirely — the largest {noun} that still fits is {fit:0.###}.",
+				sizeLabel,
+				fit,
+				$"Reduce {noun} to {fit:0.###}" );
+			return report;
+		}
+
+		var result = Finish( work, shrunk, segments, rounded, out var flattened, out var uncapped );
+		report.ResultVolume = result.SignedVolume();
+
+		if ( report.ResultVolume <= 0f )
+		{
+			var fit = Bisect( size, s => FitsAll( mesh, s, angleThresholdDegrees, segments, rounded ) );
+
+			report.SuggestedSize = fit;
+			report.Mesh = mesh.Clone();
+			report.Failure = new FeatureDiagnostic(
+				DiagnosticSeverity.Error,
+				$"This {noun} turns the solid inside out",
+				$"The body enclosed {report.OriginalVolume:0.###} and came back {report.ResultVolume:0.###} — opposite fillets have met through the middle. The largest {noun} that stays a solid is {fit:0.###}.",
+				sizeLabel,
+				fit,
+				$"Reduce {noun} to {fit:0.###}" );
+			return report;
+		}
+
+		report.Mesh = result;
+
+		if ( report.OriginalVolume > 1e-6f && report.ResultVolume < report.OriginalVolume * 0.5f )
+		{
+			report.Warnings.Add( new FeatureDiagnostic(
+				DiagnosticSeverity.Warning,
+				$"This {noun} removes more than half the solid",
+				$"The body went from {report.OriginalVolume:0.###} down to {report.ResultVolume:0.###} ({100f * report.ResultVolume / report.OriginalVolume:0.#}% left). That is still a valid solid, and almost never what was meant.",
+				sizeLabel,
+				remedies: new[] { $"Reduce the {noun}", "Check that every sharp edge was meant to be blended" } ) );
+		}
+
+		if ( work.ClampedSetbacks > 0 )
+		{
+			report.Warnings.Add( new FeatureDiagnostic(
+				DiagnosticSeverity.Warning,
+				$"{work.ClampedSetbacks} edge(s) are too shallow for this {noun}",
+				$"Their blend is narrower than the {noun} asked for — a setback of {noun}/tan(φ/2) would have eaten the faces either side, so it was clamped.",
+				sizeLabel,
+				remedies: new[] { $"Reduce the {noun}", "Raise the angle threshold so shallow edges are left sharp" } ) );
+		}
+
+		if ( work.SquaredCorners > 0 )
+		{
+			report.Warnings.Add( new FeatureDiagnostic(
+				DiagnosticSeverity.Warning,
+				$"{work.SquaredCorners} corner(s) were too shallow to cut cleanly and were squared off",
+				"A near-straight corner throws the cut point arbitrarily far; those corners were snapped back so the solid stays local.",
+				remedies: new[] { "Leave those edges unselected", $"Reduce the {noun}" } ) );
+		}
+
+		if ( flattened > 0 )
+		{
+			report.Warnings.Add( new FeatureDiagnostic(
+				DiagnosticSeverity.Warning,
+				$"{flattened} edge(s) could not be rounded and were chamfered instead",
+				"The two ends of the arc disagreed about where the centre sits, so those edges fell back to a flat quad rather than a broken strip.",
+				remedies: new[] { $"Reduce the {noun}", "Use Chamfer on those edges" } ) );
+		}
+
+		if ( uncapped > 0 )
+		{
+			report.Warnings.Add( new FeatureDiagnostic(
+				DiagnosticSeverity.Warning,
+				$"{uncapped} corner(s) sit on a boundary or non-manifold vertex and were left sharp",
+				"A cap needs a closed loop of faces around the vertex; those vertices do not have one.",
+				remedies: new[] { "Close the mesh first", "Avoid blending edges that run onto a boundary" } ) );
+		}
+
+		return report;
+	}
+
+	static PolyMesh ApplyUnchecked( PolyMesh mesh, float size, float angleThresholdDegrees, int segments, bool rounded )
 	{
 		if ( size <= 0f )
 			return mesh.Clone();
 
+		var work = Cut( mesh, size, angleThresholdDegrees, rounded );
+
+		if ( work.Selected.Count == 0 )
+			return mesh.Clone();
+
+		var shrunk = BuildShrunkFaces( work );
+		return Finish( work, shrunk, segments, rounded, out _, out _ );
+	}
+
+	static bool ShrinkFits( PolyMesh mesh, float size, float angleThresholdDegrees, bool rounded )
+	{
+		var work = Cut( mesh, size, angleThresholdDegrees, rounded );
+
+		if ( work.Selected.Count == 0 )
+			return true;
+
+		var shrunk = BuildShrunkFaces( work );
+		return CountCollapsed( mesh, shrunk, work.FaceNormals ) == 0;
+	}
+
+	static bool FitsAll( PolyMesh mesh, float size, float angleThresholdDegrees, int segments, bool rounded )
+	{
+		if ( !ShrinkFits( mesh, size, angleThresholdDegrees, rounded ) )
+			return false;
+
+		return ApplyUnchecked( mesh, size, angleThresholdDegrees, segments, rounded ).SignedVolume() > 0f;
+	}
+
+	static float Bisect( float size, Func<float, bool> fits )
+	{
+		if ( fits( size ) )
+			return size;
+
+		var lo = 0f;
+		var hi = size;
+
+		for ( var i = 0; i < 12; i++ )
+		{
+			var mid = ( lo + hi ) * 0.5f;
+
+			if ( fits( mid ) )
+				lo = mid;
+			else
+				hi = mid;
+		}
+
+		return lo;
+	}
+
+	sealed class CutWork
+	{
+		public PolyMesh Source;
+		public Vec3[] FaceNormals;
+		public Dictionary<EdgeKey, List<int>> EdgeFaces;
+		public List<int>[] VertexFaces;
+		public HashSet<EdgeKey> Selected;
+		public Dictionary<EdgeKey, float> Setbacks;
+		public Dictionary<(int Face, int Vertex), int> CornerPoint;
+		public Dictionary<(int Face, EdgeKey), int> EdgeFrom;
+		public Dictionary<(int Face, int Vertex), EdgeKey> NextEdgeAtVertex;
+		public List<Vec3> Positions;
+		public List<BoneWeight[]> Weights;
+		public int ClampedSetbacks;
+		public int SquaredCorners;
+		public float SharpestDegrees;
+		public float BlendSize;
+	}
+
+	static CutWork Cut( PolyMesh mesh, float size, float angleThresholdDegrees, bool rounded )
+	{
 		var edgeFaces = mesh.BuildEdgeFaces();
 		var vertexFaces = mesh.BuildVertexFaces();
 		var faceNormals = mesh.Faces.Select( mesh.FaceNormal ).ToArray();
-
 		var selected = SelectEdges( mesh, edgeFaces, faceNormals, angleThresholdDegrees );
+		var setback = Setbacks( selected, edgeFaces, faceNormals, size, rounded, out var clamped );
 
-		// How far back from each selected edge its two faces get cut. One number per edge rather
-		// than one for the whole mesh, because a fillet's setback depends on the angle the edge
-		// opens at. A chamfer puts the same distance on every edge and this is a flat lookup.
-		var setback = Setbacks( selected, edgeFaces, faceNormals, size, rounded );
+		var work = new CutWork
+		{
+			Source = mesh,
+			FaceNormals = faceNormals,
+			EdgeFaces = edgeFaces,
+			VertexFaces = vertexFaces,
+			Selected = selected,
+			Setbacks = setback,
+			CornerPoint = new Dictionary<(int Face, int Vertex), int>(),
+			EdgeFrom = new Dictionary<(int Face, EdgeKey), int>(),
+			NextEdgeAtVertex = new Dictionary<(int Face, int Vertex), EdgeKey>(),
+			Positions = new List<Vec3>( mesh.Positions ),
+			Weights = mesh.IsRigged ? new List<BoneWeight[]>( mesh.Skin.Vertices ) : null,
+			ClampedSetbacks = clamped,
+			SharpestDegrees = SharpestEdgeDegrees( edgeFaces, faceNormals ),
+			BlendSize = size
+		};
 
-		// Per (face, vertex) bookkeeping, filled while the corners are cut.
-		var cornerPoint = new Dictionary<(int Face, int Vertex), int>();
-		var edgeFrom = new Dictionary<(int Face, EdgeKey), int>();
-		var nextEdgeAtVertex = new Dictionary<(int Face, int Vertex), EdgeKey>();
+		var squared = 0;
 
-		var positions = new List<Vec3>( mesh.Positions );
-		var weights = mesh.IsRigged ? new List<BoneWeight[]>( mesh.Skin.Vertices ) : null;
-
-		// Pass 1: work out where every corner of every original face lands. This has to finish for
-		// EVERY face before any face's final loop is built (pass 2 below) — a face's own corner can
-		// stay put while its neighbour's, across an edge that was never selected, still needs to
-		// know that.
 		for ( var fi = 0; fi < mesh.Faces.Count; fi++ )
 		{
 			var f = mesh.Faces[fi];
@@ -118,55 +322,138 @@ public static class EdgeBlend
 				var prevKey = new EdgeKey( prev, v );
 				var nextKey = new EdgeKey( v, next );
 
-				edgeFrom[(fi, nextKey)] = v;
-				nextEdgeAtVertex[(fi, v)] = nextKey;
+				work.EdgeFrom[(fi, nextKey)] = v;
+				work.NextEdgeAtVertex[(fi, v)] = nextKey;
 
 				var point = CutCorner(
 					mesh.Positions[prev], mesh.Positions[v], mesh.Positions[next], n,
-					Setback( setback, prevKey ), Setback( setback, nextKey ) );
+					Setback( setback, prevKey ), Setback( setback, nextKey ), ref squared );
 
 				int index;
 
 				if ( point is { } p )
 				{
-					index = positions.Count;
-					positions.Add( p );
-					weights?.Add( mesh.Skin[v] );
+					index = work.Positions.Count;
+					work.Positions.Add( p );
+					work.Weights?.Add( mesh.Skin[v] );
 				}
 				else
 				{
 					index = v;
 				}
 
-				cornerPoint[(fi, v)] = index;
+				work.CornerPoint[(fi, v)] = index;
 			}
 		}
 
-		var result = new PolyMesh { Positions = positions, Skin = weights is null ? null : new SkinWeights { Vertices = weights } };
+		work.SquaredCorners = squared;
+		return work;
+	}
 
-		// Pass 2: each face keeps its own corner points, one per original corner — no splitting,
-		// no routing through a neighbour. Whatever gap that leaves along an edge whose two sides
-		// disagree is entirely pass 3's job, for every edge alike, not just the selected ones.
-		for ( var fi = 0; fi < mesh.Faces.Count; fi++ )
+	static PolyMesh BuildShrunkFaces( CutWork work )
+	{
+		var result = new PolyMesh
 		{
-			var f = mesh.Faces[fi];
+			Positions = work.Positions,
+			Skin = work.Weights is null ? null : new SkinWeights { Vertices = work.Weights }
+		};
+
+		for ( var fi = 0; fi < work.Source.Faces.Count; fi++ )
+		{
+			var f = work.Source.Faces[fi];
 			var newIndices = new int[f.Count];
 
 			for ( var i = 0; i < f.Count; i++ )
-				newIndices[i] = cornerPoint[(fi, f.Indices[i])];
+				newIndices[i] = work.CornerPoint[(fi, f.Indices[i])];
 
 			result.AddFace( newIndices, (Vec2[])f.UVs.Clone(), f.Material );
 		}
 
-		// Pass 2.5: the arc, for every selected edge, at both of its ends.
-		//
-		// Built before pass 3 and before the caps because both consume it and they have to consume
-		// the SAME points — one that exists in the bridge and not in the cap is a T-junction. A
-		// chamfer skips this entirely and every rail below is two points long, which is the single
-		// quad it always emitted.
+		return result;
+	}
+
+	static int CountCollapsed( PolyMesh original, PolyMesh shrunk, Vec3[] originalNormals )
+	{
+		var n = 0;
+
+		for ( var fi = 0; fi < original.Faces.Count; fi++ )
+		{
+			var origArea = original.FaceArea( original.Faces[fi] );
+
+			if ( origArea < 1e-12f )
+				continue;
+
+			var signed = SignedArea( shrunk, shrunk.Faces[fi], originalNormals[fi] );
+
+			if ( signed <= origArea * 1e-4f )
+				n++;
+		}
+
+		return n;
+	}
+
+	static float SignedArea( PolyMesh mesh, Face f, Vec3 referenceNormal )
+	{
+		var c = mesh.FaceCentroid( f );
+		var area = 0f;
+
+		for ( var i = 0; i < f.Count; i++ )
+		{
+			var a = mesh.Positions[f.Indices[i]] - c;
+			var b = mesh.Positions[f.Indices[(i + 1) % f.Count]] - c;
+			area += Vec3.Dot( Vec3.Cross( a, b ), referenceNormal ) * 0.5f;
+		}
+
+		return area;
+	}
+
+	static float SharpestEdgeDegrees( Dictionary<EdgeKey, List<int>> edgeFaces, Vec3[] faceNormals )
+	{
+		var sharpest = 0f;
+
+		foreach ( var ( _, faces ) in edgeFaces )
+		{
+			if ( faces.Count != 2 )
+				continue;
+
+			var dot = Math.Clamp( Vec3.Dot( faceNormals[faces[0]], faceNormals[faces[1]] ), -1f, 1f );
+			var deg = MathF.Acos( dot ) * 180f / MathF.PI;
+
+			if ( deg > sharpest )
+				sharpest = deg;
+		}
+
+		return sharpest;
+	}
+
+	static PolyMesh Finish( CutWork work, PolyMesh result, int segments, bool rounded,
+		out int flattened, out int uncapped )
+	{
+		var mesh = work.Source;
+		var selected = work.Selected;
+		var edgeFaces = work.EdgeFaces;
+		var edgeFrom = work.EdgeFrom;
+		var cornerPoint = work.CornerPoint;
+		var faceNormals = work.FaceNormals;
+		var nextEdgeAtVertex = work.NextEdgeAtVertex;
+		var vertexFaces = work.VertexFaces;
+		flattened = 0;
+		uncapped = 0;
+
+		// Pass 2 already ran: `result` holds the shrunk faces. Continue from the original Apply
+		// at pass 2.5.
 		var rails = rounded
-			? ArcRails( mesh, result, selected, edgeFaces, edgeFrom, cornerPoint, faceNormals, size, segments )
+			? ArcRails( mesh, result, selected, edgeFaces, edgeFrom, cornerPoint, faceNormals, work.BlendSize, segments )
 			: new Dictionary<EdgeKey, Rails>();
+
+		if ( rounded && segments >= 2 )
+		{
+			foreach ( var key in selected )
+			{
+				if ( edgeFaces[key].Count == 2 && !rails.ContainsKey( key ) )
+					flattened++;
+			}
+		}
 
 		// Pass 3: a bridging face for every edge whose two sides disagree at either end — not just
 		// the selected ones. An edge can end up needing this even though it was never selected
@@ -193,31 +480,11 @@ public static class EdgeBlend
 			var pBonBA = cornerPoint[(fBtoA, key.B)];
 			var pAonBA = cornerPoint[(fBtoA, key.A)];
 
-			// The two rails this strip runs between: each end of the edge, from its AB-side point to
-			// its BA-side point, through whatever arc points pass 2.5 put between them. No arc means
-			// two points, and the loop below emits the one quad it always did.
 			var hasArc = rails.TryGetValue( key, out var arc );
 
 			var railA = hasArc ? arc.AtA : new[] { pAonAB, pAonBA };
 			var railB = hasArc ? arc.AtB : new[] { pBonAB, pBonBA };
 
-			// UVs are a placeholder here — planar projection isn't built yet (see
-			// WHAT-IS-BUILT.md, "UV projection"), and this face's true UV depends on it.
-			//
-			// Order is [A-side, A-side-next, B-side-next, B-side], NOT the more obvious "walk A's
-			// side then B's side" — that ordering puts the normal in the plane but pointing inward,
-			// an exact instance of the trap MeshTransform.Apply's own comment warns about: it
-			// renders black and looks fine in wireframe. Caught by Newell's method on a cube edge by
-			// hand, cross-checked against the volume test.
-			//
-			// An end whose two points already agree (both equal the plain vertex, or by symmetry
-			// equal each other) collapses away in the dedupe below rather than needing special-
-			// casing — including the "untouched third face" case: routing THROUGH that vertex here
-			// was tried and reliably added spurious volume (a hand-measured, reproducible excess,
-			// not a rounding artefact) because it double-counts the sliver the cap below already
-			// covers. The vertex's own cap face is what closes that gap instead — every distinct
-			// point converging on a vertex belongs to exactly one place, the cap, not smeared across
-			// every bridge that happens to end there too.
 			for ( var s = 0; s < railA.Length - 1; s++ )
 			{
 				var corners = new List<int> { railA[s], railA[s + 1], railB[s + 1], railB[s] };
@@ -232,7 +499,7 @@ public static class EdgeBlend
 					corners.RemoveAt( corners.Count - 1 );
 
 				if ( corners.Count < 3 )
-					continue; // neither end actually cut — nothing to do on this edge after all.
+					continue;
 
 				result.AddFace( corners.ToArray(), material: mesh.Faces[fAtoB].Material );
 			}
@@ -243,12 +510,24 @@ public static class EdgeBlend
 			var loop = WalkFacesAroundVertex( v, faces, edgeFaces, nextEdgeAtVertex );
 
 			if ( loop is null )
-				continue; // boundary or non-manifold vertex — left untouched, a known limitation.
+			{
+				var cut = false;
 
-			// THE CAP CARRIES THE ARC TOO. Between one face's corner point and the next lies the
-			// edge they share, and if that edge was rounded then the cap's boundary follows the arc
-			// across it rather than cutting the corner off. Take the same points the bridge used,
-			// in the direction this walk is going.
+				foreach ( var f in faces )
+				{
+					if ( cornerPoint.TryGetValue( (f, v), out var idx ) && idx != v )
+					{
+						cut = true;
+						break;
+					}
+				}
+
+				if ( cut )
+					uncapped++;
+
+				continue;
+			}
+
 			var points = new List<int>();
 
 			foreach ( var f in loop )
@@ -262,8 +541,6 @@ public static class EdgeBlend
 
 				var rail = v == edge.A ? arc.AtA : arc.AtB;
 
-				// The rail runs from the AB-side face to the BA-side face. This walk leaves `f`
-				// across this edge, so it is going that way only if `f` IS the AB-side face.
 				if ( f == arc.FaceAtoB )
 				{
 					for ( var i = 1; i < rail.Length - 1; i++ )
@@ -276,8 +553,6 @@ public static class EdgeBlend
 				}
 			}
 
-			// Two consecutive entries can still land on the very same point — e.g. by symmetry, or
-			// an uncut end whose whole rail is one index — so collapse repeats.
 			var distinct = new List<int>();
 
 			foreach ( var p in points )
@@ -290,14 +565,11 @@ public static class EdgeBlend
 				distinct.RemoveAt( distinct.Count - 1 );
 
 			if ( distinct.Count < 3 )
-				continue; // nothing left to cap.
+				continue;
 
 			result.AddFace( distinct.ToArray(), material: mesh.Faces[loop[0]].Material );
 		}
 
-		// A fully-cut solid never has a single face left referencing an original vertex — every
-		// corner got cut on both sides. Left in, those positions would still count toward
-		// VertexCount and quietly break any Euler-characteristic check downstream.
 		return RemoveUnusedVertices( result );
 	}
 
@@ -480,9 +752,10 @@ public static class EdgeBlend
 	/// </summary>
 	static Dictionary<EdgeKey, float> Setbacks(
 		HashSet<EdgeKey> selected, Dictionary<EdgeKey, List<int>> edgeFaces, Vec3[] faceNormals,
-		float size, bool rounded )
+		float size, bool rounded, out int clamped )
 	{
 		var setbacks = new Dictionary<EdgeKey, float>( selected.Count );
+		clamped = 0;
 
 		foreach ( var key in selected )
 		{
@@ -501,7 +774,15 @@ public static class EdgeBlend
 			var half = MathF.Acos( cos ) * 0.5f;
 			var tan = MathF.Tan( half );
 
-			setbacks[key] = tan < 1f / MaxSetback ? size * MaxSetback : size / tan;
+			if ( tan < 1f / MaxSetback )
+			{
+				clamped++;
+				setbacks[key] = size * MaxSetback;
+			}
+			else
+			{
+				setbacks[key] = size / tan;
+			}
 		}
 
 		return setbacks;
@@ -570,7 +851,7 @@ public static class EdgeBlend
 	/// Each cut edge slides its supporting line inward, within the face's own plane, by that edge's
 	/// own setback; the corner becomes the intersection of its two (possibly-slid) boundary lines.
 	/// </summary>
-	static Vec3? CutCorner( Vec3 prev, Vec3 v, Vec3 next, Vec3 faceNormal, float prevWidth, float nextWidth )
+	static Vec3? CutCorner( Vec3 prev, Vec3 v, Vec3 next, Vec3 faceNormal, float prevWidth, float nextWidth, ref int squared )
 	{
 		if ( prevWidth <= 0f && nextWidth <= 0f )
 			return null;
@@ -627,7 +908,13 @@ public static class EdgeBlend
 		//
 		// Every honest cut lands within a few multiples of width: a square corner is about 1.4x,
 		// and even a 5° needle only reaches ~11x. Past this it is degeneracy, not sharpness.
-		return (hit - v).Length > width * MaxCornerOffset ? fallback : hit;
+		if ( (hit - v).Length > width * MaxCornerOffset )
+		{
+			squared++;
+			return fallback;
+		}
+
+		return hit;
 	}
 
 	/// <summary>How far a cut corner may travel from its original vertex, as a multiple of the
