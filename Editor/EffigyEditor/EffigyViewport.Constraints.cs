@@ -393,7 +393,7 @@ internal sealed partial class EffigyViewport
 	/// whatever curve happened to be under the glyph.</summary>
 	private bool CursorOnConstraintMark => _hoverMarker is not null;
 
-	static string Name( SketchConstraintKind kind ) => kind switch
+	new static string Name( SketchConstraintKind kind ) => kind switch
 	{
 		SketchConstraintKind.Horizontal => "Horizontal",
 		SketchConstraintKind.Vertical => "Vertical",

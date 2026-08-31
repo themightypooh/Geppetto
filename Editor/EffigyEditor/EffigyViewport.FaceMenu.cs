@@ -101,7 +101,7 @@ internal sealed partial class EffigyViewport
 		_flyingCamera = flying;
 	}
 
-	private static bool Moved( Vector3 a, Vector3 b, float epsilon ) =>
+	private new static bool Moved( Vector3 a, Vector3 b, float epsilon ) =>
 		MathF.Abs( a.x - b.x ) > epsilon
 		|| MathF.Abs( a.y - b.y ) > epsilon
 		|| MathF.Abs( a.z - b.z ) > epsilon;
