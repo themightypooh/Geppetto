@@ -38,6 +38,88 @@ public static class EditorFlowTests
 
 		Report.Section( "editor flow: a messy sketch degrades instead of blocking" );
 		TestMessySketchStillBuilds();
+
+		Report.Section( "editor flow: sculpting a feature that is not the last one" );
+		TestSculptModeSurvivesTheRollbackDance();
+	}
+
+	/// <summary>
+	/// What EffigyWindow actually does around a sculpt, replayed without any widgets.
+	///
+	/// ENTERING SCULPT MODE MOVES THE ROLLBACK BAR. EditFeature rolls to just after the feature so
+	/// the cage is what you see rather than whatever is stacked on top of it, and finishing puts the
+	/// bar back. That is three pieces of state changing around a fourth - the deltas - and the order
+	/// is exactly the kind of thing that reads as correct and is not: roll back, sculpt, roll
+	/// forward, and the feature above has to come back carrying the sculpt underneath it.
+	///
+	/// This is the sequence, not the widgets. If it passes, what is left in the editor is a strip of
+	/// buttons calling these methods in this order.
+	/// </summary>
+	static void TestSculptModeSurvivesTheRollbackDance()
+	{
+		var studio = new PartStudio();
+
+		var box = studio.Add( new PrimitiveFeature() );
+		box.SizeX.Value = 2f;
+		box.SizeY.Value = 2f;
+		box.SizeZ.Value = 2f;
+
+		var sculpt = studio.Add( new SculptFeature() );
+
+		// Something ABOVE the sculpt, so the rollback actually hides one feature and putting the bar
+		// back has something to restore.
+		var mirror = studio.Add( new MirrorFeature() );
+
+		studio.Rebuild();
+
+		var bodiesWithMirror = studio.Bodies.Count;
+
+		Report.Check( "the fixture builds with the mirror on top", bodiesWithMirror > 1,
+			$"{bodiesWithMirror} bodies" );
+
+		// --- EnterSculpt: roll to just after the sculpt, and rebuild ------------------------------
+		var restoreTo = studio.RollbackIndex;
+		studio.RollbackIndex = studio.Features.IndexOf( sculpt ) + 1;
+		studio.Rebuild();
+
+		Report.Check( "rolling to the sculpt hides the feature above it", studio.Bodies.Count < bodiesWithMirror,
+			$"{studio.Bodies.Count} bodies" );
+		Report.Check( "and the sculpt has a cage to work on", sculpt.Sculpt is not null );
+
+		// --- the session, exactly as the viewport drives it ---------------------------------------
+		var session = new SculptSession( sculpt.Sculpt );
+		session.Radius = session.SuggestedRadius;
+		session.Sculpt.AddLevel();
+		session.Level = session.Sculpt.TopLevel;
+
+		var started = session.BeginStroke( new Vec3( 0, 0, 5 ), new Vec3( 0, 0, -1 ) );
+		session.MoveTo( new Vec3( 0.3f, 0, 5 ), new Vec3( 0, 0, -1 ) );
+		var edit = session.EndStroke();
+
+		Report.Check( "a stroke lands on the cage from above", started && edit is not null,
+			started ? "nothing committed" : "the press missed" );
+
+		// --- FinishSculpt: mark dirty, put the bar back, rebuild ----------------------------------
+		studio.MarkDirty( sculpt );
+		studio.RollbackIndex = restoreTo;
+
+		var report = studio.Rebuild();
+
+		Report.Check( "the model builds again with the bar back", !report.HasErrors, report.ToString() );
+		Report.Check( "the feature above the sculpt is back", studio.Bodies.Count == bodiesWithMirror,
+			$"{studio.Bodies.Count} bodies, expected {bodiesWithMirror}" );
+		Report.Check( "and the sculpt survived the round trip", sculpt.Sculpt.HasDetail( sculpt.Sculpt.TopLevel ) );
+
+		// The mirror copies the sculpted body, so the sculpt has to be in what it copied - the check
+		// that the bar going back did not quietly rebuild the cage from scratch underneath it.
+		var vertices = 0;
+
+		foreach ( var body in studio.Bodies )
+			vertices += body.Mesh.VertexCount;
+
+		Report.Check( "the sculpted level is what everything above it was built from",
+			vertices > bodiesWithMirror * sculpt.Sculpt.Cage.VertexCount,
+			$"{vertices} vertices across {studio.Bodies.Count} bodies" );
 	}
 
 	/// <summary>

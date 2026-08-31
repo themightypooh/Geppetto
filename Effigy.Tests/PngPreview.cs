@@ -331,7 +331,7 @@ public static class PngPreview
 
 	// --- PNG encoding -------------------------------------------------------------------------
 
-	static void WritePng( string path, int[] pixels, int w, int h )
+	internal static void WritePng( string path, int[] pixels, int w, int h )
 	{
 		// Raw scanlines, each prefixed with filter type 0 (None). Simplest valid encoding.
 		var raw = new byte[h * (w * 3 + 1)];

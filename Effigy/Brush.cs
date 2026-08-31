@@ -59,7 +59,27 @@ public sealed class BrushUndo
 
 	public int Count => _previous.Count;
 
+	/// <summary>Every vertex this stroke moved, with the position it had BEFORE.</summary>
+	public IReadOnlyDictionary<int, Vec3> Previous => _previous;
+
 	internal void Remember( int vertex, Vec3 position ) => _previous.TryAdd( vertex, position );
+
+	/// <summary>
+	/// Fold a later undo into this one, so several brush applications read as a single stroke.
+	///
+	/// EARLIEST WINS, which is what TryAdd gives: a vertex moved by three dabs in one stroke has to
+	/// go back to where it was before the FIRST of them, not before the last. Absorbing in the other
+	/// order would leave the model two thirds sculpted after an undo, which looks like a brush bug
+	/// rather than an undo one.
+	/// </summary>
+	public void Absorb( BrushUndo later )
+	{
+		if ( later is null )
+			throw new ArgumentNullException( nameof( later ) );
+
+		foreach ( var (vertex, position) in later._previous )
+			_previous.TryAdd( vertex, position );
+	}
 
 	public void Restore( PolyMesh mesh )
 	{

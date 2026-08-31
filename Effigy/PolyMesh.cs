@@ -283,6 +283,34 @@ public sealed class PolyMesh
 		return acc / 3f;
 	}
 
+	/// <summary>
+	/// Diagonal of the axis-aligned bounds - this tool's one answer to "how big is this model".
+	///
+	/// Effigy's units are dimensionless: a default primitive is one unit across and a room is
+	/// hundreds, so anything with a distance in it needs a default that SCALES rather than a
+	/// constant. The bake's search range, reprojection's, and the sculpt brush's starting radius are
+	/// all a fraction of this, and they were three copies of the same loop until they were not.
+	/// </summary>
+	public float BoundsDiagonal
+	{
+		get
+		{
+			if ( Positions.Count == 0 )
+				return 0f;
+
+			var min = Positions[0];
+			var max = Positions[0];
+
+			foreach ( var p in Positions )
+			{
+				min = new Vec3( MathF.Min( min.x, p.x ), MathF.Min( min.y, p.y ), MathF.Min( min.z, p.z ) );
+				max = new Vec3( MathF.Max( max.x, p.x ), MathF.Max( max.y, p.y ), MathF.Max( max.z, p.z ) );
+			}
+
+			return (max - min).Length;
+		}
+	}
+
 	public PolyMesh Clone()
 	{
 		var m = new PolyMesh { Positions = new List<Vec3>( Positions ), Skin = Skin?.Clone() };

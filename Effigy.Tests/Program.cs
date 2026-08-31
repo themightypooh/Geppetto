@@ -116,6 +116,8 @@ public static class Program
 
 		EditorFlowTests.Run();
 
+		PngTests.Run();
+
 		KernelSyncTests.Run();
 
 		Section( "writing sample OBJs" );
@@ -407,6 +409,7 @@ public static class Program
 
 		WriteSketchSamples( outDir );
 		WritePreviews( outDir );
+		WriteBakeSample( outDir );
 		WriteDmxSamples( outDir );
 
 		var files = Directory.GetFiles( outDir, "*.obj" ).Length;
@@ -428,6 +431,60 @@ public static class Program
 
 			Console.WriteLine( $"  {name,-12} {At( 0 ),12} {At( 2 ),14} {At( 4 ),16} {At( 6 ),18}" );
 		}
+	}
+
+	/// <summary>
+	/// A normal map, baked from a sculpted plane onto its cage and written out as a PNG.
+	///
+	/// THE SUITE CANNOT JUDGE THIS ONE. It checks that the flanks of a bump lean the right way and
+	/// that the numbers are what they should be, and every one of those can pass while the map is
+	/// unusable in a shader — the green channel's convention in particular is a coin flip that looks
+	/// entirely plausible either way in a thumbnail and lights every dent as a bump in the engine.
+	/// So the file is written for the same reason the sample DMX is: the real verdict is somewhere
+	/// else, and this is what gets carried there.
+	///
+	/// Expect a mostly flat lilac sheet — (128, 128, 255) is "no change from the cage" — with a disc
+	/// in the middle: pink to the right of centre and blue to the left (red is +u), cyan below centre
+	/// and purple above it (green is +v, and this file's first row is v = 0, so +v runs DOWN the
+	/// image). That last clause is a convention, not a fact about the bake, and it is the second
+	/// thing to check in the engine after the green channel's sign — an upside-down map lights
+	/// exactly as wrongly as a flipped one.
+	/// </summary>
+	static void WriteBakeSample( string outDir )
+	{
+		var sculpt = new MultiresSculpt( Primitives.Plane( 2, 2, 4, 4 ) );
+		sculpt.AddLevel();
+		sculpt.AddLevel();
+		sculpt.AddLevel();
+
+		var mesh = sculpt.Evaluate( 3 );
+
+		for ( var i = 0; i < mesh.VertexCount; i++ )
+		{
+			var p = mesh.Positions[i];
+			var r = MathF.Sqrt( p.x * p.x + p.y * p.y );
+
+			if ( r >= 0.6f )
+				continue;
+
+			var t = 1f - r / 0.6f;
+			mesh.Positions[i] = new Vec3( p.x, p.y, p.z + 0.2f * t * t * (3f - 2f * t) );
+		}
+
+		sculpt.Record( 3, mesh );
+
+		var coverage = NormalBake.Measure( sculpt.Cage, 256 );
+		var map = NormalBake.Bake( sculpt.Cage, sculpt.Evaluate( 3 ), 256 );
+		var pixels = new int[map.Width * map.Height];
+
+		for ( var i = 0; i < pixels.Length; i++ )
+			pixels[i] = (map.Rgb[i * 3] << 16) | (map.Rgb[i * 3 + 1] << 8) | map.Rgb[i * 3 + 2];
+
+		PngPreview.WritePng( Path.Combine( outDir, "sample_normal_bake.png" ), pixels, map.Width, map.Height );
+
+		Check( $"baked a {map.Width}x{map.Height} normal map to {outDir}/sample_normal_bake.png "
+			+ $"({map.FilledCount} texels hit, UVs {(coverage.CanBake ? "clean" : "unusable")})",
+			map.FilledCount > 0 && coverage.CanBake );
 	}
 
 	/// <summary>

@@ -254,6 +254,21 @@ public abstract class Feature
 	public abstract string TypeName { get; }
 	public abstract IReadOnlyList<IParam> Parameters { get; }
 
+	/// <summary>
+	/// Whether this feature's cached result is out of date even though nobody called MarkDirty.
+	///
+	/// The convention everywhere else is that whoever edits a feature marks it dirty, and for a
+	/// dialog full of numbers that is one call in one place. It does not hold for a feature whose
+	/// state is a live object somebody else is mutating — SculptFeature's levels are changed by a
+	/// brush, hundreds of times a stroke, nowhere near the code that owns the studio. Relying on
+	/// that caller to remember is how "every parameter edit is a silent no-op" happened once
+	/// already, and it looked like three unrelated UI faults for a day.
+	///
+	/// So a feature that owns mutable state outside its parameters answers this instead, and the
+	/// rebuild asks. Must be cheap: it is called for every reusable feature on every rebuild.
+	/// </summary>
+	public virtual bool IsStale => false;
+
 	protected abstract void Execute( FeatureContext ctx );
 
 	internal void Run( FeatureContext ctx )

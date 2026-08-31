@@ -209,6 +209,17 @@ public sealed class PartStudio
 		var reusableUpTo = Math.Min( _dirtyFrom, _cache.Count );
 		reusableUpTo = Math.Min( reusableUpTo, count );
 
+		// A feature holding mutable state of its own gets to veto its own cache entry — see
+		// Feature.IsStale. Checked before anything is restored, so the snapshot is never read at all.
+		for ( var i = 0; i < reusableUpTo; i++ )
+		{
+			if ( !Features[i].IsStale )
+				continue;
+
+			reusableUpTo = i;
+			break;
+		}
+
 		var ctx = new FeatureContext();
 
 		if ( reusableUpTo > 0 )
