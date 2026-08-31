@@ -58,7 +58,7 @@ should colour the icon yellow. Kernel half is tested; this is the sitting.
 ## 1. Effigy kernel
 
 The kernel is roughly **93% of phase one**. All of it is headless-testable — no s&box anywhere, and
-2056 checks say so.
+2080 checks say so.
 
 ### 1.1 Exercise the boolean past the one case that works
 
@@ -70,8 +70,11 @@ of these is unexercised and at least one is likely to fail:
 
 - a cut through a **curved** face (the mouth is not planar, so `FindContainingFace` finds nothing
   and declines; the repair will need per-face loop splitting rather than one whole loop)
-- a cut meeting an edge, so the mouth spans two faces (same failure; the honest fix is to split the
-  loop where it crosses an edge)
+- ~~a cut meeting an edge, so the mouth spans two faces~~ — **done.** `MeshHoleRepairSpan` splits the
+  loop at the crossing and notches BOTH faces, rather than loosening the containment test the
+  single-face repair does properly. It runs from inside `CloseBoundaryLoopsIntoFaces`, so a caller
+  never has to know which shape of mouth it has. It still declines a crossing that is not already a
+  vertex, a loop weaving in and out of one face, and anything non-planar.
 - two cuts overlapping, and cutting a body that has already been cut
 - a cut that separates the body into two pieces — nothing downstream expects one body to become two
 - ~~two holes in one face~~ — **done, and it was the shared limit rather than the boolean's own.**

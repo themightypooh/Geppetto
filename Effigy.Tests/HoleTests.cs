@@ -53,6 +53,244 @@ public static class HoleTests
 
 		Report.Section( "holes: a SKETCH profile's cap splits the same way a cut face does" );
 		TestSketchCapSplits();
+
+		Report.Section( "holes: a mouth landing across two faces is closed, not abandoned" );
+		TestMouthSpanningTwoFaces();
+		TestSpanRepairRefusesWhatItCannotBeSureOf();
+	}
+
+	/// <summary>
+	/// A lid made of TWO coplanar quads, with the tunnel's mouth straddling the edge between them.
+	///
+	/// This is the case WHAT-IS-LEFT named and the single-face repair declines: FindContainingFace
+	/// wants one face that contains the whole loop, and here neither quad does. It was right to
+	/// decline - a guess seals a surface the wrong way - so the answer is to split the loop at the
+	/// crossing rather than to loosen the test.
+	///
+	/// MEASURED BY BOUNDARY EDGES AND ENCLOSED VOLUME, never by eye. Every bug fixed in this boolean
+	/// produced a mesh that was closed, manifold, Euler-correct and wrong.
+	/// </summary>
+	static void TestMouthSpanningTwoFaces()
+	{
+		var mesh = SpanFixture( out var expectedVolume );
+
+		var before = MeshValidator.Validate( mesh );
+
+		Report.Check( "the fixture starts with the mouth open", before.BoundaryEdges == 12,
+			$"{before.BoundaryEdges} boundary edges" );
+
+		var closed = MeshHoleRepairSpan.CloseLoopsSpanningFaces( mesh );
+
+		Report.Check( "the span repair closes it", closed == 1, $"closed {closed}" );
+
+		// And it is reachable the ordinary way. CloseBoundaryLoopsIntoFaces runs the single-face pass
+		// first and hands whatever it declined to the span pass, so a caller never has to know which
+		// shape of mouth it has - which is the point of chaining them rather than exposing both.
+		var throughTheFrontDoor = SpanFixture( out _ );
+
+		Report.Check( "and the ordinary repair reaches it without being asked specially",
+			MeshHoleRepair.CloseBoundaryLoopsIntoFaces( throughTheFrontDoor ) == 1
+			&& MeshValidator.Validate( throughTheFrontDoor ).BoundaryEdges == 0,
+			$"{MeshValidator.Validate( throughTheFrontDoor ).BoundaryEdges} boundary edges left" );
+
+		var after = MeshValidator.Validate( mesh );
+
+		Report.Check( "no boundary edges are left", after.BoundaryEdges == 0,
+			$"{after.BoundaryEdges} left" );
+		Report.Check( "and nothing was made non-manifold doing it", after.NonManifoldEdges == 0,
+			$"{after.NonManifoldEdges} non-manifold" );
+		Report.Check( "the mesh is valid", after.IsValid, after.ToString() );
+
+		// THE CHECK THAT CANNOT BE FAKED. A repair that sealed the mouth over instead of around it
+		// would also report zero boundary edges - and would enclose the tunnel's volume as solid.
+		var volume = MathF.Abs( mesh.SignedVolume() );
+
+		Report.Check( "and it encloses the volume of a block with a hole through it",
+			MathF.Abs( volume - expectedVolume ) < 0.05f,
+			$"{volume:0.####}, expected about {expectedVolume:0.####}" );
+
+		// The lid is still two faces, each notched - not two faces plus a patch, and not a fan.
+		// Counted at z = 0 specifically: the pocket's floor also faces up, and counting every upward
+		// face called a correct repair wrong.
+		var lidFaces = mesh.Faces.Count( f =>
+			MathF.Abs( mesh.FaceNormal( f ).Normal.z - 1f ) < 1e-3f
+			&& MathF.Abs( mesh.FaceCentroid( f ).z ) < 1e-3f );
+
+		Report.Check( "the lid is still two faces, each with the notch spliced in", lidFaces == 2,
+			$"{lidFaces} faces at the lid" );
+
+		// THE CHECK A BOW-TIE CANNOT PASS, and the reason it is here: splicing the arc into the face
+		// the wrong way round produces a polygon that crosses itself. It keeps its vertex count, it
+		// keeps a boundary edge count of zero, and Newell still calls its normal +Z - so every other
+		// check in this test waves it through. Its AREA does not survive: a notched half-lid is its
+		// 4x2 quad less half the bore, and a bow-tie is neither.
+		var lidArea = 0f;
+
+		foreach ( var face in mesh.Faces )
+		{
+			if ( MathF.Abs( mesh.FaceNormal( face ).Normal.z - 1f ) < 1e-3f
+				&& MathF.Abs( mesh.FaceCentroid( face ).z ) < 1e-3f )
+			{
+				lidArea += mesh.FaceArea( face );
+			}
+		}
+
+		// 16 for the lid, less the 12-gon bore's 3.0.
+		Report.Check( "and together they cover the lid less the bore, so neither is folded over itself",
+			MathF.Abs( lidArea - 13f ) < 0.02f, $"{lidArea:0.####}, expected 13" );
+	}
+
+	/// <summary>
+	/// The refusals, which matter as much as the repair. A span repair that seals whatever it is
+	/// handed is worse than one that declines, because the failure is invisible.
+	/// </summary>
+	static void TestSpanRepairRefusesWhatItCannotBeSureOf()
+	{
+		// A mouth entirely inside ONE face is the single-face case and must be left to it - closing
+		// it here would notch a face that should have got a hole.
+		var single = OneFaceFixture();
+
+		Report.Check( "a mouth inside one face is left to the single-face repair",
+			MeshHoleRepairSpan.CloseLoopsSpanningFaces( single ) == 0 );
+		Report.Check( "which then closes it", MeshHoleRepair.CloseBoundaryLoopsIntoFaces( single ) == 1 );
+
+		// A loop whose crossing points are NOT vertices cannot be spliced without inventing one, and
+		// inventing one means splitting a face this was not asked to touch.
+		var offset = SpanFixture( out _, rotate: 15f );
+
+		Report.Check( "a mouth crossing between vertices is declined rather than guessed at",
+			MeshHoleRepairSpan.CloseLoopsSpanningFaces( offset ) == 0,
+			"it spliced a crossing it could not name" );
+		Report.Check( "and the opening is still there to be seen",
+			MeshValidator.Validate( offset ).BoundaryEdges > 0 );
+	}
+
+	/// <summary>
+	/// A 4x4 lid split into two coplanar quads at x = 0, with a 12-sided tunnel through the middle
+	/// whose mouth crosses that split at exactly (0, -1) and (0, 1).
+	///
+	/// Those two crossings ARE ring vertices, which is what makes the repair possible: the point
+	/// where the mouth meets the edge already exists, so nothing has to be invented. `rotate` turns
+	/// the ring so they no longer do, which is the case that must be declined.
+	/// </summary>
+	static PolyMesh SpanFixture( out float expectedVolume, float rotate = 0f )
+	{
+		const int segments = 12;
+		const float radius = 1f;
+		const float pocket = 1f;
+		const float block = 2f;
+
+		var mesh = new PolyMesh();
+
+		// The lid at z = 0, as two coplanar quads meeting along x = 0. The split is the whole point:
+		// the mouth below crosses it, so neither quad contains the loop and the single-face repair
+		// declines.
+		var a0 = mesh.AddVertex( new Vec3( -2, -2, 0 ) );
+		var a1 = mesh.AddVertex( new Vec3( 0, -2, 0 ) );
+		var b1 = mesh.AddVertex( new Vec3( 2, -2, 0 ) );
+		var b2 = mesh.AddVertex( new Vec3( 2, 2, 0 ) );
+		var a2 = mesh.AddVertex( new Vec3( 0, 2, 0 ) );
+		var a3 = mesh.AddVertex( new Vec3( -2, 2, 0 ) );
+
+		mesh.AddFace( new[] { a0, a1, a2, a3 } );
+		mesh.AddFace( new[] { a1, b1, b2, a2 } );
+
+		// The pocket. Its wall faces INWARD - the material is outside the bore, so the surface that
+		// bounds it points into the void. Getting this backwards makes a solid plug rather than a
+		// hole, and the volume check below is what says which one was built.
+		var top = new int[segments];
+		var bottom = new int[segments];
+
+		for ( var i = 0; i < segments; i++ )
+		{
+			var angle = MathF.Tau * i / segments + rotate * MathF.PI / 180f;
+			var x = MathF.Cos( angle ) * radius;
+			var y = MathF.Sin( angle ) * radius;
+
+			top[i] = mesh.AddVertex( new Vec3( x, y, 0 ) );
+			bottom[i] = mesh.AddVertex( new Vec3( x, y, -pocket ) );
+		}
+
+		for ( var i = 0; i < segments; i++ )
+		{
+			var next = (i + 1) % segments;
+
+			mesh.AddFace( new[] { top[i], top[next], bottom[next], bottom[i] } );
+		}
+
+		// The pocket's floor, facing up into the void for the same reason.
+		mesh.AddFace( (int[])bottom.Clone() );
+
+		// The block's own base, two units down so it is nowhere near the pocket floor - two coplanar
+		// faces facing opposite ways is a fixture that tests the fixture.
+		var e0 = mesh.AddVertex( new Vec3( -2, -2, -block ) );
+		var e1 = mesh.AddVertex( new Vec3( 2, -2, -block ) );
+		var e2 = mesh.AddVertex( new Vec3( 2, 2, -block ) );
+		var e3 = mesh.AddVertex( new Vec3( -2, 2, -block ) );
+
+		mesh.AddFace( new[] { e0, e3, e2, e1 } );
+
+		// The four walls. The two that meet the split lid are FIVE-sided, because their top edge is
+		// broken at x = 0 by the lid's own split - a quad there would leave the split's edges
+		// unmatched, which is a boundary the repair never touched and would be blamed for.
+		mesh.AddFace( new[] { a0, e0, e1, b1, a1 } );
+		mesh.AddFace( new[] { a3, a2, b2, e2, e3 } );
+		mesh.AddFace( new[] { a0, a3, e3, e0 } );
+		mesh.AddFace( new[] { b1, e1, e2, b2 } );
+
+		// A TWELVE-SIDED BORE, not a circle. Its area is (n/2) r^2 sin(2pi/n) = 3.0 exactly at n = 12,
+		// against pi r^2 = 3.1416 - and using the circle would have called a correct mesh wrong by
+		// 0.14, which is the sort of gap that gets "fixed" by loosening the tolerance.
+		var boreArea = 0.5f * segments * radius * radius * MathF.Sin( MathF.Tau / segments );
+
+		expectedVolume = 4f * 4f * block - boreArea * pocket;
+
+		return mesh;
+	}
+
+	/// <summary>The same idea with ONE lid face, which the single-face repair already handles.</summary>
+	static PolyMesh OneFaceFixture()
+	{
+		const int segments = 12;
+
+		var mesh = new PolyMesh();
+
+		mesh.AddFace( new[]
+		{
+			mesh.AddVertex( new Vec3( -2, -2, 0 ) ),
+			mesh.AddVertex( new Vec3( 2, -2, 0 ) ),
+			mesh.AddVertex( new Vec3( 2, 2, 0 ) ),
+			mesh.AddVertex( new Vec3( -2, 2, 0 ) ),
+		} );
+
+		var top = new int[segments];
+		var bottom = new int[segments];
+
+		for ( var i = 0; i < segments; i++ )
+		{
+			var angle = MathF.Tau * i / segments;
+			var x = MathF.Cos( angle );
+			var y = MathF.Sin( angle );
+
+			top[i] = mesh.AddVertex( new Vec3( x, y, 0 ) );
+			bottom[i] = mesh.AddVertex( new Vec3( x, y, -1 ) );
+		}
+
+		for ( var i = 0; i < segments; i++ )
+		{
+			var next = (i + 1) % segments;
+
+			mesh.AddFace( new[] { top[i], bottom[i], bottom[next], top[next] } );
+		}
+
+		var floor = new int[segments];
+
+		for ( var i = 0; i < segments; i++ )
+			floor[i] = bottom[segments - 1 - i];
+
+		mesh.AddFace( floor );
+
+		return mesh;
 	}
 
 	/// <summary>

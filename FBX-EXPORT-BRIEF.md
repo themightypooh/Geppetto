@@ -171,7 +171,7 @@ the same data through a different syntax. From `Effigy/DmxWriter.cs`:
   `tools/sync-kernel.sh` for why the mirror is one-way and what happened the one time it was not).
   Shape it like `DmxWriter`: `Write(...)` returning a string, `WriteFile(...)` wrapping it, same
   parameter list (`mesh, skeleton, smoothingAngleDegrees, materialName, modelName`).
-- Tests in **`Effigy.Tests/`**. The kernel is engine-free and the suite is 2056 checks; a writer is
+- Tests in **`Effigy.Tests/`**. The kernel is engine-free and the suite is 2080 checks; a writer is
   exactly the kind of thing that is fully testable there. `SmdWriter` ships a minimal reader for
   round-tripping in tests (`Effigy/SmdWriter.cs:188`) — do the same: parse back positions, polygon
   boundaries, material-per-polygon and cluster weights, and assert they match what went in. That

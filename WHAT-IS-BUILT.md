@@ -12,7 +12,7 @@ it" has repeatedly been the difference between right and wrong.
 - A feature that cannot do what was asked says what it was asked, what stopped it, with this
   model's numbers, and what would work instead. A feature that did nothing is never a success.
 
-Verified as of 31 August 2026: **2056 kernel checks, 0 failing** (`./tools/test.sh`). The diagnostic
+Verified as of 31 August 2026: **2080 kernel checks, 0 failing** (`./tools/test.sh`). The diagnostic
 dialog and tree tooltip are written against the shipped `Editor.Label.WordWrap` and
 `TreeNode.GetTooltip` APIs; they have not been judged on screen.
 
@@ -585,6 +585,37 @@ as a low-level edit that fails to move the detail above it, and there is a check
 Verified by mutation, not just by the suite being green: subdividing the rest mesh instead of the
 displaced one fails 4 checks, dropping the cache invalidation in `Record` fails 2, and handing the
 brush the rest frames fails 1.
+
+### A mouth that lands across two faces
+
+`MeshHoleRepairSpan`. The single-face repair wants one coplanar face containing the whole loop and is
+right to — a guess there seals a surface the wrong way — so a cut landing where two coplanar faces
+meet was declined and the opening stayed open. The fix is a DETOUR, not a patch: each face keeps its
+own boundary and detours around its half of the mouth where that boundary runs along the shared edge.
+
+**The check that made it trustworthy is area.** Splicing the arc in the wrong direction produces a
+bow-tie that keeps its vertex count, keeps zero boundary edges, and whose Newell normal still points
+the right way — so boundary count, manifoldness, validity and even enclosed volume all waved it
+through. Only the face's area does not survive: 19 against the 13 a notched half-lid must have.
+
+### The UV packer tries four arrangements
+
+Charts have no up, so turning one costs nothing — but "turn every tall chart" is too blunt a rule to
+trust: measured, it gains 21 points on a long box and LOSES 7 on a cylinder. Packing is cheap, so all
+four arrangements are packed and the one that fits at the largest scale wins.
+
+Doing that surfaced a bug worth recording: **`List.Sort` is not stable**, and sorting the charts twice
+— once to measure a scale, once to commit it — put them in two different orders, so the commit packed
+at a scale measured against a different arrangement and the islands landed ON TOP of each other. The
+tell was coverage coming out HIGHER than any single policy could achieve. The ordering is total now.
+Coverage runs 45–67%; a real bin packer is the remaining improvement.
+
+### Removing a sculpt level can be undone, so it is offered
+
+`RemoveTopLevel` sat in the kernel unexposed because nothing could undo it, and a destructive button
+with no way back is one nobody should be given. `RestoreTopLevel` is the other half; the session
+holds the dropped layer as an undo entry, and the editor's "coarser" button removes the finest level
+only when it is EMPTY of detail.
 
 ### The CAD gaps that were named as absent
 

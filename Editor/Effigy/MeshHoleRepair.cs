@@ -69,6 +69,11 @@ public static class MeshHoleRepair
 				closed++;
 		}
 
+		// Whatever is left is a mouth no single face contains. Most of those are a cut that landed
+		// where two coplanar faces meet, which MeshHoleRepairSpan closes by notching both rather than
+		// by loosening the containment test above - see that file for why loosening it would be wrong.
+		closed += MeshHoleRepairSpan.CloseLoopsSpanningFaces( mesh );
+
 		return closed;
 	}
 

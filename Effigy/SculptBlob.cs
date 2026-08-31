@@ -284,7 +284,7 @@ public static class SculptSidecar
 		Directory.CreateDirectory( dir );
 
 		foreach ( var (id, bytes) in pending )
-			File.WriteAllBytes( Path.Combine( dir, id + ".bin" ), bytes );
+			File.WriteAllBytes( PathFor( documentPath, id ), bytes );
 
 		return pending.Count;
 	}
@@ -311,7 +311,7 @@ public static class SculptSidecar
 			if ( feature is not SculptFeature sculpt )
 				continue;
 
-			var path = Path.Combine( dir, feature.Id + ".bin" );
+			var path = PathFor( documentPath, feature.Id );
 
 			if ( !File.Exists( path ) )
 				continue;

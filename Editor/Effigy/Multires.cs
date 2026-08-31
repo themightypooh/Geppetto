@@ -122,8 +122,46 @@ public sealed class MultiresSculpt
 	}
 
 	/// <summary>
-	/// Drop the top level, returning its deltas so the caller can put it back. The only call here
-	/// that destroys anything, which is why it hands the evidence over rather than swallowing it.
+	/// Put a level back on top, with the deltas it had.
+	///
+	/// The other half of <see cref="RemoveTopLevel"/>, and the reason that one can be offered at all:
+	/// dropping a level is the only call here that destroys anything, and a destructive button with
+	/// no way back is one nobody should be given.
+	///
+	/// The layer has to be the right size for the level it is going onto - which it will be, if it
+	/// came off the top and nothing below it has been sculpted since. If something HAS, the count no
+	/// longer matches and this refuses rather than putting the old detail on new vertices.
+	/// </summary>
+	public void RestoreTopLevel( SculptLayer layer )
+	{
+		if ( layer is null )
+			throw new ArgumentNullException( nameof( layer ) );
+
+		var level = AddLevel();
+		var expected = _layers[level].Count;
+
+		if ( expected != layer.Count )
+		{
+			// Undo the AddLevel, so a refusal leaves the sculpt exactly as it found it.
+			_layers.RemoveAt( level );
+			Trim( _layers.Count );
+
+			if ( _viewLevel > TopLevel )
+				_viewLevel = TopLevel;
+
+			throw new ArgumentException(
+				$"That layer holds {layer.Count} deltas and level {level} now has {expected} vertices - "
+				+ "the levels below it have been sculpted since it was removed, so its detail no longer "
+				+ "belongs to those vertices." );
+		}
+
+		SetLayer( level, layer );
+	}
+
+	/// <summary>
+	/// Drop the top level, returning its deltas so the caller can put it back with
+	/// <see cref="RestoreTopLevel"/>. The only call here that destroys anything, which is why it
+	/// hands the evidence over rather than swallowing it.
 	/// </summary>
 	public SculptLayer RemoveTopLevel()
 	{

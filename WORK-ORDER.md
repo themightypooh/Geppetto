@@ -29,7 +29,7 @@ Run the suite before touching anything:
 export PATH="/c/Program Files/dotnet:$PATH" && ./tools/test.sh
 ```
 
-~25 seconds, **2056 checks, 0 failing** as of this writing. `dotnet` is installed but not on `PATH`
+~25 seconds, **2080 checks, 0 failing** as of this writing. `dotnet` is installed but not on `PATH`
 in Git Bash, hence the prefix — without it the script tries `apt-get` and dies. The script syncs the
 editor's kernel mirror first (see HANDOFF.md, "The two kernel copies"): **never edit
 `Editor/Effigy/` by hand**, it is generated from `Effigy/`.

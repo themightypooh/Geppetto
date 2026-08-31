@@ -95,6 +95,8 @@ public static class SculptTests
 		TestDraggingOffTheModelKeepsTheStroke();
 		TestCancellingAStrokeLeavesTheModelAlone();
 		TestTheDisplayMeshIsCachedUntilSomethingMoves();
+		TestRemovingALevelIsUndoable();
+		TestPuttingALevelBackOntoAChangedBaseIsRefused();
 
 		Section( "sculpt: masking holds part of the model still" );
 		TestAFreshMaskChangesNothing();
@@ -1987,6 +1989,76 @@ public static class SculptTests
 
 		Check( "and after the stroke it is rebuilt rather than served stale",
 			!ReferenceEquals( first, s.DisplayMesh ) && !SamePositions( s.DisplayMesh, first ) );
+	}
+
+	static void TestRemovingALevelIsUndoable()
+	{
+		// REMOVING A LEVEL THROWS AWAY EVERY DELTA ON IT. That is why it sat in the kernel unexposed
+		// until the session could hold what it dropped: a destructive button with no way back is one
+		// nobody should be given, and this is the check that says it now has one.
+		var m = Levels( Primitives.QuadSphere( 0.5f, 4 ), 2 );
+		var s = new SculptSession( m ) { Radius = 0.2f, Strength = 0.05f };
+
+		Bump( m, 1, new Vec3( 0, 0, 1 ), 0.1f );
+		Bump( m, 2, new Vec3( 0, 0, 1 ), 0.05f );
+
+		var atTop = m.Evaluate( 2 ).Clone();
+		var atOne = m.Evaluate( 1 ).Clone();
+
+		Check( "the fine level is removed", s.RemoveTopLevel() && m.TopLevel == 1 );
+		Check( "and the coarse one is untouched by it", SamePositions( m.Evaluate( 1 ), atOne ) );
+
+		Check( "undo puts the level back", s.Undo() && m.TopLevel == 2 );
+		Check( "with the detail it had", SamePositions( m.Evaluate( 2 ), atTop ) );
+
+		Check( "and redo takes it away again", s.Redo() && m.TopLevel == 1 );
+		Check( "which undo can still reverse", s.Undo() && m.TopLevel == 2
+			&& SamePositions( m.Evaluate( 2 ), atTop ) );
+
+		Check( "the cage level can never be removed",
+			!new SculptSession( new MultiresSculpt( Primitives.Box( 1, 1, 1 ) ) ).RemoveTopLevel() );
+	}
+
+	static void TestPuttingALevelBackOntoAChangedBaseIsRefused()
+	{
+		// The layer only fits if the levels below it are as they were. Sculpting underneath does not
+		// change the vertex COUNT, so that case still fits and should still work - but a cage swap
+		// that changes the count must be refused rather than land old detail on new vertices.
+		var m = Levels( Primitives.QuadSphere( 0.5f, 4 ), 1 );
+		Bump( m, 1, new Vec3( 0, 0, 1 ), 0.1f );
+
+		var dropped = m.RemoveTopLevel();
+
+		Bump( m, 0, new Vec3( 0, 0, 1 ), 0.05f );
+
+		var threw = false;
+
+		try
+		{
+			m.RestoreTopLevel( dropped );
+		}
+		catch ( ArgumentException )
+		{
+			threw = true;
+		}
+
+		Check( "sculpting the level below does not stop the level going back", !threw
+			&& m.TopLevel == 1, "it was refused" );
+
+		var wrongSize = new SculptLayer( new Vec3[3] );
+		var refused = false;
+
+		try
+		{
+			m.RestoreTopLevel( wrongSize );
+		}
+		catch ( ArgumentException )
+		{
+			refused = true;
+		}
+
+		Check( "but a layer of the wrong size is", refused );
+		Check( "and the refusal leaves the sculpt as it found it", m.TopLevel == 1 );
 	}
 
 	/// <summary>A one-level sculpt on a sphere, with a session on it.</summary>

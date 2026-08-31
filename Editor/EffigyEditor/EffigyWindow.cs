@@ -255,6 +255,7 @@ public sealed class EffigyWindow : DockWindow
 		edit.AddSeparator();
 		edit.AddOption( "Invert Sculpt Mask", "flip", InvertSculptMask );
 		edit.AddOption( "Clear Sculpt Mask", "layers_clear", ClearSculptMask );
+		edit.AddOption( "Mask All Sculpt Geometry", "select_all", ProtectAllSculpt );
 		edit.AddOption( "Sculpt Mask: Paint / Erase", "brush", ToggleSculptMaskErase );
 		edit.AddOption( "Hide / Show Masked Geometry", "visibility_off", ToggleHideMasked );
 
@@ -689,6 +690,22 @@ public sealed class EffigyWindow : DockWindow
 			return;
 		}
 
+		// Stepping below the top REMOVES the finest level when it is empty of detail, rather than
+		// leaving a level nobody is using on the model for ever. Only when it is empty: throwing away
+		// somebody's sculpt because they wanted a coarser view would be unforgivable, and the undo
+		// stack is what makes even the empty case safe.
+		if ( delta < 0 && session.Level == sculpt.TopLevel && !sculpt.HasDetail( sculpt.TopLevel ) )
+		{
+			session.RemoveTopLevel();
+			SetPrompt( $"Dropped the empty level {sculpt.TopLevel + 1}. Ctrl+Z puts it back." );
+
+			_viewport.RefreshSculptPreview();
+			_sculptBar?.Refresh();
+			NoteSculptEdited();
+
+			return;
+		}
+
 		if ( target > sculpt.TopLevel )
 		{
 			var (vertices, faces) = sculpt.Cost( target );
@@ -854,6 +871,20 @@ public sealed class EffigyWindow : DockWindow
 		_sculptBar?.Refresh();
 
 		SetPrompt( $"Mask inverted — {session.MaskFor( session.Level ).ProtectedFraction:P0} held." );
+	}
+
+	private void ProtectAllSculpt()
+	{
+		if ( !SculptingOrSaySo( out var session ) )
+			return;
+
+		// The other end of Clear, and the start of "mask everything but this": protect the lot, then
+		// invert, then paint free the part you actually want to work on.
+		session.ProtectAll();
+		_viewport.RefreshSculptPreview();
+		_sculptBar?.Refresh();
+
+		SetPrompt( "Everything is masked - invert, or paint to release the part you want to work on." );
 	}
 
 	private void ClearSculptMask()

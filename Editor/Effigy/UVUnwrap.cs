@@ -199,6 +199,12 @@ public static class UVUnwrap
 		public Vec2 Offset;
 		public float Scale = 1f;
 
+		/// <summary>Turned a quarter turn to pack better. Costs nothing - a chart has no up.</summary>
+		public bool Turned;
+
+		/// <summary>Width and height as the packer sees them, which swap when the chart is turned.</summary>
+		public Vec2 Packed => Turned ? new Vec2( Size.y, Size.x ) : Size;
+
 		/// <summary>Write the packed UVs onto the mesh. The chart holds them in its own plane's
 		/// units until here, so the packer can move it about without touching the mesh.</summary>
 		public void WriteTo( PolyMesh mesh )
@@ -211,9 +217,16 @@ public static class UVUnwrap
 
 				for ( var c = 0; c < uvs.Length; c++ )
 				{
-					written[c] = new Vec2(
-						Offset.x + (uvs[c].x - Min.x) * Scale,
-						Offset.y + (uvs[c].y - Min.y) * Scale );
+					var x = (uvs[c].x - Min.x) * Scale;
+					var y = (uvs[c].y - Min.y) * Scale;
+
+					// A quarter turn, which is why the packer could swap the chart's width and height.
+					// (x, y) -> (y, w - x) keeps the winding, and a chart whose winding flipped would
+					// bake with its tangent frame mirrored - the same inverted-green failure a
+					// mirrored island has, arrived at from the other direction.
+					written[c] = Turned
+						? new Vec2( Offset.x + y, Offset.y + Size.x * Scale - x )
+						: new Vec2( Offset.x + x, Offset.y + y );
 				}
 
 				face.UVs = written;
@@ -292,7 +305,94 @@ public static class UVUnwrap
 		if ( charts.Count == 0 )
 			return 1f;
 
-		charts.Sort( ( a, b ) => b.Size.y.CompareTo( a.Size.y ) );
+		// TRIED BOTH WAYS UP, AND THE BETTER ONE KEPT.
+		//
+		// A chart has no up - its UVs are a projection nobody reads as oriented - so turning one
+		// costs nothing, and shelf packing does much better on a row of similar heights. But "turn
+		// every tall chart" is too blunt a rule to trust: measured across the primitives it gains 21
+		// points on a long box and LOSES 7 on a cylinder, whose charts were already a uniform height
+		// and got shuffled into a ragged one.
+		//
+		// Packing is cheap and the answer is measurable, so both policies are packed and the one with
+		// the larger scale wins. That can only ever be as good as the better of the two.
+		var best = 0f;
+		var bestTurned = false;
+		var bestByArea = false;
+
+		// Four arrangements, and the one that packs largest wins. Each is one bisection over a list
+		// of a few dozen boxes, so the whole search is far cheaper than the raycasting the bake does
+		// afterwards - and the answer is measured rather than argued about.
+		foreach ( var turnTall in new[] { false, true } )
+		{
+			foreach ( var byArea in new[] { false, true } )
+			{
+				Arrange( charts, turnTall, byArea );
+
+				var scale = Search( charts, margin );
+
+				if ( scale <= best )
+					continue;
+
+				best = scale;
+				bestTurned = turnTall;
+				bestByArea = byArea;
+			}
+		}
+
+		Arrange( charts, bestTurned, bestByArea );
+
+		if ( best <= 0f )
+			best = 1e-4f;
+
+		TryPack( charts, best, margin, commit: true );
+		return best;
+	}
+
+	/// <summary>Put the charts in one of the four arrangements the packer tries.</summary>
+	static void Arrange( List<Chart> charts, bool turnTall, bool byArea )
+	{
+		foreach ( var chart in charts )
+			chart.Turned = turnTall && chart.Size.y > chart.Size.x;
+
+		Order( charts, byArea );
+	}
+
+	/// <summary>
+	/// Tallest first, and TOTALLY ordered.
+	///
+	/// List.Sort is not stable, so a comparison on height alone leaves charts of equal height in
+	/// whatever order the sort happened to land on. That was harmless while the list was sorted once;
+	/// trying several arrangements means sorting it again to commit the winner, and two different
+	/// orders means committing at a scale measured against a different arrangement - which packs the
+	/// islands ON TOP of each other. The tell was coverage coming out HIGHER than any single policy
+	/// could achieve, and 19% of a cylinder's texels claimed twice.
+	///
+	/// Introduced by the multi-arrangement search above and fixed here, rather than inherited.
+	///
+	/// The width and the first face index break every tie, so the order is a function of the charts.
+	/// </summary>
+	static void Order( List<Chart> charts, bool byArea ) => charts.Sort( ( a, b ) =>
+	{
+		var first = byArea
+			? (b.Packed.x * b.Packed.y).CompareTo( a.Packed.x * a.Packed.y )
+			: b.Packed.y.CompareTo( a.Packed.y );
+
+		if ( first != 0 )
+			return first;
+
+		var byHeight = b.Packed.y.CompareTo( a.Packed.y );
+
+		if ( byHeight != 0 )
+			return byHeight;
+
+		var byWidth = b.Packed.x.CompareTo( a.Packed.x );
+
+		return byWidth != 0 ? byWidth : a.Faces[0].CompareTo( b.Faces[0] );
+	} );
+
+	/// <summary>The largest scale this arrangement still fits at, by bisection.</summary>
+	static float Search( List<Chart> charts, float margin )
+	{
 
 		var low = 0f;
 		var high = 1f;
@@ -300,7 +400,7 @@ public static class UVUnwrap
 		// An upper bound that certainly fails, so the search below has something to close on.
 		foreach ( var chart in charts )
 		{
-			var largest = MathF.Max( chart.Size.x, chart.Size.y );
+			var largest = MathF.Max( chart.Packed.x, chart.Packed.y );
 
 			if ( largest > 1e-9f )
 				high = MathF.Max( high, 2f / largest );
@@ -323,12 +423,6 @@ public static class UVUnwrap
 			}
 		}
 
-		// A pathological set that never fit at any scale still has to come out somewhere inside the
-		// square rather than as garbage, so the last resort is a scale small enough to be harmless.
-		if ( best <= 0f )
-			best = 1e-4f;
-
-		TryPack( charts, best, margin, commit: true );
 		return best;
 	}
 
@@ -340,8 +434,8 @@ public static class UVUnwrap
 
 		foreach ( var chart in charts )
 		{
-			var w = chart.Size.x * scale;
-			var h = chart.Size.y * scale;
+			var w = chart.Packed.x * scale;
+			var h = chart.Packed.y * scale;
 
 			if ( w > 1f - margin * 2f || h > 1f - margin * 2f )
 				return false;

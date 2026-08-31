@@ -37,11 +37,26 @@ public sealed class SculptEdit
 		_maskAfter = after;
 	}
 
+	/// <summary>A whole level that was removed, held so it can be put back.</summary>
+	internal SculptEdit( int level, SculptLayer removed )
+	{
+		Level = level;
+		_removed = removed;
+	}
+
+	readonly SculptLayer _removed;
+
+	/// <summary>Whether this edit removed a level rather than moving vertices or painting a mask.</summary>
+	public bool IsLevel => _removed is not null;
+
+	/// <summary>The layer this edit took off, for putting back.</summary>
+	internal SculptLayer Level_ => _removed;
+
 	/// <summary>Whether this stroke painted the mask rather than moving the surface.</summary>
 	public bool IsMask => _maskBefore is not null;
 
 	/// <summary>How many vertices this stroke actually changed.</summary>
-	public int Count => _before?.Count ?? _maskBefore.Count;
+	public int Count => _before?.Count ?? _maskBefore?.Count ?? _removed.Count;
 
 	internal void Write( PolyMesh mesh, bool forward )
 	{
@@ -226,6 +241,10 @@ public sealed class SculptSession
 
 	/// <summary>The level's surface with the fully protected parts dropped — "hide by mask".</summary>
 	public PolyMesh HiddenByMask() => MaskFor( Level ).Hide( _sculpt.Evaluate( Level ) );
+
+	/// <summary>Protect everything, which is where "mask all but this bit" starts - invert it and
+	/// then paint free the part you want to work on.</summary>
+	public void ProtectAll() => MaskFor( Level ).Protect();
 
 	/// <summary>Vertex and face count at a level, for the slider that has to warn before the click.</summary>
 	public (int Vertices, int Faces) Cost( int level ) => _sculpt.Cost( level );
@@ -457,6 +476,27 @@ public sealed class SculptSession
 		_maskBefore = null;
 	}
 
+	/// <summary>
+	/// Drop the finest level, and put it on the undo stack.
+	///
+	/// EXPOSED ONLY BECAUSE IT CAN BE UNDONE. Removing a level throws away every delta on it, and a
+	/// destructive button with no way back is one nobody should be given - which is why this sat in
+	/// the kernel unexposed until the session could hold the layer it dropped.
+	/// </summary>
+	public bool RemoveTopLevel()
+	{
+		if ( IsStroking || _sculpt.TopLevel == 0 )
+			return false;
+
+		var level = _sculpt.TopLevel;
+		var dropped = _sculpt.RemoveTopLevel();
+
+		_done.Push( new SculptEdit( level, dropped ) );
+		_undone.Clear();
+
+		return true;
+	}
+
 	public bool Undo() => Step( _done, _undone, forward: false );
 
 	public bool Redo() => Step( _undone, _done, forward: true );
@@ -467,6 +507,21 @@ public sealed class SculptSession
 			return false;
 
 		var edit = from.Pop();
+
+		if ( edit.IsLevel )
+		{
+			// A level edit is its own inverse read backwards: undoing a removal puts the level back,
+			// and redoing it takes it away again.
+			if ( forward )
+				_sculpt.RemoveTopLevel();
+			else
+				_sculpt.RestoreTopLevel( edit.Level_ );
+
+			_masks.Remove( edit.Level );
+			to.Push( edit );
+
+			return true;
+		}
 
 		if ( edit.IsMask )
 		{
