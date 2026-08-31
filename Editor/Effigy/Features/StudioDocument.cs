@@ -207,6 +207,25 @@ public static class StudioDocument
 					sb.Append( "\t\tcircle " ).Append( circle.Center ).Append( ' ' ).Append( Num( circle.Radius ) );
 					break;
 
+				case SketchEllipse ellipse:
+					sb.Append( "\t\tellipse " ).Append( ellipse.Center ).Append( ' ' )
+						.Append( ellipse.MajorPoint ).Append( ' ' ).Append( Num( ellipse.MinorRadius ) );
+					break;
+
+				// The point COUNT is written before the points, because everything else in this
+				// format has a fixed field count and the reader finds a curve's id and construction
+				// flag at a known offset. A variable-length record without a count would make that
+				// offset unknowable without counting backwards from the end, which works right up
+				// until a field is added.
+				case SketchSpline spline:
+					sb.Append( "\t\tspline " ).Append( spline.Closed ? 1 : 0 ).Append( ' ' )
+						.Append( spline.Points.Count );
+
+					foreach ( var index in spline.Points )
+						sb.Append( ' ' ).Append( index );
+
+					break;
+
 				default:
 					throw new InvalidOperationException( $"StudioDocument cannot save a {curve.GetType().Name}" );
 			}
@@ -470,6 +489,23 @@ public static class StudioDocument
 				case "circle":
 					sketch.Add( Tagged( new SketchCircle( ParseInt( parts[0], 0 ), ParseFloat( parts[1] ) ), parts, 2 ) );
 					break;
+
+				case "ellipse":
+					sketch.Add( Tagged( new SketchEllipse(
+						ParseInt( parts[0], 0 ), ParseInt( parts[1], 0 ), ParseFloat( parts[2] ) ), parts, 3 ) );
+					break;
+
+				case "spline":
+				{
+					var count = ParseInt( parts[1], 0 );
+					var indices = new List<int>( count );
+
+					for ( var k = 0; k < count && 2 + k < parts.Length; k++ )
+						indices.Add( ParseInt( parts[2 + k], 0 ) );
+
+					sketch.Add( Tagged( new SketchSpline( indices, parts[0] == "1" ), parts, 2 + count ) );
+					break;
+				}
 
 				case "constraint":
 				{

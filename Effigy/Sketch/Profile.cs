@@ -78,10 +78,11 @@ public static class ProfileFinder
 		var result = new ProfileResult();
 		var loops = new List<List<Vec2>>();
 
-		// A circle closes on its own and never participates in the graph walk.
-		foreach ( var circle in sketch.Curves.OfType<SketchCircle>().Where( c => !c.Construction ) )
+		// A closed curve — circle, ellipse, closed spline — is a region on its own and never
+		// participates in the graph walk.
+		foreach ( var closed in sketch.Curves.Where( c => c.IsClosed && !c.Construction ) )
 		{
-			var pts = circle.Tessellate( sketch, sketch.Tolerance );
+			var pts = closed.Tessellate( sketch, sketch.Tolerance );
 			pts.RemoveAt( pts.Count - 1 ); // drop the repeated closing point
 
 			// A circle at or below the sketch tolerance tessellates to fewer than three points and
@@ -90,7 +91,7 @@ public static class ProfileFinder
 			if ( pts.Count < 3 )
 			{
 				result.Warnings.Add(
-					$"A circle of radius {circle.Radius} is too small to form a region at the sketch tolerance of {sketch.Tolerance}" );
+					$"A closed {closed.GetType().Name} is too small to form a region at the sketch tolerance of {sketch.Tolerance}" );
 				continue;
 			}
 
@@ -98,7 +99,7 @@ public static class ProfileFinder
 		}
 
 		var edges = sketch.Curves
-			.Where( c => !c.Construction && c is not SketchCircle )
+			.Where( c => !c.Construction && !c.IsClosed )
 			.ToList();
 
 		// point index -> the curves touching it, by their two ends only. An arc's centre is not a
@@ -411,12 +412,7 @@ public static class ProfileFinder
 		return chains;
 	}
 
-	static (int A, int B) Ends( SketchCurve curve ) => curve switch
-	{
-		SketchLine l => (l.Start, l.End),
-		SketchArc a => (a.Start, a.End),
-		_ => throw new InvalidOperationException( $"{curve.GetType().Name} has no endpoints" )
-	};
+	static (int A, int B) Ends( SketchCurve curve ) => curve.Endpoints;
 
 	/// <summary>
 	/// Follow curves end to end until we return to where we started, or run out.

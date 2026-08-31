@@ -81,6 +81,8 @@ public static class Program
 
 		ConstraintTests.Run();
 
+		CurveTests.Run();
+
 		UntestedKernelTests.Run();
 
 		MergeTests.Run();

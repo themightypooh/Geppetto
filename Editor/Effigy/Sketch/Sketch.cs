@@ -29,6 +29,24 @@ public abstract class SketchCurve
 
 	public abstract IEnumerable<int> PointRefs { get; }
 
+	/// <summary>
+	/// This curve closes on itself and is a region all by itself — a circle, an ellipse, a closed
+	/// spline. Loop finding takes these straight to a loop rather than walking them.
+	/// </summary>
+	public virtual bool IsClosed => false;
+
+	/// <summary>
+	/// The two points a loop walk enters and leaves this curve by. Meaningless for a closed curve,
+	/// which returns (-1, -1) and is filtered out by IsClosed before anything asks.
+	///
+	/// NOT PointRefs. An arc's centre is a point it references and is emphatically not somewhere a
+	/// walk can arrive from, and a spline's interior points are the same. Profile finding used to
+	/// switch over the curve types to get at this, which meant every new kind of curve was a
+	/// change to loop finding as well as a new class. Asking the curve is what makes a new curve
+	/// one file.
+	/// </summary>
+	public virtual (int A, int B) Endpoints => (-1, -1);
+
 	/// <summary>Sample into a polyline in plane coordinates. Returns points from start to end
 	/// INCLUSIVE of both, so consecutive curves in a loop overlap by one point and the walker can
 	/// stitch them without special cases.</summary>
@@ -279,6 +297,8 @@ public sealed class SketchLine : SketchCurve
 
 	public override IEnumerable<int> PointRefs => new[] { Start, End };
 
+	public override (int A, int B) Endpoints => (Start, End);
+
 	public override List<Vec2> Tessellate( Sketch sketch, float tolerance ) =>
 		new() { sketch.Points[Start], sketch.Points[End] };
 
@@ -306,6 +326,8 @@ public sealed class SketchArc : SketchCurve
 	}
 
 	public override IEnumerable<int> PointRefs => new[] { Center, Start, End };
+
+	public override (int A, int B) Endpoints => (Start, End);
 
 	public float Radius( Sketch sketch )
 	{
@@ -396,6 +418,8 @@ public sealed class SketchCircle : SketchCurve
 
 	public override IEnumerable<int> PointRefs => new[] { Center };
 
+	public override bool IsClosed => true;
+
 	public override List<Vec2> Tessellate( Sketch sketch, float tolerance )
 	{
 		var c = sketch.Points[Center];
@@ -413,6 +437,258 @@ public sealed class SketchCircle : SketchCurve
 
 	public override SketchCurve Clone() =>
 		new SketchCircle( Center, Radius ) { Id = Id, Construction = Construction };
+}
+
+/// <summary>
+/// An ellipse, given as a centre, a point at the end of its major axis, and a minor radius.
+///
+/// THE MAJOR AXIS IS A POINT, NOT A NUMBER AND AN ANGLE. Storing it as a rim point means the major
+/// radius AND the rotation are both ordinary sketch points the solver can see and drive — a
+/// dimension on the major axis is just a Distance, and making an ellipse tangent to something is
+/// the same TangentLineArc machinery pointing at a different rim. Stored as a length and an angle,
+/// neither would be reachable by any constraint.
+///
+/// The minor radius stays a float, which is the same compromise SketchCircle.Radius already makes:
+/// a second rim point would be more solvable but would also have to be kept perpendicular to the
+/// first by a constraint that nothing would stop a user deleting. A circle whose radius cannot be
+/// driven has been fine in practice, and this is that trade made twice rather than a new one.
+/// </summary>
+public sealed class SketchEllipse : SketchCurve
+{
+	public int Center, MajorPoint;
+	public float MinorRadius;
+
+	public SketchEllipse( int center, int majorPoint, float minorRadius )
+	{
+		Center = center;
+		MajorPoint = majorPoint;
+		MinorRadius = minorRadius;
+	}
+
+	public override IEnumerable<int> PointRefs => new[] { Center, MajorPoint };
+
+	public override bool IsClosed => true;
+
+	/// <summary>Distance from the centre to the major-axis point.</summary>
+	public float MajorRadius( Sketch sketch )
+	{
+		var c = sketch.Points[Center];
+		var m = sketch.Points[MajorPoint];
+
+		return MathF.Sqrt( (m.x - c.x) * (m.x - c.x) + (m.y - c.y) * (m.y - c.y) );
+	}
+
+	public override List<Vec2> Tessellate( Sketch sketch, float tolerance )
+	{
+		var c = sketch.Points[Center];
+		var m = sketch.Points[MajorPoint];
+
+		var ax = m.x - c.x;
+		var ay = m.y - c.y;
+		var major = MathF.Sqrt( ax * ax + ay * ay );
+		var minor = MathF.Abs( MinorRadius );
+
+		if ( major < 1e-9f || minor < 1e-9f )
+			return new List<Vec2> { c, c };
+
+		// Unit vector along the major axis; the minor axis is it turned a quarter turn. Taking the
+		// rotation from the point rather than from a stored angle is the whole reason the point
+		// exists.
+		var ux = ax / major;
+		var uy = ay / major;
+
+		// Segment count from the WORST curvature on the ellipse, which is at the ends of the major
+		// axis where the effective radius is minor^2/major. Using the major radius instead would
+		// under-tessellate exactly the two places that need it most, and a long thin ellipse would
+		// come out as a hexagon with pointy ends.
+		var sharpest = minor * minor / major;
+		var steps = SketchArc.SegmentsForArc( MathF.Max( sharpest, 1e-6f ), MathF.Tau, tolerance );
+
+		var points = new List<Vec2>( steps + 1 );
+
+		for ( var i = 0; i <= steps; i++ )
+		{
+			var t = i / (float)steps * MathF.Tau;
+			var px = MathF.Cos( t ) * major;
+			var py = MathF.Sin( t ) * minor;
+
+			points.Add( new Vec2( c.x + px * ux - py * uy, c.y + px * uy + py * ux ) );
+		}
+
+		return points;
+	}
+
+	public override SketchCurve Clone() =>
+		new SketchEllipse( Center, MajorPoint, MinorRadius ) { Id = Id, Construction = Construction };
+}
+
+/// <summary>
+/// A spline through a list of points — an interpolating Catmull-Rom, not a Bezier or a NURBS.
+///
+/// INTERPOLATING, BECAUSE A SKETCH POINT THE CURVE MISSES IS A LIE. A B-spline or Bezier's control
+/// points sit off the curve, so a dimension on one does not measure the shape and a coincidence
+/// with one does not touch it. Every point here is ON the curve, which means every constraint that
+/// already exists — coincident, distance, midpoint, point-on-line — means the obvious thing when
+/// pointed at a spline point, and the solver needed no changes at all to drive one.
+///
+/// CENTRIPETAL PARAMETERISATION rather than uniform. Uniform Catmull-Rom overshoots into a visible
+/// loop when consecutive points are unevenly spaced, and unevenly spaced is what hand-placed sketch
+/// points always are. Centripetal (the exponent of a half below) is the standard fix and provably
+/// never self-intersects between two points.
+///
+/// The ends are handled by reflecting a phantom point outward rather than by duplicating the end
+/// point. Duplicating gives a zero-length segment, and the parameterisation divides by its length.
+/// </summary>
+public sealed class SketchSpline : SketchCurve
+{
+	public List<int> Points = new();
+
+	/// <summary>Joins its last point back to its first, making it a region on its own.</summary>
+	public bool Closed;
+
+	public SketchSpline( IEnumerable<int> points, bool closed = false )
+	{
+		Points = points.ToList();
+		Closed = closed;
+	}
+
+	public override IEnumerable<int> PointRefs => Points;
+
+	public override bool IsClosed => Closed;
+
+	public override (int A, int B) Endpoints =>
+		Closed || Points.Count < 2 ? (-1, -1) : (Points[0], Points[^1]);
+
+	public override List<Vec2> Tessellate( Sketch sketch, float tolerance )
+	{
+		var knots = Points.Select( i => sketch.Points[i] ).ToList();
+
+		if ( knots.Count == 0 )
+			return new List<Vec2>();
+
+		if ( knots.Count == 1 )
+			return new List<Vec2> { knots[0], knots[0] };
+
+		// Two points have no curvature to resolve and are a straight line however they are
+		// parameterised. Saying so here keeps the phantom-point logic below off a degenerate case.
+		if ( knots.Count == 2 && !Closed )
+			return new List<Vec2> { knots[0], knots[1] };
+
+		var output = new List<Vec2>();
+		var spans = Closed ? knots.Count : knots.Count - 1;
+
+		for ( var i = 0; i < spans; i++ )
+		{
+			var p0 = Neighbour( knots, i - 1, i, i + 1 );
+			var p1 = knots[Wrap( i, knots.Count )];
+			var p2 = knots[Wrap( i + 1, knots.Count )];
+			var p3 = Neighbour( knots, i + 2, i + 1, i );
+
+			var steps = StepsFor( p1, p2, tolerance );
+
+			// The last sample of a span is the first of the next, so every span but the final one
+			// stops short of its end and lets the next span contribute that point exactly once.
+			var last = i == spans - 1 ? steps : steps - 1;
+
+			for ( var s = 0; s <= last; s++ )
+				output.Add( Sample( p0, p1, p2, p3, s / (float)steps ) );
+		}
+
+		// Snap the ends onto the authored points. The arithmetic above lands on them to within
+		// rounding, and a loop walk compares positions, so "within rounding" is not good enough.
+		output[0] = knots[Closed ? 0 : 0];
+		output[^1] = Closed ? knots[0] : knots[^1];
+
+		return output;
+	}
+
+	int Wrap( int i, int count ) => Closed ? ((i % count) + count) % count : Math.Clamp( i, 0, count - 1 );
+
+	/// <summary>
+	/// The point outside a span, used to give the span its tangents. On a closed spline it wraps;
+	/// on an open one there is nothing beyond the end, so the phantom point is the end reflected
+	/// through its neighbour — which continues the curve straight rather than pinning it flat.
+	/// </summary>
+	Vec2 Neighbour( List<Vec2> knots, int want, int edge, int inward )
+	{
+		if ( Closed )
+			return knots[Wrap( want, knots.Count )];
+
+		if ( want >= 0 && want < knots.Count )
+			return knots[want];
+
+		var e = knots[Math.Clamp( edge, 0, knots.Count - 1 )];
+		var i2 = knots[Math.Clamp( inward, 0, knots.Count - 1 )];
+
+		return new Vec2( e.x + (e.x - i2.x), e.y + (e.y - i2.y) );
+	}
+
+	/// <summary>
+	/// Samples per span, from the chord length against the tolerance. A cubic's deviation from its
+	/// chord has no closed form worth deriving here, so this is the arc heuristic reused with the
+	/// chord standing in for the radius — generous on gentle spans and correct in the direction
+	/// that matters on tight ones.
+	/// </summary>
+	static int StepsFor( Vec2 a, Vec2 b, float tolerance )
+	{
+		var chord = MathF.Sqrt( (b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y) );
+
+		if ( chord < 1e-9f )
+			return 1;
+
+		if ( tolerance <= 0f )
+			return 16;
+
+		return Math.Clamp( (int)MathF.Ceiling( chord / MathF.Max( tolerance * 8f, 1e-6f ) ), 4, 256 );
+	}
+
+	/// <summary>
+	/// Centripetal Catmull-Rom, evaluated by the Barry-Goldman pyramid rather than by a basis
+	/// matrix. The matrix form assumes uniform knots and is exactly what this is avoiding.
+	/// </summary>
+	static Vec2 Sample( Vec2 p0, Vec2 p1, Vec2 p2, Vec2 p3, float t )
+	{
+		var t0 = 0f;
+		var t1 = t0 + Knot( p0, p1 );
+		var t2 = t1 + Knot( p1, p2 );
+		var t3 = t2 + Knot( p2, p3 );
+
+		var tt = t1 + (t2 - t1) * t;
+
+		var a1 = Lerp( p0, p1, t0, t1, tt );
+		var a2 = Lerp( p1, p2, t1, t2, tt );
+		var a3 = Lerp( p2, p3, t2, t3, tt );
+
+		var b1 = Lerp( a1, a2, t0, t2, tt );
+		var b2 = Lerp( a2, a3, t1, t3, tt );
+
+		return Lerp( b1, b2, t1, t2, tt );
+	}
+
+	/// <summary>Knot spacing: the square root of the chord length, which is what makes this
+	/// centripetal rather than uniform. Floored so coincident points cannot divide by zero.</summary>
+	static float Knot( Vec2 a, Vec2 b )
+	{
+		var dx = b.x - a.x;
+		var dy = b.y - a.y;
+
+		return MathF.Max( MathF.Sqrt( MathF.Sqrt( dx * dx + dy * dy ) ), 1e-5f );
+	}
+
+	static Vec2 Lerp( Vec2 a, Vec2 b, float ta, float tb, float t )
+	{
+		var span = tb - ta;
+
+		if ( MathF.Abs( span ) < 1e-9f )
+			return a;
+
+		var u = (t - ta) / span;
+
+		return new Vec2( a.x + (b.x - a.x) * u, a.y + (b.y - a.y) * u );
+	}
+
+	public override SketchCurve Clone() =>
+		new SketchSpline( Points, Closed ) { Id = Id, Construction = Construction };
 }
 
 /// <summary>
@@ -507,6 +783,19 @@ public sealed class Sketch
 
 	public SketchCircle AddCircle( Vec2 centre, float radius ) =>
 		Add( new SketchCircle( AddPoint( centre ), radius ) );
+
+	/// <summary>Ellipse from a centre, the end of its major axis, and a minor radius.</summary>
+	public SketchEllipse AddEllipse( Vec2 centre, Vec2 majorEnd, float minorRadius ) =>
+		Add( new SketchEllipse( AddPoint( centre ), AddPoint( majorEnd ), minorRadius ) );
+
+	/// <summary>Spline through the given points, in order. Every point is on the curve.</summary>
+	public SketchSpline AddSpline( bool closed, params Vec2[] through )
+	{
+		if ( through.Length < 2 )
+			throw new ArgumentException( "A spline needs at least 2 points" );
+
+		return Add( new SketchSpline( through.Select( AddPoint ).ToList(), closed ) );
+	}
 
 	public Sketch Clone() => new()
 	{
