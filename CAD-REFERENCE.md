@@ -386,9 +386,19 @@ frustum formula — because a twisted or inside-out result passes every closed-a
    only the original eleven. Tangent, arc-to-arc tangent, diameter, midpoint, concentric and fix are
    solvable, round-trip through the file, and are reachable from nothing. One case each, plus a menu
    entry each in `EffigyViewport.Constraints.cs`. Small, and it is what makes batch one usable.
-2. **Run the boolean.** `EffigyMeshBoolean.cs` is written and has never executed. Check that it
-   works, and check *what it returns*: triangle soup rather than quads poisons the subdivision cage
-   and breaks the sculpt stage too. This gates more than it looks like it does.
+2. ~~**Run the boolean.**~~ Done — **cuts work end to end in the editor**, and it returns n-gons
+   rather than triangle soup, so the subdivision cage and the sculpt stage are both safe. That was
+   the open question this list called the one that "gates more than it looks like it does", and the
+   answer went the good way.
+
+   Four bugs sat between "the adapter works" and "a hole appears", all of them producing meshes that
+   passed most checks: the extrude direction leaving the part instead of entering it, bridged faces
+   the engine returns for a holed face that `PolyMesh` forbids, `Triangulate.Polygon` silently
+   fanning a bridged loop instead of refusing it, and — the last and worst — welding the result's
+   vertices by exact float equality, which left the cut's mouth a hair open and covered by a flat
+   face. See `Effigy/README.md` for each in full; the shared lesson is that a boolean result can be
+   closed, manifold, Euler-correct and valid while being visibly wrong, so every one of them was
+   caught by measuring a different thing rather than by looking.
 3. **Rounded fillets.** The one CAD item deliberately not attempted — see the reasoning in
    `Effigy/README.md`'s "Not here yet". It is surgery on `Bevel`'s vertex-cap pass, not a parameter.
 4. **Draft on existing faces.** Extrude has `Taper`, which covers the common case; drafting faces of

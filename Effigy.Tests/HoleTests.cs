@@ -35,6 +35,169 @@ public static class HoleTests
 
 		Report.Section( "holes: profiles without them are untouched" );
 		TestNoRegression();
+
+		Report.Section( "holes: a BRIDGED loop, which is how the engine's boolean returns one" );
+		TestBridgedLoopKeepsItsHole();
+
+		Report.Section( "holes: an opening the boolean left as a bare boundary loop" );
+		TestBoundaryLoopRepair();
+	}
+
+	/// <summary>
+	/// The other shape a cut arrives in, and the one that produced "the tunnel is there and the
+	/// mouth is covered".
+	///
+	/// s&box's boolean cuts correctly and cannot describe a face with a hole in it, so reading the
+	/// entered face back gives its outer contour only. The opening survives as a ring of boundary
+	/// edges no face closes, and the flat face sits over it looking solid. This builds exactly that
+	/// defect - a square lid, a ring of walls hanging off an inner loop it does not share - and
+	/// asserts the repair sews the two together.
+	///
+	/// BOUNDARY EDGE COUNT is the measure, because it is the thing that is actually wrong: the
+	/// walls claim the mouth's edges once each and nothing claims them again.
+	/// </summary>
+	static void TestBoundaryLoopRepair()
+	{
+		const int segments = 12;
+		const float radius = 1f;
+
+		var mesh = new PolyMesh();
+
+		// A 4x4 lid at z = 0, facing up, with no hole in it - the face the cut went through.
+		var lid = new[]
+		{
+			mesh.AddVertex( new Vec3( -2, -2, 0 ) ),
+			mesh.AddVertex( new Vec3( 2, -2, 0 ) ),
+			mesh.AddVertex( new Vec3( 2, 2, 0 ) ),
+			mesh.AddVertex( new Vec3( -2, 2, 0 ) ),
+		};
+
+		mesh.AddFace( lid );
+
+		// The tunnel: a ring at z = 0 and the same ring at z = -1, walled between them and capped
+		// at the bottom. Its top ring shares no vertex with the lid, which is the defect.
+		var top = new int[segments];
+		var bottom = new int[segments];
+
+		for ( var i = 0; i < segments; i++ )
+		{
+			var a = MathF.Tau * i / segments;
+			var x = MathF.Cos( a ) * radius;
+			var y = MathF.Sin( a ) * radius;
+
+			top[i] = mesh.AddVertex( new Vec3( x, y, 0 ) );
+			bottom[i] = mesh.AddVertex( new Vec3( x, y, -1 ) );
+		}
+
+        for ( var i = 0; i < segments; i++ )
+		{
+			var j = (i + 1) % segments;
+			mesh.AddFace( new[] { top[i], bottom[i], bottom[j], top[j] } );
+		}
+
+		mesh.AddFace( bottom );
+
+		var before = MeshValidator.Validate( mesh );
+
+		Report.Check( "the fixture really is open at the mouth", before.BoundaryEdges == segments + 4,
+			$"{before.BoundaryEdges} boundary edges, expected {segments + 4}" );
+
+		var closed = MeshHoleRepair.CloseBoundaryLoopsIntoFaces( mesh );
+
+		Report.Check( "the repair closes exactly one loop", closed == 1, $"closed {closed}" );
+
+		var after = MeshValidator.Validate( mesh );
+
+		Report.Check( "the mesh stays valid", after.IsValid, after.ToString() );
+
+		// The lid's own outer square is still open - this fixture is a lid and a tunnel, not a
+		// solid - so 4 boundary edges are correct and the mouth's 12 are gone.
+		Report.Check( "and only the outer square is still open", after.BoundaryEdges == 4,
+			$"{after.BoundaryEdges} boundary edges, expected 4" );
+
+		// The lid must still cover its own area minus the hole, or the repair sealed the hole shut
+		// while removing the boundary - which would pass every count above.
+		var area = 0f;
+
+		foreach ( var face in mesh.Faces )
+		{
+			if ( MathF.Abs( mesh.FaceNormal( face ).z ) > 0.99f && MathF.Abs( mesh.FaceCentroid( face ).z ) < 1e-4f )
+				area += mesh.FaceArea( face );
+		}
+
+		var expected = 16f - HoleArea( radius, segments );
+
+		Report.Check( "the lid covers its area minus the opening", MathF.Abs( area - expected ) < 1e-3f,
+			$"{area:0.####}, expected {expected:0.####}" );
+	}
+
+	/// <summary>Area of the tessellated opening, not of the true circle - the mesh only ever had
+	/// the polygon.</summary>
+	static float HoleArea( float radius, int segments ) =>
+		0.5f * segments * radius * radius * MathF.Sin( MathF.Tau / segments );
+
+	/// <summary>
+	/// Ear clipping a loop that runs out to an inner boundary and back along the same seam.
+	///
+	/// This is the assumption EffigyMeshBoolean.AddFaceSplittingBridges rests on, and it is the
+	/// mechanism a cut hole survives by. A half-edge mesh cannot hold a face with a hole in it, so
+	/// s&box's boolean hands a holed face back as ONE loop that visits the two seam vertices twice.
+	/// That loop has to triangulate into a ring with a genuine hole in the middle - not a filled
+	/// disc - or a cut produces a tunnel whose opening is painted over, which is exactly what it
+	/// did before the adapter learned to split them.
+	///
+	/// Checked by AREA rather than by triangle count, because a filled square and a square with a
+	/// hole in it triangulate to a similar number of triangles and differ only in what they cover.
+	/// The one thing that cannot be faked is how much surface is there.
+	/// </summary>
+	static void TestBridgedLoopKeepsItsHole()
+	{
+		// A 4x4 square with a 2x2 hole, spliced along a bridge at the left edge: out along y=-1 to
+		// the hole, anticlockwise round it, back to where the bridge started, then round the outside.
+		var loop = new List<Vec2>
+		{
+			// the bridge out, and the hole, wound OPPOSITE to the outer so it reads as a hole
+			new( -2, -1 ), new( -1, -1 ), new( -1, 1 ), new( 1, 1 ), new( 1, -1 ), new( -1, -1 ),
+			// back along the bridge and round the outside
+			new( -2, -1 ), new( -2, -2 ), new( 2, -2 ), new( 2, 2 ), new( -2, 2 ),
+		};
+
+		var triangles = Triangulate.BridgedLoop( loop );
+
+		Report.Check( "a bridged loop triangulates at all", triangles.Count > 0, "no triangles" );
+
+		var area = 0f;
+
+		foreach ( var (a, b, c) in triangles )
+		{
+			var p = loop[a];
+			var q = loop[b];
+			var r = loop[c];
+
+			area += MathF.Abs( (q.x - p.x) * (r.y - p.y) - (r.x - p.x) * (q.y - p.y) ) * 0.5f;
+		}
+
+		// 4x4 outer minus the 2x2 hole. A filled square would measure 16 and is the failure this
+		// whole test exists to catch.
+		Report.Check( "and covers the ring only, not the hole", MathF.Abs( area - 12f ) < 1e-3f,
+			$"covered {area:0.###}, expected 12 (16 means the hole was filled in)" );
+
+		// The defect the adapter removes: no triangle may reuse one vertex twice, or the face it
+		// becomes repeats a vertex and MeshValidator rejects the mesh exactly as before.
+		var degenerate = 0;
+
+		foreach ( var (a, b, c) in triangles )
+		{
+			// By POSITION, not by loop index: the seam's two visits are different indices into the
+			// loop and the same point in space, which is precisely the case that matters.
+			if ( Same( loop[a], loop[b] ) || Same( loop[b], loop[c] ) || Same( loop[a], loop[c] ) )
+				degenerate++;
+		}
+
+		Report.Check( "and no triangle collapses onto the seam", degenerate == 0,
+			$"{degenerate} triangles reuse a seam vertex" );
+
+		static bool Same( Vec2 a, Vec2 b ) => MathF.Abs( a.x - b.x ) < 1e-6f && MathF.Abs( a.y - b.y ) < 1e-6f;
 	}
 
 	static void TestBoltHoles()

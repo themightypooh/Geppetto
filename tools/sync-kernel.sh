@@ -77,13 +77,38 @@ if [ -n "$orphans" ] && [ "${1:-}" != "--force" ]; then
 	exit 1
 fi
 
-rm -rf "$dst"
+# NEVER `rm -rf "$dst"` HERE, however tempting a clean slate is.
+#
+# s&box watches this tree and recompiles the editor assembly the moment it changes. Deleting the
+# directory hands the compiler a source tree with no Effigy in it, so the whole assembly fails with
+# several hundred "The type or namespace name 'Effigy' could not be found" errors - and it takes
+# HaloMount, ShaderForge and everything else under Editor/ down with it, none of which is at fault.
+# The files reappear a moment later, but the FAILED build is the one that sticks: s&box keeps
+# running the last assembly that compiled, so every edit made afterwards silently does nothing and
+# the editor shows stale results with no sign they are stale.
+#
+# That has cost this project whole sessions of chasing bugs in code that was already correct
+# (sbox-dev logs: 2026-08-26 23:41, and every compile from 2026-08-30 21:07 onward). The tell is a
+# compile failure whose errors are ALL "namespace Effigy could not be found" with none inside
+# Editor/Effigy itself - the mirror was mid-rebuild, nothing more. Touch any source file to trigger
+# a fresh compile and it goes green.
+#
+# Copying over the files in place fixes it: every intermediate state the watcher can observe still
+# contains a complete kernel, so no observable state fails to compile.
 mkdir -p "$dst"
 
 # Source only. The README documents the canonical copy and would be a lie sitting in the mirror.
+# Unchanged files are skipped so the watcher sees as few writes as possible.
 ( cd "$src" && find . -name '*.cs' -print ) | while read -r f; do
 	mkdir -p "$dst/$( dirname "$f" )"
-	cp "$src/$f" "$dst/$f"
+	cmp -s "$src/$f" "$dst/$f" 2>/dev/null || cp "$src/$f" "$dst/$f"
 done
+
+# Mirror-only files are refused above, so this only ever fires under --force. Removing them after
+# the copy rather than wiping the tree first keeps the no-broken-intermediate-state guarantee.
+( cd "$dst" && find . -name '*.cs' -print ) | while read -r f; do
+	[ -f "$src/$f" ] || rm -f "$dst/$f"
+done
+find "$dst" -mindepth 1 -type d -empty -delete 2>/dev/null || true
 
 echo "synced $( find "$dst" -name '*.cs' | wc -l | tr -d ' ' ) kernel files into Editor/Effigy"

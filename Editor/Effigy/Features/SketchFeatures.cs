@@ -197,6 +197,16 @@ public abstract class SketchConsumingFeature : Feature
 
 		if ( Result.Index == ResultRemove )
 		{
+			// ASKED BEFORE THE ENGINE IS, because the engine cannot tell these two apart. A tool
+			// that misses the target entirely and a tool that genuinely defeats the boolean both
+			// come back as one refusal, and its text sends you looking at the adapter.
+			//
+			// Bounding boxes only, so this never rejects a cut that would have worked: two boxes
+			// that do not overlap contain no solids that do. Two that DO overlap may still hold
+			// solids that miss each other, and that case is left to the engine — a conservative
+			// check that is always right about what it refuses beats an exact one that guesses.
+			RefuseIfItMisses( target.Mesh, mesh );
+
 			// The built solid is the TOOL here, not the result: it is the shape of the hole, and
 			// what stays in the studio is the target with that shape taken out of it. Replacing the
 			// mesh rather than the Body keeps the body's id, which everything built on this part is
@@ -206,6 +216,64 @@ public abstract class SketchConsumingFeature : Feature
 		}
 
 		MeshTransform.Append( target.Mesh, mesh );
+	}
+
+	/// <summary>
+	/// Refuse a cut whose tool solid does not reach the body at all, and say which way it went
+	/// wrong rather than that it went wrong.
+	///
+	/// The overwhelmingly common cause is direction — see ExtrudeFeature.DirectionSign — so the
+	/// message names the axis it missed along and how far short it fell. "It did not work" sends
+	/// someone to read the boolean adapter; "the cut sits 0.4 above the material" does not.
+	/// </summary>
+	protected static void RefuseIfItMisses( PolyMesh target, PolyMesh tool )
+	{
+		if ( target is null || tool is null || target.VertexCount == 0 || tool.VertexCount == 0 )
+			return;
+
+		Extent( target, out var targetMin, out var targetMax );
+		Extent( tool, out var toolMin, out var toolMax );
+
+		var gapX = Gap( targetMin.x, targetMax.x, toolMin.x, toolMax.x );
+		var gapY = Gap( targetMin.y, targetMax.y, toolMin.y, toolMax.y );
+		var gapZ = Gap( targetMin.z, targetMax.z, toolMin.z, toolMax.z );
+
+		var worst = MathF.Max( gapX, MathF.Max( gapY, gapZ ) );
+
+		// STRICTLY NEGATIVE, not merely non-positive. A gap of exactly zero is the two solids
+		// touching on a plane, which is precisely what a cut extruded the wrong way off a face
+		// looks like — it sits ON the material with zero volume in common, and subtracting it
+		// removes nothing. Treating "touching" as "overlapping" is what let the original bug
+		// through this check on its first run.
+		if ( worst < -1e-6f )
+			return;
+
+		var axis = worst == gapX ? "X" : worst == gapY ? "Y" : "Z";
+
+		var how = worst > 1e-6f
+			? $"it clears the part by {worst:0.###} along {axis}"
+			: $"it only touches the part along {axis}, enclosing none of it";
+
+		throw new InvalidOperationException(
+			$"This cut does not reach into the part — {how}, so there is nothing to take away. "
+			+ "A profile drawn on a face extrudes into that face by default; check Flip direction, "
+			+ "or increase the distance." );
+	}
+
+	/// <summary>How far two spans are apart. Zero or negative means they overlap.</summary>
+	static float Gap( float aMin, float aMax, float bMin, float bMax ) =>
+		MathF.Max( bMin - aMax, aMin - bMax );
+
+	static void Extent( PolyMesh mesh, out Vec3 min, out Vec3 max )
+	{
+		min = new Vec3( float.MaxValue, float.MaxValue, float.MaxValue );
+		max = new Vec3( float.MinValue, float.MinValue, float.MinValue );
+
+		foreach ( var p in mesh.Positions )
+		{
+			min = new Vec3( MathF.Min( min.x, p.x ), MathF.Min( min.y, p.y ), MathF.Min( min.z, p.z ) );
+			max = new Vec3( MathF.Max( max.x, p.x ), MathF.Max( max.y, p.y ), MathF.Max( max.z, p.z ) );
+		}
 	}
 
 	/// <summary>The body this result acts on — merges into, or cuts into — or null to start a new
@@ -355,6 +423,48 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 
 	public readonly IntParam Material = new( "Material slot", 0, 0, 63 );
 
+	/// <summary>
+	/// Which way the extrude actually travels: +1 along the sketch plane's normal, -1 against it.
+	///
+	/// FLIP IS NOT THE WHOLE ANSWER, and that is the fix this method exists for. A sketch on a face
+	/// takes that face's OUTWARD normal (FacePlane.Capture reads mesh.FaceNormal straight off the
+	/// mesh), so the default direction points away from the solid. For a boss that is exactly right
+	/// — it grows off the part. For a cut it is exactly backwards: the tool solid ends up floating
+	/// outside the material, touching it on one plane and enclosing no common volume with it, and
+	/// subtracting something that is not there removes nothing.
+	///
+	/// The engine's boolean reports that as "these two solids could not be combined - they may not
+	/// overlap", which is true and reads like an adapter fault. It cost a session.
+	///
+	/// So a Remove whose sketch sits on a face of the body it is cutting defaults to travelling INTO
+	/// that body, and Flip still means what it always meant: the other way from the sensible default.
+	/// That is Onshape's behaviour too — picking Remove there points the arrow into the material.
+	///
+	/// Deliberately NOT applied when the sketch is on a global plane. The outward normal of a face
+	/// says which way the material lies; a free-standing plane's normal says nothing of the kind, so
+	/// there is nothing to infer from and guessing would be worse than the honest default.
+	/// </summary>
+	float DirectionSign( FeatureContext ctx )
+	{
+		var sign = Flip.Value ? -1f : 1f;
+
+		return CutsIntoItsHostFace( ctx ) ? -sign : sign;
+	}
+
+	/// <summary>Removing material, through a sketch drawn on a face of the very body being cut.</summary>
+	bool CutsIntoItsHostFace( FeatureContext ctx )
+	{
+		if ( Result.Index != ResultRemove )
+			return false;
+
+		if ( ResolveSketchId( ctx ) is not { } id || !ctx.SketchHostBodies.TryGetValue( id, out var bodyId ) )
+			return false;
+
+		// The host has to still be there. ResolveTarget falls back to "the only body" when it is
+		// not, and that body is not necessarily the one the normal was measured against.
+		return ctx.Bodies.Any( b => b.Id == bodyId );
+	}
+
 	public override IReadOnlyList<IParam> Parameters => Termination.Index == 0
 		? new IParam[] { Sketch, Termination, Distance, SecondDistance, Symmetric, Flip, Taper, Result, Material }
 		: new IParam[] { Sketch, Termination, Flip, Taper, Result, Material };
@@ -364,12 +474,14 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 		var sketch = ResolveSketch( ctx );
 		var profiles = ResolveProfiles( sketch );
 
-		var reach = Termination.Index == 0 ? Distance.Value : MeasuredDistance( ctx, sketch, profiles );
+		var sign = DirectionSign( ctx );
+
+		var reach = Termination.Index == 0 ? Distance.Value : MeasuredDistance( ctx, sketch, profiles, sign );
 
 		if ( MathF.Abs( reach ) < 1e-6f )
 			throw new InvalidOperationException( "Distance cannot be zero" );
 
-		var distance = Flip.Value ? -reach : reach;
+		var distance = reach * sign;
 		var second = MathF.Abs( SecondDistance.Value );
 
 		// Three ways to place the two ends, in priority order: symmetric splits the one distance,
@@ -410,9 +522,9 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 	/// rather than silent, and warned about besides: if the sample rays disagree about the distance,
 	/// the target is not parallel and the feature says so.
 	/// </summary>
-	float MeasuredDistance( FeatureContext ctx, Sketch sketch, List<Profile> profiles )
+	float MeasuredDistance( FeatureContext ctx, Sketch sketch, List<Profile> profiles, float sign )
 	{
-		var direction = Flip.Value ? -sketch.Plane.Normal : sketch.Plane.Normal;
+		var direction = sketch.Plane.Normal * sign;
 
 		// Everything already built. A sketch drawn on a face of one of these starts ON it, which is
 		// what the epsilon below is for.

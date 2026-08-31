@@ -132,6 +132,11 @@ public sealed class EffigyWindow : DockWindow
 	/// hiding them - which is exactly what the previous window-docked ToolBar version did, since
 	/// hiding IT never touched the unrelated floating feature strip sitting on the canvas.</summary>
 	private EffigySketchStrip _sketchStrip;
+
+	/// <summary>The ADD/REMOVE mode strip, shown only while a feature that HAS a Result is open.
+	/// See EffigyResultStrip for why it is on the canvas rather than in the dialog.</summary>
+	private EffigyResultStrip _resultStrip;
+
 	private readonly List<EffigySketchToolButton> _sketchTools = new();
 	private EffigySketchToolButton _constructionButton;
 	private DockWidget _centralDock;
@@ -139,8 +144,24 @@ public sealed class EffigyWindow : DockWindow
 	private Editor.Label _statusInfoLabel;
 	private Editor.Label _promptLabel;
 
+	/// <summary>
+	/// The open window, for console diagnostics to talk to.
+	///
+	/// A ConCmd is static and the studio it needs to inspect is not, and there is no other route
+	/// from the console to the live document. Only ever read by effigy_dump_tree - nothing in the
+	/// tool's own behaviour depends on it, so a stale one after a crash costs a wrong dump and
+	/// nothing more.
+	/// </summary>
+	internal static EffigyWindow Current;
+
+	/// <summary>The live part studio, for effigy_dump_tree to read. Read-only by intent - the
+	/// diagnostic prints, it does not touch the document.</summary>
+	internal PartStudio DiagnosticStudio => _studio;
+
 	public EffigyWindow()
 	{
+		Current = this;
+
 		DeleteOnClose = true;
 		Size = new Vector2( 1440, 900 );
 
@@ -284,7 +305,12 @@ public sealed class EffigyWindow : DockWindow
 		// widget and nothing eats a band off the top of it.
 		_toolStrip = new EffigyToolStrip( _viewport.Canvas );
 		_sketchStrip = new EffigySketchStrip( _viewport.Canvas );
-		_viewport.CompleteLayout( _toolStrip, _sketchStrip );
+
+		// Under the tool strip rather than in the dialog, because the question it answers - "is
+		// this about to cut?" - is asked while looking at the MODEL, not at the parameter list.
+		_resultStrip = new EffigyResultStrip( _viewport.Canvas ) { Changed = OnResultStripChanged };
+
+		_viewport.CompleteLayout( _toolStrip, _sketchStrip, _resultStrip );
 
 		RefreshToolStrip( force: true );
 
@@ -517,8 +543,38 @@ public sealed class EffigyWindow : DockWindow
 		if ( _dialog?.Feature is { } feature )
 			_studio.MarkDirty( feature );
 
+		// The dropdown and the strip are two views of one ChoiceParam, so an edit through either
+		// has to refresh the other or they disagree about what is armed - which is the exact
+		// confusion the strip exists to end.
+		_resultStrip?.Bind( _dialog?.Feature, SketchHostBodyId );
+
 		RebuildStudio();
 	}
+
+	/// <summary>
+	/// A click on the ADD/REMOVE strip. The parameter is already set by the time this runs; what
+	/// is left is everything a dropdown change would have done.
+	///
+	/// The dialog rebuild is not optional. Result decides which parameters a feature even declares
+	/// in some cases, and the dropdown four rows down still shows the old value until it is redrawn
+	/// - two controls disagreeing about the same value being precisely the failure this is fixing.
+	/// </summary>
+	private void OnResultStripChanged()
+	{
+		OnFeatureEdited();
+
+		_dialog?.Rebuild();
+	}
+
+	/// <summary>
+	/// Which body a sketch was drawn on, or null for one on a global plane. This is what Auto
+	/// reads, so it is what the strip's Auto hint has to read too.
+	///
+	/// Straight off SketchFeature.Face rather than through the kernel's own resolution, because
+	/// that needs a FeatureContext which only exists mid-rebuild - see EffigyResultStrip.ResolveAuto.
+	/// </summary>
+	private string SketchHostBodyId( string sketchId ) =>
+		_studio.Features.OfType<SketchFeature>().FirstOrDefault( f => f.Id == sketchId )?.Face?.BodyId;
 
 	/// <summary>The left half of the status bar — what the active tool wants next.</summary>
 	private void SetPrompt( string prompt )
@@ -803,7 +859,11 @@ public sealed class EffigyWindow : DockWindow
 			SketchNameLookup = id => _studio.Features.OfType<SketchFeature>().FirstOrDefault( f => f.Id == id )?.Name,
 			PickableBodiesLookup = () => _studio.Bodies,
 			BodyNameLookup = id => _studio.Bodies.FirstOrDefault( b => b.Id == id )?.Name,
-			OpenedForFeature = UpdatePickTargets,
+			OpenedForFeature = f =>
+			{
+				UpdatePickTargets( f );
+				_resultStrip?.Bind( f, SketchHostBodyId );
+			},
 			MaterialLookup = SlotMaterial,
 			MaterialChanged = SetSlotMaterial,
 		};
@@ -971,6 +1031,8 @@ public sealed class EffigyWindow : DockWindow
 
 	private void OnDialogAccepted( Feature feature )
 	{
+		_resultStrip?.Bind( null, SketchHostBodyId );
+
 		if ( _viewport.IsSketching )
 			FinishSketch();
 
@@ -983,6 +1045,8 @@ public sealed class EffigyWindow : DockWindow
 	/// it was. Cancelling an edit has already had its parameters restored by the dialog.</summary>
 	private void OnDialogCancelled( Feature feature, bool wasNew )
 	{
+		_resultStrip?.Bind( null, SketchHostBodyId );
+
 		if ( wasNew )
 			_studio.Remove( feature );
 

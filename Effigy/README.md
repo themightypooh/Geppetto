@@ -588,11 +588,43 @@ section, and `Editor/EffigyEditor/EffigyMeshBoolean.cs` now implements `IMeshBoo
 transform is how the second mesh is placed against the first, and UVs have to be recomputed after,
 because the boolean makes faces that never had any.
 
-**It has never been run.** It lives in the editor assembly, so no test here touches it, and the
-single most valuable thing anyone can do next is open the editor and cut one solid with another.
-Two things to check when you do: that it works at all, and *what it hands back* — if
-`PerformBoolean` returns triangle soup rather than quads, every cut poisons the subdivision cage
-and that breaks the sculpt stage as well as this one.
+**It has been run, and it works.** `effigy_test_boolean` on two unit boxes offset by half returns
+union 20v/12f, subtract 14v/9f, intersect 8v/6f — all closed, and all three exactly the arithmetic
+answer. The question that hung over it for longest is answered well: **it returns n-gons, not
+triangle soup**, so a cut does not poison the subdivision cage and the sculpt stage is safe.
+
+Getting from "the adapter works" to "a cut appears on screen" took four separate bugs, and every
+one of them produced a mesh that passed some checks and looked plausible. They are worth reading
+before touching this file:
+
+**Direction.** A sketch on a face takes that face's OUTWARD normal, so a cut extruded off it left
+the part instead of entering it — the two solids touched on a plane and enclosed nothing. Fixed in
+the kernel (`ExtrudeFeature.DirectionSign`), not here.
+
+**Bridged faces.** A half-edge face is one closed loop, so the engine returns a face with a hole in
+it as a single loop that runs out to the hole and back along the same seam, visiting two vertices
+twice. `PolyMesh` forbids that — `MeshValidator` errors on a repeated vertex, and Effigy's own
+holed caps are triangles for exactly this reason. Handed straight to `AddFace` it produced a mesh
+whose OBJ Blender filled in solid: the tunnel was there and its mouth was covered.
+`AddFaceSplittingBridges` triangulates them on the way in.
+
+**The wrong ear clipper.** `Triangulate.Polygon` assumes a simple polygon and does not fail on a
+bridged loop — it returns an overlapping fan that covers the hole back in. `ClipRing` tolerates a
+bridge only when the seam's two visits are *the same index*, which is why `WithHoles` never hit
+this and an outside loop does. `Triangulate.BridgedLoop` welds first, then clips.
+
+**Exact float welding, which was the last one and the worst.** Reading the result back welded
+vertices by exact equality, on the reasoning that the engine's floats come back untouched. True of
+a corner the boolean copied; false of one it CALCULATED — an intersection reached along two edges
+is computed twice and agrees to about six digits. Two vertices a hair apart meant every edge
+through them was claimed by one face rather than two, so the cut's mouth was an open boundary that
+nothing closed and the flat face sat over it looking solid. Welding within 1e-4 fixed it.
+
+The lesson the four share: **a boolean result can be closed, manifold, Euler-correct and valid
+while being visibly wrong**, and each of these was found by measuring something different — a
+bounds overlap, a repeated-vertex check, a covered AREA, and a boundary-edge count. `MeshHoleRepair`
+also exists for the case where the engine drops an inner loop entirely rather than bridging it, and
+`effigy_dump_tree` prints all of these at once, which is what made them findable at all.
 
 Everything on this side of that adapter is done and tested: the operand order (target is the part,
 tool is the shape of the hole), the result replacing the body without changing its id, a provider

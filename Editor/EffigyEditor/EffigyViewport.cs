@@ -234,7 +234,7 @@ internal sealed partial class EffigyViewport : Widget
 	/// at that point orphans the canvas: it keeps whatever tiny geometry it had and renders the
 	/// whole 3D scene into a sliver, leaving the rest of the viewport black.
 	/// </summary>
-	public void CompleteLayout( Widget featureOverlay, Widget sketchOverlay )
+	public void CompleteLayout( Widget featureOverlay, Widget sketchOverlay, Widget resultOverlay = null )
 	{
 		Layout.Add( _canvas, 1 );
 
@@ -250,6 +250,15 @@ internal sealed partial class EffigyViewport : Widget
 		_sketchOverlay = sketchOverlay;
 		sketchOverlay.Position = OverlayMargin;
 		sketchOverlay.Visible = false;
+
+		// A SECOND ROW, not a third thing sharing the first spot. The two strips above swap with
+		// each other because only one can be relevant at a time; this one is about the feature
+		// being edited and is orthogonal to both, so it sits under whichever is showing.
+		if ( resultOverlay is not null )
+		{
+			_resultOverlay = resultOverlay;
+			resultOverlay.Position = OverlayMargin + new Vector2( 0f, EffigyToolStrip.ButtonSize + 8f );
+		}
 	}
 
 	/// <summary>Inset of the floating tool strip from the canvas's top-left corner.</summary>
@@ -258,6 +267,7 @@ internal sealed partial class EffigyViewport : Widget
 	/// <summary>The floating tool strip, so the frame loop can keep camera drags out of it.</summary>
 	private Widget _overlay;
 	private Widget _sketchOverlay;
+	private Widget _resultOverlay;
 
 	// --- model management -------------------------------------------------------------------
 
@@ -974,7 +984,9 @@ internal sealed partial class EffigyViewport : Widget
 		// The floating tool strips sit inside the canvas, so "cursor over the canvas" is true while
 		// you are aiming at a button. Without excluding them, pressing a tool also grabs the orbit
 		// camera, the click drags the view, and sketch tools place points on the plane.
-		var overAnyOverlay = (_overlay?.IsUnderMouse ?? false) || (_sketchOverlay?.IsUnderMouse ?? false);
+		var overAnyOverlay = (_overlay?.IsUnderMouse ?? false)
+			|| (_sketchOverlay?.IsUnderMouse ?? false)
+			|| (_resultOverlay?.IsUnderMouse ?? false);
 		var overCanvas = _canvas.IsUnderMouse && !overAnyOverlay;
 
 		_gizmoInstance.Input.IsHovered = IsActiveWindow && overCanvas;

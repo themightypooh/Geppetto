@@ -26,6 +26,109 @@ public static class Triangulate
 	/// LIST, wound the same way the input is, so a caller can map them straight back onto its own
 	/// vertices without worrying about which way the face faces.
 	/// </summary>
+	/// <summary>
+	/// Triangulate a loop that has already had its holes SPLICED IN along bridges — one boundary
+	/// that runs out to an inner ring, round it, and back along the same seam.
+	///
+	/// WHY THIS IS NOT Polygon(). Polygon assumes a SIMPLE polygon: no repeated vertex, no edge
+	/// travelled twice. A bridged loop breaks both, and Polygon does not fail on one - it returns
+	/// overlapping triangles that cover more area than the outline encloses, which renders as a
+	/// hole that has been filled in. WithHoles never hit this because it builds its own bridges and
+	/// finishes through ClipRing, the clipper that tolerates them; Polygon is simply the wrong door
+	/// and nothing had ever knocked on it with a bridged loop before.
+	///
+	/// What knocks now is s&box's mesh boolean. A half-edge face is one closed loop, so a cut that
+	/// leaves a hole in a face can only hand it back bridged, and that is the shape a cut arrives
+	/// in — see EffigyMeshBoolean.
+	///
+	/// Winding follows the input, the same contract Polygon gives.
+	/// </summary>
+	public static List<(int A, int B, int C)> BridgedLoop( IReadOnlyList<Vec2> points )
+	{
+		if ( points is null || points.Count < 3 )
+			return new List<(int, int, int)>();
+
+		// WELDING IS THE WHOLE TRICK, and getting it wrong looks like success. ClipRing tolerates a
+		// bridge only when the seam's two visits are THE SAME INDEX - that identity is what lets its
+		// ear test recognise the doubled edge instead of measuring a zero-area corner and rejecting
+		// every candidate. Handed a ring whose visits are two different indices at identical
+		// positions, it finds no ear at all and falls back to a fan, which returns a plausible pile
+		// of triangles covering the hole and everything else besides.
+		//
+		// WithHoles never meets this because it splices indices into a shared point list and the
+		// repeat is literal. A loop arriving from outside - the shape s&box's boolean returns - has
+		// to be put into that same form first.
+		var welded = new List<Vec2>( points.Count );
+		var ring = new List<int>( points.Count );
+		var representative = new List<int>( points.Count );
+
+		for ( var i = 0; i < points.Count; i++ )
+		{
+			var index = -1;
+
+			for ( var j = 0; j < welded.Count; j++ )
+			{
+				if ( MathF.Abs( welded[j].x - points[i].x ) > WeldTolerance
+					|| MathF.Abs( welded[j].y - points[i].y ) > WeldTolerance )
+					continue;
+
+				index = j;
+				break;
+			}
+
+			if ( index < 0 )
+			{
+				index = welded.Count;
+				welded.Add( points[i] );
+
+				// Which position in the CALLER'S list this welded point stands for, so the triples
+				// come back indexed the way the caller handed its loop in.
+				representative.Add( i );
+			}
+
+			ring.Add( index );
+		}
+
+		var triangles = ClipRing( welded, ring, reversed: RingSignedArea( welded, ring ) < 0f );
+
+		for ( var i = 0; i < triangles.Count; i++ )
+		{
+			var (a, b, c) = triangles[i];
+			triangles[i] = (representative[a], representative[b], representative[c]);
+		}
+
+		return triangles;
+	}
+
+	/// <summary>Two points this close together in plane units are the same point. Loose enough for
+	/// a seam the engine reports twice, far below anything anyone draws.</summary>
+	const float WeldTolerance = 1e-5f;
+
+	/// <summary>Signed area of a ring of indices, rather than of a bare point list.</summary>
+	static float RingSignedArea( IReadOnlyList<Vec2> points, IReadOnlyList<int> ring )
+	{
+		var sum = 0f;
+
+		for ( var i = 0; i < ring.Count; i++ )
+		{
+			var a = points[ring[i]];
+			var b = points[ring[(i + 1) % ring.Count]];
+			sum += a.x * b.y - b.x * a.y;
+		}
+
+		return sum * 0.5f;
+	}
+
+	/// <summary>The 3D form of <see cref="BridgedLoop"/>, flattened onto the loop's own Newell
+	/// normal exactly as <see cref="Face"/> does.</summary>
+	public static List<(int A, int B, int C)> BridgedFace( IReadOnlyList<Vec3> positions )
+	{
+		if ( positions is null || positions.Count < 3 )
+			return new List<(int, int, int)>();
+
+		return BridgedLoop( Flatten( positions ) );
+	}
+
 	public static List<(int A, int B, int C)> Polygon( IReadOnlyList<Vec2> points )
 	{
 		var triangles = new List<(int, int, int)>( Math.Max( points.Count - 2, 0 ) );
@@ -344,6 +447,18 @@ public static class Triangulate
 		if ( positions.Count < 3 )
 			return new List<(int, int, int)>();
 
+		return Polygon( Flatten( positions ) );
+	}
+
+	/// <summary>
+	/// Drop a planar 3D loop onto its own plane, keeping the order and the winding.
+	///
+	/// Shared by Face and BridgedFace rather than written twice: the two differ only in which
+	/// clipper they hand the result to, and a second copy of this projection would be a second
+	/// place for the seed-axis choice below to drift.
+	/// </summary>
+	static List<Vec2> Flatten( IReadOnlyList<Vec3> positions )
+	{
 		var normal = NewellNormal( positions );
 
 		if ( normal.LengthSquared < 1e-20f )
@@ -362,7 +477,7 @@ public static class Triangulate
 		foreach ( var p in positions )
 			flat.Add( new Vec2( Vec3.Dot( p, u ), Vec3.Dot( p, v ) ) );
 
-		return Polygon( flat );
+		return flat;
 	}
 
 	static Vec3 NewellNormal( IReadOnlyList<Vec3> points )

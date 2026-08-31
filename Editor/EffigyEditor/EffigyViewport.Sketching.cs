@@ -444,6 +444,44 @@ internal sealed partial class EffigyViewport
 	private const float PointHandlePixels = 7f;
 
 	/// <summary>
+	/// Every DOT this sketcher draws, in screen pixels of radius. Same reasoning as
+	/// PointHandlePixels and UnitsPerPixel - and these were the sites that were missed when the
+	/// snap tolerances were converted.
+	///
+	/// They were fixed world constants, the largest of them 1.25 units. On a part one unit across
+	/// - which is what a primitive added to test something is - a 1.25-unit-radius sphere is two
+	/// and a half times the width of the whole model, so the sketch's own points swallowed the
+	/// solid they were drawn on. Nothing about it reads as a scale bug on screen; it reads as a
+	/// giant yellow blob where the part should be.
+	///
+	/// Kept as separate constants rather than one, because the sizes are a hierarchy: a resting
+	/// point is the smallest thing, the cursor is smaller still so it does not hide what it is
+	/// about to snap to, and anything the sketcher is trying to draw ATTENTION to - a snap
+	/// target, a loose end, a pending click - is larger than a resting point.
+	/// </summary>
+	private const float SketchPointPixels = 3.5f;
+
+	/// <summary>The point the next click would snap onto. Larger than a resting point on purpose.</summary>
+	private const float SnapPointPixels = 4.5f;
+
+	/// <summary>A committed sketch's points, drawn dimmer and smaller than the active one's so the
+	/// sketch being worked on stays the foreground.</summary>
+	private const float CommittedPointPixels = 3f;
+
+	/// <summary>A branch point (degree 3+) in the profile diagnostics.</summary>
+	private const float BranchPointPixels = 4f;
+
+	/// <summary>A loose end (degree 1) in the profile diagnostics.</summary>
+	private const float LooseEndPixels = 3.5f;
+
+	/// <summary>An endpoint of the shape being drawn, before it is committed to the sketch.</summary>
+	private const float PendingPointPixels = 4.5f;
+
+	/// <summary>The cursor itself. The smallest dot here - it sits on top of whatever is being
+	/// aimed at, so anything bigger hides the thing it is aiming for.</summary>
+	private const float CursorPixels = 2.5f;
+
+	/// <summary>
 	/// Hit-test, highlight and drag the active sketch's points.
 	///
 	/// The hitbox/hover/press dance is the editor's own gizmo machinery, the same as the origin
@@ -1880,8 +1918,12 @@ internal sealed partial class EffigyViewport
 		// Points last so they sit on top of the curves through them.
 		Gizmo.Draw.Color = SketchPointColor;
 
+		// Hoisted out of the loop: UnitsPerPixel does a tangent and a length every call, and the
+		// answer is the same for every point in one frame.
+		var units = UnitsPerPixel();
+
 		foreach ( var p in ActiveSketch.Points )
-			Gizmo.Draw.SolidSphere( PlaneToWorld( p ), 1.25f, 10, 10 );
+			Gizmo.Draw.SolidSphere( PlaneToWorld( p ), units * SketchPointPixels, 10, 10 );
 
 		if ( ProfileInspector )
 			DrawProfileDiagnostics();
@@ -1889,7 +1931,7 @@ internal sealed partial class EffigyViewport
 		if ( _snapPoint >= 0 && _snapPoint < ActiveSketch.Points.Count )
 		{
 			Gizmo.Draw.Color = SketchPreviewColor;
-			Gizmo.Draw.SolidSphere( PlaneToWorld( ActiveSketch.Points[_snapPoint] ), 1.5f, 10, 10 );
+			Gizmo.Draw.SolidSphere( PlaneToWorld( ActiveSketch.Points[_snapPoint] ), units * SnapPointPixels, 10, 10 );
 		}
 
 		Gizmo.Draw.LineThickness = 1f;
@@ -1945,6 +1987,8 @@ internal sealed partial class EffigyViewport
 		// draw-through behaviour; you are working on that one and it has to stay reachable.
 		Gizmo.Draw.IgnoreDepth = false;
 
+		var pointRadius = UnitsPerPixel() * CommittedPointPixels;
+
 		foreach ( var sketch in _displaySketches )
 		{
 			if ( sketch == ActiveSketch || _hiddenSketches.Contains( sketch ) )
@@ -1979,7 +2023,7 @@ internal sealed partial class EffigyViewport
 			Gizmo.Draw.LineThickness = 2f;
 			Gizmo.Draw.Color = SketchPointColor.WithAlpha( 0.7f );
 			foreach ( var p in sketch.Points )
-				Gizmo.Draw.SolidSphere( PlaneToWorld( sketch.Plane, p ), 1.0f, 8, 8 );
+				Gizmo.Draw.SolidSphere( PlaneToWorld( sketch.Plane, p ), pointRadius, 8, 8 );
 		}
 
 		Gizmo.Draw.LineThickness = 1f;
@@ -2008,12 +2052,15 @@ internal sealed partial class EffigyViewport
 		}
 
 		Gizmo.Draw.Color = SketchGapColor;
+		var units = UnitsPerPixel();
+
 		foreach ( var (point, count) in degree )
 		{
 			if ( count == 2 )
 				continue;
 
-			Gizmo.Draw.SolidSphere( PlaneToWorld( ActiveSketch.Points[point] ), count > 2 ? 1.2f : 1.0f, 10, 10 );
+			Gizmo.Draw.SolidSphere( PlaneToWorld( ActiveSketch.Points[point] ),
+				units * (count > 2 ? BranchPointPixels : LooseEndPixels), 10, 10 );
 		}
 
 		void AddDegree( int point ) => degree[point] = degree.TryGetValue( point, out var count ) ? count + 1 : 1;
@@ -2030,14 +2077,16 @@ internal sealed partial class EffigyViewport
 		Gizmo.Draw.LineThickness = 2f;
 		Gizmo.Draw.Color = SketchPreviewColor;
 
+		var units = UnitsPerPixel();
+
 		// Pending endpoints are not in ActiveSketch.Points until the entity is committed. Draw them
 		// explicitly so the user can see the actual point the next click will connect to.
 		foreach ( var p in _pending )
-			Gizmo.Draw.SolidSphere( PlaneToWorld( p ), 1.5f, 10, 10 );
+			Gizmo.Draw.SolidSphere( PlaneToWorld( p ), units * PendingPointPixels, 10, 10 );
 
 		// Cursor crosshair, so the snapped position is visible even with nothing pending.
 		var c = PlaneToWorld( _cursorOnPlane );
-		Gizmo.Draw.SolidSphere( c, 0.75f, 8, 8 );
+		Gizmo.Draw.SolidSphere( c, units * CursorPixels, 8, 8 );
 
 		if ( _pending.Count > 0 )
 		{

@@ -236,9 +236,10 @@ folder's README for the design decisions; the status here is what remains.
    tested** — `MeshBoolean`/`IMeshBoolean`, and Extrude/Revolve reach for it when Result is Remove.
    The adapter to s&box's own `PolygonMesh` is now **written** as well
    (`Editor/EffigyEditor/EffigyMeshBoolean.cs`), from Facepunch's own call site rather than guessed.
-   It has **never been run**, which makes running it the highest-value thing left on this list —
-   and check what it hands back, not just that it works: triangle soup rather than quads poisons the
-   subdivision cage and breaks phase three as well as this.
+   It has now **been run, and cutting works end to end in the editor**. It hands back n-gons rather
+   than triangle soup, so phase three is not poisoned by it — the thing this list was most worried
+   about. Four bugs stood between the adapter working and a hole being visible; they are written up
+   in `Effigy/README.md` and are all of the "valid mesh, wrong picture" kind.
 6. **Planar/box-projection auto-UV per face cluster.** **Done** — `UVProjectFeature` re-projects box
    or planar per selected bodies.
 7. **Export** — OBJ works for static geometry. Collision from the primitive list rather than from 

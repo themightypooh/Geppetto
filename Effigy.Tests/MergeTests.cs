@@ -38,6 +38,97 @@ public static class MergeTests
 
 		Report.Section( "remove: the cut goes through the boolean seam" );
 		TestRemove();
+
+		Report.Section( "remove: the cut tool has to be INSIDE the thing it cuts" );
+		TestCutToolOverlapsTarget();
+	}
+
+	/// <summary>
+	/// The assertion every other Remove test here was missing, and the reason a cut that is wired
+	/// correctly end to end still does nothing in the editor.
+	///
+	/// Everything above stubs the boolean and checks the PLUMBING: that a cut is routed to a
+	/// provider, that the result is adopted, that the body keeps its id. The stub returns whatever
+	/// it is told to, so no test ever looked at the tool solid it was handed — and the tool solid
+	/// is the whole problem.
+	///
+	/// A sketch on a face takes that FACE'S OUTWARD NORMAL as its plane normal (FacePlane.Capture
+	/// reads mesh.FaceNormal directly). An extrude with Flip off travels along that normal. So a
+	/// sketch drawn on the top of a block extrudes UP AND AWAY from it — correct for a boss, and
+	/// exactly backwards for a cut, which needs to travel down INTO the material.
+	///
+	/// The two solids then meet on a plane and enclose no common volume, and subtracting something
+	/// that isn't there takes nothing away. The engine reports that as a refusal whose text is "they
+	/// may not overlap", which reads as an adapter fault and is nothing of the kind.
+	/// </summary>
+	static void TestCutToolOverlapsTarget()
+	{
+		var previous = MeshBoolean.Provider;
+
+		try
+		{
+			var stub = new StubBoolean();
+			MeshBoolean.Provider = stub;
+
+			// Exactly the editor's case: block, sketch on its top face, Remove, default direction.
+			var studio = CutSetup( out var cut );
+			studio.Rebuild();
+
+			Report.Check( "the cut reached the boolean at all", stub.Calls > 0,
+				"the provider was never called" );
+
+			var target = Bounds( stub.LastTarget );
+			var tool = Bounds( stub.LastTool );
+
+			// The block is 2 tall about the origin, so its top face is at z = +1. A tool that cuts
+			// it has to reach BELOW that; one that starts there and climbs is outside the material.
+			// Before DirectionSign existed this came out as target -1..1 against tool 1..2.
+			var overlap = MathF.Min( target.Max, tool.Max ) - MathF.Max( target.Min, tool.Min );
+
+			Report.Check( "a cut off a face travels into the material, not away from it", overlap > 1e-4f,
+				$"target z {target.Min:0.###}..{target.Max:0.###}, tool z {tool.Min:0.###}..{tool.Max:0.###} "
+				+ $"- overlap {overlap:0.###}" );
+
+			Report.Check( "and it stops where the distance says", MathF.Abs( tool.Min - 0f ) < 1e-4f,
+				$"tool reaches down to {tool.Min:0.###}, expected 0 for a distance of 1 off a face at z=1" );
+
+			// Flip still means what it always meant: the other way from the sensible default. For a
+			// cut that is back OUT of the material, which is now the broken direction rather than
+			// the default one - and the pre-flight check is what has to catch it.
+			cut.Flip.Value = true;
+			studio.MarkDirty( 0 );
+			var flippedReport = studio.Rebuild();
+
+			Report.Check( "flipping a face cut back out of the material is refused", flippedReport.HasErrors,
+				"it built something" );
+
+			Report.Check( "and the refusal says which way it missed and by how much",
+				cut.Error is not null && cut.Error.Contains( "does not reach into the part" )
+					&& cut.Error.Contains( "Flip" ),
+				cut.Error ?? "no error" );
+		}
+		finally
+		{
+			MeshBoolean.Provider = previous;
+		}
+	}
+
+	/// <summary>Z extent of a mesh. The cut in CutSetup travels along Z, so one axis answers it.</summary>
+	static (float Min, float Max) Bounds( PolyMesh mesh )
+	{
+		if ( mesh is null || mesh.VertexCount == 0 )
+			return (0f, 0f);
+
+		var min = float.MaxValue;
+		var max = float.MinValue;
+
+		foreach ( var p in mesh.Positions )
+		{
+			min = MathF.Min( min, p.z );
+			max = MathF.Max( max, p.z );
+		}
+
+		return (min, max);
 	}
 
 	/// <summary>
