@@ -8,7 +8,7 @@ it" has repeatedly been the difference between right and wrong.
 wrong. Every hard bug in this repo passed most of its checks. Measure enclosed volume, covered
 area, or boundary-edge count — not "it renders and looks fine".
 
-Verified as of 31 August 2026: **1407 kernel checks, 0 failing** (`./tools/test.sh`), and the whole
+Verified as of 31 August 2026: **1468 kernel checks, 0 failing** (`./tools/test.sh`), and the whole
 project **compiles clean in the s&box editor**, 0 errors, 61 tools registered.
 
 ---
@@ -93,12 +93,12 @@ hands holes back wound the opposite way, so the same wall code faces them into t
 handling anywhere. Profiles *without* holes are untouched and still get their single n-gon, pinned by
 a test.
 
-**A holed cap is two n-gons, not a pile of triangles.** `Triangulate.SplitWithHoles` hands the
-bridged ring to the same `SplitBridgedLoop` the boolean's cut faces go through, which cuts it on a
-second bridge; the cap pass falls back to the ear clipper when the splitter refuses. A 6x6 plate with
-a 2x2 hole extrudes to twelve faces where it used to be twenty-four. Two is the floor, not one — a
-face is a single loop of corners — and **one hole only**, because two holes put two bridges in the
-ring and an n-holed face needs n+1 cuts.
+**A holed cap is n+1 faces, not a pile of triangles.** `Triangulate.SplitWithHoles` cuts each hole
+against whichever face it landed in, so one hole gives two faces, two give three, and the cap pass
+falls back to the ear clipper only when the splitter refuses. A 6x6 plate with a 2x2 hole extrudes to
+twelve faces where it used to be twenty-four; add a second hole and it is eighteen. Two is the floor
+for one hole, not one — a face is a single loop of corners, so a face with a hole in it cannot be
+fewer.
 
 **A concave face's area is projected, not summed.** `PolyMesh.FaceArea` fans about the centroid, and
 it used to sum `|cross|`, which is exact for a convex face and too big for a concave one: every
@@ -371,12 +371,16 @@ correct and expensive in the only currency the user spends: a `Face` is the unit
 material assignment, so a 24-gon cylinder cap with a pocket cut into it came back as **29 triangles**
 and clicking it to paint it painted one of them. The mesh was closed, manifold and the right volume
 every time — the existing hole tests all passed while the face a person clicks on had been shattered.
-`Triangulate.SplitBridgedLoop` now recovers the outer boundary and the hole from the bridged loop and
-cuts the ring on a **second bridge**, giving **two n-gons**. Two is the floor, not one: a face is a
+`Triangulate.SplitBridgedLoop` now recovers the outer boundary and every hole from the bridged loop —
+peeling one bridge at a time, shortest run first, because an innermost run cannot have another nested
+inside it — and cuts each hole against whichever face it landed in, giving **n+1 n-gons**. A face
+with two pockets in it comes back as three faces. Two is the floor for one hole, not one: a face is a
 single loop of corners, so a face with a hole in it cannot be fewer, and no modeller does better.
-The splitter refuses anything it is not certain of — more than one hole in a face, repeats that do not
-sit where a bridge puts them, a hole with no valid second bridge — and falls back to triangulating,
-which is never wrong, only coarse. `HoleTests` asserts the **face count**, which nothing did before.
+The splitter refuses anything it is not certain of — repeats that do not sit where a bridge puts them,
+a hole that lands in no face, a hole with no valid pair of bridges — and falls back to triangulating,
+which is never wrong, only coarse. `HoleTests` asserts the **face count**, which nothing did before,
+and builds its twice-bridged fixture by splicing rather than by hand, because a sixteen-corner ring
+with two seams typed out as a literal is one nobody can check by reading.
 
 **The wrong ear clipper.** `Triangulate.Polygon` assumes a simple polygon and does not fail on a
 bridged loop — it returns an overlapping fan that covers the hole back in. `Triangulate.BridgedLoop`

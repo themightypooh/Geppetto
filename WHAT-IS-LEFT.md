@@ -53,7 +53,7 @@ is tested; none of it has been looked at. See 2.1 and 2.2 for what to check.
 ## 1. Effigy kernel
 
 The kernel is roughly **93% of phase one**. All of it is headless-testable — no s&box anywhere, and
-1443 checks say so.
+1468 checks say so.
 
 ### 1.1 Exercise the boolean past the one case that works
 
@@ -69,16 +69,12 @@ of these is unexercised and at least one is likely to fail:
   loop where it crosses an edge)
 - two cuts overlapping, and cutting a body that has already been cut
 - a cut that separates the body into two pieces — nothing downstream expects one body to become two
-- **two holes in one face.** `Triangulate.SplitBridgedLoop` handles exactly one bridge and refuses
-  anything else, so a face with two holes in it still comes back as triangles. That is correct but
-  coarse, and it is the first case likely to be met in practice — two pockets in one cap. Splitting
-  an n-holed face needs n+1 cuts, and there has never been one to test against.
-
-  **This is now the shared limit rather than the boolean's own.** The sketch cap pass goes through
-  the same splitter (`Triangulate.SplitWithHoles`), so a *drawn* profile with two holes in it also
-  caps as triangles — a plate with two bolt holes is the everyday version, and it is the fixture
-  `BevelTests` now leans on to keep a collinear corner in reach. Lifting the one-bridge limit fixes
-  both paths at once, and is the single highest-leverage thing left in this section.
+- ~~two holes in one face~~ — **done, and it was the shared limit rather than the boolean's own.**
+  `SplitBridgedLoop` peels one bridge at a time, shortest run first, and `SplitIntoFaces` cuts each
+  hole against whichever face it landed in: **n holes, n+1 faces**, on both paths. A face with two
+  pockets returns three faces; a drawn plate with two bolt holes extrudes to eighteen. Covered by a
+  hand-spliced twice-bridged fixture and by the feature end to end. What is left here is only
+  running it against the **engine's** own loops, which is the sitting rather than the code.
 
 **Method:** build each in the editor and run `effigy_dump_tree`. `boundary edges`, `bridged faces`
 and `opening(s) reinstated` name the failure mode directly. Where a case fails, reproduce the mesh

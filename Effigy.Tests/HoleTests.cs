@@ -45,6 +45,9 @@ public static class HoleTests
 		Report.Section( "holes: a bridged loop splits into TWO faces rather than a pile of triangles" );
 		TestBridgedLoopSplitsIntoTwo();
 
+		Report.Section( "holes: a loop the engine bridged twice, for a face with two pockets" );
+		TestTwoBridgesRecovered();
+
 		Report.Section( "holes: the splitter refuses what it cannot be sure of" );
 		TestSplitRefusals();
 
@@ -575,6 +578,73 @@ public static class HoleTests
 	}
 
 	/// <summary>
+	/// A loop the engine bridged TWICE, which is what a face with two pockets in it comes back as.
+	///
+	/// Peeled one bridge at a time, innermost first, and the fixture is spliced here the way the
+	/// engine splices it rather than written out as a literal: a hand-typed sixteen-corner ring
+	/// with two seams in it is a fixture nobody can check by reading, and getting it subtly wrong
+	/// would prove the splitter works on a shape that never occurs.
+	/// </summary>
+	static void TestTwoBridgesRecovered()
+	{
+		var outer = new List<Vec2> { new( -3, -3 ), new( 3, -3 ), new( 3, 3 ), new( -3, 3 ) };
+		var right = new List<Vec2> { new( 1, -1 ), new( 1, 1 ), new( 2, 1 ), new( 2, -1 ) };
+		var left = new List<Vec2> { new( -1, -1 ), new( -2, -1 ), new( -2, 1 ), new( -1, 1 ) };
+
+		// Each hole bridged from the outer corner nearest it, so neither bridge crosses the other.
+		var ring = Splice( Splice( outer, right, 1, 3 ), left, 0, 1 );
+
+		var loops = Triangulate.SplitBridgedLoop( ring );
+
+		Report.Check( "a twice-bridged loop splits at all", loops is not null, "refused" );
+
+		if ( loops is null )
+			return;
+
+		Report.Check( "into three faces", loops.Count == 3, $"{loops.Count} faces" );
+
+		foreach ( var face in loops )
+		{
+			Report.Check( "no face repeats a corner",
+				face.Select( i => ring[i] ).Distinct().Count() == face.Count, "repeated corner" );
+
+			Report.Check( "no face crosses itself", IsSimple( ring, face ), "self-intersecting" );
+		}
+
+		// 36 less two 2x1 pockets. Three faces covering 36 have filled both back in.
+		var area = loops.Sum( face => MathF.Abs( LoopArea( ring, face ) ) );
+
+		Report.Check( "covering the plate and neither pocket", MathF.Abs( area - 32f ) < 1e-3f,
+			$"covered {area}, expected 32" );
+
+		Report.Check( "all three keeping the input's winding",
+			loops.All( f => LoopArea( ring, f ) > 0f ), "a face came back reversed" );
+	}
+
+	/// <summary>
+	/// Splice a hole into a ring along a bridge, exactly as a half-edge mesh hands one back: out to
+	/// the hole at <paramref name="from"/>, all the way round it, back along the same seam.
+	/// </summary>
+	static List<Vec2> Splice( List<Vec2> ring, List<Vec2> hole, int at, int from )
+	{
+		var result = new List<Vec2>();
+
+		for ( var i = 0; i <= at; i++ )
+			result.Add( ring[i] );
+
+		for ( var j = 0; j < hole.Count; j++ )
+			result.Add( hole[(from + j) % hole.Count] );
+
+		result.Add( hole[from] );
+		result.Add( ring[at] );
+
+		for ( var i = at + 1; i < ring.Count; i++ )
+			result.Add( ring[i] );
+
+		return result;
+	}
+
+	/// <summary>
 	/// Refusing is a feature. A wrong split is a self-intersecting face that is closed, manifold and
 	/// Euler-correct - the exact class of defect that cost this repo a day - so anything the
 	/// splitter is not certain of returns null and the caller triangulates instead.
@@ -676,14 +746,76 @@ public static class HoleTests
 		Report.Check( "and still genus 1", MeshValidator.EulerCharacteristic( mesh ) == 0,
 			$"X = {MeshValidator.EulerCharacteristic( mesh )}" );
 
-		// TWO HOLES STILL TRIANGULATE, and that is the deliberate limit rather than an oversight:
-		// two holes put two bridges in the ring and splitting an n-holed face needs n+1 cuts.
-		Report.Check( "two holes in one profile are refused rather than split wrongly",
-			Triangulate.SplitWithHoles( outer, new List<IReadOnlyList<Vec2>>
+		// N HOLES, N+1 FACES. Each hole is cut against whichever face it landed in, so the second
+		// one splits a face the first one made rather than needing a different algorithm.
+		var twoHoles = new List<IReadOnlyList<Vec2>>
+		{
+			new List<Vec2> { new( -2, -2 ), new( -1, -2 ), new( -1, -1 ), new( -2, -1 ) },
+			new List<Vec2> { new( 1, 1 ), new( 2, 1 ), new( 2, 2 ), new( 1, 2 ) },
+		};
+
+		var twoFlat = new List<Vec2>( outer );
+
+		foreach ( var h in twoHoles )
+			twoFlat.AddRange( h );
+
+		var three = Triangulate.SplitWithHoles( outer, twoHoles );
+
+		Report.Check( "two holes in one profile split as well", three is not null, "refused" );
+
+		if ( three is not null )
+		{
+			Report.Check( "into three faces", three.Count == 3, $"{three.Count} faces" );
+
+			foreach ( var face in three )
 			{
-				new List<Vec2> { new( -2, -2 ), new( -1, -2 ), new( -1, -1 ), new( -2, -1 ) },
-				new List<Vec2> { new( 1, 1 ), new( 2, 1 ), new( 2, 2 ), new( 1, 2 ) },
-			} ) is null, "split a two-holed profile" );
+				Report.Check( "no face repeats a corner",
+					face.Select( i => twoFlat[i] ).Distinct().Count() == face.Count, "repeated corner" );
+
+				Report.Check( "no face crosses itself", IsSimple( twoFlat, face ), "self-intersecting" );
+			}
+
+			// 36 less two 1x1 holes. Three faces covering 36 have filled both back in, and three
+			// covering 35 have missed one.
+			var covered = three.Sum( face => MathF.Abs( LoopArea( twoFlat, face ) ) );
+
+			Report.Check( "covering the plate and neither hole", MathF.Abs( covered - 34f ) < 1e-3f,
+				$"covered {covered}, expected 34" );
+
+			Report.Check( "and all three keep the winding",
+				three.All( f => LoopArea( twoFlat, f ) > 0f ), "a face came back reversed" );
+		}
+
+		// The same plate through the feature: eight walls for the two holes, four for the outer,
+		// and two caps of three faces each.
+		var plate = new PartStudio();
+		var ps = plate.Add( new SketchFeature() );
+		ps.Sketch.AddRectangle( new Vec2( -3, -3 ), new Vec2( 3, 3 ) );
+		ps.Sketch.AddRectangle( new Vec2( -2, -2 ), new Vec2( -1, -1 ) );
+		ps.Sketch.AddRectangle( new Vec2( 1, 1 ), new Vec2( 2, 2 ) );
+		plate.Add( new ExtrudeFeature() ).Distance.Value = 2f;
+
+		var plateReport = plate.Rebuild();
+
+		Report.Check( "a two-hole plate builds", !plateReport.HasErrors, plateReport.ToString() );
+
+		if ( plateReport.HasErrors )
+			return;
+
+		var twoHoleMesh = plate.Bodies.Single().Mesh;
+
+		Report.Check( "and extrudes to eighteen faces", twoHoleMesh.FaceCount == 18,
+			$"{twoHoleMesh.FaceCount} faces" );
+
+		Report.Check( "measuring the plate less both holes",
+			MathF.Abs( Volume( twoHoleMesh ) - 68f ) < 1e-2f, $"{Volume( twoHoleMesh ):0.####}, expected 68" );
+
+		Report.Check( "closed and valid with two holes",
+			MeshValidator.Validate( twoHoleMesh ) is { IsValid: true, IsClosed: true } );
+
+		// Two tunnels through a slab: X = 2 - 2 x genus, so genus 2 reads -2.
+		Report.Check( "and it is genus 2", MeshValidator.EulerCharacteristic( twoHoleMesh ) == -2,
+			$"X = {MeshValidator.EulerCharacteristic( twoHoleMesh )}" );
 	}
 
 	static float LoopArea( List<Vec2> points, List<int> loop )

@@ -58,31 +58,32 @@ public static class BevelTests
 	/// </summary>
 	static void TestCollinearCornersStayLocal()
 	{
-		// TWO FIXTURES, BECAUSE THE FIRST ONE STOPPED CARRYING THE DEFECT. The annulus is the shape
-		// the bug was found on and is still worth chamfering, but a cap with ONE hole is no longer
-		// ear-clipped - it comes back as two n-gons - so its collinear corners are gone. A cap with
-		// TWO holes still goes through the clipper, because splitting an n-holed face needs n+1
-		// cuts and only the one-hole case is in reach, so that is where the degenerate corner lives
-		// now. Both get chamfered; the guard is asserted on the one that still has the corner.
+		// THE DEFECT IS BUILT BY HAND NOW, and that is the point of this arrangement.
+		//
+		// The corner came free once: ear clipping a holed cap left corners turning a full 180, and
+		// the annulus below was full of them. Holed caps are no longer clipped - they come back as
+		// n-gons, however many holes they have - so the shape that used to carry the defect stopped
+		// carrying it, and a guard that quietly stops guarding is worth less than no guard at all.
+		// Splitting an edge of a box gives the same 180 turn, exactly, and cannot drift with a
+		// tessellation or a cap pass ever again.
+		//
+		// The annulus stays as well. It is the shape the bug was found on, it is still worth
+		// chamfering, and a thin ring is where a chamfer has least room to work.
 		var tube = Extruded( s =>
 		{
 			s.AddCircle( new Vec2( 0, 0 ), 10f );
 			s.AddCircle( new Vec2( 0, 0 ), 8.4f );
 		} );
 
-		var plate = Extruded( s =>
-		{
-			s.AddRectangle( new Vec2( -20, -10 ), new Vec2( 20, 10 ) );
-			s.AddCircle( new Vec2( -10, 0 ), 9f );
-			s.AddCircle( new Vec2( 10, 0 ), 9f );
-		} );
+		var split = WithSplitEdge( Primitives.Box( 8f, 5f, 3f ) );
 
-		// Confirms the mesh really does contain the degenerate corners, so this test cannot quietly
-		// stop exercising the fix if the tessellation changes.
-		Check( "a clipped two-hole cap really does have a collinear corner",
-			StraightestCorner( plate ) < 1e-3f, $"straightest |sin| = {StraightestCorner( plate ):E3}" );
+		Check( "the hand-built fixture really does have a collinear corner",
+			StraightestCorner( split ) < 1e-6f, $"straightest |sin| = {StraightestCorner( split ):E3}" );
 
-		foreach ( var (name, mesh) in new[] { ("annulus", tube), ("two-hole plate", plate) } )
+		Check( "and it is still a closed, valid mesh to start from",
+			MeshValidator.Validate( split ) is { IsValid: true, IsClosed: true } );
+
+		foreach ( var (name, mesh) in new[] { ("annulus", tube), ("split-edge box", split) } )
 		{
 			var before = mesh.Positions.Max( p => p.Length );
 
@@ -103,6 +104,51 @@ public static class BevelTests
 					validation is { IsValid: true, IsClosed: true }, validation.ToString() );
 			}
 		}
+	}
+
+	/// <summary>
+	/// Split one edge of a mesh by putting a vertex at its midpoint, giving both faces that share
+	/// it a corner that turns exactly 180 degrees.
+	///
+	/// Inserted into BOTH faces, which is the whole difficulty: adding it to one leaves the other
+	/// with an edge running past a vertex it does not mention, which is a T-junction rather than a
+	/// collinear corner, and the mesh stops being manifold.
+	/// </summary>
+	static PolyMesh WithSplitEdge( PolyMesh mesh )
+	{
+		var face = mesh.Faces[0];
+		var a = face.Indices[0];
+		var b = face.Indices[1];
+
+		var index = mesh.Positions.Count;
+
+		mesh.Positions.Add( (mesh.Positions[a] + mesh.Positions[b]) * 0.5f );
+
+		foreach ( var f in mesh.Faces )
+		{
+			for ( var i = 0; i < f.Indices.Length; i++ )
+			{
+				var p = f.Indices[i];
+				var q = f.Indices[(i + 1) % f.Indices.Length];
+
+				// Either way round: the two faces sharing an edge walk it in opposite directions.
+				if ( (p != a || q != b) && (p != b || q != a) )
+					continue;
+
+				var indices = f.Indices.ToList();
+				var uvs = f.UVs.ToList();
+
+				indices.Insert( i + 1, index );
+				uvs.Insert( i + 1, (f.UVs[i] + f.UVs[(i + 1) % f.UVs.Length]) * 0.5f );
+
+				f.Indices = indices.ToArray();
+				f.UVs = uvs.ToArray();
+
+				break;
+			}
+		}
+
+		return mesh;
 	}
 
 	/// <summary>One solid from one drawn profile, 2.6 deep.</summary>
