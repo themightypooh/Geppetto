@@ -299,4 +299,66 @@ public static class ShaderForgeGenerator
 
 		return accepted;
 	}
+
+	/// <summary>
+	/// Closest library keyword to a word the description used that meant nothing. "glowin" →
+	/// "glowing". Distance greater than two is treated as a different idea, not a typo.
+	/// </summary>
+	public static string Suggest( string term )
+	{
+		if ( string.IsNullOrWhiteSpace( term ) || term.Length < 3 )
+			return null;
+
+		string best = null;
+		var bestDistance = int.MaxValue;
+
+		foreach ( var keyword in BlockLibrary.All.SelectMany( b => b.Keywords ) )
+		{
+			if ( keyword.Contains( ' ' ) )
+				continue;
+
+			var distance = Levenshtein( term.ToLowerInvariant(), keyword.ToLowerInvariant() );
+
+			if ( distance <= 0 || distance >= bestDistance )
+				continue;
+
+			bestDistance = distance;
+			best = keyword;
+		}
+
+		return bestDistance <= 2 ? best : null;
+	}
+
+	private static int Levenshtein( string a, string b )
+	{
+		if ( a == b )
+			return 0;
+
+		if ( a.Length == 0 )
+			return b.Length;
+
+		if ( b.Length == 0 )
+			return a.Length;
+
+		var prev = new int[b.Length + 1];
+		var curr = new int[b.Length + 1];
+
+		for ( var j = 0; j <= b.Length; j++ )
+			prev[j] = j;
+
+		for ( var i = 1; i <= a.Length; i++ )
+		{
+			curr[0] = i;
+
+			for ( var j = 1; j <= b.Length; j++ )
+			{
+				var cost = a[i - 1] == b[j - 1] ? 0 : 1;
+				curr[j] = Math.Min( Math.Min( curr[j - 1] + 1, prev[j] + 1 ), prev[j - 1] + cost );
+			}
+
+			(prev, curr) = (curr, prev);
+		}
+
+		return prev[b.Length];
+	}
 }

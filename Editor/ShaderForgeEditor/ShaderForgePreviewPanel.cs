@@ -1,4 +1,5 @@
 using Editor;
+using Marionette.ShaderForge;
 using Sandbox;
 using System;
 using System.Collections.Generic;
@@ -33,6 +34,9 @@ internal sealed class ShaderForgePreviewPanel : Widget
 	/// <summary>The material the generator last handed over, so switching model or slot re-applies
 	/// it rather than losing it.</summary>
 	private Material _current;
+
+	/// <summary>Tap a lexicon word — the spell panel fills it in.</summary>
+	public Action<string> WordChosen { get; set; }
 
 	public ShaderForgePreviewPanel( Widget parent, ShaderForgeViewport viewport ) : base( parent )
 	{
@@ -72,10 +76,51 @@ internal sealed class ShaderForgePreviewPanel : Widget
 
 		// --- existing shader ----------------------------------------------------------------------
 
-		Layout.Add( new Editor.Label( "Preview an existing shader" ) );
+		Layout.Add( new Editor.Label( "Words this tool knows — tap one" ) );
+
+		var lexicon = new ScrollArea( this )
+		{
+			VerticalScrollbarMode = ScrollbarMode.Auto,
+			HorizontalScrollbarMode = ScrollbarMode.Off,
+			MinimumHeight = 180,
+		};
+		var lexiconCanvas = new Widget( this ) { Layout = Layout.Column() };
+		lexiconCanvas.Layout.Spacing = 3;
+		lexicon.Canvas = lexiconCanvas;
+		Layout.Add( lexicon, 1 );
+
+		foreach ( var block in BlockLibrary.All )
+		{
+			var word = block.Keywords[0];
+			var button = new Button( $"{block.Title}    {word}" )
+			{
+				ToolTip = $"{block.Lesson ?? block.Summary}\nWords: {string.Join( ", ", block.Keywords )}",
+				Clicked = () => WordChosen?.Invoke( word ),
+			};
+			lexiconCanvas.Layout.Add( button );
+		}
+
+		Layout.Add( new Editor.Label( "Shaders already in this project" ) );
 
 		_shaderPath = new LineEdit( "", this ) { PlaceholderText = "shaders/custom/my_shader.shader" };
 		Layout.Add( _shaderPath );
+
+		var shelf = new Widget( this ) { Layout = Layout.Column() };
+		shelf.Layout.Spacing = 2;
+		Layout.Add( shelf );
+
+		foreach ( var path in ShaderForgeBridge.ProjectShaders().Take( 24 ) )
+		{
+			var relative = path;
+			shelf.Layout.Add( new Button( relative )
+			{
+				Clicked = () =>
+				{
+					_shaderPath.Text = relative;
+					LoadExisting();
+				},
+			} );
+		}
 
 		Layout.Add( new Button( "Load and apply", "folder_open" ) { Clicked = LoadExisting } );
 

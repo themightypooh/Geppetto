@@ -52,6 +52,12 @@ public static class Program
 		Section( "filenames are safe" );
 		TestFileNames();
 
+		Section( "live preview shader gates every block" );
+		TestLivePreview();
+
+		Section( "typos get a suggestion rather than a shrug" );
+		TestSuggest();
+
 		WriteSamples( outDir );
 
 		Console.WriteLine();
@@ -309,7 +315,8 @@ public static class Program
 		// meaningless diff.
 		var reordered = ShaderForgeGenerator.Generate( "snowy dissolving glowing thing" ).ShaderSource;
 
-		Check( "word order does not change the file", first == reordered );
+		Check( "word order does not change the HLSL, only the quoted description",
+			StripDescription( first ) == StripDescription( reordered ) );
 	}
 
 	private static void TestParamDeclarations()
@@ -333,6 +340,35 @@ public static class Program
 		var strength = emissive.Declarations().First( d => d.Contains( "g_flSfEmissiveStrength" ) );
 
 		Check( "float defaults carry a decimal point", strength.Contains( "2.0" ), strength );
+	}
+
+	private static void TestLivePreview()
+	{
+		var source = ShaderTemplate.BuildLive( BlockLibrary.All );
+
+		Check( "live shader emits every enable param",
+			BlockLibrary.All.All( b => source.Contains( ShaderTemplate.EnableParam( b.Id ) ) ) );
+
+		Check( "emission is gated so typing glowing is a flag, not a recompile",
+			source.Contains( $"if ( {ShaderTemplate.EnableParam( "emissive" )} > 0.5 )" ) );
+
+		Check( "live shader uses Init so a mesh with no colour texture is not a checkerboard",
+			source.Contains( "Material m = Material::Init();" )
+			&& !source.Contains( "Material::From" ) );
+
+		Check( "live shader still balances braces",
+			source.Count( c => c == '{' ) == source.Count( c => c == '}' ) );
+
+		ExpectBlocks( "glowing", "emissive" );
+	}
+
+	private static void TestSuggest()
+	{
+		Check( "glowin suggests glowing or glow",
+			ShaderForgeGenerator.Suggest( "glowin" ) is "glowing" or "glow" );
+
+		Check( "an unrelated word does not get a false friend",
+			ShaderForgeGenerator.Suggest( "banana" ) is null );
 	}
 
 	private static void TestFileNames()
@@ -399,6 +435,17 @@ public static class Program
 
 	/// <summary>Collapse CRLF so position assertions mean the same thing on every platform.</summary>
 	private static string Normalise( string source ) => source.Replace( "\r\n", "\n" );
+
+	/// <summary>The HEADER description quotes the user's words, so two phrases that select the
+	/// same blocks still differ there. The HLSL is what has to be stable.</summary>
+	private static string StripDescription( string source )
+	{
+		var lines = Normalise( source ).Split( '\n' )
+			.Where( line => !line.Contains( "Description:", StringComparison.Ordinal )
+				&& !line.Contains( "Description =", StringComparison.Ordinal ) );
+
+		return string.Join( "\n", lines );
+	}
 
 	private static void Section( string title ) => Report.Section( title );
 

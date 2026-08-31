@@ -1,5 +1,11 @@
 # Shader Forge — session handoff
 
+**Live preview is in.** Close and reopen Shader Forge (layout cookie is now `ShaderForgeLive1` so the docks come back). Type `glowing` — no Generate click. The sphere should light up as the word lands. Tap words on the left, or Surprise me. Forge writes a slim `.shader` of just those blocks. The live material is `shaders/custom/shaderforge_live.shader` (every block, gated). First open may wait on compile; the viewport retries.
+
+---
+
+# Shader Forge — session handoff (original)
+
 A third s&box tool alongside the RigControl animation editor and the Effigy modelling tool: a
 shader previewer paired with a keyword-driven `.shader` generator, so someone who doesn't know HLSL
 can describe an effect in plain English and get a working shader back.

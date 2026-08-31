@@ -27,6 +27,9 @@ internal sealed class ShaderForgeViewport : Widget
 	/// <summary>Raised whenever the shown model changes, so the status bar can update.</summary>
 	public Action<string> ModelInfoChanged { get; set; }
 
+	/// <summary>Fired every preview frame so the live material can retry compiling.</summary>
+	public Action Ticked { get; set; }
+
 	/// <summary>Current model stats for the status bar.</summary>
 	public string ModelInfo { get; private set; } = "";
 
@@ -218,5 +221,7 @@ internal sealed class ShaderForgeViewport : Widget
 		_canvas.UpdateGizmoInputs( _gizmoInstance.Input.IsHovered );
 
 		Cursor = Gizmo.HasHovered ? CursorShape.Finger : CursorShape.Arrow;
+
+		Ticked?.Invoke();
 	}
 }

@@ -32,6 +32,14 @@ public static class ShaderTemplate
 	/// </summary>
 	public const string Extension = ".shader";
 
+	/// <summary>Filename the live preview material is written under. Always rewritten on tool
+	/// open so the gated snippets stay in lockstep with the library.</summary>
+	public const string LiveFileName = "shaderforge_live";
+
+	/// <summary>Per-block on/off float the live preview uses. Typing a word flips this; no
+	/// recompile.</summary>
+	public static string EnableParam( string blockId ) => $"g_flSfOn_{blockId}";
+
 	public static string Build( IReadOnlyList<ShaderBlock> blocks, string description )
 	{
 		var sb = new StringBuilder();
@@ -246,6 +254,166 @@ public static class ShaderTemplate
 		sb.AppendLine( "}" );
 
 		return sb.ToString();
+	}
+
+	/// <summary>
+	/// One shader holding every library block, each gated by <see cref="EnableParam"/>. The live
+	/// tool compiles this once, then typing a word is a Material.Set rather than a recompile —
+	/// which is why "glowing" can light the sphere as you type it.
+	/// </summary>
+	public static string BuildLive( IReadOnlyList<ShaderBlock> blocks )
+	{
+		var sb = new StringBuilder();
+
+		sb.AppendLine( "// Shader Forge live preview. Every library block is in here, gated off" );
+		sb.AppendLine( "// until a word turns it on. Do not edit — the tool rewrites this on open." );
+		sb.AppendLine();
+		sb.AppendLine( "HEADER" );
+		sb.AppendLine( "{" );
+		sb.AppendLine( "\tDescription = \"Shader Forge live preview\";" );
+		sb.AppendLine( "}" );
+		sb.AppendLine();
+		sb.AppendLine( "FEATURES" );
+		sb.AppendLine( "{" );
+		sb.AppendLine( "\t#include \"common/features.hlsl\"" );
+		sb.AppendLine( "}" );
+		sb.AppendLine();
+		sb.AppendLine( "MODES" );
+		sb.AppendLine( "{" );
+		sb.AppendLine( "\tForward();" );
+		sb.AppendLine( "\tDepth( S_MODE_DEPTH );" );
+		sb.AppendLine( "}" );
+		sb.AppendLine();
+		sb.AppendLine( "COMMON" );
+		sb.AppendLine( "{" );
+		sb.AppendLine( "\t#include \"common/shared.hlsl\"" );
+		sb.AppendLine();
+
+		foreach ( var block in blocks )
+		{
+			sb.AppendLine( $"\tfloat {EnableParam( block.Id )} < UiGroup( \"Live,10/0\" ); Attribute( \"{EnableParam( block.Id )}\" ); Default( 0.0 ); Range( 0.0, 1.0 ); >;" );
+		}
+
+		sb.AppendLine();
+
+		foreach ( var block in blocks.Where( b => b.Params.Length > 0 ) )
+		{
+			sb.AppendLine( $"\t// --- {block.Title} ---" );
+
+			foreach ( var declaration in block.Declarations() )
+				sb.AppendLine( $"\t{declaration}" );
+
+			sb.AppendLine();
+		}
+
+		sb.AppendLine( Indent( BlockLibrary.NoiseHelpers, 1 ) );
+		sb.AppendLine();
+		sb.AppendLine( "\tfloat SFPulse()" );
+		sb.AppendLine( "\t{" );
+		sb.AppendLine( $"\t\tif ( {EnableParam( "pulse" )} > 0.5 )" );
+		sb.AppendLine( "\t\t{" );
+		sb.AppendLine( "\t\t\tfloat wave = sin( g_flTime * g_flSfPulseSpeed * 6.2831853 ) * 0.5 + 0.5;" );
+		sb.AppendLine( "\t\t\treturn 1.0 - g_flSfPulseDepth + g_flSfPulseDepth * wave;" );
+		sb.AppendLine( "\t\t}" );
+		sb.AppendLine();
+		sb.AppendLine( "\t\treturn 1.0;" );
+		sb.AppendLine( "\t}" );
+
+		foreach ( var block in blocks.Where( b => !string.IsNullOrWhiteSpace( b.CommonCode ) ) )
+		{
+			sb.AppendLine();
+			sb.AppendLine( Indent( block.CommonCode, 1 ) );
+		}
+
+		sb.AppendLine( "}" );
+		sb.AppendLine();
+		sb.AppendLine( "struct VertexInput" );
+		sb.AppendLine( "{" );
+		sb.AppendLine( "\t#include \"common/vertexinput.hlsl\"" );
+		sb.AppendLine( "};" );
+		sb.AppendLine();
+		sb.AppendLine( "struct PixelInput" );
+		sb.AppendLine( "{" );
+		sb.AppendLine( "\t#include \"common/pixelinput.hlsl\"" );
+		sb.AppendLine( "};" );
+		sb.AppendLine();
+
+		var vertexBlocks = blocks.Where( b => !string.IsNullOrWhiteSpace( b.VertexCode ) ).ToList();
+
+		sb.AppendLine( "VS" );
+		sb.AppendLine( "{" );
+		sb.AppendLine( "\t#include \"common/vertex.hlsl\"" );
+		sb.AppendLine();
+		sb.AppendLine( "\tPixelInput MainVs( VertexInput i )" );
+		sb.AppendLine( "\t{" );
+		sb.AppendLine( "\t\tfloat3 vPositionOs = i.vPositionOs;" );
+
+		foreach ( var block in vertexBlocks )
+			Gated( sb, block, block.VertexCode, 2 );
+
+		sb.AppendLine();
+		sb.AppendLine( "\t\ti.vPositionOs = vPositionOs;" );
+		sb.AppendLine( "\t\tPixelInput o = ProcessVertex( i );" );
+		sb.AppendLine( "\t\treturn FinalizeVertex( o );" );
+		sb.AppendLine( "\t}" );
+		sb.AppendLine( "}" );
+		sb.AppendLine();
+
+		sb.AppendLine( "PS" );
+		sb.AppendLine( "{" );
+		sb.AppendLine( "\t#include \"common/pixel.hlsl\"" );
+		sb.AppendLine();
+		sb.AppendLine( Indent( BlockLibrary.ViewDirHelper, 1 ) );
+		sb.AppendLine();
+		sb.AppendLine( "\tfloat4 MainPs( PixelInput i ) : SV_Target0" );
+		sb.AppendLine( "\t{" );
+
+		foreach ( var block in blocks.Where( b => !string.IsNullOrWhiteSpace( b.UvCode ) ) )
+			Gated( sb, block, block.UvCode, 2 );
+
+		sb.AppendLine();
+		sb.AppendLine( "\t\t// Init, not From: From samples the material's colour texture, and this" );
+		sb.AppendLine( "\t\t// preview mesh has none — that is the red checkerboard. A solid albedo" );
+		sb.AppendLine( "\t\t// is the clay; words paint on top of it." );
+		sb.AppendLine( "\t\tMaterial m = Material::Init();" );
+		sb.AppendLine( "\t\tm.Albedo = float3( 0.62, 0.63, 0.66 );" );
+		sb.AppendLine( "\t\tm.Normal = normalize( i.vNormalWs.xyz );" );
+		sb.AppendLine( "\t\tm.Roughness = 0.45;" );
+		sb.AppendLine( "\t\tm.Metalness = 0.0;" );
+		sb.AppendLine( "\t\tm.AmbientOcclusion = 1.0;" );
+		sb.AppendLine( "\t\tm.Opacity = 1.0;" );
+		sb.AppendLine( "\t\tm.Emission = float3( 0.0, 0.0, 0.0 );" );
+
+		foreach ( var block in blocks.Where( b => !string.IsNullOrWhiteSpace( b.SurfaceCode ) ) )
+			Gated( sb, block, block.SurfaceCode, 2 );
+
+		sb.AppendLine();
+		sb.AppendLine( "\t\tfloat4 result = ShadingModelStandard::Shade( i, m );" );
+
+		foreach ( var block in blocks.Where( b => !string.IsNullOrWhiteSpace( b.PostCode ) ) )
+			Gated( sb, block, block.PostCode, 2 );
+
+		sb.AppendLine();
+		sb.AppendLine( "\t\treturn result;" );
+		sb.AppendLine( "\t}" );
+		sb.AppendLine( "}" );
+
+		return sb.ToString();
+	}
+
+	private static void Gated( StringBuilder sb, ShaderBlock block, string code, int tabs )
+	{
+		if ( string.IsNullOrWhiteSpace( code ) )
+			return;
+
+		var pad = new string( '\t', tabs );
+
+		sb.AppendLine();
+		sb.AppendLine( $"{pad}// --- {block.Title} ---" );
+		sb.AppendLine( $"{pad}if ( {EnableParam( block.Id )} > 0.5 )" );
+		sb.AppendLine( $"{pad}{{" );
+		sb.AppendLine( Indent( code.Trim(), tabs + 1 ) );
+		sb.AppendLine( $"{pad}}}" );
 	}
 
 	/// <summary>Push a snippet in by whole tabs, preserving its own relative indentation. Blank

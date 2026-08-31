@@ -1,0 +1,7 @@
+// Points the live preview at the gated Shader Forge shader. Materials are how project
+// shaders actually get bound — Material.FromShader looks up ENGINE shaders and returns
+// the red error checker for anything in this project.
+Layer0
+{
+	shader "shaders/custom/shaderforge_live.shader"
+}

@@ -59,7 +59,8 @@ float3 SFViewDir( PixelInput i )
 			Id = "emissive",
 			Title = "Emissive Output",
 			Summary = "HDR emissive added to the surface",
-			Keywords = new[] { "glow", "glowing", "neon", "emissive", "emit", "light up", "lit up", "bright" },
+			Lesson = "The pixel is allowed to go brighter than 1. That extra is Emission — the surface makes its own light, which is why neon and magma read as glowing rather than just painted yellow.",
+			Keywords = new[] { "glow", "glowing", "neon", "emissive", "emit", "light up", "lit up", "bright", "shine", "shining", "luminous" },
 			Params = new[]
 			{
 				ShaderParam.Color( "g_vSfEmissiveColor", "Emissive Colour", 1.0f, 0.65f, 0.25f ),

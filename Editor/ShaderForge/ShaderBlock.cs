@@ -113,6 +113,10 @@ public sealed class ShaderBlock
 	/// <summary>One line shown in the panel next to the matched block.</summary>
 	public string Summary;
 
+	/// <summary>What this does on the GPU, in one breath — the teaching line the live tool shows
+	/// when the word lights up. Falls back to Summary if unset.</summary>
+	public string Lesson;
+
 	/// <summary>Words and phrases that select this block. Multi-word phrases are matched as
 	/// phrases and score higher than single words — see KeywordMatcher.</summary>
 	public string[] Keywords = Array.Empty<string>();

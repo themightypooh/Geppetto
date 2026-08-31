@@ -56,6 +56,7 @@ public sealed class ShaderForgeWindow : DockWindow
 		// The probe is the first thing to reach for when the preview misbehaves, so it is a menu
 		// item rather than console-only trivia. See ShaderForgeBridge for why it exists.
 		help.AddOption( "Check engine shader APIs", "biotech", ShaderForgeBridge.Probe );
+		help.AddOption( "Try 'glowing'", "wb_incandescent", () => _generatorPanel?.CastFrom( "glowing" ) );
 	}
 
 	// --- docks ------------------------------------------------------------------------------
@@ -70,6 +71,9 @@ public sealed class ShaderForgeWindow : DockWindow
 		// viewport, because the preview panel owns which slot it lands on.
 		_generatorPanel.PreviewMaterial = material => _previewPanel?.SetPreviewMaterial( material );
 		_generatorPanel.StatusChanged = SetMessage;
+		_previewPanel.WordChosen = word => _generatorPanel.CastFrom( word );
+
+		_viewport.Ticked = () => _generatorPanel.TickWarmup();
 
 		_centralDock = DockManager.SetCentralWidget( _viewport );
 
@@ -92,7 +96,9 @@ public sealed class ShaderForgeWindow : DockWindow
 		// Bumped from ShaderForge1, which had no docks at all. A restored ShaderForge1 layout
 		// would leave both panels closed and BuildDefaultLayout would never run again — the trap
 		// HANDOFF.md records hitting with the Rig tool's docks.
-		StateCookie = "ShaderForge2";
+		// ShaderForge2 hid the docks for anyone who had opened the old window. Live needs both
+		// panels on screen or typing a word looks like nothing is hooked up.
+		StateCookie = "ShaderForgeLive1";
 	}
 
 	protected override void BuildDefaultLayout()

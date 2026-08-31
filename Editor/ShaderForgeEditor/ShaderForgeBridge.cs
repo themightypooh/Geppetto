@@ -118,6 +118,222 @@ internal static class ShaderForgeBridge
 		return path;
 	}
 
+	/// <summary>Every .shader under the project's Assets/shaders folder, for the live shelf.</summary>
+	public static List<string> ProjectShaders()
+	{
+		var found = new List<string>();
+		var assets = AssetsPath();
+
+		if ( string.IsNullOrEmpty( assets ) )
+			return found;
+
+		var root = Path.Combine( assets, "shaders" );
+
+		if ( !Directory.Exists( root ) )
+			return found;
+
+		try
+		{
+			foreach ( var path in Directory.EnumerateFiles( root, "*.shader", SearchOption.AllDirectories ) )
+			{
+				var relative = Path.GetRelativePath( assets, path ).Replace( '\\', '/' );
+
+				if ( relative.EndsWith( $"{LiveRelative()}", StringComparison.OrdinalIgnoreCase ) )
+					continue;
+
+				found.Add( relative );
+			}
+		}
+		catch ( Exception e )
+		{
+			ReportOnce( "scanning project shaders", e );
+		}
+
+		found.Sort( StringComparer.OrdinalIgnoreCase );
+		return found;
+	}
+
+	public static string LiveRelative() => RelativePathFor( ShaderTemplate.LiveFileName );
+
+	static string _liveSourceWritten;
+	static Material _liveMaterial;
+
+	/// <summary>
+	/// Write the gated shader if it changed, then make a material the way ShaderGraph does
+	/// (Material.Create after mat_reloadshaders) and the way this project's own pixel-arms
+	/// preview does (a .vmat that points at the .shader).
+	///
+	/// Material.FromShader is the wrong door: it caches the first answer and it looks up engine
+	/// shaders, not project ones. The red flashing checkerboard is that cache of the missing
+	/// shader.
+	/// </summary>
+	public static Material EnsureLiveMaterial()
+	{
+		var source = ShaderTemplate.BuildLive( BlockLibrary.All );
+		var shaderPath = LiveRelative();
+		var changed = !string.Equals( _liveSourceWritten, source, StringComparison.Ordinal );
+
+		if ( changed )
+		{
+			if ( Write( ShaderTemplate.LiveFileName, source, out _ ) is null )
+				return null;
+
+			WriteLiveVmat();
+			_liveSourceWritten = source;
+			_liveMaterial = null;
+
+			try
+			{
+				ConsoleSystem.Run( $"mat_reloadshaders {shaderPath}" );
+			}
+			catch ( Exception e )
+			{
+				ReportOnce( "mat_reloadshaders", e );
+			}
+		}
+
+		if ( _liveMaterial.IsValid() && LooksUsable( _liveMaterial ) )
+			return _liveMaterial;
+
+		if ( !LiveCompiled() )
+			return null;
+
+		_liveMaterial = CreateProjectMaterial( "shaderforge_live", shaderPath, "materials/shaderforge_live.vmat" );
+		return LooksUsable( _liveMaterial ) ? _liveMaterial : null;
+	}
+
+	static void WriteLiveVmat()
+	{
+		var assets = AssetsPath();
+
+		if ( string.IsNullOrEmpty( assets ) )
+			return;
+
+		var path = Path.Combine( assets, "materials", "shaderforge_live.vmat" );
+
+		try
+		{
+			Directory.CreateDirectory( Path.GetDirectoryName( path ) );
+			File.WriteAllText( path,
+				"Layer0\n{\n\tshader \"shaders/custom/shaderforge_live.shader\"\n}\n" );
+			AssetSystem.RegisterFile( path );
+		}
+		catch ( Exception e )
+		{
+			ReportOnce( "writing shaderforge_live.vmat", e );
+		}
+	}
+
+	static bool LiveCompiled()
+	{
+		var src = OutputPathFor( ShaderTemplate.LiveFileName );
+
+		if ( string.IsNullOrEmpty( src ) || !File.Exists( src ) )
+			return false;
+
+		var compiled = Path.ChangeExtension( src, ".shader_c" );
+
+		if ( !File.Exists( compiled ) )
+			return false;
+
+		return File.GetLastWriteTimeUtc( compiled ) >= File.GetLastWriteTimeUtc( src ).AddSeconds( -2 );
+	}
+
+	static Material CreateProjectMaterial( string name, string shaderPath, string vmatPath )
+	{
+		if ( !string.IsNullOrWhiteSpace( vmatPath ) )
+		{
+			try
+			{
+				var loaded = Material.Load( vmatPath );
+
+				if ( LooksUsable( loaded ) )
+					return loaded;
+			}
+			catch ( Exception e )
+			{
+				ReportOnce( "Material.Load vmat", e );
+			}
+		}
+
+		try
+		{
+			var created = Material.Create( name, shaderPath );
+
+			if ( LooksUsable( created ) )
+				return created;
+		}
+		catch ( Exception e )
+		{
+			ReportOnce( "Material.Create", e );
+		}
+
+		return null;
+	}
+
+	static bool LooksUsable( Material material )
+	{
+		if ( !material.IsValid() )
+			return false;
+
+		var shaderName = material.ShaderName ?? "";
+
+		if ( shaderName.Contains( "error", StringComparison.OrdinalIgnoreCase ) )
+			return false;
+
+		if ( shaderName.Contains( "missing", StringComparison.OrdinalIgnoreCase ) )
+			return false;
+
+		return true;
+	}
+
+	/// <summary>Flip every live-on flag to match the current description, and push param values.</summary>
+	public static void ApplyLive( Material material, GenerationResult result,
+		Dictionary<string, float> floats, Dictionary<string, Color> colors )
+	{
+		if ( !material.IsValid() )
+			return;
+
+		var on = new HashSet<string>( StringComparer.OrdinalIgnoreCase );
+
+		if ( result?.Success == true )
+		{
+			foreach ( var match in result.Blocks )
+				on.Add( match.Block.Id );
+		}
+
+		foreach ( var block in BlockLibrary.All )
+		{
+			try
+			{
+				material.Set( ShaderTemplate.EnableParam( block.Id ), on.Contains( block.Id ) ? 1f : 0f );
+			}
+			catch ( Exception e )
+			{
+				ReportOnce( $"Material.Set enable {block.Id}", e );
+			}
+		}
+
+		if ( result?.Params is null )
+			return;
+
+		foreach ( var param in result.Params )
+		{
+			if ( param.Kind == ShaderParamKind.Color )
+			{
+				var color = colors is not null && colors.TryGetValue( param.Name, out var c )
+					? c
+					: new Color( param.DefaultColor[0], param.DefaultColor[1], param.DefaultColor[2] );
+
+				SetParam( material, param, 0f, color, false );
+				continue;
+			}
+
+			var value = floats is not null && floats.TryGetValue( param.Name, out var v ) ? v : param.Default;
+			SetParam( material, param, value, default, value > 0.5f );
+		}
+	}
+
 	// --- materials --------------------------------------------------------------------------
 
 	/// <summary>
@@ -128,6 +344,14 @@ internal static class ShaderForgeBridge
 	{
 		if ( string.IsNullOrWhiteSpace( assetRelativePath ) )
 			return null;
+
+		var created = CreateProjectMaterial(
+			"sf_" + Path.GetFileNameWithoutExtension( assetRelativePath ),
+			assetRelativePath,
+			null );
+
+		if ( LooksUsable( created ) )
+			return created;
 
 		try
 		{
