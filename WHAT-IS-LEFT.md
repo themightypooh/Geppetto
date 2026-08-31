@@ -246,7 +246,7 @@ pass.
 with a sensible icon, applies, and leaves a mark that can be clicked to delete it. The new marks are
 `D`, `MID`, `CO`, `FIX` and `T`, ASCII for the reason the file gives about the perpendicular sign.
 
-### 2.3 ~~The missing sketch tools~~ — **written, and never seen on screen**
+### 2.3 ~~The missing sketch tools~~ — **compiles, and never seen on screen**
 
 All six are on the strip: ellipse and spline with the drawing tools, and trim, extend, fillet and
 offset in a group of their own, because clicking one of those on empty space does nothing and the
@@ -259,6 +259,10 @@ So there are three one-line hooks and everything else is in `EffigyViewport.Sket
 
 Every refusal is the kernel's own words — `SketchEdit` was written to hand back a reason, and the
 tools show it rather than inventing one.
+
+**It compiles in s&box** — confirmed on the second batch as it was on the first. The missing-`using`
+lint over `Editor/` caught nothing this time, which is the point of having written it. Compiling is
+still not behaving: none of these six has been clicked.
 
 *What the old note said, which is still the useful summary of what each one wants:*
 
