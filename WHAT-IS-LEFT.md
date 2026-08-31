@@ -58,7 +58,7 @@ should colour the icon yellow. Kernel half is tested; this is the sitting.
 ## 1. Effigy kernel
 
 The kernel is roughly **93% of phase one**. All of it is headless-testable — no s&box anywhere, and
-1609 checks say so.
+1926 checks say so.
 
 ### 1.1 Exercise the boolean past the one case that works
 
@@ -306,9 +306,10 @@ vertex-index rig storage; no SMD import back into the parametric document; no he
 
 ## 4. The sculpt stage
 
-Steps 1–4 are built and verified (`SculptTests`, 1713 checks). Next is step 5, multires levels.
-Steps 5–6 are still pure kernel and should stay that way: get the maths right where a test can see
-it, then put a cursor on it.
+Every step of the sculpt plan now has code, and every part of it that can be tested headlessly is
+(`SculptTests`, 1926 checks in the suite). The kernel half is done: the maths is
+right where a test can see it, and what is left is putting a cursor on it. **Next is step 7, the
+editor — the long pole**, exactly as it was for CAD.
 
 The shape of it:
 
@@ -354,37 +355,86 @@ force; refit keeps both true.
 Smooth, Draw, Inflate, Grab, Flatten, Pinch. Per-stroke undo is affected-vertex diffs, not a full
 snapshot. Stopwatch is in the suite from the first brush.
 
-**Step 5 — Multires level management** *(kernel, medium)*. Adding level N+1 subdivides the
-*displaced* level-N mesh and starts N+1's deltas at zero. Going down displays fewer levels; it does
-not discard the higher ones. *Test:* sculpt at L3, drop to L1, return — unchanged. Sculpt at L1 after
-sculpting at L3 — the L3 detail **rides** the L1 change rather than being flattened by it. That
-second one is the whole feature.
+**Step 5 — Multires level management** *(kernel, medium)* — **done.** `MultiresSculpt`. Adding a
+level subdivides the *displaced* level below and starts at zero deltas; `ViewLevel` drops the display
+without discarding anything. Both named tests hold: sculpt at L3, drop to L1, return — unchanged; and
+a level-1 edit after sculpting at L3 moves the surface L3 is written against, with the L3 detail
+riding it rather than being flattened. `SetCage` re-bases the stack and refuses a topology change
+with both models' numbers; `Stroke`/`Undo` bridge the brushes to the levels. See WHAT-IS-BUILT.md.
 
-**Step 6 — `SculptFeature` and persistence** *(kernel + document, medium)*. It consumes one body like
-`ShellFeature` does, but its "parameters" are megabytes of deltas rather than a handful of numbers,
-so it does not go in the parameter dialog and does not serialise alongside everything else. Deltas go
-to a side-car binary blob keyed by feature id, quantised to 16 bits per component against a per-level
-bounding box — at L4 on a 500-face cage, ~128k × 6 bytes ≈ 750 KB per level.
+The three checks that matter were confirmed by breaking the kernel on purpose and watching them
+fail — subdividing the rest mesh instead of the displaced one, dropping the cache invalidation in
+`Record`, and handing a brush the rest frames. A green suite that stays green under those is not
+evidence of anything.
 
-**Step 7 — The editor** *(s&box, large)*. Brush cursor projected on the surface, stroke capture with
-sample coalescing, a level slider showing the cost table the kernel already computes,
-brush/radius/strength UI in the existing floating-strip idiom, symmetry toggle. **This is the long
-pole**, as it was for CAD — steps 1–6 are perhaps a third of the calendar time despite being most of
-the intellectual content.
+**Step 6 — `SculptFeature` and persistence** *(kernel + document, medium)* — **done.** Consumes one
+body like `ShellFeature`, outputs the top level, refuses a topology change with a cause and remedies
+while keeping the deltas. `SculptBlob` is the side-car: 16 bits per component against a per-level
+bounding box, six bytes a vertex, keyed by feature id under `model.sculpt/` beside `model.effigy`.
+An untouched level round-trips bit-exact. See WHAT-IS-BUILT.md.
 
-**Step 8 — Masking and visibility.** Paint a mask, invert it, hide by mask. Genuinely useful and
-genuinely optional; after the tool works, not before.
+Two things came out of this that were not in the plan. `Feature.IsStale` had to exist — a brush
+mutates the sculpt nowhere near the studio, so `MarkDirty` is never called and the rebuild served a
+cached body; without it the sculpt tool would have looked like it did nothing. And `MultiresSculpt`
+gained `Revision` and `SetLayer` to support it and the blob reader.
 
-**Step 9 — Normal-map bake** *(kernel, medium)*. Cage + sculpted mesh + the cage's existing UVs →
-tangent-space normal map. This is what makes the whole pipeline pay off. Ray from each texel's cage
-position along the cage normal, hit the sculpted mesh, encode the difference. `UVProjection` and the
-step-3 BVH have most of it. *Test:* a cage with a known bump bakes to a map whose centre pixel points
-the way the bump does — then look at one in the engine, because a normal map is a thing you have to
-see.
+**Step 7 — The editor** *(s&box, large)* — **written, and never seen on screen.**
 
-**Step 10 — Reprojection for changed topology.** Raycast the new dense surface against the *old*
-sculpted surface and re-derive deltas from the hits. Lossy, honest, and better than either
-alternative. Deliberately last.
+`SculptSession` holds everything that is arithmetic rather than widgets, tested headlessly. The s&box
+layer on top of it is now written too: a Sculpt button on the feature strip, a sculpt strip sharing
+the spot with the other two, `EffigySculptBar` for radius/strength/level, `EffigyViewport.Sculpting.cs`
+for the rays and the brush ring, and a bake button that writes a PNG. See WHAT-IS-BUILT.md.
+
+**What is left is the sitting, and it is the largest one on the list.** None of the below can be
+judged from outside s&box:
+
+1. **Does it compile in the engine?** The sources parse and every *Effigy* symbol they use resolves
+   (checked by compiling them against the kernel with the s&box types absent). The s&box widget calls
+   are unproven — `Widget.Update`, `FileDialog.SetNameFilter`, `Editor.Label`, the `Layout` calls in
+   `EffigySculptBar`, and `Gizmo.Draw.Line` in the ring.
+2. **Add a Sculpt feature on a box, open it from the tree menu, and drag.** Does the surface follow
+   the cursor? Is the ring where the brush actually bites?
+3. **The level buttons.** Coarser, finer, and one press past the top should ADD a level and say what
+   it cost.
+4. **X and M.** Symmetry and masking are the two shortcuts; the strip's ticks should follow them.
+5. **The bake button** on a box — which has box-projected UVs, so it should REFUSE and say why. Then
+   on something with clean UVs, and open the PNG.
+6. **Save, close, reopen.** The deltas go to a side-car beside the `.effigy` file, and the round
+   trip is tested headlessly — but the editor's own Save/Open path calling it has never run.
+7. **Ctrl+Z mid-sculpt**, which undoes the stroke rather than the studio.
+8. **The Edit menu's sculpt entries**: invert/clear mask, paint-vs-erase, hide masked, and the three
+   normal-map settings.
+9. **The eleven new glyphs at strip size.** Drawn against a nominal 18x18 box and never rendered.
+
+**Deliberately not exposed**: `MultiresSculpt.RemoveTopLevel`. It works and is tested, but nothing in
+the editor can undo it — the studio's undo does not carry sculpt levels — so a button for it would be
+an unrecoverable destructive click. Give the session a level history first, then add the button.
+
+**Radius is on the bar, not the bracket keys**, and that is a deliberate stop rather than a choice:
+nothing in this editor has ever named a `KeyCode` outside letters, Escape, Enter, Delete and
+Backspace, so the bracket names would be a guess. Read the real enum out of the shipped assembly and
+put them on.
+
+**Step 8 — Masking and visibility** — **done.** `SculptMask`, paint/invert/clear, hide-by-mask, and
+a mask button on the strip. Masks are per level and not persisted, which is deliberate. See
+WHAT-IS-BUILT.md.
+
+**Step 9 — Normal-map bake** *(kernel, medium)* — **done, except the part that needs eyes.**
+`NormalBake` bakes cage + sculpt + UVs to a tangent-space map, with per-texel frames, mirrored-UV
+handedness, edge bleed, and `Measure` for the non-overlapping-UV check this file has wanted since it
+was written. 28 checks. See WHAT-IS-BUILT.md.
+
+**What is left is the sitting**, and it is small but real: `Effigy.Tests/out/sample_normal_bake.png`
+has to be looked at in s&box to settle two conventions the suite cannot judge — whether the green
+channel wants flipping (`BakeOptions.FlipGreen`), and which end of the image v = 0 belongs at. Both
+light a model exactly as wrongly as each other and neither shows in a thumbnail.
+
+Also unmeasured: how often `SmoothNormal`'s fallback fires on a heavily sculpted model. It is correct
+either way; nobody has counted.
+
+**Step 10 — Reprojection for changed topology** — **done.** `SculptReprojection`, offered as an
+opt-in `BoolParam` on the feature and warned about loudly when it runs, because it is lossy and the
+original deltas do not survive it. See WHAT-IS-BUILT.md.
 
 ### Limits, stated up front so they are not discovered as bugs
 

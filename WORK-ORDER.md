@@ -29,7 +29,7 @@ Run the suite before touching anything:
 export PATH="/c/Program Files/dotnet:$PATH" && ./tools/test.sh
 ```
 
-~25 seconds, **1713 checks, 0 failing** as of this writing. `dotnet` is installed but not on `PATH`
+~25 seconds, **1926 checks, 0 failing** as of this writing. `dotnet` is installed but not on `PATH`
 in Git Bash, hence the prefix — without it the script tries `apt-get` and dies. The script syncs the
 editor's kernel mirror first (see HANDOFF.md, "The two kernel copies"): **never edit
 `Editor/Effigy/` by hand**, it is generated from `Effigy/`.
@@ -112,9 +112,15 @@ Ordered by what unblocks the pipeline, which is not the same as what is most int
 
 ## D. The sculpt stage — phase two
 
-Steps 1–4 are built — see [WHAT-IS-BUILT.md](WHAT-IS-BUILT.md). Next is **step 5, multires levels**.
-[WHAT-IS-LEFT.md §4](WHAT-IS-LEFT.md) is still the plan. Steps 5–6 are pure kernel and verifiable
-headlessly; **step 7, the editor, is the long pole**.
+**Every step of the sculpt plan now has code**, steps 1 to 10 — see
+[WHAT-IS-BUILT.md](WHAT-IS-BUILT.md). Everything that can be verified headlessly is, and the editor
+layer is written and **has never been seen on screen**.
+
+So the sculpt track's remaining work is a SITTING, not a build: open it in s&box, confirm the editor
+half compiles and behaves, judge the eleven new glyphs, and settle the two bake conventions the suite
+cannot judge — the green channel's sign and which end of the image v = 0 belongs at
+(`Effigy.Tests/out/sample_normal_bake.png` is written for exactly that).
+[WHAT-IS-LEFT.md §4](WHAT-IS-LEFT.md) lists what to check, in order.
 
 The CAD side owes it exactly one thing that is not already done: **non-overlapping UVs on the cage**,
 which nothing currently checks. Quad-dominant output is no longer a risk — the boolean returns
@@ -159,7 +165,7 @@ judged at various dock sizes.
 Four docs, on purpose. When something lands:
 
 - It moves **out of** WHAT-IS-LEFT.md and **into** WHAT-IS-BUILT.md, and the entry there names *how
-  it was verified* — "1713 checks" and "I looked at it in the editor" are different claims and the
+  it was verified* — "1722 checks" and "I looked at it in the editor" are different claims and the
   difference has repeatedly been the difference between right and wrong.
 - A temporary brief (`DIAGNOSTICS-BRIEF.md`, `FBX-EXPORT-BRIEF.md`) is folded in and **deleted**.
 - This file is a work order. When phase one is done, delete section A–C rather than leaving a

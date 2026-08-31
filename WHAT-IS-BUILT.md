@@ -12,7 +12,7 @@ it" has repeatedly been the difference between right and wrong.
 - A feature that cannot do what was asked says what it was asked, what stopped it, with this
   model's numbers, and what would work instead. A feature that did nothing is never a success.
 
-Verified as of 31 August 2026: **1713 kernel checks, 0 failing** (`./tools/test.sh`). The diagnostic
+Verified as of 31 August 2026: **1926 kernel checks, 0 failing** (`./tools/test.sh`). The diagnostic
 dialog and tree tooltip are written against the shipped `Editor.Label.WordWrap` and
 `TreeNode.GetTooltip` APIs; they have not been judged on screen.
 
@@ -546,6 +546,245 @@ pull, `Refit` updates boxes without touching tree structure, and both queries st
 Draw, Inflate, Grab, Flatten, Pinch. Grab at zero strength is the identity. Smooth strictly reduces
 Laplacian energy. Mirror-X produces a mesh symmetric across X. Undo stores only the vertices the
 stroke moved. Eight Smooth samples on 1538 verts finish in well under two seconds.
+
+### Multires levels
+
+`MultiresSculpt` — kernel only, verified headlessly in `SculptTests`. Still no editor and no
+`SculptFeature`.
+
+**One rule, and the rest is bookkeeping around it: level N+1's rest surface is the subdivision of
+level N *displaced*, not of level N at rest.** That is what lets a coarse edit carry fine detail.
+Sculpt a bump at L3, go back to L1 and lift the top half: L1's deltas move the surface L2 and L3 are
+subdivided from, so the bump rides the lift instead of being flattened by it. Subdividing the rest
+mesh instead produces a perfectly plausible model that silently cannot do this, so the rule is
+checked directly — `Rest(2)` is compared against the subdivision of the displaced L1 *and* against
+the subdivision of the flat one — rather than inferred from the behaviour it causes.
+
+Level 0 is the cage and always exists, so a coarse edit needs no level added first. `ViewLevel` is
+display only: dropping to L1 and returning to L3 leaves the model bit-identical, and the L3 deltas
+are never touched. `RemoveTopLevel` is the only call that destroys anything and it hands the dropped
+layer back so the caller can undo it.
+
+`SetCage` re-bases the whole stack on a rebuilt cage — every level re-derives its frames and every
+delta rides the edit. It **refuses** a cage whose topology changed rather than misapplying the deltas
+or silently dropping them, and `CanRebase` gives the reason with both models' numbers. The refusal
+catches the case a count check alone waves through: same vertex and face counts, different wiring.
+`TopologyId` is the stable id persistence (step 6) will store beside the deltas — counts and face
+indices, deliberately not positions, since positions are exactly what a parametric edit changes.
+
+`Stroke` and `Undo` bridge the brushes to the levels, and exist to get two sets of frames the right
+way round: a brush works on the **displaced** mesh's frames, a delta is captured through the **rest**
+mesh's. Swapping them is invisible on a fresh level — the two are the same mesh until something is
+sculpted there — and wrong on every level after that. Only Inflate reads the frames at all, which is
+what makes the bug easy to leave in and is why there is a test that tilts a level first and then
+checks which surface the stroke followed.
+
+The cache of rest surfaces is an optimisation and is not observable: a missed invalidation shows up
+as a low-level edit that fails to move the detail above it, and there is a check for exactly that.
+
+Verified by mutation, not just by the suite being green: subdividing the rest mesh instead of the
+displaced one fails 4 checks, dropping the cache invalidation in `Record` fails 2, and handing the
+brush the rest frames fails 1.
+
+### The sculpt feature, and where its deltas live
+
+`SculptFeature` consumes one body the way `ShellFeature` does and replaces its mesh with the sculpted
+one, so export, rigging and the boolean never learn a sculpt happened. It goes on the cage **in place
+of a Subdivide** — the levels are the subdivision.
+
+**It outputs the top level, always.** `ViewLevel` is an editing convenience and deliberately does not
+reach the model, because dropping to L1 to work coarsely must not quietly export an L1 model. Blender
+draws the same line as separate viewport and render levels.
+
+**A parametric edit carries the sculpt, and a topology change is refused rather than absorbed.**
+Making the box taller rebuilds with the sculpt still on the surface; turning it into a cylinder is an
+error with a cause and two remedies, the deltas are **kept**, and undoing the edit restores the sculpt
+exactly. That last check is the point of keeping them — a refusal that threw the deltas away would
+make one wrong click unrecoverable.
+
+**The deltas are not in the .effigy file.** `StudioDocument` saves public fields by reflection, so the
+sculpt is a private field and persistence goes through `SculptBlob` and `SculptSidecar` instead: one
+directory beside the document, one blob per feature, keyed by feature id so re-ordering the history
+cannot shuffle a sculpt onto the wrong feature. Saving never deletes a blob it did not write — that is
+the cheapest undo of "I deleted the feature and saved" — and `Prune` has to be asked for by name.
+The reflection sweep in `DocumentTests` cannot cover this one, so there is an end-to-end test that
+writes a sculpted studio, reads it back, rebuilds it and compares every vertex.
+
+**16 bits per component against a per-level bounding box**, six bytes a vertex, which is the budget
+the plan was written against: ~750 KB per level at L4 on a 500-face cage. A level nobody touched comes
+back **exactly** zero rather than nearly zero, so a model saved and reloaded twenty times does not
+drift away from its cage a hundredth at a time. Blobs are refused by magic, by version, and by cage —
+including a cage with the same vertex and face counts but different wiring.
+
+Verified by mutation: spending 8 bits of the 16 fails the precision check and the end-to-end reload;
+silently restarting the sculpt on a changed cage fails the refusal checks.
+
+### The sculpt tool, with no cursor in it
+
+`SculptSession` is step 7's kernel half. The editor cannot be compiled outside s&box, so anything
+living there is verified by reading it — which is how the silent-no-op bug survived a day looking
+like three unrelated UI faults. Everything between the pointer and the mesh is arithmetic, so it
+lives here and is tested headlessly, the same argument `EditorFlowTests` was written on. What is left
+for the s&box half is thin: hand it rays, draw `DisplayMesh`, draw a ring at `Hover`.
+
+**A stroke works on a mesh, not on the level stack.** `BeginStroke` evaluates once and brushes a
+working copy the viewport draws live; `Record` is called exactly once, at `EndStroke`. Recording per
+sample would be correct and unusable at L3. The test for it is that a nine-sample stroke is **one**
+revision and one undo entry — which is also what a user means by "undo".
+
+**Sample coalescing, both directions.** A pointer reports far faster than a brush needs: without
+spacing, holding still would bite harder the longer you hovered and a slow drag would cut deeper than
+a quick one for the same gesture. And a drag that outruns the sampling gets the gap filled along the
+straight line between reports, capped so one flick across the model cannot stall the tool. Ten reports
+from a still pointer produce no samples and do not move the mesh; one big jump becomes several and
+sculpts the middle of the path.
+
+**Frames are built once per stroke, from the surface the stroke found.** Rebuilding them per dab is
+the obvious way to make the tool unusable, and a brush that re-reads its own output feeds back — an
+Inflate would run away following normals it had just moved.
+
+The rest is what a tool needs to not feel broken: a click leaves a mark rather than waiting for a
+move, clicking past the model starts nothing, dragging off the silhouette and back keeps the stroke
+alive, cancelling leaves the model alone, and `DisplayMesh` is cached against the revision because a
+viewport asks every frame. Undo and redo are sparse and symmetric — `SculptEdit` holds before and
+after for the vertices the stroke touched, not two copies of a 128k-vertex level.
+
+Verified by mutation: removing the spacing check, collapsing the interpolation to one sample, and
+absorbing stroke undos latest-first each fail the checks written for them. That last one is the
+subtle one — a vertex moved by three dabs has to go back to where it was before the first.
+
+### Baking the sculpt down onto the cage
+
+`NormalBake` is where the pipeline pays off: cage + sculpted mesh + the cage's UVs in, a tangent-space
+normal map out, so the model that ships is the cage — a few hundred faces, already unwrapped, already
+rigged — wearing the detail of something a thousand times heavier. Tangent-space rather than
+object-space because the cage deforms with the rig.
+
+For each texel: find the cage point that owns it, fire a ray along the cage normal from outside in,
+hit the sculpt, and write the difference as a direction in the cage's own tangent frame. The frame is
+orthonormalised per texel against the interpolated normal rather than per triangle, or the map facets.
+
+**Mirrored UVs are handled, and are the case worth knowing about.** Half a character is usually the
+other half flipped, and this tool has a Mirror feature. A mirrored island's tangent runs backwards, so
+the frame's handedness is read off the UV winding; get it wrong and that island's green channel comes
+out inverted, which lights every bump on one side of the model as a dent. There is a two-quad fixture
+with one island mirrored, because an unmirrored fixture never takes the branch — which is exactly what
+happened: the first version of the correction survived a mutation test until that fixture existed.
+
+**`Measure` is the check the plan has been asking for since it was written.** UVs must not overlap; a
+bake over overlapping UVs does not fail, it produces a plausible map that is wrong wherever two faces
+shared a texel. It reports coverage, overlapping texels and faces outside the 0-1 square, and it names
+box projection — the tool's own default — as unbakeable, which it is: it tiles on purpose, which is
+right for a wall and wrong for a bake.
+
+Edges bleed outward by four texels so seams do not glow once mipmaps mix in what sits outside the
+island, and padded texels are not counted as measured.
+
+**Two conventions are still coin flips and must be settled on screen**: the green channel's sign
+(`BakeOptions.FlipGreen`) and which end of the image v = 0 lands at. Neither is visible in a thumbnail
+and both light a model exactly as wrongly as the other. `Effigy.Tests/out/sample_normal_bake.png` is
+written by the suite for that purpose — a flat lilac sheet with a dome in the middle, pink to the
+right of centre, cyan below it.
+
+**How faceting is tested, because the obvious way does not work.** A map baked from face normals rather
+than interpolated ones is faceted, and passes every other check here. An absolute threshold on the step
+between neighbouring texels cannot catch it, because a smooth map of a steep dome has a large step too.
+What separates them is behaviour under resolution: a smooth bake samples a continuous function and
+doubling the map halves the step (0.086 → 0.048 → 0.024 at 64/128/256), while a faceted one is stuck to
+the source geometry and does not improve at all (0.3207 at both 64 and 128). That is the check.
+
+### Masking, and reprojection onto a cage it was not made on
+
+**`SculptMask` is one float per vertex, 1 meaning "brush me normally".** The sense is that way round
+because `Brush` already multiplies by it, so an all-ones mask is the same as no mask and a fresh one
+changes nothing; storing "how protected" instead would invert every brush in the tool the moment a
+mask existed. Painting reuses the session's own spacing and gap-filling, so a mask stroke behaves
+like any other stroke, and it is undoable as a sparse diff rather than a copy of the array. Hide-by-
+mask drops a face only when EVERY corner is protected — dropping it on one corner would eat the
+boundary of every mask, so the visible edge would creep inward each time it was used. Masks are
+per level and deliberately **not persisted**: a mask is the sculpting equivalent of a selection.
+
+**`SculptReprojection` is the last resort, and it is meant to be.** A cage whose topology changed has
+no vertex to put deltas on, and refusing is right nearly always — the usual cause is an edit nobody
+meant, and undoing it brings the sculpt back exactly. Reprojection is for the other case: raycast the
+new dense surface against the old sculpted one and re-derive from the hits. `SculptFeature.Reproject`
+is a `BoolParam` defaulting to **false**, because reprojection is lossy and cannot be undone by
+undoing the upstream edit — the original deltas are gone once it runs. When it does run the feature
+**warns** rather than saying nothing, and the warning names what was lost: detail finer than the new
+cage, and the level structure, which all collapses into the top level.
+
+`ReprojectionReport.Coverage` is what tells a caller the two shapes had nothing to do with each
+other. Worth knowing: a small search radius is NOT the same test as an unrelated cage — two surfaces
+sitting on each other still hit at any radius at all, correctly.
+
+### The sculpt is in the editor
+
+Written, compiles-clean as far as anything here can check, and **never seen on screen** — the
+category [WHAT-IS-LEFT.md](WHAT-IS-LEFT.md) uses for editor work, and the honest one for all of it.
+
+- **A Sculpt button on the feature strip**, next to Subdivide because it replaces it: the levels ARE
+  the subdivision, and a Subdivide underneath would hand the sculpt a dense mesh as its cage.
+- **Sculpt mode**, entered from the feature tree's context menu, swapping in a third floating strip
+  where the feature and sketch strips already trade places. Six brushes, mask, symmetry, level down
+  and up, bake, finish.
+- **`EffigySculptBar`**, a second row with radius and strength as expression fields and a readout
+  saying what the level costs and — when the view is below the top — that the model still builds at
+  the top. Levels are exponential; a level control with no number beside it is a way to hang the
+  editor politely.
+- **`EffigyViewport.Sculpting.cs`** is deliberately the thinnest part: convert Vector3 to Vec3, call
+  four session methods, draw a ring. The ring lies in the SURFACE'S plane rather than facing the
+  camera, because the radius is in world units along the surface and a screen-facing circle on a
+  face turned away covers far more of the model than it claims.
+- **The bake writes a PNG**, through the new kernel `PngWriter`, and checks the UVs with
+  `NormalBake.Measure` BEFORE writing anything.
+- **Eleven hand-drawn glyphs** in the existing idiom, each drawn as what the brush DOES to a surface
+  rather than as a tool shape — six brush heads with a small badge each is six identical blobs at
+  27px.
+
+**Saving a sculpt saves it.** `SculptSidecar` is called from `WriteDocument` and `LoadDocument` —
+worth stating because for a while it was not, and a side-car nothing calls is a save that looks like
+it worked and loses the sculpt. Loading happens BEFORE the first rebuild, which is when the deltas
+are consumed. A failure to write the blobs is logged as an error rather than swallowed.
+
+**Ctrl+Z reaches the stroke.** Sculpt mode owns undo outright while it is open and does NOT fall
+through to the studio's undo when its own stack is empty: the studio's restores a feature list, and a
+snapshot from before the sculpt feature existed would leave the live session holding a feature the
+studio no longer has.
+
+**The mask actions that are not brush strokes** — invert, clear, paint/erase, hide-masked — are in
+the Edit menu rather than on the strip, because four more hand-painted glyphs is real design work for
+things nobody reaches for mid-stroke. `HideMasked` is a view, like `ViewLevel`, and reaches the model
+exactly as far as that one does: nowhere.
+
+**The bake's two conventions are controls, not constants.** Green channel and V orientation are the
+two things the suite cannot judge, and the sitting exists to settle them — a bake button that could
+write only one of the four combinations would make that sitting impossible to finish. The size cycles
+too, and the prompt names which convention was used, because two files differing only in the sign of
+one channel are indistinguishable once they are on disk.
+
+**Only one full rebuild happens in sculpt mode, on finish.** Rebuilding the tree per stroke would be
+slow and wrong to look at: the tree builds the TOP level while the viewport may be showing a coarser
+one. Strokes refresh the viewport straight from the session and mark the document unsaved; the tree
+catches up when you leave.
+
+**What was actually verified**, because "it compiles" is not available here: the editor sources parse
+with no syntax errors, and they were compiled against the real kernel with only s&box types missing
+— so every Effigy type and member the editor calls resolves. That leaves the s&box widget API as the
+only unproven part, which is exactly what the sitting is for.
+
+### A feature can say its own cache is stale
+
+`Feature.IsStale` is new, and `PartStudio.Rebuild` asks every reusable feature before it trusts the
+snapshot. Everywhere else the convention is that whoever edits a feature calls `MarkDirty`, which is
+one call in one place for a dialog full of numbers. It does not hold for a feature whose state is a
+live object someone else is mutating: a brush changes `MultiresSculpt` hundreds of times a stroke,
+nowhere near the code that owns the studio. `MultiresSculpt.Revision` counts model-changing edits
+(`ViewLevel` deliberately does not bump it) and `SculptFeature` compares it against the revision it
+last built at.
+
+This was found rather than designed: the first run of the feature tests returned the 8-vertex cage
+from cache after a sculpt, which in the editor would have read as "the sculpt tool does nothing"
+rather than as a caching bug. Removing the check in `Rebuild` still fails those tests.
 
 ### What the kernel suite actually checks
 

@@ -952,7 +952,9 @@ internal sealed partial class EffigyViewport : Widget
 		// camera, the click drags the view, and sketch tools place points on the plane.
 		var overAnyOverlay = (_overlay?.IsUnderMouse ?? false)
 			|| (_sketchOverlay?.IsUnderMouse ?? false)
-			|| (_resultOverlay?.IsUnderMouse ?? false);
+			|| (_resultOverlay?.IsUnderMouse ?? false)
+			|| (_sculptOverlay?.IsUnderMouse ?? false)
+			|| (_sculptBarOverlay?.IsUnderMouse ?? false);
 		var overCanvas = _canvas.IsUnderMouse && !overAnyOverlay;
 
 		_gizmoInstance.Input.IsHovered = IsActiveWindow && overCanvas;
@@ -992,6 +994,7 @@ internal sealed partial class EffigyViewport : Widget
 		BoneToolFrame();
 
 		SketchFrame();
+		SculptFrame();
 
 		// Origin on top of the planes. Hidden while sketching or picking anything - it sits at the
 		// exact spot most first clicks land, and stealing them was the first thing that broke.
@@ -1332,6 +1335,10 @@ internal sealed partial class EffigyViewport : Widget
 		// It has to come before the Escape branch below or dismissing the number would also back
 		// out of the tool you are drawing with.
 		if ( HandleDimensionKey( e ) )
+			return;
+
+		// Sculpting owns X and M while it is running, and owns nothing at all when it is not.
+		if ( HandleSculptKey( e ) )
 			return;
 
 		// W/E/R switch bone drag mode while a bone is selected.

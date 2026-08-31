@@ -247,6 +247,17 @@ public sealed class EffigyWindow : DockWindow
 		edit.AddSeparator();
 		edit.AddOption( "Toggle Suppress", "visibility", ToggleSuppressFeature );
 		edit.AddSeparator();
+		edit.AddOption( "Normal Map: OpenGL / DirectX Green", "invert_colors", ToggleBakeGreen );
+		edit.AddOption( "Normal Map: Flip V", "swap_vert", ToggleBakeFlipV );
+		edit.AddOption( "Normal Map: Cycle Size", "photo_size_select_large", CycleBakeSize );
+
+		edit.AddSeparator();
+		edit.AddOption( "Invert Sculpt Mask", "flip", InvertSculptMask );
+		edit.AddOption( "Clear Sculpt Mask", "layers_clear", ClearSculptMask );
+		edit.AddOption( "Sculpt Mask: Paint / Erase", "brush", ToggleSculptMaskErase );
+		edit.AddOption( "Hide / Show Masked Geometry", "visibility_off", ToggleHideMasked );
+
+		edit.AddSeparator();
 		edit.AddOption( "Settings...", "settings", OpenSettings );
 
 		var view = MenuBar.FindOrCreateMenu( "View" );
@@ -312,15 +323,28 @@ public sealed class EffigyWindow : DockWindow
 
 		_viewport.CompleteLayout( _toolStrip, _sketchStrip, _resultStrip );
 
+		// The sculpt strip shares the top-left spot with the other two; its number bar sits under it
+		// where the result strip sits. Added through the viewport rather than CompleteLayout so the
+		// three existing call sites keep the signature they have.
+		_sculptStrip = new EffigySketchStrip( _viewport.Canvas );
+		_sculptBar = new EffigySculptBar( _viewport.Canvas ) { Changed = OnSculptBarChanged };
+
+		_viewport.AddSculptOverlays( _sculptStrip, _sculptBar );
+
+		_viewport.SculptStrokeFinished = NoteSculptEdited;
+		_viewport.SculptSettingsChanged = OnSculptSettingsChanged;
+
 		RefreshToolStrip( force: true );
 
 		BuildSketchToolbar();
+		BuildSculptToolbar();
 
 		// Belt and braces: the two strips share one spot and exactly one may show. CompleteLayout
 		// hides the sketch strip before any button exists; restate it once both strips are fully
 		// built so a restored window state can never leak both on screen at once.
 		_toolStrip.Visible = true;
 		_sketchStrip.Visible = false;
+		_sculptStrip.Visible = false;
 	}
 
 	// --- sketch toolbar ----------------------------------------------------------------------
@@ -440,6 +464,443 @@ public sealed class EffigyWindow : DockWindow
 			if ( index >= 0 )
 				button.ShowVariant( index );
 		}
+	}
+
+	// --- sculpt mode ---------------------------------------------------------------------------
+
+	/// <summary>The sculpt strip. Same widget class as the sketch strip - a floating row of
+	/// checkable icon buttons is a floating row of checkable icon buttons - and it shares the same
+	/// spot, so exactly one of the three strips is visible at a time.</summary>
+	private EffigySketchStrip _sculptStrip;
+
+	private EffigySculptBar _sculptBar;
+
+	/// <summary>The feature being sculpted, so finishing knows what to mark dirty.</summary>
+	private SculptFeature _sculptFeature;
+
+	private readonly List<(EffigySketchToolButton Button, BrushKind Kind)> _brushButtons = new();
+	private EffigySketchToolButton _maskButton;
+	private EffigySketchToolButton _symmetryButton;
+
+	private void BuildSculptToolbar()
+	{
+		AddBrushTool( EffigyIcon.SculptDraw, "Draw — push the surface out along its normal", BrushKind.Draw );
+		AddBrushTool( EffigyIcon.SculptSmooth, "Smooth — pull a region towards its own neighbours", BrushKind.Smooth );
+		AddBrushTool( EffigyIcon.SculptInflate, "Inflate — push out in every direction at once", BrushKind.Inflate );
+		AddBrushTool( EffigyIcon.SculptGrab, "Grab — drag the surface sideways", BrushKind.Grab );
+		AddBrushTool( EffigyIcon.SculptFlatten, "Flatten — cut a region back towards a plane", BrushKind.Flatten );
+		AddBrushTool( EffigyIcon.SculptPinch, "Pinch — gather the surface towards the stroke", BrushKind.Pinch );
+
+		_sculptStrip.AddGap();
+
+		_maskButton = _sculptStrip.AddButton( EffigyIcon.SculptMask,
+			"Mask (M) — paint the part you want held still", true, ToggleSculptMasking );
+
+		_symmetryButton = _sculptStrip.AddButton( EffigyIcon.Mirror,
+			"Symmetry (X) — mirror every stroke across X", true, ToggleSculptSymmetry );
+
+		_sculptStrip.AddGap();
+
+		_sculptStrip.AddButton( EffigyIcon.SculptLevelDown, "Show one level coarser", false,
+			() => StepSculptLevel( -1 ) );
+
+		_sculptStrip.AddButton( EffigyIcon.SculptLevelUp, "Show — or add — one level finer", false,
+			() => StepSculptLevel( 1 ) );
+
+		_sculptStrip.AddGap();
+
+		_sculptStrip.AddButton( EffigyIcon.SculptBake,
+			"Bake a normal map from this sculpt onto the cage", false, BakeSculpt );
+
+		var finish = _sculptStrip.AddButton( EffigyIcon.FinishSketchTool, "Finish sculpting", false, FinishSculpt );
+		finish.IconColor = EffigyToolStrip.ConfirmColor;
+	}
+
+	private void AddBrushTool( EffigyIcon icon, string tip, BrushKind kind )
+	{
+		var button = _sculptStrip.AddButton( icon, tip, true, () => SetSculptBrush( kind ) );
+		_brushButtons.Add( (button, kind) );
+	}
+
+	/// <summary>
+	/// Open a sculpt feature for brushing.
+	///
+	/// EditFeature first, because the sculpt has no cage until the features above it have run and
+	/// rolling to just after this one is also what puts the thing being sculpted on screen rather
+	/// than whatever is stacked on top of it.
+	/// </summary>
+	private void EnterSculpt( SculptFeature feature )
+	{
+		if ( feature is null || _viewport is null )
+			return;
+
+		EditFeature( feature );
+
+		if ( feature.Sculpt is null )
+		{
+			// The feature errored, so there is nothing to sculpt on. Its own diagnostic says why far
+			// better than anything this could invent.
+			SetPrompt( feature.Error ?? "This sculpt has no cage yet — the feature below it did not build." );
+			return;
+		}
+
+		_sculptFeature = feature;
+
+		// One strip at a time, and the dialog closed: a sculpt is not edited through a parameter
+		// list, so leaving one open would be two controls claiming the same feature.
+		_toolStrip.Visible = false;
+		_sketchStrip.Visible = false;
+		_sculptStrip.Visible = true;
+
+		_rigPanel?.CancelBoneTool();
+
+		var session = new SculptSession( feature.Sculpt );
+		session.Radius = session.SuggestedRadius;
+
+		_viewport.BeginSculpt( session );
+		_sculptBar.Bind( session );
+		_viewport.RefreshSculptPreview();
+
+		UpdateSculptChecks();
+
+		SetPrompt( "Sculpt: drag on the model. X mirrors, M masks, the level buttons add detail." );
+	}
+
+	private void FinishSculpt()
+	{
+		if ( _viewport is null || !_viewport.IsSculpting )
+			return;
+
+		_viewport.EndSculpt();
+		_sculptBar.Bind( null );
+
+		_sculptStrip.Visible = false;
+		_toolStrip.Visible = true;
+
+		RefreshToolStrip();
+
+		var feature = _sculptFeature;
+		_sculptFeature = null;
+
+		SetPrompt( "" );
+
+		// THE ONLY FULL REBUILD IN SCULPT MODE, and that is the point. Every stroke marks the model
+		// changed and refreshes the viewport straight from the session, because rebuilding the whole
+		// feature tree per stroke would be both slow and wrong to look at - the tree builds the TOP
+		// level while the viewport may be showing a coarser one. The tree catches up here.
+		if ( feature is not null )
+			_studio.MarkDirty( feature );
+
+		RestoreRollbackAfterEdit();
+		RebuildStudio();
+	}
+
+	private void SetSculptBrush( BrushKind kind )
+	{
+		if ( _viewport?.SculptSession is not { } session )
+			return;
+
+		// Picking a brush leaves masking, or the click would arm a tool that then does not run.
+		session.Masking = false;
+		session.Brush = kind;
+
+		UpdateSculptChecks();
+		_sculptBar?.Refresh();
+	}
+
+	private void ToggleSculptMasking()
+	{
+		if ( _viewport?.SculptSession is not { } session )
+			return;
+
+		session.Masking = !session.Masking;
+
+		UpdateSculptChecks();
+		_sculptBar?.Refresh();
+	}
+
+	private void ToggleSculptSymmetry()
+	{
+		if ( _viewport?.SculptSession is not { } session )
+			return;
+
+		session.MirrorX = !session.MirrorX;
+
+		UpdateSculptChecks();
+		_sculptBar?.Refresh();
+	}
+
+	/// <summary>Put the strip's ticks back in step with the session, which the X and M shortcuts can
+	/// change from under it.</summary>
+	private void UpdateSculptChecks()
+	{
+		var session = _viewport?.SculptSession;
+
+		foreach ( var (button, kind) in _brushButtons )
+			button.Checked = session is not null && !session.Masking && session.Brush == kind;
+
+		if ( _maskButton is not null )
+			_maskButton.Checked = session?.Masking ?? false;
+
+		if ( _symmetryButton is not null )
+			_symmetryButton.Checked = session?.MirrorX ?? false;
+	}
+
+	/// <summary>
+	/// Move the working level, adding one when asked for finer than exists.
+	///
+	/// ADDING RATHER THAN REFUSING at the top is the point of the button: somebody who has reached
+	/// the finest level and presses "finer" wants the next one, not a message saying there is not
+	/// one. Going below zero is different - level 0 is the cage itself and there is genuinely
+	/// nothing under it.
+	/// </summary>
+	private void StepSculptLevel( int delta )
+	{
+		if ( _viewport?.SculptSession is not { } session )
+			return;
+
+		var sculpt = session.Sculpt;
+		var target = session.Level + delta;
+
+		if ( target < 0 )
+		{
+			SetPrompt( "Level 0 is the cage itself — there is nothing coarser than it." );
+			return;
+		}
+
+		if ( target > sculpt.TopLevel )
+		{
+			var (vertices, faces) = sculpt.Cost( target );
+
+			RecordUndo();
+			sculpt.AddLevel();
+
+			SetPrompt( $"Level {target}: {vertices:N0} vertices, {faces:N0} faces." );
+		}
+
+		session.Level = target;
+
+		_viewport.RefreshSculptPreview();
+		_sculptBar?.Refresh();
+		NoteSculptEdited();
+	}
+
+	/// <summary>
+	/// Bake the sculpt down onto the cage's UVs and write it out as a PNG.
+	///
+	/// The UVs are checked BEFORE anything is written. A bake over overlapping UVs does not fail: it
+	/// produces a plausible map that is wrong wherever two faces shared a texel, and box projection -
+	/// this tool's own default - overlaps by construction. Naming that is worth more than a file.
+	/// </summary>
+	/// <summary>
+	/// The two normal-map conventions, and the size.
+	///
+	/// THESE EXIST AS CONTROLS BECAUSE NOBODY KNOWS THE ANSWER YET. Which way s&box wants the green
+	/// channel, and which end of the image v = 0 belongs at, are the two things the suite explicitly
+	/// cannot judge and the sitting is meant to settle. A bake button that could only write one of
+	/// the four combinations would make that sitting impossible to finish - you would find out the
+	/// map was wrong and have no way to write the right one.
+	///
+	/// Defaults are OpenGL-style green and no vertical flip, which is what the sample in
+	/// Effigy.Tests/out was written with, so the two can be compared directly.
+	/// </summary>
+	private bool _bakeFlipGreen;
+	private bool _bakeFlipV;
+	private int _bakeSize = 1024;
+
+	private void ToggleBakeGreen()
+	{
+		_bakeFlipGreen = !_bakeFlipGreen;
+		SetPrompt( $"Normal map green channel: {(_bakeFlipGreen ? "DirectX (-Y)" : "OpenGL (+Y)")}." );
+	}
+
+	private void ToggleBakeFlipV()
+	{
+		_bakeFlipV = !_bakeFlipV;
+		SetPrompt( $"Normal map rows: v = 0 at the {(_bakeFlipV ? "bottom" : "top")} of the image." );
+	}
+
+	private void CycleBakeSize()
+	{
+		_bakeSize = _bakeSize >= 4096 ? 256 : _bakeSize * 2;
+		SetPrompt( $"Normal map size: {_bakeSize}x{_bakeSize}." );
+	}
+
+	private void BakeSculpt()
+	{
+		if ( _viewport?.SculptSession is not { } session )
+			return;
+
+		var sculpt = session.Sculpt;
+		var cage = sculpt.Cage;
+		var coverage = NormalBake.Measure( cage );
+
+		if ( !coverage.CanBake )
+		{
+			SetPrompt( $"Cannot bake: {coverage.Problem}" );
+			return;
+		}
+
+		var fd = new FileDialog( null )
+		{
+			Title = "Bake normal map to...",
+			DefaultSuffix = ".png",
+			Directory = Project.Current?.GetAssetsPath() ?? "",
+		};
+
+		fd.SelectFile( $"{_sculptFeature?.Name ?? "sculpt"}_normal.png" );
+		fd.SetFindFile();
+		fd.SetModeSave();
+		fd.SetNameFilter( "PNG image (*.png)" );
+
+		if ( !fd.Execute() )
+			return;
+
+		try
+		{
+			var options = new BakeOptions { FlipGreen = _bakeFlipGreen };
+			var map = NormalBake.Bake( cage, sculpt.Evaluate( sculpt.TopLevel ), _bakeSize, _bakeSize, options );
+
+			PngWriter.WriteFile( fd.SelectedFile, map, _bakeFlipV );
+
+			// The convention is named in the message on purpose. Two files that differ only in the
+			// sign of one channel are indistinguishable once they are on disk, and the whole point of
+			// the sitting is to work out which one is right.
+			var convention = $"{(_bakeFlipGreen ? "DirectX" : "OpenGL")} green, v = 0 at the "
+				+ $"{(_bakeFlipV ? "bottom" : "top")}";
+
+			SetPrompt( $"Baked {map.Width}×{map.Height} to {fd.SelectedFile} — {map.FilledCount:N0} texels hit, "
+				+ convention + "." );
+
+			Log.Info( $"[Effigy] baked normal map to {fd.SelectedFile} ({convention})" );
+		}
+		catch ( Exception e )
+		{
+			// Writing a file is the one place failing quietly is unforgivable, same as Save.
+			Log.Error( $"[Effigy] could not bake to {fd.SelectedFile}: {e.Message}" );
+			SetPrompt( $"Bake failed: {e.Message}" );
+		}
+	}
+
+	/// <summary>
+	/// Step the sculpt's own undo stack and put the viewport back in step with it.
+	///
+	/// A stroke is one entry, which is what a user means by undo - see SculptSession.
+	/// </summary>
+	private void StepSculptHistory( bool redo )
+	{
+		if ( _viewport?.SculptSession is not { } session )
+			return;
+
+		if ( !(redo ? session.Redo() : session.Undo()) )
+		{
+			SetPrompt( redo ? "Nothing to redo in this sculpt." : "Nothing to undo in this sculpt." );
+			return;
+		}
+
+		_viewport.RefreshSculptPreview();
+		NoteSculptEdited();
+	}
+
+	/// <summary>
+	/// The mask actions that are not a brush stroke: invert, clear, erase, and hide what is held.
+	///
+	/// IN THE EDIT MENU RATHER THAN ON THE STRIP, deliberately. The strip is hand-painted glyphs and
+	/// four more of them is real design work (see WHAT-IS-LEFT 2.6) for actions nobody reaches for
+	/// mid-stroke. The menu takes named Material icons, which this window already uses everywhere.
+	///
+	/// They are added unconditionally and refuse when there is no sculpt open, rather than the menu
+	/// being rebuilt per state - a menu that changes shape depending on the mode is a menu whose
+	/// items move under the cursor.
+	/// </summary>
+	private bool SculptingOrSaySo( out SculptSession session )
+	{
+		session = _viewport?.SculptSession;
+
+		if ( session is null )
+			SetPrompt( "That is a sculpting action — open a Sculpt feature first." );
+
+		return session is not null;
+	}
+
+	private void InvertSculptMask()
+	{
+		if ( !SculptingOrSaySo( out var session ) )
+			return;
+
+		session.InvertMask();
+		_viewport.RefreshSculptPreview();
+		_sculptBar?.Refresh();
+
+		SetPrompt( $"Mask inverted — {session.MaskFor( session.Level ).ProtectedFraction:P0} held." );
+	}
+
+	private void ClearSculptMask()
+	{
+		if ( !SculptingOrSaySo( out var session ) )
+			return;
+
+		session.ClearMask();
+		_viewport.RefreshSculptPreview();
+		_sculptBar?.Refresh();
+
+		SetPrompt( "Mask cleared — nothing is held." );
+	}
+
+	private void ToggleSculptMaskErase()
+	{
+		if ( !SculptingOrSaySo( out var session ) )
+			return;
+
+		session.Erasing = !session.Erasing;
+		session.Masking = true;
+
+		UpdateSculptChecks();
+		_sculptBar?.Refresh();
+
+		SetPrompt( session.Erasing ? "Mask brush: erasing." : "Mask brush: painting." );
+	}
+
+	private void ToggleHideMasked()
+	{
+		if ( !SculptingOrSaySo( out var session ) )
+			return;
+
+		// A VIEW, like the level, and it reaches the model exactly as far as that one does: nowhere.
+		// Hiding half a head to reach inside it must not export a head with half of it missing.
+		session.HideMasked = !session.HideMasked;
+
+		_viewport.RefreshSculptPreview();
+		_sculptBar?.Refresh();
+
+		SetPrompt( session.HideMasked
+			? "Masked geometry hidden — the model still builds whole."
+			: "Showing all geometry." );
+	}
+
+	/// <summary>The radius or strength box was typed in. The viewport only needs to know so the
+	/// brush ring is drawn at the new size.</summary>
+	private void OnSculptBarChanged() => _viewport?.Update();
+
+	/// <summary>The viewport changed a brush setting itself - the X and M shortcuts - so the strip's
+	/// ticks and the bar's readout have to catch up with it.</summary>
+	private void OnSculptSettingsChanged()
+	{
+		UpdateSculptChecks();
+		_sculptBar?.Refresh();
+	}
+
+	/// <summary>A stroke landed. The document is now unsaved and the bar's readouts have moved, but
+	/// the feature tree deliberately does NOT rebuild - see FinishSculpt.</summary>
+	private void NoteSculptEdited()
+	{
+		if ( !_dirty )
+		{
+			_dirty = true;
+			UpdateTitle();
+		}
+
+		_sculptBar?.Refresh();
 	}
 
 	// --- sketch mode -------------------------------------------------------------------------
@@ -598,7 +1059,7 @@ public sealed class EffigyWindow : DockWindow
 	private enum ToolKind
 	{
 		Sketch, Primitive, Extrude, Revolve, Sweep, Loft, Chamfer, Fillet, Shell, Subdivide,
-		Mirror, LinearPattern, CircularPattern, Transform, UVProject, FaceMaterial,
+		Sculpt, Mirror, LinearPattern, CircularPattern, Transform, UVProject, FaceMaterial,
 	}
 
 	/// <summary>Build one, and apply the variant chosen from its dropdown where it has one.</summary>
@@ -614,6 +1075,7 @@ public sealed class EffigyWindow : DockWindow
 		ToolKind.Fillet => new FilletFeature(),
 		ToolKind.Shell => new ShellFeature(),
 		ToolKind.Subdivide => new SubdivideFeature(),
+		ToolKind.Sculpt => new SculptFeature(),
 		ToolKind.Mirror => new MirrorFeature(),
 		ToolKind.LinearPattern => new LinearPatternFeature(),
 		ToolKind.CircularPattern => new CircularPatternFeature(),
@@ -711,6 +1173,11 @@ public sealed class EffigyWindow : DockWindow
 			Kind = ToolKind.Shell },
 		new() { Icon = EffigyIcon.Subdivide, Tip = "Add a Subdivide — Catmull-Clark subdivision",
 			Kind = ToolKind.Subdivide },
+
+		// Next to Subdivide because it REPLACES it on a part you mean to sculpt: the levels are the
+		// subdivision, and a Subdivide underneath would hand the sculpt a dense mesh as its cage.
+		new() { Icon = EffigyIcon.Sculpt, Tip = "Add a Sculpt — brush detail onto the cage in levels",
+			Kind = ToolKind.Sculpt },
 
 		new() { Icon = EffigyIcon.Mirror, Tip = "Add a Mirror — reflect bodies across a plane",
 			Kind = ToolKind.Mirror, GapBefore = true },
@@ -1367,6 +1834,11 @@ public sealed class EffigyWindow : DockWindow
 				EditFeature( feature );
 				break;
 
+			case EffigyFeatureCommand.Sculpt:
+				if ( feature is SculptFeature sculpt )
+					EnterSculpt( sculpt );
+				break;
+
 			case EffigyFeatureCommand.Rename:
 				_featureTree?.BeginRename( feature );
 				break;
@@ -1550,6 +2022,24 @@ public sealed class EffigyWindow : DockWindow
 			return;
 		}
 
+		// THE DELTAS ARE NOT IN THE DOCUMENT. StudioDocument saves a feature's public fields, and a
+		// sculpt's state is megabytes of per-vertex deltas that deliberately do not go into a text
+		// format - see SculptFeature. Without this the .effigy file saves perfectly and the sculpt is
+		// gone, which is the worst shape a save bug can have: it looks like it worked.
+		try
+		{
+			var blobs = SculptSidecar.Save( _studio, path );
+
+			if ( blobs > 0 )
+				Log.Info( $"[Effigy] wrote {blobs} sculpt blob(s) beside {path}" );
+		}
+		catch ( Exception e )
+		{
+			// The document itself is already on disk, so this is not fatal - but it must be loud. A
+			// sculpt that quietly did not save is the thing this whole side-car exists to avoid.
+			Log.Error( $"[Effigy] saved {path} but could NOT write its sculpt data: {e.Message}" );
+		}
+
 		_documentPath = path;
 		MarkClean();
 
@@ -1595,6 +2085,18 @@ public sealed class EffigyWindow : DockWindow
 			// passing through rather than replacing with "could not open".
 			Log.Error( $"[Effigy] could not open {path}: {e.Message}" );
 			return;
+		}
+
+		// BEFORE the rebuild, because that is when the deltas are consumed: SculptSidecar hands each
+		// feature its bytes, and the feature turns them into a sculpt on the first rebuild, once the
+		// cage it belongs to has been built by the features above it.
+		try
+		{
+			SculptSidecar.Load( loaded, path );
+		}
+		catch ( Exception e )
+		{
+			Log.Error( $"[Effigy] opened {path} but could not read its sculpt data: {e.Message}" );
 		}
 
 		_studio = loaded;
@@ -2287,6 +2789,16 @@ public sealed class EffigyWindow : DockWindow
 	[Shortcut( "editor.undo", "CTRL+Z", ShortcutType.Window )]
 	private void Undo()
 	{
+		// SCULPT MODE OWNS UNDO OUTRIGHT while it is open, and does not fall through when its own
+		// stack is empty. The studio's undo restores a feature list, and a snapshot taken before this
+		// sculpt feature existed would leave the live session holding a feature the studio no longer
+		// has. Doing nothing is the honest answer to "there is nothing left to undo in here".
+		if ( _viewport?.SculptSession is not null )
+		{
+			StepSculptHistory( redo: false );
+			return;
+		}
+
 		if ( _undoStack.Count == 0 )
 			return;
 
@@ -2302,6 +2814,12 @@ public sealed class EffigyWindow : DockWindow
 	[Shortcut( "editor.redo", "CTRL+Y", ShortcutType.Window )]
 	private void Redo()
 	{
+		if ( _viewport?.SculptSession is not null )
+		{
+			StepSculptHistory( redo: true );
+			return;
+		}
+
 		if ( _redoStack.Count == 0 )
 			return;
 
@@ -2461,6 +2979,12 @@ public sealed class EffigyWindow : DockWindow
 
 		if ( _sketchStrip is not null )
 			_sketchStrip.GapColor = _palette.ViewportBg;
+
+		if ( _sculptStrip is not null )
+			_sculptStrip.GapColor = _palette.ViewportBg;
+
+		if ( _sculptBar is not null )
+			_sculptBar.GapColor = _palette.ViewportBg;
 
 		// Grid lines want the palette's dim text colour: it is picked to sit just above the
 		// background in every one of these palettes, which is exactly the job.
@@ -2854,6 +3378,7 @@ internal enum EffigyFeatureCommand
 	MoveDown,
 	RollbackTo,
 	RollForward,
+	Sculpt,
 }
 
 /// <summary>What the Parts list's context menu asked the window to do. Same split as
@@ -3000,6 +3525,14 @@ internal sealed class EffigyFeatureTreePanel : Widget
 
 			menu.AddOption( IsVisible( key ) ? "Hide sketch" : "Show sketch",
 				IsVisible( key ) ? "visibility_off" : "visibility", () => ToggleVisibility( key ) );
+		}
+
+		// A sculpt is not edited in a dialog - its state is a brush, not a parameter list - so the
+		// way in is its own menu item rather than Edit.
+		if ( feature is SculptFeature )
+		{
+			menu.AddOption( "Sculpt", "brush",
+				() => CommandRequested?.Invoke( feature, EffigyFeatureCommand.Sculpt ) );
 		}
 
 		menu.AddSeparator();

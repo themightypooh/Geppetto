@@ -44,6 +44,22 @@ internal enum EffigyIcon
 	ConstructionTool,
 	ProfileInspectorTool,
 	FinishSketchTool,
+
+	// --- sculpt tools -------------------------------------------------------------------------
+	// The brushes are drawn as what they DO to a surface rather than as tool shapes: a row of six
+	// identical brush heads distinguished by a tiny badge is six ways to pick the wrong one. Every
+	// glyph here is a surface line and what the brush does to it.
+	Sculpt,
+	SculptDraw,
+	SculptSmooth,
+	SculptInflate,
+	SculptGrab,
+	SculptFlatten,
+	SculptPinch,
+	SculptMask,
+	SculptLevelDown,
+	SculptLevelUp,
+	SculptBake,
 }
 
 /// <summary>
@@ -126,6 +142,18 @@ internal static class EffigyIcons
 			case EffigyIcon.ConstructionTool: PaintConstructionTool( center, color ); return;
 			case EffigyIcon.ProfileInspectorTool: PaintProfileInspectorTool( center, color ); return;
 			case EffigyIcon.FinishSketchTool: PaintFinishSketchTool( center, color ); return;
+
+			case EffigyIcon.Sculpt: PaintSculpt( center, color ); return;
+			case EffigyIcon.SculptDraw: PaintSculptDraw( center, color ); return;
+			case EffigyIcon.SculptSmooth: PaintSculptSmooth( center, color ); return;
+			case EffigyIcon.SculptInflate: PaintSculptInflate( center, color ); return;
+			case EffigyIcon.SculptGrab: PaintSculptGrab( center, color ); return;
+			case EffigyIcon.SculptFlatten: PaintSculptFlatten( center, color ); return;
+			case EffigyIcon.SculptPinch: PaintSculptPinch( center, color ); return;
+			case EffigyIcon.SculptMask: PaintSculptMask( center, color ); return;
+			case EffigyIcon.SculptLevelDown: PaintSculptLevelDown( center, color ); return;
+			case EffigyIcon.SculptLevelUp: PaintSculptLevelUp( center, color ); return;
+			case EffigyIcon.SculptBake: PaintSculptBake( center, color ); return;
 		}
 	}
 
@@ -953,5 +981,238 @@ internal static class EffigyIcons
 		Stroked( color, 2.2f );
 		Editor.Paint.DrawLine( At( c, -6, 0.5f ), At( c, -1.5f, 5 ) );
 		Editor.Paint.DrawLine( At( c, -1.5f, 5 ), At( c, 6.5f, -5 ) );
+	}
+
+	// --- sculpt tools ---------------------------------------------------------------------------
+	//
+	// EVERY ONE OF THESE IS A SURFACE AND WHAT HAPPENS TO IT. The obvious way to draw six brushes is
+	// six brush heads with a small badge each, which at 27px is six identical blobs. Drawing the
+	// EFFECT instead means the row can be read at a glance without learning it: a bump rising, a
+	// ripple flattening, a peak dragged sideways.
+	//
+	// The surface runs across the lower half so every glyph shares a baseline and the row reads as
+	// one family.
+
+	/// <summary>A surface with a bump pushed up out of it, and the brush's ring resting on the
+	/// bump. The feature-strip glyph, so it says "sculpting" rather than any one brush.</summary>
+	private static void PaintSculpt( Vector2 c, Color color )
+	{
+		Stroked( color, 1.7f );
+		SurfaceWithBump( c, 4.5f );
+
+		// The brush ring, seen at a slight angle so it reads as sitting ON the surface.
+		Stroked( color.WithAlpha( 0.75f ), 1.3f );
+		Arc( At( c, 0, -3.4f ), 5.6f, 0f, 360f, 20 );
+	}
+
+	/// <summary>A bump, and an arrow pushing outward from it: draw adds material along the normal.</summary>
+	private static void PaintSculptDraw( Vector2 c, Color color )
+	{
+		Stroked( color, 1.7f );
+		SurfaceWithBump( c, 4f );
+
+		Stroked( color, 1.4f );
+		Editor.Paint.DrawLine( At( c, 0, -1.5f ), At( c, 0, -7f ) );
+		ArrowHead( At( c, 0, -8f ), new Vector2( 0, -1 ), color );
+	}
+
+	/// <summary>A ripple above, the same surface calmed below. Smooth is the one brush whose whole
+	/// meaning is the difference between two lines.</summary>
+	private static void PaintSculptSmooth( Vector2 c, Color color )
+	{
+		// Rippled.
+		Stroked( color.WithAlpha( 0.85f ), 1.5f );
+		var previous = At( c, -8.5f, -4f );
+
+		for ( var i = 1; i <= 24; i++ )
+		{
+			var t = i / 24f;
+			var x = -8.5f + 17f * t;
+			var y = -4f + MathF.Sin( t * MathF.PI * 3f ) * 2.6f;
+			var point = At( c, x, y );
+
+			Editor.Paint.DrawLine( previous, point );
+			previous = point;
+		}
+
+		// Calmed.
+		Stroked( color, 1.8f );
+		Editor.Paint.DrawLine( At( c, -8.5f, 5f ), At( c, 8.5f, 5f ) );
+
+		Stroked( color.WithAlpha( 0.6f ), 1.2f );
+		Editor.Paint.DrawLine( At( c, 0, -0.5f ), At( c, 0, 2.2f ) );
+		ArrowHead( At( c, 0, 3.4f ), new Vector2( 0, 1 ), color.WithAlpha( 0.6f ), 2.8f );
+	}
+
+	/// <summary>A closed shape with arrows pushing out all round it — inflate acts everywhere at
+	/// once, which is what tells it apart from draw.</summary>
+	private static void PaintSculptInflate( Vector2 c, Color color )
+	{
+		Stroked( color, 1.7f );
+		Arc( c, 4.6f, 0f, 360f, 20 );
+
+		for ( var i = 0; i < 4; i++ )
+		{
+			var radians = (45f + i * 90f) * MathF.PI / 180f;
+			var dir = new Vector2( MathF.Cos( radians ), MathF.Sin( radians ) );
+
+			Stroked( color.WithAlpha( 0.9f ), 1.3f );
+			Editor.Paint.DrawLine( c + dir * 5.8f * _scale, c + dir * 8f * _scale );
+			ArrowHead( c + dir * 9.2f * _scale, dir, color, 2.8f );
+		}
+	}
+
+	/// <summary>A surface dragged sideways into a lean, with the pull shown as an arrow. Grab moves
+	/// what it holds rather than adding to it, so nothing here points along the normal.</summary>
+	private static void PaintSculptGrab( Vector2 c, Color color )
+	{
+		Stroked( color, 1.7f );
+
+		// A peak that leans right, rather than a symmetric bump.
+		Editor.Paint.DrawLine( At( c, -8.5f, 5f ), At( c, -2.5f, 5f ) );
+		Editor.Paint.DrawLine( At( c, -2.5f, 5f ), At( c, 2.5f, -3f ) );
+		Editor.Paint.DrawLine( At( c, 2.5f, -3f ), At( c, 5.5f, 5f ) );
+		Editor.Paint.DrawLine( At( c, 5.5f, 5f ), At( c, 8.5f, 5f ) );
+
+		Stroked( color.WithAlpha( 0.9f ), 1.4f );
+		Editor.Paint.DrawLine( At( c, -2f, -6f ), At( c, 3.5f, -6f ) );
+		ArrowHead( At( c, 5f, -6f ), new Vector2( 1, 0 ), color );
+	}
+
+	/// <summary>A bump with a straight edge laid across it — flatten is a plane meeting a surface.
+	/// </summary>
+	private static void PaintSculptFlatten( Vector2 c, Color color )
+	{
+		Stroked( color.WithAlpha( 0.65f ), 1.5f );
+		SurfaceWithBump( c, 5.5f );
+
+		// The plane it is being cut back to.
+		Stroked( color, 2f );
+		Editor.Paint.DrawLine( At( c, -8.5f, -2.5f ), At( c, 8.5f, -2.5f ) );
+	}
+
+	/// <summary>Two arrows squeezing towards one ridge. Pinch gathers a surface rather than moving
+	/// it, so both arrows point inward at the same line.</summary>
+	private static void PaintSculptPinch( Vector2 c, Color color )
+	{
+		Stroked( color, 1.8f );
+		Editor.Paint.DrawLine( At( c, 0, -7.5f ), At( c, 0, 7.5f ) );
+
+		Stroked( color.WithAlpha( 0.9f ), 1.4f );
+		Editor.Paint.DrawLine( At( c, -8f, 0 ), At( c, -3.5f, 0 ) );
+		ArrowHead( At( c, -2.2f, 0 ), new Vector2( 1, 0 ), color );
+
+		Editor.Paint.DrawLine( At( c, 8f, 0 ), At( c, 3.5f, 0 ) );
+		ArrowHead( At( c, 2.2f, 0 ), new Vector2( -1, 0 ), color );
+	}
+
+	/// <summary>A patch of the surface hatched off. Masking protects rather than shapes, so this is
+	/// the one sculpt glyph that is not a deformation.</summary>
+	private static void PaintSculptMask( Vector2 c, Color color )
+	{
+		Stroked( color.WithAlpha( 0.85f ), 1.5f );
+		Outline( At( c, -8, -6.5f ), At( c, 8, -6.5f ), At( c, 8, 6.5f ), At( c, -8, 6.5f ) );
+
+		// Hatching, the universal "held back" texture.
+		Stroked( color.WithAlpha( 0.7f ), 1.2f );
+
+		for ( var x = -6f; x <= 8f; x += 3.4f )
+		{
+			var top = MathF.Max( x - 13f, -8f );
+			var bottom = MathF.Min( x, 8f );
+
+			Editor.Paint.DrawLine( At( c, bottom, -6.5f ), At( c, top, 6.5f ) );
+		}
+	}
+
+	/// <summary>A coarse grid with a chevron down: fewer, bigger faces.</summary>
+	private static void PaintSculptLevelDown( Vector2 c, Color color ) => PaintSculptLevel( c, color, 2, down: true );
+
+	/// <summary>A fine grid with a chevron up: four times the faces, which is the whole cost.
+	/// </summary>
+	private static void PaintSculptLevelUp( Vector2 c, Color color ) => PaintSculptLevel( c, color, 4, down: false );
+
+	private static void PaintSculptLevel( Vector2 c, Color color, int divisions, bool down )
+	{
+		const float Half = 6.5f;
+
+		Stroked( color.WithAlpha( 0.9f ), 1.4f );
+		Outline( At( c, -Half, -Half - 1.5f ), At( c, Half, -Half - 1.5f ),
+			At( c, Half, Half - 1.5f ), At( c, -Half, Half - 1.5f ) );
+
+		Stroked( color.WithAlpha( 0.65f ), 1f );
+
+		for ( var i = 1; i < divisions; i++ )
+		{
+			var t = -Half + i * (Half * 2f / divisions);
+
+			Editor.Paint.DrawLine( At( c, t, -Half - 1.5f ), At( c, t, Half - 1.5f ) );
+			Editor.Paint.DrawLine( At( c, -Half, t - 1.5f ), At( c, Half, t - 1.5f ) );
+		}
+
+		// The chevron, below the grid so the two never overlap at strip size.
+		Stroked( color, 1.8f );
+
+		if ( down )
+		{
+			Editor.Paint.DrawLine( At( c, -3.5f, 6f ), At( c, 0, 9f ) );
+			Editor.Paint.DrawLine( At( c, 0, 9f ), At( c, 3.5f, 6f ) );
+		}
+		else
+		{
+			Editor.Paint.DrawLine( At( c, -3.5f, 9f ), At( c, 0, 6f ) );
+			Editor.Paint.DrawLine( At( c, 0, 6f ), At( c, 3.5f, 9f ) );
+		}
+	}
+
+	/// <summary>A dense surface collapsing into a flat square: the sculpt becoming a texture, which
+	/// is the whole point of the pipeline and the one operation here that produces a file.</summary>
+	private static void PaintSculptBake( Vector2 c, Color color )
+	{
+		// The sculpted surface, up top.
+		Stroked( color.WithAlpha( 0.85f ), 1.5f );
+		var previous = At( c, -8.5f, -5f );
+
+		for ( var i = 1; i <= 20; i++ )
+		{
+			var t = i / 20f;
+			var x = -8.5f + 17f * t;
+			var y = -5f + MathF.Sin( t * MathF.PI * 2f ) * 2.2f;
+			var point = At( c, x, y );
+
+			Editor.Paint.DrawLine( previous, point );
+			previous = point;
+		}
+
+		// Into the map.
+		Stroked( color.WithAlpha( 0.7f ), 1.2f );
+		Editor.Paint.DrawLine( At( c, 0, -1f ), At( c, 0, 1.6f ) );
+		ArrowHead( At( c, 0, 2.8f ), new Vector2( 0, 1 ), color.WithAlpha( 0.7f ), 2.8f );
+
+		Stroked( color, 1.6f );
+		Outline( At( c, -7, 4f ), At( c, 7, 4f ), At( c, 7, 9f ), At( c, -7, 9f ) );
+
+		Filled( color.WithAlpha( 0.3f ) );
+		Editor.Paint.DrawRect( Box( c, -7, 4f, 14f, 5f ) );
+	}
+
+	/// <summary>The shared baseline: a flat surface with one smooth bump in the middle of it. Every
+	/// brush glyph starts from this so the row reads as one family acting on one thing.</summary>
+	private static void SurfaceWithBump( Vector2 c, float height )
+	{
+		var previous = At( c, -8.5f, 5f );
+
+		for ( var i = 1; i <= 24; i++ )
+		{
+			var t = i / 24f;
+			var x = -8.5f + 17f * t;
+
+			// A raised cosine, flat at both ends so it meets the surface without a corner.
+			var bump = 0.5f * (1f + MathF.Cos( MathF.Max( MathF.Min( x / 5.5f, 1f ), -1f ) * MathF.PI ));
+			var point = At( c, x, 5f - bump * height );
+
+			Editor.Paint.DrawLine( previous, point );
+			previous = point;
+		}
 	}
 }
