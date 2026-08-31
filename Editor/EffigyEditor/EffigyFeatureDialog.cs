@@ -246,9 +246,11 @@ internal sealed class EffigyFeatureDialog : Widget
 
 		// A face material with nothing picked cannot do anything at all, so it opens asking - the
 		// same reasoning as a brand new sketch opening with its plane box armed.
-		if ( _feature is FaceMaterialFeature material )
+		// A feature that picks faces and has none picked cannot do anything at all, so it opens
+		// asking - the same reasoning as a brand new sketch opening with its plane box armed.
+		if ( PickedFaces( _feature ) is { } picking )
 		{
-			if ( material.Faces.Count == 0 )
+			if ( picking.Count == 0 )
 				_activeArmable?.Arm();
 
 			return;
@@ -557,16 +559,26 @@ internal sealed class EffigyFeatureDialog : Widget
 		// A face material is a set of picked faces plus a slot. The faces have no IParam - a list of
 		// picked geometry has no generic control the way a float or a choice does - so the box comes
 		// first and the generic rows follow it.
-		if ( _feature is FaceMaterialFeature material )
+		if ( PickedFaces( _feature ) is { } faces )
 		{
 			_viewport.SetPickableBodies( _pickableBodiesLookup?.Invoke() );
 
-			var faceSelector = new EffigyFaceSetSelector( _body, _viewport, material, OnFaceSetChanged );
+			var faceSelector = new EffigyFaceSetSelector( _body, _viewport, faces, OnFaceSetChanged,
+				_feature switch
+				{
+					DraftFeature => "Faces to taper",
+					HoleFeature => "Faces to drill",
+					_ => "Faces",
+				} );
+
 			_activeArmable = faceSelector;
 			AddRow( faceSelector );
 
 			foreach ( var param in _feature.Parameters )
 				AddRow( BuildParamRow( param ) );
+
+			if ( _feature is not FaceMaterialFeature material )
+				return;
 
 			// Under the slot number, because it is the answer to the question the number raises.
 			// Picking a slot in a dialog and having no idea what it looks like is the reason this
@@ -698,6 +710,20 @@ internal sealed class EffigyFeatureDialog : Widget
 	/// where the slot is a parameter you can type over. Rebuilding the child rather than the whole
 	/// dialog keeps the number field's focus and any half-typed expression in the rows above.
 	/// </summary>
+	/// <summary>
+	/// The face list a feature picks into, or null for one that does not pick faces.
+	///
+	/// Named in one place so a fourth face-picking feature is one line here rather than three
+	/// branches scattered through the dialog.
+	/// </summary>
+	private static List<FaceRef> PickedFaces( Feature feature ) => feature switch
+	{
+		FaceMaterialFeature material => material.Faces,
+		DraftFeature draft => draft.Faces,
+		HoleFeature hole => hole.Faces,
+		_ => null,
+	};
+
 	private Widget BuildMaterialRow( FaceMaterialFeature material )
 	{
 		_materialRow = NewRow( out var layout );
@@ -1716,16 +1742,27 @@ internal sealed class EffigyBodySelector : Widget, IArmableSelection
 internal sealed class EffigyFaceSetSelector : Widget, IArmableSelection
 {
 	private readonly EffigyViewport _viewport;
-	private readonly FaceMaterialFeature _feature;
+
+	/// <summary>
+	/// The list this box fills, rather than the feature that owns it.
+	///
+	/// It was typed to FaceMaterialFeature until Draft and Hole turned up wanting exactly the same
+	/// control over exactly the same kind of list. Three features picking faces through one box is
+	/// the point; three boxes that drift apart is what typing it to one of them would have got.
+	/// </summary>
+	private readonly List<FaceRef> _faces;
+
+	private readonly string _label;
 	private readonly Action _changed;
 
 	private bool _armed;
 
-	public EffigyFaceSetSelector( Widget parent, EffigyViewport viewport, FaceMaterialFeature feature,
-		Action changed ) : base( parent )
+	public EffigyFaceSetSelector( Widget parent, EffigyViewport viewport, List<FaceRef> faces,
+		Action changed, string label = "Faces" ) : base( parent )
 	{
 		_viewport = viewport;
-		_feature = feature;
+		_faces = faces;
+		_label = label;
 		_changed = changed;
 
 		Layout = Layout.Row();
@@ -1740,11 +1777,11 @@ internal sealed class EffigyFaceSetSelector : Widget, IArmableSelection
 
 	protected override void OnPaint()
 	{
-		var count = _feature.Faces.Count;
+		var count = _faces.Count;
 
 		Paint.SetPen( Theme.TextControl.WithAlpha( 0.7f ) );
 		Paint.SetDefaultFont( 8 );
-		Paint.DrawText( new Rect( 0f, 0f, Width, 16f ).Shrink( 8f, 2f, 0f, 0f ), "Faces", TextFlag.LeftTop );
+		Paint.DrawText( new Rect( 0f, 0f, Width, 16f ).Shrink( 8f, 2f, 0f, 0f ), _label, TextFlag.LeftTop );
 
 		var box = new Rect( 8f, 18f, Width - 16f, 22f );
 
@@ -1789,9 +1826,9 @@ internal sealed class EffigyFaceSetSelector : Widget, IArmableSelection
 		if ( !e.LeftMouseButton )
 			return;
 
-		if ( _feature.Faces.Count > 0 && ClearRect().IsInside( e.LocalPosition ) )
+		if ( _faces.Count > 0 && ClearRect().IsInside( e.LocalPosition ) )
 		{
-			_feature.Faces.Clear();
+			_faces.Clear();
 			Push();
 			Update();
 			_changed?.Invoke();
@@ -1845,22 +1882,22 @@ internal sealed class EffigyFaceSetSelector : Widget, IArmableSelection
 		if ( !FacePlane.TryResolveFace( bodies, face, out var body, out var index ) )
 			return;
 
-		for ( var i = 0; i < _feature.Faces.Count; i++ )
+		for ( var i = 0; i < _faces.Count; i++ )
 		{
-			if ( !FacePlane.TryResolveFace( bodies, _feature.Faces[i], out var existing, out var existingIndex ) )
+			if ( !FacePlane.TryResolveFace( bodies, _faces[i], out var existing, out var existingIndex ) )
 				continue;
 
 			if ( existing.Id != body.Id || existingIndex != index )
 				continue;
 
-			_feature.Faces.RemoveAt( i );
+			_faces.RemoveAt( i );
 			Push();
 			Update();
 			_changed?.Invoke();
 			return;
 		}
 
-		_feature.Faces.Add( face );
+		_faces.Add( face );
 		Push();
 		Update();
 		_changed?.Invoke();
@@ -1868,7 +1905,7 @@ internal sealed class EffigyFaceSetSelector : Widget, IArmableSelection
 
 	private void Push()
 	{
-		_viewport.SelectedFaces = _armed ? _feature.Faces.ToList() : null;
+		_viewport.SelectedFaces = _armed ? _faces.ToList() : null;
 	}
 
 	public override void OnDestroyed()

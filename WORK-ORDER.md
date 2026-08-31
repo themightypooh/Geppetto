@@ -29,7 +29,7 @@ Run the suite before touching anything:
 export PATH="/c/Program Files/dotnet:$PATH" && ./tools/test.sh
 ```
 
-~25 seconds, **1926 checks, 0 failing** as of this writing. `dotnet` is installed but not on `PATH`
+~25 seconds, **2056 checks, 0 failing** as of this writing. `dotnet` is installed but not on `PATH`
 in Git Bash, hence the prefix — without it the script tries `apt-get` and dies. The script syncs the
 editor's kernel mirror first (see HANDOFF.md, "The two kernel copies"): **never edit
 `Editor/Effigy/` by hand**, it is generated from `Effigy/`.
@@ -112,8 +112,11 @@ Ordered by what unblocks the pipeline, which is not the same as what is most int
 
 ## D. The sculpt stage — phase two
 
-**Every step of the sculpt plan now has code**, steps 1 to 10 — see
-[WHAT-IS-BUILT.md](WHAT-IS-BUILT.md). Everything that can be verified headlessly is, and the editor
+**The CAD kernel's named gaps are closed and every step of the sculpt plan has code** — see
+[WHAT-IS-BUILT.md](WHAT-IS-BUILT.md). Collision, draft, holes and a UV unwrapper are built and
+tested; the unwrapper is the one that mattered most, because until it existed `NormalBake.Measure`
+correctly refused every model the tool could make and the sculpt pipeline could not pay off on
+anything but a hand-UV'd plane. Everything that can be verified headlessly is, and the editor
 layer is written and **has never been seen on screen**.
 
 So the sculpt track's remaining work is a SITTING, not a build: open it in s&box, confirm the editor

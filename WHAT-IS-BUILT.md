@@ -12,7 +12,7 @@ it" has repeatedly been the difference between right and wrong.
 - A feature that cannot do what was asked says what it was asked, what stopped it, with this
   model's numbers, and what would work instead. A feature that did nothing is never a success.
 
-Verified as of 31 August 2026: **1926 kernel checks, 0 failing** (`./tools/test.sh`). The diagnostic
+Verified as of 31 August 2026: **2056 kernel checks, 0 failing** (`./tools/test.sh`). The diagnostic
 dialog and tree tooltip are written against the shipped `Editor.Label.WordWrap` and
 `TreeNode.GetTooltip` APIs; they have not been judged on screen.
 
@@ -586,6 +586,49 @@ Verified by mutation, not just by the suite being green: subdividing the rest me
 displaced one fails 4 checks, dropping the cache invalidation in `Record` fails 2, and handing the
 brush the rest frames fails 1.
 
+### The CAD gaps that were named as absent
+
+**`UVUnwrap` is the one that mattered.** Box and planar projection both overlap by construction on a
+closed solid — box projection maps +X and −X onto the same square on purpose, because it is built for
+tiling a texture across a wall. Until this existed `NormalBake.Measure` correctly refused every model
+the tool could make, and the whole sculpt pipeline could only pay off on a hand-UV'd plane. Chart by
+normal, flatten each chart onto its average, pack with one shared scale so texel density is uniform.
+Shelf packing reaches about 45% of the square on a sphere; rotating a chart when it packs better on
+its side, and a real bin packer, are the two things that would raise it.
+
+**`DraftOperation`** tapers faces of a solid that already exists — extrude's Taper covers a face being
+made, which by the time you need draft is twenty features back. **`HoleOperation`** builds simple,
+counterbore and countersink negatives and hands them to the boolean. **`CollisionBuilder`** reads the
+feature history: a model built out of boxes IS its own collision, and anything a primitive cannot
+describe falls back to a convex hull per body, naming what spoiled it.
+
+**Revolve works on the first press now.** Its axis ran through the sketch origin, which is where
+people draw, so the first press on a normal sketch reliably refused — correct, and a terrible first
+impression. An Axis dropdown offers the profile's own edges, which are tangent to it and therefore
+always legal. The kernel default stays the typed axis and that is deliberate: a ChoiceParam
+serialises its INDEX, so a document saved before the dropdown existed loads on index 0, and if index
+0 were an edge mode every revolve in every saved file would quietly move on the next open. The editor
+sets the friendly mode when it creates one.
+
+**Four bugs the tests caught that reading would not have**, all of the same kind — plausible output
+that is wrong:
+
+- a drafted corner belongs to two walls and leans by only its component of the average, so a part
+  comes out **under-drafted**, which is the one failure a mould angle exists to prevent
+- the third of LoopOffset's three checks, *no edge reversed*, was named in a comment and never
+  written; without it a drafted box folds into a bow-tie that keeps its area and its Newell normal
+- a countersink reached its head diameter a third of a unit ABOVE the part, so the hole was narrower
+  than asked for at the only place anybody measures it
+- the bake's rasteriser used a tolerance, so a texel centre on the edge between two coplanar faces
+  satisfied BOTH — `Measure` reported overlapping UVs on a mesh whose UVs were perfect. A top-left
+  fill rule is the exact answer; a tolerance is the one that invites tuning the threshold.
+
+**And one the bake itself was wrong about.** Its search range was a tenth of the model's diagonal,
+which is nothing like enough when the cage IS a coarse box and the sculpt IS its subdivision — they
+sit 2.6 units apart on a 2x2x2 box against a range of 0.35, so three quarters of the map came back
+flat. The range is measured off the two surfaces now. Worth knowing regardless: **a bake wants a cage
+that hugs its sculpt**, and a coarse box does not.
+
 ### The sculpt feature, and where its deltas live
 
 `SculptFeature` consumes one body the way `ShellFeature` does and replaces its mesh with the sculpted
@@ -719,8 +762,9 @@ sitting on each other still hit at any radius at all, correctly.
 
 ### The sculpt is in the editor
 
-Written, compiles-clean as far as anything here can check, and **never seen on screen** — the
-category [WHAT-IS-LEFT.md](WHAT-IS-LEFT.md) uses for editor work, and the honest one for all of it.
+**It compiles in s&box** — confirmed, not inferred — and has **never been seen on screen**, which
+is the category [WHAT-IS-LEFT.md](WHAT-IS-LEFT.md) uses for editor work and the honest one for all
+of it. Compiling is not behaving.
 
 - **A Sculpt button on the feature strip**, next to Subdivide because it replaces it: the levels ARE
   the subdivision, and a Subdivide underneath would hand the sculpt a dense mesh as its cage.
@@ -767,10 +811,19 @@ slow and wrong to look at: the tree builds the TOP level while the viewport may 
 one. Strokes refresh the viewport straight from the session and mark the document unsaved; the tree
 catches up when you leave.
 
-**What was actually verified**, because "it compiles" is not available here: the editor sources parse
-with no syntax errors, and they were compiled against the real kernel with only s&box types missing
-— so every Effigy type and member the editor calls resolves. That leaves the s&box widget API as the
-only unproven part, which is exactly what the sitting is for.
+**It compiles in s&box.** It took one fix to get there — a missing `using Editor;` in
+`EffigyViewport.Sculpting.cs` — and that fix is worth recording because of what failed to catch it.
+
+Compiling the editor sources against the kernel with the s&box assemblies ABSENT is a genuinely
+useful check: it proves every *Effigy* type and member the editor calls resolves, which is where a
+blind kernel-API mistake would show. What it structurally cannot see is a missing `using` for an
+s&box namespace, because an unimported type and an unreferenced assembly are both CS0246 — so one
+forgotten directive sat inside 920 identical errors and read as normal. The lint that catches it is
+"every file under Editor/ naming a type from the Editor namespace must import it", and it is the
+first thing to run after writing editor code that cannot be compiled locally.
+
+Compiling is still not behaving. The s&box widget API doing the RIGHT thing is unproven, and that is
+what the sitting is for.
 
 ### A feature can say its own cache is stale
 

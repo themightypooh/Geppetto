@@ -137,7 +137,7 @@ public static class NormalBake
 		var cageNormals = cage.ComputeVertexNormals();
 		var sculptNormals = sculpted.ComputeVertexNormals();
 		var bvh = MeshBVH.Build( sculpted );
-		var reach = options.MaxDistance > 0f ? options.MaxDistance : DefaultReach( cage );
+		var reach = options.MaxDistance > 0f ? options.MaxDistance : MeasuredReach( cage, sculpted, bvh );
 
 		foreach ( var face in cage.Faces )
 		{
@@ -337,6 +337,12 @@ public static class NormalBake
 		if ( MathF.Abs( area ) < 1e-16f )
 			return;
 
+		// Wound consistently so the fill rule below has a fixed sense of "inside".
+		var flipped = area < 0f;
+		var p1 = flipped ? c : b;
+		var p2 = flipped ? b : c;
+		var doubled = MathF.Abs( area );
+
 		for ( var y = minY; y <= maxY; y++ )
 		{
 			for ( var x = minX; x <= maxX; x++ )
@@ -344,18 +350,51 @@ public static class NormalBake
 				var px = (x + 0.5f) / width;
 				var py = (y + 0.5f) / height;
 
-				var w0 = ((b.x - px) * (c.y - py) - (c.x - px) * (b.y - py)) / area;
-				var w1 = ((c.x - px) * (a.y - py) - (a.x - px) * (c.y - py)) / area;
-				var w2 = 1f - w0 - w1;
+				var e0 = Edge( p1, p2, px, py );
+				var e1 = Edge( p2, a, px, py );
+				var e2 = Edge( a, p1, px, py );
 
-				const float slack = 1e-5f;
-
-				if ( w0 < -slack || w1 < -slack || w2 < -slack )
+				if ( !Covers( e0, p1, p2 ) || !Covers( e1, p2, a ) || !Covers( e2, a, p1 ) )
 					continue;
 
-				texel( x, y, w0, w1, w2 );
+				var w0 = e0 / doubled;
+				var wp1 = e1 / doubled;
+				var wp2 = e2 / doubled;
+
+				texel( x, y, w0, flipped ? wp2 : wp1, flipped ? wp1 : wp2 );
 			}
 		}
+	}
+
+	static float Edge( Vec2 u, Vec2 v, float px, float py ) =>
+		(v.x - u.x) * (py - u.y) - (v.y - u.y) * (px - u.x);
+
+	/// <summary>
+	/// The top-left fill rule, which is what makes a shared edge belong to exactly ONE face.
+	///
+	/// THIS REPLACED A TOLERANCE, AND THE TOLERANCE WAS WRONG. Accepting any texel within a slack of
+	/// the triangle meant a texel centre landing on the edge between two coplanar faces satisfied
+	/// both of them — so `Measure` reported overlapping UVs on a mesh whose UVs were perfect, and the
+	/// bake wrote the same texel twice. It showed up as exactly one texel on a quadsphere, which is
+	/// the kind of number that invites tuning the threshold instead of fixing the rule.
+	///
+	/// A point exactly on an edge is awarded to the triangle for which that edge is a left or a top
+	/// edge; the neighbour, walking the same edge the other way, declines it. Standard, and the only
+	/// answer that is exact rather than nearly exact.
+	/// </summary>
+	static bool Covers( float e, Vec2 u, Vec2 v )
+	{
+		if ( e > 0f )
+			return true;
+
+		if ( e < 0f )
+			return false;
+
+		// y is up here, and the winding above is counter-clockwise, so the interior lies to the left
+		// of each directed edge: a left edge climbs, a top edge runs right to left.
+		var dy = v.y - u.y;
+
+		return dy > 0f || (dy == 0f && v.x < u.x);
 	}
 
 	static void Encode( BakedMap map, int index, Vec3 n, bool flipGreen )
@@ -437,12 +476,53 @@ public static class NormalBake
 		}
 	}
 
-	/// <summary>A tenth of the cage's diagonal. Big enough for ordinary sculpted relief, small enough
-	/// that a ray rarely reaches an unrelated part of the model.</summary>
-	static float DefaultReach( PolyMesh cage )
+	/// <summary>
+	/// How far to search, MEASURED off the two surfaces rather than guessed from the model's size.
+	///
+	/// A FRACTION OF THE DIAGONAL IS NOT GOOD ENOUGH, and the case that proves it is the ordinary one:
+	/// a SculptFeature's cage IS the coarse body and the sculpt IS its Catmull-Clark subdivision, and
+	/// subdivision pulls a cube's corners a very long way in. On a 2x2x2 box the two surfaces are 2.6
+	/// units apart at the corners while a tenth of the diagonal is 0.35 — so the old default missed
+	/// three quarters of the map and the bake came out mostly flat. Nothing about that is exotic; it
+	/// is what pressing Bake on a box does.
+	///
+	/// So: probe from every cage vertex along its own normal, far enough to cross both models, and
+	/// take the largest separation actually found. Times 1.5, because texels sit between vertices and
+	/// the surface can bow further out between two of them than at either.
+	///
+	/// Still bounded above by the cage's own diagonal. The failure at the other end — a reach so long
+	/// that a ray meets the far side of the model and paints its normal onto this one — is worse than
+	/// a flat patch, because it looks like detail.
+	/// </summary>
+	static float MeasuredReach( PolyMesh cage, PolyMesh sculpted, MeshBVH bvh )
 	{
 		var diagonal = cage.BoundsDiagonal;
-		return diagonal > 1e-6f ? diagonal * 0.1f : 1f;
+
+		if ( diagonal <= 1e-6f )
+			return 1f;
+
+		var probe = diagonal + sculpted.BoundsDiagonal;
+		var normals = cage.ComputeVertexNormals();
+		var worst = 0f;
+
+		for ( var i = 0; i < cage.VertexCount; i++ )
+		{
+			var normal = normals[i];
+
+			if ( normal.LengthSquared < 0.5f )
+				continue;
+
+			var hit = bvh.Raycast( sculpted, cage.Positions[i] + normal * probe, -normal );
+
+			if ( hit is null )
+				continue;
+
+			worst = MathF.Max( worst, MathF.Abs( hit.Value.Distance - probe ) );
+		}
+
+		// The floor covers a cage sitting exactly on its sculpt, where every probe returns zero and a
+		// reach of zero would find nothing at all.
+		return Math.Clamp( worst * 1.5f, diagonal * 0.1f, diagonal );
 	}
 
 	// --- the check the bake depends on ----------------------------------------------------------

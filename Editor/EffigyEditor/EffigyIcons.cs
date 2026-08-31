@@ -60,6 +60,18 @@ internal enum EffigyIcon
 	SculptLevelDown,
 	SculptLevelUp,
 	SculptBake,
+
+	// --- solid tools that act on picked faces ---------------------------------------------------
+	Draft,
+	Hole,
+
+	// --- the six sketch tools whose kernel half was finished first ------------------------------
+	EllipseTool,
+	SplineTool,
+	TrimTool,
+	ExtendTool,
+	SketchFilletTool,
+	OffsetTool,
 }
 
 /// <summary>
@@ -154,6 +166,16 @@ internal static class EffigyIcons
 			case EffigyIcon.SculptLevelDown: PaintSculptLevelDown( center, color ); return;
 			case EffigyIcon.SculptLevelUp: PaintSculptLevelUp( center, color ); return;
 			case EffigyIcon.SculptBake: PaintSculptBake( center, color ); return;
+
+			case EffigyIcon.Draft: PaintDraft( center, color ); return;
+			case EffigyIcon.Hole: PaintHole( center, color ); return;
+
+			case EffigyIcon.EllipseTool: PaintEllipseTool( center, color ); return;
+			case EffigyIcon.SplineTool: PaintSplineTool( center, color ); return;
+			case EffigyIcon.TrimTool: PaintTrimTool( center, color ); return;
+			case EffigyIcon.ExtendTool: PaintExtendTool( center, color ); return;
+			case EffigyIcon.SketchFilletTool: PaintSketchFilletTool( center, color ); return;
+			case EffigyIcon.OffsetTool: PaintOffsetTool( center, color ); return;
 		}
 	}
 
@@ -1214,5 +1236,195 @@ internal static class EffigyIcons
 			Editor.Paint.DrawLine( previous, point );
 			previous = point;
 		}
+	}
+
+	/// <summary>
+	/// A wall leaning off vertical, with the vertical it leans from left dashed beside it.
+	///
+	/// The angle IS the operation, so the glyph is the angle. Drawing a moulded part instead would
+	/// say "moulding" and leave you guessing which of the six tools on the strip does the leaning.
+	/// </summary>
+	private static void PaintDraft( Vector2 c, Color color )
+	{
+		// The parting line the taper is measured from.
+		Stroked( color.WithAlpha( 0.45f ), 1.1f );
+		for ( var x = -9f; x < 9f; x += 3.4f )
+			Editor.Paint.DrawLine( At( c, x, 0 ), At( c, x + 2f, 0 ) );
+
+		// The tapered wall: narrow at the top, wide at the bottom, closed as an outline.
+		Stroked( color, 1.7f );
+		Outline( At( c, -3.4f, -8 ), At( c, 3.4f, -8 ), At( c, 6.6f, 8 ), At( c, -6.6f, 8 ) );
+
+		// The vertical it is leaning away from, so the lean reads as deliberate rather than as a
+		// wonky rectangle.
+		Stroked( color.WithAlpha( 0.5f ), 1f );
+		Editor.Paint.DrawLine( At( c, 3.4f, -8 ), At( c, 3.4f, 8 ) );
+	}
+
+	/// <summary>
+	/// A counterbore in section: a wide mouth stepping down to a narrow shaft, through a plate.
+	///
+	/// Drawn as a SECTION rather than as a circle on a surface, because a circle is what every other
+	/// round thing on this strip already looks like from above - and the step is the whole reason
+	/// this is a feature rather than a sketched circle.
+	/// </summary>
+	private static void PaintHole( Vector2 c, Color color )
+	{
+		// The plate, in section.
+		Stroked( color.WithAlpha( 0.8f ), 1.5f );
+		Editor.Paint.DrawLine( At( c, -9, -6 ), At( c, -3.2f, -6 ) );
+		Editor.Paint.DrawLine( At( c, 3.2f, -6 ), At( c, 9, -6 ) );
+		Editor.Paint.DrawLine( At( c, -9, 7 ), At( c, 9, 7 ) );
+		Editor.Paint.DrawLine( At( c, -9, -6 ), At( c, -9, 7 ) );
+		Editor.Paint.DrawLine( At( c, 9, -6 ), At( c, 9, 7 ) );
+
+		// The bore: wide at the mouth, stepping in to the shaft.
+		Stroked( color, 1.7f );
+		Editor.Paint.DrawLine( At( c, -3.2f, -6 ), At( c, -3.2f, -1 ) );
+		Editor.Paint.DrawLine( At( c, -3.2f, -1 ), At( c, -1.4f, -1 ) );
+		Editor.Paint.DrawLine( At( c, -1.4f, -1 ), At( c, -1.4f, 7 ) );
+
+		Editor.Paint.DrawLine( At( c, 3.2f, -6 ), At( c, 3.2f, -1 ) );
+		Editor.Paint.DrawLine( At( c, 3.2f, -1 ), At( c, 1.4f, -1 ) );
+		Editor.Paint.DrawLine( At( c, 1.4f, -1 ), At( c, 1.4f, 7 ) );
+
+		// The void itself, so the shape reads as absence rather than as a post.
+		Filled( color.WithAlpha( 0.18f ) );
+		Editor.Paint.DrawPolygon(
+			At( c, -3.2f, -6 ), At( c, 3.2f, -6 ), At( c, 3.2f, -1 ), At( c, 1.4f, -1 ),
+			At( c, 1.4f, 7 ), At( c, -1.4f, 7 ), At( c, -1.4f, -1 ), At( c, -3.2f, -1 ) );
+	}
+	// --- the six sketch tools -------------------------------------------------------------------
+	//
+	// The four EDIT tools all show the same thing: a curve, and what the tool does to it, with the
+	// part being removed or added drawn faintly. A trim that showed only the result would be
+	// indistinguishable from a plain line at 27 pixels.
+
+	/// <summary>An ellipse, with its long axis marked so it is not mistaken for a circle.</summary>
+	private static void PaintEllipseTool( Vector2 c, Color color )
+	{
+		Stroked( color, 1.7f );
+
+		var previous = Vector2.Zero;
+
+		for ( var i = 0; i <= 40; i++ )
+		{
+			var a = i / 40f * MathF.PI * 2f;
+			var point = At( c, MathF.Cos( a ) * 8.6f, MathF.Sin( a ) * 5f );
+
+			if ( i > 0 )
+				Editor.Paint.DrawLine( previous, point );
+
+			previous = point;
+		}
+
+		Stroked( color.WithAlpha( 0.5f ), 1.1f );
+		Editor.Paint.DrawLine( At( c, -8.6f, 0 ), At( c, 8.6f, 0 ) );
+	}
+
+	/// <summary>A curve through its control points, which is what a spline IS - the points are the
+	/// thing you place and the curve is what follows.</summary>
+	private static void PaintSplineTool( Vector2 c, Color color )
+	{
+		Stroked( color, 1.7f );
+
+		var previous = Vector2.Zero;
+
+		// A cubic-ish wiggle through the three dots below.
+		for ( var i = 0; i <= 32; i++ )
+		{
+			var t = i / 32f;
+			var x = -8.5f + 17f * t;
+			var y = MathF.Sin( t * MathF.PI * 1.6f + 0.4f ) * 5.2f - 1f;
+			var point = At( c, x, y );
+
+			if ( i > 0 )
+				Editor.Paint.DrawLine( previous, point );
+
+			previous = point;
+		}
+
+		Filled( color );
+
+		foreach ( var t in new[] { 0f, 0.5f, 1f } )
+		{
+			var x = -8.5f + 17f * t;
+			var y = MathF.Sin( t * MathF.PI * 1.6f + 0.4f ) * 5.2f - 1f;
+
+			Editor.Paint.DrawRect( Box( c, x - 1.5f, y - 1.5f, 3f, 3f ), 1.5f * _scale );
+		}
+	}
+
+	/// <summary>Two crossing lines with the stub past the crossing drawn faintly - the piece that
+	/// goes. Trim is defined by what it removes, so that is what the glyph shows.</summary>
+	private static void PaintTrimTool( Vector2 c, Color color )
+	{
+		// The cutting line.
+		Stroked( color.WithAlpha( 0.55f ), 1.3f );
+		Editor.Paint.DrawLine( At( c, 2.5f, -8.5f ), At( c, 2.5f, 8.5f ) );
+
+		// The part that stays.
+		Stroked( color, 1.9f );
+		Editor.Paint.DrawLine( At( c, -8.5f, 3f ), At( c, 2.5f, 0f ) );
+
+		// The part that goes, dashed.
+		Stroked( color.WithAlpha( 0.35f ), 1.5f );
+		for ( var t = 0f; t < 1f; t += 0.28f )
+		{
+			var a = At( c, 2.5f + 6f * t, -1.6f * t );
+			var b = At( c, 2.5f + 6f * (t + 0.16f), -1.6f * (t + 0.16f) );
+
+			Editor.Paint.DrawLine( a, b );
+		}
+	}
+
+	/// <summary>A line reaching a boundary, with the new length drawn faintly and an arrow head -
+	/// the mirror of Trim, and drawn as its mirror so the pair reads as a pair.</summary>
+	private static void PaintExtendTool( Vector2 c, Color color )
+	{
+		// The boundary it reaches to.
+		Stroked( color.WithAlpha( 0.55f ), 1.3f );
+		Editor.Paint.DrawLine( At( c, 6.5f, -8.5f ), At( c, 6.5f, 8.5f ) );
+
+		// What is there now.
+		Stroked( color, 1.9f );
+		Editor.Paint.DrawLine( At( c, -8.5f, 3f ), At( c, -1f, 1f ) );
+
+		// Where it is going.
+		Stroked( color.WithAlpha( 0.4f ), 1.4f );
+		Editor.Paint.DrawLine( At( c, -1f, 1f ), At( c, 5f, -0.6f ) );
+		ArrowHead( At( c, 6.4f, -1f ), new Vector2( 1f, -0.26f ), color.WithAlpha( 0.75f ), 3f );
+	}
+
+	/// <summary>A rounded corner with the square one it replaces dashed behind it.</summary>
+	private static void PaintSketchFilletTool( Vector2 c, Color color )
+	{
+		// The corner that was.
+		Stroked( color.WithAlpha( 0.35f ), 1.3f );
+		Editor.Paint.DrawLine( At( c, -8, -7 ), At( c, 7, -7 ) );
+		Editor.Paint.DrawLine( At( c, 7, -7 ), At( c, 7, 8 ) );
+
+		// The corner that is.
+		Stroked( color, 1.9f );
+		Editor.Paint.DrawLine( At( c, -8, -7 ), At( c, 0f, -7 ) );
+		Arc( At( c, 0f, 0f ), 7f, -90f, 0f, 12 );
+		Editor.Paint.DrawLine( At( c, 7, 0f ), At( c, 7, 8 ) );
+	}
+
+	/// <summary>A shape and a second one running parallel outside it, which is the whole of what an
+	/// offset is - the same curve, held away at a distance.</summary>
+	private static void PaintOffsetTool( Vector2 c, Color color )
+	{
+		// The original.
+		Stroked( color, 1.8f );
+		Editor.Paint.DrawLine( At( c, -6, 6 ), At( c, -6, -2 ) );
+		Arc( At( c, -1.5f, -2f ), 4.5f, 180f, 270f, 10 );
+		Editor.Paint.DrawLine( At( c, -1.5f, -6.5f ), At( c, 5, -6.5f ) );
+
+		// Its offset, outside and parallel.
+		Stroked( color.WithAlpha( 0.55f ), 1.4f );
+		Editor.Paint.DrawLine( At( c, -9.5f, 6 ), At( c, -9.5f, -2 ) );
+		Arc( At( c, -1.5f, -2f ), 8f, 180f, 270f, 12 );
+		Editor.Paint.DrawLine( At( c, -1.5f, -10f ), At( c, 5, -10f ) );
 	}
 }

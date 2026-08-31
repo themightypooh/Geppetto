@@ -58,7 +58,7 @@ should colour the icon yellow. Kernel half is tested; this is the sitting.
 ## 1. Effigy kernel
 
 The kernel is roughly **93% of phase one**. All of it is headless-testable — no s&box anywhere, and
-1926 checks say so.
+2056 checks say so.
 
 ### 1.1 Exercise the boolean past the one case that works
 
@@ -124,9 +124,25 @@ inverted-solid table from the brief cannot happen silently any more. The dialog 
 cause / remedy-as-button) and the tree tooltip / yellow warning icon are **written, not seen** —
 they belong in section 0 the next time the editor is open.
 
-### 1.3 Collision from the primitive history
+### 1.3 ~~Collision from the primitive history~~ — **done**
 
-*Nothing exists — `Collision` appears nowhere in the kernel.*
+`CollisionBuilder` walks the history and emits primitives where it can: a model built out of boxes IS
+its own collision, exactly. Anything a primitive cannot describe — a boolean, a fillet, a subdivide,
+a rotated Transform — spoils the decomposition and it falls back to one convex hull per body, naming
+the feature that spoiled it. `ConvexHull` is an incremental hull, tested for containment (every
+vertex of the part inside it) rather than for looking right.
+
+Deliberately all-or-nothing rather than per body: a physics representation that is exact for three
+props and quietly wrong for the fourth is worse than one that is approximate for all four and says so.
+
+**Not written into the .vmdl**, and that is the remaining work. Collision goes in as a
+PhysicsShapeList node in ModelDoc's KV3 and nothing here has seen that schema — the same position
+`AnimBindPose` is in, and a guessed node risks breaking a compile that currently works. `File >
+Collision Report` puts the shapes where they can be read; writing them wants one real ModelDoc file
+with collision in it to read the node names off first.
+
+*The old note, kept because it was the reasoning: nothing existed, and `Collision` appeared nowhere
+in the kernel.*
 
 A model known to be a union of N convex primitives **is** its own physics representation, so this is
 bookkeeping rather than geometry.
@@ -136,9 +152,19 @@ own shape and transform; a pattern or mirror contributes copies; anything that h
 boolean or a subdivide falls back to a convex hull of its body, or to the mesh itself. Emit a list of
 convex shapes, not triangles. Testable headlessly by volume and count.
 
-### 1.4 Draft on existing faces
+### 1.4 ~~Draft on existing faces~~ — **done**
 
-*Well defined, small, and genuinely absent.*
+`DraftOperation` plus `DraftFeature`, on the strip next to Shell. Every vertex moves along the
+horizontal component of its own normal, proportional to its signed distance from the neutral plane.
+
+Two things the tests caught that reading would not have. **A corner belongs to two walls and has to
+lean both by the angle** — moving it along the averaged normal leans each wall by only its component,
+about 7 degrees out of 10, and a part comes out under-drafted, which is the one failure that matters
+for a mould. And the third of the three checks LoopOffset uses — *no edge reversed* — was named in the
+comment and not written; without it a drafted box folds into a bow-tie that keeps its area and its
+Newell normal and passes both of the other two.
+
+*The old note: well defined, small, and genuinely absent.*
 
 Extrude has `Taper`, which covers a face being **made**. Drafting faces of a solid that already
 exists does not exist at all.
@@ -149,9 +175,18 @@ Refuse self-intersection with the three checks `LoopOffset` already uses — sig
 sign, it has not collapsed, no edge reversed — because the third catches the inside-out case the
 first two call healthy.
 
-### 1.5 A hole feature
+### 1.5 ~~A hole feature~~ — **done**
 
-*Convenience, not capability.*
+`HoleOperation` builds the negative — simple, counterbore or countersink — and `HoleFeature` hands it
+to the boolean as a tool, drilled into the picked face along that face's own normal. A countersink is
+specified by an included angle and a head size, never a depth, so the depth follows from them.
+
+The test caught the one that matters: the cone was reaching its head diameter a third of a unit ABOVE
+the part, because the overshoot that keeps the boolean off a coplanar face was lifting the wide ring
+straight up instead of continuing the taper through it. The hole would have been narrower than asked
+for at the only place anybody measures it.
+
+*The old note: convenience, not capability.*
 
 Counterbore and countersink as a tool solid emitted with `Result = Remove`. Holes already work as
 inner loops of a profile and cuts now work, so this is a parameterised shape and a dialog. It cannot
@@ -211,7 +246,21 @@ pass.
 with a sensible icon, applies, and leaves a mark that can be clicked to delete it. The new marks are
 `D`, `MID`, `CO`, `FIX` and `T`, ASCII for the reason the file gives about the perpendicular sign.
 
-### 2.3 The missing sketch tools
+### 2.3 ~~The missing sketch tools~~ — **written, and never seen on screen**
+
+All six are on the strip: ellipse and spline with the drawing tools, and trim, extend, fillet and
+offset in a group of their own, because clicking one of those on empty space does nothing and the
+grouping is what says why.
+
+**They intercept before the existing switches rather than adding cases to them.** Twelve drawing
+tools already share that state machine and all twelve work; threading six more cases through its
+click, preview and prompt switches means editing known-good code, blind, to add tools that are not.
+So there are three one-line hooks and everything else is in `EffigyViewport.SketchTools.cs`.
+
+Every refusal is the kernel's own words — `SketchEdit` was written to hand back a reason, and the
+tools show it rather than inventing one.
+
+*What the old note said, which is still the useful summary of what each one wants:*
 
 `SketchToolKind` has twelve entries — Select plus eleven draw tools. There is no ellipse tool, no
 spline tool, and no trim, extend, fillet or offset tool, though `SketchEdit` implements all four and
@@ -226,7 +275,18 @@ was nothing underneath them; now the hard half of each is done and tested.
 - **Spline** wants click-to-place points; **ellipse** a centre, a major-axis point and a minor
   radius. Both are ordinary sketch points, so dragging and dimensioning them already work.
 
-### 2.4 Hide affordances for planes and origin
+### 2.4 ~~Hide affordances for planes and origin~~ — **already done, and this note was stale**
+
+Re-checked: `DefaultGeometryChildNode` implements `IVisibilityNode` and paints through `TreeEyeIcon`,
+which is hover-reveal and stays visible while hidden — exactly po's spec. `OnTreeVisibilityToggled`
+wires all four keys (`origin`, `top`, `front`, `right`) to the viewport's own flags.
+
+**Worth reading the note below anyway**, because it is a lesson about these documents rather than
+about the feature: it said "Re-verified 30 August 2026: no eye-icon or per-plane visibility code
+exists", and it was wrong. A dated re-verification reads as more trustworthy than an undated claim
+and is worth exactly as much. Check the code.
+
+*The old note, kept as written:*
 
 *po's spec, verbatim, and the only one of po's UI items with nothing written at all.*
 
@@ -388,10 +448,19 @@ for the rays and the brush ring, and a bake button that writes a PNG. See WHAT-I
 **What is left is the sitting, and it is the largest one on the list.** None of the below can be
 judged from outside s&box:
 
-1. **Does it compile in the engine?** The sources parse and every *Effigy* symbol they use resolves
-   (checked by compiling them against the kernel with the s&box types absent). The s&box widget calls
-   are unproven — `Widget.Update`, `FileDialog.SetNameFilter`, `Editor.Label`, the `Layout` calls in
-   `EffigySculptBar`, and `Gizmo.Draw.Line` in the ring.
+1. ~~**Does it compile in the engine?**~~ **— yes, it does, as of this writing.** It took one fix:
+   `EffigyViewport.Sculpting.cs` was missing `using Editor;`, so `Widget`, `KeyEvent` and `KeyCode`
+   were all unresolved and two more errors cascaded off the broken signatures.
+
+   **The check that missed it is worth knowing about**, because the same trap is there for the next
+   editor change. Compiling the editor sources against the kernel with the s&box assemblies ABSENT
+   cannot tell a missing `using` from a missing assembly — both are CS0246 — so one forgotten
+   directive hid inside 920 identical-looking errors. A lint over `Editor/` for exactly that
+   (any file naming a type from the `Editor` namespace must import it) is what catches it, and it
+   is the first thing to run after writing editor code blind.
+
+   Still unproven by a compile: whether the s&box calls DO the right thing. Compiling is not
+   behaving, which is the whole reason for the rest of this list.
 2. **Add a Sculpt feature on a box, open it from the tree menu, and drag.** Does the surface follow
    the cursor? Is the ring where the brush actually bites?
 3. **The level buttons.** Coarser, finer, and one press past the top should ADD a level and say what

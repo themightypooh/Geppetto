@@ -22,6 +22,15 @@ internal enum SketchToolKind
 	PolygonCircumscribed,
 	Slot,
 	Point,
+
+	// Appended, never inserted. These six have their own file - see EffigyViewport.SketchTools.cs -
+	// and the machine below never sees their clicks.
+	Ellipse,
+	Spline,
+	Trim,
+	Extend,
+	Fillet,
+	Offset,
 }
 
 /// <summary>
@@ -344,6 +353,12 @@ internal sealed partial class EffigyViewport
 
 		_pending.Clear();
 		_chainStartIndex = -1;
+
+		// The six newer tools keep state of their own - a half-placed spline, a chosen fillet corner -
+		// and it has to go for the same reason _pending does: carrying it into the next tool is how
+		// stale clicks come back.
+		ResetNewSketchTools();
+
 		SketchTool = tool;
 		PushPrompt();
 	}
@@ -1533,6 +1548,14 @@ internal sealed partial class EffigyViewport
 
 		_pending.Add( p );
 
+		// The six newer tools handle their own clicks entirely - see EffigyViewport.SketchTools.cs.
+		// Intercepting here rather than adding cases below keeps twelve working tools untouched.
+		if ( HandleNewSketchToolClick( p ) )
+		{
+			PushPrompt();
+			return;
+		}
+
 		switch ( SketchTool )
 		{
 			case SketchToolKind.Point:
@@ -2077,6 +2100,9 @@ internal sealed partial class EffigyViewport
 		Gizmo.Draw.LineThickness = 2f;
 		Gizmo.Draw.Color = SketchPreviewColor;
 
+		if ( DrawNewSketchToolPreview() )
+			return;
+
 		var units = UnitsPerPixel();
 
 		// Pending endpoints are not in ActiveSketch.Points until the entity is committed. Draw them
@@ -2267,7 +2293,7 @@ internal sealed partial class EffigyViewport
 		SketchPromptChanged?.Invoke( SelectionPrompt() ?? CurrentPrompt() );
 	}
 
-	private string CurrentPrompt() => SketchTool switch
+	private string CurrentPrompt() => NewSketchToolPrompt() ?? SketchTool switch
 	{
 		SketchToolKind.Line when _pending.Count == 0 => "Line - click the start point",
 		SketchToolKind.Line => "Line - click the end point, or press Escape to break the chain",

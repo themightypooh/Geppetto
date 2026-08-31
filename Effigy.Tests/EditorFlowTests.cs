@@ -41,6 +41,106 @@ public static class EditorFlowTests
 
 		Report.Section( "editor flow: sculpting a feature that is not the last one" );
 		TestSculptModeSurvivesTheRollbackDance();
+
+		Report.Section( "editor flow: a revolve that works on the first press" );
+		TestTheTypedAxisStillRefusesAndSaysSo();
+		TestAnEdgeAxisBuildsTheProfileAsDrawn();
+		TestOldDocumentsKeepTheAxisTheyWereSavedWith();
+	}
+
+	/// <summary>A sketch with a rectangle straddling the origin - what somebody actually draws.</summary>
+	static (PartStudio Studio, RevolveFeature Revolve) Lathe( int axisMode )
+	{
+		var studio = new PartStudio();
+		var sketch = studio.Add( new SketchFeature() );
+
+		// Straddling BOTH axes on purpose. The typed default runs along X through the origin, so a
+		// profile only has to cross y = 0 to defeat it - which a rectangle drawn around the origin
+		// does, and which is what people draw.
+		sketch.Sketch.AddRectangle( new Vec2( -1f, -1f ), new Vec2( 2f, 3f ) );
+
+		var revolve = studio.Add( new RevolveFeature() );
+		revolve.AxisMode.Index = axisMode;
+
+		studio.Rebuild();
+
+		return (studio, revolve);
+	}
+
+	/// <summary>
+	/// The typed axis is still the kernel's default, and it still refuses a profile drawn across it.
+	///
+	/// That refusal is CORRECT - each half sweeps the same solid - and it is not the thing that was
+	/// wrong. What was wrong is that it was the only thing a fresh Revolve could do.
+	/// </summary>
+	static void TestTheTypedAxisStillRefusesAndSaysSo()
+	{
+		var (_, revolve) = Lathe( RevolveFeature.AxisCustom );
+
+		Report.Check( "a profile drawn across the typed axis is still refused", revolve.Error is not null,
+			"it built" );
+		Report.Check( "and the refusal offers the dropdown as the way out",
+			revolve.Diagnostic is not null
+			&& revolve.Diagnostic.Remedies.Exists( r => r.Contains( "Axis" ) || r.Contains( "axis" ) ),
+			revolve.Diagnostic is null ? "no diagnostic" : string.Join( "; ", revolve.Diagnostic.Remedies ) );
+	}
+
+	/// <summary>
+	/// THE POINT OF THE CHANGE. The same sketch, on the mode the editor creates a revolve with,
+	/// builds - because an axis tangent to the profile is one the profile cannot straddle.
+	/// </summary>
+	static void TestAnEdgeAxisBuildsTheProfileAsDrawn()
+	{
+		var (studio, revolve) = Lathe( RevolveFeature.AxisProfileLeftEdge );
+
+		Report.Check( "the same sketch spun about its own left edge builds", revolve.Error is null,
+			revolve.Error ?? "" );
+		Report.Check( "and produces a solid", studio.Bodies.Count == 1 && studio.Bodies[0].Mesh.FaceCount > 0,
+			$"{studio.Bodies.Count} bodies" );
+
+		// A ring, by Pappus: the rectangle spans x -1..2 and y -1..3, so it is 3 by 4 with its
+		// centroid at x = 0.5, which is 1.5 from the left edge it is being spun about.
+		var volume = MathF.Abs( studio.Bodies[0].Mesh.SignedVolume() );
+		var pappus = 12f * 2f * MathF.PI * 1.5f;
+
+		Report.Check( "with the volume Pappus predicts, to within the faceting",
+			MathF.Abs( volume - pappus ) < pappus * 0.02f,
+			$"{volume:0.###}, expected about {pappus:0.###}" );
+
+		// Every edge mode has to be legal on the same profile - that is what "tangent" buys.
+		for ( var mode = RevolveFeature.AxisProfileLeftEdge; mode <= 4; mode++ )
+		{
+			var (_, each) = Lathe( mode );
+
+			Report.Check( $"axis mode {mode} builds too", each.Error is null, each.Error ?? "" );
+		}
+	}
+
+	/// <summary>
+	/// A ChoiceParam serialises its INDEX, and a document saved before this dropdown existed has no
+	/// line for it — so it loads on index 0. If index 0 were an edge mode, every revolve in every
+	/// saved file would quietly move to a different axis on the next open, and the model would come
+	/// back a different shape with nothing to say it had changed.
+	/// </summary>
+	static void TestOldDocumentsKeepTheAxisTheyWereSavedWith()
+	{
+		Report.Check( "index 0 is the typed axis", RevolveFeature.AxisCustom == 0 );
+
+		// A document from before the parameter existed: no AxisMode line at all.
+		var document = "effigy 1\n"
+			+ "feature SketchFeature\n\tid sk\nend\n"
+			+ "feature RevolveFeature\n\tid rv\n\tparam AxisPoint 2 0 0\n"
+			+ "\tparam AxisDirection 0 1 0\n\tparam Angle 360\nend\n";
+
+		var loaded = StudioDocument.Read( document );
+		var revolve = loaded.Features.OfType<RevolveFeature>().Single();
+
+		Report.Check( "an old document loads on the typed axis",
+			revolve.AxisMode.Index == RevolveFeature.AxisCustom, $"index {revolve.AxisMode.Index}" );
+		Report.Check( "and keeps the axis it was saved with",
+			MathF.Abs( revolve.AxisPoint.Value.x - 2f ) < 1e-4f
+			&& MathF.Abs( revolve.AxisDirection.Value.y - 1f ) < 1e-4f,
+			$"{revolve.AxisPoint.Value.x}, {revolve.AxisDirection.Value.y}" );
 	}
 
 	/// <summary>

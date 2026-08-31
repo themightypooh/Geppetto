@@ -233,6 +233,7 @@ public sealed class EffigyWindow : DockWindow
 		file.AddSeparator();
 		file.AddOption( "Export OBJ", "file_download", ExportObj );
 		file.AddOption( "Compile .vmdl", "build", CompileVmdl );
+		file.AddOption( "Collision Report", "fitness_center", ReportCollision );
 		file.AddSeparator();
 		file.AddOption( "Close", "close", Close );
 
@@ -391,7 +392,27 @@ public sealed class EffigyWindow : DockWindow
 				"Circumscribed polygon - click the centre, then an edge midpoint", SketchToolKind.PolygonCircumscribed ) );
 
 		AddSketchTool( EffigyIcon.SlotTool, "Slot", "Slot - click both ends of the centre line, then the width", SketchToolKind.Slot );
+
+		// Ellipse and spline belong with the other DRAWING tools; the four that edit what is already
+		// there get their own group below, because clicking one of those on empty space does nothing
+		// and the grouping is what says why.
+		AddSketchTool( EffigyIcon.EllipseTool, "Ellipse", "Ellipse - centre, the long axis, then the bulge",
+			SketchToolKind.Ellipse );
+		AddSketchTool( EffigyIcon.SplineTool, "Spline", "Spline - click points, Enter finishes",
+			SketchToolKind.Spline );
+
 		AddSketchTool( EffigyIcon.PointTool, "Point", "Point - click to place", SketchToolKind.Point );
+
+		_sketchStrip.AddGap();
+
+		AddSketchTool( EffigyIcon.TrimTool, "Trim", "Trim - click the piece of a curve you want gone",
+			SketchToolKind.Trim );
+		AddSketchTool( EffigyIcon.ExtendTool, "Extend", "Extend - click the end of a curve to stretch it",
+			SketchToolKind.Extend );
+		AddSketchTool( EffigyIcon.SketchFilletTool, "Fillet", "Fillet - click a corner, then set the radius",
+			SketchToolKind.Fillet );
+		AddSketchTool( EffigyIcon.OffsetTool, "Offset", "Offset - click a curve, then which side and how far",
+			SketchToolKind.Offset );
 
 		_sketchStrip.AddGap();
 
@@ -1059,7 +1080,7 @@ public sealed class EffigyWindow : DockWindow
 	private enum ToolKind
 	{
 		Sketch, Primitive, Extrude, Revolve, Sweep, Loft, Chamfer, Fillet, Shell, Subdivide,
-		Sculpt, Mirror, LinearPattern, CircularPattern, Transform, UVProject, FaceMaterial,
+		Draft, Hole, Sculpt, Mirror, LinearPattern, CircularPattern, Transform, UVProject, FaceMaterial,
 	}
 
 	/// <summary>Build one, and apply the variant chosen from its dropdown where it has one.</summary>
@@ -1068,13 +1089,15 @@ public sealed class EffigyWindow : DockWindow
 		ToolKind.Sketch => new SketchFeature(),
 		ToolKind.Primitive => NewPrimitive( choice ),
 		ToolKind.Extrude => new ExtrudeFeature(),
-		ToolKind.Revolve => new RevolveFeature(),
+		ToolKind.Revolve => NewRevolve(),
 		ToolKind.Sweep => new SweepFeature(),
 		ToolKind.Loft => new LoftFeature(),
 		ToolKind.Chamfer => new ChamferFeature(),
 		ToolKind.Fillet => new FilletFeature(),
 		ToolKind.Shell => new ShellFeature(),
 		ToolKind.Subdivide => new SubdivideFeature(),
+		ToolKind.Draft => new DraftFeature(),
+		ToolKind.Hole => new HoleFeature(),
 		ToolKind.Sculpt => new SculptFeature(),
 		ToolKind.Mirror => new MirrorFeature(),
 		ToolKind.LinearPattern => new LinearPatternFeature(),
@@ -1084,6 +1107,22 @@ public sealed class EffigyWindow : DockWindow
 		ToolKind.FaceMaterial => new FaceMaterialFeature(),
 		_ => throw new ArgumentOutOfRangeException( nameof( kind ), kind, "no feature for this tool" )
 	};
+
+	/// <summary>
+	/// A revolve that works on the first press.
+	///
+	/// The kernel's default axis is the typed one, and it has to stay that way so documents saved
+	/// before the Axis dropdown existed rebuild exactly as they were - see RevolveFeature.AxisMode.
+	/// A revolve created HERE has no such history, so it gets the mode a person actually wants:
+	/// spun about its own left edge, like a lathe profile.
+	/// </summary>
+	private static RevolveFeature NewRevolve()
+	{
+		var feature = new RevolveFeature();
+		feature.AxisMode.Index = RevolveFeature.AxisProfileLeftEdge;
+
+		return feature;
+	}
 
 	private static PrimitiveFeature NewPrimitive( int shape )
 	{
@@ -1171,6 +1210,13 @@ public sealed class EffigyWindow : DockWindow
 			Kind = ToolKind.Chamfer },
 		new() { Icon = EffigyIcon.Shell, Tip = "Add a Shell — hollow to a wall thickness",
 			Kind = ToolKind.Shell },
+
+		// Both act on picked faces of a solid that already exists, which is what puts them next to
+		// Shell rather than next to Extrude.
+		new() { Icon = EffigyIcon.Draft, Tip = "Add a Draft — taper picked faces so the part leaves a mould",
+			Kind = ToolKind.Draft },
+		new() { Icon = EffigyIcon.Hole, Tip = "Add a Hole — drill, counterbore or countersink into a face",
+			Kind = ToolKind.Hole },
 		new() { Icon = EffigyIcon.Subdivide, Tip = "Add a Subdivide — Catmull-Clark subdivision",
 			Kind = ToolKind.Subdivide },
 
@@ -2173,6 +2219,36 @@ public sealed class EffigyWindow : DockWindow
 
 		confirm.Show();
 		return false;
+	}
+
+	/// <summary>
+	/// What this part's physics representation would be, reported rather than written.
+	///
+	/// IT IS NOT IN THE .vmdl, AND THAT IS DELIBERATE. Collision goes in as a PhysicsShapeList node
+	/// in ModelDoc's KV3, and nothing in this repo has seen that schema's real shape - the same
+	/// position AnimBindPose is in, and for the same reason: a guessed KV3 node risks breaking a
+	/// compile that currently works, and the failure would be a model that stops loading rather than
+	/// a model with no collision.
+	///
+	/// So the shapes are computed, correct, and tested (CollisionTests), and this puts them where a
+	/// person can read them. Writing them into the .vmdl wants one real ModelDoc file with collision
+	/// in it to read the node names off first.
+	/// </summary>
+	private void ReportCollision()
+	{
+		if ( _studio is null )
+			return;
+
+		var report = CollisionBuilder.Build( _studio );
+
+		Log.Info( $"[Effigy] collision: {report}" );
+
+		foreach ( var shape in report.Shapes )
+			Log.Info( $"[Effigy]   {shape} at ({shape.Position.x:0.##}, {shape.Position.y:0.##}, {shape.Position.z:0.##})" );
+
+		SetPrompt( report.FromHistory
+			? $"Collision: {report.Shapes.Count} shape(s) read straight from the history — see the console."
+			: $"Collision: {report.Shapes.Count} hull(s) — {report.Reason}. See the console." );
 	}
 
 	private void ExportObj()

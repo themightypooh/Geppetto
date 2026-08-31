@@ -1341,6 +1341,11 @@ internal sealed partial class EffigyViewport : Widget
 		if ( HandleSculptKey( e ) )
 			return;
 
+		// The spline is the one tool with no fixed number of clicks, so Enter is how it ends. After
+		// the dimension box, which owns Enter whenever it is up.
+		if ( HandleSketchToolKey( e ) )
+			return;
+
 		// W/E/R switch bone drag mode while a bone is selected.
 		if ( _selectedBoneIndex >= 0 )
 		{

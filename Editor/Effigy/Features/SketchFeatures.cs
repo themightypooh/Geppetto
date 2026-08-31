@@ -954,14 +954,86 @@ public sealed class RevolveFeature : SketchConsumingFeature
 {
 	public override string TypeName => "Revolve";
 
+	/// <summary>
+	/// Where the axis comes from.
+	///
+	/// THE TYPED AXIS WAS A RELIABLE ERROR, AND IS STILL THE DEFAULT. Custom runs through the sketch
+	/// origin along X, and the sketch origin is exactly where people draw - so the first press of
+	/// Revolve on a normal sketch hits a profile straddling its own axis and refuses. Correct, and a
+	/// terrible first impression: the tool looks broken rather than unfinished, and the fix was to
+	/// type numbers into two Vec3 boxes in sketch coordinates, which nobody can do from memory.
+	///
+	/// A lathe profile is revolved about one of its own edges essentially always, so the editor
+	/// creates new Revolves on "Profile's left edge" - see EffigyWindow.NewFeature. It is NOT the
+	/// default here, and that is deliberate: a ChoiceParam serialises its INDEX, and a document
+	/// saved before this parameter existed has no line for it and loads on whatever index 0 is. If
+	/// index 0 were an edge mode, every revolve in every saved file would quietly move to a
+	/// different axis on the next open. Custom sits at 0 so those files rebuild exactly as they were.
+	///
+	/// The order is a promise for the same reason. Append, never reorder.
+	/// </summary>
+	public readonly ChoiceParam AxisMode = new( "Axis", new[]
+	{
+		"Custom", "Profile's left edge", "Profile's right edge", "Profile's bottom edge",
+		"Profile's top edge", "Sketch X axis", "Sketch Y axis",
+	} );
+
 	public readonly Vec3Param AxisPoint = new( "Axis through (sketch coords)", Vec3.Zero );
 	public readonly Vec3Param AxisDirection = new( "Axis direction (sketch coords)", new Vec3( 1, 0, 0 ) );
 	public readonly FloatParam Angle = new( "Angle", 360f, unit: "deg" );
 	public readonly IntParam Segments = new( "Segments", 24, 3, 512 );
 	public readonly IntParam Material = new( "Material slot", 0, 0, 63 );
 
-	public override IReadOnlyList<IParam> Parameters =>
-		new IParam[] { Sketch, AxisPoint, AxisDirection, Angle, Segments, Result, Material };
+	/// <summary>Index into AxisMode for the hand-typed axis. Zero so an old document, which has no
+	/// AxisMode line at all, loads with the axis it was saved with.</summary>
+	public const int AxisCustom = 0;
+
+	/// <summary>What a NEW revolve should use, which is not what an old one defaults to. See AxisMode.</summary>
+	public const int AxisProfileLeftEdge = 1;
+
+	public override IReadOnlyList<IParam> Parameters => AxisMode.Index == AxisCustom
+		? new IParam[] { Sketch, AxisMode, AxisPoint, AxisDirection, Angle, Segments, Result, Material }
+		: new IParam[] { Sketch, AxisMode, Angle, Segments, Result, Material };
+
+	/// <summary>
+	/// The axis in sketch coordinates, from whichever mode is chosen.
+	///
+	/// The edge modes put the axis TANGENT to the profile - touching it, never through it - which is
+	/// the one placement that is always legal, because a profile cannot straddle a line it only
+	/// touches. That is what makes the default press work instead of refusing.
+	/// </summary>
+	(Vec2 Point, Vec2 Direction) ResolveAxis( List<Profile> profiles )
+	{
+		if ( AxisMode.Index == AxisCustom )
+			return (new Vec2( AxisPoint.Value.x, AxisPoint.Value.y ),
+				new Vec2( AxisDirection.Value.x, AxisDirection.Value.y ));
+
+		if ( AxisMode.Value == "Sketch X axis" )
+			return (Vec2.Zero, new Vec2( 1, 0 ));
+
+		if ( AxisMode.Value == "Sketch Y axis" )
+			return (Vec2.Zero, new Vec2( 0, 1 ));
+
+		var min = new Vec2( float.MaxValue, float.MaxValue );
+		var max = new Vec2( float.MinValue, float.MinValue );
+
+		foreach ( var profile in profiles )
+		{
+			foreach ( var p in profile.Outer )
+			{
+				min = new Vec2( MathF.Min( min.x, p.x ), MathF.Min( min.y, p.y ) );
+				max = new Vec2( MathF.Max( max.x, p.x ), MathF.Max( max.y, p.y ) );
+			}
+		}
+
+		return AxisMode.Value switch
+		{
+			"Profile's right edge" => (new Vec2( max.x, 0 ), new Vec2( 0, 1 )),
+			"Profile's bottom edge" => (new Vec2( 0, min.y ), new Vec2( 1, 0 )),
+			"Profile's top edge" => (new Vec2( 0, max.y ), new Vec2( 1, 0 )),
+			_ => (new Vec2( min.x, 0 ), new Vec2( 0, 1 )),
+		};
+	}
 
 	protected override void Execute( FeatureContext ctx )
 	{
@@ -987,19 +1059,24 @@ public sealed class RevolveFeature : SketchConsumingFeature
 		}
 
 		var plane = sketch.Plane;
+		var (axis2d, axisDir2d) = ResolveAxis( profiles );
 
 		// The axis is authored in sketch coordinates and lifted into world space, so it moves with
 		// the plane like everything else in the sketch.
-		var axisOrigin = plane.ToWorld( new Vec2( AxisPoint.Value.x, AxisPoint.Value.y ) );
-		var axisDir = plane.XAxis * AxisDirection.Value.x + plane.YAxis * AxisDirection.Value.y;
+		var axisOrigin = plane.ToWorld( axis2d );
+		var axisDir = plane.XAxis * axisDir2d.x + plane.YAxis * axisDir2d.y;
 
 		if ( axisDir.LengthSquared < 1e-12f )
 		{
-			FailOn( "Axis",
+			FailOn( "Axis direction",
 				"Axis direction cannot be zero",
 				"A revolve needs an axis to spin around, and this one has no length.",
-				"Set Axis to a non-zero direction in the sketch plane" );
+				"Set Axis to a non-zero direction in the sketch plane",
+				"Or pick one of the profile's own edges from the Axis dropdown" );
 		}
+
+		_resolvedAxis = axis2d;
+		_resolvedAxisDirection = axisDir2d;
 
 		var full = MathF.Abs( MathF.Abs( Angle.Value ) - 360f ) < 1e-3f;
 
@@ -1029,10 +1106,15 @@ public sealed class RevolveFeature : SketchConsumingFeature
 	/// zero volume, and welds vertices that should have stayed apart. Catching it here gives the
 	/// user the real reason instead of a mesh that is quietly nonsense.
 	/// </summary>
+	/// <summary>The axis Execute settled on, so the straddle check tests what was actually used
+	/// rather than what was typed. They differ in every mode but Custom.</summary>
+	Vec2 _resolvedAxis;
+	Vec2 _resolvedAxisDirection = new( 1, 0 );
+
 	void RejectIfCrossingAxis( List<Vec2> loop )
 	{
-		var a = new Vec2( AxisPoint.Value.x, AxisPoint.Value.y );
-		var d = new Vec2( AxisDirection.Value.x, AxisDirection.Value.y );
+		var a = _resolvedAxis;
+		var d = _resolvedAxisDirection;
 		var length = MathF.Sqrt( d.x * d.x + d.y * d.y );
 
 		if ( length < 1e-9f )

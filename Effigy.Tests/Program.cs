@@ -116,6 +116,14 @@ public static class Program
 
 		EditorFlowTests.Run();
 
+		DraftTests.Run();
+
+		HoleFeatureTests.Run();
+
+		CollisionTests.Run();
+
+		UnwrapTests.Run();
+
 		PngTests.Run();
 
 		KernelSyncTests.Run();

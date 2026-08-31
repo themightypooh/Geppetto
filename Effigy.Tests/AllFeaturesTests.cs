@@ -126,11 +126,44 @@ public static class AllFeaturesTests
 			return;
 		}
 
-		if ( feature is not FaceMaterialFeature material || studio.Bodies.Count == 0 )
+		if ( studio.Bodies.Count == 0 )
 			return;
 
 		var body = studio.Bodies[0];
 		var mesh = body.Mesh;
+
+		// Draft wants WALLS, not the top: a face looking straight along the pull has no horizontal
+		// component to lean, which is a refusal rather than a small effect. Picking the top here
+		// would test the guard instead of the operation.
+		if ( feature is DraftFeature draft )
+		{
+			for ( var i = 0; i < mesh.Faces.Count; i++ )
+			{
+				if ( MathF.Abs( mesh.FaceNormal( mesh.Faces[i] ).Normal.z ) < 0.01f )
+					draft.Faces.Add( FacePlane.Capture( body, i, mesh.FaceCentroid( mesh.Faces[i] ) ) );
+			}
+
+			return;
+		}
+
+		// A hole is drilled into a face along that face's own normal, so any face will do - the top
+		// is the one a person would pick.
+		if ( feature is HoleFeature hole )
+		{
+			for ( var i = 0; i < mesh.Faces.Count; i++ )
+			{
+				if ( mesh.FaceNormal( mesh.Faces[i] ).Normal.z > 0.99f )
+				{
+					hole.Faces.Add( FacePlane.Capture( body, i, mesh.FaceCentroid( mesh.Faces[i] ) ) );
+					return;
+				}
+			}
+
+			return;
+		}
+
+		if ( feature is not FaceMaterialFeature material )
+			return;
 
 		for ( var i = 0; i < mesh.Faces.Count; i++ )
 		{
@@ -139,6 +172,24 @@ public static class AllFeaturesTests
 				material.Faces.Add( FacePlane.Capture( body, i, mesh.FaceCentroid( mesh.Faces[i] ) ) );
 				return;
 			}
+		}
+	}
+
+	/// <summary>
+	/// Just enough boolean for the sweep: hands back the target untouched.
+	///
+	/// It is not a CSG and does not pretend to be. What this sweep asks of a feature is that it runs
+	/// its own path and produces no error, and for Hole that path ends in a call to the provider.
+	/// Whether the engine's real boolean makes the right hole is the engine's question, and
+	/// HoleTests is where the shape of the tool is checked.
+	/// </summary>
+	sealed class SweepBoolean : IMeshBoolean
+	{
+		public bool TryApply( BooleanOp op, PolyMesh target, PolyMesh tool, out PolyMesh result, out string error )
+		{
+			result = target.Clone();
+			error = null;
+			return true;
 		}
 	}
 
@@ -178,8 +229,17 @@ public static class AllFeaturesTests
 
 			RebuildReport report;
 
+			// HOLE IS THE ONE FEATURE HERE THAT CANNOT BUILD WITHOUT A BOOLEAN, because taking
+			// material away means recomputing the surface. Installed only around this rebuild and
+			// only for that feature: a provider left in place for the whole sweep would change what
+			// every other feature does with a Remove it never asked for.
+			var previousProvider = MeshBoolean.Provider;
+
+			if ( feature is HoleFeature )
+				MeshBoolean.Provider = new SweepBoolean();
+
 			try
-			{
+            {
 				report = studio.Rebuild();
 			}
 			catch ( Exception e )
@@ -188,6 +248,10 @@ public static class AllFeaturesTests
 				// in the studio itself and is worth failing loudly on.
 				Report.Check( $"{type.Name} does not throw out of Rebuild", false, e.Message );
 				continue;
+			}
+			finally
+			{
+				MeshBoolean.Provider = previousProvider;
 			}
 
 			var ownError = feature.Error;
