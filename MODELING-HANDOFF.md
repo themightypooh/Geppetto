@@ -245,6 +245,13 @@ folder's README for the design decisions; the status here is what remains.
 7. **Export** — OBJ works for static geometry. Collision from the primitive list rather than from 
    triangles is not built.
 
+**Phase one is roughly 92% done.** What remains, with method, is in `CAD-REFERENCE.md`'s "What is
+left, in the order worth doing it" — kept there rather than duplicated here so there is one list.
+Shortest form: exercise the boolean past the single case proven so far (curved faces, cuts meeting
+an edge, cutting an already-cut body), rounded fillets, collision from the primitive history, draft
+on existing faces, six constraints unreachable from the UI, and a hole feature. The editor half is
+now a bigger gap than the kernel half.
+
 Live tree throughout: change any number, the model rebuilds.
 
 ## Phase two — bones and rigged export

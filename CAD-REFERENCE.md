@@ -380,35 +380,99 @@ frustum formula — because a twisted or inside-out result passes every closed-a
 
 ### What is left, in the order worth doing it
 
-1. **Wire the six new constraints into `ConstraintTools`.** This is a loose end from the same
-   session that added them, found by checking rather than assumed: the SOLVER has sixteen kinds, but
-   `ConstraintTools` — which turns a sketch selection into the constraints it allows — still offers
-   only the original eleven. Tangent, arc-to-arc tangent, diameter, midpoint, concentric and fix are
-   solvable, round-trip through the file, and are reachable from nothing. One case each, plus a menu
-   entry each in `EffigyViewport.Constraints.cs`. Small, and it is what makes batch one usable.
-2. ~~**Run the boolean.**~~ Done — **cuts work end to end in the editor**, and it returns n-gons
-   rather than triangle soup, so the subdivision cage and the sculpt stage are both safe. That was
-   the open question this list called the one that "gates more than it looks like it does", and the
-   answer went the good way.
+Rewritten 30 August 2026, after cutting worked end to end. **The kernel is roughly 92% of phase
+one.** Everything below is kernel-side and headless-testable unless it says otherwise; the UI gap
+is separate and is now the larger of the two — see the last item.
 
-   Four bugs sat between "the adapter works" and "a hole appears", all of them producing meshes that
-   passed most checks: the extrude direction leaving the part instead of entering it, bridged faces
-   the engine returns for a holed face that `PolyMesh` forbids, `Triangulate.Polygon` silently
-   fanning a bridged loop instead of refusing it, and — the last and worst — welding the result's
-   vertices by exact float equality, which left the cut's mouth a hair open and covered by a flat
-   face. See `Effigy/README.md` for each in full; the shared lesson is that a boolean result can be
-   closed, manifold, Euler-correct and valid while being visibly wrong, so every one of them was
-   caught by measuring a different thing rather than by looking.
-3. **Rounded fillets.** The one CAD item deliberately not attempted — see the reasoning in
-   `Effigy/README.md`'s "Not here yet". It is surgery on `Bevel`'s vertex-cap pass, not a parameter.
-4. **Draft on existing faces.** Extrude has `Taper`, which covers the common case; drafting faces of
-   a solid that already exists does not exist. Well-defined and testable: move each vertex along the
-   horizontal component of its normal, proportional to its distance from a neutral plane.
-5. **A hole feature.** Holes already work as inner loops of a profile (`HoleTests`), so this is
-   convenience rather than capability: counterbore and countersink as a tool solid emitted with
-   Result = Remove. Note it cannot build in the headless suite without a boolean provider, which is
-   why `MergeTests` installs a stub — do the same.
-6. **The editor half of all of the above.** None of this session's work has any UI. The sketcher has
-   no trim/extend/offset/fillet tool, no ellipse or spline tool, and no way to add a tangent
-   constraint; sweep and loft have no toolbar entry and no way to pick a second sketch. That is the
-   Onshape-parity gap, and it is larger than the kernel gap was.
+---
+
+**1. Exercise the boolean past the one case that works.** *Highest value, lowest effort, and the
+only item here whose outcome could change the others.*
+
+One hole in one box is a proven PATH, not a proven envelope. `MeshHoleRepair` is deliberately
+conservative — it declines any boundary loop it cannot place in exactly one coplanar face — so each
+of these is unexercised and at least one is likely to fail:
+
+- a cut through a CURVED face (the mouth is not planar, so `FindContainingFace` finds nothing and
+  declines; the repair will need per-face loop splitting rather than one whole loop)
+- a cut meeting an edge, so the mouth spans two faces (same failure, and the honest fix is to split
+  the loop where it crosses an edge)
+- two cuts overlapping, and cutting a body that has already been cut
+- a cut that separates the body into two pieces — nothing downstream expects one body to become two
+
+Method: build them in the editor and run `effigy_dump_tree` on each. `boundary edges`,
+`bridged faces` and `opening(s) reinstated` name the failure mode directly. Where a case fails,
+reproduce the mesh shape as a fixture in `HoleTests` — `TestBoundaryLoopRepair` is the template, it
+hand-builds the defect rather than needing an engine — and fix against that.
+
+**Do not measure this by eye.** All four bugs fixed this session produced closed, manifold,
+Euler-correct, valid meshes. Measure enclosed volume, covered area, or boundary-edge count.
+
+**2. Rounded (multi-segment) fillets.** *The one CAD capability deliberately never attempted.*
+
+`Bevel` is a flat chamfer. The obvious move — give its bridging pass N segments on an arc instead of
+one quad — does not work as a local change, and the reason is written up in `Bevel.cs`'s class
+comment: a bevel is explicitly NOT local to the selected edge, and the vertex-cap pass builds its
+n-gon from every distinct point converging on a vertex. Arc points threaded into a bridge without
+being threaded into that cap in the right cyclic order leave T-junctions, which pass closed,
+manifold and Euler checks while rendering wrong.
+
+Method: rework the cap pass and the bridge pass together, not one then the other. Order the arc
+points into the cap's cyclic sequence as they are generated. Verify with `RenderCheck` — this is
+exactly the class of defect it exists for, and exactly the class the numeric suite cannot see. The
+20x width corner cap stays; a fillet has the same nearly-collinear blowup a chamfer does.
+
+**3. Collision from the primitive history.** *Nothing exists — `Collision` appears nowhere.*
+
+The argument for it is in `MODELING-HANDOFF.md` and is still good: a model known to be a union of N
+convex primitives IS its own physics representation, so this is bookkeeping rather than geometry.
+
+Method: walk the feature tree rather than the finished mesh. A `PrimitiveFeature` contributes its
+own shape and transform; a pattern or mirror contributes copies; anything that has been through a
+boolean or a subdivide falls back to a convex hull of its body, or to the mesh itself. Emit a list
+of convex shapes, not triangles. Testable headlessly by volume and count.
+
+**4. Draft on existing faces.** *Well defined, small, and genuinely absent.*
+
+Extrude has `Taper`, which covers a face being made. Drafting faces of a solid that already exists
+does not exist at all.
+
+Method: pick faces plus a neutral plane and a pull direction. Move each vertex along the horizontal
+component of its own normal, proportional to its signed distance from the neutral plane. Refuse
+self-intersection with the three checks `LoopOffset` already uses — signed area keeps its sign, it
+has not collapsed, no edge reversed — because the third catches the inside-out case that the first
+two call healthy.
+
+**5. Wire the six unreachable constraints into `ConstraintTools`.** *An hour, and it has been open
+for two sessions.*
+
+`SketchSolver` has sixteen kinds. `ConstraintTools` — which turns a selection into the constraints
+it allows — still offers eleven. Tangent, arc-to-arc tangent, diameter, midpoint, concentric and fix
+all solve, all round-trip through the file, and are reachable from nothing. One case each in
+`Offers`, one menu entry each in `EffigyViewport.Constraints.cs`.
+
+**6. A hole feature.** *Convenience, not capability.*
+
+Counterbore and countersink as a tool solid emitted with `Result = Remove`. Holes already work as
+inner loops of a profile (`HoleTests`) and cuts now work, so this is a parameterised shape and a
+dialog. It cannot build in the headless suite without a boolean provider — `MergeTests` installs a
+stub for exactly this, do the same.
+
+**7. The editor half of all of it.** *Now the biggest gap in the project, and not a kernel job.*
+
+The kernel can do things the tool cannot reach. There is no trim, extend, offset or fillet tool in
+the sketcher, no ellipse or spline tool, no way to add a tangent constraint, and no sketch PICKER —
+which is why sweep and loft, both built and tested, have no toolbar entry at all. See
+`Effigy/EFFIGY-UI-PUNCHLIST.md`. The sketch picker is the unblocking piece: two features are waiting
+on that one control.
+
+---
+
+**A method note worth keeping, because it is what this session actually cost.**
+
+Five separate causes of "the cut is not cutting" look identical in the viewport, and every one was a
+fact the document already knew. `effigy_dump_tree` prints all of them at once — Result index, sketch
+attachment, boolean call count, boundary edges, bridged faces, tolerance welds — and it is what
+turned a guess-and-check loop into three decisive readings. **When a geometry bug is hard to see,
+print what the geometry says about itself before changing any code.** Extend that command rather
+than debugging by description.
