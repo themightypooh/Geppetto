@@ -1,4 +1,4 @@
-using Editor;
+﻿using Editor;
 using Effigy;
 using Sandbox;
 using System.IO;
@@ -84,7 +84,7 @@ public static class EffigyTool
 		"\t\t\t\t\t\t]\n" +
 		$"\t\t\t\t\t\tfilename = \"{meshFilename}\"\n" +
 		"\t\t\t\t\t\timport_translation = [ 0.0, 0.0, 0.0 ]\n" +
-		"\t\t\t\t\t\timport_rotation = [ 0.0, 0.0, 0.0 ]\n" +
+		"\t\t\t\t\t\timport_rotation = [ 0.0, -90.0, 0.0 ]\n" +
 		"\t\t\t\t\t\timport_scale = 1.0\n" +
 		"\t\t\t\t\t\talign_origin_x_type = \"None\"\n" +
 		"\t\t\t\t\t\talign_origin_y_type = \"None\"\n" +

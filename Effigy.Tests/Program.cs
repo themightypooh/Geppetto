@@ -108,6 +108,10 @@ public static class Program
 
 		HoleTests.Run();
 
+		SplitTests.Run();
+
+		CurvedHoleTests.Run();
+
 		CoplanarMergeTests.Run();
 
 		TaperTests.Run();
@@ -123,6 +127,8 @@ public static class Program
 		HoleFeatureTests.Run();
 
 		CollisionTests.Run();
+
+		VmdlPhysicsTests.Run();
 
 		UnwrapTests.Run();
 
@@ -421,6 +427,7 @@ public static class Program
 		WritePreviews( outDir );
 		WriteBakeSample( outDir );
 		WriteDmxSamples( outDir );
+		VmdlPhysicsTests.WriteSample( outDir );
 
 		var files = Directory.GetFiles( outDir, "*.obj" ).Length;
 		var svgs = Directory.GetFiles( outDir, "*.svg" ).Length;

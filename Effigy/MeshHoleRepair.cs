@@ -74,6 +74,18 @@ public static class MeshHoleRepair
 		// by loosening the containment test above - see that file for why loosening it would be wrong.
 		closed += MeshHoleRepairSpan.CloseLoopsSpanningFaces( mesh );
 
+		// And what is left after THAT is a mouth across more than two faces, or across faces that
+		// do not share a plane at all - a cut through a curved surface, or a second cut into a face
+		// a first repair already triangulated. MeshHoleRepairCurved handles both by giving each face
+		// the piece of the loop that lies in it, and checks its own work before keeping it.
+		closed += MeshHoleRepairCurved.CloseCurvedLoops( mesh );
+
+		// And last, the mouth that crosses nothing because the surface under it is already in
+		// pieces: a second cut into a face this repair triangulated the first time. That one is
+		// closed by taking the whole coplanar group as one region and putting the mouth in as one
+		// more hole - a bigger hammer than the three above, which is why it goes last.
+		closed += MeshHoleRepairFragment.CloseLoopsInFragments( mesh );
+
 		return closed;
 	}
 

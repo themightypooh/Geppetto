@@ -227,6 +227,11 @@ public abstract class SketchConsumingFeature : Feature
 			// mesh rather than the Body keeps the body's id, which everything built on this part is
 			// holding — a cut must not invalidate the face a later sketch sits on.
 			target.Mesh = MeshBoolean.Apply( BooleanOp.Subtract, target.Mesh, mesh );
+
+			// A cut is allowed to go all the way through and leave two solids where there was one.
+			// Nothing downstream expects that of a Body, so it is settled here rather than being
+			// discovered later as a part list that disagrees with the screen.
+			WarnSeparated( SeparatePieces( ctx, target ), target.Name );
 			return;
 		}
 

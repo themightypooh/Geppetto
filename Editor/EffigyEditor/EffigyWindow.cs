@@ -2253,17 +2253,56 @@ public sealed class EffigyWindow : DockWindow
 	}
 
 	/// <summary>
-	/// What this part's physics representation would be, reported rather than written.
+	/// The PhysicsShapeList the export should carry, or an empty string for none.
 	///
-	/// IT IS NOT IN THE .vmdl, AND THAT IS DELIBERATE. Collision goes in as a PhysicsShapeList node
-	/// in ModelDoc's KV3, and nothing in this repo has seen that schema's real shape - the same
-	/// position AnimBindPose is in, and for the same reason: a guessed KV3 node risks breaking a
-	/// compile that currently works, and the failure would be a model that stops loading rather than
-	/// a model with no collision.
+	/// THE SHAPES USED TO GO NOWHERE. They were computed, correct and tested, and the .vmdl carried
+	/// no collision at all, because writing one meant guessing at ModelDoc's KV3 and a guessed node
+	/// fails as a model that will not load rather than as a model without physics. That is settled
+	/// now: every key VmdlPhysics writes was put into a probe .vmdl, compiled, and read back off the
+	/// compiled model's own physics bounds. See that file for what each probe answered.
 	///
-	/// So the shapes are computed, correct, and tested (CollisionTests), and this puts them where a
-	/// person can read them. Writing them into the .vmdl wants one real ModelDoc file with collision
-	/// in it to read the node names off first.
+	/// A RIGGED PART FALLS BACK TO THE RENDER MESH, and that is the one judgement call here. Every
+	/// shape CollisionBuilder produces is in MODEL space, with no bone to hang off - a shape list on
+	/// a skinned model wants parent_bone set per shape, and the mapping from a body to the bone that
+	/// drives it is exactly the thing the rig panel exists to let somebody decide. Writing them all
+	/// against the root would put a static collision hull on an animating character, which is the
+	/// wrong kind of wrong: it looks right until something moves. PhysicsMeshFromRender is honest,
+	/// costs nothing, and is what every hand-authored model in this project already uses.
+	/// </summary>
+	private string BuildPhysics( bool rigged )
+	{
+		if ( _studio is null )
+			return "";
+
+		if ( rigged )
+			return VmdlPhysics.MeshFromRender();
+
+		try
+		{
+			var report = CollisionBuilder.Build( _studio );
+			var node = VmdlPhysics.ShapeList( report.Shapes );
+
+			if ( node.Length == 0 )
+				return VmdlPhysics.MeshFromRender();
+
+			Log.Info( $"[Effigy] collision into the .vmdl: {report}" );
+			return node;
+		}
+		catch ( Exception e )
+		{
+			// A collision build failing must not take the export with it. The model without physics
+			// is still a model; the exception on the way to one is not worth losing it over.
+			Log.Warning( $"[Effigy] collision could not be built ({e.Message}) - falling back to the render mesh" );
+			return VmdlPhysics.MeshFromRender();
+		}
+	}
+
+	/// <summary>
+	/// What this part's physics representation is, listed where a person can read it.
+	///
+	/// Still worth having now that the shapes reach the .vmdl: this is where you find out WHY a part
+	/// came out as one hull per body instead of as the boxes it was drawn from - CollisionReport
+	/// names the feature that spoiled the decomposition, and nothing in the compiled model does.
 	/// </summary>
 	private void ReportCollision()
 	{
@@ -2343,7 +2382,8 @@ public sealed class EffigyWindow : DockWindow
 			Log.Info( $"[Effigy] wrote {dmxPath} - {skeleton.Count} bones, {mesh.VertexCount} vertices" );
 
 			var vmdlPath = Path.Combine( folder, "export.vmdl" );
-			File.WriteAllText( vmdlPath, BuildSkinnedVmdl( "models/effigy/export.dmx", skeleton ) );
+			File.WriteAllText( vmdlPath, BuildSkinnedVmdl( "models/effigy/export.dmx", skeleton,
+				BuildPhysics( rigged: true ) ) );
 
 			var result = ExternalAssetTools.Register( folder );
 			Log.Info( $"[Effigy] wrote {vmdlPath} - {result.Registered} registered" );
@@ -2376,7 +2416,7 @@ public sealed class EffigyWindow : DockWindow
 			materialName: _studio.NameForSlot );
 
 		var staticVmdlPath = Path.Combine( folder, "export.vmdl" );
-		File.WriteAllText( staticVmdlPath, BuildVmdl( "models/effigy/export.obj" ) );
+		File.WriteAllText( staticVmdlPath, BuildVmdl( "models/effigy/export.obj", BuildPhysics( rigged: false ) ) );
 
 		var staticResult = ExternalAssetTools.Register( folder );
 		Log.Info( $"[Effigy] wrote {staticObjPath} and {staticVmdlPath} — {staticResult.Registered} registered" );
@@ -2400,8 +2440,29 @@ public sealed class EffigyWindow : DockWindow
 		}
 	}
 
-	/// <summary>Same one-node RenderMeshFile shape as EffigyTool.BuildVmdl.</summary>
-	static string BuildVmdl( string meshFilename ) =>
+	/// <summary>
+	/// Same one-node RenderMeshFile shape as EffigyTool.BuildVmdl, plus whatever PhysicsShapeList
+	/// VmdlPhysics built - an empty string when there is none.
+	///
+	/// THE -90 YAW IS NOT DECORATION. ModelDoc's OBJ importer does not land the mesh in the
+	/// coordinates the file gives it: a bar written along +x comes out of the compiler lying along
+	/// +y. That was survivable while the .vmdl carried no collision - the part was simply a quarter
+	/// turn from how it was drawn - and it stops being survivable the moment physics shapes go in,
+	/// because those ARE in the file's own coordinates and would sit at ninety degrees to the model
+	/// they belong to. Collision that misses the thing it is attached to is the worst of the three
+	/// possible outcomes here.
+	///
+	/// MEASURED, and both signs were tried: a bar occupying x = 0..10 was compiled with a matching
+	/// PhysicsShapeBox over the same range, and the two physics volumes were unioned. At +90 the
+	/// union read 20 across - the mesh had gone to x = -10..0 - and at -90 it read 10, which is the
+	/// two coinciding exactly. The whole two-box export then came back 13 x 4 x 4 in both render and
+	/// physics, which is the number it is drawn as.
+	///
+	/// The DMX path does not get this and must not: it is only the OBJ importer that turns the mesh,
+	/// and the rigged export uses PhysicsMeshFromRender anyway, so its physics follows its mesh
+	/// wherever the importer puts it.
+	/// </summary>
+	static string BuildVmdl( string meshFilename, string physics = "" ) =>
 		"<!-- kv3 encoding:text:version{e21c7f3c-8a33-41c5-9977-a76d3a32aa0d} format:modeldoc29:version{3cec427c-1b0e-4d48-a90a-0436f33a6041} -->\n" +
 		"{\n" +
 		"\trootNode = \n" +
@@ -2421,7 +2482,7 @@ public sealed class EffigyWindow : DockWindow
 		"\t\t\t\t\t\t]\n" +
 		$"\t\t\t\t\t\tfilename = \"{meshFilename}\"\n" +
 		"\t\t\t\t\t\timport_translation = [ 0.0, 0.0, 0.0 ]\n" +
-		"\t\t\t\t\t\timport_rotation = [ 0.0, 0.0, 0.0 ]\n" +
+		"\t\t\t\t\t\timport_rotation = [ 0.0, -90.0, 0.0 ]\n" +
 		"\t\t\t\t\t\timport_scale = 1.0\n" +
 		"\t\t\t\t\t\talign_origin_x_type = \"None\"\n" +
 		"\t\t\t\t\t\talign_origin_y_type = \"None\"\n" +
@@ -2430,6 +2491,7 @@ public sealed class EffigyWindow : DockWindow
 		"\t\t\t\t\t},\n" +
 		"\t\t\t\t]\n" +
 		"\t\t\t},\n" +
+		physics +
 		"\t\t]\n" +
 		"\t\tmodel_archetype = \"\"\n" +
 		"\t\tprimary_associated_entity = \"\"\n" +
@@ -2443,7 +2505,7 @@ public sealed class EffigyWindow : DockWindow
 	/// bind pose, and per-vertex weights). ModelDoc imports the skeleton from the SMD and bakes
 	/// everything into the compiled model.
 	/// </summary>
-	static string BuildSkinnedVmdl( string meshFilename, Skeleton skeleton ) =>
+	static string BuildSkinnedVmdl( string meshFilename, Skeleton skeleton, string physics = "" ) =>
 		"<!-- kv3 encoding:text:version{e21c7f3c-8a33-41c5-9977-a76d3a32aa0d} format:modeldoc29:version{3cec427c-1b0e-4d48-a90a-0436f33a6041} -->\n" +
 		"{\n" +
 		"\trootNode = \n" +
@@ -2473,6 +2535,7 @@ public sealed class EffigyWindow : DockWindow
 		"\t\t\t\t]\n" +
 		"\t\t\t},\n" +
 		BuildBoneMarkupList( skeleton ) +
+		physics +
 		"\t\t]\n" +
 		"\t\tmodel_archetype = \"\"\n" +
 		"\t\tprimary_associated_entity = \"\"\n" +

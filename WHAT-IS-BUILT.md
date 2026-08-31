@@ -12,7 +12,7 @@ it" has repeatedly been the difference between right and wrong.
 - A feature that cannot do what was asked says what it was asked, what stopped it, with this
   model's numbers, and what would work instead. A feature that did nothing is never a success.
 
-Verified as of 31 August 2026: **2099 kernel checks, 0 failing** (`./tools/test.sh`). The diagnostic
+Verified as of 31 August 2026: **2191 kernel checks, 0 failing** (`./tools/test.sh`). The diagnostic
 dialog and tree tooltip are written against the shipped `Editor.Label.WordWrap` and
 `TreeNode.GetTooltip` APIs; they have not been judged on screen.
 
@@ -617,6 +617,85 @@ bow-tie that keeps its vertex count, keeps zero boundary edges, and whose Newell
 the right way — so boundary count, manifoldness, validity and even enclosed volume all waved it
 through. Only the face's area does not survive: 19 against the 13 a notched half-lid must have.
 
+### A mouth across any number of faces, and one across a ridge
+
+`MeshHoleRepairCurved`. The span repair above wants exactly two coplanar faces; a cut through a
+CURVED surface has neither. Its mouth is not planar at all, so there is no loop normal, no containing
+face, and no shared basis to test containment in — every argument the first two repairs are built on
+stops being available.
+
+**The answer is read off the wall, and that is why it survives.** Every loop edge is used by exactly
+one face — the tunnel wall — and two faces sharing an edge traverse it in opposite directions. So the
+surface's own boundary must run along each arc the OTHER way from the wall, and a region that walks
+one of its arcs the wall's way is on the void side of it. No plane appears anywhere in that.
+
+Each face gets the arc of the loop lying in it and is re-partitioned by its arcs, which are chords
+with both ends on its boundary. A face can get more than one: the middle quad of a cylinder wall has
+the hole passing through it top and bottom, and the strip between those two arcs is hole rather than
+material.
+
+**The bug that was there before the tests were:** materiality cannot be carried down the chord
+recursion. Marking the half that walks a chord the wall's way as void and letting its children inherit
+that is the obvious implementation and it is wrong — that half is not a region yet. On a mouth across
+three strips the first chord cuts off the top strip and leaves "the mouth plus the bottom strip" as one
+lump; the second chord separates them, and the bottom strip is material despite having come out of the
+lump. Every finished ring is asked directly instead.
+
+### A second cut into a face the first repair already took apart
+
+`MeshHoleRepairFragment`. Not hard because the cuts overlap — hard because the single-face repair
+TRIANGULATES the face it fixes, so the next mouth to land there crosses a dozen coplanar fragments at
+ordinary points on their edges rather than at vertices. All three earlier passes decline that, and
+correctly: naming a crossing that is not a vertex means splitting a face the repair was not asked to
+touch.
+
+So it stops treating the fragments as faces. They are one surface a previous repair left in pieces,
+and the mouth is a hole in that SURFACE — so the whole coplanar group is taken as one region, its own
+outer contour and existing holes are derived from the edges only one of its faces uses, and the mouth
+goes in as one more hole. Nothing has to be crossed, because the mouth crosses nothing.
+
+Ordered LAST for a reason: rebuilding the group throws away the partition the fragments had, and the
+earlier repairs preserve theirs. Both new passes also measure the mesh before and after every loop and
+roll back a repair that did not strictly reduce the open boundary — splitting polygons by chords and
+deciding materiality from a winding is too much machinery to run on trust.
+
+### A cut is allowed to sever a part, and the part list now knows
+
+`MeshSplit`, `Feature.SeparatePieces`. Drill a slot across a bar and the boolean returns one mesh
+holding two blocks that touch nowhere. Nothing was wrong with the mesh; what was wrong is that a Body
+is assumed to be one solid by everything that reads it — the parts list showed one part where the
+screen showed two, hiding one hid both, and the collision builder wrapped a single convex hull around
+the pair, filling in the gap the cut had just made.
+
+Two decisions that are not details:
+
+- **Connected means sharing a VERTEX, not an edge.** Two blocks joined at one corner are one solid by
+  the vertex rule and two by the edge rule, and the vertex rule can only ever split things genuinely
+  apart. Splitting a part somebody thinks of as one part renames bodies underneath them.
+- **The order the pieces come back in is a promise** — largest volume first, ties broken on the
+  minimum corner. The original body keeps its id and its largest piece, because every sketch and
+  picked face hanging off that part is holding that id. Volume alone is not enough: a symmetric part
+  cut down the middle gives two pieces whose float volumes do not reliably compare the same way twice.
+
+### Collision reaches the .vmdl, and the schema was measured
+
+`VmdlPhysics`. `CollisionBuilder`'s shapes had been correct and tested for a while with nowhere to go,
+because writing them meant guessing ModelDoc's KV3 and a guessed node fails as a model that will not
+load. Every key was probed instead: written into a .vmdl, compiled by the engine, and read back off
+the compiled model's own physics bounds.
+
+What that answered, none of which was readable anywhere: `PhysicsShapeBox.dimensions` is the FULL size
+and it is placed by `origin` — `center`, `translation` and `position` all compile on a box and are
+ignored. `PhysicsShapeSphere` is placed by `center`, which is not the box's key. `PhysicsShapeHull`
+takes `hull_vertices` in model space, exactly.
+
+**And it exposed an older bug.** ModelDoc's OBJ importer turns the mesh: a bar written along +x
+compiles lying along +y. Harmless while the .vmdl carried no collision — the part was a quarter turn
+from how it was drawn — and not harmless at all once shapes go in, since those are in the file's own
+coordinates. `import_rotation = [ 0, -90, 0 ]` cancels it, and both signs were tried: +90 put the mesh
+at x = -10..0. The two-box sample now compiles to `Bounds 13 x 4 x 4` and `PhysicsBounds 13 x 4 x 4`
+— the mesh where it was drawn, and the collision on it rather than beside it.
+
 ### The UV packer tries four arrangements
 
 Charts have no up, so turning one costs nothing — but "turn every tall chart" is too blunt a rule to
@@ -1142,4 +1221,11 @@ treated as a lead until it is.
 | `blendweights$0`/`blendindices$0` carry **no index array** — they are `jointCount` entries per position, indexed by the position index. `fp_arms`: 260 positions, 260 blendweights at jointCount 1, against 944 face corners | same |
 | In KeyValues2, **every element_array member takes a trailing comma, nested elements included**, and a reference is the two tokens `"element" "<id>"` — a bare quoted id is read as an element *type* name | same |
 | `PolygonMesh.PerformBoolean` mutates its receiver; the relative transform places the second mesh against the first; UVs must be recomputed after | `BooleanTool.cs` + reflection dump, then run |
+| **`PhysicsShapeBox.dimensions` is the box's FULL size**, not its half-extents, and the box is placed by **`origin`** — `center`, `translation` and `position` all compile on it and are silently ignored. `angles` works | probed: written, compiled, physics bounds read back |
+| **`PhysicsShapeSphere` is placed by `center`**, and by nothing else — the one shape whose placement key is not the box's | same |
+| `PhysicsShapeCapsule` and `PhysicsShapeCylinder` take `radius` plus `point0`/`point1`, and the points are where they go — no separate placement key | `citizen_physicsshapelist.vmdl_prefab`, then probed |
+| **`PhysicsShapeHull.hull_vertices` takes points in MODEL space**, exactly — a hull written from a 20-unit cube offset along x measured 20 across, so nothing is re-centred underneath | probed |
+| `parent_bone`, `surface_prop` and `collision_tags` are the base keys every physics shape carries | `citizen_physicsshapelist.vmdl_prefab` |
+| **ModelDoc's OBJ importer turns the mesh a quarter turn**: a bar written along +x compiles lying along +y. `import_rotation = [ 0, -90, 0 ]` cancels it — both signs were tried, and +90 put the mesh at x = -10..0. Physics shapes are NOT turned, so without this they sit at ninety degrees to the model | probed with a one-sided bar and a matching PhysicsShapeBox, unioned |
+| A `PhysicsShapeList` with no children is a model that declares collision and has none — write no node at all instead | reasoned from the above, and why `VmdlPhysics.ShapeList` returns "" |
 | s&box ships classic `MaterialIcons-Regular.ttf`, **not** Material Symbols — a Symbols name renders as nothing | `RigIconButton` class comment |

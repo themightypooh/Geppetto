@@ -382,6 +382,8 @@ public sealed class HoleFeature : Feature
 
 		var drilled = 0;
 		var lost = 0;
+		var separated = 0;
+		var separatedBodies = new List<string>();
 
 		foreach ( var reference in Faces )
 		{
@@ -425,6 +427,18 @@ public sealed class HoleFeature : Feature
 
 			body.Mesh = MeshBoolean.Apply( BooleanOp.Subtract, body.Mesh, tool );
 			drilled++;
+
+			// A hole drilled right through a thin wall can sever the part - a slot across a bar is
+			// the obvious one. See Feature.SeparatePieces.
+			var added = SeparatePieces( ctx, body );
+
+			if ( added > 0 )
+			{
+				separated += added;
+
+				if ( !separatedBodies.Contains( body.Name ) )
+					separatedBodies.Add( body.Name );
+			}
 		}
 
 		if ( drilled == 0 )
@@ -435,12 +449,38 @@ public sealed class HoleFeature : Feature
 				"Pick the faces again on the current model" );
 		}
 
+		// ONE DIAGNOSTIC PER FEATURE, so the two possible warnings cannot both be set and the second
+		// would silently overwrite the first. Lost faces are the one to lead with - they mean the
+		// feature did less than it was asked - and a separation that happened alongside is named in
+		// the same message rather than dropped.
 		if ( lost > 0 )
 		{
+			var also = separated > 0
+				? $" Drilling also separated {Listed( separatedBodies )} into {separated} more part(s)."
+				: "";
+
 			Warn(
 				$"{lost} of {Faces.Count} picked faces are no longer on the model",
-				"They named geometry the features above this one no longer produce, so they were skipped.",
+				"They named geometry the features above this one no longer produce, so they were skipped." + also,
 				"Pick them again on the current model" );
+
+			return;
+		}
+
+		if ( separatedBodies.Count == 1 )
+		{
+			WarnSeparated( separated, separatedBodies[0] );
+			return;
+		}
+
+		if ( separatedBodies.Count > 1 )
+		{
+			Warn(
+				$"Drilling separated {separatedBodies.Count} parts",
+				$"{Listed( separatedBodies )} each went all the way through, adding {separated} part(s) to the studio. "
+					+ "Each original keeps its name and id and its largest piece.",
+				"Reduce the depth if these were meant to be pockets",
+				"Nothing to fix if separating the parts was the intent" );
 		}
 	}
 }

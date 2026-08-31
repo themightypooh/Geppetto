@@ -58,39 +58,72 @@ should colour the icon yellow. Kernel half is tested; this is the sitting.
 ## 1. Effigy kernel
 
 The kernel is roughly **93% of phase one**. All of it is headless-testable — no s&box anywhere, and
-2099 checks say so.
+2191 checks say so.
 
-### 1.1 Exercise the boolean past the one case that works
+### 1.1 ~~Exercise the boolean past the one case that works~~ — **done**
 
-*Highest value, lowest effort, and the only item here whose outcome could change the others.*
+Every case this section listed is now closed, and the repair is four passes rather than one. They
+are chained inside `CloseBoundaryLoopsIntoFaces`, each seeing only what the one before it declined,
+so a caller still never has to know which shape of mouth it has:
 
-One hole in one box is a proven **path**, not a proven envelope. `MeshHoleRepair` is deliberately
-conservative — it declines any boundary loop it cannot place in exactly one coplanar face — so each
-of these is unexercised and at least one is likely to fail:
+1. **`MeshHoleRepair`** — the loop lies inside exactly one coplanar face. Splices it in as a hole.
+2. **`MeshHoleRepairSpan`** — the loop crosses one edge between two coplanar faces. Notches both.
+3. **`MeshHoleRepairCurved`** — the loop crosses ANY number of faces, coplanar or not. Each face gets
+   the arc of the loop that lies in it and is re-partitioned by its arcs.
+4. **`MeshHoleRepairFragment`** — the loop lies inside a surface that is already in pieces. Takes the
+   whole coplanar group as one region and adds the mouth as one more hole.
 
-- a cut through a **curved** face (the mouth is not planar, so `FindContainingFace` finds nothing
-  and declines; the repair will need per-face loop splitting rather than one whole loop)
+- ~~a cut through a **curved** face~~ — **done, and it is the one that could not be phrased as a
+  plane at all.** A mouth across a ridge has no normal, so there is no containing face to look for
+  and no shared basis to work in. `MeshHoleRepairCurved` reads the answer off the WALL instead: every
+  loop edge is used by exactly one face, two faces sharing an edge traverse it opposite ways, so the
+  surface must walk each arc against the wall — and a region that walks one of its arcs the wall's
+  way is on the void side of it. No plane appears in that argument anywhere, which is why it survives
+  where every planar argument stops. Covered by a tent with a shaft through its ridge.
 - ~~a cut meeting an edge, so the mouth spans two faces~~ — **done.** `MeshHoleRepairSpan` splits the
   loop at the crossing and notches BOTH faces, rather than loosening the containment test the
-  single-face repair does properly. It runs from inside `CloseBoundaryLoopsIntoFaces`, so a caller
-  never has to know which shape of mouth it has. It still declines a crossing that is not already a
-  vertex, a loop weaving in and out of one face, and anything non-planar.
-- two cuts overlapping, and cutting a body that has already been cut
-- a cut that separates the body into two pieces — nothing downstream expects one body to become two
+  single-face repair does properly.
+- ~~two cuts overlapping, and cutting a body that has already been cut~~ — **done, and the shape of
+  the problem was not what this line assumed.** The second cut is not hard because it overlaps the
+  first; it is hard because the first repair TRIANGULATED the face it fixed, so the second mouth
+  lands across a dozen coplanar fragments whose edges it crosses at ordinary points rather than at
+  vertices. That defeats all three of the passes above on purpose. `MeshHoleRepairFragment` stops
+  treating the fragments as faces: they are one surface a previous repair left in pieces, so it takes
+  the group whole and puts the mouth in as another hole. Covered by a fixture that runs the first
+  repair for real rather than hand-writing the fan it produces.
+- ~~a cut that separates the body into two pieces~~ — **done, and the fix was not in the repair.** The
+  boolean returns a perfectly good mesh; the bug was that a Body is assumed to be one solid by
+  everything that reads it, so a severed part showed as one part in the list, hid as one, painted as
+  one, and got one convex hull wrapped around the gap the cut had just made. `MeshSplit` answers "how
+  many solids is this", `Feature.SeparatePieces` puts the offcuts in the part list, and both cutting
+  features call it. **The largest piece keeps the original body's id**, because every sketch and
+  picked face hanging off that part is holding it. The piece order is a promise for the same reason —
+  largest volume first, ties broken on the minimum corner — since anything else renames bodies
+  between rebuilds. See `SplitTests`.
 - ~~two holes in one face~~ — **done, and it was the shared limit rather than the boolean's own.**
   `SplitBridgedLoop` peels one bridge at a time, shortest run first, and `SplitIntoFaces` cuts each
   hole against whichever face it landed in: **n holes, n+1 faces**, on both paths. A face with two
-  pockets returns three faces; a drawn plate with two bolt holes extrudes to eighteen. Covered by a
-  hand-spliced twice-bridged fixture and by the feature end to end. What is left here is only
-  running it against the **engine's** own loops, which is the sitting rather than the code.
+  pockets returns three faces; a drawn plate with two bolt holes extrudes to eighteen.
 
-**Method:** build each in the editor and run `effigy_dump_tree`. `boundary edges`, `bridged faces`
-and `opening(s) reinstated` name the failure mode directly. Where a case fails, reproduce the mesh
-shape as a fixture in `HoleTests` — `TestBoundaryLoopRepair` is the template, it hand-builds the
-defect rather than needing an engine — and fix against that.
+**What the two new passes still decline, deliberately.** A crossing that is not already a vertex —
+inventing one means splitting a face the repair was not asked to touch. A loop whose vertices sit
+strictly inside two faces at once. And a fragmented group whose mouth is not strictly inside its
+outer contour and outside every hole it already has. Each refusal leaves the opening visibly open,
+which is the failure everyone can see rather than the one nobody can.
+
+**Both new passes check their own work and roll back.** Splitting polygons by chords and deciding
+materiality from a winding is far too much machinery to run on trust, so the mesh is measured before
+and after every loop and a repair that did not strictly reduce the open boundary — or that introduced
+a non-manifold edge — is undone. That is what makes "it declines" a guarantee rather than an
+intention.
+
+**What is still only the sitting:** running all four against the ENGINE's own loops rather than against
+hand-built fixtures. `effigy_dump_tree` names the failure mode directly — `boundary edges`,
+`bridged faces`, `opening(s) reinstated`. Where a case fails, reproduce the mesh shape as a fixture in
+`HoleTests` or `CurvedHoleTests` and fix against that.
 
 **Do not measure this by eye.** All four bugs fixed in the boolean produced closed, manifold,
-Euler-correct, valid meshes.
+Euler-correct, valid meshes, and so would every wrong answer the new passes could give.
 
 ### 1.2 ~~Rounded (multi-segment) fillets~~ — **done**
 
@@ -138,11 +171,41 @@ vertex of the part inside it) rather than for looking right.
 Deliberately all-or-nothing rather than per body: a physics representation that is exact for three
 props and quietly wrong for the fourth is worse than one that is approximate for all four and says so.
 
-**Not written into the .vmdl**, and that is the remaining work. Collision goes in as a
-PhysicsShapeList node in ModelDoc's KV3 and nothing here has seen that schema — the same position
-`AnimBindPose` is in, and a guessed node risks breaking a compile that currently works. `File >
-Collision Report` puts the shapes where they can be read; writing them wants one real ModelDoc file
-with collision in it to read the node names off first.
+**Now written into the .vmdl too.** `VmdlPhysics.ShapeList` emits the PhysicsShapeList node and
+`EffigyWindow.BuildVmdl` splices it in, so a static export carries its own exact collision.
+
+**The schema was measured, not guessed**, which is what the old note was waiting for. Each shape went
+into a probe .vmdl, the engine compiled it, and the compiled model's own physics bounds were read
+back. What that settled:
+
+| | |
+|---|---|
+| `PhysicsShapeBox` | `dimensions` is the **full size**, not the half-extents; placed by `origin`; `angles` works |
+| | `center`, `translation` and `position` all compile on a box and are **ignored** |
+| `PhysicsShapeSphere` | `radius` plus `center` — and `center` only, which is not the box's key |
+| `PhysicsShapeCylinder` | `radius` plus `point0`/`point1`, which are where it goes |
+| `PhysicsShapeHull` | `hull_vertices`, in **model space**, exact |
+| all of them | `parent_bone`, `surface_prop`, `collision_tags`, off citizen's own prefab |
+
+**And it turned up a bug that predates it.** ModelDoc's OBJ importer does not land the mesh in the
+coordinates the file gives it — a bar written along +x compiles lying along +y. That was survivable
+while the .vmdl carried no collision (the part was simply a quarter turn from how it was drawn) and
+stops being survivable the moment shapes go in, because those ARE in the file's own coordinates.
+`import_rotation = [ 0, -90, 0 ]` on the OBJ RenderMeshFile cancels it; both signs were tried against
+a one-sided bar, and +90 put the mesh at x = -10..0. The DMX path does NOT get this and must not.
+
+**Verified end to end on 2026-08-31**: the two-box sample compiled to `Bounds 13 x 4 x 4` AND
+`PhysicsBounds 13 x 4 x 4` — the mesh where it was drawn, and the collision on it rather than beside
+it. `out/sample_physics.{obj,vmdl}` is written by the suite for re-running that check; see
+`VmdlPhysicsTests.WriteSample` for the four numbers and what each failure looks like.
+
+**A rigged export still uses `PhysicsMeshFromRender`, deliberately.** Every shape CollisionBuilder
+produces is in model space with no bone to hang off, and the mapping from a body to the bone that
+drives it is exactly what the rig panel exists to let somebody decide. Writing them all against the
+root would put static collision on an animating character — right until something moves.
+
+`File > Collision Report` stays, because it is still the only place that says WHY a part came out as
+hulls rather than as the boxes it was drawn from.
 
 *The old note, kept because it was the reasoning: nothing existed, and `Collision` appeared nowhere
 in the kernel.*
@@ -336,10 +399,12 @@ read out of the shipped Base Editor Library instead.
 
 ### 2.7 Smaller editor gaps
 
-- **Revolve's axis is typed Vec3 only**, and its default runs through the sketch origin — which is
-  where people draw — so the first press on a normal sketch reliably errors. The error now names how
-  far the profile reaches either side, but the real fix is picking the axis in the viewport. This is
-  the clearest case of a tool that looks *broken* rather than unfinished.
+- ~~**Revolve's axis is typed Vec3 only**~~ — **this note was stale, and the code says so.**
+  `RevolveFeature.AxisMode` is a ChoiceParam offering the profile's four edges and the sketch's two
+  axes, and `EffigyWindow.NewFeature` creates new revolves on "Profile's left edge" — which is what a
+  lathe wants essentially always. Custom stays at index 0 for a documented reason: a ChoiceParam
+  serialises its INDEX, so an edge mode at 0 would move every revolve in every saved file. Picking the
+  axis in the VIEWPORT is still not done, and that is what remains of this item.
 - **Extrude's region choice** has kernel support (`RegionSeed`) and no UI.
 - **Mirror plane and pattern axis/direction** are typed Vec3. Usable, and a much lower priority.
 - **Per-part hide/show** is done. The Parts list eye and its Hide menu item key `HiddenBodyIds`
@@ -538,8 +603,10 @@ Only two things, both about the cage rather than about features:
    `EffigyMeshBoolean` has been run and returns n-gons rather than triangle soup, so that risk is
    retired. Sweep and loft are quad-only by construction. Nothing to do here; noted so it is not
    re-checked.
-2. **UVs on the cage, assigned at CAD time.** `UVProjection` and per-corner UVs exist. The bake needs
-   them **non-overlapping**, which nothing currently checks.
+2. ~~**UVs on the cage, assigned at CAD time.**~~ — **also stale.** `UVProjection` and per-corner UVs
+   exist, `UVUnwrap` produces non-overlapping ones where the projections do not, and `NormalBake.Measure`
+   reports overlapping texels so the bake can refuse rather than write a plausible wrong map. What is
+   left is the sitting, not the check.
 
 Nothing else on the CAD list blocks sculpting, so this track and the CAD track can run in parallel.
 

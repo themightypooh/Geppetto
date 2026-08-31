@@ -318,6 +318,87 @@ public abstract class Feature
 	protected void Warn( string problem, string cause, params string[] remedies ) =>
 		ApplyDiagnostic( new FeatureDiagnostic( DiagnosticSeverity.Warning, problem, cause, remedies: remedies ) );
 
+	/// <summary>
+	/// After a cut, put every piece the cut severed into the part list. Returns how many bodies
+	/// were added, so the caller can say so.
+	///
+	/// A boolean is allowed to sever a part and has no obligation to mention it — "one mesh" is a
+	/// fine answer to "subtract this". Whether that mesh is one SOLID is the part list's question,
+	/// and this is where it gets asked. See MeshSplit for why connectivity is by shared vertex and
+	/// why the order the pieces come back in is a promise rather than an implementation detail.
+	///
+	/// THE ORIGINAL BODY KEEPS ITS ID, and keeps the largest piece. Everything built on this part is
+	/// holding that id — a sketch drawn on one of its faces, a later feature's body selection — and
+	/// a cut must not invalidate them. The offcuts are new bodies named after the feature that made
+	/// them, which is the same rule every other body in the studio follows.
+	/// </summary>
+	protected int SeparatePieces( FeatureContext ctx, Body body )
+	{
+		if ( body?.Mesh is null || MeshSplit.PieceCount( body.Mesh ) < 2 )
+			return 0;
+
+		var pieces = MeshSplit.ConnectedPieces( body.Mesh );
+
+		body.Mesh = pieces[0];
+
+		// Straight after the body they came off, so the parts list reads in the order someone would
+		// expect rather than collecting offcuts at the bottom. IndexOf can legitimately miss - a
+		// feature is allowed to hand us a body it has not published - and appending is right then.
+		var at = ctx.Bodies.IndexOf( body );
+
+		for ( var i = 1; i < pieces.Count; i++ )
+		{
+			var piece = new Body( ctx.NewBodyId(), $"{body.Name} ({i + 1})", pieces[i] )
+			{
+				Visible = body.Visible,
+				FeatureId = Id,
+			};
+
+			if ( at < 0 )
+				ctx.Bodies.Add( piece );
+			else
+				ctx.Bodies.Insert( at + i, piece );
+		}
+
+		return pieces.Count - 1;
+	}
+
+	/// <summary>
+	/// The warning a severing cut earns. Never an error: the geometry is right, and the part list
+	/// having grown is something to look at rather than something to fix.
+	/// </summary>
+	protected void WarnSeparated( int added, string bodyName )
+	{
+		if ( added <= 0 )
+			return;
+
+		Warn(
+			added == 1
+				? $"This cut separated '{bodyName}' into two parts"
+				: $"This cut separated '{bodyName}' into {added + 1} parts",
+			$"The tool went all the way through, so what was one solid is now {added + 1} that touch nowhere. "
+				+ "The largest keeps the original part's name and id; the rest are new parts below it.",
+			"Reduce the depth if the cut was meant to be a pocket",
+			"Nothing to fix if separating the part was the intent" );
+	}
+
+	/// <summary>Names in a sentence: "'A'", "'A' and 'B'", "'A', 'B' and 'C'".</summary>
+	protected static string Listed( IReadOnlyList<string> names )
+	{
+		if ( names is null || names.Count == 0 )
+			return "nothing";
+
+		var quoted = new List<string>( names.Count );
+
+		foreach ( var name in names )
+			quoted.Add( $"'{name}'" );
+
+		if ( quoted.Count == 1 )
+			return quoted[0];
+
+		return string.Join( ", ", quoted.GetRange( 0, quoted.Count - 1 ) ) + " and " + quoted[^1];
+	}
+
 	protected void ApplyDiagnostic( FeatureDiagnostic diagnostic )
 	{
 		if ( diagnostic is null )
