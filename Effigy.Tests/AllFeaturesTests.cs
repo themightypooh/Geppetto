@@ -45,7 +45,7 @@ public static class AllFeaturesTests
 	/// The failure is correct: you cannot revolve a profile through its own axis. What matters is
 	/// that it says so usefully, with the numbers, because "move it to one side" alone leaves you
 	/// guessing which side and how far. The real fix is an axis SELECTION in the dialog, the way
-	/// Extrude selects a face - noted in CAD-REFERENCE.md, and not something the kernel can do.
+	/// Extrude selects a face - noted in WHAT-IS-LEFT.md 2.7, and not something the kernel can do.
 	/// </summary>
 	static void TestRevolveNeedsAnAxisClearOfTheProfile()
 	{

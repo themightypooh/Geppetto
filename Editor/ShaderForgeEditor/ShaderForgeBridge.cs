@@ -11,7 +11,7 @@ namespace Marionette.ShaderForgeEditor;
 /// <summary>
 /// Every call this tool makes into the engine's shader and material APIs, in one place.
 ///
-/// This exists because of the warning at the top of MODELING-HANDOFF.md: this work was done
+/// This exists because of the provenance warning in WHAT-IS-BUILT.md: this work was done
 /// without the engine source on disk, so the exact shapes of Shader.Load, Material.FromShader,
 /// Material.Set and Shader.Schema are LEADS, NOT FACTS. Rather than scatter those guesses through
 /// the UI where one wrong signature takes the whole window down, they are funnelled through here

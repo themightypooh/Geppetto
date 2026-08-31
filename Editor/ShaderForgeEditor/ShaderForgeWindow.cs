@@ -9,7 +9,7 @@ namespace Marionette.ShaderForgeEditor;
 /// Describe an effect in plain English, get a working .shader file, see it on a model straight away,
 /// tweak it, save it. The generator works from a library of composable HLSL blocks rather than a
 /// language model, so what it produces is deterministic, readable, and yours to edit — see
-/// Editor/ShaderForge for the kernel and SHADER-FORGE-HANDOFF.md for the scope.
+/// Editor/ShaderForge for the kernel and WHAT-IS-BUILT.md for the scope.
 ///
 /// Layout follows the design doc: preview on the left and centre, generator on the right.
 /// </summary>

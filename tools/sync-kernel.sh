@@ -8,7 +8,7 @@
 # assembly's sandbox whitelist does not allow. So the editor needs its own copy.
 #
 # `Effigy/` is the canonical one: it is what Effigy.Tests compiles, and keeping it outside any
-# engine folder is what keeps the Godot option open (see MODELING-HANDOFF-GODOT.md).
+# engine folder is what keeps the Godot option open (see WHAT-IS-BUILT.md).
 # `Editor/Effigy/` is a mirror and must never be edited by hand.
 #
 # KernelSyncTests fails the test run when the two diverge, so drift is caught rather than silently

@@ -14,7 +14,7 @@ namespace Effigy.Tests;
 /// `Editor/Effigy/` is that copy.
 ///
 /// `Effigy/` is canonical: it is what this test project compiles, and keeping it out of any engine
-/// folder is what keeps the Godot option open (MODELING-HANDOFF-GODOT.md).
+/// folder is what keeps the Godot option open (WHAT-IS-BUILT.md, "s&box, not Godot").
 ///
 /// The failure mode this exists to catch is silent: edit the canonical kernel, forget to mirror,
 /// and the tests keep passing against source the editor is not running. That already happened once

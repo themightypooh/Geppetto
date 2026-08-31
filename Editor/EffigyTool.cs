@@ -6,10 +6,10 @@ using System.IO;
 namespace Marionette.EditorTools;
 
 /// <summary>
-/// First look at the Effigy kernel (see ../Effigy/README.md) from inside the editor. Builds a
+/// First look at the Effigy kernel (see ../WHAT-IS-BUILT.md) from inside the editor. Builds a
 /// fixed demo body — a subdivided box — and drops it in the project as an OBJ wrapped in a
 /// compiled .vmdl, so it's an actual placeable prop rather than just a browser preview, ahead of
-/// real feature-tree editor integration (phase four, see ../MODELING-HANDOFF.md).
+/// real feature-tree editor integration (see ../WHAT-IS-LEFT.md).
 /// </summary>
 /// <remarks>
 /// The .vmdl text is the real modeldoc29 RenderMeshFile node shape, copied out of Citizen's own

@@ -23,7 +23,7 @@ namespace Effigy;
 /// is what the bridging pass does for every edge, not only the ones the angle threshold picked.
 ///
 /// A rounded fillet (multiple segments) is not built — this is Segments=1 chamfer only. See
-/// MODELING-HANDOFF.md.
+/// WHAT-IS-LEFT.md, "Rounded (multi-segment) fillets".
 /// </summary>
 public static class Bevel
 {
@@ -142,7 +142,7 @@ public static class Bevel
 			var pAonBA = cornerPoint[(fBtoA, key.A)];
 
 			// UVs are a placeholder here — planar projection isn't built yet (see
-			// MODELING-HANDOFF.md), and this face's true UV depends on it.
+			// WHAT-IS-BUILT.md, "UV projection"), and this face's true UV depends on it.
 			//
 			// Order is [A-on-AB, A-on-BA, B-on-BA, B-on-AB], NOT the more obvious "walk A's side
 			// then B's side" — that ordering puts the normal in the plane but pointing inward, an

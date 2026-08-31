@@ -3318,10 +3318,10 @@ internal sealed class EffigyToolStrip : Widget
 ///
 /// FONT ICONS, NOT DRAWN ONES, and that is a smaller scope than it looks. EffigyIcons only covers
 /// the twelve feature-creation tools; drawing another dozen-plus glyphs for every sketch tool in
-/// the same hand-painted style is real design work of its own (see EFFIGY-UI-PUNCHLIST.md item 2)
+/// the same hand-painted style is real design work of its own (see WHAT-IS-LEFT.md 2.6)
 /// and is deliberately not attempted here. Every name used is a CLASSIC Material Icon already
 /// audited against the same s&box-ships-classic-not-Symbols problem EffigyIcons exists to dodge -
-/// see ONSHAPE-WORKFLOW.md's icon table - so this does not reintroduce the blank-icon bug, it just
+/// see WHAT-IS-BUILT.md on icons - so this does not reintroduce the blank-icon bug, it just
 /// does not yet look as considered as the feature strip.
 /// </summary>
 /// <summary>One entry in a sketch tool's dropdown: the same kind of tool, done a different way.
