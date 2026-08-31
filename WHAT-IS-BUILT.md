@@ -12,7 +12,7 @@ it" has repeatedly been the difference between right and wrong.
 - A feature that cannot do what was asked says what it was asked, what stopped it, with this
   model's numbers, and what would work instead. A feature that did nothing is never a success.
 
-Verified as of 31 August 2026: **1609 kernel checks, 0 failing** (`./tools/test.sh`). The diagnostic
+Verified as of 31 August 2026: **1713 kernel checks, 0 failing** (`./tools/test.sh`). The diagnostic
 dialog and tree tooltip are written against the shipped `Editor.Label.WordWrap` and
 `TreeNode.GetTooltip` APIs; they have not been judged on screen.
 
@@ -521,6 +521,32 @@ want a different UV for the same position; per-vertex UVs would force one value 
 texture across every seam. It also makes UV subdivision purely local, so seams survive subdivision
 for free.
 
+### Sculpt correspondence, frames, BVH, brushes
+
+Kernel only, verified headlessly in `SculptTests`. No editor and no `SculptFeature` yet.
+
+**Correspondence is a contract.** `CatmullClark.SubdivideOnce` sorts edge points by `(A, B)` rather
+than dictionary insertion order, and `SubdivideWithMap` returns a `SubdivisionMap` naming each
+output vertex as an original, an edge point, or a face point. Same cage twice is the same map;
+reversing the face list does not shuffle the edge block. That is what a stored sculpt has to
+survive a rebuild and a runtime upgrade.
+
+**Deltas live in a derived local frame.** `SculptFrames.Build` makes a right-handed orthonormal
+basis per vertex (normal from `ComputeVertexNormals()`, tangent toward the lowest-indexed neighbour)
+plus a local edge length. `SculptLayer.Capture` / `Apply` convert through that frame. Capture-then-
+apply is the identity. Uniform 2× scale of the cage keeps the bump on the new normal and the same
+size relative to the cage; a 20% height edit keeps it on the surface.
+
+**Spatial queries refit, they do not rebuild.** `MeshBVH` is an AABB tree over faces. Ray hits
+agree with the linear `MeshRaycast` on point and distance (a ray through a shared vertex may name
+either adjacent face — same `t`). Radius query returns exactly the brute-force vertex set. After a
+pull, `Refit` updates boxes without touching tree structure, and both queries stay correct.
+
+**Brushes consume strokes, not a mouse.** `Brush.Apply` takes a `BrushStroke` of samples. Smooth,
+Draw, Inflate, Grab, Flatten, Pinch. Grab at zero strength is the identity. Smooth strictly reduces
+Laplacian energy. Mirror-X produces a mesh symmetric across X. Undo stores only the vertices the
+stroke moved. Eight Smooth samples on 1538 verts finish in well under two seconds.
+
 ### What the kernel suite actually checks
 
 Not "it renders, looks fine". Subdivision is the classic looks-right-is-wrong case: a vertex rule
@@ -563,7 +589,9 @@ All of it compiles clean. Where something has not been *run*, it says so, and
 
 - **The feature tree panel** with the Default geometry node, a **parts list** populated from
   `_studio.Bodies`, a **rollback bar** driven from the context menu and the Edit menu, and a
-  **feature context menu** (rename, suppress, roll-to-here, delete).
+  **feature context menu** (rename, suppress, roll-to-here, delete). The **parts list** has the
+  same kind of menu: rename, edit the feature that made it, hide/show, isolate, delete. Names and
+  hide flags are keyed by body id and survive rebuild and save.
 - **Feature dialogs** on Onshape's model: red spine plus a status line naming the reason, the tick
   disabled while the feature is broken, `Accept()` refusing to commit, and Enter / Escape /
   Shift+Enter wired. `IsBroken` is the single predicate.

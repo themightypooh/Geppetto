@@ -275,9 +275,11 @@ read out of the shipped Base Editor Library instead.
   the clearest case of a tool that looks *broken* rather than unfinished.
 - **Extrude's region choice** has kernel support (`RegionSeed`) and no UI.
 - **Mirror plane and pattern axis/direction** are typed Vec3. Usable, and a much lower priority.
-- **Per-part hide/show** is not implemented rather than stubbed: the viewport previews one merged
-  mesh (`PartStudio.ToMesh`), so there is nothing per-body to hide yet.
-- **The view cube is a text label, not clickable.**
+- **Per-part hide/show** is done. The Parts list eye and its Hide menu item key `HiddenBodyIds`
+  by body id, so one copy of a pattern can be hidden without the rest. The viewport preview already
+  took `ToVisibleMesh`.
+- **The view cube was a text label.** Removed — this camera flies, so a corner cube is the wrong
+  affordance. Named views stay in the View menu.
 - **The preview panel's "load an existing .shader"** in Shader Forge takes a typed path.
   `RigControlWindow.OpenPicker` is the precedent for a real asset picker.
 
@@ -304,10 +306,9 @@ vertex-index rig storage; no SMD import back into the parametric document; no he
 
 ## 4. The sculpt stage
 
-**Nothing in this section is built.** This is the plan for the second half of Effigy, written so a
-session picking it up cold can start at step 1 without re-deciding anything. Steps 1–5 are pure
-kernel and verifiable headlessly, which is how they should be built: get the maths right where a
-test can see it, then put a cursor on it.
+Steps 1–4 are built and verified (`SculptTests`, 1713 checks). Next is step 5, multires levels.
+Steps 5–6 are still pure kernel and should stay that way: get the maths right where a test can see
+it, then put a cursor on it.
 
 The shape of it:
 
@@ -335,36 +336,23 @@ Until reprojection exists, the right behaviour is a clear refusal.
 
 ### Build order
 
-**Step 1 — Stable subdivision correspondence** *(kernel, small)*. `SubdivideOnce`'s vertex layout is
-already deterministic and documented — `[0..V)` updated originals, `[V..V+E)` edge points,
-`[V+E..V+E+F)` face points — but the edge block's ordering comes from `Dictionary` enumeration. In
-practice that is insertion order; it is an implementation detail, not a contract, and a sculpt is
-persisted data that has to survive a re-run, a rebuild and a .NET upgrade. Sort `edgeList` by
-`(A, B)`, say so in the comment, and add `SubdivideWithMap` returning a `SubdivisionMap` stating per
-output vertex whether it is an original / edge / face point and which one. Everything else rests on
-this.
+**Step 1 — Stable subdivision correspondence** *(kernel, small)* — **done.** Edge points are sorted
+by `(A, B)`. `SubdivideWithMap` returns a `SubdivisionMap`. Verified: same cage twice is the same
+map; reversing faces does not shuffle the edge block; layout is originals, then edges, then faces.
 
-**Step 2 — Local frames and the delta round-trip** *(kernel, small)*. `SculptFrames.Build`,
-`SculptLayer.Apply`/`Capture`. *Test:* capture-then-apply is the identity to tolerance. **Then the
-one that matters:** capture a delta, scale the cage, re-apply — the detail is still on the surface
-and still the right size relative to it. **That test is the multires promise, and it is the gate: if
-frame-space deltas do not survive a cage edit cleanly, multires is not delivering the thing it was
-chosen for and the plan needs revisiting before steps 3–10 are built on it.**
+**Step 2 — Local frames and the delta round-trip** *(kernel, small)* — **done, and the gate held.**
+`SculptFrames.Build`, `SculptLayer.Capture`/`Apply`. Capture-then-apply is the identity. Uniform 2×
+scale keeps the bump on the new normal and the same size relative to the cage (local edge length is
+derived with the frame, not stored). A 20% taller cage keeps the bump on the surface. Frames stay
+orthonormal. See WHAT-IS-BUILT.md.
 
-**Step 3 — Spatial queries** *(kernel, medium)*. A BVH over faces with ray hit-test and radius
-query. `MeshRaycast` exists and is linear; at 128k vertices a linear scan per stroke sample is not
-viable. **Refit rather than rebuild** between samples — sculpting never changes topology, so the tree
-structure stays valid and only bounds need updating. That is the payoff for refusing dyntopo.
+**Step 3 — Spatial queries** *(kernel, medium)* — **done.** `MeshBVH` over faces, ray + radius,
+`Refit` after displacement. Ray hits match linear on point and distance; radius query matches brute
+force; refit keeps both true.
 
-**Step 4 — Brushes** *(kernel, medium)*. `Brush.Apply( mesh, stroke, frames, mask )`. A
-`BrushStroke` is a list of samples (position, normal, radius, strength, direction) — the editor
-produces them, the kernel consumes them, and the kernel never learns what a mouse is. Order, easiest
-and most useful first: **Smooth** (Laplacian, and the one you reach for constantly), **Draw/Clay**,
-**Inflate**, **Grab**, **Flatten**, **Pinch**. *Test:* volume- and area-sane on a known sphere;
-smooth strictly reduces a curvature metric; grab at zero strength is the identity; symmetry produces
-a symmetric mesh. **Put a stopwatch in these tests from the first brush**, not after step 7 makes it
-feel bad. **Decide undo here too** — a naive undo snapshots the whole delta array per stroke; store
-per-stroke affected-vertex diffs instead, rather than retrofitting it.
+**Step 4 — Brushes** *(kernel, medium)* — **done.** `Brush.Apply( mesh, stroke, frames, mask )`.
+Smooth, Draw, Inflate, Grab, Flatten, Pinch. Per-stroke undo is affected-vertex diffs, not a full
+snapshot. Stopwatch is in the suite from the first brush.
 
 **Step 5 — Multires level management** *(kernel, medium)*. Adding level N+1 subdivides the
 *displaced* level-N mesh and starts N+1's deltas at zero. Going down displays fewer levels; it does

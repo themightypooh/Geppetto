@@ -66,6 +66,18 @@ public static class StudioDocument
 				sb.Append( "material " ).Append( slot ).Append( ' ' ).Append( OneLine( name ) ).Append( '\n' );
 		}
 
+		foreach ( var (id, name) in studio.BodyNames.OrderBy( kv => kv.Key, StringComparer.Ordinal ) )
+		{
+			if ( !string.IsNullOrWhiteSpace( id ) && !string.IsNullOrWhiteSpace( name ) )
+				sb.Append( "bodyname " ).Append( id ).Append( ' ' ).Append( OneLine( name ) ).Append( '\n' );
+		}
+
+		foreach ( var id in studio.HiddenBodyIds.OrderBy( k => k, StringComparer.Ordinal ) )
+		{
+			if ( !string.IsNullOrWhiteSpace( id ) )
+				sb.Append( "hiddenbody " ).Append( id ).Append( '\n' );
+		}
+
 		foreach ( var feature in studio.Features )
 			WriteFeature( sb, feature );
 
@@ -311,6 +323,26 @@ public static class StudioDocument
 			{
 				var (slot, name) = Split( line[9..] );
 				studio.MaterialNames[ParseInt( slot, 0 )] = name;
+				continue;
+			}
+
+			if ( line.StartsWith( "bodyname " ) )
+			{
+				var (id, name) = Split( line[9..] );
+
+				if ( !string.IsNullOrWhiteSpace( id ) && !string.IsNullOrWhiteSpace( name ) )
+					studio.BodyNames[id] = name;
+
+				continue;
+			}
+
+			if ( line.StartsWith( "hiddenbody " ) )
+			{
+				var id = line[11..].Trim();
+
+				if ( !string.IsNullOrWhiteSpace( id ) )
+					studio.HiddenBodyIds.Add( id );
+
 				continue;
 			}
 

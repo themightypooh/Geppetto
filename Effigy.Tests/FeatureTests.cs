@@ -44,6 +44,9 @@ public static class FeatureTests
 
 		Section( "parameter dialogs follow the shape" );
 		TestParameterVisibility();
+
+		Section( "parts-list name and hide survive a rebuild" );
+		TestBodyPresentation();
 	}
 
 	static float Volume( PolyMesh m ) => m.SignedVolume();
@@ -383,5 +386,46 @@ public static class FeatureTests
 			f.Parameters.Any( p => p.Label == "Inner radius" ) );
 
 		Check( "type name follows the shape", f.TypeName == "Tube", f.TypeName );
+	}
+
+	static void TestBodyPresentation()
+	{
+		var studio = StudioWithBox();
+		studio.Features[0].Id = "box";
+		studio.Features[0].Name = "Box 1";
+		studio.Rebuild();
+
+		Check( "a body starts with the feature's name",
+			studio.Bodies[0].Name == "Box 1", studio.Bodies[0].Name );
+		Check( "and is visible", studio.Bodies[0].Visible );
+
+		var id = studio.Bodies[0].Id;
+
+		studio.BodyNames[id] = "Housing";
+		studio.HiddenBodyIds.Add( id );
+
+		// No MarkDirty: the cache still has the default name and visible flag. The override has
+		// to be reapplied on a reuse or a Parts-list rename would last until the next edit.
+		studio.Rebuild();
+
+		Check( "a renamed part keeps the name across a cached rebuild",
+			studio.Bodies[0].Name == "Housing", studio.Bodies[0].Name );
+		Check( "a hidden part stays hidden across a cached rebuild",
+			!studio.Bodies[0].Visible );
+
+		studio.MarkAllDirty();
+		studio.Rebuild();
+
+		Check( "and both survive a full rebuild",
+			studio.Bodies[0].Name == "Housing" && !studio.Bodies[0].Visible,
+			$"{studio.Bodies[0].Name} visible={studio.Bodies[0].Visible}" );
+
+		studio.BodyNames.Remove( id );
+		studio.HiddenBodyIds.Remove( id );
+		studio.Rebuild();
+
+		Check( "clearing the override restores the feature name",
+			studio.Bodies[0].Name == "Box 1", studio.Bodies[0].Name );
+		Check( "and showing it again draws it", studio.Bodies[0].Visible );
 	}
 }

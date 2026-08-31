@@ -271,8 +271,8 @@ public sealed class EffigyWindow : DockWindow
 		rigPanel.Checked = false;
 		rigPanel.Toggled += visible => DockManager.SetDockState( "Rig", visible );
 
-		// The orientations Onshape's view cube offers when you click it. Ours is a corner label
-		// rather than a clickable cube, so the list has to be reachable from somewhere.
+		// Named views, same list Onshape puts on the cube. The cube itself is gone — this camera
+		// flies rather than orbiting a locked-up model — but snapping to a plane is still useful.
 		view.AddSeparator();
 
 		foreach ( var standard in new[]
@@ -885,6 +885,8 @@ public sealed class EffigyWindow : DockWindow
 		_partsPanel = new EffigyPartsPanel( this, _studio )
 		{
 			VisibilityToggled = OnPartVisibilityToggled,
+			CommandRequested = OnPartCommand,
+			RenameCommitted = OnPartRenamed,
 		};
 
 		_materialsPanel = new EffigyMaterialsPanel( this, _studio )
@@ -941,21 +943,93 @@ public sealed class EffigyWindow : DockWindow
 		StateCookie = "Effigy4";
 	}
 
-	/// <summary>Hide or show the bodies a feature made, from the Parts list's eye.
+	/// <summary>Hide or show one body, from the Parts list's eye or its Hide menu item.
 	///
-	/// MarkDirty is the part that is easy to miss: features before the first dirty one are
-	/// restored from the rebuild cache and never re-run, and body visibility is applied while a
-	/// feature runs - so without this the eye would flip and nothing on screen would change.</summary>
-	private void OnPartVisibilityToggled( string featureId )
+	/// Per body, not per feature: hiding one copy of a pattern must not hide the rest. No
+	/// MarkDirty — this is drawing, not geometry, and PartStudio reapplies HiddenBodyIds at the
+	/// end of every rebuild including a cached one.</summary>
+	private void OnPartVisibilityToggled( string bodyId )
 	{
-		var feature = _studio.Features.FirstOrDefault( f => f.Id == featureId );
-
-		if ( feature is null )
+		if ( string.IsNullOrEmpty( bodyId ) )
 			return;
 
-		feature.Visible = !feature.Visible;
-		_studio.MarkDirty( feature );
+		RecordUndo();
+
+		if ( !_studio.HiddenBodyIds.Remove( bodyId ) )
+			_studio.HiddenBodyIds.Add( bodyId );
+
 		RebuildStudio();
+	}
+
+	private void OnPartCommand( string bodyId, EffigyPartCommand command )
+	{
+		if ( string.IsNullOrEmpty( bodyId ) )
+			return;
+
+		switch ( command )
+		{
+			case EffigyPartCommand.Rename:
+				_partsPanel?.BeginRename( bodyId );
+				break;
+
+			case EffigyPartCommand.ToggleVisibility:
+				OnPartVisibilityToggled( bodyId );
+				break;
+
+			case EffigyPartCommand.Edit:
+				if ( FeatureForBody( bodyId ) is { } feature )
+					EditFeature( feature );
+				break;
+
+			case EffigyPartCommand.Delete:
+				if ( FeatureForBody( bodyId ) is { } toDelete )
+					OnFeatureCommand( toDelete, EffigyFeatureCommand.Delete );
+				break;
+
+			case EffigyPartCommand.Isolate:
+				RecordUndo();
+
+				_studio.HiddenBodyIds.Clear();
+
+				foreach ( var body in _studio.Bodies )
+				{
+					if ( body.Id != bodyId )
+						_studio.HiddenBodyIds.Add( body.Id );
+				}
+
+				RebuildStudio();
+				break;
+
+			case EffigyPartCommand.ShowAll:
+				RecordUndo();
+				_studio.HiddenBodyIds.Clear();
+				RebuildStudio();
+				break;
+		}
+	}
+
+	private void OnPartRenamed( string bodyId, string name )
+	{
+		if ( string.IsNullOrEmpty( bodyId ) )
+			return;
+
+		RecordUndo();
+
+		var trimmed = string.IsNullOrWhiteSpace( name ) ? null : name.Trim();
+
+		if ( trimmed is null )
+			_studio.BodyNames.Remove( bodyId );
+		else
+			_studio.BodyNames[bodyId] = trimmed;
+
+		RebuildStudio();
+	}
+
+	private Feature FeatureForBody( string bodyId )
+	{
+		var featureId = _studio.Bodies.FirstOrDefault( b => b.Id == bodyId )?.FeatureId;
+
+		return featureId is null ? null : _studio.Features.FirstOrDefault( f => f.Id == featureId );
 	}
 
 	private void OnTreeVisibilityToggled( string key, bool visible )
@@ -1890,6 +1964,17 @@ public sealed class EffigyWindow : DockWindow
 		/// <summary>Slot names, renamed from the same menu.</summary>
 		public Dictionary<int, string> MaterialNames;
 
+		/// <summary>Parts-list names, keyed by body id. Not a feature field, so they have to be
+		/// captured the same way material names are or Ctrl+Z after a rename would keep the new
+		/// name on the same Feature objects.</summary>
+		public Dictionary<string, string> BodyNames;
+
+		public HashSet<string> HiddenBodyIds;
+
+		/// <summary>Feature.Name at this step. The Feature objects themselves are shared across
+		/// snapshots, so a rename mutated in place would survive undo without this.</summary>
+		public Dictionary<Feature, string> FeatureNames;
+
 		public int RollbackIndex;
 
 		/// <summary>A full clone (Skeleton.Clone) rather than a reference — the rig panel mutates
@@ -1933,6 +2018,9 @@ public sealed class EffigyWindow : DockWindow
 			Sketches = sketches,
 			FaceSets = faceSets,
 			MaterialNames = new Dictionary<int, string>( _studio.MaterialNames ),
+			BodyNames = new Dictionary<string, string>( _studio.BodyNames ),
+			HiddenBodyIds = new HashSet<string>( _studio.HiddenBodyIds ),
+			FeatureNames = _studio.Features.ToDictionary( f => f, f => f.Name ),
 			RollbackIndex = _studio.RollbackIndex,
 			RigSkeleton = _rigPanel?.Skeleton.Clone() ?? new Skeleton(),
 			BodyBoneMap = _rigPanel is null
@@ -1992,6 +2080,19 @@ public sealed class EffigyWindow : DockWindow
 
 		foreach ( var (slot, name) in snapshot.MaterialNames )
 			_studio.MaterialNames[slot] = name;
+
+		_studio.BodyNames.Clear();
+
+		foreach ( var (id, name) in snapshot.BodyNames )
+			_studio.BodyNames[id] = name;
+
+		_studio.HiddenBodyIds.Clear();
+
+		foreach ( var id in snapshot.HiddenBodyIds )
+			_studio.HiddenBodyIds.Add( id );
+
+		foreach ( var (feature, name) in snapshot.FeatureNames )
+			feature.Name = name;
 
 		_rigPanel?.RestoreRig( snapshot.RigSkeleton, snapshot.BodyBoneMap );
 
@@ -2089,6 +2190,33 @@ public sealed class EffigyWindow : DockWindow
 		foreach ( var (slot, name) in a.MaterialNames )
 		{
 			if ( !b.MaterialNames.TryGetValue( slot, out var other ) || name != other )
+				return false;
+		}
+
+		if ( a.BodyNames.Count != b.BodyNames.Count )
+			return false;
+
+		foreach ( var (id, name) in a.BodyNames )
+		{
+			if ( !b.BodyNames.TryGetValue( id, out var other ) || name != other )
+				return false;
+		}
+
+		if ( a.HiddenBodyIds.Count != b.HiddenBodyIds.Count )
+			return false;
+
+		foreach ( var id in a.HiddenBodyIds )
+		{
+			if ( !b.HiddenBodyIds.Contains( id ) )
+				return false;
+		}
+
+		if ( a.FeatureNames.Count != b.FeatureNames.Count )
+			return false;
+
+		foreach ( var (feature, name) in a.FeatureNames )
+		{
+			if ( !b.FeatureNames.TryGetValue( feature, out var other ) || name != other )
 				return false;
 		}
 
@@ -2726,6 +2854,18 @@ internal enum EffigyFeatureCommand
 	MoveDown,
 	RollbackTo,
 	RollForward,
+}
+
+/// <summary>What the Parts list's context menu asked the window to do. Same split as
+/// <see cref="EffigyFeatureCommand"/>: the panel knows the row, the window owns undo.</summary>
+internal enum EffigyPartCommand
+{
+	Rename,
+	ToggleVisibility,
+	Edit,
+	Delete,
+	Isolate,
+	ShowAll,
 }
 
 internal sealed class EffigyFeatureTreePanel : Widget
@@ -3776,9 +3916,15 @@ internal sealed class EffigyPartsPanel : Widget
 	private PartStudio _studio;
 	private readonly PartsTreeView _tree;
 
-	/// <summary>Feature id of the part whose eye was clicked. The window owns the studio and the
+	/// <summary>Body id of the part whose eye was clicked. The window owns the studio and the
 	/// rebuild, so the panel reports the click rather than acting on it.</summary>
 	public Action<string> VisibilityToggled { get; set; }
+
+	public Action<string, EffigyPartCommand> CommandRequested { get; set; }
+
+	/// <summary>A rename was typed and confirmed. Carries the new text, and the window has to
+	/// snapshot for undo BEFORE applying it.</summary>
+	public Action<string, string> RenameCommitted { get; set; }
 
 	public EffigyPartsPanel( Widget parent, PartStudio studio ) : base( parent )
 	{
@@ -3825,6 +3971,77 @@ internal sealed class EffigyPartsPanel : Widget
 			_tree.AddItem( new PartNode( this, body ) );
 	}
 
+	/// <summary>Rename in place: a one-field popup at the cursor, same as the feature tree.</summary>
+	public void BeginRename( string bodyId )
+	{
+		var body = BodyById( bodyId );
+
+		if ( body is null )
+			return;
+
+		var menu = new Menu( this );
+		var edit = new LineEdit( body.Name ?? "Part", menu ) { FixedWidth = 190 };
+
+		edit.ReturnPressed += () =>
+		{
+			RenameCommitted?.Invoke( bodyId, edit.Text );
+			menu.Close();
+		};
+
+		menu.AddWidget( edit );
+		menu.OpenAtCursor();
+
+		edit.Focus();
+		edit.SelectAll();
+	}
+
+	/// <summary>The right-click menu on a part. Every entry acts on the row that was clicked
+	/// rather than on the selection, so right-clicking one part while another is selected does
+	/// what it looks like it does.</summary>
+	public void OpenPartMenu( Body body )
+	{
+		if ( body is null )
+			return;
+
+		var menu = new Menu( this );
+		var bodyId = body.Id;
+		var visible = body.Visible;
+		var othersHidden = _studio.HiddenBodyIds.Count > 0;
+
+		menu.AddOption( "Rename", "text_fields", () => BeginRename( bodyId ) );
+		menu.AddOption( "Edit", "edit", () => CommandRequested?.Invoke( bodyId, EffigyPartCommand.Edit ) );
+
+		menu.AddSeparator();
+
+		menu.AddOption( visible ? "Hide" : "Show",
+			visible ? "visibility_off" : "visibility",
+			() => CommandRequested?.Invoke( bodyId, EffigyPartCommand.ToggleVisibility ) );
+
+		menu.AddOption( "Show only this", "center_focus_strong",
+			() => CommandRequested?.Invoke( bodyId, EffigyPartCommand.Isolate ) );
+
+		if ( othersHidden )
+		{
+			menu.AddOption( "Show all parts", "visibility",
+				() => CommandRequested?.Invoke( bodyId, EffigyPartCommand.ShowAll ) );
+		}
+
+		menu.AddSeparator();
+
+		var delete = menu.AddOption( "Delete", "delete",
+			() => CommandRequested?.Invoke( bodyId, EffigyPartCommand.Delete ) );
+
+		var siblings = _studio.Bodies.Count( b => b.FeatureId == body.FeatureId );
+
+		if ( siblings > 1 )
+			delete.StatusTip = "Removes the feature that made this part, and every other part it made.";
+
+		menu.OpenAtCursor();
+	}
+
+	private Body BodyById( string bodyId ) =>
+		_studio?.Bodies.FirstOrDefault( b => b.Id == bodyId );
+
 	private sealed class PartsTreeView : TreeView
 	{
 		public PartsTreeView( Widget parent ) : base( parent ) { }
@@ -3848,11 +4065,18 @@ internal sealed class EffigyPartsPanel : Widget
 
 		public PartNode( EffigyPartsPanel panel, Body body ) : base( body ) { _panel = panel; }
 
-		/// <summary>The eye toggles the FEATURE that made this body, not the body - Body.Visible is
-		/// re-derived from it on every rebuild, so setting it here would last until the next
-		/// parameter tick and no longer. One consequence worth knowing: hiding a part made by a
-		/// pattern hides every copy that pattern produced, because they share a feature.</summary>
-		public void ToggleVisibility() => _panel.VisibilityToggled?.Invoke( Value.FeatureId );
+		public void ToggleVisibility() => _panel.VisibilityToggled?.Invoke( Value.Id );
+
+		/// <summary>Double click renames, which is where every tree in the editor puts it.</summary>
+		public override void OnActivated() => _panel.BeginRename( Value.Id );
+
+		/// <summary>Right click opens the part menu. Returning true stops the tree falling back
+		/// to its own (empty) menu.</summary>
+		public override bool OnContextMenu()
+		{
+			_panel.OpenPartMenu( Value );
+			return true;
+		}
 
 		public override void OnPaint( VirtualWidget item )
 		{

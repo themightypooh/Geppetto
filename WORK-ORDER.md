@@ -29,7 +29,7 @@ Run the suite before touching anything:
 export PATH="/c/Program Files/dotnet:$PATH" && ./tools/test.sh
 ```
 
-~25 seconds, **1609 checks, 0 failing** as of this writing. `dotnet` is installed but not on `PATH`
+~25 seconds, **1713 checks, 0 failing** as of this writing. `dotnet` is installed but not on `PATH`
 in Git Bash, hence the prefix — without it the script tries `apt-get` and dies. The script syncs the
 editor's kernel mirror first (see HANDOFF.md, "The two kernel copies"): **never edit
 `Editor/Effigy/` by hand**, it is generated from `Effigy/`.
@@ -110,17 +110,11 @@ closed, manifold, Euler-correct, valid meshes.
 
 Ordered by what unblocks the pipeline, which is not the same as what is most interesting.
 
-## D. The sculpt stage — phase two, and nothing is built
+## D. The sculpt stage — phase two
 
-[WHAT-IS-LEFT.md §4](WHAT-IS-LEFT.md) is a complete ten-step plan written so a session picking it up
-cold can start at step 1 without re-deciding anything. Steps 1–6 are pure kernel and verifiable
-headlessly; **step 7, the editor, is the long pole** — steps 1–6 are perhaps a third of the calendar
-time despite carrying most of the intellectual content.
-
-**Step 2 is the gate, and it should be treated as one.** Capture a delta, scale the cage, re-apply —
-the detail must still be on the surface and still the right size relative to it. If frame-space
-deltas do not survive a cage edit cleanly, multires is not delivering the thing it was chosen for,
-and steps 3–10 should not be built on top of it. Stop and revisit the plan instead.
+Steps 1–4 are built — see [WHAT-IS-BUILT.md](WHAT-IS-BUILT.md). Next is **step 5, multires levels**.
+[WHAT-IS-LEFT.md §4](WHAT-IS-LEFT.md) is still the plan. Steps 5–6 are pure kernel and verifiable
+headlessly; **step 7, the editor, is the long pole**.
 
 The CAD side owes it exactly one thing that is not already done: **non-overlapping UVs on the cage**,
 which nothing currently checks. Quad-dominant output is no longer a risk — the boolean returns
@@ -165,7 +159,7 @@ judged at various dock sizes.
 Four docs, on purpose. When something lands:
 
 - It moves **out of** WHAT-IS-LEFT.md and **into** WHAT-IS-BUILT.md, and the entry there names *how
-  it was verified* — "1609 checks" and "I looked at it in the editor" are different claims and the
+  it was verified* — "1713 checks" and "I looked at it in the editor" are different claims and the
   difference has repeatedly been the difference between right and wrong.
 - A temporary brief (`DIAGNOSTICS-BRIEF.md`, `FBX-EXPORT-BRIEF.md`) is folded in and **deleted**.
 - This file is a work order. When phase one is done, delete section A–C rather than leaving a

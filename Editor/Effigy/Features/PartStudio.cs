@@ -70,6 +70,23 @@ public sealed class PartStudio
 			? name
 			: ObjWriter.DefaultMaterialName( slot );
 
+	/// <summary>
+	/// Names given to a body, keyed by body id.
+	///
+	/// Bodies are remade every rebuild and otherwise take the name of the feature that made them.
+	/// That is the right default and the wrong override: a pattern of eight cubes would all follow
+	/// "Linear pattern 1", and renaming one in the Parts list would have nowhere to live. Body ids
+	/// are stable (<c>{featureId}b{n}</c>), so a name keyed by id survives a rebuild the way
+	/// MaterialNames survive one.
+	/// </summary>
+	public Dictionary<string, string> BodyNames = new();
+
+	/// <summary>
+	/// Bodies hidden from the viewport, keyed by id. Independent of Feature.Visible: hiding one
+	/// copy of a pattern must not hide the rest, and hiding is not suppression.
+	/// </summary>
+	public HashSet<string> HiddenBodyIds = new();
+
 	/// <summary>Result of the last rebuild.</summary>
 	public List<Body> Bodies { get; private set; } = new();
 
@@ -262,9 +279,30 @@ public sealed class PartStudio
 		}
 
 		Bodies = ctx.Bodies;
+		ApplyBodyPresentation();
 		_dirtyFrom = count;
 
 		return report;
+	}
+
+	/// <summary>
+	/// Put Parts-list names and hide flags onto the bodies this rebuild just produced.
+	///
+	/// MUST RUN AFTER the feature loop. Each feature writes Body.Visible from Feature.Visible and
+	/// Body.Name from Feature.Name as it goes, which is the right default and would wipe a rename
+	/// or a hide if this ran first. Incremental rebuilds restore those same defaults from the
+	/// cache, so this also has to run when nothing was re-evaluated.
+	/// </summary>
+	void ApplyBodyPresentation()
+	{
+		foreach ( var body in Bodies )
+		{
+			if ( BodyNames.TryGetValue( body.Id, out var name ) && !string.IsNullOrWhiteSpace( name ) )
+				body.Name = name;
+
+			if ( HiddenBodyIds.Contains( body.Id ) )
+				body.Visible = false;
+		}
 	}
 
 	static int HighestBodyNumber( IEnumerable<Body> bodies )

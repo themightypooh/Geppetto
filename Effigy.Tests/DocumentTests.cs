@@ -74,6 +74,12 @@ public static class DocumentTests
 		Report.Check( "and an unnamed slot still falls back to its number",
 			back.NameForSlot( 5 ) == "material_5", back.NameForSlot( 5 ) );
 
+		Report.Check( "a renamed part comes back",
+			back.BodyNames.TryGetValue( "boxb0", out var partName ) && partName == "Housing",
+			partName ?? "missing" );
+
+		Report.Check( "a hidden part stays hidden", back.HiddenBodyIds.Contains( "boxb0" ) );
+
 		var box = (PrimitiveFeature)back.Features[0];
 
 		Report.Check( "float parameters come back exactly",
@@ -356,6 +362,9 @@ public static class DocumentTests
 
 		studio.MaterialNames[3] = "brushed steel";
 		studio.MaterialNames[7] = "rubber";
+
+		studio.BodyNames["boxb0"] = "Housing";
+		studio.HiddenBodyIds.Add( "boxb0" );
 
 		return studio;
 	}

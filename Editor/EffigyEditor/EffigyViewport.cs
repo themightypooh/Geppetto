@@ -10,7 +10,7 @@ namespace Marionette.EditorTools;
 /// <summary>
 /// The 3D viewport for Effigy — a live view of the PartStudio's output, with Onshape-style
 /// reference planes (Top/Front/Right intersecting at the origin), a selectable origin point,
-/// a view cube, and orbit camera.
+/// and a fly camera.
 ///
 /// PLANES ARE DRAWN AS WIREFRAME RECTANGLES using Gizmo.Draw.Line, oriented to s&box's
 /// coordinate system (+x forward, +y left, +z up):
@@ -160,7 +160,7 @@ internal sealed partial class EffigyViewport : Widget
 	/// This used to be the reference planes' grid colour, which is where the name comes from. The
 	/// planes are outlines only now and their outlines keep their per-axis hues — Top orange, Front
 	/// blue, Right green — because that is how you tell them apart. What is left on this is the
-	/// view cube's orientation label.
+	/// faded interior grid.
 	/// </summary>
 	public Color PlaneColor { get; set; } = new( 0.55f, 0.58f, 0.61f, 1f );
 	public bool OriginVisible { get; set; } = true;
@@ -849,44 +849,10 @@ internal sealed partial class EffigyViewport : Widget
 		_planeHalfSize[_resizingPlane] = MathF.Max( half, MinPlaneHalfSize );
 	}
 
-	// --- view cube (top-right orientation indicator) ----------------------------------------
-
-	/// <summary>
-	/// A small orientation label in the viewport's top-right corner, like Onshape's view cube.
-	/// Shows the current camera direction as text (FRONT / BACK / LEFT / RIGHT / TOP / BOTTOM).
-	/// </summary>
-	private void DrawViewCube()
-	{
-		var forward = -_camera.WorldRotation.Forward;
-		var absX = MathF.Abs( forward.x );
-		var absY = MathF.Abs( forward.y );
-		var absZ = MathF.Abs( forward.z );
-
-		string label;
-
-		if ( absZ > absX && absZ > absY )
-			label = forward.z > 0 ? "TOP" : "BOTTOM";
-		else if ( absX > absY )
-			label = forward.x > 0 ? "FRONT" : "BACK";
-		else
-			label = forward.y > 0 ? "LEFT" : "RIGHT";
-
-		// Set the colour explicitly. Gizmo.Draw.Color is sticky, so without this the label came out
-		// in whatever the last thing drawn happened to leave behind - the Z axis blue on one frame,
-		// the origin handle's yellow on the next.
-		Gizmo.Draw.Color = PlaneColor.WithAlpha( 0.9f );
-
-		Gizmo.Draw.ScreenText( label, new Vector2( _canvas.Size.x - 52f, 18f ),
-			"Roboto", 11f, TextFlag.Center );
-
-		// The "grid N u" readout that used to sit under the label is gone with the grid it measured.
-		// A scale readout is still worth having and there is nothing left for it to count, so it
-		// waits for something that is actually on screen to describe.
-	}
-
 	// --- standard views ----------------------------------------------------------------------
 
-	/// <summary>The orientations Onshape's view cube offers when you click it.</summary>
+	/// <summary>Named camera poses, reachable from the View menu. A fly camera does not need a
+	/// corner cube to stay oriented, but snapping to a plane is still useful.</summary>
 	public enum StandardView
 	{
 		Top,
@@ -1037,8 +1003,6 @@ internal sealed partial class EffigyViewport : Widget
 			if ( Gizmo.WasLeftMousePressed && !Gizmo.IsHovered && OriginSelected )
 				DeselectOrigin();
 		}
-
-		DrawViewCube();
 
 		// BoneToolActive and BodyPickMode: the same "you can click here" signal every other live
 		// pick mode already gets from Gizmo.HasHovered/_hoveredSketchId/_hoveredFaceBodyId. Without
