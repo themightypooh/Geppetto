@@ -67,9 +67,11 @@ Each cost real time to find. All are documented at their call sites too.
 
 ---
 
-See `CAD-REFERENCE.md` for how Solvespace and FreeCAD solve the problems Effigy is still missing —
-sketching on a face, cut vs boss, and referring to geometry that gets rebuilt. Design notes only:
-they are GPL and LGPL, this repo is MIT.
+See `CAD-REFERENCE.md` for how Solvespace and FreeCAD solve the problems this repo has had to solve.
+The three named here originally — sketching on a face, cut vs boss, and referring to geometry that
+gets rebuilt — are all built now (`FacePlane`/`FaceRef`, and Extrude's `Result`), so read that
+document for its comparisons and for its running "where this left off" log rather than as a list of
+gaps. Design notes only: Solvespace and FreeCAD are GPL and LGPL, this repo is MIT.
 
 ## Where things are
 

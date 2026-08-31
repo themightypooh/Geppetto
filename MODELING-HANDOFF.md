@@ -223,14 +223,22 @@ folder's README for the design decisions; the status here is what remains.
    Quad-dominant output is a hard requirement, not a nicety: skinning needs it in phase two.
 2. **Feature tree** — ordered history, rollback, incremental rebuild, self-describing parameters.
    **Done**, modelled on Onshape's Part Studio.
-3. **Sketcher** — planes, lines, arcs, circles, closed-region finding, extrude, revolve. **Done.**
-   The constraint solver is not: coordinates are typed rather than derived.
+3. **Sketcher** — planes, lines, arcs, circles, ellipses, splines, closed-region finding, extrude,
+   revolve. **Done.** The constraint solver landed and has since been extended twice: sixteen kinds
+   now, including tangency (line-to-arc and arc-to-arc), midpoint, fix, concentric and diameter.
+   Trim, extend, fillet and offset are **done** too, as in-place edits rather than as features —
+   see `Effigy/Sketch/SketchEdit.cs` for why that is the right line to draw.
+   **Sweep and loft are done**, over one shared skinner: sweep carries its profile in a
+   rotation-minimising frame, loft resamples and rotationally aligns its sections before skinning.
 4. **Modifiers** — array, mirror, bevel (flat chamfer by angle threshold with skin-weight passthrough)
    and shell are **done**.
 5. **Boolean subtract**, which also unlocks profiles with holes. The kernel side is **done and
    tested** — `MeshBoolean`/`IMeshBoolean`, and Extrude/Revolve reach for it when Result is Remove.
-   What's missing is the adapter to s&box's own `PolygonMesh`, which needs a real editor session to
-   write (see Effigy's README, "Not here yet").
+   The adapter to s&box's own `PolygonMesh` is now **written** as well
+   (`Editor/EffigyEditor/EffigyMeshBoolean.cs`), from Facepunch's own call site rather than guessed.
+   It has **never been run**, which makes running it the highest-value thing left on this list —
+   and check what it hands back, not just that it works: triangle soup rather than quads poisons the
+   subdivision cage and breaks phase three as well as this.
 6. **Planar/box-projection auto-UV per face cluster.** **Done** — `UVProjectFeature` re-projects box
    or planar per selected bodies.
 7. **Export** — OBJ works for static geometry. Collision from the primitive list rather than from 

@@ -1,4 +1,4 @@
-# Effigy UI punch list — po's, dictated in one pass, August 2026
+﻿# Effigy UI punch list — po's, dictated in one pass, August 2026
 
 **Read this first if you are picking this up cold.** Everything below is a direct request from po,
 captured as close to verbatim as possible because a session ended mid-work before and the context
@@ -69,17 +69,27 @@ tests — see `EditorFlowTests`, `FaceSketchTests`. The widget/gizmo code itself
 the pull-handle viewport code) has never been compiled in this session's environment. Flag this
 prominently to po: **do not assume the gizmo works until it's been run once.**
 
-## 5. Plane grid: either remove it, or (better) add a Settings tab with a checkbox to toggle it
+## 5. Plane grid: either remove it, or (better) add a Settings tab with a checkbox to toggle it — WRITTEN
 
 po's preferred version: a Settings entry in the very top toolbar (menu bar area) with a checkbox
-for "show plane grid". Not started.
+for "show plane grid".
 
-## 6. Same Settings menu: color palette dropdown selector
+**Built** as `Editor/EffigyEditor/EffigySettingsWindow.cs`, with `ShowGrid` as the setting behind
+it. The switch is hand-painted rather than an s&box `Checkbox`, because a checkbox reads as "tick
+this to agree" and what is wanted here is "this is on".
+
+**Status: written, never compiled or run**, the same caveat as everything else in this document that
+touches a widget. Judge the switch and its slide animation once it is on screen.
+
+## 6. Same Settings menu: color palette dropdown selector — WRITTEN
 
 Move/add the existing palette switching (currently a View-menu submenu, see `EffigyPalette` in
 `EffigyWindow.cs`) into this new Settings tab, as a dropdown rather than a checkable submenu list.
 **Must include one dark-mode option with good contrast** — `OnshapeDark` may already qualify, judge
 against po's actual monitor once it's running, not by RGB values alone.
+
+**Built** in the same `EffigySettingsWindow`, as a dropdown. The dark-mode contrast judgement is
+still outstanding and still needs po's actual monitor — that part cannot be closed from here.
 
 ## 7. Planes and origin should be independently hideable, via a tree-row eye icon
 
@@ -211,3 +221,16 @@ Item 4 (screenshots) is not schedulable — it happens on po's machine, whenever
 **Item 10 (the cube-face-sketch demo) is now the single highest-value thing to test first once
 back at the machine** — everything behind it, kernel and UI both, is written and it's the one po
 explicitly wants on video.
+
+---
+
+## Not on po's list: the UI the CAD kernel is now waiting on
+
+Everything above came from po. This section did not, and is kept separate for that reason — it is a
+record of kernel work that has landed with no way to reach it, not a request.
+
+As of 30 August 2026 the sketcher's kernel gained ellipses, splines, trim, extend, fillet, offset,
+six more constraint kinds, and sweep and loft as features. **None of it has a button.** See
+`CAD-REFERENCE.md`'s "What is left, in the order worth doing it" for the ordering; the two smallest
+and highest-value pieces are wiring the new constraints into `ConstraintTools` so a selection can
+offer them, and a sketch PICKER, which sweep and loft need and which nothing in the tool has yet.

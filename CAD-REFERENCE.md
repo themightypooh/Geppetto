@@ -380,19 +380,25 @@ frustum formula — because a twisted or inside-out result passes every closed-a
 
 ### What is left, in the order worth doing it
 
-1. **Run the boolean.** `EffigyMeshBoolean.cs` is written and has never executed. Check that it
+1. **Wire the six new constraints into `ConstraintTools`.** This is a loose end from the same
+   session that added them, found by checking rather than assumed: the SOLVER has sixteen kinds, but
+   `ConstraintTools` — which turns a sketch selection into the constraints it allows — still offers
+   only the original eleven. Tangent, arc-to-arc tangent, diameter, midpoint, concentric and fix are
+   solvable, round-trip through the file, and are reachable from nothing. One case each, plus a menu
+   entry each in `EffigyViewport.Constraints.cs`. Small, and it is what makes batch one usable.
+2. **Run the boolean.** `EffigyMeshBoolean.cs` is written and has never executed. Check that it
    works, and check *what it returns*: triangle soup rather than quads poisons the subdivision cage
    and breaks the sculpt stage too. This gates more than it looks like it does.
-2. **Rounded fillets.** The one CAD item deliberately not attempted — see the reasoning in
+3. **Rounded fillets.** The one CAD item deliberately not attempted — see the reasoning in
    `Effigy/README.md`'s "Not here yet". It is surgery on `Bevel`'s vertex-cap pass, not a parameter.
-3. **Draft on existing faces.** Extrude has `Taper`, which covers the common case; drafting faces of
+4. **Draft on existing faces.** Extrude has `Taper`, which covers the common case; drafting faces of
    a solid that already exists does not exist. Well-defined and testable: move each vertex along the
    horizontal component of its normal, proportional to its distance from a neutral plane.
-4. **A hole feature.** Holes already work as inner loops of a profile (`HoleTests`), so this is
+5. **A hole feature.** Holes already work as inner loops of a profile (`HoleTests`), so this is
    convenience rather than capability: counterbore and countersink as a tool solid emitted with
    Result = Remove. Note it cannot build in the headless suite without a boolean provider, which is
    why `MergeTests` installs a stub — do the same.
-5. **The editor half of all of the above.** None of this session's work has any UI. The sketcher has
+6. **The editor half of all of the above.** None of this session's work has any UI. The sketcher has
    no trim/extend/offset/fillet tool, no ellipse or spline tool, and no way to add a tangent
    constraint; sweep and loft have no toolbar entry and no way to pick a second sketch. That is the
    Onshape-parity gap, and it is larger than the kernel gap was.

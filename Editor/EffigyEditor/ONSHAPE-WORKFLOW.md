@@ -1,4 +1,4 @@
-# Onshape's workflow, and what Effigy does about it
+﻿# Onshape's workflow, and what Effigy does about it
 
 Notes taken from Onshape's own documentation, and the record of which parts of its workflow this
 editor now implements. Written because the previous pass built ~3,400 lines of editor against an
@@ -122,12 +122,30 @@ Inferencing covers horizontal/vertical against existing points and the active li
 `ViewNormalToSketchPlane`, bound to `N`, and deliberately *not* called on sketch entry, per the
 Onshape behaviour above.
 
-Not built, because there is no kernel behind them: spline, trim, extend and offset. Those buttons
-are absent rather than present and dead.
+Spline, trim, extend and offset **have a kernel behind them now** — `SketchSolver`'s neighbours in
+`Effigy/Sketch/SketchEdit.cs`, plus `SketchSpline` and `SketchEllipse` — and the buttons are still
+absent. They were absent-rather-than-dead when there was nothing underneath them; now they are the
+highest-value sketch tools to build, because the hard half of each is done and tested:
 
-Dimensions and constraints are now the other case — the kernel IS there (`SketchSolver`, and seven
-constraint kinds), and the editor has no tool to put a constraint into a sketch. That makes them the
-highest-value sketch tools to build next, since the hard half is already done and tested.
+- **Trim** wants a click on the piece to remove; the kernel takes the curve and a pick point.
+- **Extend** wants a click on the end to stretch; the kernel takes the curve and which end.
+- **Offset** wants a chain and a distance, and reports corners it could not close.
+- **Fillet** wants the corner point and a radius. It refuses a radius too big for its arms rather
+  than clamping, so the editor has a message to show rather than a silently different result.
+- **Spline** wants click-to-place points, and **ellipse** a centre, a major-axis point and a minor
+  radius — both are ordinary sketch points, so dragging and dimensioning them already works.
+
+Dimensions and constraints are no longer the gap they were: the solver has **sixteen** constraint
+kinds, and `ConstraintTools` plus the right-click menu over a sketch selection is built.
+
+But the gap there is wider than "a menu entry". `ConstraintTools` — the KERNEL side, the thing that
+turns a selection into the constraints it allows — still only offers the original eleven. Tangent,
+arc-to-arc tangent, diameter, midpoint, concentric and fix are solvable and tested but unreachable
+from any selection, so wiring them is kernel work before it is editor work, and it is small: one
+case each in `ConstraintTools`, then one menu entry each.
+
+Sweep and loft also have no toolbar entry and no way to pick a second sketch, which is the one piece
+of UI they need that nothing else in the tool has: a sketch PICKER, not just "the most recent one".
 
 ## 5. The rollback bar
 
