@@ -184,7 +184,11 @@ internal static class ShaderForgeBridge
 
 			try
 			{
-				ConsoleSystem.Run( $"mat_reloadshaders {shaderPath}" );
+				// Editor.ConsoleSystem, not Sandbox.ConsoleSystem — both are in scope here and the
+				// bare name does not compile. Facepunch's own editor-side caller
+				// (addons/tools/Code/Mcp/EditorTools.cs) sits in namespace Editor.Mcp, so its
+				// unqualified ConsoleSystem.Run resolves to the Editor one; this is that call.
+				Editor.ConsoleSystem.Run( $"mat_reloadshaders {shaderPath}" );
 			}
 			catch ( Exception e )
 			{
