@@ -53,7 +53,7 @@ is tested; none of it has been looked at. See 2.1 and 2.2 for what to check.
 ## 1. Effigy kernel
 
 The kernel is roughly **93% of phase one**. All of it is headless-testable — no s&box anywhere, and
-1468 checks say so.
+1555 checks say so.
 
 ### 1.1 Exercise the boolean past the one case that works
 
@@ -84,21 +84,48 @@ defect rather than needing an engine — and fix against that.
 **Do not measure this by eye.** All four bugs fixed in the boolean produced closed, manifold,
 Euler-correct, valid meshes.
 
-### 1.2 Rounded (multi-segment) fillets
+### 1.2 ~~Rounded (multi-segment) fillets~~ — **done**
 
-*The one CAD capability deliberately never attempted.*
+`Bevel` is now `EdgeBlend`, and it offers `Chamfer` and `Fillet`. In the editor they are two
+features with the names Onshape gives them — Chamfer sized in a **distance**, Fillet in a **radius**
+and a segment count — rather than one tool with a control that means a different thing at each end
+of its range. `BevelFeature` still loads: `StudioDocument.RenamedFeatures` maps it to
+`ChamferFeature`, parameters intact.
 
-`Bevel` is a flat chamfer. The obvious move — give its bridging pass N segments on an arc instead of
-one quad — does not work as a local change, and the reason is in `Bevel.cs`'s class comment: a bevel
-is explicitly **not** local to the selected edge, and the vertex-cap pass builds its n-gon from every
-distinct point converging on a vertex. Arc points threaded into a bridge without being threaded into
-that cap in the right cyclic order leave T-junctions, which pass closed, manifold and Euler checks
-while rendering wrong.
+It was done the way this section said to do it. The cap pass and the bridge pass were reworked
+together: `ArcRails` builds each rounded edge's points once, the bridge lays them across the edge
+and the cap threads the same indices around the vertex in the walk's own direction. The 20× corner
+clamp stayed.
 
-**Method:** rework the cap pass and the bridge pass **together**, not one then the other. Order the
-arc points into the cap's cyclic sequence as they are generated. Verify with `RenderCheck` — this is
-exactly the class of defect it exists for, and exactly the class the numeric suite cannot see. The
-20× width corner cap stays; a fillet has the same nearly-collinear blowup a chamfer does.
+Two things the plan did not anticipate, both now in `EdgeBlend`'s comments:
+
+- **A radius is not a setback.** A chamfer's distance is measured back along each face; a fillet's
+  radius is the arc's own, and the tangent points fall `r/tan(φ/2)` back for an edge opening at φ.
+  So the setback is per-edge, not one number for the mesh. On a cube every edge opens at 90° and the
+  two coincide — which is why one global width was enough while only chamfers existed, and why a
+  cube would never have caught it. `TestRadiusIsARadius` uses a wedge.
+- **The arc's centre is found twice and checked**, once from each tangent point. Where they disagree
+  the corner has been dragged somewhere the arc cannot follow, and that edge falls back to a flat
+  quad rather than guessing.
+
+`TestArcIsRound` is the check that matters: closed, manifold, Euler and a plausible face count are
+all satisfied just as well by a chamfer cut into n flat strips, which is what a slerp silently
+degrading to a lerp would produce. It measures every strip point against the edge's axis instead.
+
+### 1.2b Diagnostics — why a feature refused, and what to do instead
+
+*po's request, and the highest-value item in this section. See **`DIAGNOSTICS-BRIEF.md`** for the
+full design, the measurements behind it and the order of work.*
+
+The short version: a fillet with too large a radius currently produces an **inverted solid** — the
+2×2×2 cube goes to negative volume somewhere between r=0.80 and r=0.85 — and reports nothing at all.
+Same face count, Euler 2, `valid, closed`, at every radius up to 3.0. Effigy is presently worse than
+the Onshape behaviour po was complaining about, which at least goes red.
+
+The work is a structured `FeatureDiagnostic` (problem / cause-with-numbers / remedies), a pre-flight
+feasibility check that can report *"largest radius that fits: 0.31"*, a post-flight volume check that
+catches what the pre-flight cannot see, and turning `EdgeBlend`'s five silent degradations into
+warnings. Plus a dialog that can show more than one line — today it is a single `Editor.Label`.
 
 ### 1.3 Collision from the primitive history
 
@@ -234,7 +261,7 @@ selects.
 
 The sketch strip has safe, non-blank, but **generic** font glyphs (`Paint.DrawIcon`, classic
 Material Icon names), not the hand-drawn CAD-operation-specific style `EffigyIcons` uses for the
-feature strip — where Bevel shows a corner being cut and Shell shows a wall inside a shape. Drawing
+feature strip — where Chamfer shows a corner being cut and Shell shows a wall inside a shape. Drawing
 ~14 more in that style is real design work: line, rectangle ×2, circle ×2, arc ×2, polygon ×2, slot,
 point, construction, profile inspector, finish.
 
@@ -476,6 +503,29 @@ that Rig Control opens). What has not been done is **the run**: make the palm an
 separate bodies, create a palm/root bone, draw one bone down each finger, assign each finger body to
 that bone, export, and pose it in Rig Control — **including a rebuild after keyframing**, which is
 the part that proves body-id binding actually survives a parametric edit.
+
+**The export no longer blocks this.** It did until 2026-08-31: the rigged path wrote a DMX the
+compiler rejected outright ("Couldn't load DMX file" / "Node 'Body_LOD0' resolve failure"). Three
+things were wrong in `DmxWriter` — two pieces of KeyValues2 punctuation and the vertex-format field
+names — all now fixed and covered by `Effigy.Tests/DmxGrammarTests.cs`, which parses the output
+rather than searching it for substrings. A rigged cylinder now compiles to a `.vmdl` with correct
+bounds. Details and the reproducing commands are in `DmxWriter`'s class comment.
+
+Two things that run does still have to establish, because nothing so far has:
+
+- **that the bones survive the compiler.** Only the geometry has been checked (bounds, mesh and
+  material count). Bone names are not recoverable from a `.vmdl_c` by inspection — not even for
+  `fp_arms`, which is known-good — so this needs the model loaded in the editor.
+- **the UV V orientation.** `DmxWriter` writes `flipVCoordinates 0`; `fbx2dmx` writes `1` for FBX
+  input. Effigy's UVs are not in FBX's convention, so copying that would be a guess either way.
+  Check it against a textured model rather than reasoning about it.
+
+**An FBX exporter is no longer needed to unblock this**, though one is being written in parallel and
+may land anyway. The engine does ship `fbx2dmx.exe` and Autodesk's SDK, so FBX *is* a viable input
+and the old claim in `DmxWriter` that it "is a binary format nobody should hand-write" was wrong on
+both counts — handing the importer job to that SDK stays a real argument for it. But the DMX path
+works now, so that is a free choice rather than a rescue. `fbx2dmx`'s immediate value turned out to
+be as a **reference generator and validator** for the DMX path rather than as a format to switch to.
 
 The initial result is intentionally rigid: each finger moves as a unit. Segmented fingers can later
 use parented bones and smooth weights.

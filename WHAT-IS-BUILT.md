@@ -8,7 +8,7 @@ it" has repeatedly been the difference between right and wrong.
 wrong. Every hard bug in this repo passed most of its checks. Measure enclosed volume, covered
 area, or boundary-edge count — not "it renders and looks fine".
 
-Verified as of 31 August 2026: **1468 kernel checks, 0 failing** (`./tools/test.sh`), and the whole
+Verified as of 31 August 2026: **1555 kernel checks, 0 failing** (`./tools/test.sh`), and the whole
 project **compiles clean in the s&box editor**, 0 errors, 61 tools registered.
 
 ---
@@ -302,11 +302,23 @@ Known limits, stated rather than discovered:
 - **Openings must form simple loops.** Two opened faces meeting at only a vertex would put four rim
   quads on one outer-to-inner edge — non-manifold. Refused with an explanation.
 
-### Bevel
+### Chamfer and Fillet (`EdgeBlend`)
 
-Cuts every edge whose two face normals diverge past an angle threshold, by a fixed width each side —
-a flat chamfer, not a rounded fillet. The angle selection is what tells a genuine corner from the
-seams a curved surface is tessellated into.
+Cuts every edge whose two face normals diverge past an angle threshold, on both adjacent faces. The
+angle selection is what tells a genuine corner from the seams a curved surface is tessellated into.
+
+**Two features, one algorithm.** `EdgeBlend.Chamfer` takes a distance and leaves a flat cut;
+`EdgeBlend.Fillet` takes a radius and a segment count and leaves an arc. They are separate features
+in the editor, named and dimensioned the way Onshape names and dimensions them, because a rounded
+corner is not a chamfer with a number turned up to anyone using it. `BevelFeature`, what the chamfer
+used to be called, still loads out of old documents — see `StudioDocument.RenamedFeatures`.
+
+They differ in exactly two places, both in `EdgeBlend`'s comments. The **setback is derived** for a
+fillet (`r/tan(φ/2)`, per edge, from that edge's own opening angle) where a chamfer's distance is
+the setback outright — the same number only on a 90° edge. And the **single bridging quad becomes n
+quads across an arc**, whose points are threaded into the vertex cap at each end in the cap's own
+cyclic order; arc points in the bridge but not the cap are T-junctions that pass every numeric
+check. A one-segment fillet is byte-for-byte the chamfer, and a test asserts it.
 
 A face's corner is never split into two points: each (face, vertex) pair gets exactly one new point,
 the intersection in that face's own plane of its two boundary edges after sliding the selected ones
@@ -490,7 +502,7 @@ plausible until measured.
 
 **`RenderCheck` is the other half of the suite.** It rasterises a mesh and reduces it to coverage,
 island count and front/back parity, catching what counting cannot: a vertex in the wrong place, a
-detached fragment, and a face wound backwards. The Bevel bug is what prompted it. The tests damage
+detached fragment, and a face wound backwards. The chamfer bug is what prompted it. The tests damage
 good models three ways and fail if a check stays quiet.
 
 **A habit worth keeping:** three separate limitations in this repo were documented as needing the
@@ -529,7 +541,7 @@ All of it compiles clean. Where something has not been *run*, it says so, and
 - **Hand-drawn icons** in `EffigyIcons`, not font glyphs. That matters: s&box ships classic
   `MaterialIcons-Regular.ttf`, so a Material *Symbols* name renders as nothing at all. Six icons the
   first render condemned were redrawn — Extrude grows up off its profile instead of reading as a
-  plumb bob, Revolve draws the turned *shape* rather than the operation, Bevel is a filled block
+  plumb bob, Revolve draws the turned *shape* rather than the operation, Chamfer is a filled block
   with a deep chamfer, Shell fills the *wall* and leaves the void out, Subdivide shows one quadrant
   genuinely denser, Circular pattern's ring is solid because twelve dashes at toolbar size are a
   smudge. **Judge icons at 24px**, not 18 — `ButtonSize` 54 with `IconScale` 1.5 lands the ±8-unit
@@ -711,5 +723,9 @@ treated as a lead until it is.
 | Scene Mapping mode (`M`) ships Primitive, Vertex, Edge, Face, Texture, Vertex Paint and Displacement tools | `docs/editor/mapping/index.md` |
 | `AssetSystem.CreateResource` takes an **absolute** path | `RigSampleBuilder.cs:148` |
 | The export route that actually works: hand-written KV3 `.vmdl` (`EffigyWindow.BuildSkinnedVmdl`/`BuildVmdl`) alongside a DMX or OBJ, registered and compiled through `ExternalAssetTools`/`AssetSystem.FindByPath` | built and run |
+| **`bin/win64/fbx2dmx.exe` converts any FBX to a DMX the compiler loads, and `dmxconvert.exe` reads a DMX and names the first thing wrong with it — with a line number, in about a second.** Together they are a reference file and a validator for the rigged export, with no editor involved | run against `lightswitch_plate.fbx` and `fp_arms.fbx` |
+| A `DmeVertexData` field is named **`<semantic>$<set>`** — `position$0`, `normal$0`, `texcoord$0`, `blendweights$0`, `blendindices$0` — and its index array is that name plus `Indices`. The plural spellings (`positions`, `jointWeights`, …) are also strings in `modeldoc_utils.dll` but are **not** what a vertex format is keyed on; a file using them compiles to "Missing position values" | `fbx2dmx` output, then run |
+| `blendweights$0`/`blendindices$0` carry **no index array** — they are `jointCount` entries per position, indexed by the position index. `fp_arms`: 260 positions, 260 blendweights at jointCount 1, against 944 face corners | same |
+| In KeyValues2, **every element_array member takes a trailing comma, nested elements included**, and a reference is the two tokens `"element" "<id>"` — a bare quoted id is read as an element *type* name | same |
 | `PolygonMesh.PerformBoolean` mutates its receiver; the relative transform places the second mesh against the first; UVs must be recomputed after | `BooleanTool.cs` + reflection dump, then run |
 | s&box ships classic `MaterialIcons-Regular.ttf`, **not** Material Symbols — a Symbols name renders as nothing | `RigIconButton` class comment |

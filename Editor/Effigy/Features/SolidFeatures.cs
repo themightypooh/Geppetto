@@ -53,16 +53,20 @@ public sealed class ShellFeature : Feature
 }
 
 /// <summary>
-/// Flat chamfer along every edge sharper than the angle threshold. Onshape's Fillet, minus the
-/// round — this is the Segments=1 case, a straight cut rather than an arc. See Bevel.cs for why
-/// that is the whole algorithm rather than a special case of one.
+/// Flat chamfer along every edge sharper than the angle threshold — Onshape's Chamfer.
+///
+/// THE FIELD IS STILL CALLED `Width` AND THE LABEL IS "Distance". Those disagree on purpose. The
+/// label is what Onshape calls the dimension and what anyone reading the dialog expects; the field
+/// name is the key StudioDocument writes into a saved file, so renaming it would silently drop the
+/// distance out of every document already on disk. A stale field name costs one comment. See
+/// StudioDocument.StateFields.
 /// </summary>
-public sealed class BevelFeature : Feature
+public sealed class ChamferFeature : Feature
 {
-	public override string TypeName => "Bevel";
+	public override string TypeName => "Chamfer";
 
 	public readonly BodySelectionParam Bodies = new( "Bodies" );
-	public readonly FloatParam Width = new( "Width", 0.1f, 0.0001f, unit: "u" );
+	public readonly FloatParam Width = new( "Distance", 0.1f, 0.0001f, unit: "u" );
 	public readonly FloatParam AngleThreshold = new( "Angle threshold", 15f, 0f, 180f, unit: "deg" );
 
 	public override IReadOnlyList<IParam> Parameters => new IParam[] { Bodies, Width, AngleThreshold };
@@ -70,7 +74,39 @@ public sealed class BevelFeature : Feature
 	protected override void Execute( FeatureContext ctx )
 	{
 		foreach ( var body in ctx.Bodies.Where( Bodies.Matches ) )
-			body.Mesh = Bevel.Apply( body.Mesh, Width.Clamped, AngleThreshold.Clamped );
+			body.Mesh = EdgeBlend.Chamfer( body.Mesh, Width.Clamped, AngleThreshold.Clamped );
+	}
+}
+
+/// <summary>
+/// Rounded fillet along every edge sharper than the angle threshold — Onshape's Fillet.
+///
+/// A SEPARATE FEATURE RATHER THAN A CHAMFER WITH SEGMENTS TURNED UP, because that is what it is to
+/// the person using it, and because the dimension means something different: a chamfer's distance
+/// is measured back along each face, a fillet's radius is the arc's own radius and the setback
+/// follows from the angle the edge opens at. One control that means two things depending on
+/// another control is the shape of a bad dialog. See EdgeBlend for the one algorithm underneath.
+///
+/// `Segments` has no Onshape counterpart because Onshape is a B-rep and stores the arc exactly.
+/// This kernel is polygonal, so how finely the arc is cut into faces is a real authoring decision
+/// and belongs in the dialog.
+/// </summary>
+public sealed class FilletFeature : Feature
+{
+	public override string TypeName => "Fillet";
+
+	public readonly BodySelectionParam Bodies = new( "Bodies" );
+	public readonly FloatParam Radius = new( "Radius", 0.1f, 0.0001f, unit: "u" );
+	public readonly IntParam Segments = new( "Segments", 4, 1, 16 );
+	public readonly FloatParam AngleThreshold = new( "Angle threshold", 15f, 0f, 180f, unit: "deg" );
+
+	public override IReadOnlyList<IParam> Parameters =>
+		new IParam[] { Bodies, Radius, Segments, AngleThreshold };
+
+	protected override void Execute( FeatureContext ctx )
+	{
+		foreach ( var body in ctx.Bodies.Where( Bodies.Matches ) )
+			body.Mesh = EdgeBlend.Fillet( body.Mesh, Radius.Clamped, AngleThreshold.Clamped, Segments.Clamped );
 	}
 }
 

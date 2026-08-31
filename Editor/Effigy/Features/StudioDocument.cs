@@ -594,9 +594,29 @@ public static class StudioDocument
 		.Where( f => f.Name is not ("Id" or "Name" or "Suppressed" or "Visible") )
 		.OrderBy( f => f.Name, StringComparer.Ordinal );
 
+	/// <summary>
+	/// What a feature type used to be called, for documents written before it was renamed.
+	///
+	/// A SAVED FILE IS A PROMISE. The type token in it is a C# class name, so renaming a class is a
+	/// breaking change to every document already on disk unless the old name keeps resolving.
+	/// `BevelFeature` became `ChamferFeature` when the flat cut and the rounded one were split into
+	/// the two operations Onshape names — the parameters are unchanged, so an old bevel loads as
+	/// the chamfer it always was, with its width and angle intact.
+	///
+	/// Entries are never removed. The cost of one line is nothing next to a document that opens
+	/// with a line number and a type name nobody recognises.
+	/// </summary>
+	static readonly Dictionary<string, string> RenamedFeatures = new()
+	{
+		["BevelFeature"] = "ChamferFeature",
+	};
+
 	/// <summary>Find a feature type by name, in whatever assembly the kernel ended up in.</summary>
 	static Feature Create( string typeName )
 	{
+		if ( RenamedFeatures.TryGetValue( typeName, out var current ) )
+			typeName = current;
+
 		var type = typeof( Feature ).Assembly.GetTypes()
 			.FirstOrDefault( t => t.Name == typeName && !t.IsAbstract && typeof( Feature ).IsAssignableFrom( t ) );
 

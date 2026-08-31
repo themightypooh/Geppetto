@@ -230,7 +230,7 @@ public static class RenderTests
 		var studio = new PartStudio();
 		var box = studio.Add( new PrimitiveFeature() );
 		box.SizeX.Value = 6f; box.SizeY.Value = 6f; box.SizeZ.Value = 3f;
-		studio.Add( new BevelFeature() );
+		studio.Add( new ChamferFeature() );
 		yield return ("bevelled box", Built( studio ));
 
 		var washer = new PartStudio();

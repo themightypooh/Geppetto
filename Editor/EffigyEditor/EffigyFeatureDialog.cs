@@ -686,7 +686,7 @@ internal sealed class EffigyFeatureDialog : Widget
 	/// Most of Effigy's lengths declare min 0.0001 and no maximum at all (BasicFeatures.cs), and
 	/// the version this replaces invented a -9999..9999 range for them. A slider spanning five
 	/// orders of magnitude at 0.1 per step cannot be aimed at a value; it only looks like a
-	/// control. Bevel's 0..180 angle threshold and Subdivide's 0..6 levels are real ranges, and
+	/// control. Chamfer's 0..180 angle threshold and Subdivide's 0..6 levels are real ranges, and
 	/// those are the ones worth dragging.
 	/// </summary>
 	private static bool Draggable( float min, float max ) =>

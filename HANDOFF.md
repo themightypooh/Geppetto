@@ -41,7 +41,7 @@ guessing — that is how `LocalTransform` was found, and how the boolean adapter
 export PATH="/c/Program Files/dotnet:$PATH" && ./tools/test.sh
 ```
 
-`dotnet` is installed but not on `PATH` in Git Bash, hence the prefix. About 25 seconds, **1468
+`dotnet` is installed but not on `PATH` in Git Bash, hence the prefix. About 25 seconds, **1555
 checks**. The script syncs the editor's kernel mirror first, then runs the suite.
 
 The Effigy kernel is engine-free, so all of it — plus every editor workflow that is "kernel calls in
@@ -144,7 +144,7 @@ Assets/shaders/pixel_arms.shader   the one shader here known to compile — the 
 Effigy/                   the CAD kernel — engine-free, the CANONICAL copy
 Editor/Effigy/            a MIRROR of the kernel. Never hand-edit
 Editor/EffigyEditor/      the CAD tool's UI
-Effigy.Tests/             1468 headless checks
+Effigy.Tests/             1555 headless checks
 
 Editor/ShaderForge/       the shader generator kernel — engine-free
 Editor/ShaderForgeEditor/ the shader tool
@@ -244,7 +244,7 @@ Do not touch `Editor/HaloMount` unless asked.
 ## Habits this project earned the hard way
 
 - **A valid mesh can be visibly wrong.** Closed, manifold, Euler-correct and still broken. Measure
-  enclosed volume, covered area, or boundary-edge count. The Bevel bug that threw vertices 15,000
+  enclosed volume, covered area, or boundary-edge count. The chamfer bug that threw vertices 15,000
   units out passed every numeric check and was found by a *render*.
 - **A green suite and a picture catch different mistakes.** `RenderCheck` exists for that reason.
 - **Treat every "not supported yet" string as suspect** until it has been re-derived rather than

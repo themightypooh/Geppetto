@@ -19,16 +19,34 @@ namespace Effigy;
 /// and no ".smd" anywhere. Of the four, OBJ carries no bones and FBX is a binary format nobody
 /// should hand-write, which leaves DMX as the only way to compile a rigged model.
 ///
-/// EVERY NAME BELOW WAS READ OUT OF THAT SAME BINARY rather than guessed from a format article:
+/// THE ELEMENT NAMES WERE READ OUT OF THAT SAME BINARY rather than guessed from a format article:
 /// DmeModel, DmeDag, DmeMesh, DmeVertexData, DmeFaceSet, DmeMaterial, DmeTransform,
-/// DmeTransformList, DmeAxisSystem; the attributes vertexFormat, positions, positionsIndices,
-/// normals, normalsIndices, textureCoordinates, textureCoordinatesIndices, jointWeights,
-/// jointIndices, jointCount, flipVCoordinates, faceSets, faces, mtlName, bindState, currentState,
-/// baseStates, jointList, transforms, upAxis, forwardParity, coordSys; and the header shape it
-/// prints with. The compiler also states its own rules there, which this writer is built to
-/// satisfy: "Incorrect number of joint weights or indices specified, must match number of
+/// DmeTransformList, DmeAxisSystem; the attributes vertexFormat, jointCount, flipVCoordinates,
+/// faceSets, faces, mtlName, bindState, currentState, baseStates, jointList, transforms, upAxis,
+/// forwardParity, coordSys. The compiler also states its own rules there, which this writer is
+/// built to satisfy: "Incorrect number of joint weights or indices specified, must match number of
 /// positions values" and "Cannot add vertex data block with different number of normal indices
 /// (%d) and vertex indices (%d)".
+///
+/// AND THAT METHOD HAS A LIMIT, WHICH COST THIS FILE TWO ROUND TRIPS. A string in a DLL tells you a
+/// name exists; it does not tell you where it goes or what punctuation surrounds it. Two things
+/// were wrong for that reason and neither showed up as anything but "Couldn't load DMX file":
+///
+///   - the KeyValues2 punctuation (see DmxText.CloseElement and DmxText.ArrayReference);
+///   - the vertex format field names, which are position$0 / normal$0 / texcoord$0 /
+///     blendweights$0 / blendindices$0, not the plural spellings also present in that binary
+///     (see WriteVertexData).
+///
+/// THE FIX FOR BOTH IS THE SAME AND IT IS ONE COMMAND. The engine ships bin/win64/fbx2dmx.exe and
+/// dmxconvert.exe. The first turns any FBX in the project into a DMX the compiler definitely
+/// loads, to diff against; the second reads a DMX and reports the first thing wrong with it, with
+/// a line number, in about a second:
+///
+///   fbx2dmx.exe   -i Assets/models/first_person/fp_arms.fbx -o rig_ref.dmx
+///   dmxconvert.exe -i export.dmx -o check.dmx
+///
+/// Do that before reasoning about this format. Effigy.Tests/DmxGrammarTests.cs is the same check
+/// with no engine involved.
 ///
 /// KEYVALUES2 TEXT, NOT BINARY. Binary DMX is denser and completely opaque when something is
 /// wrong; a text file can be read, diffed and pasted into a bug report. Nothing here is on a hot
@@ -47,15 +65,47 @@ public static class DmxWriter
 	/// oldest one that might still be accepted.</summary>
 	private const int ModelFormatVersion = 22;
 
+	// The DmeVertexData field names, in the <semantic>$<set> spelling the compiler keys a vertex
+	// format on. $0 is the first set of each; a second UV channel would be texcoord$1. Named here
+	// rather than repeated as literals because each one is written twice — once into vertexFormat,
+	// once as the array itself — and a pair that disagrees is a field the compiler silently
+	// ignores rather than an error.
+	private const string Position = "position$0";
+	private const string Normal = "normal$0";
+	private const string TexCoord = "texcoord$0";
+	private const string BlendWeights = "blendweights$0";
+	private const string BlendIndices = "blendindices$0";
+
+	/// <summary>
+	/// Normals that came with the mesh rather than being derived from it.
+	///
+	/// Effigy's own meshes have no authored normals — they are a quad cage, and recomputing from
+	/// geometry at a smoothing angle is the right answer. Meshes that arrive from somewhere else
+	/// often do: a game's exported character carries normals that were baked against its original
+	/// high-poly, and recomputing them replaces shading the artist authored with shading derived
+	/// from the low-poly silhouette. That is a visible downgrade, not a rounding difference, which
+	/// is why this is a supported input rather than something a caller works around.
+	/// </summary>
+	public sealed class AuthoredNormals
+	{
+		/// <summary>Indexed [face][corner], each entry an index into <see cref="Values"/>.</summary>
+		public int[][] CornerIndices;
+
+		/// <summary>The distinct normals themselves, shared between corners that agree.</summary>
+		public List<Vec3> Values;
+	}
+
 	public static void WriteFile(
 		PolyMesh mesh,
 		string path,
 		Skeleton skeleton = null,
 		float smoothingAngleDegrees = MeshNormals.DefaultSmoothingAngleDegrees,
 		Func<int, string> materialName = null,
-		string modelName = null )
+		string modelName = null,
+		AuthoredNormals authoredNormals = null )
 	{
-		File.WriteAllText( path, Write( mesh, skeleton, smoothingAngleDegrees, materialName, modelName ) );
+		File.WriteAllText( path,
+			Write( mesh, skeleton, smoothingAngleDegrees, materialName, modelName, authoredNormals ) );
 	}
 
 	public static string Write(
@@ -63,7 +113,8 @@ public static class DmxWriter
 		Skeleton skeleton = null,
 		float smoothingAngleDegrees = MeshNormals.DefaultSmoothingAngleDegrees,
 		Func<int, string> materialName = null,
-		string modelName = null )
+		string modelName = null,
+		AuthoredNormals authoredNormals = null )
 	{
 		if ( mesh is null )
 			throw new ArgumentNullException( nameof( mesh ) );
@@ -77,7 +128,9 @@ public static class DmxWriter
 		materialName ??= slot => $"material_{slot}";
 		modelName ??= "effigy_model";
 
-		var (cornerNormals, normals) = MeshNormals.ComputeCornerNormals( mesh, smoothingAngleDegrees );
+		var (cornerNormals, normals) = authoredNormals is null
+			? MeshNormals.ComputeCornerNormals( mesh, smoothingAngleDegrees )
+			: Validated( authoredNormals, mesh );
 
 		var w = new DmxText();
 
@@ -173,11 +226,65 @@ public static class DmxWriter
 
 	// --- pieces -------------------------------------------------------------------------------
 
+	/// <summary>
+	/// Check supplied normals against the mesh before writing them.
+	///
+	/// Every one of these mistakes produces a file that parses and then fails somewhere else — a
+	/// short corner array walks off the end mid-write, an out-of-range index writes a normal index
+	/// the compiler resolves to nothing. Both are far cheaper to find here, against the mesh, than
+	/// as "Node 'Body_LOD0' resolve failure" with no line number.
+	/// </summary>
+	static (int[][], List<Vec3>) Validated( AuthoredNormals authored, PolyMesh mesh )
+	{
+		if ( authored.Values is null || authored.CornerIndices is null )
+			throw new ArgumentException( "AuthoredNormals needs both Values and CornerIndices" );
+
+		if ( authored.CornerIndices.Length != mesh.FaceCount )
+			throw new ArgumentException(
+				$"AuthoredNormals covers {authored.CornerIndices.Length} faces, the mesh has {mesh.FaceCount}" );
+
+		for ( var fi = 0; fi < mesh.FaceCount; fi++ )
+		{
+			var corners = authored.CornerIndices[fi];
+
+			if ( corners is null || corners.Length != mesh.Faces[fi].Count )
+				throw new ArgumentException(
+					$"AuthoredNormals gives face {fi} {corners?.Length ?? 0} corners, it has {mesh.Faces[fi].Count}" );
+
+			foreach ( var n in corners )
+			{
+				if ( n < 0 || n >= authored.Values.Count )
+					throw new ArgumentException(
+						$"AuthoredNormals face {fi} indexes normal {n}, only {authored.Values.Count} exist" );
+			}
+		}
+
+		return (authored.CornerIndices, authored.Values);
+	}
+
+	/// <summary>
+	/// One bone, and its children under it.
+	///
+	/// A BONE IS A DmeJoint, NOT A DmeDag, and nothing about the file says so. The two carry
+	/// identical attributes — transform, shape, visible, children — so a skeleton written as
+	/// DmeDag parses, validates, resolves every reference, and compiles without one word of
+	/// complaint. It simply produces a model with **zero bones**: the compiler builds its skeleton
+	/// from the joints, and a DmeDag is a plain transform node it has no reason to treat as one.
+	/// The mesh is unaffected, so the model renders perfectly and cannot be posed, which is the
+	/// one thing a rigged export exists to do.
+	///
+	/// Confirmed both ways: fp_arms compiles to 24 bones, this writer's output compiled to 0 until
+	/// this line said DmeJoint. `model_bones &lt;path&gt;` (Editor/HaloMount/HaloModelInspect.cs) is
+	/// how to check — a .vmdl_c does not surrender its bone names to a text scan, so "I could not
+	/// find the names in the file" means nothing at all here.
+	///
+	/// The mesh's own dag stays a DmeDag. Only bones are joints.
+	/// </summary>
 	static void WriteBoneDag( DmxText w, Skeleton skeleton, int index, string[] dagIds, string[] transformIds )
 	{
 		var bone = skeleton.Bones[index];
 
-		w.OpenArrayElement( "DmeDag", dagIds[index], bone.Name );
+		w.OpenArrayElement( "DmeJoint", dagIds[index], bone.Name );
 		WriteTransform( w, "transform", transformIds[index], bone.Name, bone.Local );
 		w.Attribute( "shape", "element", "" );
 		w.Attribute( "visible", "bool", "1" );
@@ -230,12 +337,28 @@ public static class DmxWriter
 	/// <summary>
 	/// Positions, normals and UVs, each as a value array plus a per-face-corner index array.
 	///
+	/// THE NAMES ARE NOT THE OBVIOUS ONES. A DmeVertexData field is named
+	/// <c>&lt;semantic&gt;$&lt;set&gt;</c> and its index array is that name with "Indices" appended:
+	/// position$0 / position$0Indices, normal$0, texcoord$0, blendweights$0, blendindices$0. The
+	/// plural spellings this writer used first — positions, normals, textureCoordinates,
+	/// jointWeights, jointIndices — are real strings in modeldoc_utils.dll, which is where they were
+	/// read from, but they are not what a vertex format is keyed on, and the compiler answers a file
+	/// full of them with "Failed to load mesh 0/1: Missing position values".
+	///
+	/// These were taken from what the engine's own fbx2dmx.exe writes, which is the reference worth
+	/// having: convert any FBX in the project and read the DmeVertexData it produces.
+	///
+	///   fbx2dmx.exe -i Assets/models/first_person/fp_arms.fbx -o rig_ref.dmx
+	///
 	/// The three index arrays MUST be the same length — the compiler says so outright ("Cannot add
 	/// vertex data block with different number of normal indices (%d) and vertex indices (%d)") —
 	/// so all three are filled in one walk over face corners and cannot drift apart.
 	///
 	/// Weights are per POSITION, not per corner, which is the other rule it states: "Incorrect
 	/// number of joint weights or indices specified, must match number of positions values".
+	/// blendweights$0 and blendindices$0 carry no index array of their own for exactly that reason:
+	/// they are jointCount entries per position, indexed by the position index. fp_arms confirms the
+	/// shape — 260 positions, 260 blendweights at jointCount 1, against 944 face corners.
 	/// </summary>
 	static void WriteVertexData( DmxText w, string id, PolyMesh mesh, SkinWeights skin, Skeleton skeleton,
 		int[][] cornerNormals, List<Vec3> normals )
@@ -246,15 +369,15 @@ public static class DmxWriter
 		w.Attribute( "jointCount", "int", MaxInfluences.ToString( CultureInfo.InvariantCulture ) );
 
 		w.OpenArray( "vertexFormat", "string_array" );
-		w.ArrayValue( "positions" );
-		w.ArrayValue( "normals" );
-		w.ArrayValue( "textureCoordinates" );
-		w.ArrayValue( "jointWeights" );
-		w.ArrayValue( "jointIndices" );
+		w.ArrayValue( Position );
+		w.ArrayValue( TexCoord );
+		w.ArrayValue( Normal );
+		w.ArrayValue( BlendWeights );
+		w.ArrayValue( BlendIndices );
 		w.CloseArray();
 
 		// Positions, shared between faces exactly as the cage shares them.
-		w.OpenArray( "positions", "vector3_array" );
+		w.OpenArray( Position, "vector3_array" );
 
 		foreach ( var p in mesh.Positions )
 			w.ArrayValue( DmxText.Vector3( p ) );
@@ -262,7 +385,7 @@ public static class DmxWriter
 		w.CloseArray();
 
 		// One entry per corner-normal group, so hard edges survive the trip.
-		w.OpenArray( "normals", "vector3_array" );
+		w.OpenArray( Normal, "vector3_array" );
 
 		foreach ( var n in normals )
 			w.ArrayValue( DmxText.Vector3( n ) );
@@ -288,16 +411,16 @@ public static class DmxWriter
 			}
 		}
 
-		w.OpenArray( "textureCoordinates", "vector2_array" );
+		w.OpenArray( TexCoord, "vector2_array" );
 
 		foreach ( var uv in uvs )
 			w.ArrayValue( DmxText.Vector2( uv ) );
 
 		w.CloseArray();
 
-		w.IntArray( "positionsIndices", positionIndices );
-		w.IntArray( "normalsIndices", normalIndices );
-		w.IntArray( "textureCoordinatesIndices", uvIndices );
+		w.IntArray( Position + "Indices", positionIndices );
+		w.IntArray( Normal + "Indices", normalIndices );
+		w.IntArray( TexCoord + "Indices", uvIndices );
 
 		var weights = new List<float>( mesh.VertexCount * MaxInfluences );
 		var joints = new List<int>( mesh.VertexCount * MaxInfluences );
@@ -323,8 +446,8 @@ public static class DmxWriter
 			}
 		}
 
-		w.FloatArray( "jointWeights", weights );
-		w.IntArray( "jointIndices", joints );
+		w.FloatArray( BlendWeights, weights );
+		w.IntArray( BlendIndices, joints );
 
 		w.CloseElement();
 	}
@@ -435,6 +558,7 @@ public static class DmxWriter
 internal sealed class DmxText
 {
 	private readonly StringBuilder _sb = new();
+	private readonly List<bool> _containers = new();
 	private int _depth;
 	private int _nextId;
 
@@ -474,11 +598,16 @@ internal sealed class DmxText
 		Attribute( "name", "string", name );
 	}
 
+	/// <summary>Closes an element body. An element that is a member of an element_array has to be
+	/// followed by a comma exactly like a plain array value is; without it the reader stops at the
+	/// next member with "Expecting ',', didn't find it!" and the file fails to load outright.
+	/// CloseArray's TrimTrailingComma then takes the one after the final member back off.</summary>
 	public void CloseElement()
 	{
+		PopContainer();
 		_depth--;
 		Indent();
-		_sb.Append( "}\n" );
+		_sb.Append( InArray ? "},\n" : "}\n" );
 	}
 
 	public void Attribute( string name, string type, string value )
@@ -495,11 +624,13 @@ internal sealed class DmxText
 		Indent();
 		_sb.Append( "[\n" );
 		_depth++;
+		PushContainer( true );
 	}
 
 	public void CloseArray()
 	{
 		TrimTrailingComma();
+		PopContainer();
 		_depth--;
 		Indent();
 		_sb.Append( "]\n" );
@@ -514,11 +645,16 @@ internal sealed class DmxText
 		_sb.Append( Quote( value ) ).Append( ",\n" );
 	}
 
-	/// <summary>A reference to an element defined elsewhere: a bare quoted id.</summary>
+	/// <summary>
+	/// A reference to an element defined elsewhere. KeyValues2 spells this as TWO tokens —
+	/// <c>"element" "&lt;id&gt;"</c> — which is what fbx2dmx's own output writes for every entry of
+	/// children and jointList. A bare quoted id is read as an element TYPE name instead, and the
+	/// parser then waits for a body that never comes.
+	/// </summary>
 	public void ArrayReference( string id )
 	{
 		Indent();
-		_sb.Append( Quote( id ) ).Append( ",\n" );
+		_sb.Append( Quote( "element" ) ).Append( ' ' ).Append( Quote( id ) ).Append( ",\n" );
 	}
 
 	public void IntArray( string name, List<int> values )
@@ -631,6 +767,19 @@ internal sealed class DmxText
 		Indent();
 		_sb.Append( "{\n" );
 		_depth++;
+		PushContainer( false );
+	}
+
+	/// <summary>Whether the container currently being written into is an element_array rather than
+	/// an element body. Only array members take a trailing comma.</summary>
+	bool InArray => _containers.Count > 0 && _containers[^1];
+
+	void PushContainer( bool isArray ) => _containers.Add( isArray );
+
+	void PopContainer()
+	{
+		if ( _containers.Count > 0 )
+			_containers.RemoveAt( _containers.Count - 1 );
 	}
 
 	void Indent() => _sb.Append( '\t', _depth );

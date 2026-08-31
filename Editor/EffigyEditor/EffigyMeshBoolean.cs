@@ -99,8 +99,22 @@ public sealed class EffigyMeshBoolean : IMeshBoolean
 
 		TransferMaterials( result, target, tool );
 
+		// PUT BACK THE FACES THE ENGINE HANDED BACK IN PIECES. The other half of the same problem,
+		// and the half nothing was looking at: where a bridged face arrives as one loop that needs
+		// splitting, a cut face often arrives as MANY coplanar faces that need welding - one
+		// measured part came back with 88 triangles and quads in a single plane and `bridged faces:
+		// 0`, so every check passed and clicking that wall to paint it painted one fragment.
+		//
+		// AFTER THE REPAIR, AND AFTER THE MATERIALS. After the repair because it splices an opening
+		// into a face as triangles, and the merge is what turns those back into the n+1 n-gons a
+		// face with n holes has to be. After the materials because the merge treats a slot as part
+		// of a face's identity and refuses to weld across one - and every face here carries slot 0
+		// until TransferMaterials has run, so merging first would fuse two differently painted
+		// coplanar faces into one and then pick a single slot for the pair. See CoplanarMerge.
+		var welded = CoplanarMerge.Merge( result );
+
 		LastOutcome = $"{op}: ok, {result.VertexCount} verts / {result.FaceCount} faces"
-			+ $", {reopened} opening(s) reinstated";
+			+ $", {reopened} opening(s) reinstated, {welded} fragment(s) welded";
 
 		return true;
 	}

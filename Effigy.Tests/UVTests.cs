@@ -100,7 +100,7 @@ public static class UVTests
 		{
 			("cylinder", Primitives.Cylinder( 1f, 2f, 16 )),
 			("quadsphere", Primitives.QuadSphere( 1f, 3 )),
-			("bevelled box", Bevel.Apply( Primitives.Box( 2, 2, 2 ), 0.2f, 15f ))
+			("chamfered box", EdgeBlend.Chamfer( Primitives.Box( 2, 2, 2 ), 0.2f, 15f ))
 		} )
 		{
 			UVProjection.BoxProject( mesh, 1f );

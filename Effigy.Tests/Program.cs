@@ -65,7 +65,7 @@ public static class Program
 
 		ShellTests.Run();
 
-		BevelTests.Run();
+		EdgeBlendTests.Run();
 
 		UVTests.Run();
 
@@ -89,6 +89,8 @@ public static class Program
 
 		UntestedKernelTests.Run();
 
+		DmxGrammarTests.Run();
+
 		MergeTests.Run();
 
 		FaceMaterialTests.Run();
@@ -99,6 +101,8 @@ public static class Program
 		DocumentTests.Run();
 
 		HoleTests.Run();
+
+		CoplanarMergeTests.Run();
 
 		TaperTests.Run();
 
@@ -404,6 +408,7 @@ public static class Program
 
 		WriteSketchSamples( outDir );
 		WritePreviews( outDir );
+		WriteDmxSamples( outDir );
 
 		var files = Directory.GetFiles( outDir, "*.obj" ).Length;
 		var svgs = Directory.GetFiles( outDir, "*.svg" ).Length;
@@ -424,6 +429,46 @@ public static class Program
 
 			Console.WriteLine( $"  {name,-12} {At( 0 ),12} {At( 2 ),14} {At( 4 ),16} {At( 6 ),18}" );
 		}
+	}
+
+	/// <summary>
+	/// A static and a rigged DMX, written out so the engine's own reader can pass judgement on them.
+	/// The suite cannot do that itself — the parser lives in the engine — but the file is the whole
+	/// input, so validating it needs nothing else running:
+	///
+	///   bin/win64/dmxconvert.exe -i out/sample_rigged.dmx -o /tmp/check.dmx -oe keyvalues2_noids
+	///
+	/// That is the standalone loader, and it reports a line number. Finding it is what turned
+	/// "Couldn't load DMX file" from the compiler — which names no line and no reason — into a
+	/// missing comma between element_array members.
+	/// </summary>
+	static void WriteDmxSamples( string outDir )
+	{
+		var box = Primitives.Box( 2, 2, 2 );
+		DmxWriter.WriteFile( box, Path.Combine( outDir, "sample_static.dmx" ), modelName: "sample_static" );
+
+		var skeleton = new Skeleton();
+		var root = skeleton.AddBone( "root", -1, Xform.Identity );
+		skeleton.AddBone( "child", root, Xform.Translate( new Vec3( 0, 1, 0 ) ) );
+
+		DmxWriter.WriteFile( box, Path.Combine( outDir, "sample_rigged.dmx" ), skeleton, modelName: "sample_rigged" );
+
+		Check( "wrote a static and a rigged sample DMX",
+			File.Exists( Path.Combine( outDir, "sample_static.dmx" ) )
+			&& File.Exists( Path.Combine( outDir, "sample_rigged.dmx" ) ) );
+
+		// The same two models again in FBX, so the engine's own importer can be pointed at them:
+		//
+		//   bin/win64/fbx2dmx.exe -i out/sample_rigged.fbx -o check.dmx
+		//
+		// That is the whole reason FBX is worth writing — the format's reader is Autodesk's, so a
+		// file it accepts is correct by something other than our own reading of a spec.
+		FbxWriter.WriteFile( box, Path.Combine( outDir, "sample_static.fbx" ), modelName: "sample_static" );
+		FbxWriter.WriteFile( box, Path.Combine( outDir, "sample_rigged.fbx" ), skeleton, modelName: "sample_rigged" );
+
+		Check( "wrote a static and a rigged sample FBX",
+			File.Exists( Path.Combine( outDir, "sample_static.fbx" ) )
+			&& File.Exists( Path.Combine( outDir, "sample_rigged.fbx" ) ) );
 	}
 
 	/// <summary>
@@ -502,7 +547,7 @@ public static class Program
 		var bevelBox = bevelStudio.Add( new PrimitiveFeature() );
 		bevelBox.Shape.Index = 0;
 		bevelBox.SizeX.Value = bevelBox.SizeY.Value = bevelBox.SizeZ.Value = 2f;
-		var bevel = bevelStudio.Add( new BevelFeature() );
+		var bevel = bevelStudio.Add( new ChamferFeature() );
 		bevel.Width.Value = 0.2f;
 		bevel.AngleThreshold.Value = 15f;
 		bevelStudio.Rebuild();

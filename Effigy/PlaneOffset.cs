@@ -10,7 +10,7 @@ namespace Effigy;
 ///     for each plane i:   dot( n_i, d ) = distance,     minimising |d|
 ///
 /// Two operations need this and they look nothing alike until you write them down. Shell moves a
-/// vertex inward so every face it touches ends up `thickness` away. Bevel insets a face corner so
+/// vertex inward so every face it touches ends up `thickness` away. EdgeBlend insets a face corner so
 /// both edges meeting there end up `distance` away — the same problem, with the two edge normals
 /// taken inside the face plane instead of the face normals taken in space.
 ///

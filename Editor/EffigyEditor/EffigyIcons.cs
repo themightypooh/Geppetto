@@ -1,4 +1,5 @@
 ﻿using Editor;
+using System.Collections.Generic;
 using Sandbox;
 using System;
 
@@ -13,7 +14,8 @@ internal enum EffigyIcon
 	Revolve,
 	Sweep,
 	Loft,
-	Bevel,
+	Chamfer,
+	Fillet,
 	Shell,
 	Subdivide,
 	Mirror,
@@ -51,7 +53,7 @@ internal enum EffigyIcon
 /// Icons, not the newer Material Symbols, so a name from the Symbols set silently renders as
 /// nothing — and the strip was leaning on generic names like "square", "flip" and "call_made"
 /// that, where they resolved at all, said nothing about the CAD operation behind them. A drawn
-/// glyph can show the actual operation: Bevel cuts a corner off a square, Shell puts a wall
+/// glyph can show the actual operation: Chamfer cuts a corner off a square, Shell puts a wall
 /// inside one, Mirror reflects a solid shape into an outlined one.
 ///
 /// Every icon is drawn around <c>center</c> inside a nominal 18x18 box, so they all read at the
@@ -98,7 +100,8 @@ internal static class EffigyIcons
 			case EffigyIcon.Revolve: PaintRevolve( center, color ); return;
 			case EffigyIcon.Sweep: PaintSweep( center, color ); return;
 			case EffigyIcon.Loft: PaintLoft( center, color ); return;
-			case EffigyIcon.Bevel: PaintBevel( center, color ); return;
+			case EffigyIcon.Chamfer: PaintChamfer( center, color ); return;
+			case EffigyIcon.Fillet: PaintFillet( center, color ); return;
 			case EffigyIcon.Shell: PaintShell( center, color ); return;
 			case EffigyIcon.Subdivide: PaintSubdivide( center, color ); return;
 			case EffigyIcon.Mirror: PaintMirror( center, color ); return;
@@ -290,7 +293,7 @@ internal static class EffigyIcons
 	/// profile, curved arrow — which is what every CAD tool draws for Revolve and what the last
 	/// version threw out. That version drew a vase in section and hoped the silhouette would
 	/// carry it; at toolbar size it was a lumpy outline with a dashed line through its face.
-	/// Fill the profile (same weight as Bevel and Shell) and let the arrow be the operation.
+	/// Fill the profile (same weight as Chamfer and Shell) and let the arrow be the operation.
 	/// </summary>
 	private static void PaintRevolve( Vector2 c, Color color )
 	{
@@ -405,7 +408,7 @@ internal static class EffigyIcons
 		const float BottomY = 6.6f;
 		const float BottomHalf = 7.6f;
 
-		// The skin, as a tint between the two sections — same weight as Bevel and Shell, so it
+		// The skin, as a tint between the two sections — same weight as Chamfer and Shell, so it
 		// reads as material rather than as two more lines.
 		Filled( color.WithAlpha( 0.22f ) );
 		Editor.Paint.DrawPolygon(
@@ -436,7 +439,7 @@ internal static class EffigyIcons
 	/// rather than as a sheet, and cut deep enough that the chamfer is a face rather than a nick.
 	/// The faint lines show the corner that was removed.
 	/// </summary>
-	private static void PaintBevel( Vector2 c, Color color )
+	private static void PaintChamfer( Vector2 c, Color color )
 	{
 		Filled( color.WithAlpha( 0.22f ) );
 		Editor.Paint.DrawPolygon(
@@ -453,6 +456,58 @@ internal static class EffigyIcons
 		Stroked( color.WithAlpha( 0.3f ), 1f );
 		Editor.Paint.DrawLine( At( c, -7, -1.5f ), At( c, -7, -7 ) );
 		Editor.Paint.DrawLine( At( c, -7, -7 ), At( c, -1.5f, -7 ) );
+	}
+
+	/// <summary>
+	/// The chamfer's twin, and deliberately so: the same solid, the same corner gone, the same
+	/// ghost of the corner that was removed — the ONLY difference is that the accent is an arc
+	/// instead of a straight line.
+	///
+	/// That is the whole point. These two sit next to each other on the strip and the thing a
+	/// person needs to tell apart at 40px is round versus flat, which a shared body makes obvious
+	/// and two unrelated drawings would bury.
+	/// </summary>
+	private static void PaintFillet( Vector2 c, Color color )
+	{
+		// The arc's centre is the inner corner of the cut, so it runs from (-7,-1.5) to (-1.5,-7)
+		// exactly where the chamfer's straight cut does.
+		var arc = ArcPoints( At( c, -1.5f, -1.5f ), 5.5f, 180f, 270f, 10 );
+
+		var body = new List<Vector2>( arc );
+		body.Add( At( c, 7, -7 ) );
+		body.Add( At( c, 7, 7 ) );
+		body.Add( At( c, -7, 7 ) );
+
+		Filled( color.WithAlpha( 0.22f ) );
+		Editor.Paint.DrawPolygon( body.ToArray() );
+
+		Stroked( color, 1.5f );
+		Outline( body.ToArray() );
+
+		Stroked( ClickColor, 2.8f );
+		Arc( At( c, -1.5f, -1.5f ), 5.5f, 180f, 270f, 10 );
+
+		Stroked( color.WithAlpha( 0.3f ), 1f );
+		Editor.Paint.DrawLine( At( c, -7, -1.5f ), At( c, -7, -7 ) );
+		Editor.Paint.DrawLine( At( c, -7, -7 ), At( c, -1.5f, -7 ) );
+	}
+
+	/// <summary>The points Arc walks, for a glyph that needs the arc as part of a filled outline
+	/// rather than as a stroke. Same maths, so the fill and the stroke cannot drift apart.</summary>
+	private static List<Vector2> ArcPoints( Vector2 center, float radius,
+		float fromDegrees, float toDegrees, int segments )
+	{
+		var points = new List<Vector2>( segments + 1 );
+
+		for ( var i = 0; i <= segments; i++ )
+		{
+			var t = fromDegrees + (toDegrees - fromDegrees) * (i / (float)segments);
+			var radians = t * MathF.PI / 180f;
+
+			points.Add( center + new Vector2( MathF.Cos( radians ) * radius, MathF.Sin( radians ) * radius ) * _scale );
+		}
+
+		return points;
 	}
 
 	/// <summary>

@@ -301,8 +301,11 @@ public static class UntestedKernelTests
 		Report.Check( "a skinned export names its bones",
 			skinned.Contains( "root" ) && skinned.Contains( "child" ) );
 
-		Report.Check( "and carries joint weights", skinned.Contains( "jointWeights" ),
-			"no jointWeights array" );
+		// blendweights$0, not jointWeights. This check asserted the latter and passed on a file the
+		// compiler answered with "Missing position values" - see DmxGrammarTests, which parses the
+		// output instead of searching it.
+		Report.Check( "and carries joint weights", skinned.Contains( "blendweights$0" ),
+			"no blendweights$0 array" );
 
 		Report.Check( "a static export still writes a root bone, which DMX requires",
 			text.Contains( "root" ) );
@@ -313,6 +316,127 @@ public static class UntestedKernelTests
 
 		Report.Check( "SMD and DMX agree the mesh is the same size",
 			smd.Split( '\n' ).Any( l => l.Contains( "triangles" ) ) && skinned.Length > 0 );
+
+		// The checks above are all "does this word appear", and a file can pass every one of them
+		// and still be refused by the reader. It was: element_array members were written
+		// `} "DmeDag" {` with no comma between, and dmxconvert stopped at the second one with
+		// "Expecting ',', didn't find it!". Nothing that asks about substrings can see that, so
+		// these two parse the punctuation instead.
+		Report.Check( "the static export is balanced and comma-correct KeyValues2",
+			KeyValues2WellFormed( text, out var staticFault ), staticFault );
+
+		Report.Check( "and so is the rigged one, where the array members are nested deepest",
+			KeyValues2WellFormed( skinned, out var riggedFault ), riggedFault );
+	}
+
+	/// <summary>
+	/// A deliberately small KeyValues2 syntax check: braces and brackets balance, and every member
+	/// of an array is followed by a comma except the last. It is not a full parser and does not
+	/// need to be — it exists to catch the malformed shapes this writer can actually produce.
+	/// </summary>
+	static bool KeyValues2WellFormed( string text, out string fault )
+	{
+		fault = null;
+
+		// true = the enclosing container is an array, false = an element body. Array members take
+		// a trailing comma; attributes inside an element body must not.
+		var containers = new Stack<bool>();
+		var lines = text.Split( '\n' );
+
+		// Whether the previous meaningful token closed a member that still owes a comma.
+		var pendingComma = false;
+		var pendingLine = 0;
+
+		for ( var i = 0; i < lines.Length; i++ )
+		{
+			var line = lines[i].Trim();
+
+			if ( line.Length == 0 || line.StartsWith( "<!--" ) )
+				continue;
+
+			if ( pendingComma && !line.StartsWith( "]" ) )
+			{
+				fault = $"line {pendingLine + 1}: array member is not followed by a comma";
+				return false;
+			}
+
+			pendingComma = false;
+
+			if ( line == "{" )
+			{
+				containers.Push( false );
+				continue;
+			}
+
+			if ( line == "[" )
+			{
+				containers.Push( true );
+				continue;
+			}
+
+			if ( line.StartsWith( "}" ) || line.StartsWith( "]" ) )
+			{
+				if ( containers.Count == 0 )
+				{
+					fault = $"line {i + 1}: closed a container that was never opened";
+					return false;
+				}
+
+				var wasArray = containers.Pop();
+				var expected = wasArray ? "]" : "}";
+
+				if ( !line.StartsWith( expected ) )
+				{
+					fault = $"line {i + 1}: got '{line}' closing a{(wasArray ? "n array" : "n element")}";
+					return false;
+				}
+
+				// A closed element that sat inside an array is itself an array member.
+				if ( !wasArray && containers.Count > 0 && containers.Peek() && !line.EndsWith( "," ) )
+				{
+					pendingComma = true;
+					pendingLine = i;
+				}
+
+				continue;
+			}
+
+			// An element inside an array is written as its type name on one line and the body on
+			// the next. The type name is not the member — the closing brace is — so it owes
+			// nothing here.
+			if ( NextMeaningful( lines, i ) == "{" )
+				continue;
+
+			// A plain member of an array — a value or an element reference — owes a comma unless
+			// it is the last one before the bracket.
+			if ( containers.Count > 0 && containers.Peek() && !line.EndsWith( "," ) )
+			{
+				pendingComma = true;
+				pendingLine = i;
+			}
+		}
+
+		if ( containers.Count != 0 )
+		{
+			fault = $"{containers.Count} container(s) left unclosed at end of file";
+			return false;
+		}
+
+		return true;
+	}
+
+	/// <summary>The next line that is not blank, after <paramref name="index"/>.</summary>
+	static string NextMeaningful( string[] lines, int index )
+	{
+		for ( var i = index + 1; i < lines.Length; i++ )
+		{
+			var line = lines[i].Trim();
+
+			if ( line.Length > 0 )
+				return line;
+		}
+
+		return "";
 	}
 
 	// --- body selection -------------------------------------------------------------------------
@@ -384,7 +508,7 @@ public static class UntestedKernelTests
 		{
 			new SubdivideFeature(), new TransformFeature(), new MirrorFeature(),
 			new LinearPatternFeature(), new CircularPatternFeature(),
-			new ShellFeature(), new BevelFeature(), new UVProjectFeature()
+			new ShellFeature(), new ChamferFeature(), new UVProjectFeature()
 		};
 
 		foreach ( var feature in carriers )

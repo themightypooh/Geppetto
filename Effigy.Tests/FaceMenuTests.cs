@@ -226,7 +226,7 @@ public static class FaceMenuTests
 		var box = studio.Add( new PrimitiveFeature() );
 		box.SizeX.Value = box.SizeY.Value = box.SizeZ.Value = 4f;
 
-		var bevel = studio.Add( new BevelFeature() );
+		var bevel = studio.Add( new ChamferFeature() );
 		var subdivide = studio.Add( new SubdivideFeature() );
 
 		studio.RollbackIndex = 1;

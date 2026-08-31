@@ -74,7 +74,13 @@ public static class EffigyCutDiagnostic
 						bridged++;
 				}
 
-				Log.Info( $"[effigy]     largest face: {largest} corners, bridged faces: {bridged}" );
+				// The number that would have caught the fragmented-wall defect on its first day.
+				// Everything else on this line can look perfect while one flat face is 88 pieces;
+				// see CoplanarMerge.LargestFragmentedSurface.
+				var fragmented = CoplanarMerge.LargestFragmentedSurface( mesh );
+
+				Log.Info( $"[effigy]     largest face: {largest} corners, bridged faces: {bridged}, "
+					+ $"worst fragmented surface: {fragmented} face(s)" );
 			}
 		}
 
@@ -117,6 +123,49 @@ public static class EffigyCutDiagnostic
 		Log.Info( "[effigy] An Extrude that should cut must read Result=3:Remove. Auto never removes." );
 		Log.Info( "[effigy] If Result=3 and boolean calls is 0, the cut errored before reaching the engine "
 			+ "- the feature's ERROR line says why." );
+	}
+
+	/// <summary>
+	/// Re-run the feature tree from the top, and say what the bodies became.
+	///
+	/// THE ONE THING IN THIS FILE THAT WRITES. Everything else here reads, and that is the right
+	/// default - but a body holds the mesh its last rebuild produced, so after a change to the
+	/// boolean adapter the document on screen is still showing the OLD answer and every dump of it
+	/// agrees. Reopening the document or nudging a parameter also works; this is the version that
+	/// does not need a hand on the mouse, which is what makes a fix verifiable from a console.
+	///
+	/// It goes through the same PartStudio.Rebuild the editor uses, so there is no second path that
+	/// could succeed where the real one fails.
+	/// </summary>
+	[ConCmd( "effigy_rebuild" )]
+	public static void Rebuild()
+	{
+		if ( EffigyWindow.Current?.DiagnosticStudio is not { } studio )
+		{
+			Log.Warning( "[effigy] no Effigy window is open" );
+			return;
+		}
+
+		var before = EffigyMeshBoolean.CallCount;
+
+		// MarkAllDirty first, or this does nothing at all. Rebuild is incremental - it restores the
+		// snapshot taken after the last clean feature and carries on from there - so with nothing
+		// dirty it reuses every cached body and reports success without running one feature. That
+		// is right for editing and exactly wrong here, where the whole point is to re-run the
+		// geometry against code that has since changed underneath it.
+		studio.MarkAllDirty();
+
+		var report = studio.Rebuild();
+
+		Log.Info( $"[effigy] rebuilt - {EffigyMeshBoolean.CallCount - before} boolean call(s), "
+			+ $"{(report.HasErrors ? "WITH ERRORS" : "no errors")}" );
+
+		foreach ( var body in studio.Bodies )
+		{
+			Log.Info( $"[effigy]   body {body.Id} '{body.Name}' {body.Mesh?.FaceCount ?? 0} faces, "
+				+ $"{body.Mesh?.VertexCount ?? 0} verts, "
+				+ $"{(body.Mesh is null ? "no mesh" : MeshValidator.Validate( body.Mesh ).ToString())}" );
+		}
 	}
 
 	/// <summary>

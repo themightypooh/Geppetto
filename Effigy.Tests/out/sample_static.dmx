@@ -1,0 +1,359 @@
+<!-- dmx encoding keyvalues2 1 format model 22 -->
+
+"DmElement"
+{
+	"id" "elementid" "00000001-0000-0000-0000-000000000000"
+	"name" "string" "root"
+	"skeleton" "DmeModel"
+	{
+		"id" "elementid" "00000002-0000-0000-0000-000000000000"
+		"name" "string" "sample_static"
+		"transform" "DmeTransform"
+		{
+			"id" "elementid" "00000003-0000-0000-0000-000000000000"
+			"name" "string" "sample_static"
+			"position" "vector3" "0 0 0"
+			"orientation" "quaternion" "0 0 0 1"
+		}
+		"shape" "element" ""
+		"visible" "bool" "1"
+		"children" "element_array"
+		[
+			"DmeJoint"
+			{
+				"id" "elementid" "00000004-0000-0000-0000-000000000000"
+				"name" "string" "root"
+				"transform" "DmeTransform"
+				{
+					"id" "elementid" "00000005-0000-0000-0000-000000000000"
+					"name" "string" "root"
+					"position" "vector3" "0 0 0"
+					"orientation" "quaternion" "0 0 0 1"
+				}
+				"shape" "element" ""
+				"visible" "bool" "1"
+				"children" "element_array"
+				[
+				]
+			},
+			"DmeDag"
+			{
+				"id" "elementid" "00000007-0000-0000-0000-000000000000"
+				"name" "string" "mesh"
+				"transform" "DmeTransform"
+				{
+					"id" "elementid" "00000008-0000-0000-0000-000000000000"
+					"name" "string" "mesh"
+					"position" "vector3" "0 0 0"
+					"orientation" "quaternion" "0 0 0 1"
+				}
+				"shape" "DmeMesh"
+				{
+					"id" "elementid" "00000009-0000-0000-0000-000000000000"
+					"name" "string" "mesh"
+					"visible" "bool" "1"
+					"bindState" "DmeVertexData"
+					{
+						"id" "elementid" "0000000a-0000-0000-0000-000000000000"
+						"name" "string" "bind"
+						"flipVCoordinates" "bool" "0"
+						"jointCount" "int" "4"
+						"vertexFormat" "string_array"
+						[
+							"position$0",
+							"texcoord$0",
+							"normal$0",
+							"blendweights$0",
+							"blendindices$0"
+						]
+						"position$0" "vector3_array"
+						[
+							"-1 -1 -1",
+							"1 -1 -1",
+							"1 1 -1",
+							"-1 1 -1",
+							"-1 -1 1",
+							"1 -1 1",
+							"1 1 1",
+							"-1 1 1"
+						]
+						"normal$0" "vector3_array"
+						[
+							"0 0 -1",
+							"0 0 1",
+							"0 -1 0",
+							"1 0 0",
+							"0 1 0",
+							"-1 0 0"
+						]
+						"texcoord$0" "vector2_array"
+						[
+							"0 0",
+							"1 0",
+							"1 1",
+							"0 1",
+							"0 0",
+							"1 0",
+							"1 1",
+							"0 1",
+							"0 0",
+							"1 0",
+							"1 1",
+							"0 1",
+							"0 0",
+							"1 0",
+							"1 1",
+							"0 1",
+							"0 0",
+							"1 0",
+							"1 1",
+							"0 1",
+							"0 0",
+							"1 0",
+							"1 1",
+							"0 1"
+						]
+						"position$0Indices" "int_array"
+						[
+							"0",
+							"3",
+							"2",
+							"1",
+							"4",
+							"5",
+							"6",
+							"7",
+							"0",
+							"1",
+							"5",
+							"4",
+							"1",
+							"2",
+							"6",
+							"5",
+							"2",
+							"3",
+							"7",
+							"6",
+							"3",
+							"0",
+							"4",
+							"7"
+						]
+						"normal$0Indices" "int_array"
+						[
+							"0",
+							"0",
+							"0",
+							"0",
+							"1",
+							"1",
+							"1",
+							"1",
+							"2",
+							"2",
+							"2",
+							"2",
+							"3",
+							"3",
+							"3",
+							"3",
+							"4",
+							"4",
+							"4",
+							"4",
+							"5",
+							"5",
+							"5",
+							"5"
+						]
+						"texcoord$0Indices" "int_array"
+						[
+							"0",
+							"1",
+							"2",
+							"3",
+							"4",
+							"5",
+							"6",
+							"7",
+							"8",
+							"9",
+							"10",
+							"11",
+							"12",
+							"13",
+							"14",
+							"15",
+							"16",
+							"17",
+							"18",
+							"19",
+							"20",
+							"21",
+							"22",
+							"23"
+						]
+						"blendweights$0" "float_array"
+						[
+							"1",
+							"0",
+							"0",
+							"0",
+							"1",
+							"0",
+							"0",
+							"0",
+							"1",
+							"0",
+							"0",
+							"0",
+							"1",
+							"0",
+							"0",
+							"0",
+							"1",
+							"0",
+							"0",
+							"0",
+							"1",
+							"0",
+							"0",
+							"0",
+							"1",
+							"0",
+							"0",
+							"0",
+							"1",
+							"0",
+							"0",
+							"0"
+						]
+						"blendindices$0" "int_array"
+						[
+							"0",
+							"0",
+							"0",
+							"0",
+							"0",
+							"0",
+							"0",
+							"0",
+							"0",
+							"0",
+							"0",
+							"0",
+							"0",
+							"0",
+							"0",
+							"0",
+							"0",
+							"0",
+							"0",
+							"0",
+							"0",
+							"0",
+							"0",
+							"0",
+							"0",
+							"0",
+							"0",
+							"0",
+							"0",
+							"0",
+							"0",
+							"0"
+						]
+					}
+					"currentState" "element" "0000000a-0000-0000-0000-000000000000"
+					"baseStates" "element_array"
+					[
+						"element" "0000000a-0000-0000-0000-000000000000"
+					]
+					"faceSets" "element_array"
+					[
+						"DmeFaceSet"
+						{
+							"id" "elementid" "0000000b-0000-0000-0000-000000000000"
+							"name" "string" "faceset_0"
+							"material" "DmeMaterial"
+							{
+								"id" "elementid" "0000000c-0000-0000-0000-000000000000"
+								"name" "string" "material_0"
+								"mtlName" "string" "material_0"
+							}
+							"faces" "int_array"
+							[
+								"0",
+								"1",
+								"2",
+								"3",
+								"-1",
+								"4",
+								"5",
+								"6",
+								"7",
+								"-1",
+								"8",
+								"9",
+								"10",
+								"11",
+								"-1",
+								"12",
+								"13",
+								"14",
+								"15",
+								"-1",
+								"16",
+								"17",
+								"18",
+								"19",
+								"-1",
+								"20",
+								"21",
+								"22",
+								"23",
+								"-1"
+							]
+						}
+					]
+				}
+				"visible" "bool" "1"
+				"children" "element_array"
+				[
+				]
+			}
+		]
+		"jointList" "element_array"
+		[
+			"element" "00000004-0000-0000-0000-000000000000"
+		]
+		"baseStates" "element_array"
+		[
+			"DmeTransformList"
+			{
+				"id" "elementid" "0000000d-0000-0000-0000-000000000000"
+				"name" "string" "bind pose"
+				"transforms" "element_array"
+				[
+					"DmeTransform"
+					{
+						"id" "elementid" "00000006-0000-0000-0000-000000000000"
+						"name" "string" "root"
+						"position" "vector3" "0 0 0"
+						"orientation" "quaternion" "0 0 0 1"
+					}
+				]
+			}
+		]
+		"axisSystem" "DmeAxisSystem"
+		{
+			"id" "elementid" "0000000e-0000-0000-0000-000000000000"
+			"name" "string" "axisSystem"
+			"upAxis" "int" "3"
+			"forwardParity" "int" "1"
+			"coordSys" "int" "0"
+		}
+	}
+	"model" "element" "00000002-0000-0000-0000-000000000000"
+}

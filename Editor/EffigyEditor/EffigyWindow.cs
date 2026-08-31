@@ -86,7 +86,7 @@ internal sealed class EffigyPalette
 // ============================================================================
 //  The main Effigy dock window — Onshape-faithful layout with:
 //    Top:    square feature-creation icon buttons floating over the viewport's top edge
-//    Left:   flat feature tree (Default geometry → features → bodies)
+//    Left:   flat feature tree (origin/planes → features → bodies)
 //    Center: 3D viewport with reference planes, origin, orbit camera
 //    Right:  parameter panel for the selected feature
 //    Bottom: Part-studio-style tabs
@@ -597,7 +597,7 @@ public sealed class EffigyWindow : DockWindow
 	/// </summary>
 	private enum ToolKind
 	{
-		Sketch, Primitive, Extrude, Revolve, Sweep, Loft, Bevel, Shell, Subdivide,
+		Sketch, Primitive, Extrude, Revolve, Sweep, Loft, Chamfer, Fillet, Shell, Subdivide,
 		Mirror, LinearPattern, CircularPattern, Transform, UVProject, FaceMaterial,
 	}
 
@@ -610,7 +610,8 @@ public sealed class EffigyWindow : DockWindow
 		ToolKind.Revolve => new RevolveFeature(),
 		ToolKind.Sweep => new SweepFeature(),
 		ToolKind.Loft => new LoftFeature(),
-		ToolKind.Bevel => new BevelFeature(),
+		ToolKind.Chamfer => new ChamferFeature(),
+		ToolKind.Fillet => new FilletFeature(),
 		ToolKind.Shell => new ShellFeature(),
 		ToolKind.Subdivide => new SubdivideFeature(),
 		ToolKind.Mirror => new MirrorFeature(),
@@ -700,8 +701,12 @@ public sealed class EffigyWindow : DockWindow
 		new() { Icon = EffigyIcon.Loft, Tip = "Add a Loft — skin a surface between two or more sketches",
 			Kind = ToolKind.Loft },
 
-		new() { Icon = EffigyIcon.Bevel, Tip = "Add a Bevel — chamfer sharp edges",
-			Kind = ToolKind.Bevel, GapBefore = true },
+		// Fillet before Chamfer, which is the order Onshape puts them in and the order people reach
+		// for them: rounding an edge is the common case and chamfering it is the deliberate one.
+		new() { Icon = EffigyIcon.Fillet, Tip = "Add a Fillet — round sharp edges to a radius",
+			Kind = ToolKind.Fillet, GapBefore = true },
+		new() { Icon = EffigyIcon.Chamfer, Tip = "Add a Chamfer — cut sharp edges back by a distance",
+			Kind = ToolKind.Chamfer },
 		new() { Icon = EffigyIcon.Shell, Tip = "Add a Shell — hollow to a wall thickness",
 			Kind = ToolKind.Shell },
 		new() { Icon = EffigyIcon.Subdivide, Tip = "Add a Subdivide — Catmull-Clark subdivision",
@@ -742,7 +747,7 @@ public sealed class EffigyWindow : DockWindow
 	/// Show the starter tools on their own until a sketch has been drawn, then the whole strip.
 	///
 	/// THIRTEEN BUTTONS ON AN EMPTY STUDIO ARE THIRTEEN WAYS TO GET AN ERROR. Extrude, Revolve,
-	/// Sweep, Loft, Bevel, Shell and the rest all need geometry to act on, and adding one before
+	/// Sweep, Loft, Fillet, Shell and the rest all need geometry to act on, and adding one before
 	/// there is any produces a feature that goes straight to red — correct, and useless as a first
 	/// impression. Sketch and Primitive are the only two that can start a part, so at the start
 	/// they are the only two offered.
@@ -2651,11 +2656,10 @@ public sealed class EffigyWindow : DockWindow
 //  The left panel — a flat feature tree matching Onshape's Part Studio layout:
 //
 //    FEATURES (2)
-//    ├─ Default geometry
-//    │   ├─ Origin
-//    │   ├─ Top
-//    │   ├─ Front
-//    │   └─ Right
+//    ├─ Origin
+//    ├─ Top
+//    ├─ Front
+//    ├─ Right
 //    ├─ Box
 //    └─ Subdivide
 //
@@ -2665,7 +2669,7 @@ public sealed class EffigyWindow : DockWindow
 
 /// <summary>
 /// The hover-reveal "eye" a tree row uses to toggle visibility — one implementation shared by the
-/// Features tree (sketches, default geometry) and the Parts tree (bodies).
+/// Features tree (sketches, origin and planes) and the Parts tree (bodies).
 ///
 /// Before this they were two independent copies of the same idea that had quietly drifted: the
 /// Features tree reserved 34px of right margin for its secondary text and never hid it, the Parts
@@ -2972,9 +2976,17 @@ internal sealed class EffigyFeatureTreePanel : Widget
 		SelectedFeature = null;
 		_consumedSketchIds = _studio?.ConsumedSketchIds();
 
-		// Default geometry node (always present, like Onshape)
-		var defaultGeo = _tree.AddItem( new DefaultGeometryNode( this ) );
-		_tree.Open( defaultGeo );
+		// Origin and the three reference planes - always present, at the top of the tree. They used
+		// to hang under a "Default geometry" folder, which was a row whose only job was to be
+		// expanded before you could reach the four rows inside it. The four rows sit here now.
+		foreach ( var node in new DefaultGeometryChildNode[]
+		{
+			new( this, "Origin", "adjust", "origin" ),
+			new( this, "Top (XY)", "crop_landscape", "top" ),
+			new( this, "Front (XZ)", "crop_landscape", "front" ),
+			new( this, "Right (YZ)", "crop_landscape", "right" ),
+		} )
+			_tree.AddItem( node );
 
 		// Feature nodes
 		foreach ( var feature in _studio.Features )
@@ -3007,41 +3019,7 @@ internal sealed class EffigyFeatureTreePanel : Widget
 
 	// --- tree node types --------------------------------------------------------------------
 
-	/// <summary>Root "Default geometry" node with Origin/Top/Front/Right children.</summary>
-	private sealed class DefaultGeometryNode : TreeNode<string>
-	{
-		private readonly EffigyFeatureTreePanel _panel;
-
-		public DefaultGeometryNode( EffigyFeatureTreePanel panel ) : base( "Default geometry" )
-		{
-			_panel = panel;
-		}
-
-		public override void OnPaint( VirtualWidget item )
-		{
-			PaintSelection( item );
-
-			Paint.SetPen( Theme.TextLight );
-			Paint.DrawIcon( item.Rect, "folder", 14, TextFlag.LeftCenter );
-
-			Paint.SetPen( Theme.Text );
-			Paint.DrawText( item.Rect.Shrink( 22, 0, 0, 0 ), Value, TextFlag.LeftCenter );
-		}
-
-		protected override void BuildChildren()
-		{
-			ClearChildren();
-			AddItems( new DefaultGeometryChildNode[]
-			{
-				new( _panel, "Origin", "adjust", "origin" ),
-				new( _panel, "Top (XY)", "crop_landscape", "top" ),
-				new( _panel, "Front (XZ)", "crop_landscape", "front" ),
-				new( _panel, "Right (YZ)", "crop_landscape", "right" ),
-			} );
-		}
-	}
-
-	/// <summary>Origin and the three reference planes under "Default geometry".</summary>
+	/// <summary>Origin and the three reference planes, at the top of the feature tree.</summary>
 	private sealed class DefaultGeometryChildNode : TreeNode<string>
 		, IVisibilityNode
 	{
