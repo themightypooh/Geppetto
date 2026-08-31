@@ -95,6 +95,37 @@ public static class AllFeaturesTests
 	/// </summary>
 	static void GivePickedInput( Feature feature, PartStudio studio )
 	{
+		// Sweep and loft are the two features that need a SECOND sketch to mean anything — a
+		// path to follow, or another section to skin to. The shared fixture deliberately holds
+		// one sketch, because every other feature resolves "the most recent sketch" and adding
+		// another to the fixture would quietly change what they all build. Handing it to the two
+		// features that ask for it keeps that blast radius at zero.
+		if ( feature is SweepFeature or LoftFeature )
+		{
+			var second = studio.Add( new SketchFeature() );
+			second.Plane.Index = 1; // Front (XZ), so it crosses the fixture sketch rather than lying on it
+
+			if ( feature is SweepFeature )
+			{
+				// An open two-segment path for the profile to travel along.
+				var a = second.Sketch.AddPoint( 1.5f, 0f );
+				var b = second.Sketch.AddPoint( 1.5f, 3f );
+				var c = second.Sketch.AddPoint( 3f, 5f );
+
+				second.Sketch.Add( new SketchLine( a, b ) );
+				second.Sketch.Add( new SketchLine( b, c ) );
+			}
+			else
+			{
+				// A second closed section, offset from the first so the loft has somewhere to go.
+				second.PlaneOffset.Value = 3f;
+				second.Sketch.AddRectangle( new Vec2( 1f, 1f ), new Vec2( 2.5f, 2.5f ) );
+			}
+
+			studio.Rebuild();
+			return;
+		}
+
 		if ( feature is not FaceMaterialFeature material || studio.Bodies.Count == 0 )
 			return;
 

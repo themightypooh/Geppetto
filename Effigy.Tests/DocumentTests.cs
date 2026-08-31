@@ -382,6 +382,7 @@ public static class DocumentTests
 			case Vec3Param p: p.Value = new Vec3( 0.5f, -1.25f, 2f ); break;
 			case BodySelectionParam p: p.BodyIds.Add( "someb0" ); break;
 			case List<int> ints: ints.Add( 4 ); ints.Add( 7 ); break;
+			case List<string> texts: texts.Add( "sk0001" ); texts.Add( "sk0002" ); break;
 			case List<FaceRef> list: list.Add( new FaceRef( "someb0", new Vec3( 1, 2, 3 ), new Vec3( 0, 0, 1 ) ) ); break;
 
 			case Sketch sketch:
@@ -418,6 +419,7 @@ public static class DocumentTests
 			(Vec3Param p, Vec3Param q) => p.Value.x == q.Value.x && p.Value.y == q.Value.y && p.Value.z == q.Value.z,
 			(BodySelectionParam p, BodySelectionParam q) => p.BodyIds.SequenceEqual( q.BodyIds ),
 			(List<int> p, List<int> q) => p.SequenceEqual( q ),
+			(List<string> p, List<string> q) => p.SequenceEqual( q ),
 			(List<FaceRef> p, List<FaceRef> q) => p.Count == q.Count && p.Zip( q ).All( pair => SameFace( pair.First, pair.Second ) ),
 			(Sketch p, Sketch q) => SameSketch( p, q ),
 			(FaceRef p, FaceRef q) => SameFace( p, q ),

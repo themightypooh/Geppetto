@@ -85,6 +85,8 @@ public static class Program
 
 		SketchEditTests.Run();
 
+		SweepLoftTests.Run();
+
 		UntestedKernelTests.Run();
 
 		MergeTests.Run();

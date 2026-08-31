@@ -149,6 +149,18 @@ public static class StudioDocument
 				sb.Append( '\n' );
 				return;
 
+			case List<string> texts:
+				// Loft's Sections, and anything like it. One line with every entry on it, like
+				// ints rather than like facelist, because these are short ids and a line each
+				// would bury the rest of the feature.
+				sb.Append( "\ttexts " ).Append( field.Name );
+
+				foreach ( var text in texts )
+					sb.Append( ' ' ).Append( text );
+
+				sb.Append( '\n' );
+				return;
+
 			case List<FaceRef> faces:
 				foreach ( var f in faces )
 					sb.Append( "\tfacelist " ).Append( field.Name ).Append( ' ' ).Append( Face( f ) ).Append( '\n' );
@@ -410,6 +422,19 @@ public static class StudioDocument
 			case "face":
 				field.SetValue( feature, ParseFace( value ) );
 				return;
+
+			case "texts":
+			{
+				if ( current is not List<string> texts )
+					return;
+
+				texts.Clear();
+
+				foreach ( var part in value.Split( ' ', StringSplitOptions.RemoveEmptyEntries ) )
+					texts.Add( part );
+
+				return;
+			}
 
 			case "ints":
 			{
