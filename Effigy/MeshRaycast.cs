@@ -51,34 +51,63 @@ public static class MeshRaycast
 
 		for ( var fi = 0; fi < mesh.Faces.Count; fi++ )
 		{
-			var face = mesh.Faces[fi];
-
-			if ( face.Count < 3 )
+			if ( !HitFace( mesh, fi, origin, dir, out var t, out var point ) )
 				continue;
 
-			var corners = new List<Vec3>( face.Count );
+			if ( best is { } current && t >= current.Distance )
+				continue;
 
-			for ( var c = 0; c < face.Count; c++ )
-				corners.Add( mesh.Positions[face.Indices[c]] );
-
-			foreach ( var (ia, ib, ic) in Triangulate.Face( corners ) )
-			{
-				var p0 = corners[ia];
-				var p1 = corners[ib];
-				var p2 = corners[ic];
-
-				if ( !TriangleHit( origin, dir, p0, p1, p2, out var t, out var point ) )
-					continue;
-
-				if ( best is { } current && t >= current.Distance )
-					continue;
-
-				var normal = mesh.FaceNormal( face );
-				best = new MeshHit( point, fi, normal, t );
-			}
+			best = new MeshHit( point, fi, mesh.FaceNormal( mesh.Faces[fi] ), t );
 		}
 
 		return best;
+	}
+
+	/// <summary>
+	/// Nearest triangle of one face. Shared by the linear scan and the BVH so a click cannot
+	/// disagree with a stroke sample about which triangle was there.
+	/// </summary>
+	public static bool HitFace( PolyMesh mesh, int faceIndex, Vec3 origin, Vec3 dir, out float t, out Vec3 point )
+	{
+		t = 0f;
+		point = default;
+
+		if ( mesh is null || faceIndex < 0 || faceIndex >= mesh.Faces.Count )
+			return false;
+
+		var face = mesh.Faces[faceIndex];
+
+		if ( face.Count < 3 )
+			return false;
+
+		var corners = new List<Vec3>( face.Count );
+
+		for ( var c = 0; c < face.Count; c++ )
+			corners.Add( mesh.Positions[face.Indices[c]] );
+
+		var hit = false;
+		var bestT = float.MaxValue;
+		var bestP = default( Vec3 );
+
+		foreach ( var (ia, ib, ic) in Triangulate.Face( corners ) )
+		{
+			if ( !TriangleHit( origin, dir, corners[ia], corners[ib], corners[ic], out var cand, out var p ) )
+				continue;
+
+			if ( cand >= bestT )
+				continue;
+
+			bestT = cand;
+			bestP = p;
+			hit = true;
+		}
+
+		if ( !hit )
+			return false;
+
+		t = bestT;
+		point = bestP;
+		return true;
 	}
 
 	/// <summary>
@@ -191,7 +220,7 @@ public static class MeshRaycast
 	/// back-facing triangle counts too, since a click through a thin wall should still register
 	/// something rather than nothing.
 	/// </summary>
-	static bool TriangleHit( Vec3 origin, Vec3 dir, Vec3 a, Vec3 b, Vec3 c, out float t, out Vec3 point )
+	public static bool TriangleHit( Vec3 origin, Vec3 dir, Vec3 a, Vec3 b, Vec3 c, out float t, out Vec3 point )
 	{
 		t = 0f;
 		point = default;

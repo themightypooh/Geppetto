@@ -58,6 +58,8 @@ public static class Program
 		Section( "OBJ round-trips" );
 		TestObjRoundTrip();
 
+		SculptTests.Run();
+
 		FeatureTests.Run();
 		SketchTests.Run();
 

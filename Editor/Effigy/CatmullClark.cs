@@ -3,6 +3,59 @@ using System.Collections.Generic;
 
 namespace Effigy;
 
+/// <summary>Which source element a subdivided vertex came from. The layout of SubdivideOnce is
+/// a contract: originals, then edge points, then face points, in that order.</summary>
+public enum SubdivisionOrigin
+{
+	Original,
+	Edge,
+	Face
+}
+
+/// <summary>
+/// One output vertex of a single Catmull-Clark step, named by the source element it came from.
+///
+/// Original: A is the source vertex index, B is unused.
+/// Edge:     A, B are the source endpoints, already sorted A &lt; B.
+/// Face:     A is the source face index, B is unused.
+/// </summary>
+public readonly struct SubdivisionVertex
+{
+	public readonly SubdivisionOrigin Origin;
+	public readonly int A;
+	public readonly int B;
+
+	public SubdivisionVertex( SubdivisionOrigin origin, int a, int b = -1 )
+	{
+		Origin = origin;
+		A = a;
+		B = b;
+	}
+}
+
+/// <summary>
+/// Per-vertex correspondence for one subdivision step. A sculpt stores deltas against these
+/// indices, so the map has to be identical for the same topology on every rebuild — not merely
+/// "the same in practice on this runtime".
+/// </summary>
+public sealed class SubdivisionMap
+{
+	public readonly SubdivisionVertex[] Vertices;
+	public readonly int SourceVertexCount;
+	public readonly int SourceEdgeCount;
+	public readonly int SourceFaceCount;
+
+	public SubdivisionMap( SubdivisionVertex[] vertices, int sourceVertexCount, int sourceEdgeCount, int sourceFaceCount )
+	{
+		Vertices = vertices;
+		SourceVertexCount = sourceVertexCount;
+		SourceEdgeCount = sourceEdgeCount;
+		SourceFaceCount = sourceFaceCount;
+	}
+
+	public int OutputVertexCount => Vertices.Length;
+}
+
 /// <summary>
 /// Catmull-Clark subdivision.
 ///
@@ -32,37 +85,62 @@ public static class CatmullClark
 		var current = mesh.Clone();
 
 		for ( var i = 0; i < levels; i++ )
-			current = SubdivideOnce( current );
+			current = SubdivideOnce( current ).Mesh;
 
 		return current;
 	}
 
-	static PolyMesh SubdivideOnce( PolyMesh mesh )
+	/// <summary>
+	/// One subdivision step plus the correspondence map. Sculpt deltas are stored per output
+	/// vertex; this is how those vertices name the cage elements they came from.
+	/// </summary>
+	public static (PolyMesh Mesh, SubdivisionMap Map) SubdivideWithMap( PolyMesh mesh ) =>
+		SubdivideOnce( mesh );
+
+	static (PolyMesh Mesh, SubdivisionMap Map) SubdivideOnce( PolyMesh mesh )
 	{
 		var edgeFaces = mesh.BuildEdgeFaces();
 		var vertexFaces = mesh.BuildVertexFaces();
 		var vertexEdges = mesh.BuildVertexEdges();
 
-		// Stable index per edge, so edge points can live in a contiguous block of the new vertex
-		// list rather than in a dictionary that later lookups have to chase.
-		var edgeIndex = new Dictionary<EdgeKey, int>( edgeFaces.Count );
-		var edgeList = new List<EdgeKey>( edgeFaces.Count );
-
-		foreach ( var key in edgeFaces.Keys )
+		// Edge-point indices are a persisted contract, not an implementation accident. Dictionary
+		// enumeration is insertion order in practice and is not promised across a rebuild or a
+		// runtime. Sort by the already-canonical (A, B) so the same topology always produces the
+		// same edge block.
+		var edgeList = new List<EdgeKey>( edgeFaces.Keys );
+		edgeList.Sort( ( a, b ) =>
 		{
-			edgeIndex[key] = edgeList.Count;
-			edgeList.Add( key );
-		}
+			var cmp = a.A.CompareTo( b.A );
+			return cmp != 0 ? cmp : a.B.CompareTo( b.B );
+		} );
+
+		var edgeIndex = new Dictionary<EdgeKey, int>( edgeList.Count );
+
+		for ( var i = 0; i < edgeList.Count; i++ )
+			edgeIndex[edgeList[i]] = i;
 
 		var vertCount = mesh.VertexCount;
 		var edgeCount = edgeList.Count;
 		var faceCount = mesh.FaceCount;
 
-		// Layout of the new vertex list:
+		// Layout of the new vertex list — this IS the correspondence:
 		//   [0 .. V)                 updated original vertices
-		//   [V .. V+E)               edge points
-		//   [V+E .. V+E+F)           face points
+		//   [V .. V+E)               edge points, sorted by (A, B)
+		//   [V+E .. V+E+F)           face points, in source face order
 		var newPositions = new Vec3[vertCount + edgeCount + faceCount];
+		var mapVertices = new SubdivisionVertex[newPositions.Length];
+
+		for ( var vi = 0; vi < vertCount; vi++ )
+			mapVertices[vi] = new SubdivisionVertex( SubdivisionOrigin.Original, vi );
+
+		for ( var ei = 0; ei < edgeCount; ei++ )
+		{
+			var key = edgeList[ei];
+			mapVertices[vertCount + ei] = new SubdivisionVertex( SubdivisionOrigin.Edge, key.A, key.B );
+		}
+
+		for ( var fi = 0; fi < faceCount; fi++ )
+			mapVertices[vertCount + edgeCount + fi] = new SubdivisionVertex( SubdivisionOrigin.Face, fi );
 
 		// Skin weights ride along through every rule below, using THE SAME COEFFICIENTS as the
 		// positions. That is not a nicety: every Catmull-Clark rule is an affine combination — its
@@ -293,7 +371,7 @@ public static class CatmullClark
 			}
 		}
 
-		return result;
+		return (result, new SubdivisionMap( mapVertices, vertCount, edgeCount, faceCount ));
 	}
 
 	/// <summary>
