@@ -47,6 +47,16 @@ public sealed class ConstraintOffer
 	/// <summary>The measured value as things stand. Zero for the kinds that take no value.</summary>
 	public float Value;
 
+	/// <summary>
+	/// The second half of a two-number value, for the one kind that has one: a Fix carries a
+	/// POSITION rather than a magnitude.
+	///
+	/// It is here rather than only on the constraint because Apply writes the offer's value onto
+	/// the constraint on the way through — that is how a dimension typed into a box takes effect —
+	/// and a Fix whose y was not carried alongside would be applied to the right x and y = 0.
+	/// </summary>
+	public float ValueY;
+
 	/// <summary>"" for a length, "deg" for an angle. What a numeric field should show.</summary>
 	public string Unit = "";
 
@@ -201,10 +211,25 @@ public static class ConstraintTools
 		if ( arcs.Count == 1 && points.Count == 0 && lines.Count == 0 )
 		{
 			var arc = arcs[0];
+			var radius = Length( sketch, arc.Center, arc.Start );
 
-			AddValued( offers, sketch, SketchConstraintKind.Radius, "Radius",
-				"Drive this arc's radius.", Length( sketch, arc.Center, arc.Start ), "",
-				new SketchConstraint( SketchConstraintKind.Radius, arc.Center, arc.Start ) );
+			// RADIUS AND DIAMETER ARE ONE RULE WRITTEN TWO WAYS, so having either means being
+			// offered neither. They solve identically — Diameter builds the same distance at half
+			// its value — and a sketch carrying both would solve and then report redundancy, which
+			// is a puzzling way to be told you had already dimensioned this arc.
+			var dimensioned = Has( sketch, new SketchConstraint( SketchConstraintKind.Radius, arc.Center, arc.Start ) )
+				|| Has( sketch, new SketchConstraint( SketchConstraintKind.Diameter, arc.Center, arc.Start ) );
+
+			if ( !dimensioned )
+			{
+				AddValued( offers, sketch, SketchConstraintKind.Radius, "Radius",
+					"Drive this arc's radius.", radius, "",
+					new SketchConstraint( SketchConstraintKind.Radius, arc.Center, arc.Start ) );
+
+				AddValued( offers, sketch, SketchConstraintKind.Diameter, "Diameter",
+					"Drive this arc's diameter.", radius * 2f, "",
+					new SketchConstraint( SketchConstraintKind.Diameter, arc.Center, arc.Start ) );
+			}
 		}
 
 		if ( arcs.Count == 2 && points.Count == 0 && lines.Count == 0 )
@@ -215,6 +240,62 @@ public static class ConstraintTools
 			Add( offers, sketch, SketchConstraintKind.EqualLength, "Equal radius",
 				"Make these two arcs the same size.",
 				new SketchConstraint( SketchConstraintKind.EqualLength, a.Center, a.Start, b.Center, b.Start ) );
+
+			// WHICH TANGENCY IS READ OFF THE SKETCH, not asked for. Two circles can touch outside
+			// each other or with one inside the other, and those are different rules; picking the
+			// one the drawing is already closer to means "make this exact" does what it looks like
+			// it should, and the other is a drag away.
+			Add( offers, sketch, SketchConstraintKind.TangentArcs, "Tangent",
+				"Bring these two arcs to touch.",
+				new SketchConstraint( SketchConstraintKind.TangentArcs, a.Center, a.Start, b.Center, b.Start )
+				{ Value = InternalTangency( sketch, a, b ) ? 1f : 0f } );
+		}
+
+		// --- two things with centres ----------------------------------------------------------
+		//
+		// The one rule a CIRCLE can take part in. A circle contributes its centre to the solve and
+		// nothing else — see the arcs-only note above — and Concentric is Coincident on two centres,
+		// so it needs nothing a circle does not have. Any mix of arcs and circles works.
+		var centres = arcs.Select( a => a.Center ).Concat( circles.Select( c => c.Center ) ).ToList();
+
+		if ( centres.Count == 2 && points.Count == 0 && lines.Count == 0 )
+		{
+			Add( offers, sketch, SketchConstraintKind.Concentric, "Concentric",
+				"Bring these two centres together.",
+				new SketchConstraint( SketchConstraintKind.Concentric, centres[0], centres[1] ) );
+		}
+
+		// --- a line and an arc ------------------------------------------------------------------
+		//
+		// Arcs only again, and for the same reason: a tangency is written against a centre and a
+		// point on the rim, and a circle has no rim point for the solver to move.
+		if ( lines.Count == 1 && arcs.Count == 1 && points.Count == 0 && circles.Count == 0 )
+		{
+			var line = lines[0];
+			var arc = arcs[0];
+
+			Add( offers, sketch, SketchConstraintKind.Tangent, "Tangent",
+				"Bring this line to touch that arc.",
+				new SketchConstraint( SketchConstraintKind.Tangent, line.Start, line.End, arc.Center, arc.Start ) );
+		}
+
+		// --- one point ----------------------------------------------------------------------------
+		//
+		// A FIX IS NOT THE SOLVER'S PIN. Solve() holds one point still by removing its columns from
+		// the Jacobian, which is how a sketch has an absolute frame at all; it can only ever be one
+		// point and the caller chooses it. This is the user's own version, there can be as many as
+		// they like, and it fights other rules honestly — see FixedConstraint.
+		//
+		// It carries a POSITION rather than a magnitude, so it is not a dimension and does not open
+		// a box: "leave this where it is" is the whole operation, and moving it afterwards is what
+		// deleting the rule is for.
+		if ( points.Count == 1 && lines.Count == 0 && arcs.Count == 0 && circles.Count == 0 )
+		{
+			var at = sketch.Points[points[0]];
+
+			Add( offers, sketch, SketchConstraintKind.Fixed, "Fix",
+				"Nail this point where it is.",
+				new SketchConstraint( SketchConstraintKind.Fixed, points[0], -1 ) { Value = at.x, ValueY = at.y } );
 		}
 
 		// --- two points -------------------------------------------------------------------------
@@ -250,6 +331,12 @@ public static class ConstraintTools
 			Add( offers, sketch, SketchConstraintKind.PointOnLine, "Point on line",
 				"Put this point on that line.",
 				new SketchConstraint( SketchConstraintKind.PointOnLine, points[0], line.Start, line.End ) );
+
+			// Midpoint is point-on-line said more exactly, and it takes the same selection: the
+			// point that moves, and the line it moves along.
+			Add( offers, sketch, SketchConstraintKind.Midpoint, "Midpoint",
+				"Put this point half way along that line.",
+				new SketchConstraint( SketchConstraintKind.Midpoint, points[0], line.Start, line.End ) );
 		}
 
 		// --- two points and a line ------------------------------------------------------------
@@ -293,6 +380,7 @@ public static class ConstraintTools
 		var before = new List<Vec2>( sketch.Points );
 
 		offer.Constraint.Value = offer.Value;
+		offer.Constraint.ValueY = offer.ValueY;
 		sketch.Constraints.Add( offer.Constraint );
 
 		var solve = SketchSolver.Solve( sketch, pinnedPoint );
@@ -328,6 +416,7 @@ public static class ConstraintTools
 			return false;
 
 		offer.Constraint.Value = offer.Value;
+		offer.Constraint.ValueY = offer.ValueY;
 		sketch.Constraints.Add( offer.Constraint );
 
 		return true;
@@ -452,17 +541,40 @@ public static class ConstraintTools
 				return;
 
 			case SketchConstraintKind.Coincident:
-				if ( !InRange( sketch, a ) )
-					return;
+				AtPoint( sketch, c, a, "\u2022", markers );
+				return;
 
-				markers.Add( new ConstraintMarker
-				{
-					Constraint = c,
-					Kind = c.Kind,
-					Anchor = sketch.Points[a],
-					Away = Vec2.Zero,
-					Label = "\u2022",
-				} );
+			case SketchConstraintKind.Concentric:
+				// ONE MARK, NOT TWO, unlike the other rules that relate a pair. What this one
+				// asserts is that the two centres are the same place, so a second glyph would sit
+				// exactly on top of the first as soon as the sketch solved.
+				AtPoint( sketch, c, a, "CO", markers );
+				return;
+
+			case SketchConstraintKind.Midpoint:
+				// On the point that is held, not on the line: the line carries its own marks, and
+				// what this says is "this one is the middle of that".
+				AtPoint( sketch, c, c.PointA, "MID", markers );
+				return;
+
+			case SketchConstraintKind.Fixed:
+				AtPoint( sketch, c, c.PointA, "FIX", markers );
+				return;
+
+			case SketchConstraintKind.Tangent:
+				// The line, and the rim point the arc is held by: the two things the rule is
+				// about, the same way the pair rules mark both their segments.
+				OnSegment( sketch, c, c.PointA, c.PointB, "T", markers );
+				AtPoint( sketch, c, c.PointD, "T", markers );
+				return;
+
+			case SketchConstraintKind.TangentArcs:
+				AtPoint( sketch, c, c.PointB, "T", markers );
+				AtPoint( sketch, c, c.PointD, "T", markers );
+				return;
+
+			case SketchConstraintKind.Diameter:
+				OnSegment( sketch, c, a, b, $"D {Number( c.Value )}", markers, dimension: true );
 				return;
 
 			case SketchConstraintKind.Distance:
@@ -496,38 +608,36 @@ public static class ConstraintTools
 				return;
 
 			case SketchConstraintKind.PointOnLine:
-				if ( !InRange( sketch, c.PointA ) )
-					return;
-
-				markers.Add( new ConstraintMarker
-				{
-					Constraint = c,
-					Kind = c.Kind,
-					Anchor = sketch.Points[c.PointA],
-					Away = Vec2.Zero,
-					Label = "ON",
-				} );
+				AtPoint( sketch, c, c.PointA, "ON", markers );
 				return;
 
 			case SketchConstraintKind.Symmetric:
 				// The two points being mirrored, not the mirror. Marking the axis would say "this
 				// line is involved in a symmetry" without saying what is symmetric about it.
-				foreach ( var point in new[] { c.PointA, c.PointB } )
-				{
-					if ( !InRange( sketch, point ) )
-						continue;
-
-					markers.Add( new ConstraintMarker
-					{
-						Constraint = c,
-						Kind = c.Kind,
-						Anchor = sketch.Points[point],
-						Away = Vec2.Zero,
-						Label = "><",
-					} );
-				}
+				AtPoint( sketch, c, c.PointA, "><", markers );
+				AtPoint( sketch, c, c.PointB, "><", markers );
 				return;
 		}
+	}
+
+	/// <summary>A mark on a point itself, with no side to be pushed off to: a coincidence is a
+	/// point, and a point has no sides. Silently marks nothing when the point is gone, the same way
+	/// OnSegment does, because a rule outliving its geometry is ordinary rather than exceptional.
+	/// </summary>
+	static void AtPoint( Sketch sketch, SketchConstraint c, int point, string label,
+		List<ConstraintMarker> markers )
+	{
+		if ( !InRange( sketch, point ) )
+			return;
+
+		markers.Add( new ConstraintMarker
+		{
+			Constraint = c,
+			Kind = c.Kind,
+			Anchor = sketch.Points[point],
+			Away = Vec2.Zero,
+			Label = label,
+		} );
 	}
 
 	/// <summary>A mark at a segment's midpoint, pushed off to its left. Left every time rather than
@@ -608,9 +718,14 @@ public static class ConstraintTools
 		// round and the two segments may be given in either order.
 		if ( a.PointD >= 0 || b.PointD >= 0 )
 		{
-			// Symmetric is the exception among the four-point kinds: the first pair are the points
-			// being mirrored and the second is the mirror. Swapping the pairs means something else.
-			if ( a.Kind == SketchConstraintKind.Symmetric )
+			// Symmetric and Tangent are the exceptions among the four-point kinds, because their
+			// two pairs are not the same sort of thing. Symmetric's first pair are the points being
+			// mirrored and the second is the mirror; Tangent's first pair are a line's ends and the
+			// second is an arc's centre and rim. Swapping either means something else.
+			//
+			// TangentArcs is NOT an exception: both its pairs are a centre and a rim, so which arc
+			// was named first is not something the user chose.
+			if ( a.Kind == SketchConstraintKind.Symmetric || a.Kind == SketchConstraintKind.Tangent )
 				return SamePair( a.PointA, a.PointB, b.PointA, b.PointB )
 					&& SamePair( a.PointC, a.PointD, b.PointC, b.PointD );
 
@@ -670,6 +785,23 @@ public static class ConstraintTools
 		return degrees;
 	}
 
+	/// <summary>
+	/// Whether these two arcs are nearer to touching from the inside than from the outside, as they
+	/// are drawn right now.
+	///
+	/// External tangency puts the centres ra + rb apart, internal |ra - rb|. Neither is more
+	/// correct than the other — they are two different rules — so the one offered is whichever the
+	/// sketch is already closest to, which is the arrangement the user has in front of them.
+	/// </summary>
+	static bool InternalTangency( Sketch sketch, SketchArc a, SketchArc b )
+	{
+		var gap = Length( sketch, a.Center, b.Center );
+		var ra = Length( sketch, a.Center, a.Start );
+		var rb = Length( sketch, b.Center, b.Start );
+
+		return MathF.Abs( gap - MathF.Abs( ra - rb ) ) < MathF.Abs( gap - (ra + rb) );
+	}
+
 	// --- building offers -------------------------------------------------------------------------
 
 	static void Add( List<ConstraintOffer> offers, Sketch sketch, SketchConstraintKind kind,
@@ -683,6 +815,13 @@ public static class ConstraintTools
 			Kind = kind,
 			Label = label,
 			Hint = hint,
+
+			// Carried back OFF the constraint rather than left at zero. Most plain rules have no
+			// value at all, but a Fix is a position and an arc-to-arc tangency stores which side it
+			// is tangent on — and Apply writes the offer's values onto the constraint, so a value
+			// that did not make the round trip would be zeroed on the way in.
+			Value = constraint.Value,
+			ValueY = constraint.ValueY,
 			Constraint = constraint,
 		} );
 	}

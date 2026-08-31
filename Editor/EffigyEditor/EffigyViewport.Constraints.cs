@@ -406,6 +406,12 @@ internal sealed partial class EffigyViewport
 		SketchConstraintKind.PointOnLine => "Point on line",
 		SketchConstraintKind.Symmetric => "Symmetric",
 		SketchConstraintKind.Radius => "Radius",
+		SketchConstraintKind.Diameter => "Diameter",
+		SketchConstraintKind.Midpoint => "Midpoint",
+		SketchConstraintKind.Concentric => "Concentric",
+		SketchConstraintKind.Fixed => "Fix",
+		SketchConstraintKind.Tangent => "Tangent",
+		SketchConstraintKind.TangentArcs => "Tangent",
 		_ => "Constraint",
 	};
 

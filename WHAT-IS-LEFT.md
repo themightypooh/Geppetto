@@ -43,6 +43,11 @@ may already qualify.
 **5. Plane corner resize** — whether the handle fades in at the right distance and the drag feels
 right.
 
+**6. The two new strip buttons and the six new constraints.** Same sitting, because they are the same
+kind of unknown: Sweep and Loft now have buttons and hand-drawn glyphs, and the constraint menu now
+offers Diameter, Midpoint, Concentric, Fix and both tangencies. All of it compiles and the kernel half
+is tested; none of it has been looked at. See 2.1 and 2.2 for what to check.
+
 ---
 
 ## 1. Effigy kernel
@@ -156,32 +161,52 @@ Only single-hole profiles are in reach — see the two-holes bullet in 1.1.
 
 The kernel can do things the tool cannot reach. This is now the larger half of the project.
 
-### 2.1 Toolbar entries for sweep and loft — the cheapest item in the repo
+### 2.1 Sweep and loft on the strip — **written, and never seen on screen**
 
-Both features are built, volume-tested, and reachable from **nothing**. The feature strip has
-thirteen buttons and `ToolKind` has thirteen entries; Sweep and Loft are in neither.
+Done as code: `ToolKind.Sweep`/`ToolKind.Loft`, a `CreateTools` row each, and hand-drawn
+`EffigyIcon.Sweep`/`EffigyIcon.Loft` glyphs in the same idiom as the rest of the strip — a profile
+carried along a curved path, and two sections with the skin ruled between them. The strip is now
+fifteen buttons. The editor assembly compiles with no new warnings.
 
-This was previously written up as blocked on a sketch picker "which nothing in the tool has yet".
-That was wrong twice over: `EffigySketchSelector` (`EffigyFeatureDialog.cs:1244`) exists and arms for
-any `SketchConsumingFeature`, which both are — and neither strictly needs it, because an empty
-`SweepFeature.PathSketchId` means "the sketch before the profile's" and a `LoftFeature` with fewer
-than two `Sections` lofts every sketch available.
+Neither needs its selector filled in to do something, which is why a button alone is enough: an empty
+`SweepFeature.PathSketchId` means "the sketch before the profile's", and a `LoftFeature` with fewer
+than two `Sections` lofts every sketch available. `EffigySketchSelector`
+(`EffigyFeatureDialog.cs:1244`) arms for both, being `SketchConsumingFeature`s.
 
-**Method:** a `ToolKind` entry, a `CreateTools` row and an icon each, in `EffigyWindow.cs`. Do this
-before anything harder. The refinements each would still want — a path selector for sweep, an ordered
-section list for loft — are follow-ups, not prerequisites.
+**What is left:** the sitting. Draw two sketches, press each button, and look — at the result, and at
+the two new glyphs at strip size, which have been drawn against a nominal 18×18 box and never
+rendered. Then the refinements: a path selector for sweep, an ordered section list for loft.
 
-### 2.2 Wire the six unreachable constraints
+### 2.2 The six unreachable constraints — **written, and never seen on screen**
 
-*An hour, and it has been open for several sessions.*
+`SketchConstraintKind` has seventeen kinds and `ConstraintTools` offered eleven. The other six —
+`Diameter`, `Midpoint`, `Concentric`, `Fixed`, `Tangent`, `TangentArcs` — are now offered, marked up
+and covered:
 
-`SketchConstraintKind` has **seventeen** kinds. `ConstraintTools` — which turns a selection into the
-constraints it allows — offers **eleven**. The six with no way to reach them, named as the enum
-spells them: `Diameter`, `Midpoint`, `Concentric`, `Fixed`, `Tangent`, `TangentArcs`. All six solve,
-all round-trip through the file.
+- **Diameter** joins Radius on one arc, opening on twice the radius. Having either means being
+  offered neither again: they are one rule written two ways, and a sketch carrying both solves and
+  then reports redundancy.
+- **Midpoint** joins Point-on-line on a point and a line, being the same selection said exactly.
+- **Concentric** on any two things with centres — the one new rule a *circle* can take part in,
+  since it contributes its centre to the solve and nothing else.
+- **Fix** on a single point, carrying a position rather than a magnitude. `ConstraintOffer` gained a
+  `ValueY` for it: `Apply` writes the offer's value onto the constraint, so a fix whose y did not
+  make that trip would have been applied to the right x and y = 0.
+- **Tangent** on a line and an arc.
+- **Tangent** on two arcs, with **internal or external read off the sketch** rather than asked for —
+  whichever arrangement the drawing is already closer to.
 
-**Method:** one case each in `Offers`, one menu entry each in `EffigyViewport.Constraints.cs`. This
-is kernel work before it is editor work.
+Arcs only for the two tangencies and for Diameter, for the reason the file already gives about
+Radius: a tangency is written against a centre and a rim point, and a circle has no rim point for the
+solver to move.
+
+`ConstraintToolTests` grew a section that offers *and applies* each one and checks the geometry
+obeyed — a table of offers reads as correct while the point indices inside it are wrong. 1423 checks
+pass.
+
+**What is left:** the sitting. Select the geometry, right-click, and confirm each of the six appears
+with a sensible icon, applies, and leaves a mark that can be clicked to delete it. The new marks are
+`D`, `MID`, `CO`, `FIX` and `T`, ASCII for the reason the file gives about the perpendicular sign.
 
 ### 2.3 The missing sketch tools
 

@@ -35,6 +35,9 @@ public static class ConstraintToolTests
 		Report.Section( "constraint tools: what a circle's radius really is" );
 		TestCircleRadius();
 
+		Report.Section( "constraint tools: the six kinds that had no way in" );
+		TestTheUnreachableSix();
+
 		Report.Section( "constraint tools: a rule that cannot hold is taken back out" );
 		TestRefused();
 
@@ -72,10 +75,12 @@ public static class ConstraintToolTests
 
 		// A POINT AND A LINE, not three loose points. Three points also describe "one lies on the
 		// other two", and then which one is the point is a guess dressed up as a convention.
+		//
+		// Midpoint takes the same selection, being point-on-line said more exactly.
 		var onLine = Labels( sketch, new SketchSelection( new[] { second.Start }, new[] { line.Id } ) );
 
-		Report.Check( "a point and a line offer point-on-line",
-			onLine.SequenceEqual( new[] { "Point on line" } ), string.Join( ", ", onLine ) );
+		Report.Check( "a point and a line offer point-on-line and midpoint",
+			onLine.SequenceEqual( new[] { "Midpoint", "Point on line" } ), string.Join( ", ", onLine ) );
 
 		var mirror = Labels( sketch,
 			new SketchSelection( new[] { second.Start, second.End }, new[] { line.Id } ) );
@@ -341,9 +346,17 @@ public static class ConstraintToolTests
 
 		var offers = ConstraintTools.Offers( arcSketch, new SketchSelection( null, new[] { arc.Id } ) );
 
-		Report.Check( "an arc does", offers.Count == 1 && offers[0].Label == "Radius" );
+		Report.Check( "an arc does", offers.Count == 2 && offers[0].Label == "Radius",
+			string.Join( ", ", offers.Select( o => o.Label ) ) );
 
 		Report.Check( "pre-filled with the radius it has", MathF.Abs( offers[0].Value - 3f ) < 1e-4f );
+
+		// RADIUS AND DIAMETER ARE ONE RULE WRITTEN TWO WAYS. Both are offered while the arc is
+		// undimensioned, and the number each opens on is its own.
+		Report.Check( "and a diameter alongside it", offers[1].Label == "Diameter" );
+
+		Report.Check( "opening on twice the radius", MathF.Abs( offers[1].Value - 6f ) < 1e-4f,
+			$"{offers[1].Value:0.###}" );
 
 		offers[0].Value = 5f;
 		ConstraintTools.Apply( arcSketch, offers[0] );
@@ -358,6 +371,170 @@ public static class ConstraintToolTests
 		Report.Check( "taking the other end with it",
 			MathF.Abs( (arcSketch.Points[end] - arcSketch.Points[centre]).Length - 5f ) < 1e-3f,
 			$"{(arcSketch.Points[end] - arcSketch.Points[centre]).Length:0.####}" );
+
+		// AND NOW NEITHER IS OFFERED. A sketch carrying both would solve and then report
+		// redundancy, which is a puzzling way to be told the arc was already dimensioned.
+		var after = Labels( arcSketch, new SketchSelection( null, new[] { arc.Id } ) );
+
+		Report.Check( "a dimensioned arc is offered neither of them again",
+			after.Count == 0, string.Join( ", ", after ) );
+	}
+
+	/// <summary>
+	/// The six kinds that solved, marked up and round-tripped through the file with no selection
+	/// anywhere that produced one.
+	///
+	/// OFFERED AND THEN APPLIED, in that order and never only the first. What a selection allows is
+	/// a table, and a table reads as correct while the point indices inside it are wrong; only the
+	/// geometry moving proves each constraint's slots were filled in the order it reads them.
+	/// </summary>
+	static void TestTheUnreachableSix()
+	{
+		// --- fix ------------------------------------------------------------------------------
+		var fixSketch = new Sketch();
+		var bar = fixSketch.AddLine( new Vec2( 2, 3 ), new Vec2( 6, 3 ) );
+
+		var single = Labels( fixSketch, new SketchSelection( new[] { bar.Start } ) );
+
+		Report.Check( "one point on its own offers a fix",
+			single.SequenceEqual( new[] { "Fix" } ), string.Join( ", ", single ) );
+
+		Apply( fixSketch, new SketchSelection( new[] { bar.Start } ), "Fix" );
+
+		// A FIX IS THE ONE RULE WHOSE VALUE IS A POSITION. Carrying only the x through the offer
+		// would nail the point to the right column of a sketch and to y = 0.
+		Report.Check( "a fix remembers both coordinates",
+			MathF.Abs( fixSketch.Constraints[0].Value - 2f ) < 1e-4f
+			&& MathF.Abs( fixSketch.Constraints[0].ValueY - 3f ) < 1e-4f,
+			$"{fixSketch.Constraints[0].Value:0.##}, {fixSketch.Constraints[0].ValueY:0.##}" );
+
+		fixSketch.Points[bar.Start] = new Vec2( 9, 9 );
+		SketchSolver.Solve( fixSketch, bar.End );
+
+		Report.Check( "and drags the point back where it was fixed",
+			(fixSketch.Points[bar.Start] - new Vec2( 2, 3 )).Length < 1e-3f,
+			$"({fixSketch.Points[bar.Start].x:0.##},{fixSketch.Points[bar.Start].y:0.##})" );
+
+		// --- midpoint -------------------------------------------------------------------------
+		var mid = new Sketch();
+		var rail = mid.AddLine( new Vec2( 0, 0 ), new Vec2( 10, 0 ) );
+		var free = mid.AddPoint( new Vec2( 1, 4 ) );
+
+		Apply( mid, new SketchSelection( new[] { free }, new[] { rail.Id } ), "Midpoint" );
+		SketchSolver.Solve( mid, rail.Start );
+
+		// Against the line WHEREVER IT ENDED UP, not against (5,0): the solver is free to move the
+		// line as well as the point, and the rule is about the relation rather than the place.
+		Report.Check( "midpoint puts the point half way along the line",
+			(mid.Points[free] - (mid.Points[rail.Start] + mid.Points[rail.End]) * 0.5f).Length < 1e-3f,
+			$"({mid.Points[free].x:0.##},{mid.Points[free].y:0.##})" );
+
+		// --- concentric -----------------------------------------------------------------------
+		//
+		// The one new rule a CIRCLE can take part in: it contributes its centre to the solve and
+		// nothing else, which is all a concentricity needs.
+		var conc = new Sketch();
+		var outer = conc.AddCircle( new Vec2( 0, 0 ), 3f );
+		var inner = conc.AddCircle( new Vec2( 4, 1 ), 1.5f );
+
+		var both = Labels( conc, new SketchSelection( null, new[] { outer.Id, inner.Id } ) );
+
+		Report.Check( "two circles offer concentric and nothing else",
+			both.SequenceEqual( new[] { "Concentric" } ), string.Join( ", ", both ) );
+
+		Apply( conc, new SketchSelection( null, new[] { outer.Id, inner.Id } ), "Concentric" );
+		SketchSolver.Solve( conc, outer.Center );
+
+		Report.Check( "and applying it brings their centres together",
+			(conc.Points[inner.Center] - conc.Points[outer.Center]).Length < 1e-3f,
+			$"{(conc.Points[inner.Center] - conc.Points[outer.Center]).Length:0.####}" );
+
+		// --- a line tangent to an arc -----------------------------------------------------------
+		var tangent = new Sketch();
+		var hub = tangent.AddPoint( new Vec2( 0, 0 ) );
+		var rim = tangent.AddPoint( new Vec2( 2, 0 ) );
+		var tail = tangent.AddPoint( new Vec2( 0, 2 ) );
+		var curve = tangent.Add( new SketchArc( hub, rim, tail ) );
+		var edge = tangent.AddLine( new Vec2( -4, 3 ), new Vec2( 4, 3 ) );
+
+		var lineAndArc = Labels( tangent, new SketchSelection( null, new[] { edge.Id, curve.Id } ) );
+
+		Report.Check( "a line and an arc offer a tangency",
+			lineAndArc.SequenceEqual( new[] { "Tangent" } ), string.Join( ", ", lineAndArc ) );
+
+		Apply( tangent, new SketchSelection( null, new[] { edge.Id, curve.Id } ), "Tangent" );
+		SketchSolver.Solve( tangent, hub );
+
+		var reach = (tangent.Points[rim] - tangent.Points[hub]).Length;
+		var standoff = DistanceToLine( tangent, hub, edge.Start, edge.End );
+
+		Report.Check( "and the line ends up exactly a radius from the centre",
+			MathF.Abs( standoff - reach ) < 1e-3f, $"{standoff:0.####} against a radius of {reach:0.####}" );
+
+		// --- two arcs tangent to each other -----------------------------------------------------
+		var pairSketch = new Sketch();
+		var leftHub = pairSketch.AddPoint( new Vec2( 0, 0 ) );
+		var leftRim = pairSketch.AddPoint( new Vec2( 2, 0 ) );
+		var leftTail = pairSketch.AddPoint( new Vec2( 0, 2 ) );
+		var left = pairSketch.Add( new SketchArc( leftHub, leftRim, leftTail ) );
+
+		var rightHub = pairSketch.AddPoint( new Vec2( 6, 0 ) );
+		var rightRim = pairSketch.AddPoint( new Vec2( 7, 0 ) );
+		var rightTail = pairSketch.AddPoint( new Vec2( 6, 1 ) );
+		var right = pairSketch.Add( new SketchArc( rightHub, rightRim, rightTail ) );
+
+		var twoArcs = Labels( pairSketch, new SketchSelection( null, new[] { left.Id, right.Id } ) );
+
+		Report.Check( "two arcs offer equal radius, concentric and a tangency",
+			twoArcs.SequenceEqual( new[] { "Concentric", "Equal radius", "Tangent" } ),
+			string.Join( ", ", twoArcs ) );
+
+		Apply( pairSketch, new SketchSelection( null, new[] { left.Id, right.Id } ), "Tangent" );
+		SketchSolver.Solve( pairSketch, leftHub );
+
+		var apart = (pairSketch.Points[rightHub] - pairSketch.Points[leftHub]).Length;
+		var leftRadius = (pairSketch.Points[leftRim] - pairSketch.Points[leftHub]).Length;
+		var rightRadius = (pairSketch.Points[rightRim] - pairSketch.Points[rightHub]).Length;
+
+		Report.Check( "two arcs drawn apart are made to touch on the outside",
+			MathF.Abs( apart - (leftRadius + rightRadius) ) < 1e-3f,
+			$"{apart:0.###} apart against radii of {leftRadius:0.###} and {rightRadius:0.###}" );
+
+		// WHICH TANGENCY IS READ OFF THE SKETCH. A small arc drawn inside a big one is asking for
+		// the internal kind, and offering the external one would shove it out through the wall.
+		var nested = new Sketch();
+		var bigHub = nested.AddPoint( new Vec2( 0, 0 ) );
+		var bigRim = nested.AddPoint( new Vec2( 5, 0 ) );
+		var bigTail = nested.AddPoint( new Vec2( 0, 5 ) );
+		var big = nested.Add( new SketchArc( bigHub, bigRim, bigTail ) );
+
+		var smallHub = nested.AddPoint( new Vec2( 1, 0 ) );
+		var smallRim = nested.AddPoint( new Vec2( 2, 0 ) );
+		var smallTail = nested.AddPoint( new Vec2( 1, 1 ) );
+		var small = nested.Add( new SketchArc( smallHub, smallRim, smallTail ) );
+
+		var selection = new SketchSelection( null, new[] { big.Id, small.Id } );
+		var internalOffer = ConstraintTools.Offers( nested, selection ).Single( o => o.Label == "Tangent" );
+
+		Report.Check( "an arc drawn inside another is offered the internal tangency",
+			internalOffer.Value != 0f, $"{internalOffer.Value}" );
+
+		ConstraintTools.Apply( nested, internalOffer );
+
+		// The flag lives in Value, which Apply writes from the offer - so this is also the check
+		// that a plain rule's value survives the trip through the offer rather than being zeroed.
+		Report.Check( "and the rule keeps that flag when it lands on the sketch",
+			nested.Constraints.Single().Value != 0f );
+
+		SketchSolver.Solve( nested, bigHub );
+
+		var gap = (nested.Points[smallHub] - nested.Points[bigHub]).Length;
+		var bigRadius = (nested.Points[bigRim] - nested.Points[bigHub]).Length;
+		var smallRadius = (nested.Points[smallRim] - nested.Points[smallHub]).Length;
+
+		Report.Check( "so it touches from the inside rather than being pushed out",
+			MathF.Abs( gap - MathF.Abs( bigRadius - smallRadius ) ) < 1e-3f,
+			$"{gap:0.###} apart against radii of {bigRadius:0.###} and {smallRadius:0.###}" );
 	}
 
 	static void TestTouching()

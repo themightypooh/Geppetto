@@ -253,9 +253,11 @@ a loft between different sizes matches the frustum formula.
 Both are quad-only by construction — the walls are nothing but quads and the end caps are single
 n-gons — so they are safe cage sources for the sculpt stage.
 
-Useful defaults, and they matter because neither has a toolbar button yet: an empty
-`SweepFeature.PathSketchId` means "the sketch before the profile's", and a `LoftFeature` with fewer
-than two `Sections` lofts every sketch available.
+Both are on the feature strip. Their defaults are what makes a bare button enough, with no selector
+to fill in first: an empty `SweepFeature.PathSketchId` means "the sketch before the profile's", and a
+`LoftFeature` with fewer than two `Sections` lofts every sketch available — the order a person draws
+them in. A path selector for sweep and an ordered section list for loft are refinements, not
+prerequisites.
 
 ### Shell, and why the obvious version is wrong
 
@@ -526,7 +528,11 @@ All of it compiles clean. Where something has not been *run*, it says so, and
   are drawn**, and clicking one removes that rule — "why will this line not move" is a question about
   a specific place on the drawing, so the answer sits next to it. A rule relating two segments marks
   **both**; an angle is marked where its two lines actually cross, out in space if that is where the
-  extended lines would meet.
+  extended lines would meet. **All seventeen kinds are reachable** — the last six went in with the
+  selections that name them unambiguously: Diameter beside Radius on an arc (offer either and neither
+  is offered again, being one rule written two ways), Midpoint beside Point-on-line, Concentric on
+  any two centres, Fix on a lone point, and a tangency both for a line and an arc and for two arcs —
+  the second picking internal or external from the arrangement already drawn rather than asking.
 - **Right-click a face for a material menu** — the slots, a rename for the one it is on, and the
   slot-shading toggle. It holds last frame's cursor ray, because `Gizmo.CurrentRay` means nothing
   inside a menu callback, and refuses the menu for a quarter second after the fly camera last moved,

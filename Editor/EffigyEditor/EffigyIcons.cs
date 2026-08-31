@@ -11,6 +11,8 @@ internal enum EffigyIcon
 	Primitive,
 	Extrude,
 	Revolve,
+	Sweep,
+	Loft,
 	Bevel,
 	Shell,
 	Subdivide,
@@ -94,6 +96,8 @@ internal static class EffigyIcons
 			case EffigyIcon.Primitive: PaintPrimitive( center, color ); return;
 			case EffigyIcon.Extrude: PaintExtrude( center, color ); return;
 			case EffigyIcon.Revolve: PaintRevolve( center, color ); return;
+			case EffigyIcon.Sweep: PaintSweep( center, color ); return;
+			case EffigyIcon.Loft: PaintLoft( center, color ); return;
 			case EffigyIcon.Bevel: PaintBevel( center, color ); return;
 			case EffigyIcon.Shell: PaintShell( center, color ); return;
 			case EffigyIcon.Subdivide: PaintSubdivide( center, color ); return;
@@ -320,6 +324,108 @@ internal static class EffigyIcons
 		var tangent = new Vector2( -MathF.Sin( end ), MathF.Cos( end ) );
 
 		ArrowHead( tip, tangent, color, 3.6f );
+	}
+
+	/// <summary>
+	/// A profile carried along a path, with the path drawn as the thing that shapes it.
+	///
+	/// Sweep and Extrude are the same sentence with a different verb — a profile, and where it goes
+	/// — so they are drawn with the same grammar: the starting profile dim because it is what the
+	/// operation begins FROM rather than what it makes, and an arrow for the operation itself. The
+	/// difference between them is the whole point, so here the path is a curve and the solid
+	/// follows it instead of standing straight up.
+	/// </summary>
+	private static void PaintSweep( Vector2 c, Color color )
+	{
+		// Hub, radius and extent of the path. Everything else is derived from these, so the glyph
+		// stays consistent with itself if the arc is retuned.
+		const float HubX = -7f;
+		const float HubY = -7.5f;
+		const float Radius = 12f;
+
+		// Half the profile's width, so the band either side of the path IS the solid.
+		const float Half = 2.6f;
+
+		const float From = 0f;
+		const float To = 90f;
+		const float ArrowAt = To + 10f;
+
+		var hub = At( c, HubX, HubY );
+
+		// The swept solid: the path offset either side of itself. Faint rather than outlined at
+		// full weight, so the path stays the strongest line in the glyph.
+		Stroked( color.WithAlpha( 0.32f ), 2f );
+		Arc( hub, Radius - Half, From, To, 18 );
+		Arc( hub, Radius + Half, From, To, 18 );
+
+		Stroked( color, 1.7f );
+		Arc( hub, Radius, From, ArrowAt, 20 );
+
+		// Where it starts, and where it arrives.
+		SweepStation( hub, Radius, Half, From, color.WithAlpha( 0.55f ), 1.4f );
+		SweepStation( hub, Radius, Half, To, color, 1.7f );
+
+		var end = ArrowAt * MathF.PI / 180f;
+		var tip = hub + new Vector2( MathF.Cos( end ), MathF.Sin( end ) ) * Radius * _scale;
+
+		ArrowHead( tip, new Vector2( -MathF.Sin( end ), MathF.Cos( end ) ), color, 3.6f );
+	}
+
+	/// <summary>The profile at one station of a sweep: a diamond spanning the swept band, drawn
+	/// ACROSS the path rather than lying flat, because a sweep takes its profile perpendicular to
+	/// where it is going — see SweepFeature.</summary>
+	private static void SweepStation( Vector2 hub, float radius, float half, float degrees, Color color, float width )
+	{
+		var angle = degrees * MathF.PI / 180f;
+		var radial = new Vector2( MathF.Cos( angle ), MathF.Sin( angle ) );
+		var tangent = new Vector2( -radial.y, radial.x );
+		var centre = hub + radial * radius * _scale;
+
+		Stroked( color, width );
+		Outline(
+			centre + radial * half * _scale,
+			centre + tangent * half * 0.62f * _scale,
+			centre - radial * half * _scale,
+			centre - tangent * half * 0.62f * _scale );
+	}
+
+	/// <summary>
+	/// Two sections, and the skin ruled between them.
+	///
+	/// The sections are drawn as flat diamonds — the same plan-view profile Extrude and Sweep use,
+	/// so a closed sketch reads the same way everywhere on this strip — one small and one large, so
+	/// what lies between them has to be a loft rather than an extrusion. The sides are STRAIGHT,
+	/// which is what the kernel actually does: neighbouring sections joined by a ruled surface, not
+	/// a spline smoothly through them.
+	/// </summary>
+	private static void PaintLoft( Vector2 c, Color color )
+	{
+		const float TopY = -7f;
+		const float TopHalf = 3.4f;
+		const float BottomY = 6.6f;
+		const float BottomHalf = 7.6f;
+
+		// The skin, as a tint between the two sections — same weight as Bevel and Shell, so it
+		// reads as material rather than as two more lines.
+		Filled( color.WithAlpha( 0.22f ) );
+		Editor.Paint.DrawPolygon(
+			At( c, -TopHalf, TopY ), At( c, TopHalf, TopY ),
+			At( c, BottomHalf, BottomY ), At( c, -BottomHalf, BottomY ) );
+
+		Stroked( color, 1.7f );
+		Editor.Paint.DrawLine( At( c, -TopHalf, TopY ), At( c, -BottomHalf, BottomY ) );
+		Editor.Paint.DrawLine( At( c, TopHalf, TopY ), At( c, BottomHalf, BottomY ) );
+
+		LoftSection( c, TopY, TopHalf, TopHalf * 0.46f, color );
+		LoftSection( c, BottomY, BottomHalf, BottomHalf * 0.32f, color );
+	}
+
+	/// <summary>One loft section, in plan: a diamond as wide as the section and shallow enough to
+	/// read as lying flat, rather than as the top and bottom edges of a trapezium.</summary>
+	private static void LoftSection( Vector2 c, float y, float half, float depth, Color color )
+	{
+		Stroked( color, 1.5f );
+		Outline( At( c, -half, y ), At( c, 0, y - depth ), At( c, half, y ), At( c, 0, y + depth ) );
 	}
 
 	/// <summary>

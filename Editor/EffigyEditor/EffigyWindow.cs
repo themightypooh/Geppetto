@@ -583,8 +583,6 @@ public sealed class EffigyWindow : DockWindow
 			_promptLabel.Text = prompt;
 	}
 
-	/// <summary>A square strip button that appends one feature to the history. The factory runs
-	/// per click rather than the feature being built up front, so each press makes a new one.</summary>
 	// --- which creation tools are on the strip -------------------------------------------------
 
 	/// <summary>
@@ -599,7 +597,7 @@ public sealed class EffigyWindow : DockWindow
 	/// </summary>
 	private enum ToolKind
 	{
-		Sketch, Primitive, Extrude, Revolve, Bevel, Shell, Subdivide,
+		Sketch, Primitive, Extrude, Revolve, Sweep, Loft, Bevel, Shell, Subdivide,
 		Mirror, LinearPattern, CircularPattern, Transform, UVProject, FaceMaterial,
 	}
 
@@ -610,6 +608,8 @@ public sealed class EffigyWindow : DockWindow
 		ToolKind.Primitive => NewPrimitive( choice ),
 		ToolKind.Extrude => new ExtrudeFeature(),
 		ToolKind.Revolve => new RevolveFeature(),
+		ToolKind.Sweep => new SweepFeature(),
+		ToolKind.Loft => new LoftFeature(),
 		ToolKind.Bevel => new BevelFeature(),
 		ToolKind.Shell => new ShellFeature(),
 		ToolKind.Subdivide => new SubdivideFeature(),
@@ -691,6 +691,15 @@ public sealed class EffigyWindow : DockWindow
 		new() { Icon = EffigyIcon.Revolve, Tip = "Add a Revolve — sweep a sketch profile around an axis",
 			Kind = ToolKind.Revolve },
 
+		// Neither of these needs its selector filled in to do something: an empty
+		// SweepFeature.PathSketchId means "the sketch before the profile's", and a LoftFeature with
+		// fewer than two Sections lofts every sketch there is. Both are the order a person draws
+		// them in, so the tooltips say so rather than sending them to a dialog first.
+		new() { Icon = EffigyIcon.Sweep, Tip = "Add a Sweep — run a sketch profile along a path sketch",
+			Kind = ToolKind.Sweep },
+		new() { Icon = EffigyIcon.Loft, Tip = "Add a Loft — skin a surface between two or more sketches",
+			Kind = ToolKind.Loft },
+
 		new() { Icon = EffigyIcon.Bevel, Tip = "Add a Bevel — chamfer sharp edges",
 			Kind = ToolKind.Bevel, GapBefore = true },
 		new() { Icon = EffigyIcon.Shell, Tip = "Add a Shell — hollow to a wall thickness",
@@ -732,11 +741,11 @@ public sealed class EffigyWindow : DockWindow
 	/// <summary>
 	/// Show the starter tools on their own until a sketch has been drawn, then the whole strip.
 	///
-	/// TWELVE BUTTONS ON AN EMPTY STUDIO ARE TWELVE WAYS TO GET AN ERROR. Extrude, Revolve, Bevel,
-	/// Shell and the rest all need geometry to act on, and adding one before there is any produces
-	/// a feature that goes straight to red — correct, and useless as a first impression. Sketch and
-	/// Primitive are the only two that can start a part, so at the start they are the only two
-	/// offered.
+	/// THIRTEEN BUTTONS ON AN EMPTY STUDIO ARE THIRTEEN WAYS TO GET AN ERROR. Extrude, Revolve,
+	/// Sweep, Loft, Bevel, Shell and the rest all need geometry to act on, and adding one before
+	/// there is any produces a feature that goes straight to red — correct, and useless as a first
+	/// impression. Sketch and Primitive are the only two that can start a part, so at the start
+	/// they are the only two offered.
 	/// </summary>
 	private void RefreshToolStrip( bool force = false )
 	{
@@ -2464,6 +2473,12 @@ public sealed class EffigyWindow : DockWindow
 		SketchConstraintKind.PointOnLine => "linear_scale",
 		SketchConstraintKind.Symmetric => "flip",
 		SketchConstraintKind.Radius => "radio_button_unchecked",
+		SketchConstraintKind.Diameter => "circle",
+		SketchConstraintKind.Midpoint => "vertical_align_center",
+		SketchConstraintKind.Concentric => "adjust",
+		SketchConstraintKind.Fixed => "lock",
+		SketchConstraintKind.Tangent => "trip_origin",
+		SketchConstraintKind.TangentArcs => "trip_origin",
 		_ => "rule",
 	};
 
