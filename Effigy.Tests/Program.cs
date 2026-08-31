@@ -83,6 +83,8 @@ public static class Program
 
 		CurveTests.Run();
 
+		SketchEditTests.Run();
+
 		UntestedKernelTests.Run();
 
 		MergeTests.Run();
