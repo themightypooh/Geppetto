@@ -1,4 +1,4 @@
-# How other CAD tools solve the problems Effigy has
+﻿# How other CAD tools solve the problems Effigy has
 
 Notes taken by reading the source of two established open-source parametric CAD systems, checked
 against the specific things Effigy is currently missing or unsure about.
@@ -255,8 +255,9 @@ feature:
    adapter from PolyMesh to the engine's PolygonMesh, which cannot be written without the engine in
    front of you — `effigy_probe_boolean` dumps the API it gets written from. A portable
    implementation stays off the table until something genuinely needs one.
-6. ~~**Constraint solver.**~~ Landed, and since extended with angle, point-on-line, symmetric and
-   radius — the set a dimension tool needs underneath it. Solvespace's DOF reporting turned out to be
+6. ~~**Constraint solver.**~~ Landed, and since extended twice: first with angle, point-on-line,
+   symmetric and radius, then with diameter, midpoint, concentric, fix and tangent — sixteen kinds,
+   which is the set a dimension tool needs underneath it. Solvespace's DOF reporting turned out to be
    the valuable part, exactly as this document guessed: counting the Jacobian's RANK rather than its
    rows is what separates "under defined by two" from "four constraints that say three things": Levenberg-Marquardt over the residuals, seven constraint kinds,
    degrees of freedom counted from the Jacobian's rank. What it still needs is the UI — there is no
@@ -267,7 +268,7 @@ Note that 3 and 4 are both reachable and verifiable in this repo with no engine 
 
 ## Where this left off
 
-Everything below the line is kernel-side and verified by `tools/test.sh` (1275 checks). Everything
+Everything below the line is kernel-side and verified by `tools/test.sh` (1381 checks). Everything
 in `Editor/EffigyEditor` is written and syntax-checked but **has never been compiled** — there is no
 s&box assembly in this repo, so nothing there resolves names. That is the standing risk and the
 reason the split below is drawn where it is: anything that could be moved into the kernel and tested
@@ -344,3 +345,54 @@ prompted this; the tests damage good models three ways and fail if a check stays
 mesh boolean and none of them did — profiles with holes, revolve with holes, and up-to-face
 termination. Treat every remaining "not supported yet" string in the kernel as suspect until it has
 been re-derived rather than re-read.
+
+---
+
+## Session of 30 August 2026 — the kernel-side CAD gaps, closed
+
+Four batches, each committed with its suite green. **1381 checks, 0 failing**, up from 1275. The
+whole of this is kernel-side and headless: `cd Effigy.Tests && dotnet run -- out`.
+
+**Constraints — tangency, midpoint, fix, concentric, diameter.** Tangent was the one that mattered;
+without it an arc-to-line blend cannot be expressed at all. Two kinds rather than one with a
+discriminator (`Tangent` is line-to-arc, `TangentArcs` is arc-to-arc) because the two read their
+four point slots completely differently. `Fix` needed a second number in the file, and `ValueY` is
+appended *after* the CurveId so every existing index keeps its meaning — there is a test that a
+constraint line written before it existed still loads.
+
+**Ellipses and splines**, and the refactor that had to come first: `ProfileFinder` no longer
+switches on curve type. `IsClosed` and `Endpoints` are questions the curve answers, so a new curve
+is one new class instead of a class plus two edits to loop finding. The spline interpolates
+(centripetal Catmull-Rom) rather than using control points, which is what makes every existing
+constraint mean the obvious thing when pointed at a spline point.
+
+**Trim, extend, fillet and offset.** These are edits, not features — they change the curve list in
+place and undo takes them back, which is the line Onshape draws too. `SketchIntersect` is exact for
+line/line, line/circle and circle/circle; splines and ellipses fall back to sampled tessellations
+and say so.
+
+**Sweep and loft**, over one shared `Skinner`. Sweep propagates rotation-minimising frames rather
+than rebuilding a frame per station from a fixed up-vector, which is what stops a swept helix
+corkscrewing. Loft aligns each section to the previous one by least total squared distance, and
+reverses it first if the windings disagree. Both are checked by *volume* — a swept prism encloses
+exactly area times length, a torus matches Pappus, a loft between different sizes matches the
+frustum formula — because a twisted or inside-out result passes every closed-and-manifold check.
+
+### What is left, in the order worth doing it
+
+1. **Run the boolean.** `EffigyMeshBoolean.cs` is written and has never executed. Check that it
+   works, and check *what it returns*: triangle soup rather than quads poisons the subdivision cage
+   and breaks the sculpt stage too. This gates more than it looks like it does.
+2. **Rounded fillets.** The one CAD item deliberately not attempted — see the reasoning in
+   `Effigy/README.md`'s "Not here yet". It is surgery on `Bevel`'s vertex-cap pass, not a parameter.
+3. **Draft on existing faces.** Extrude has `Taper`, which covers the common case; drafting faces of
+   a solid that already exists does not exist. Well-defined and testable: move each vertex along the
+   horizontal component of its normal, proportional to its distance from a neutral plane.
+4. **A hole feature.** Holes already work as inner loops of a profile (`HoleTests`), so this is
+   convenience rather than capability: counterbore and countersink as a tool solid emitted with
+   Result = Remove. Note it cannot build in the headless suite without a boolean provider, which is
+   why `MergeTests` installs a stub — do the same.
+5. **The editor half of all of the above.** None of this session's work has any UI. The sketcher has
+   no trim/extend/offset/fillet tool, no ellipse or spline tool, and no way to add a tangent
+   constraint; sweep and loft have no toolbar entry and no way to pick a second sketch. That is the
+   Onshape-parity gap, and it is larger than the kernel gap was.

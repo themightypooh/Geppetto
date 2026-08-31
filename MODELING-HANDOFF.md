@@ -1,4 +1,4 @@
-# Modeling tool — session handoff
+﻿# Modeling tool — session handoff
 
 A second s&box tool: **make a usable, rigged 3D model without leaving the editor**, the same thesis
 as Marionette applied to meshes instead of animation.
@@ -216,7 +216,7 @@ turns out to be the actual point.
 
 ## Phase one — the parametric base
 
-Much of this now exists in `Effigy/`, engine-free and with 1145 checks behind it. See that
+Much of this now exists in `Effigy/`, engine-free and with 1381 checks behind it. See that
 folder's README for the design decisions; the status here is what remains.
 
 1. **Parametric primitives** — box, plane, cylinder, quad sphere, wedge, tube. **Done.**

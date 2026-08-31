@@ -1,4 +1,4 @@
-# Marionette — session handoff
+﻿# Marionette — session handoff
 
 A control-rig animation editor for s&box, split out of the `midnight_am` game project into its own
 repo: <https://github.com/themightypooh/marionette>
@@ -32,7 +32,7 @@ instead of reading shipped code that uses it. Each of these cost a round trip or
 
 **Run `tools/test.sh` before anything else.** It installs the .NET SDK if the machine has none
 (`apt-get install -y dotnet-sdk-8.0`), syncs the editor's kernel mirror, and runs the suite.
-The Effigy kernel is engine-free, so `cd Effigy.Tests && dotnet run -- out` compiles and runs 1145
+The Effigy kernel is engine-free, so `cd Effigy.Tests && dotnet run -- out` compiles and runs 1381
 checks with no s&box anywhere — including headless replays of editor workflows (EditorFlowTests).
 That is the difference between verifying a change and reading it and hoping.
 

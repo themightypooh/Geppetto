@@ -1,4 +1,4 @@
-# Effigy sculpting — design and build order
+﻿# Effigy sculpting — design and build order
 
 **Status: nothing in this document is built.** This is the plan for the second half of the tool,
 written so a session picking it up cold can start at step 1 without re-deciding anything.
@@ -232,12 +232,19 @@ Only two things, and both are about the cage rather than about features:
    brush. Boolean output is the risk here — `EffigyMeshBoolean` goes through the engine and there is
    no guarantee about what it hands back. **Check what a boolean actually returns before trusting a
    cut in a sculpt base**, and if it is triangle soup, that is a quad-remesh-after-boolean job.
+
+   Sweep and loft are now also cage sources, and both are quad-only by construction — `Skinner`
+   emits nothing but quads for the walls, and the two end caps are single n-gons that subdivide
+   cleanly. Nothing to do there; noted so it does not get re-checked.
 2. **UVs on the cage, assigned at CAD time.** `UVProjection` and per-corner UVs exist. The bake in
    step 9 needs them non-overlapping, which nothing currently checks.
 
-Nothing else on the CAD list blocks sculpting. Sweep, loft, fillet and the sketcher gaps all make
-better *cages*, but none of them are prerequisites — this track and the CAD track can run in
-parallel, which is the point of writing them down separately.
+Nothing else on the CAD list blocks sculpting. As of 30 August 2026 the kernel-side CAD gaps are
+mostly closed anyway — sweep, loft, ellipses, splines, trim/extend/offset/fillet and the tangency
+constraints all landed, at 1381 passing checks — so the cages available to sculpt on are already
+much better than this plan assumed. What is left on that side (rounded fillets, draft, a hole
+feature, and all of the UI) makes nicer cages still, but none of it is a prerequisite: this track
+and the CAD track can run in parallel, which is the point of writing them down separately.
 
 ---
 

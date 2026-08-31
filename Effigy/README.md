@@ -1,4 +1,4 @@
-# Effigy
+﻿# Effigy
 
 The engine-free half of the modelling tool. Parametric primitives in, subdivision surfaces and an
 OBJ out, with no reference to any engine type anywhere in it.
@@ -36,7 +36,7 @@ machine. A session that skips this ends up reasoning about the code by reading i
 is how a bug that made every parameter edit a silent no-op survived long enough to look like three
 unrelated UI faults.
 
-1145 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
+1381 checks, and it writes sample `.obj` files to `out/` — one per primitive plus a
 2-level-subdivided version of each. Those are the fastest way to see whether something is actually
 right: open them in Blender, or drop one into ModelDoc to find out what s&box makes of it.
 
@@ -59,7 +59,7 @@ Exit code is non-zero on failure, so it works as a pre-commit or CI check unchan
 | `Features/SolidFeatures.cs` | shell, bevel, UV project, face material — the ops that act on a solid once it exists |
 | `Features/FaceMaterialEdit.cs` | putting one face on a slot, for the editor's right-click menu — which assignment to reuse, and what happens to the one the face is leaving |
 | `Sketch/SketchPlane.cs` | the plane a sketch lives on, and plane↔world mapping |
-| `Sketch/Sketch.cs` | points, lines, arcs, circles, tessellation |
+| `Sketch/Sketch.cs` | points, lines, arcs, circles, ellipses, splines, tessellation |
 | `Sketch/Profile.cs` | closed-region finding, nesting, orientation |
 | `ShellOperation.cs` | hollow a solid to an exact wall thickness, with optional openings |
 | `Bevel.cs` | flat chamfer by angle threshold: corner cutting, edge bridging, vertex caps |
@@ -78,6 +78,8 @@ Exit code is non-zero on failure, so it works as a pre-commit or CI check unchan
 | `Sketch/IConstraint.cs` | one residual and its derivative — the solver never switches on a kind |
 | `Sketch/Constraints.cs` | the constraint set, and the derivatives that make it solvable |
 | `Sketch/SketchSolver.cs` | Levenberg-Marquardt, with degrees of freedom and redundancy reported |
+| `Sketch/SketchEdit.cs` | trim, extend, fillet and offset, plus the curve intersection they all need |
+| `Features/SweepFeatures.cs` | sweep along a path and loft between sections, over one shared skinner |
 | `MeshBoolean.cs` | what a boolean is, and where a host installs one that can actually do it |
 | `LoopOffset.cs` | move a 2D loop in or out from its edges — what a draft angle is built on |
 | `Features/StudioDocument.cs` | saving and loading the tree — the file the whole history depends on |
@@ -283,7 +285,25 @@ revolve never learn that a solver exists.
 Levenberg-Marquardt over the constraint residuals: each rule contributes an equation that reads zero
 when it holds, plus its derivative, and the solve is the point positions that zero them all.
 Coincident, distance, horizontal, vertical, equal length, parallel, perpendicular, angle,
-point-on-line, symmetric and radius — with a new one costing one class and no change to the solver.
+point-on-line, symmetric, radius, diameter, midpoint, concentric, fix and tangent (line-to-arc and
+arc-to-arc) — with a new one costing one class and no change to the solver.
+
+**Tangent is written in length-squared, and the scaling is the reason.** The obvious residual for
+line-to-circle is `cross(d,w)² − r²|d|²`, which clears the division and is quartic in the
+coordinates. It is smooth and it is correct, and it is badly scaled: the convergence test is an
+absolute 1e-6 on the residual norm, so a quartic residual reaching 1e-6 can still be a visibly
+untangent line. Dividing through by `|d|²` makes both terms an area, and 1e-6 of residual becomes
+about 5e-7 of radius. Arc-to-arc needs no division and stays in plain lengths.
+
+**A circle is addressed as a centre plus a rim point, never as a radius.** A radius living in a
+float field is invisible to the Jacobian and nothing could drive it. Centre-plus-rim is also
+exactly how `SketchArc` already defines its own radius.
+
+**Fix is not the solver's pin.** `SketchSolver.Solve` takes one `pinnedPoint` and removes its
+columns entirely, which is how the sketch gets an absolute frame; it can only ever be one point
+and the caller chooses it. `Fixed` is the user-facing rule, there can be as many as you like, and
+it works the ordinary way — so a fix fighting a dimension shows up honestly as a sketch that will
+not converge rather than as a rule that was quietly ignored.
 
 Angle is worth a note: its residual is `cross·cos θ − dot·sin θ` rather than an angle difference,
 because an angle computed with `atan2` carries a branch cut, and a residual that jumps by 2π
@@ -546,17 +566,33 @@ in this repo demonstrates its KV3 shape, and a guessed one risks breaking a comp
 works. Needs a real s&box editor session against `citizen.vmdl` or the Model Editor's own sequence
 UI, not a guess from here.
 
-**Phase three**: Rounded (multi-segment) fillets, then Catmull-Clark subdivision brushes, multires deltas, normal-map bake. The sketch constraint solver was the other item here and has landed.
+**Phase three**: Catmull-Clark subdivision brushes, multires deltas, normal-map bake — see
+`SCULPT-DESIGN.md`, which is the build order for all of it. The sketch constraint solver was the
+other item here and has landed.
 
-Boolean is still the notable absence, but it now has a shape. Robust mesh CSG is a decades-old
-problem — coplanar faces, floating-point robustness, self-intersection — and a half-working one is
-worse than none, so the plan was always an interface with an engine-backed implementation behind it.
+**Rounded (multi-segment) fillets are the one CAD item deliberately left undone**, and the reason
+is worth writing down rather than rediscovering. `Bevel` is a chamfer, and the obvious move is to
+give its bridging pass N segments on an arc instead of one flat quad. That does not work as a local
+change: a bevel is explicitly *not* local to the edge you selected — see the class comment in
+`Bevel.cs` — and the vertex-cap pass builds its n-gon from every distinct point converging on a
+vertex. Adding arc points to a bridge without threading them into that cap in the right cyclic
+order leaves T-junctions, and a T-junction passes closed-and-manifold and Euler checks while
+rendering wrong. Doing it properly means reworking the cap pass alongside the bridge pass, with a
+render to confirm it, not just a green suite.
 
-The interface exists (`MeshBoolean`, `IMeshBoolean`) and Extrude and Revolve reach for it when
-Result is Remove. What does not exist is the adapter between `PolyMesh` and s&box's `PolygonMesh`,
-because that is the one piece that cannot be written without the engine in front of you — and a
-guessed member name is a compile error that takes the whole editor assembly down, not a polite
-runtime failure. `effigy_probe_boolean` in the editor console dumps the real API to write it from.
+**The boolean adapter is written.** It was the notable absence in every previous version of this
+section, and `Editor/EffigyEditor/EffigyMeshBoolean.cs` now implements `IMeshBoolean` over
+`Sandbox.PolygonMesh.PerformBoolean`. It was written from Facepunch's own call site
+(`addons/tools/Code/Scene/Mesh/Tools/BooleanTool.cs`) plus the reflection dump from
+`PolygonMeshDump`, rather than guessed: `PerformBoolean` mutates its receiver, the relative
+transform is how the second mesh is placed against the first, and UVs have to be recomputed after,
+because the boolean makes faces that never had any.
+
+**It has never been run.** It lives in the editor assembly, so no test here touches it, and the
+single most valuable thing anyone can do next is open the editor and cut one solid with another.
+Two things to check when you do: that it works at all, and *what it hands back* — if
+`PerformBoolean` returns triangle soup rather than quads, every cut poisons the subdivision cage
+and that breaks the sculpt stage as well as this one.
 
 Everything on this side of that adapter is done and tested: the operand order (target is the part,
 tool is the shape of the hole), the result replacing the body without changing its id, a provider
