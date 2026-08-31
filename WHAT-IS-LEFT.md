@@ -57,8 +57,10 @@ should colour the icon yellow. Kernel half is tested; this is the sitting.
 
 ## 1. Effigy kernel
 
-The kernel is roughly **93% of phase one**. All of it is headless-testable — no s&box anywhere, and
-2191 checks say so.
+The kernel's named gaps for phase one are **closed** - every item below this line is struck
+through. What is left of the kernel is running it against the engine's own output rather than
+against hand-built fixtures. All of it is headless-testable — no s&box anywhere, and
+2272 checks say so.
 
 ### 1.1 ~~Exercise the boolean past the one case that works~~ — **done**
 
@@ -419,23 +421,65 @@ read out of the shipped Base Editor Library instead.
 
 ## 3. Rigging — what remains
 
-1. **Weight painting**, to fix what auto-weighting gets wrong by hand. Not started, and the one item
-   on the phase-two list with no progress at all.
-2. **`AnimBindPose`** is **unverified, not missing.** ModelDoc's docs say a non-static model needs
-   one or morph targets and IK data silently break, but nothing in this repo has seen its real KV3
-   shape, and a guessed one risks breaking a compile that currently works. **Method:** a real editor
-   session against `citizen.vmdl`, or the Model Editor's own sequence UI. Not a guess.
-3. **The Effigy rig panel's remaining reporting** — the KERNEL half is done: `RigDiagnostics.Check`
-   finds zero-length bones, duplicate names, parent cycles, several roots, assignments pointing at
-   bones or bodies that are gone, and hands `SkinWeights.Validate` straight through in its own
-   words. Severity is the same error/warning split features make. 18 checks.
+1. ~~**Weight painting**~~ — **the kernel half is done; the editor half is not written.** Same shape
+   as every other stage here, and the same place in it.
 
-   **What is left is showing them** — the panel does not call it yet. One list, one row per problem,
-   clicking a row selects the bone it names (`RigProblem.Bone` is there for exactly that).
+   `WeightBrush` has Add, Subtract, Set and Smooth, with radius, falloff, strength and mirror-X, and
+   per-stroke undo that stores only the vertices a stroke touched. `WeightPaintSession` is
+   everything that is arithmetic rather than widgets — active bone, stroke lifecycle, undo/redo,
+   spacing, and `Influence(bone)` for a viewport that wants to colour the model by weight.
 
-   Worth knowing: `Skeleton` already refuses most of these at construction, so a rig built through
-   its API cannot reach them. What can is a public `Bone` field written directly, a document read
-   off disk, and `RemoveBone` re-indexing around it.
+   **The invariant is the whole problem, and it is what the tests measure.** Every vertex's
+   influences are non-negative and sum to one, and everything downstream leans on it. So a brush
+   cannot simply add to one bone: what the painted bone gains has to come from the others
+   proportionally, and what it loses has to go back the same way. Every operation is written as
+   "move the painted bone to w, rescale the rest to 1 - w".
+
+   **The case with no answer, stated so it is not discovered as a bug:** a vertex weighted ENTIRELY
+   to the bone being subtracted from has nowhere to put the weight. Both tempting fixes are worse
+   than refusing — normalising an all-zero set binds the vertex to nothing, which collapses it to
+   the model origin on export, and quietly leaving 1.0 makes the brush look broken. It is refused
+   and counted, so the tool can say "these have one bone; paint the bone you want them to move to".
+
+   **`WeightPaintLayer` is what makes paint survive a rebuild**, and it is the sculpt stage's answer
+   arriving at the rig: Effigy never stores a rig by vertex index, so a naive paint would be wiped
+   the next time anything rebuilt. Paint is keyed on `MultiresSculpt.TopologyId` — counts and face
+   indices, deliberately not positions — and re-applied AFTER `BindBodies`. Topology unchanged means
+   the numbering still means what it did; topology changed means the paint is KEPT and marked stale
+   rather than misapplied. Two things differ from a sculpt delta and both matter: **bones are stored
+   by NAME**, because `RemoveBone` re-indexes everything after the hole, and **the painted result is
+   stored rather than a delta**, because a delta of a normalised quantity is not well defined.
+
+   **What is left is the editor**: a brush in the viewport, a weight ramp over the model, a bone to
+   paint chosen from the rig tree, and the layer re-applied on rebuild. `WeightPaintSession` is
+   written so that half is thin — see `SculptSession` for the same split and how much of the sculpt
+   tool turned out to live above it.
+
+2. ~~**`AnimBindPose`** is unverified~~ — **verified, written, and compiled.** The method this note
+   named was the right one and it worked: `first_person_arms_preview.vmdl` ships as source and
+   carries the node whole, so `VmdlAnimation.BindPoseList` copies it field for field rather than
+   guessing. The skinned export now writes it, and a sample .vmdl around the suite's rigged DMX
+   compiles clean.
+
+   **And the run answered §7.2's other open question at the same time.** "That the bones survive the
+   compiler" had never been established, because bone names are not recoverable from a `.vmdl_c` by
+   inspection. `rig_test_follow <model> __list__` lists them, and the answer came in two parts:
+   without a `BoneMarkupList` the two-bone sample compiled to **one bone** — `root` survived, `child`
+   was pruned — and with one it compiled to **both**. So the markup list is load-bearing rather than
+   belt and braces, and it now lives in the kernel (`VmdlAnimation.BoneMarkupList`) so the sample and
+   the editor write the same node.
+
+3. ~~**The Effigy rig panel's remaining reporting**~~ — **done.** `RigDiagnostics.Check` runs on
+   every panel refresh and on every studio rebuild, and its problems are a list under the inspector:
+   one row each, coloured by severity the way a feature's own diagnostic is, cause and remedy in the
+   tooltip, and a target button that selects the bone the problem names — which is what
+   `RigProblem.Bone` has been carrying since it was written.
+
+   Two judgement calls in there. The list and its header **hide entirely when there is nothing to
+   say**, because a permanently visible "0 problems" panel is one people stop reading. And a rig
+   with **no bones yet** is treated as silence rather than as a problem: "this model has no
+   skeleton" is true and is not news to somebody who has not placed a bone.
+
 4. **Effigy → Rig Control convenience**: an action to create the `.ctrlrig` and open Rig Control.
    Integration sugar, explicitly not a priority — constraints and animation stay in Rig Control's
    assets.
@@ -556,9 +600,10 @@ judged from outside s&box:
    normal-map settings.
 9. **The eleven new glyphs at strip size.** Drawn against a nominal 18x18 box and never rendered.
 
-**Deliberately not exposed**: `MultiresSculpt.RemoveTopLevel`. It works and is tested, but nothing in
-the editor can undo it — the studio's undo does not carry sculpt levels — so a button for it would be
-an unrecoverable destructive click. Give the session a level history first, then add the button.
+~~**Deliberately not exposed**: `MultiresSculpt.RemoveTopLevel`.~~ — **stale; it was exposed once the
+session could undo it.** `SculptEdit` carries a level entry, `RestoreTopLevel` is its inverse, and the
+"coarser" button removes the finest level only when it is EMPTY of detail. See WHAT-IS-BUILT,
+"Removing a sculpt level can be undone, so it is offered".
 
 **Radius is on the bar, not the bracket keys**, and that is a deliberate stop rather than a choice:
 nothing in this editor has ever named a `KeyCode` outside letters, Escape, Enter, Delete and
@@ -698,11 +743,15 @@ names — all now fixed and covered by `Effigy.Tests/DmxGrammarTests.cs`, which 
 rather than searching it for substrings. A rigged cylinder now compiles to a `.vmdl` with correct
 bounds. Details and the reproducing commands are in `DmxWriter`'s class comment.
 
-Two things that run does still have to establish, because nothing so far has:
+One thing that run does still have to establish:
 
-- **that the bones survive the compiler.** Only the geometry has been checked (bounds, mesh and
-  material count). Bone names are not recoverable from a `.vmdl_c` by inspection — not even for
-  `fp_arms`, which is known-good — so this needs the model loaded in the editor.
+- ~~**that the bones survive the compiler.**~~ — **established.** Bone names are not recoverable from
+  a `.vmdl_c` by inspection, but the model can be loaded and asked: `rig_test_follow <model>
+  __list__` names a bone that does not exist, and this project's own rig probe answers by listing
+  every bone it does have. A two-bone sample compiled to `Bones: root, child`.
+  **The finding worth keeping** is what came out of doing it wrong first: the same sample WITHOUT a
+  `BoneMarkupList` compiled to `Bones: root` — `child` was pruned for being neither weighted nor
+  animated. So the markup list is what keeps bones alive, not a precaution.
 - **the UV V orientation.** `DmxWriter` writes `flipVCoordinates 0`; `fbx2dmx` writes `1` for FBX
   input. Effigy's UVs are not in FBX's convention, so copying that would be a guess either way.
   Check it against a textured model rather than reasoning about it.

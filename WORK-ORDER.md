@@ -1,4 +1,4 @@
-# Work order
+﻿# Work order
 
 **For the agent finishing this** — Grok, as of 31 August 2026 — and for whoever follows. Phase one
 first, then everything after it, in the order that will actually unblock things.
@@ -48,7 +48,9 @@ po's own work on something else. Leave them alone.
 
 **Done means:** a person can open Effigy, draw, model a real part with the tools the kernel already
 supports, be told clearly when a feature refuses, and hand a clean quad cage to the next stage. The
-kernel is ~93% there. **The editor is the smaller-finished half and the larger remaining one.**
+kernel's named gaps are now closed. **The editor is the smaller-finished half and the larger
+remaining one**, and that gap has widened rather than narrowed: nearly everything left in this
+file is code that compiles and has never been clicked.
 
 ## A. The sitting — do this first, it costs an hour and it re-prices everything else
 
@@ -82,27 +84,43 @@ not judged on screen.** That sitting is WHAT-IS-LEFT.md §0 item 7.
 
 ## C. The rest of phase one, in priority order
 
+**Most of this table is struck through now, and what is left has changed shape.** Every remaining row
+is UI: the kernel side of phase one has no named gaps.
+
 | # | Item | Where | State |
 |---|---|---|---|
-| 1 | **Boolean past the one case that works** | §1.1 | one hole in one box is a proven path, not an envelope |
-| 2 | **The six sketch tools with no UI** | §2.3 | trim, extend, offset, fillet, ellipse, spline — kernel done and tested, no way to click them |
-| 3 | **Revolve's axis picked in the viewport** | §2.7 | Vec3-only, defaults through the sketch origin, so the first press reliably errors — reads *broken*, not unfinished |
-| 4 | **Hide affordance for planes and origin** | §2.4 | po's spec verbatim; nothing written at all |
-| 5 | **Hover a sketch face → select its sketch** | §2.5 | po's spec; nothing implements it |
-| 6 | **Draft on existing faces** | §1.4 | genuinely absent; `Taper` only covers a face being *made* |
-| 7 | **A hole feature** (counterbore/countersink) | §1.5 | convenience, not capability |
-| 8 | **Collision from the primitive history** | §1.3 | nothing exists; bookkeeping, not geometry |
+| 1 | ~~**Boolean past the one case that works**~~ | §1.1 | **done** — four repair passes, chained; see below |
+| 2 | ~~**The six sketch tools with no UI**~~ | §2.3 | **on the strip and compiling**; none has been clicked |
+| 3 | **Revolve's axis picked in the viewport** | §2.7 | half done — `AxisMode` offers the profile's own edges, so it no longer reads *broken*; picking in the viewport is what is left |
+| 4 | ~~**Hide affordance for planes and origin**~~ | §2.4 | **was already done**; that note was stale |
+| 5 | **Hover a sketch face → select its sketch** | §2.5 | po's spec; still nothing implements it |
+| 6 | ~~**Draft on existing faces**~~ | §1.4 | **done** |
+| 7 | ~~**A hole feature**~~ (counterbore/countersink) | §1.5 | **done** |
+| 8 | ~~**Collision from the primitive history**~~ | §1.3 | **done, and it now reaches the .vmdl** — the schema was measured by compiling probes, not guessed |
 | 9 | **Sketch-strip icons + glyph scaling** | §2.6 | ~14 glyphs of real design work; safe but generic today |
 
 Section numbers are [WHAT-IS-LEFT.md](WHAT-IS-LEFT.md), where each has its method written out.
 
-**On item 1, the one with a real chance of changing the others:** `MeshHoleRepair` declines any
-boundary loop it cannot place in exactly one coplanar face, so a cut through a **curved** face, a cut
-**meeting an edge**, overlapping cuts, and a cut that **splits the body in two** are all unexercised
-and at least one will fail. Build each in the editor, run `effigy_dump_tree`, and reproduce any
-failure as a hand-built fixture in `HoleTests` — `TestBoundaryLoopRepair` is the template and needs
-no engine. **Do not measure this by eye:** all four bugs already fixed in the boolean produced
-closed, manifold, Euler-correct, valid meshes.
+**On item 1, which is closed.** `MeshHoleRepair` declined any boundary loop it could not place in
+exactly one coplanar face, and every case that left open is now handled by a pass of its own, chained
+so a caller never has to know which shape of mouth it has:
+
+- **two coplanar faces** — `MeshHoleRepairSpan` notches both.
+- **any number of faces, coplanar or not** — `MeshHoleRepairCurved`. The cut through a curved face
+  has no loop normal and no containing face, so it reads materiality off the WALL instead: two faces
+  sharing an edge traverse it opposite ways, so the surface must walk each arc against the wall.
+- **a surface already in pieces** — `MeshHoleRepairFragment`, for a second cut into a face the first
+  repair triangulated.
+- **a cut that splits the body in two** — not a repair problem at all. `MeshSplit` answers how many
+  solids a mesh is, and the largest piece keeps the original body's id.
+
+Both new passes measure the mesh before and after every loop and roll back anything that did not
+strictly reduce the open boundary. **Do not measure this by eye:** every bug already fixed in the
+boolean produced closed, manifold, Euler-correct, valid meshes, and so would a wrong answer from any
+of these.
+
+What is left on the boolean is the sitting — running all four against the ENGINE's own loops rather
+than hand-built fixtures. `effigy_dump_tree` names the failure mode directly.
 
 ---
 
@@ -125,18 +143,22 @@ cannot judge — the green channel's sign and which end of the image v = 0 belon
 (`Effigy.Tests/out/sample_normal_bake.png` is written for exactly that).
 [WHAT-IS-LEFT.md §4](WHAT-IS-LEFT.md) lists what to check, in order.
 
-The CAD side owes it exactly one thing that is not already done: **non-overlapping UVs on the cage**,
-which nothing currently checks. Quad-dominant output is no longer a risk — the boolean returns
-n-gons rather than triangle soup, and sweep and loft are quad-only by construction.
+The CAD side owes it nothing that is not already done. Quad-dominant output is not a risk — the
+boolean returns n-gons rather than triangle soup, and sweep and loft are quad-only by construction —
+and non-overlapping UVs are covered too: `UVUnwrap` produces them where the projections do not, and
+`NormalBake.Measure` counts overlapping texels so a bake refuses rather than writing a plausible
+wrong map.
 
 ## E. Rigging
 
-1. **Weight painting** — not started, and the only item on the phase-two list with no progress at
-   all.
-2. **`AnimBindPose`** — unverified, *not* missing. A guessed KV3 shape risks breaking a compile that
-   currently works, so this wants a real editor session against `citizen.vmdl`, not a guess.
-3. **Rig-panel reporting** — zero-length bones, missing mapped bones, failed `SkinWeights.Validate()`
-   should surface as warnings.
+1. **Weight painting** — the kernel is done (`WeightBrush`, `WeightPaintLayer`,
+   `WeightPaintSession`); what remains is the editor: a brush in the viewport, a weight ramp over the
+   model, and a bone picked from the rig tree. The session object exists so that half is thin.
+2. ~~**`AnimBindPose`**~~ — **done.** Copied field for field off `first_person_arms_preview.vmdl`,
+   which ships as source, and compiled. The same run showed a `BoneMarkupList` is what keeps bones
+   alive at all: without one, a two-bone model compiles to one bone.
+3. ~~**Rig-panel reporting**~~ — **done.** `RigDiagnostics.Check` runs on every panel refresh and
+   every studio rebuild, listed under the inspector with a button that selects the bone named.
 4. **Effigy → Rig Control convenience action** — integration sugar, explicitly not a priority.
 
 Non-goals, so they are not re-proposed: no Effigy timeline or duplicate FK/IK, no vertex-index rig

@@ -12,7 +12,7 @@ it" has repeatedly been the difference between right and wrong.
 - A feature that cannot do what was asked says what it was asked, what stopped it, with this
   model's numbers, and what would work instead. A feature that did nothing is never a success.
 
-Verified as of 31 August 2026: **2191 kernel checks, 0 failing** (`./tools/test.sh`). The diagnostic
+Verified as of 31 August 2026: **2272 kernel checks, 0 failing** (`./tools/test.sh`). The diagnostic
 dialog and tree tooltip are written against the shipped `Editor.Label.WordWrap` and
 `TreeNode.GetTooltip` APIs; they have not been judged on screen.
 
@@ -469,6 +469,61 @@ which is what made them findable at all.
 
 **The pipeline works end to end today**: place bones on a model, export a real skinned `.vmdl`,
 bring it into Rig Control and pose it.
+
+### Weight painting, and how paint survives a rebuild
+
+`WeightBrush`, `WeightPaintLayer`, `WeightPaintSession`. Auto-weighting is nearest-bone smoothed
+across adjacency, and it is right most of the time and wrong in exactly the places that show — a
+finger picking up its neighbour's bone because the two are closer through space than along the
+surface, an armpit, the inside of an elbow. Those are minutes of painting and hours of anything else.
+
+**The invariant is the whole problem.** Every vertex's influences are non-negative and sum to one,
+and `Prune`, Catmull-Clark and the compiler's own culling all lean on it. So a brush cannot add to
+one bone: what it gains comes from the others proportionally and what it loses goes back the same
+way. Every operation is "move the painted bone to w, rescale the rest to 1 - w".
+
+**The case with no answer.** A vertex weighted entirely to the bone being subtracted from has nowhere
+to put the weight. Normalising an all-zero set binds it to nothing, which collapses the vertex to the
+model origin on export; leaving 1.0 silently makes the brush look broken. It is refused and counted,
+so the tool can say which vertices could not move and why.
+
+**Paint survives a rebuild by the sculpt stage's own argument.** Effigy never stores a rig by vertex
+index — that is what lets the parametric history stay alive under a rig — so a naive paint would be
+recomputed away. `WeightPaintLayer` keys paint on `MultiresSculpt.TopologyId` (counts and face
+indices, deliberately not positions) and re-applies it AFTER `BindBodies`: topology unchanged means
+the numbering still means what it did, topology changed means the paint is kept and marked stale
+rather than misapplied. Two differences from a sculpt delta, both load-bearing: **bones are stored by
+NAME**, because `RemoveBone` re-indexes everything after the hole; and **the painted result is stored
+rather than a delta**, because a delta of a normalised quantity is not a well-defined thing.
+
+The editor half is not written. `WeightPaintSession` exists so it will be thin.
+
+### The bind pose, and the bones that were quietly being pruned
+
+`VmdlAnimation`. ModelDoc's docs say a non-static model needs an `AnimBindPose` or morph targets and
+IK data break quietly, and this project never had one because nothing here had seen the node's real
+shape. `first_person_arms_preview.vmdl` ships as source and carries it whole, so it is copied field
+for field — every field, including the ones that look like defaults, because the compiler's defaults
+are not documented anywhere this project can read and the file known to work has all of them.
+
+**Then the run answered a second question and turned up a third.** Bone names are not recoverable
+from a `.vmdl_c` by inspection, but this project's own `rig_test_follow` lists them when asked for a
+bone that does not exist. A two-bone sample came back `Bones: root` — one of two. Adding a
+`BoneMarkupList` made it `Bones: root, child`. So the markup list is not a precaution against a
+theoretical prune; it is the only reason Effigy's bones exist in the compiled model at all, and it
+moved into the kernel so the sample and the editor cannot disagree about it.
+
+### The rig panel says what is wrong with the rig
+
+`RigDiagnostics.Check` had been correct and unshown since it was written. It now runs on every panel
+refresh and every studio rebuild — most of its findings are about the studio rather than the
+skeleton, so an ordinary CAD edit is exactly when they appear and disappear — and its problems are a
+list under the inspector, coloured by severity the way a feature's diagnostic is, cause and remedy in
+the tooltip, and a target button that selects the bone the problem names.
+
+The list hides entirely when there is nothing to say: a permanently visible "0 problems" panel is one
+people stop reading. And a rig with no bones is silence rather than a problem — "this model has no
+skeleton" is true and is not news to somebody who has not placed a bone yet.
 
 ### The rig design, as decided
 
@@ -1228,4 +1283,7 @@ treated as a lead until it is.
 | `parent_bone`, `surface_prop` and `collision_tags` are the base keys every physics shape carries | `citizen_physicsshapelist.vmdl_prefab` |
 | **ModelDoc's OBJ importer turns the mesh a quarter turn**: a bar written along +x compiles lying along +y. `import_rotation = [ 0, -90, 0 ]` cancels it — both signs were tried, and +90 put the mesh at x = -10..0. Physics shapes are NOT turned, so without this they sit at ninety degrees to the model | probed with a one-sided bar and a matching PhysicsShapeBox, unioned |
 | A `PhysicsShapeList` with no children is a model that declares collision and has none — write no node at all instead | reasoned from the above, and why `VmdlPhysics.ShapeList` returns "" |
+| **ModelDoc prunes any bone that is neither weighted nor animated, and a `BoneMarkupList` with `do_not_discard` is what stops it.** A two-bone sample .vmdl compiled to ONE bone without it and both bones with it | probed: compiled, then `rig_test_follow <model> __list__` |
+| `AnimBindPose` lives inside an `AnimationList` (which also carries `default_root_bone_name`), and the node's fields are copyable whole off `first_person_arms_preview.vmdl`, which ships as source | that file, then compiled |
+| A compiled model's bone names can be read back with this project's own `rig_test_follow <model> <bone>` - naming a bone that does not exist makes it list every bone that does | run |
 | s&box ships classic `MaterialIcons-Regular.ttf`, **not** Material Symbols — a Symbols name renders as nothing | `RigIconButton` class comment |

@@ -2534,7 +2534,11 @@ public sealed class EffigyWindow : DockWindow
 		"\t\t\t\t\t},\n" +
 		"\t\t\t\t]\n" +
 		"\t\t\t},\n" +
-		BuildBoneMarkupList( skeleton ) +
+		VmdlAnimation.BoneMarkupList( skeleton ) +
+		// THE BIND POSE, which a non-static model is documented as needing or morph targets and IK
+		// data break quietly. It was absent until the node's real shape could be read off a shipping
+		// file rather than guessed - see VmdlAnimation.
+		VmdlAnimation.BindPoseList() +
 		physics +
 		"\t\t]\n" +
 		"\t\tmodel_archetype = \"\"\n" +
@@ -2543,52 +2547,6 @@ public sealed class EffigyWindow : DockWindow
 		"\t\tbase_model_name = \"\"\n" +
 		"\t}\n" +
 		"}\n";
-
-	/// <summary>
-	/// Every bone marked do_not_discard, so ModelDoc keeps bones this export gives it no other
-	/// reason to keep.
-	///
-	/// CONFIRMED, not guessed: Assets/models/first_person/fp_arms.vmdl hit this for real — ModelDoc
-	/// prunes any bone that is neither weighted by the mesh nor animated by anything imported, and
-	/// arm_root/upper_arm_R/upper_arm_L kept vanishing (27 bones in the FBX, 24 in the compiled
-	/// model) until a BoneMarkupList with do_not_discard=true fixed it there. That file's own
-	/// BoneMarkupList is the schema this is copied from.
-	///
-	/// Effigy's export has no AnimationList — nothing here is ever "animated by anything imported"
-	/// — so every bone leans entirely on being weighted. BindBodies' nearest-vertex fallback
-	/// (SkinBinder.cs) gives most bones at least one vertex, but a short helper joint that never
-	/// ends up nearest to anything has nothing else keeping it alive. Marking every bone rather than
-	/// guessing which ones are at risk costs nothing and removes the question.
-	/// </summary>
-	static string BuildBoneMarkupList( Skeleton skeleton )
-	{
-		if ( skeleton is null || skeleton.Count == 0 )
-			return "";
-
-		var sb = new StringBuilder();
-
-		sb.Append( "\t\t\t{\n" );
-		sb.Append( "\t\t\t\t_class = \"BoneMarkupList\"\n" );
-		sb.Append( "\t\t\t\tchildren = \n" );
-		sb.Append( "\t\t\t\t[\n" );
-
-		foreach ( var bone in skeleton.Bones )
-		{
-			sb.Append( "\t\t\t\t\t{\n" );
-			sb.Append( "\t\t\t\t\t\t_class = \"BoneMarkup\"\n" );
-			sb.Append( $"\t\t\t\t\t\ttarget_bone = \"{bone.Name}\"\n" );
-			sb.Append( "\t\t\t\t\t\tignore_Translation = false\n" );
-			sb.Append( "\t\t\t\t\t\tignore_rotation = false\n" );
-			sb.Append( "\t\t\t\t\t\tdo_not_discard = true\n" );
-			sb.Append( "\t\t\t\t\t},\n" );
-		}
-
-		sb.Append( "\t\t\t\t]\n" );
-		sb.Append( "\t\t\t\tbone_cull_type = \"None\"\n" );
-		sb.Append( "\t\t\t},\n" );
-
-		return sb.ToString();
-	}
 
 	// --- undo / redo -------------------------------------------------------------------------
 

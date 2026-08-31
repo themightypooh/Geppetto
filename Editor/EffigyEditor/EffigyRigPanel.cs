@@ -1,4 +1,4 @@
-using Editor;
+﻿using Editor;
 using Effigy;
 using Sandbox;
 using System;
@@ -53,6 +53,11 @@ internal sealed class EffigyRigPanel : Widget
 	private EffigyNumericField _tailX, _tailY, _tailZ;
 	private Editor.Label _bodyListHeader;
 	private Widget _bodyList;
+
+	// --- diagnostics -------------------------------------------------------------------------
+
+	private Editor.Label _problemsHeader;
+	private Widget _problemsList;
 
 	/// <summary>True while RefreshInspector is pushing values into the six fields — on a selection
 	/// change, mainly. EffigyNumericField.SetValue does not fire ValueEdited on its own, but
@@ -144,6 +149,13 @@ internal sealed class EffigyRigPanel : Widget
 		BuildInspector();
 		Layout.Add( _inspector );
 
+		// BELOW THE INSPECTOR, so a problem sits nearest the controls that fix it and a clean rig
+		// costs no space at all — both the header and the list hide themselves when there is nothing
+		// to say. A permanently visible "0 problems" panel is a panel people stop reading.
+		BuildProblems();
+		Layout.Add( _problemsHeader );
+		Layout.Add( _problemsList );
+
 		_viewport.RigSkeleton = Skeleton;
 		_viewport.BoneSelectionChanged = OnViewportBoneSelectionChanged;
 		_viewport.BonePosed = OnBonePosed;
@@ -221,6 +233,7 @@ internal sealed class EffigyRigPanel : Widget
 	{
 		RebuildTree();
 		RefreshInspector();
+		RefreshProblems();
 	}
 
 	/// <summary>
@@ -231,7 +244,15 @@ internal sealed class EffigyRigPanel : Widget
 	/// alone. RebuildTree collapses every chain back to just its roots — fine on a genuine rig
 	/// edit, not something a totally unrelated parameter drag should ever trigger.
 	/// </summary>
-	public void RefreshBodyNames() => RefreshInspector();
+	public void RefreshBodyNames()
+	{
+		RefreshInspector();
+
+		// AND THE PROBLEMS, because most of them are about the studio rather than the skeleton: a
+		// body a bone was pinned to going away, or a mesh gaining vertices no bone reaches. Those
+		// appear and disappear on ordinary CAD edits, which is exactly when this is called.
+		RefreshProblems();
+	}
 
 	// --- bone placement -------------------------------------------------------------------
 
@@ -548,6 +569,134 @@ internal sealed class EffigyRigPanel : Widget
 		_bodyList = new Widget( _inspector ) { Layout = Layout.Column() };
 		_bodyList.Layout.Spacing = 2;
 		_inspector.Layout.Add( _bodyList );
+	}
+
+	/// <summary>
+	/// The list `RigDiagnostics.Check` has been filling since it was written, finally shown.
+	///
+	/// WHAT IT IS FOR. A rig leaves this tool through DmxWriter and then through the engine's
+	/// compiler, and each of those reports what IT could not do rather than what is wrong — an
+	/// unweighted vertex arrives as a vertex that does not move, a bone pinned to a deleted body as
+	/// nothing at all. Every one of those is knowable here, while the numbers that caused it are
+	/// still to hand and while the controls that fix them are on screen.
+	/// </summary>
+	private void BuildProblems()
+	{
+		_problemsHeader = new Editor.Label( "" ) { Color = Theme.TextControl.WithAlpha( 0.6f ), Visible = false };
+
+		_problemsList = new Widget( this ) { Layout = Layout.Column(), Visible = false };
+		_problemsList.Layout.Margin = new Sandbox.UI.Margin( 8, 4 );
+		_problemsList.Layout.Spacing = 2;
+	}
+
+	/// <summary>
+	/// Re-run the checks and redraw the list.
+	///
+	/// Run against whatever there is: the skeleton always, the mesh and the body map when the studio
+	/// has built something. `Check` takes every argument as optional for exactly this reason — a
+	/// panel reports on what it has rather than waiting for a complete model.
+	/// </summary>
+	private void RefreshProblems()
+	{
+		_problemsList.Layout.Clear( true );
+
+		List<RigProblem> problems;
+
+		try
+		{
+			var mesh = _studio?.Bodies.Count > 0 ? _studio.ToMesh() : null;
+			var bodyIds = _studio?.Bodies.Select( b => b.Id ).ToList();
+
+			problems = RigDiagnostics.Check( Skeleton, mesh, _bodyBoneMap, bodyIds );
+		}
+		catch ( Exception e )
+		{
+			// A diagnostic that throws must not take the panel with it. The rig is still editable
+			// and the checks are the least important thing on screen.
+			problems = new List<RigProblem>
+			{
+				new( RigSeverity.Warning, "The rig checks could not run", e.Message,
+					"Carry on - this does not stop the rig from being edited or exported" )
+			};
+		}
+
+		// NOTHING TO SAY MEANS NOTHING ON SCREEN. A rig with no bones yet reports "this model has no
+		// skeleton", which is true and is not news to somebody who has not placed a bone - so the
+		// empty-skeleton case is treated as silence rather than as a problem.
+		if ( Skeleton.Count == 0 )
+			problems.Clear();
+
+		_problemsHeader.Visible = problems.Count > 0;
+		_problemsList.Visible = problems.Count > 0;
+
+		if ( problems.Count == 0 )
+			return;
+
+		var errors = problems.Count( p => p.Severity == RigSeverity.Error );
+
+		_problemsHeader.Text = errors > 0
+			? $"{problems.Count} problem(s), {errors} blocking"
+			: $"{problems.Count} warning(s)";
+		_problemsHeader.Color = errors > 0 ? Theme.Red : Theme.Yellow;
+
+		foreach ( var problem in problems )
+			_problemsList.Layout.Add( ProblemRow( problem ) );
+	}
+
+	/// <summary>
+	/// One problem, as a row. Clicking it selects the bone it names — which is what `RigProblem.Bone`
+	/// has been carrying since it was written, and the difference between a list of complaints and a
+	/// way to fix them.
+	/// </summary>
+	private Widget ProblemRow( RigProblem problem )
+	{
+		var row = new Widget( _problemsList ) { Layout = Layout.Row() };
+		row.Layout.Spacing = 4;
+
+		// COLOURED TEXT, not an icon glyph, because that is what this window already does for a
+		// feature's own diagnostic (EffigyFeatureDialog.FillDiagnostic) - and because an icon here
+		// would be a Material Icon NAME in a Label, which renders as the literal word.
+		var colour = problem.Severity == RigSeverity.Error ? Theme.Red : Theme.Yellow;
+
+		// THE CAUSE AND THE REMEDY GO IN THE TOOLTIP rather than on the row. Three lines per problem
+		// would push the bone tree off the panel on a rig with four of them, and the one-line form is
+		// what somebody scanning the list is reading anyway.
+		var label = new Editor.Label( problem.Problem )
+		{
+			Color = colour,
+			WordWrap = true,
+			ToolTip = problem.Bone >= 0 && problem.Bone < Skeleton.Count
+				? $"{problem.Cause}\n\n{problem.Remedy}\n\nThe target button selects '{Skeleton.Bones[problem.Bone].Name}'."
+				: $"{problem.Cause}\n\n{problem.Remedy}",
+		};
+
+		row.Layout.Add( label, 1 );
+
+		if ( problem.Bone >= 0 && problem.Bone < Skeleton.Count )
+		{
+			row.Layout.Add( new IconButton( "my_location", () => SelectBoneFromProblem( problem.Bone ) )
+			{
+				IconSize = 16,
+				Background = Color.Transparent,
+				ToolTip = $"Select '{Skeleton.Bones[problem.Bone].Name}'",
+			} );
+		}
+
+		return row;
+	}
+
+	/// <summary>Select the bone a problem names, in the tree and in the viewport, so the two do not
+	/// disagree about what is selected.</summary>
+	private void SelectBoneFromProblem( int bone )
+	{
+		if ( bone < 0 || bone >= Skeleton.Count )
+			return;
+
+		_viewport.SelectBone( bone );
+		OnViewportBoneSelectionChanged( bone );
+
+		if ( _nodes.TryGetValue( Skeleton.Bones[bone].Name, out var node ) )
+			_tree.SelectItem( node );
 	}
 
 	private static EffigyNumericField AddVectorField( Widget row, Action<float> edited )

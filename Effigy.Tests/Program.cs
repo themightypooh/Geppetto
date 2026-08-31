@@ -67,6 +67,10 @@ public static class Program
 
 		RigDiagnosticTests.Run();
 
+		WeightPaintTests.Run();
+
+		VmdlAnimationTests.Run();
+
 		ShellTests.Run();
 
 		EdgeBlendTests.Run();
@@ -542,6 +546,11 @@ public static class Program
 		Check( "wrote a static and a rigged sample FBX",
 			File.Exists( Path.Combine( outDir, "sample_static.fbx" ) )
 			&& File.Exists( Path.Combine( outDir, "sample_rigged.fbx" ) ) );
+
+		// The .vmdl that wraps the rigged DMX, so the bind pose and the bone markup can be put in
+		// front of the compiler. Same skeleton, so the bone count the file claims is the one the DMX
+		// actually carries.
+		VmdlAnimationTests.WriteSample( outDir, skeleton );
 	}
 
 	/// <summary>
