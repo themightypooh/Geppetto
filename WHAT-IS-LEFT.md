@@ -52,7 +52,8 @@ is tested; none of it has been looked at. See 2.1 and 2.2 for what to check.
 
 ## 1. Effigy kernel
 
-The kernel is roughly **92% of phase one**. All of it is headless-testable — no s&box anywhere.
+The kernel is roughly **93% of phase one**. All of it is headless-testable — no s&box anywhere, and
+1443 checks say so.
 
 ### 1.1 Exercise the boolean past the one case that works
 
@@ -72,6 +73,12 @@ of these is unexercised and at least one is likely to fail:
   anything else, so a face with two holes in it still comes back as triangles. That is correct but
   coarse, and it is the first case likely to be met in practice — two pockets in one cap. Splitting
   an n-holed face needs n+1 cuts, and there has never been one to test against.
+
+  **This is now the shared limit rather than the boolean's own.** The sketch cap pass goes through
+  the same splitter (`Triangulate.SplitWithHoles`), so a *drawn* profile with two holes in it also
+  caps as triangles — a plate with two bolt holes is the everyday version, and it is the fixture
+  `BevelTests` now leans on to keep a collinear corner in reach. Lifting the one-bridge limit fixes
+  both paths at once, and is the single highest-leverage thing left in this section.
 
 **Method:** build each in the editor and run `effigy_dump_tree`. `boundary edges`, `bridged faces`
 and `opening(s) reinstated` name the failure mode directly. Where a case fails, reproduce the mesh
@@ -131,30 +138,6 @@ inner loops of a profile and cuts now work, so this is a parameterised shape and
 build in the headless suite without a boolean provider — `MergeTests` installs a stub for exactly
 this, do the same.
 
-### 1.6 Point the sketch cap pass at the two-n-gon splitter
-
-*Small, self-contained, and the direct sequel to a fix that already landed.*
-
-A cut that leaves a hole in a face now comes back as **two n-gons** rather than a pile of triangles
-(`Triangulate.SplitBridgedLoop`, called from `AddFaceSplittingBridges`). A **sketch** profile with a
-hole in it does not: `Triangulate.WithHoles` builds its own bridges and finishes through the ear
-clipper, so extruding a washer still caps with triangles at both ends. Same defect, same cost — a
-`Face` is the unit of selection and of material assignment, so painting that cap is one click per
-triangle — and now a known fix.
-
-**Method:** `WithHoles` already produces exactly the bridged ring the splitter wants, so the work is
-to return that ring instead of clipping it, hand it to `SplitBridgedLoop`, and fall back to the
-existing clip when the splitter refuses. Watch the contract: `WithHoles` promises triples indexing a
-**concatenated** list (outer first, then each hole in order) and callers rely on that layout, so the
-loops must come back in the same indexing or every caller shifts underneath.
-
-**Measure it by face count**, not by looking. `HoleTests.TestBridgedLoopSplitsIntoTwo` is the
-template: count faces, check the covered **area** is the ring and not the disc, check each loop is
-simple and keeps its winding. Every one of the existing hole tests passed throughout the 29-triangle
-regression, because a shattered face is closed, manifold and exactly the right volume.
-
-Only single-hole profiles are in reach — see the two-holes bullet in 1.1.
-
 ---
 
 ## 2. Effigy editor — the bigger gap
@@ -177,7 +160,7 @@ than two `Sections` lofts every sketch available. `EffigySketchSelector`
 the two new glyphs at strip size, which have been drawn against a nominal 18×18 box and never
 rendered. Then the refinements: a path selector for sweep, an ordered section list for loft.
 
-### 2.2 The six unreachable constraints — **written, and never seen on screen**
+### 2.2 The six constraints that had no way in — **written, and never seen on screen**
 
 `SketchConstraintKind` has seventeen kinds and `ConstraintTools` offered eleven. The other six —
 `Diameter`, `Midpoint`, `Concentric`, `Fixed`, `Tangent`, `TangentArcs` — are now offered, marked up

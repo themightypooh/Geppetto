@@ -88,16 +88,25 @@ with it is not connected, and its free end gets pruned. That is coincidence-as-i
 designed, and it caught out the first version of the test for it.
 
 **Profiles with holes** work. Each hole is spliced into the outer loop along a bridge — out to the
-hole and back — turning a ring-with-a-hole into one boundary, and then it is an ordinary ear clip.
-Hole walls come free: `ProfileFinder` hands holes back wound the opposite way, so the same wall code
-faces them into the hole with no sign handling anywhere. The cost is the cap: a face with a hole in
-it is not a polygon, so it is triangulated rather than being a single n-gon, and it subdivides
-worse. Profiles *without* holes are untouched and still get their n-gon, pinned by a test.
+hole and back — turning a ring-with-a-hole into one boundary. Hole walls come free: `ProfileFinder`
+hands holes back wound the opposite way, so the same wall code faces them into the hole with no sign
+handling anywhere. Profiles *without* holes are untouched and still get their single n-gon, pinned by
+a test.
 
-Sketch caps still triangulate. The two-n-gon splitter added for the boolean
-(`Triangulate.SplitBridgedLoop`) applies to loops arriving from the **engine**, not to
-`Triangulate.WithHoles`, which builds its own bridges and finishes through the ear clipper. Pointing
-the cap pass at the splitter is a small, self-contained job and is listed in WHAT-IS-LEFT.
+**A holed cap is two n-gons, not a pile of triangles.** `Triangulate.SplitWithHoles` hands the
+bridged ring to the same `SplitBridgedLoop` the boolean's cut faces go through, which cuts it on a
+second bridge; the cap pass falls back to the ear clipper when the splitter refuses. A 6x6 plate with
+a 2x2 hole extrudes to twelve faces where it used to be twenty-four. Two is the floor, not one — a
+face is a single loop of corners — and **one hole only**, because two holes put two bridges in the
+ring and an n-holed face needs n+1 cuts.
+
+**A concave face's area is projected, not summed.** `PolyMesh.FaceArea` fans about the centroid, and
+it used to sum `|cross|`, which is exact for a convex face and too big for a concave one: every
+backward fan triangle counted as material rather than as the notch it stands for. Nothing here was
+concave until holed caps became two n-gons, each wrapping around its hole — and then four volume
+tests failed on meshes that were correct. Projecting each fan triangle onto the face's own Newell
+normal is exact for any planar polygon and identical for a convex one. `OrientOutward` and the
+area-weighted vertex normals read the same number, so it was never only a test-side concern.
 
 Curve types: lines, arcs, circles, **ellipses and splines**. The spline interpolates (centripetal
 Catmull-Rom) rather than using control points, which is what makes every existing constraint mean

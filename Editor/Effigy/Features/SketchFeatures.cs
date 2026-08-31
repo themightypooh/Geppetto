@@ -822,21 +822,57 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 				+ "Check that every inner loop lies fully inside the outer one." );
 		}
 
-		foreach ( var (a, b, c) in topTriangles )
+		// TWO N-GONS WHERE THE SPLITTER WILL GIVE THEM, triangles where it will not.
+		//
+		// A cap with a hole in it cannot be one face - a face is one loop of corners and this has
+		// two boundaries - but two is available, and two is what someone means when they say a
+		// washer's end should not be a pile of triangles. Same reasoning as the cut that leaves a
+		// hole in an existing face, and now the same code: SplitWithHoles hands back the ring
+		// WithHoles was about to clip, cut in two instead.
+		//
+		// Each cap is asked separately. Under taper the top's loops are inset copies of the
+		// bottom's, so one can split cleanly while the other cannot, and a cap that falls back to
+		// triangles is coarse rather than wrong.
+		var topLoops = Triangulate.SplitWithHoles( highLoops[0], highLoops.Skip( 1 ).Cast<IReadOnlyList<Vec2>>().ToList() );
+		var bottomLoops = ReferenceEquals( highLoops, loops )
+			? topLoops
+			: Triangulate.SplitWithHoles( loops[0], loops.Skip( 1 ).Cast<IReadOnlyList<Vec2>>().ToList() );
+
+		if ( topLoops is not null )
 		{
-			mesh.AddFace(
-				new[] { High( a ), High( b ), High( c ) },
-				new[] { tapered[a], tapered[b], tapered[c] },
-				material );
+			foreach ( var loop in topLoops )
+				mesh.AddFace( loop.Select( High ).ToArray(), loop.Select( i => tapered[i] ).ToArray(), material );
+		}
+		else
+		{
+			foreach ( var (a, b, c) in topTriangles )
+			{
+				mesh.AddFace(
+					new[] { High( a ), High( b ), High( c ) },
+					new[] { tapered[a], tapered[b], tapered[c] },
+					material );
+			}
 		}
 
 		// The bottom is the same surface seen from the other side, so it is wound backwards.
-		foreach ( var (a, b, c) in bottomTriangles )
+		if ( bottomLoops is not null )
 		{
-			mesh.AddFace(
-				new[] { Low( c ), Low( b ), Low( a ) },
-				new[] { flat[c], flat[b], flat[a] },
-				material );
+			foreach ( var loop in bottomLoops )
+			{
+				var reversed = Enumerable.Reverse( loop ).ToList();
+
+				mesh.AddFace( reversed.Select( Low ).ToArray(), reversed.Select( i => flat[i] ).ToArray(), material );
+			}
+		}
+		else
+		{
+			foreach ( var (a, b, c) in bottomTriangles )
+			{
+				mesh.AddFace(
+					new[] { Low( c ), Low( b ), Low( a ) },
+					new[] { flat[c], flat[b], flat[a] },
+					material );
+			}
 		}
 
 		int High( int flatIndex ) => highStart[loopOf[flatIndex]] + withinLoop[flatIndex];
@@ -1109,6 +1145,28 @@ public sealed class RevolveFeature : SketchConsumingFeature
 			throw new InvalidOperationException(
 				$"This profile's {profile.Holes.Count} hole(s) could not be capped — the loops may cross each other. "
 				+ "Check that every inner loop lies fully inside the outer one." );
+		}
+
+		// Two n-gons per cap where the splitter will give them - see AddCaps, which does the same
+		// thing for an extrude and explains why a hole makes two faces rather than one.
+		var capLoops = Triangulate.SplitWithHoles( profile.Outer, profile.Holes.Cast<IReadOnlyList<Vec2>>().ToList() );
+
+		if ( capLoops is not null )
+		{
+			foreach ( var loop in capLoops )
+			{
+				// The two caps are the same surface seen from opposite sides, so one is wound
+				// backwards.
+				var reversed = Enumerable.Reverse( loop ).ToList();
+
+				AddNonDegenerate( mesh, reversed.Select( i => At( 0, i ) ).ToArray(),
+					reversed.Select( i => flat[i] ).ToArray(), material );
+
+				AddNonDegenerate( mesh, loop.Select( i => At( rings, i ) ).ToArray(),
+					loop.Select( i => flat[i] ).ToArray(), material );
+			}
+
+			return mesh;
 		}
 
 		foreach ( var (a, b, c) in triangles )

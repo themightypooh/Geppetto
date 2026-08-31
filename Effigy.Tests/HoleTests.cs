@@ -47,6 +47,9 @@ public static class HoleTests
 
 		Report.Section( "holes: the splitter refuses what it cannot be sure of" );
 		TestSplitRefusals();
+
+		Report.Section( "holes: a SKETCH profile's cap splits the same way a cut face does" );
+		TestSketchCapSplits();
 	}
 
 	/// <summary>
@@ -592,6 +595,95 @@ public static class HoleTests
 
 		Report.Check( "a thrice-visited corner is refused",
 			Triangulate.SplitBridgedLoop( tangled ) is null, "split a tangled loop" );
+	}
+
+	/// <summary>
+	/// The same measure as TestBridgedLoopSplitsIntoTwo, one step earlier in the pipeline.
+	///
+	/// A cut that leaves a hole in a face has come back as two n-gons since the boolean work; a
+	/// SKETCH with a hole in it still capped with triangles at both ends, because WithHoles built
+	/// its own bridged ring and handed it straight to the ear clipper. Same defect, same cost -
+	/// painting a washer's end face is one click per triangle - and the same fix, now that the
+	/// splitter exists to point that ring at.
+	///
+	/// FACE COUNT AND COVERED AREA, never a look at it. Every hole test here passed throughout the
+	/// 29-triangle regression: a shattered cap is closed, manifold and exactly the right volume.
+	/// </summary>
+	static void TestSketchCapSplits()
+	{
+		// A 6x6 plate with a 2x2 hole, the fixture the extrude volume check above uses.
+		var outer = new List<Vec2> { new( -3, -3 ), new( 3, -3 ), new( 3, 3 ), new( -3, 3 ) };
+		var hole = new List<Vec2> { new( -1, -1 ), new( 1, -1 ), new( 1, 1 ), new( -1, 1 ) };
+
+		var flat = new List<Vec2>( outer );
+		flat.AddRange( hole );
+
+		var loops = Triangulate.SplitWithHoles( outer, new List<IReadOnlyList<Vec2>> { hole } );
+
+		Report.Check( "a holed profile's cap splits at all", loops is not null, "refused" );
+
+		if ( loops is not null )
+		{
+			Report.Check( "into exactly two faces", loops.Count == 2, $"{loops.Count} faces" );
+
+			foreach ( var face in loops )
+			{
+				Report.Check( "no face repeats a corner",
+					face.Select( i => flat[i] ).Distinct().Count() == face.Count, "repeated corner" );
+
+				Report.Check( "no face crosses itself", IsSimple( flat, face ), "self-intersecting" );
+			}
+
+			// 36 minus 4. Two faces covering 36 have filled the hole back in.
+			var area = loops.Sum( face => MathF.Abs( LoopArea( flat, face ) ) );
+
+			Report.Check( "the two faces cover the plate and not the hole",
+				MathF.Abs( area - 32f ) < 1e-3f, $"covered {area}, expected 32" );
+
+			// WithHoles normalises its triples to the outer loop's winding, and a caller swapping
+			// one for the other must not have to think about which way the cap ends up facing.
+			Report.Check( "wound the way WithHoles winds its triangles",
+				loops.All( f => LoopArea( flat, f ) > 0f ), "a face came back reversed" );
+		}
+
+		// AND THE SAME PROFILE THROUGH THE FEATURE, because the split is only worth anything if the
+		// cap a person clicks on is the one that changed.
+		var studio = new PartStudio();
+		var sketch = studio.Add( new SketchFeature() );
+		sketch.Sketch.AddRectangle( new Vec2( -3, -3 ), new Vec2( 3, 3 ) );
+		sketch.Sketch.AddRectangle( new Vec2( -1, -1 ), new Vec2( 1, 1 ) );
+		studio.Add( new ExtrudeFeature() ).Distance.Value = 2f;
+
+		var report = studio.Rebuild();
+
+		Report.Check( "the extrude builds", !report.HasErrors, report.ToString() );
+
+		if ( report.HasErrors )
+			return;
+
+		var mesh = studio.Bodies.Single().Mesh;
+
+		// Four outer walls, four hole walls, two caps of two faces each. Twelve, where the ear
+		// clipper left twenty-four: the same eight walls, and eight triangles per cap.
+		Report.Check( "the extrusion has twelve faces, not twenty-four", mesh.FaceCount == 12,
+			$"{mesh.FaceCount} faces" );
+
+		Report.Check( "and still measures the plate minus the hole",
+			MathF.Abs( Volume( mesh ) - 64f ) < 1e-2f, $"{Volume( mesh ):0.####}, expected 64" );
+
+		Report.Check( "closed and valid", MeshValidator.Validate( mesh ) is { IsValid: true, IsClosed: true } );
+
+		Report.Check( "and still genus 1", MeshValidator.EulerCharacteristic( mesh ) == 0,
+			$"X = {MeshValidator.EulerCharacteristic( mesh )}" );
+
+		// TWO HOLES STILL TRIANGULATE, and that is the deliberate limit rather than an oversight:
+		// two holes put two bridges in the ring and splitting an n-holed face needs n+1 cuts.
+		Report.Check( "two holes in one profile are refused rather than split wrongly",
+			Triangulate.SplitWithHoles( outer, new List<IReadOnlyList<Vec2>>
+			{
+				new List<Vec2> { new( -2, -2 ), new( -1, -2 ), new( -1, -1 ), new( -2, -1 ) },
+				new List<Vec2> { new( 1, 1 ), new( 2, 1 ), new( 2, 2 ), new( 1, 2 ) },
+			} ) is null, "split a two-holed profile" );
 	}
 
 	static float LoopArea( List<Vec2> points, List<int> loop )

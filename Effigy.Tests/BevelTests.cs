@@ -58,37 +58,65 @@ public static class BevelTests
 	/// </summary>
 	static void TestCollinearCornersStayLocal()
 	{
-		var studio = new PartStudio();
-		var sketch = studio.Add( new SketchFeature() );
-		sketch.Sketch.AddCircle( new Vec2( 0, 0 ), 10f );
-		sketch.Sketch.AddCircle( new Vec2( 0, 0 ), 8.4f );
-		studio.Add( new ExtrudeFeature() ).Distance.Value = 2.6f;
-		studio.Rebuild();
+		// TWO FIXTURES, BECAUSE THE FIRST ONE STOPPED CARRYING THE DEFECT. The annulus is the shape
+		// the bug was found on and is still worth chamfering, but a cap with ONE hole is no longer
+		// ear-clipped - it comes back as two n-gons - so its collinear corners are gone. A cap with
+		// TWO holes still goes through the clipper, because splitting an n-holed face needs n+1
+		// cuts and only the one-hole case is in reach, so that is where the degenerate corner lives
+		// now. Both get chamfered; the guard is asserted on the one that still has the corner.
+		var tube = Extruded( s =>
+		{
+			s.AddCircle( new Vec2( 0, 0 ), 10f );
+			s.AddCircle( new Vec2( 0, 0 ), 8.4f );
+		} );
 
-		var tube = studio.Bodies.Single().Mesh;
-		var before = tube.Positions.Max( p => p.Length );
+		var plate = Extruded( s =>
+		{
+			s.AddRectangle( new Vec2( -20, -10 ), new Vec2( 20, 10 ) );
+			s.AddCircle( new Vec2( -10, 0 ), 9f );
+			s.AddCircle( new Vec2( 10, 0 ), 9f );
+		} );
 
 		// Confirms the mesh really does contain the degenerate corners, so this test cannot quietly
 		// stop exercising the fix if the tessellation changes.
-		Check( "the annulus really does have a collinear corner", StraightestCorner( tube ) < 1e-3f,
-			$"straightest |sin| = {StraightestCorner( tube ):E3}" );
+		Check( "a clipped two-hole cap really does have a collinear corner",
+			StraightestCorner( plate ) < 1e-3f, $"straightest |sin| = {StraightestCorner( plate ):E3}" );
 
-		foreach ( var width in new[] { 0.05f, 0.22f, 0.5f } )
+		foreach ( var (name, mesh) in new[] { ("annulus", tube), ("two-hole plate", plate) } )
 		{
-			var beveled = Bevel.Apply( tube, width, 20f );
-			var after = beveled.Positions.Max( p => p.Length );
+			var before = mesh.Positions.Max( p => p.Length );
 
-			// Generous: a chamfer can only move a corner outward by a small multiple of its own
-			// width, so anything past the original radius plus a few widths is the runaway case.
-			var limit = before + width * 20f;
+			foreach ( var width in new[] { 0.05f, 0.22f, 0.5f } )
+			{
+				var beveled = Bevel.Apply( mesh, width, 20f );
+				var after = beveled.Positions.Max( p => p.Length );
 
-			Check( $"width {width}: no corner escapes the model", after <= limit,
-				$"furthest vertex {after:0.##}, allowed {limit:0.##} (was {before:0.##} before)" );
+				// Generous: a chamfer can only move a corner outward by a small multiple of its own
+				// width, so anything past the original radius plus a few widths is the runaway case.
+				var limit = before + width * 20f;
 
-			var validation = MeshValidator.Validate( beveled );
-			Check( $"width {width}: still closed and manifold", validation is { IsValid: true, IsClosed: true },
-				validation.ToString() );
+				Check( $"{name} width {width}: no corner escapes the model", after <= limit,
+					$"furthest vertex {after:0.##}, allowed {limit:0.##} (was {before:0.##} before)" );
+
+				var validation = MeshValidator.Validate( beveled );
+				Check( $"{name} width {width}: still closed and manifold",
+					validation is { IsValid: true, IsClosed: true }, validation.ToString() );
+			}
 		}
+	}
+
+	/// <summary>One solid from one drawn profile, 2.6 deep.</summary>
+	static PolyMesh Extruded( Action<Sketch> draw )
+	{
+		var studio = new PartStudio();
+		var sketch = studio.Add( new SketchFeature() );
+
+		draw( sketch.Sketch );
+
+		studio.Add( new ExtrudeFeature() ).Distance.Value = 2.6f;
+		studio.Rebuild();
+
+		return studio.Bodies.Single().Mesh;
 	}
 
 	/// <summary>The smallest |sin(turn)| over every corner of every face — the quantity

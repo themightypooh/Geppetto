@@ -498,8 +498,86 @@ public static class Triangulate
 		if ( holes is null || holes.Count == 0 )
 			return Polygon( outer );
 
+		if ( !BridgedRing( outer, holes, out var points, out var merged ) )
+			return new List<(int, int, int)>();
+
+		return ClipRing( points, merged, reversed: SignedArea( outer ) < 0f );
+	}
+
+	/// <summary>
+	/// The same profile as <see cref="WithHoles"/>, capped as TWO N-GONS instead of a pile of
+	/// triangles. Null when it will not do it, and then the caller falls back to WithHoles.
+	///
+	/// This is the sketch-side twin of <see cref="SplitBridgedLoop"/>, which already does it for a
+	/// face a CUT left a hole in. Both start from the same shape - one bridged ring - and the
+	/// reason is the same one: a Face is the unit of SELECTION and of material assignment, so a
+	/// washer capped as 29 triangles is a cap you paint one twenty-ninth of per click. The
+	/// difference was only ever where the ring came from. A cut's arrives from the boolean; this
+	/// one WithHoles builds for itself and used to hand straight to the ear clipper.
+	///
+	/// ONE HOLE ONLY. Two holes put two bridges in the ring, SplitBridgedLoop recovers exactly one,
+	/// and splitting an n-holed face needs n+1 cuts rather than two. Refusing is the same deliberate
+	/// choice made there: the fallback is coarse and never wrong, while a wrong split is a
+	/// self-intersecting face that passes closed, manifold and Euler-correct.
+	///
+	/// Indexes the CONCATENATED list WithHoles promises - outer first, then each hole in order - and
+	/// comes back wound the way WithHoles winds its triples, so a caller swaps one for the other
+	/// without touching how it maps or which way it faces.
+	/// </summary>
+	public static List<List<int>> SplitWithHoles( IReadOnlyList<Vec2> outer,
+		IReadOnlyList<IReadOnlyList<Vec2>> holes )
+	{
+		if ( outer is null || outer.Count < 3 || holes is null || holes.Count != 1 )
+			return null;
+
+		if ( !BridgedRing( outer, holes, out var points, out var merged ) )
+			return null;
+
+		// SplitBridgedLoop reads a loop of POSITIONS and answers in positions of that same loop, so
+		// the ring goes in laid out flat and the answer comes back through merged.
+		var ring = new List<Vec2>( merged.Count );
+
+		foreach ( var index in merged )
+			ring.Add( points[index] );
+
+		var loops = SplitBridgedLoop( ring );
+
+		if ( loops is null )
+			return null;
+
+		var flip = SignedArea( outer ) < 0f;
+
+		foreach ( var loop in loops )
+		{
+			for ( var i = 0; i < loop.Count; i++ )
+				loop[i] = merged[loop[i]];
+
+			// ClipRing normalises a clockwise profile's output by emitting its triples backwards,
+			// so these have to turn the same way for the same reason - a caller that swapped one
+			// for the other would otherwise get a cap facing the other way.
+			if ( flip )
+				loop.Reverse();
+		}
+
+		return loops;
+	}
+
+	/// <summary>
+	/// The one boundary a holed profile becomes: the outer loop with each hole spliced into it
+	/// along a bridge, indexing the concatenated point list WithHoles promises its callers.
+	///
+	/// Shared by WithHoles and SplitWithHoles rather than written twice, for the same reason
+	/// WeldRing is shared by the two loop readers: they must agree exactly on which ring they are
+	/// looking at, or the splitter will refuse a ring the clipper would have accepted and nobody
+	/// will be able to say why.
+	/// </summary>
+	static bool BridgedRing( IReadOnlyList<Vec2> outer, IReadOnlyList<IReadOnlyList<Vec2>> holes,
+		out List<Vec2> points, out List<int> merged )
+	{
 		// One flat list, in the order the caller was promised.
-		var points = new List<Vec2>( outer );
+		points = new List<Vec2>( outer );
+		merged = new List<int>( outer.Count );
+
 		var holeRings = new List<List<int>>();
 		var offset = outer.Count;
 
@@ -530,22 +608,22 @@ public static class Triangulate
 			holeRings.Add( ring );
 		}
 
-		var merged = new List<int>( outer.Count );
-
 		for ( var i = 0; i < outer.Count; i++ )
 			merged.Add( i );
 
 		// Rightmost hole first, which is the conventional order and keeps the result deterministic
 		// rather than depending on the order the profile finder happened to discover loops in.
-		holeRings.Sort( ( a, b ) => b.Max( i => points[i].x ).CompareTo( a.Max( i => points[i].x ) ) );
+		var built = points;
+
+		holeRings.Sort( ( a, b ) => b.Max( i => built[i].x ).CompareTo( a.Max( i => built[i].x ) ) );
 
 		foreach ( var hole in holeRings )
 		{
 			if ( !Bridge( points, merged, hole ) )
-				return new List<(int, int, int)>();
+				return false;
 		}
 
-		return ClipRing( points, merged, reversed: SignedArea( outer ) < 0f );
+		return true;
 	}
 
 	/// <summary>

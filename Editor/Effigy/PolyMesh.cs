@@ -232,21 +232,36 @@ public sealed class PolyMesh
 		return normals;
 	}
 
-	/// <summary>Fan triangulation about the centroid, which is valid for the convex and mildly
-	/// non-planar faces this kernel produces.</summary>
+	/// <summary>
+	/// Fan triangulation about the centroid, PROJECTED ONTO THE FACE'S OWN NORMAL so the fan's
+	/// backward triangles subtract instead of adding.
+	///
+	/// It used to sum |cross| and so measured a convex face exactly and a CONCAVE one too big -
+	/// every fan triangle that wound backwards was counted as material rather than as the notch it
+	/// stands for. That was true of nothing this kernel made until a cap with a hole in it started
+	/// coming back as two n-gons, each of which wraps around the hole and is concave by
+	/// construction. A washer then measured a volume larger than its own solid, which is the sort
+	/// of thing that reads as "the cap is broken" when the cap is fine and the ruler is not.
+	///
+	/// Exact for any planar polygon, concave or not, and identical to the old sum for a convex one:
+	/// every fan triangle winds the same way there. For a mildly non-planar face it is the area
+	/// projected onto the Newell normal, which is the honest generalisation and is what the
+	/// area-weighted vertex normals wanted from it anyway.
+	/// </summary>
 	public float FaceArea( Face f )
 	{
 		var c = FaceCentroid( f );
+		var normal = FaceNormal( f );
 		var area = 0f;
 
 		for ( var i = 0; i < f.Count; i++ )
 		{
 			var a = Positions[f.Indices[i]] - c;
 			var b = Positions[f.Indices[(i + 1) % f.Count]] - c;
-			area += Vec3.Cross( a, b ).Length * 0.5f;
+			area += Vec3.Dot( Vec3.Cross( a, b ), normal ) * 0.5f;
 		}
 
-		return area;
+		return MathF.Abs( area );
 	}
 
 	public PolyMesh Clone()
