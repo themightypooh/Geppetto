@@ -62,6 +62,37 @@ public enum SketchConstraintKind
 	/// kind rather than as a Distance because that is what the user asked for and what a dimension
 	/// should read back as, even though it solves identically.</summary>
 	Radius,
+
+	/// <summary>An arc's diameter. Radius at twice the value, kept apart for the same reason
+	/// Radius is kept apart from Distance — a dimension has to read back as the thing that was
+	/// typed.</summary>
+	Diameter,
+
+	/// <summary>A point half way between two others.</summary>
+	Midpoint,
+
+	/// <summary>Two arcs or circles share a centre. Coincident on the centre points, named for
+	/// what the user asked for.</summary>
+	Concentric,
+
+	/// <summary>A point nailed to an absolute coordinate. Uses both Value and ValueY.</summary>
+	Fixed,
+
+	/// <summary>
+	/// A line tangent to an arc or circle. PointA/PointB are the line's ends, PointC the centre and
+	/// PointD a point on the rim.
+	///
+	/// Split from TangentArcs rather than sharing one kind with a discriminator, because the two
+	/// read their four point slots completely differently and a stored record that means two
+	/// different things depending on a fifth field is the kind of thing that survives review and
+	/// then breaks a file three months later. ConstraintTools picks between them from the
+	/// selection, which is where that decision belongs.
+	/// </summary>
+	Tangent,
+
+	/// <summary>Two arcs or circles tangent to each other: centre A, rim A, centre B, rim B.
+	/// Value is non-zero for internal tangency — one inside the other.</summary>
+	TangentArcs,
 }
 
 /// <summary>
@@ -86,8 +117,13 @@ public sealed class SketchConstraint
 	/// that relate a pair of lines. Unused slots stay -1.</summary>
 	public int PointA = -1, PointB = -1, PointC = -1, PointD = -1;
 
-	/// <summary>The driven value, for the kinds that carry one. Only Distance uses it today.</summary>
+	/// <summary>The driven value, for the kinds that carry one: Distance, Radius, Diameter, Angle,
+	/// the x of a Fixed, and a non-zero flag for internal tangency on TangentArcs.</summary>
 	public float Value;
+
+	/// <summary>The second half of a two-number value. Only Fixed uses it, for the y coordinate —
+	/// a fix is the one rule whose value is a position rather than a magnitude.</summary>
+	public float ValueY;
 
 	public SketchConstraint( SketchConstraintKind kind, string curveId )
 	{
@@ -166,6 +202,26 @@ public sealed class SketchConstraint
 			case SketchConstraintKind.Radius:
 				return Valid( sketch, 2 ) ? new DistanceConstraint( PointA, PointB, Value ) : null;
 
+			case SketchConstraintKind.Diameter:
+				return Valid( sketch, 2 ) ? new DistanceConstraint( PointA, PointB, Value * 0.5f ) : null;
+
+			case SketchConstraintKind.Midpoint:
+				return Valid( sketch, 3 ) ? new MidpointConstraint( PointA, PointB, PointC ) : null;
+
+			case SketchConstraintKind.Concentric:
+				return Valid( sketch, 2 ) ? new CoincidentConstraint( PointA, PointB ) : null;
+
+			case SketchConstraintKind.Fixed:
+				return Valid( sketch, 1 ) ? new FixedConstraint( PointA, Value, ValueY ) : null;
+
+			case SketchConstraintKind.Tangent:
+				return Valid( sketch, 4 ) ? new TangentLineArcConstraint( PointA, PointB, PointC, PointD ) : null;
+
+			case SketchConstraintKind.TangentArcs:
+				return Valid( sketch, 4 )
+					? new TangentArcArcConstraint( PointA, PointB, PointC, PointD, Value != 0f )
+					: null;
+
 			default:
 				return null;
 		}
@@ -206,7 +262,8 @@ public sealed class SketchConstraint
 		PointB = PointB,
 		PointC = PointC,
 		PointD = PointD,
-		Value = Value
+		Value = Value,
+		ValueY = ValueY
 	};
 }
 

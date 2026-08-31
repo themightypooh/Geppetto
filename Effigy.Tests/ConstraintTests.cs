@@ -44,6 +44,9 @@ public static class ConstraintTests
 
 		Report.Section( "solver: an arc's endpoints stay on its own circle" );
 		TestArcStaysAnArc();
+
+		Report.Section( "solver: tangency, midpoint, fix, concentric and diameter" );
+		TestNewRules();
 	}
 
 	static void TestDimensionConstraints()
@@ -267,7 +270,12 @@ public static class ConstraintTests
 			("perpendicular", new PerpendicularConstraint( 0, 1, 3, 4 )),
 			("angle", new AngleConstraint( 0, 1, 2, 3, 37.5 )),
 			("point on line", new PointOnLineConstraint( 4, 0, 2 )),
-			("symmetric", new SymmetricConstraint( 0, 1, 2, 3 ))
+			("symmetric", new SymmetricConstraint( 0, 1, 2, 3 )),
+			("midpoint", new MidpointConstraint( 4, 0, 2 )),
+			("fixed", new FixedConstraint( 3, 1.25, -0.4 )),
+			("tangent line-arc", new TangentLineArcConstraint( 0, 1, 2, 3 )),
+			("tangent arc-arc, external", new TangentArcArcConstraint( 0, 1, 2, 3 )),
+			("tangent arc-arc, internal", new TangentArcArcConstraint( 0, 4, 2, 3, internalTangency: true ))
 		};
 
 		foreach ( var (name, constraint) in cases )
@@ -733,4 +741,198 @@ public static class ConstraintTests
 
 		return acc / 3f;
 	}
+
+	/// <summary>
+	/// The rules added after the first solver landed: tangency, midpoint, fix, concentric and
+	/// diameter.
+	///
+	/// Same two-part discipline as everything above — the derivatives are checked against finite
+	/// differences in TestJacobians, and these are the known-answer solves. Tangency gets the most
+	/// attention because it is the only rule here whose residual is not linear in the coordinates,
+	/// and because "nearly tangent" is a thing a wrong residual can converge to while looking fine.
+	/// </summary>
+	static void TestNewRules()
+	{
+		// TANGENT, LINE TO CIRCLE. A horizontal line three units above a circle of radius two,
+		// told to touch it. The radius is held by its own dimension, so the only way to satisfy
+		// the tangency is to bring the line down to y = 2.
+		var tangent = new Sketch();
+		var centre = tangent.AddPoint( 0f, 0f );
+		var rim = tangent.AddPoint( 2f, 0f );
+		var top = tangent.AddPoint( 0f, 2f );
+		var left = tangent.AddPoint( -5f, 3f );
+		var right = tangent.AddPoint( 5f, 3f );
+
+		var edge = tangent.Add( new SketchLine( left, right ) );
+		tangent.Add( new SketchArc( centre, rim, top ) );
+
+		tangent.Constraints.Add( new SketchConstraint( SketchConstraintKind.Radius, centre, rim, 2f ) );
+		tangent.AddConstraint( edge, SketchConstraintKind.Horizontal );
+		tangent.Constraints.Add( new SketchConstraint( SketchConstraintKind.Tangent, left, right, centre, rim ) );
+
+		var tangentResult = tangent.Solve();
+
+		Report.Check( "a line-to-circle tangency solves", tangentResult.Converged,
+			$"residual {tangentResult.Residual:0.###e0}" );
+
+		var gap = DistanceToLine( tangent.Points[centre], tangent.Points[left], tangent.Points[right] );
+		var radius = (tangent.Points[rim] - tangent.Points[centre]).Length;
+
+		Report.Check( "and the line ends up exactly a radius from the centre",
+			MathF.Abs( gap - radius ) < 1e-3f, $"gap {gap:0.#####} against radius {radius:0.#####}" );
+
+		Report.Check( "without the dimension being sacrificed to get there",
+			MathF.Abs( radius - 2f ) < 1e-3f, $"radius {radius:0.#####}" );
+
+		// TANGENT, CIRCLE TO CIRCLE, TOUCHING OUTSIDE. Both radii are dimensioned, so the centres
+		// have to end up exactly their sum apart.
+		var pair = new Sketch();
+		var centreA = pair.AddPoint( 0f, 0f );
+		var rimA = pair.AddPoint( 1f, 0f );
+		var centreB = pair.AddPoint( 5f, 0f );
+		var rimB = pair.AddPoint( 5.5f, 0f );
+
+		pair.Constraints.Add( new SketchConstraint( SketchConstraintKind.Radius, centreA, rimA, 1f ) );
+		pair.Constraints.Add( new SketchConstraint( SketchConstraintKind.Radius, centreB, rimB, 0.5f ) );
+		pair.Constraints.Add( new SketchConstraint( SketchConstraintKind.TangentArcs, centreA, rimA, centreB, rimB ) );
+
+		var pairResult = pair.Solve();
+		var centres = (pair.Points[centreB] - pair.Points[centreA]).Length;
+
+		Report.Check( "two circles tangent on the outside solve", pairResult.Converged,
+			$"residual {pairResult.Residual:0.###e0}" );
+
+		Report.Check( "to centres exactly the sum of the radii apart",
+			MathF.Abs( centres - 1.5f ) < 1e-3f, $"centres {centres:0.#####}, wanted 1.5" );
+
+		// TANGENT, ONE CIRCLE INSIDE THE OTHER. Same two circles, told to nestle instead: the
+		// centres now belong at the DIFFERENCE of the radii, which is the case a residual that
+		// quietly assumed "sum" would get wrong while still converging.
+		var nested = new Sketch();
+		var innerCentre = nested.AddPoint( 0f, 0f );
+		var innerRim = nested.AddPoint( 1f, 0f );
+		var outerCentre = nested.AddPoint( 0.2f, 0f );
+		var outerRim = nested.AddPoint( 3.2f, 0f );
+
+		nested.Constraints.Add( new SketchConstraint( SketchConstraintKind.Radius, innerCentre, innerRim, 1f ) );
+		nested.Constraints.Add( new SketchConstraint( SketchConstraintKind.Radius, outerCentre, outerRim, 3f ) );
+		nested.Constraints.Add( new SketchConstraint( SketchConstraintKind.TangentArcs,
+			innerCentre, innerRim, outerCentre, outerRim ) { Value = 1f } );
+
+		var nestedResult = nested.Solve();
+		var nestedCentres = (nested.Points[outerCentre] - nested.Points[innerCentre]).Length;
+
+		Report.Check( "a circle tangent inside another solves", nestedResult.Converged,
+			$"residual {nestedResult.Residual:0.###e0}" );
+
+		Report.Check( "to centres the DIFFERENCE of the radii apart, not the sum",
+			MathF.Abs( nestedCentres - 2f ) < 1e-3f, $"centres {nestedCentres:0.#####}, wanted 2" );
+
+		// MIDPOINT AND FIX TOGETHER. Two fixed ends and a point told to sit between them has
+		// exactly one answer, so this checks both rules at once and neither can hide.
+		var middle = new Sketch();
+		middle.AddPoint( 9f, 9f );                      // the solver's pin, deliberately elsewhere
+		var endA = middle.AddPoint( -3f, 4f );
+		var endB = middle.AddPoint( 1f, -1f );
+		var centrePoint = middle.AddPoint( 0f, 0f );
+
+		middle.Constraints.Add( new SketchConstraint( SketchConstraintKind.Fixed, endA, -1 ) { Value = 0f, ValueY = 0f } );
+		middle.Constraints.Add( new SketchConstraint( SketchConstraintKind.Fixed, endB, -1 ) { Value = 4f, ValueY = 2f } );
+		middle.Constraints.Add( new SketchConstraint( SketchConstraintKind.Midpoint, centrePoint, endA, endB ) );
+
+		var middleResult = middle.Solve();
+
+		Report.Check( "fix and midpoint solve together", middleResult.Converged,
+			$"residual {middleResult.Residual:0.###e0}" );
+
+		Report.Check( "the fixed ends land on their absolute coordinates",
+			(middle.Points[endA] - new Vec2( 0f, 0f )).Length < 1e-3f &&
+			(middle.Points[endB] - new Vec2( 4f, 2f )).Length < 1e-3f,
+			$"{middle.Points[endA]} and {middle.Points[endB]}" );
+
+		Report.Check( "and the midpoint lands exactly between them",
+			(middle.Points[centrePoint] - new Vec2( 2f, 1f )).Length < 1e-3f,
+			$"{middle.Points[centrePoint]}, wanted (2, 1)" );
+
+		// CONCENTRIC. Stored as its own kind, solved as a coincidence of the two centres — so what
+		// this really checks is that the kind is wired to an evaluator at all.
+		var shared = new Sketch();
+		shared.AddPoint( 9f, 9f );
+		var hubA = shared.AddPoint( 0f, 0f );
+		var hubB = shared.AddPoint( 3f, 1.5f );
+
+		shared.Constraints.Add( new SketchConstraint( SketchConstraintKind.Concentric, hubA, hubB ) );
+
+		var sharedResult = shared.Solve();
+
+		Report.Check( "concentric solves", sharedResult.Converged, $"residual {sharedResult.Residual:0.###e0}" );
+
+		Report.Check( "to two centres in the same place",
+			(shared.Points[hubA] - shared.Points[hubB]).Length < 1e-3f,
+			$"{shared.Points[hubA]} against {shared.Points[hubB]}" );
+
+		// DIAMETER IS RADIUS AT HALF THE NUMBER. The one thing that could go wrong here is the
+		// factor going the wrong way, which doubles every hole in a part rather than failing.
+		var across = new Sketch();
+		var hub = across.AddPoint( 0f, 0f );
+		var edgePoint = across.AddPoint( 1f, 0f );
+
+		across.Constraints.Add( new SketchConstraint( SketchConstraintKind.Diameter, hub, edgePoint, 6f ) );
+		across.Solve();
+
+		var acrossRadius = (across.Points[edgePoint] - across.Points[hub]).Length;
+
+		Report.Check( "a diameter of 6 gives a radius of 3, not 6 or 12",
+			MathF.Abs( acrossRadius - 3f ) < 1e-3f, $"radius {acrossRadius:0.#####}" );
+
+		TestFixRoundTrips();
+	}
+
+	/// <summary>
+	/// A fix is the only rule whose value is a position rather than a magnitude, so it is the only
+	/// one that needed a second number in the file. That second number was appended AFTER the
+	/// CurveId rather than next to the first, so older documents still read — this checks the new
+	/// half survives a write and a read, and that a line written without it still loads.
+	/// </summary>
+	static void TestFixRoundTrips()
+	{
+		var studio = new PartStudio();
+		var feature = studio.Add( new SketchFeature() );
+
+		feature.Sketch.AddPoint( 0f, 0f );
+		var pinned = feature.Sketch.AddPoint( 1f, 1f );
+
+		feature.Sketch.Constraints.Add(
+			new SketchConstraint( SketchConstraintKind.Fixed, pinned, -1 ) { Value = 1.5f, ValueY = -2.5f } );
+
+		var back = StudioDocument.Read( StudioDocument.Write( studio ) );
+		var reloaded = ((SketchFeature)back.Features[0]).Sketch.Constraints[0];
+
+		Report.Check( "a fix comes back as a fix", reloaded.Kind == SketchConstraintKind.Fixed,
+			reloaded.Kind.ToString() );
+
+		Report.Check( "with both halves of its coordinate intact",
+			reloaded.Value == 1.5f && reloaded.ValueY == -2.5f,
+			$"({reloaded.Value}, {reloaded.ValueY}), wanted (1.5, -2.5)" );
+
+		// A constraint line from before ValueY existed has seven fields, not eight.
+		var older = StudioDocument.Read( StudioDocument.Write( studio )
+			.Replace( " 1.5 - -2.5", " 1.5 -" ) );
+
+		Report.Check( "and a document written before ValueY existed still loads",
+			((SketchFeature)older.Features[0]).Sketch.Constraints[0].ValueY == 0f );
+	}
+
+	/// <summary>Perpendicular distance from a point to the infinite line through two others.</summary>
+	static float DistanceToLine( Vec2 p, Vec2 a, Vec2 b )
+	{
+		var d = b - a;
+		var length = d.Length;
+
+		if ( length < 1e-9f )
+			return (p - a).Length;
+
+		return MathF.Abs( d.x * (p.y - a.y) - d.y * (p.x - a.x) ) / length;
+	}
+
 }

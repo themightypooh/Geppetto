@@ -383,3 +383,226 @@ public sealed class SymmetricConstraint : IConstraint
 		} );
 	}
 }
+
+/// <summary>
+/// A point sits exactly half way between two others. Two rows, because x and y are independently
+/// wrong — the same reason Coincident is two.
+///
+/// Not expressible as two equal distances: that would also be satisfied by the point sitting
+/// anywhere on the perpendicular bisector, which is a circle's worth of wrong answers.
+/// </summary>
+public sealed class MidpointConstraint : IConstraint
+{
+	public readonly int P, A, B;
+
+	public MidpointConstraint( int p, int a, int b )
+	{
+		P = p;
+		A = a;
+		B = b;
+	}
+
+	public int ResidualCount => 2;
+
+	public void Evaluate( ReadOnlySpan<Vec2> points, Span<ConstraintResult> output )
+	{
+		var mx = ((double)points[A].x + points[B].x) * 0.5;
+		var my = ((double)points[A].y + points[B].y) * 0.5;
+
+		output[0] = new ConstraintResult( (double)points[P].x - mx,
+			new[] { (P, 1.0, 0.0), (A, -0.5, 0.0), (B, -0.5, 0.0) } );
+
+		output[1] = new ConstraintResult( (double)points[P].y - my,
+			new[] { (P, 0.0, 1.0), (A, 0.0, -0.5), (B, 0.0, -0.5) } );
+	}
+}
+
+/// <summary>
+/// A point is nailed to an absolute coordinate — Onshape's "fix".
+///
+/// THE SOLVER'S PIN IS NOT THIS. SketchSolver.Solve takes a single pinnedPoint and removes its
+/// columns from the Jacobian entirely, which is how the sketch gets an absolute frame at all; it
+/// can only ever be one point and it is chosen by the caller, not by the user. This is the
+/// user-facing version and there can be as many as you like. It works the ordinary way, as two
+/// residuals the solver drives to zero, so a fix that fights a dimension shows up honestly as a
+/// sketch that will not converge rather than as a silently ignored rule.
+/// </summary>
+public sealed class FixedConstraint : IConstraint
+{
+	public readonly int P;
+	public readonly double X, Y;
+
+	public FixedConstraint( int p, double x, double y )
+	{
+		P = p;
+		X = x;
+		Y = y;
+	}
+
+	public int ResidualCount => 2;
+
+	public void Evaluate( ReadOnlySpan<Vec2> points, Span<ConstraintResult> output )
+	{
+		output[0] = new ConstraintResult( (double)points[P].x - X, new[] { (P, 1.0, 0.0) } );
+		output[1] = new ConstraintResult( (double)points[P].y - Y, new[] { (P, 0.0, 1.0) } );
+	}
+}
+
+/// <summary>
+/// A line is tangent to a circle or an arc: the distance from the centre to the infinite line
+/// equals the radius.
+///
+/// The circle is given as a centre and a point on its rim rather than as a stored radius, because
+/// that is the only form the solver can see. Every unknown here is a point coordinate — a radius
+/// held in a float field is invisible to the Jacobian and could not be driven by anything. For a
+/// SketchArc the rim point is its Start, which is exactly how SketchArc already defines its radius.
+///
+/// WRITTEN IN LENGTH-SQUARED, AND THE SCALING IS THE REASON. The obvious residual is
+/// cross(d, w)^2 - r^2*|d|^2, which clears the division and is quartic in the coordinates. It is
+/// smooth and it is correct, and it is badly scaled: the solver's convergence test is an absolute
+/// 1e-6 on the residual norm, so a quartic residual reaching 1e-6 can still be a visibly untangent
+/// line. Dividing through by |d|^2 makes both terms an area, so 1e-6 of residual is about 5e-7 of
+/// radius on a unit-ish sketch, which is the accuracy the number implies.
+///
+/// Sign-blind on purpose: the line can arrive at tangency from either side, and forcing a side
+/// would mean choosing one at build time from the current configuration and having the constraint
+/// mean something different depending on when it was added.
+/// </summary>
+public sealed class TangentLineArcConstraint : IConstraint
+{
+	public readonly int A0, A1, Center, Rim;
+
+	public TangentLineArcConstraint( int a0, int a1, int center, int rim )
+	{
+		A0 = a0;
+		A1 = a1;
+		Center = center;
+		Rim = rim;
+	}
+
+	public int ResidualCount => 1;
+
+	public void Evaluate( ReadOnlySpan<Vec2> points, Span<ConstraintResult> output )
+	{
+		var dx = (double)points[A1].x - points[A0].x;
+		var dy = (double)points[A1].y - points[A0].y;
+		var wx = (double)points[Center].x - points[A0].x;
+		var wy = (double)points[Center].y - points[A0].y;
+
+		var rx = (double)points[Center].x - points[Rim].x;
+		var ry = (double)points[Center].y - points[Rim].y;
+		var r2 = rx * rx + ry * ry;
+
+		var d2 = dx * dx + dy * dy;
+
+		// A zero-length line has no direction and no distance-to-line. Reporting the radius as the
+		// error with a zero gradient on the line leaves the circle free to shrink toward it, which
+		// is the only sensible half of the answer, and keeps a NaN out of H.
+		if ( d2 < 1e-18 )
+		{
+			output[0] = new ConstraintResult( -r2, new[]
+			{
+				(Center, -2.0 * rx, -2.0 * ry),
+				(Rim, 2.0 * rx, 2.0 * ry)
+			} );
+
+			return;
+		}
+
+		var k = dx * wy - dy * wx;
+		var q = k * k / d2;
+
+		var a = 2.0 * k / d2;
+		var b = q / d2;
+
+		output[0] = new ConstraintResult( q - r2, new[]
+		{
+			(A0, a * (dy - wy) + 2.0 * b * dx, a * (wx - dx) + 2.0 * b * dy),
+			(A1, a * wy - 2.0 * b * dx, -a * wx - 2.0 * b * dy),
+			(Center, -a * dy - 2.0 * rx, a * dx - 2.0 * ry),
+			(Rim, 2.0 * rx, 2.0 * ry)
+		} );
+	}
+}
+
+/// <summary>
+/// Two circles or arcs are tangent to each other: centre distance equals the sum of the radii
+/// (touching outside) or the difference (one nestled inside the other).
+///
+/// Which of the two is a stored choice rather than something inferred from the current positions.
+/// Inferring would make the rule mean whichever one happened to be closer when it was added, and
+/// then silently flip meaning the first time a drag carried the circles past each other.
+///
+/// In plain lengths rather than squares — unlike the line case there is no division to clear here,
+/// so the residual is already a distance and 1e-6 of residual is 1e-6 of gap.
+/// </summary>
+public sealed class TangentArcArcConstraint : IConstraint
+{
+	public readonly int CenterA, RimA, CenterB, RimB;
+
+	/// <summary>True when one circle sits inside the other and they touch at a single point.</summary>
+	public readonly bool Internal;
+
+	public TangentArcArcConstraint( int centerA, int rimA, int centerB, int rimB, bool internalTangency = false )
+	{
+		CenterA = centerA;
+		RimA = rimA;
+		CenterB = centerB;
+		RimB = rimB;
+		Internal = internalTangency;
+	}
+
+	public int ResidualCount => 1;
+
+	public void Evaluate( ReadOnlySpan<Vec2> points, Span<ConstraintResult> output )
+	{
+		var dx = (double)points[CenterA].x - points[CenterB].x;
+		var dy = (double)points[CenterA].y - points[CenterB].y;
+		var l = Math.Sqrt( dx * dx + dy * dy );
+
+		var ax = (double)points[CenterA].x - points[RimA].x;
+		var ay = (double)points[CenterA].y - points[RimA].y;
+		var ra = Math.Sqrt( ax * ax + ay * ay );
+
+		var bx = (double)points[CenterB].x - points[RimB].x;
+		var by = (double)points[CenterB].y - points[RimB].y;
+		var rb = Math.Sqrt( bx * bx + by * by );
+
+		// Every direction below is a unit vector that does not exist when its length is zero.
+		// Zeroing the gradient there leaves the other terms to do the work rather than poisoning
+		// the whole step with a NaN, the same tactic DistanceConstraint uses.
+		var lx = l > 1e-12 ? dx / l : 0.0;
+		var ly = l > 1e-12 ? dy / l : 0.0;
+		var uax = ra > 1e-12 ? ax / ra : 0.0;
+		var uay = ra > 1e-12 ? ay / ra : 0.0;
+		var ubx = rb > 1e-12 ? bx / rb : 0.0;
+		var uby = rb > 1e-12 ? by / rb : 0.0;
+
+		if ( !Internal )
+		{
+			output[0] = new ConstraintResult( l - ra - rb, new[]
+			{
+				(CenterA, lx - uax, ly - uay),
+				(CenterB, -lx - ubx, -ly - uby),
+				(RimA, uax, uay),
+				(RimB, ubx, uby)
+			} );
+
+			return;
+		}
+
+		// |ra - rb| is not differentiable where the radii are equal, and that state is a real one:
+		// two equal circles are internally tangent exactly when they are the same circle. The sign
+		// is taken from the current configuration, which is the standard handling and is stable
+		// everywhere except that degenerate point.
+		var s = ra >= rb ? 1.0 : -1.0;
+
+		output[0] = new ConstraintResult( l - Math.Abs( ra - rb ), new[]
+		{
+			(CenterA, lx - s * uax, ly - s * uay),
+			(CenterB, -lx + s * ubx, -ly + s * uby),
+			(RimA, s * uax, s * uay),
+			(RimB, -s * ubx, -s * uby)
+		} );
+	}
+}

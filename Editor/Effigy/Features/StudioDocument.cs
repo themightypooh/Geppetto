@@ -222,7 +222,8 @@ public static class StudioDocument
 				.Append( c.PointA ).Append( ' ' ).Append( c.PointB ).Append( ' ' )
 				.Append( c.PointC ).Append( ' ' ).Append( c.PointD ).Append( ' ' )
 				.Append( Num( c.Value ) ).Append( ' ' )
-				.Append( string.IsNullOrEmpty( c.CurveId ) ? "-" : c.CurveId ).Append( '\n' );
+				.Append( string.IsNullOrEmpty( c.CurveId ) ? "-" : c.CurveId ).Append( ' ' )
+				.Append( Num( c.ValueY ) ).Append( '\n' );
 		}
 
 		sb.Append( "\tendsketch\n" );
@@ -478,7 +479,12 @@ public static class StudioDocument
 						PointC = ParseInt( parts[3], -1 ),
 						PointD = ParseInt( parts[4], -1 ),
 						Value = ParseFloat( parts[5] ),
-						CurveId = parts[6] == "-" ? null : parts[6]
+						CurveId = parts[6] == "-" ? null : parts[6],
+
+						// Appended after the CurveId rather than beside Value, so every index before it
+						// keeps its meaning and a document written before Fixed existed still reads.
+						// Absent means zero, which is what those documents meant.
+						ValueY = parts.Length > 7 ? ParseFloat( parts[7] ) : 0f
 					};
 
 					sketch.Constraints.Add( constraint );
