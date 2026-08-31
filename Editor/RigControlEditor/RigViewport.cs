@@ -1755,6 +1755,15 @@ internal sealed class RigViewport : Widget
 		{
 			var weight = ik.Weight.Clamp( 0f, 1f );
 
+			// What this pass actually wrote, keyed by bone. THE WHOLE CHAIN MOVES IN THIS ONE
+			// FRAME, and bone writes don't land until the next tick - so a chain bone's keyframe
+			// has to be converted against its parent's NEW pose from this map, not against the
+			// renderer's readback, which still holds the pre-drag pose. Same reasoning as the
+			// `resolved` map in EvaluatePose, and the same failure if it's skipped: mid and end are
+			// keyed relative to a stale root, the error compounds down the chain, and the arm comes
+			// back mangled the next time the clip is evaluated.
+			var solved = new Dictionary<string, Transform>();
+
 			foreach ( var (chainBone, chainWorld) in chain )
 			{
 				var blended = chainWorld;
@@ -1764,13 +1773,20 @@ internal sealed class RigViewport : Widget
 				if ( weight < 1f && _renderer.TryGetBoneTransform( chainBone, out var currentWorld ) )
 					blended = Transform.Lerp( currentWorld, chainWorld, weight, true );
 
+				// Recorded before the notify below reads it - the solver hands the chain back
+				// root-first, so a bone's parent is already in here by the time it's needed.
+				solved[chainBone.Name] = blended;
+
 				ApplyWorldTransform( chainBone, blended );
 
 				// Same reason as the plain drag: each solved bone has to carry whatever hangs off
 				// it. For an arm IK that's the hand and every finger under the wrist.
 				PropagateToDescendants( chainBone, blended );
 
-				NotifyPosed( chainBone, blended );
+				NotifyPosed( chainBone, blended,
+					chainBone.Parent is { } chainParent && solved.TryGetValue( chainParent.Name, out var solvedParent )
+						? solvedParent
+						: null );
 			}
 
 			return;
@@ -1791,16 +1807,23 @@ internal sealed class RigViewport : Widget
 	/// keyframe, same as scrubbing between existing keys does.</summary>
 	public bool AutoKeyEnabled { get; set; } = true;
 
-	private void NotifyPosed( BoneCollection.Bone bone, Transform newWorld )
+	/// <summary>
+	/// Announce a bone's new pose as the parent-space value a keyframe is stored in.
+	///
+	/// <paramref name="parentWorld"/> is the parent's transform AS OF THIS FRAME'S WRITES, and any
+	/// caller that moved the parent in the same frame must pass it. Reading it back off the
+	/// renderer instead - which is what the fallback does - returns the parent's PREVIOUS pose,
+	/// because bone writes only fold into the pose on the next tick. That's harmless for a plain FK
+	/// drag, where only the dragged bone moves and its parent is genuinely still, and wrong for an
+	/// IK solve, where the whole chain moves at once and each bone would be keyed against a stale
+	/// parent.
+	/// </summary>
+	private void NotifyPosed( BoneCollection.Bone bone, Transform newWorld, Transform? parentWorld = null )
 	{
 		if ( _suppressAutoKey || !AutoKeyEnabled )
 			return;
 
-		var parentWorld = bone.Parent is { } parent && _renderer.TryGetBoneTransform( parent, out var parentTx )
-			? parentTx
-			: _renderer.WorldTransform;
-
-		BonePosed?.Invoke( bone.Name, parentWorld.ToLocal( newWorld ) );
+		BonePosed?.Invoke( bone.Name, (parentWorld ?? ParentWorld( bone )).ToLocal( newWorld ) );
 	}
 
 	public override void OnDestroyed()

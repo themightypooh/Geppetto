@@ -199,6 +199,250 @@ internal static class RigApiProbe
 		Log.Info( $"[rigprobe] BoneCollection.Bone: {string.Join( ", ", members )}" );
 	}
 
+	/// <summary>
+	/// The two assumptions PropagateToDescendants stands on, checked against a real model.
+	///
+	/// Children do not follow a posed parent by themselves - SetBoneTransform pins each bone in
+	/// WORLD space, so a bone with an override stops inheriting. RigViewport carries the hierarchy
+	/// by hand instead, and that code is only correct if:
+	///
+	///   1. AllBones lists every parent before its children. PropagateToDescendants makes a single
+	///      pass and skips any bone whose parent it hasn't resolved yet, with no second pass - so
+	///      one out-of-order bone silently drops its whole subtree, and those bones stay put while
+	///      everything around them moves.
+	///
+	///   2. BindPoseFor returns a PARENT-SPACE transform. It is built as
+	///      parent.LocalTransform.ToLocal( bone.LocalTransform ), which is only right if
+	///      Bone.LocalTransform is model-space despite the name. If it is already parent-relative,
+	///      every un-keyframed descendant gets its parent's transform subtracted twice and lands
+	///      somewhere arbitrary - following, but to the wrong place.
+	///
+	/// Prints one line per failure and a PASS line if neither is broken.
+	/// </summary>
+	[ConCmd( "rig_test_hierarchy" )]
+	public static void TestHierarchy( string modelPath = "models/citizen/citizen.vmdl" )
+	{
+		var model = Model.Load( modelPath );
+
+		if ( model?.Bones is null )
+		{
+			Log.Error( $"[rigprobe] could not load '{modelPath}' or it has no bones" );
+			return;
+		}
+
+		var order = model.Bones.AllBones.ToList();
+		var seen = new System.Collections.Generic.HashSet<string>();
+		var outOfOrder = new System.Collections.Generic.List<string>();
+
+		foreach ( var bone in order )
+		{
+			if ( bone.Parent is { } parent && !seen.Contains( parent.Name ) )
+				outOfOrder.Add( $"{bone.Name} (parent {parent.Name})" );
+
+			seen.Add( bone.Name );
+		}
+
+		Log.Info( $"[rigprobe] {modelPath}: {order.Count} bones, " +
+			$"{order.Count( b => b.Parent is null )} roots, parent-first={outOfOrder.Count == 0}" );
+
+		if ( outOfOrder.Count > 0 )
+			Log.Error( $"[rigprobe] {outOfOrder.Count} bones listed BEFORE their parent - " +
+				$"PropagateToDescendants drops these and everything under them: " +
+				$"{string.Join( ", ", outOfOrder.Take( 12 ) )}" );
+
+		var scene = Scene.CreateEditorScene();
+
+		try
+		{
+			using var scope = scene.Push();
+
+			var renderer = new GameObject( true, "probe" ).GetOrAddComponent<SkinnedModelRenderer>( false );
+			renderer.Model = model;
+			renderer.UseAnimGraph = false;
+			renderer.Enabled = true;
+
+			Tick( scene );
+
+			// The renderer at rest IS the bind pose, so its parent-space transforms are the answer
+			// BindPoseFor is trying to compute. Any bone where the two disagree is a bone that will
+			// be misplaced the moment its parent moves.
+			var worst = 0f;
+			var worstBone = "";
+			var checked_ = 0;
+
+			foreach ( var bone in order )
+			{
+				if ( bone.Parent is not { } parent )
+					continue;
+
+				if ( !renderer.TryGetBoneTransform( bone, out var world )
+					|| !renderer.TryGetBoneTransform( parent, out var parentWorld ) )
+					continue;
+
+				var actual = parentWorld.ToLocal( world );
+				var computed = parent.LocalTransform.ToLocal( bone.LocalTransform );
+				var error = (actual.Position - computed.Position).Length;
+
+				checked_++;
+
+				if ( error > worst )
+				{
+					worst = error;
+					worstBone = bone.Name;
+				}
+			}
+
+			Log.Info( $"[rigprobe] BindPoseFor vs renderer rest pose over {checked_} bones: " +
+				$"worst position error {worst:0.###} on '{worstBone}'" );
+
+			if ( worst > 0.1f )
+				Log.Error( "[rigprobe] BindPoseFor does NOT match the rest pose - Bone.LocalTransform is " +
+					"parent-space already, so the extra ToLocal is subtracting the parent twice. " +
+					"Un-keyframed children will follow a posed parent to the wrong place." );
+
+			if ( outOfOrder.Count == 0 && worst <= 0.1f )
+				Log.Info( "[rigprobe] PASS - hierarchy order and bind-pose conversion are both sound." );
+		}
+		catch ( Exception e )
+		{
+			Log.Error( $"[rigprobe] hierarchy probe threw: {e}" );
+		}
+		finally
+		{
+			scene.Destroy();
+		}
+	}
+
+	/// <summary>
+	/// Does posing a bone actually carry the bones under it? Rotates one bone, runs the same
+	/// carry-the-hierarchy pass RigViewport.PropagateToDescendants runs, ticks, and reports how far
+	/// each descendant actually moved.
+	///
+	/// A descendant that reports moved=0 did not follow. That is the whole question this answers,
+	/// and it answers it without a window open.
+	/// </summary>
+	[ConCmd( "rig_test_follow" )]
+	public static void TestFollow( string modelPath = "models/citizen/citizen.vmdl", string boneName = "arm_upper_R" )
+	{
+		var model = Model.Load( modelPath );
+
+		if ( model?.Bones is null )
+		{
+			Log.Error( $"[rigprobe] could not load '{modelPath}' or it has no bones" );
+			return;
+		}
+
+		if ( model.Bones.GetBone( boneName ) is not { } bone )
+		{
+			Log.Error( $"[rigprobe] no bone '{boneName}'. Bones: " +
+				string.Join( ", ", model.Bones.AllBones.Take( 80 ).Select( b => b.Name ) ) );
+			return;
+		}
+
+		var scene = Scene.CreateEditorScene();
+
+		try
+		{
+			using var scope = scene.Push();
+
+			var renderer = new GameObject( true, "probe" ).GetOrAddComponent<SkinnedModelRenderer>( false );
+			renderer.Model = model;
+			renderer.UseAnimGraph = false;
+			renderer.Enabled = true;
+
+			Tick( scene );
+
+			var before = new System.Collections.Generic.Dictionary<string, Transform>();
+
+			foreach ( var b in model.Bones.AllBones )
+			{
+				if ( renderer.TryGetBoneTransform( b, out var w ) )
+					before[b.Name] = w;
+			}
+
+			if ( !before.TryGetValue( boneName, out var start ) )
+			{
+				Log.Error( $"[rigprobe] could not read '{boneName}'" );
+				return;
+			}
+
+			// A 45 degree yaw is large enough that no descendant can sit still by rounding.
+			var posed = new Transform( start.Position, Rotation.FromYaw( 45f ) * start.Rotation, start.Scale );
+
+			renderer.SetBoneTransform( bone, posed );
+
+			// PropagateToDescendants, verbatim in shape: one pass, parent's NEW world from the map,
+			// child's own local pose from the bind pose, skip anything whose parent isn't resolved.
+			var resolved = new System.Collections.Generic.Dictionary<string, Transform> { [bone.Name] = posed };
+
+			foreach ( var b in model.Bones.AllBones )
+			{
+				if ( b.Parent is not { } parent || !resolved.TryGetValue( parent.Name, out var parentWorld ) )
+					continue;
+
+				var local = b.Parent is { } p ? p.LocalTransform.ToLocal( b.LocalTransform ) : b.LocalTransform;
+				var worldPose = parentWorld.ToWorld( local );
+
+				resolved[b.Name] = worldPose;
+				renderer.SetBoneTransform( b, worldPose );
+			}
+
+			Tick( scene );
+
+			var descendants = resolved.Keys.Where( n => n != boneName ).ToList();
+			var stuck = new System.Collections.Generic.List<string>();
+			var moved = new System.Collections.Generic.List<string>();
+
+			foreach ( var name in descendants )
+			{
+				if ( model.Bones.GetBone( name ) is not { } d || !renderer.TryGetBoneTransform( d, out var after ) )
+					continue;
+
+				var delta = (after.Position - before[name].Position).Length;
+
+				(delta < 0.01f ? stuck : moved).Add( $"{name}={delta:0.##}" );
+			}
+
+			Log.Info( $"[rigprobe] posed '{boneName}' by 45deg on {modelPath}\n" +
+				$"    resolved {descendants.Count} descendants, {moved.Count} moved, {stuck.Count} stuck" );
+
+			if ( moved.Count > 0 )
+				Log.Info( $"[rigprobe]   moved: {string.Join( ", ", moved.Take( 12 ) )}" );
+
+			if ( stuck.Count > 0 )
+				Log.Error( $"[rigprobe]   DID NOT FOLLOW: {string.Join( ", ", stuck.Take( 12 ) )}" );
+
+			// Anything genuinely under this bone that the single pass never reached is the other
+			// half of the failure - it is not stuck, it was never written at all.
+			var expected = model.Bones.AllBones.Where( b => IsUnder( b, boneName ) ).Select( b => b.Name ).ToList();
+			var missed = expected.Where( n => !resolved.ContainsKey( n ) ).ToList();
+
+			if ( missed.Count > 0 )
+				Log.Error( $"[rigprobe]   NEVER REACHED by the pass ({missed.Count}): {string.Join( ", ", missed.Take( 12 ) )}" );
+			else
+				Log.Info( $"[rigprobe]   the pass reached all {expected.Count} bones under '{boneName}'" );
+		}
+		catch ( Exception e )
+		{
+			Log.Error( $"[rigprobe] follow probe threw: {e}" );
+		}
+		finally
+		{
+			scene.Destroy();
+		}
+	}
+
+	private static bool IsUnder( BoneCollection.Bone bone, string ancestor )
+	{
+		for ( var p = bone.Parent; p is not null; p = p.Parent )
+		{
+			if ( p.Name == ancestor )
+				return true;
+		}
+
+		return false;
+	}
+
 	private static float _probeTime;
 
 	private static void Tick( Scene scene )
