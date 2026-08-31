@@ -67,17 +67,29 @@ internal sealed partial class EffigyViewport
 		if ( !PlanePickMode )
 			return;
 
-		var s = PlaneSize;
+		// Each plane's own size now that they resize independently. A shared constant here meant a
+		// plane dragged small was still clickable across the whole 128 units it used to occupy.
+		var top = _planeHalfSize[0] * 2f;
+		var front = _planeHalfSize[1] * 2f;
+		var right = _planeHalfSize[2] * 2f;
 
 		// Slab dimensions per plane: flat along that plane's normal, full size on the other two.
-		HitPlane( 0, new Vector3( s * 2f, s * 2f, PlanePickThickness ) );  // Top   (XY), normal Z
-		HitPlane( 1, new Vector3( s * 2f, PlanePickThickness, s * 2f ) );  // Front (XZ), normal Y
-		HitPlane( 2, new Vector3( PlanePickThickness, s * 2f, s * 2f ) );  // Right (YZ), normal X
+		HitPlane( 0, new Vector3( top, top, PlanePickThickness ) );      // Top   (XY), normal Z
+		HitPlane( 1, new Vector3( front, PlanePickThickness, front ) );  // Front (XZ), normal Y
+		HitPlane( 2, new Vector3( PlanePickThickness, right, right ) );  // Right (YZ), normal X
 	}
 
 	private void HitPlane( int index, Vector3 size )
 	{
-		if ( index == 0 && !TopPlaneVisible || index == 1 && !FrontPlaneVisible || index == 2 && !RightPlaneVisible )
+		if ( !PlaneVisible( index ) )
+			return;
+
+		// THE NEARER TARGET WINS. A solid in front of this plane takes the click, and this plane
+		// does not so much as highlight — it is not what the cursor is pointing at. Compared along
+		// the ray rather than resolved by a rule like "faces always beat planes", because a plane
+		// genuinely in front of a body should still be pickable: that is how you sketch on Top with
+		// a part sitting under it.
+		if ( PlaneRayDistance( index, out var distance ) && FacePickDistance < distance )
 			return;
 
 		using var scope = Gizmo.Scope( $"plane-pick-{index}", new Transform( OriginPosition ) );
@@ -91,6 +103,30 @@ internal sealed partial class EffigyViewport
 
 		if ( Gizmo.WasLeftMousePressed )
 			PlanePicked?.Invoke( index );
+	}
+
+	/// <summary>How far along the cursor ray this reference plane sits, or false when the ray runs
+	/// parallel to it or hits it behind the camera.</summary>
+	private bool PlaneRayDistance( int index, out float distance )
+	{
+		distance = float.PositiveInfinity;
+
+		var (right, up, _) = PlaneAxes( index );
+		var normal = Vector3.Cross( right, up );
+
+		var ray = Gizmo.CurrentRay;
+		var denom = Vector3.Dot( ray.Forward, normal );
+
+		if ( MathF.Abs( denom ) < 1e-5f )
+			return false;
+
+		var t = Vector3.Dot( OriginPosition - ray.Position, normal ) / denom;
+
+		if ( t <= 0f )
+			return false;
+
+		distance = t;
+		return true;
 	}
 
 	// --- sketch picking ---------------------------------------------------------------------
@@ -264,18 +300,15 @@ internal sealed partial class EffigyViewport
 		if ( _hoveredPlane < 0 )
 			return;
 
-		var (right, up, colour) = _hoveredPlane switch
-		{
-			0 => (Vector3.Forward, Vector3.Left, new Color( 0.85f, 0.55f, 0.25f, 0.18f )),
-			1 => (Vector3.Forward, Vector3.Up, new Color( 0.25f, 0.5f, 0.85f, 0.18f )),
-			_ => (Vector3.Left, Vector3.Up, new Color( 0.25f, 0.78f, 0.45f, 0.18f )),
-		};
+		var (right, up, colour) = PlaneAxes( _hoveredPlane );
 
 		var c = OriginPosition;
-		var s = PlaneSize;
+		var s = _planeHalfSize[_hoveredPlane];
 
 		Gizmo.Draw.IgnoreDepth = true;
-		Gizmo.Draw.Color = colour;
+
+		// A wash, not the outline's weight — PlaneAxes hands back the edge colour.
+		Gizmo.Draw.Color = colour.WithAlpha( 0.18f );
 
 		// Two triangles, drawn as a solid quad. Gizmo.Draw has no quad primitive.
 		var a = c + right * s + up * s;
@@ -343,9 +376,25 @@ internal sealed partial class EffigyViewport
 	/// <summary>Show Onshape-style sketch diagnostics: loose endpoints and branching points.</summary>
 	public bool ProfileInspector { get; set; }
 
-	/// <summary>Grid snap in sketch units. Zero means AUTOMATIC — a 1/2/5 x 10^n step chosen so the
-	/// grid stays about GridPixels apart on screen however far you are zoomed in.</summary>
-	public float SketchGridSnap { get; set; } = 0f;
+	/// <summary>
+	/// Grid spacing in sketch units, or zero for AUTOMATIC — a 1/2/5 x 10^n step chosen so the grid
+	/// stays about GridPixels apart on screen however far you are zoomed in.
+	///
+	/// ONE NUMBER FOR BOTH THE DRAWN GRID AND THE SNAP, which they were not before. The lattice was
+	/// drawn as a fixed eight subdivisions of whatever the plane's width happened to be, while the
+	/// cursor snapped to this — so the lines you could see and the intervals you actually landed on
+	/// were unrelated numbers, and a grid that is not what you snap to is decoration.
+	/// </summary>
+	public float GridSpacing { get; set; }
+
+	/// <summary>Whether the cursor rounds to the grid. Off leaves it free — points land exactly
+	/// where the plane says, which is what you want when tracing something imported.</summary>
+	public bool SnapToGrid { get; set; } = true;
+
+	/// <summary>Whether the cursor jumps to existing sketch points. This is what makes a chain
+	/// actually close: two clicks at visually the same place otherwise leave two points a hair
+	/// apart and ProfileFinder refuses the open loop.</summary>
+	public bool SnapToPoints { get; set; } = true;
 
 	/// <summary>Snapping and point reuse, which are sketch maths rather than UI and therefore live
 	/// in the kernel where they can be tested without s&amp;box. This only feeds it tolerances.</summary>
@@ -725,6 +774,12 @@ internal sealed partial class EffigyViewport
 	/// <summary>Roughly how far apart the snap grid should look on screen, in pixels.</summary>
 	private const float GridPixels = 14f;
 
+	/// <summary>The grid step in effect: whatever was chosen in settings, or the adaptive one when
+	/// that is Automatic. Both the drawn lattice and the snap go through this, which is what keeps
+	/// them the same number.</summary>
+	private float GridStep( float unitsPerPixel ) =>
+		GridSpacing > 0f ? GridSpacing : SketchSnapper.AutoGridStep( unitsPerPixel, GridPixels );
+
 	/// <summary>
 	/// How many sketch units one screen pixel covers, at the sketch plane's depth.
 	///
@@ -814,6 +869,42 @@ internal sealed partial class EffigyViewport
 	/// RaycastTests against a box's six faces and known normals. This is only the adapter: turn
 	/// the cursor into a ray in kernel coordinates, and turn the winning hit into a FaceRef.
 	/// </summary>
+	/// <summary>
+	/// The face under the cursor this frame, resolved BEFORE anything claims the click.
+	///
+	/// This used to be worked out inside FacePickFrame, which runs after DrawReferencePlanes — and
+	/// the reference planes register a 256-unit pick slab each. The feature dialog arms plane
+	/// picking and face picking together on purpose (one click, whichever you actually hit), so
+	/// with the planes resolving first, a click on a solid fired PlanePicked AND FacePicked in that
+	/// order and the plane usually won. That is what made clicking a face inaccurate with the
+	/// planes visible: the face was never really in the running.
+	/// </summary>
+	private (Body Body, MeshHit Hit)? _facePickHit;
+
+	/// <summary>How far along the cursor ray the face under it sits, or infinity for none. What the
+	/// reference planes compare their own hit against before taking a click.</summary>
+	private float FacePickDistance => _facePickHit is { } hit ? hit.Hit.Distance : float.PositiveInfinity;
+
+	/// <summary>Run the pick raycast and cache it. Called early in the frame, before the planes.
+	/// </summary>
+	private void ResolveFacePick()
+	{
+		_facePickHit = null;
+
+		if ( !FacePickMode || _pickableBodies.Count == 0 || !_canvasHasCursor )
+			return;
+
+		var ray = Gizmo.CurrentRay;
+
+		// Vector3 -> Vec3 is a straight re-type, not a transform - ToWorldDir does the same thing
+		// in the other direction elsewhere in this file, because the kernel's axes and s&box's
+		// line up exactly (see EffigyTool's own note on this).
+		var origin = new Vec3( ray.Position.x, ray.Position.y, ray.Position.z );
+		var direction = new Vec3( ray.Forward.x, ray.Forward.y, ray.Forward.z );
+
+		_facePickHit = MeshRaycast.Raycast( _pickableBodies, origin, direction );
+	}
+
 	private void FacePickFrame()
 	{
 		_hoveredFaceBodyId = null;
@@ -836,17 +927,8 @@ internal sealed partial class EffigyViewport
 		if ( !_canvasHasCursor )
 			return;
 
-		var ray = Gizmo.CurrentRay;
-
-		// Vector3 -> Vec3 is a straight re-type, not a transform - ToWorldDir does the same thing
-		// in the other direction elsewhere in this file, because the kernel's axes and s&box's
-		// line up exactly (see EffigyTool's own note on this).
-		var origin = new Vec3( ray.Position.x, ray.Position.y, ray.Position.z );
-		var direction = new Vec3( ray.Forward.x, ray.Forward.y, ray.Forward.z );
-
-		var result = MeshRaycast.Raycast( _pickableBodies, origin, direction );
-
-		if ( result is not { } hit )
+		// Already resolved this frame by ResolveFacePick, before the planes had their chance.
+		if ( _facePickHit is not { } hit )
 			return;
 
 		_hoveredFaceBodyId = hit.Body.Id;
@@ -1341,11 +1423,11 @@ internal sealed partial class EffigyViewport
 		// across; see SketchSnapper for what it looked like when they were world constants.
 		var unitsPerPixel = UnitsPerPixel();
 
-		_snapper.PointRadius = SnapPixels * unitsPerPixel;
+		// A zero radius disables a snap pass outright rather than needing a flag inside the kernel:
+		// SketchSnapper compares against radius-squared, and nothing is ever closer than zero.
+		_snapper.PointRadius = SnapToPoints ? SnapPixels * unitsPerPixel : 0f;
 		_snapper.AlignmentRadius = AlignmentPixels * unitsPerPixel;
-		_snapper.GridStep = SketchGridSnap > 0f
-			? SketchGridSnap
-			: SketchSnapper.AutoGridStep( unitsPerPixel, GridPixels );
+		_snapper.GridStep = SnapToGrid ? GridStep( unitsPerPixel ) : 0f;
 
 		var result = _snapper.Snap( ActiveSketch, raw, _pending,
 			SketchTool == SketchToolKind.Line && _pending.Count == 1 );

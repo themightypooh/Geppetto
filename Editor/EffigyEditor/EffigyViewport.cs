@@ -31,11 +31,22 @@ internal sealed partial class EffigyViewport : Widget
 	private GameObject _modelObject;
 	private ModelRenderer _renderer;
 
-	/// <summary>Half-width of each reference plane rectangle in world units.</summary>
+	/// <summary>Half-width a reference plane starts at, in world units. Each plane can be dragged
+	/// to its own size from there — see <see cref="_planeHalfSize"/>.</summary>
 	private const float PlaneSize = 128f;
 
-	/// <summary>How many subdivisions along each edge of the reference planes.</summary>
-	private const int PlaneSubdivisions = 8;
+	/// <summary>
+	/// Half-width of each reference plane — Top, Front, Right — in world units.
+	///
+	/// PER PLANE rather than the single shared constant this used to be. A plane is a drawing
+	/// surface, and the one you are about to sketch on wants to be big enough to work on while the
+	/// other two want to be out of the way. One number could not do both.
+	/// </summary>
+	private readonly float[] _planeHalfSize = { PlaneSize, PlaneSize, PlaneSize };
+
+	/// <summary>How small a plane may be dragged. Below this the corner handles land on top of
+	/// each other and there is no way to grab one to make it big again.</summary>
+	private const float MinPlaneHalfSize = 8f;
 
 	/// <summary>
 	/// Radius of the origin handle dot, in SCREEN PIXELS.
@@ -48,12 +59,17 @@ internal sealed partial class EffigyViewport : Widget
 	private const float OriginHandlePixels = 2.5f;
 
 	/// <summary>The dot's radius in world units at its current distance from the camera.</summary>
-	private float OriginHandleRadius()
+	private float OriginHandleRadius() => WorldRadiusAt( OriginPosition, OriginHandlePixels );
+
+	/// <summary>What a screen-pixel radius is worth in world units at some point in the scene. The
+	/// origin dot wanted this first; the plane corner handles want it at twelve more places, each
+	/// at its own distance from the camera.</summary>
+	private float WorldRadiusAt( Vector3 point, float pixels )
 	{
-		var distance = MathF.Max( (OriginPosition - _camera.WorldPosition).Length, 0.01f );
+		var distance = MathF.Max( (point - _camera.WorldPosition).Length, 0.01f );
 		var halfHeight = MathF.Tan( _camera.FieldOfView.DegreeToRadian() * 0.5f ) * distance;
 
-		return halfHeight / MathF.Max( _canvas.Size.y * 0.5f, 1f ) * OriginHandlePixels;
+		return halfHeight / MathF.Max( _canvas.Size.y * 0.5f, 1f ) * pixels;
 	}
 
 	// --- origin state -----------------------------------------------------------------------
@@ -137,10 +153,15 @@ internal sealed partial class EffigyViewport : Widget
 		}
 	}
 
-	/// <summary>Grid colour for the reference planes, driven by the active palette. The plane
-	/// OUTLINES keep their per-axis hues (Top orange, Front blue, Right green) because that is how
-	/// you tell them apart; it is the grid infill that has to stay legible against whatever the
-	/// background happens to be.</summary>
+	/// <summary>
+	/// Chrome colour drawn over the viewport, driven by the active palette so it stays legible
+	/// against whatever the background happens to be.
+	///
+	/// This used to be the reference planes' grid colour, which is where the name comes from. The
+	/// planes are outlines only now and their outlines keep their per-axis hues — Top orange, Front
+	/// blue, Right green — because that is how you tell them apart. What is left on this is the
+	/// view cube's orientation label.
+	/// </summary>
 	public Color PlaneColor { get; set; } = new( 0.55f, 0.58f, 0.61f, 1f );
 	public bool OriginVisible { get; set; } = true;
 	public bool TopPlaneVisible { get; set; } = true;
@@ -450,38 +471,51 @@ internal sealed partial class EffigyViewport : Widget
 	/// </summary>
 	private void DrawReferencePlanes()
 	{
+		// Before anything is drawn, so a plane being dragged this frame is drawn at the size the
+		// cursor is asking for rather than one frame behind it.
+		UpdatePlaneResize();
+
 		var center = OriginPosition;
 		var s = PlaneSize;
-		var step = (s * 2f) / PlaneSubdivisions;
 
 		// DEPTH-TESTED. The reference planes are 128 units across and were drawn straight through
 		// whatever the part is, so a finished solid had a grid laid over it and read as a glass
 		// box rather than as material. A plane behind the part now goes behind the part.
 		Gizmo.Draw.IgnoreDepth = false;
 
-		// Grid infill comes from the palette so it stays readable on a light or a dark background;
-		// outlines keep their per-axis hue so the three planes remain tellable apart.
+		// OUTLINES BY DEFAULT, GRID ON REQUEST. Each plane used to be filled with an 8x8 lattice
+		// unconditionally, and three of those overlapping at the origin was most of what you saw on
+		// opening the editor: the part sat inside a wire cage. The outline alone says where a plane
+		// is and how big it is, which is all it has to say most of the time — but the lattice is a
+		// ruler when you want one, so it is a setting rather than a deletion. Edit > Settings.
 		var grid = PlaneColor.WithAlpha( PlaneColor.a * 0.5f );
 
-		// --- Top plane (XY at z=0) — orange edge ---
-		if ( TopPlaneVisible )
+		for ( var index = 0; index < 3; index++ )
 		{
-			DrawPlaneOutline( center, Vector3.Forward, Vector3.Left, s, new Color( 0.85f, 0.55f, 0.25f, 0.55f ) );
-			DrawPlaneGrid( center, Vector3.Forward, Vector3.Left, s, step, grid );
-		}
+			if ( !PlaneVisible( index ) )
+				continue;
 
-		// --- Front plane (XZ at y=0) — blue edge ---
-		if ( FrontPlaneVisible )
-		{
-			DrawPlaneOutline( center, Vector3.Forward, Vector3.Up, s, new Color( 0.25f, 0.5f, 0.85f, 0.55f ) );
-			DrawPlaneGrid( center, Vector3.Forward, Vector3.Up, s, step, grid );
-		}
+			var (right, up, colour) = PlaneAxes( index );
+			var half = _planeHalfSize[index];
 
-		// --- Right plane (YZ at x=0) — green edge ---
-		if ( RightPlaneVisible )
-		{
-			DrawPlaneOutline( center, Vector3.Left, Vector3.Up, s, new Color( 0.25f, 0.78f, 0.45f, 0.55f ) );
-			DrawPlaneGrid( center, Vector3.Left, Vector3.Up, s, step, grid );
+			DrawPlaneOutline( center, right, up, half, colour );
+
+			if ( !ShowPlaneGrid )
+				continue;
+
+			// A plane seen edge-on is a line, and its grid collapses into that line as a bright
+			// smear across everything behind it. Three planes meet at right angles, so from any
+			// camera angle at least one of them is close to edge-on and it was always the one
+			// making the middle of the view unreadable. Fading it out by how square-on it is means
+			// you only ever see the grids you are actually looking at.
+			var facing = MathF.Abs( Vector3.Dot( Vector3.Cross( right, up ), _camera.WorldRotation.Forward ) );
+			var viewFade = MathF.Min( facing / EdgeOnFade, 1f );
+
+			if ( viewFade <= 0.01f )
+				continue;
+
+			DrawPlaneGrid( center, right, up, half, DrawnGridStep( center, half ),
+				grid.WithAlpha( grid.a * viewFade ) );
 		}
 
 		// An offset sketch lives on a parallel plane, not on the origin reference plane. Keep the
@@ -499,10 +533,17 @@ internal sealed partial class EffigyViewport : Widget
 			var sketchColor = new Color( 0.95f, 0.82f, 0.25f, 0.65f );
 
 			DrawPlaneOutline( sketchCenter, sketchX, sketchY, s, sketchColor );
-			DrawPlaneGrid( sketchCenter, sketchX, sketchY, s, step, sketchColor.WithAlpha( 0.3f ) );
+
+			if ( ShowPlaneGrid )
+			{
+				DrawPlaneGrid( sketchCenter, sketchX, sketchY, s, DrawnGridStep( sketchCenter, s ),
+					sketchColor.WithAlpha( 0.3f ) );
+			}
 
 			Gizmo.Draw.IgnoreDepth = false;
 		}
+
+		DrawPlaneCornerHandles();
 
 		if ( !OriginVisible )
 		{
@@ -561,31 +602,241 @@ internal sealed partial class EffigyViewport : Widget
 		Gizmo.Draw.Line( d, a );
 	}
 
-	/// <summary>Draw subdivision lines across a plane rectangle, like Onshape's faint grid on
-	/// reference planes.</summary>
+	/// <summary>
+	/// The most grid lines a plane may draw across itself in one direction.
+	///
+	/// A CAP, NOT A DENSITY. Spacing is now a real distance in units rather than a count of
+	/// subdivisions, which means a fine grid on a plane dragged out to a thousand units asks for
+	/// tens of thousands of lines and takes the frame rate with it. Past this the step is widened
+	/// until it fits, so a grid that would be an unreadable smear is drawn coarse instead.
+	/// </summary>
+	private const int MaxGridLines = 160;
+
+	/// <summary>How square-on a plane has to be before its grid is at full strength — the cosine of
+	/// the angle between its normal and the view. Below this it fades out proportionally, reaching
+	/// nothing when exactly edge-on. 0.35 is about twenty degrees of tilt.</summary>
+	private const float EdgeOnFade = 0.35f;
+
+	/// <summary>
+	/// The step to draw a plane's lattice at — the same one the cursor snaps to, so the lines mean
+	/// something, widened if that would put more than <see cref="MaxGridLines"/> across the plane.
+	///
+	/// On Automatic the step comes from the camera: WorldRadiusAt with a one-pixel radius IS the
+	/// units-per-pixel at that point, which is exactly what AutoGridStep wants. That is why the
+	/// reference planes can have an adaptive grid outside a sketch, where there is no sketch plane
+	/// to measure against.
+	/// </summary>
+	private float DrawnGridStep( Vector3 center, float halfSize )
+	{
+		var step = GridStep( WorldRadiusAt( center, 1f ) );
+
+		if ( step <= 0f )
+			step = halfSize * 0.25f;
+
+		return MathF.Max( step, halfSize * 2f / MaxGridLines );
+	}
+
+	/// <summary>
+	/// Whether planes draw a grid inside their outline — the three reference planes AND the active
+	/// sketch plane, together.
+	///
+	/// ONE SWITCH FOR ALL FOUR. It governed only the sketch plane at first, which made it look
+	/// broken: the sketch plane is drawn only while a sketch is open, so flipping the setting
+	/// anywhere else changed nothing on screen and there was no way to tell that from a dead
+	/// control.
+	///
+	/// Snapping is unaffected either way — SketchSnapper rounds to a step it works out for itself
+	/// and never consults this — so turning the grid off means drawing against an invisible ruler.
+	/// </summary>
+	public bool ShowPlaneGrid { get; set; }
+
+	/// <summary>
+	/// Draw a plane's lattice, stepping OUT FROM THE CENTRE rather than in from one edge.
+	///
+	/// That is not cosmetic. Starting at -halfSize put the lines at whatever the plane's width
+	/// happened to leave over, so with a 1-unit spacing on a 128.5-unit plane none of them landed on
+	/// a whole number — the grid was half a unit off the coordinates the cursor was snapping to.
+	/// Walking out from zero puts every line on an exact multiple of the step, which is what makes
+	/// it the same grid the snap uses.
+	///
+	/// Two things keep three overlapping planes from reading as a wire cage. The centre lines are
+	/// skipped, because those are the origin axes and they are already drawn in their own colours —
+	/// three planes meeting at the origin were putting six coincident grey lines over three
+	/// coloured ones. And the lines fade as they get further out, so the lattice thins toward the
+	/// edge instead of ending in a hard grid to the last row.
+	/// </summary>
 	private static void DrawPlaneGrid( Vector3 center, Vector3 right, Vector3 up,
 		float halfSize, float step, Color color )
 	{
-		Gizmo.Draw.Color = color;
+		if ( step <= 0f || halfSize <= 0f )
+			return;
 
-		var half = halfSize;
-		var count = (int)(half * 2f / step);
+		var count = (int)(halfSize / step);
 
-		for ( var i = 0; i <= count; i++ )
+		for ( var i = 1; i <= count; i++ )
 		{
-			var offset = -half + i * step;
-			var start = center + up * offset - right * half;
-			var end = center + up * offset + right * half;
-			Gizmo.Draw.Line( start, end );
+			var offset = i * step;
+
+			// Quadratic rather than linear: a linear ramp still reads as a solid sheet most of the
+			// way out and then stops. This is near full weight around the origin, where the work
+			// happens, and a quarter of it at the rim.
+			var t = offset / halfSize;
+			var faded = color.WithAlpha( color.a * (1f - 0.75f * t * t) );
+
+			Gizmo.Draw.Color = faded;
+
+			foreach ( var sign in Signs )
+			{
+				var d = offset * sign;
+
+				Gizmo.Draw.Line( center + up * d - right * halfSize, center + up * d + right * halfSize );
+				Gizmo.Draw.Line( center + right * d - up * halfSize, center + right * d + up * halfSize );
+			}
+		}
+	}
+
+	/// <summary>Both sides of the centre line, walked together so each pair shares one alpha.
+	/// </summary>
+	private static readonly float[] Signs = { 1f, -1f };
+
+	/// <summary>Whether a plane index — 0 Top, 1 Front, 2 Right — is currently shown.</summary>
+	private bool PlaneVisible( int index ) => index switch
+	{
+		0 => TopPlaneVisible,
+		1 => FrontPlaneVisible,
+		_ => RightPlaneVisible,
+	};
+
+	/// <summary>
+	/// The two in-plane axes and the edge colour for a plane index, in Onshape's convention:
+	/// Top (XY) orange, Front (XZ) blue, Right (YZ) green.
+	///
+	/// One definition rather than the three switch statements the outline, the hover wash and the
+	/// corner handles each used to carry. They disagreed once already — the hover wash is the
+	/// reason DrawPlaneHitboxes lives beside the wireframe rather than apart from it.
+	/// </summary>
+	private static (Vector3 Right, Vector3 Up, Color Colour) PlaneAxes( int index ) => index switch
+	{
+		0 => (Vector3.Forward, Vector3.Left, new Color( 0.85f, 0.55f, 0.25f, 0.55f )),
+		1 => (Vector3.Forward, Vector3.Up, new Color( 0.25f, 0.5f, 0.85f, 0.55f )),
+		_ => (Vector3.Left, Vector3.Up, new Color( 0.25f, 0.78f, 0.45f, 0.55f )),
+	};
+
+	// --- resizing a plane by its corners --------------------------------------------------------
+
+	/// <summary>Radius of a plane's corner handle in SCREEN PIXELS, for the same reason the origin
+	/// dot is measured that way: a world-unit handle is a boulder on a small part and invisible on
+	/// a large one.</summary>
+	private const float PlaneCornerPixels = 5f;
+
+	/// <summary>Which plane is being resized right now, or -1. Held across frames because a drag
+	/// is a gesture, not an event — the cursor leaves the handle the moment it starts moving.
+	/// </summary>
+	private int _resizingPlane = -1;
+
+	/// <summary>
+	/// A grab handle at each corner of each plane, shown only when the cursor is on it.
+	///
+	/// HOVER-ONLY because twelve permanent dots around the origin is the clutter the grid was just
+	/// taken out for. The hitbox is always registered — it has to be, or there would be nothing to
+	/// hover — but nothing is drawn until the cursor finds it, and then the corner being dragged
+	/// stays lit for as long as the drag lasts.
+	///
+	/// Not while sketching or while a plane is armed for picking: in both of those a click on a
+	/// plane already means something, and a handle sitting on the corner would eat it.
+	/// </summary>
+	private void DrawPlaneCornerHandles()
+	{
+		if ( IsSketching || PlanePickMode )
+			return;
+
+		var center = OriginPosition;
+
+		for ( var index = 0; index < 3; index++ )
+		{
+			if ( !PlaneVisible( index ) )
+				continue;
+
+			var (right, up, colour) = PlaneAxes( index );
+			var half = _planeHalfSize[index];
+
+			for ( var corner = 0; corner < 4; corner++ )
+			{
+				// 0 (+,+), 1 (-,+), 2 (-,-), 3 (+,-) — the same walk around the rectangle
+				// DrawPlaneOutline makes, so a handle always sits on a drawn corner.
+				var x = corner is 0 or 3 ? half : -half;
+				var y = corner is 0 or 1 ? half : -half;
+
+				var position = center + right * x + up * y;
+				var radius = WorldRadiusAt( position, PlaneCornerPixels );
+
+				using var scope = Gizmo.Scope( $"plane-corner-{index}-{corner}", new Transform( position ) );
+
+				Gizmo.Hitbox.DepthBias = 0.01f;
+				Gizmo.Hitbox.Sphere( new Sphere( Vector3.Zero, radius * 2f ) );
+
+				var dragging = _resizingPlane == index;
+
+				if ( !Gizmo.IsHovered && !dragging )
+					continue;
+
+				// Through everything, including the part. A handle you cannot see because the solid
+				// you are building sits in front of it is a handle you cannot grab.
+				Gizmo.Draw.IgnoreDepth = true;
+				Gizmo.Draw.Color = colour.WithAlpha( dragging ? 0.9f : 0.5f );
+				Gizmo.Draw.SolidSphere( 0f, radius, 10, 10 );
+				Gizmo.Draw.IgnoreDepth = false;
+
+				if ( Gizmo.IsHovered && Gizmo.WasLeftMousePressed )
+					_resizingPlane = index;
+			}
+		}
+	}
+
+	/// <summary>
+	/// Carry a corner drag, sizing the plane to wherever the cursor is on it.
+	///
+	/// The cursor is put back on the plane rather than tracked in screen space, so the corner stays
+	/// under the pointer at any camera angle — the same ray-into-plane projection sketching uses to
+	/// place a point (CursorToPlane). The new half-size is the LARGER of the two in-plane distances,
+	/// which keeps the plane square the way it has always been drawn; the corner therefore tracks
+	/// the cursor exactly along a diagonal and approximately elsewhere, which is what a square
+	/// constraint costs.
+	/// </summary>
+	private void UpdatePlaneResize()
+	{
+		if ( _resizingPlane < 0 )
+			return;
+
+		// Released anywhere, over the handle or not. A drag that only ended when the cursor
+		// happened to be back on the corner would never end.
+		if ( !Gizmo.IsLeftMouseDown )
+		{
+			_resizingPlane = -1;
+			return;
 		}
 
-		for ( var i = 0; i <= count; i++ )
-		{
-			var offset = -half + i * step;
-			var start = center + right * offset - up * half;
-			var end = center + right * offset + up * half;
-			Gizmo.Draw.Line( start, end );
-		}
+		var (right, up, _) = PlaneAxes( _resizingPlane );
+		var normal = Vector3.Cross( right, up );
+
+		var ray = Gizmo.CurrentRay;
+		var denom = Vector3.Dot( ray.Forward, normal );
+
+		// Edge-on: the plane is a line from here and there is no meaningful hit. Hold the size it
+		// had rather than snapping it to something arbitrary.
+		if ( MathF.Abs( denom ) < 1e-5f )
+			return;
+
+		var t = Vector3.Dot( OriginPosition - ray.Position, normal ) / denom;
+
+		if ( t <= 0f )
+			return;
+
+		var offset = ray.Position + ray.Forward * t - OriginPosition;
+
+		var half = MathF.Max( MathF.Abs( Vector3.Dot( offset, right ) ), MathF.Abs( Vector3.Dot( offset, up ) ) );
+
+		_planeHalfSize[_resizingPlane] = MathF.Max( half, MinPlaneHalfSize );
 	}
 
 	// --- view cube (top-right orientation indicator) ----------------------------------------
@@ -618,11 +869,9 @@ internal sealed partial class EffigyViewport : Widget
 		Gizmo.Draw.ScreenText( label, new Vector2( _canvas.Size.x - 52f, 18f ),
 			"Roboto", 11f, TextFlag.Center );
 
-		// What one background grid square is worth. Without it the reference grid is no better a
-		// ruler than a tiled texture - you cannot tell 32 units from 32 of anything else.
-		Gizmo.Draw.Color = PlaneColor.WithAlpha( 0.55f );
-		Gizmo.Draw.ScreenText( $"grid {(PlaneSize * 2f) / PlaneSubdivisions:0.##} u",
-			new Vector2( _canvas.Size.x - 52f, 34f ), "Roboto", 9f, TextFlag.Center );
+		// The "grid N u" readout that used to sit under the label is gone with the grid it measured.
+		// A scale readout is still worth having and there is nothing left for it to count, so it
+		// waits for something that is actually on screen to describe.
 	}
 
 	// --- standard views ----------------------------------------------------------------------
@@ -748,6 +997,11 @@ internal sealed partial class EffigyViewport : Widget
 
 		// Held for the right-click menu, which has no frame of its own to build a ray in.
 		CaptureCursorRay();
+
+		// BEFORE the planes, not with the rest of the picking below. The planes decide whether to
+		// take this click by comparing against the face under the cursor, so the face has to be
+		// known by the time they ask — see ResolveFacePick.
+		ResolveFacePick();
 
 		// Draw planes first (behind everything else)
 		DrawReferencePlanes();

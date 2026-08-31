@@ -5,6 +5,10 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
+// Effigy.Skeleton, not Sandbox.Skeleton - the engine has a Skeleton type of its own, and every
+// Skeleton named here is the CAD one the rig panel builds and the exporters write out.
+using Skeleton = Effigy.Skeleton;
+
 namespace Marionette.EditorTools;
 
 /// <summary>

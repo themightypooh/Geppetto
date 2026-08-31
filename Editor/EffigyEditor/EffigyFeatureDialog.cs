@@ -83,6 +83,17 @@ internal sealed class EffigyFeatureDialog : Widget
 	/// The window owns the studio, so it supplies the lookup.</summary>
 	public Func<string, string> SketchNameLookup { get; set; }
 
+	/// <summary>The material a slot currently carries, or null. The studio owns MaterialNames, so
+	/// the window supplies this the same way it supplies the sketch names.</summary>
+	public Func<int, string> MaterialLookup { get; set; }
+
+	/// <summary>A material was picked for a slot from inside this dialog. It is a studio edit, not a
+	/// parameter edit — it changes what slot 3 means everywhere, not what this feature does — so it
+	/// goes straight to the window rather than through the dialog's own accept/cancel. Cancelling a
+	/// face-material feature you were in the middle of does not un-pick the material, and should
+	/// not: the slot outlives the feature.</summary>
+	public Action<int, string> MaterialChanged { get; set; }
+
 	/// <summary>Raised with the feature the dialog just opened on, before any auto-arm reads
 	/// the viewport's pick list. The pick list is relative to the feature being edited, so the
 	/// window has to rebuild it against THIS feature right now — reading a list that was built
@@ -93,6 +104,13 @@ internal sealed class EffigyFeatureDialog : Widget
 	/// feature — a plane picker, or a sketch picker — so a single reference is enough for
 	/// Escape to stand it down and for a brand new feature to auto-arm it.</summary>
 	private IArmableSelection _activeArmable;
+
+	/// <summary>The material row on a face-material dialog, and the slot it was built for. Kept
+	/// because the row belongs to a SLOT while the dialog belongs to a FEATURE, and the feature's
+	/// slot number is itself editable a row above — typing 3 over 1 has to move the row onto slot 3
+	/// or it would keep offering to repaint the slot you just left.</summary>
+	private Widget _materialRow;
+	private int _materialRowSlot = -1;
 
 	public Feature Feature => _feature;
 	public bool IsOpen => _feature is not null;
@@ -355,6 +373,9 @@ internal sealed class EffigyFeatureDialog : Widget
 
 		_rows.Clear();
 		_valueRefreshers.Clear();
+
+		_materialRow = null;
+		_materialRowSlot = -1;
 	}
 
 	/// <summary>Re-read every parameter into its row, for when something outside the dialog is
@@ -378,6 +399,8 @@ internal sealed class EffigyFeatureDialog : Widget
 	/// </summary>
 	public void RefreshState()
 	{
+		SyncMaterialRow();
+
 		if ( !_statusLabel.IsValid() )
 			return;
 
@@ -436,6 +459,11 @@ internal sealed class EffigyFeatureDialog : Widget
 
 			foreach ( var param in _feature.Parameters )
 				AddRow( BuildParamRow( param ) );
+
+			// Under the slot number, because it is the answer to the question the number raises.
+			// Picking a slot in a dialog and having no idea what it looks like is the reason this
+			// control exists at all.
+			AddRow( BuildMaterialRow( material ) );
 
 			return;
 		}
@@ -552,6 +580,60 @@ internal sealed class EffigyFeatureDialog : Widget
 
 		_body.Layout.Add( row );
 		_rows.Add( row );
+	}
+
+	/// <summary>
+	/// The shared slot control, in a container the dialog can re-fill when the slot number changes.
+	///
+	/// The container is the indirection that matters: EffigyMaterialSlot is built for one slot and
+	/// stays on it, which is right in the Materials panel where a row IS a slot, and wrong here
+	/// where the slot is a parameter you can type over. Rebuilding the child rather than the whole
+	/// dialog keeps the number field's focus and any half-typed expression in the rows above.
+	/// </summary>
+	private Widget BuildMaterialRow( FaceMaterialFeature material )
+	{
+		_materialRow = NewRow( out var layout );
+		_materialRowSlot = material.Material.Clamped;
+
+		layout.Add( new Editor.Label( "Material" ) { FixedWidth = 110 } );
+		layout.Add( NewMaterialSlot( _materialRow, _materialRowSlot, showSlotLabel: false ), 1 );
+
+		return _materialRow;
+	}
+
+	private EffigyMaterialSlot NewMaterialSlot( Widget parent, int slot, bool showSlotLabel ) =>
+		new( parent, slot, MaterialLookup?.Invoke( slot ), showSlotLabel )
+		{
+			Changed = ( s, path ) => MaterialChanged?.Invoke( s, path ),
+		};
+
+	/// <summary>
+	/// Put the material row back on the slot the feature now paints, if either has moved.
+	///
+	/// Called from RefreshState, which runs after every rebuild — the one moment that covers both
+	/// ways this row goes stale: the slot number edited here, and the same slot given a different
+	/// material from the Materials panel while this dialog sits open.
+	/// </summary>
+	private void SyncMaterialRow()
+	{
+		if ( _feature is not FaceMaterialFeature material || !_materialRow.IsValid() )
+			return;
+
+		var slot = material.Material.Clamped;
+		var current = MaterialLookup?.Invoke( slot );
+
+		if ( slot == _materialRowSlot )
+		{
+			foreach ( var child in _materialRow.Children.OfType<EffigyMaterialSlot>() )
+				child.Refresh( current );
+
+			return;
+		}
+
+		_materialRowSlot = slot;
+		_materialRow.Layout.Clear( true );
+		_materialRow.Layout.Add( new Editor.Label( "Material" ) { FixedWidth = 110 } );
+		_materialRow.Layout.Add( NewMaterialSlot( _materialRow, slot, showSlotLabel: false ), 1 );
 	}
 
 	private Widget BuildSketchButtonRow( SketchFeature sketch )
@@ -763,6 +845,24 @@ internal sealed class EffigyFeatureDialog : Widget
 		toggle.Toggled = () =>
 		{
 			bp.Value = toggle.Value;
+
+			// Ticking "uniform" squares the axes up straight away, off X, rather than waiting for
+			// the next edit. A box that says the scale is locked while showing three different
+			// numbers is telling you something that is not true.
+			if ( toggle.Value && _feature is PrimitiveFeature p && ReferenceEquals( bp, p.UniformScale ) )
+			{
+				var x = p.Scale.Value.x;
+
+				if ( p.Scale.Value.y != x || p.Scale.Value.z != x )
+				{
+					p.Scale.Value = new Vec3( x, x, x );
+
+					// The three fields are built widgets holding their own text; a rebuild is the
+					// honest way to get them showing the new value.
+					Rebuild();
+				}
+			}
+
 			Edited?.Invoke();
 		};
 
@@ -798,6 +898,19 @@ internal sealed class EffigyFeatureDialog : Widget
 		return row;
 	}
 
+	/// <summary>
+	/// The "keep the axes equal" flag governing a Vec3, or null where there is none.
+	///
+	/// Matched by REFERENCE against the parameter it belongs to rather than by its label. A name
+	/// test would tie the behaviour to the words on screen, and two features with a "Scale" would
+	/// then share a flag only one of them has.
+	/// </summary>
+	private BoolParam UniformFor( Vec3Param vp ) => _feature switch
+	{
+		PrimitiveFeature p when ReferenceEquals( vp, p.Scale ) => p.UniformScale,
+		_ => null,
+	};
+
 	private Widget BuildVec3Row( Vec3Param vp )
 	{
 		var row = NewRow( out var layout, column: true );
@@ -806,17 +919,57 @@ internal sealed class EffigyFeatureDialog : Widget
 		var sub = new Widget( row ) { Layout = Layout.Row() };
 		sub.Layout.Spacing = 4;
 
-		AddAxis( sub, "X", Theme.Red, vp.Value.x, v => vp.Value = new Vec3( v, vp.Value.y, vp.Value.z ) );
-		AddAxis( sub, "Y", Theme.Green, vp.Value.y, v => vp.Value = new Vec3( vp.Value.x, v, vp.Value.z ) );
-		AddAxis( sub, "Z", Theme.Blue, vp.Value.z, v => vp.Value = new Vec3( vp.Value.x, vp.Value.y, v ) );
+		var uniform = UniformFor( vp );
+		var fields = new EffigyNumericField[3];
+
+		// Writes one axis, or all three when the row is locked uniform, and then puts the result
+		// into the OTHER two fields. Never into the field the edit came from: that one is either
+		// being typed in, where rewriting the text mid-keystroke would fight the cursor, or being
+		// dragged, where the handle has already updated it.
+		void Set( int axis, float value )
+		{
+			var current = vp.Value;
+
+			vp.Value = uniform is { Value: true }
+				? new Vec3( value, value, value )
+				: axis switch
+				{
+					0 => new Vec3( value, current.y, current.z ),
+					1 => new Vec3( current.x, value, current.z ),
+					_ => new Vec3( current.x, current.y, value ),
+				};
+
+			var now = vp.Value;
+
+			for ( var i = 0; i < 3; i++ )
+			{
+				if ( i == axis )
+					continue;
+
+				fields[i]?.SetValue( i == 0 ? now.x : i == 1 ? now.y : now.z );
+			}
+		}
+
+		fields[0] = AddAxis( sub, "X", Theme.Red, () => vp.Value.x, v => Set( 0, v ) );
+		fields[1] = AddAxis( sub, "Y", Theme.Green, () => vp.Value.y, v => Set( 1, v ) );
+		fields[2] = AddAxis( sub, "Z", Theme.Blue, () => vp.Value.z, v => Set( 2, v ) );
 
 		layout.Add( sub );
 		return row;
 	}
 
-	private void AddAxis( Widget parent, string label, Color colour, float value, Action<float> set )
+	/// <summary>
+	/// One axis of a Vec3: a draggable coloured letter and the field it drives.
+	///
+	/// The two share the parameter rather than each other. Dragging writes through <paramref
+	/// name="set"/> and then pushes the result into the field with SetValue, which deliberately
+	/// does NOT fire ValueEdited — otherwise the field would echo the drag straight back out and
+	/// the two would drive each other round in a loop. Same reasoning as the paired slider that
+	/// EffigyNumericField already documents.
+	/// </summary>
+	private EffigyNumericField AddAxis( Widget parent, string label, Color colour, Func<float> get, Action<float> set )
 	{
-		var field = new EffigyNumericField( parent, value );
+		var field = new EffigyNumericField( parent, get() );
 
 		field.ValueEdited = v =>
 		{
@@ -824,8 +977,25 @@ internal sealed class EffigyFeatureDialog : Widget
 			Edited?.Invoke();
 		};
 
-		parent.Layout.Add( new Editor.Label( label ) { FixedWidth = 12, Color = colour } );
+		var handle = new EffigyAxisHandle( parent, label, colour )
+		{
+			Value = get,
+			Dragged = v =>
+			{
+				set( v );
+
+				// The typed field has to follow the drag, or the number on screen goes stale the
+				// moment you scrub and the next keystroke edits a value nobody is looking at.
+				field.SetValue( v );
+
+				Edited?.Invoke();
+			},
+		};
+
+		parent.Layout.Add( handle );
 		parent.Layout.Add( field, 1 );
+
+		return field;
 	}
 
 	/// <summary>

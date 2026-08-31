@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -26,16 +26,37 @@ public sealed class PrimitiveFeature : Feature
 	public readonly IntParam Segments = new( "Segments", 16, 3, 512 );
 	public readonly IntParam Divisions = new( "Divisions", 4, 1, 64 );
 	public readonly Vec3Param Position = new( "Position", Vec3.Zero );
+
+	/// <summary>
+	/// Per-axis scale, applied about the primitive's own origin before it is moved into place.
+	///
+	/// NOT THE SAME THING AS THE SIZE PARAMETERS, and worth having alongside them. Width/Depth/
+	/// Height build the shape at a size; this stretches whatever was built, which is the only way
+	/// to get an ellipsoid out of a sphere or an oval tube out of a round one — those are defined
+	/// by a radius and have no per-axis size to set.
+	/// </summary>
+	public readonly Vec3Param Scale = new( "Scale", Vec3.One );
+
+	/// <summary>
+	/// Whether the dialog keeps the three scale axes equal as you edit one of them.
+	///
+	/// A UI CONVENIENCE THAT IS PERSISTED, not something the kernel enforces. Scale stays the
+	/// single truth about the shape — Execute reads all three axes and never consults this — so a
+	/// document always builds exactly what its three numbers say. This only rides along so the
+	/// dialog can remember that you were editing that primitive uniformly.
+	/// </summary>
+	public readonly BoolParam UniformScale = new( "Uniform scale", false );
+
 	public readonly IntParam Material = new( "Material slot", 0, 0, 63 );
 
 	public override IReadOnlyList<IParam> Parameters => Shape.Value switch
 	{
-		"Box" => new IParam[] { Shape, SizeX, SizeY, SizeZ, Position, Material },
-		"Cylinder" => new IParam[] { Shape, Radius, SizeZ, Segments, Position, Material },
-		"Sphere" => new IParam[] { Shape, Radius, Divisions, Position, Material },
-		"Wedge" => new IParam[] { Shape, SizeX, SizeY, SizeZ, Position, Material },
-		"Tube" => new IParam[] { Shape, Radius, InnerRadius, SizeZ, Segments, Position, Material },
-		"Plane" => new IParam[] { Shape, SizeX, SizeY, Segments, Position, Material },
+		"Box" => new IParam[] { Shape, SizeX, SizeY, SizeZ, Position, Scale, UniformScale, Material },
+		"Cylinder" => new IParam[] { Shape, Radius, SizeZ, Segments, Position, Scale, UniformScale, Material },
+		"Sphere" => new IParam[] { Shape, Radius, Divisions, Position, Scale, UniformScale, Material },
+		"Wedge" => new IParam[] { Shape, SizeX, SizeY, SizeZ, Position, Scale, UniformScale, Material },
+		"Tube" => new IParam[] { Shape, Radius, InnerRadius, SizeZ, Segments, Position, Scale, UniformScale, Material },
+		"Plane" => new IParam[] { Shape, SizeX, SizeY, Segments, Position, Scale, UniformScale, Material },
 		_ => new IParam[] { Shape }
 	};
 
@@ -51,6 +72,17 @@ public sealed class PrimitiveFeature : Feature
 			"Plane" => Primitives.Plane( SizeX.Clamped, SizeY.Clamped, Segments.Clamped, Segments.Clamped, Material.Clamped ),
 			_ => throw new InvalidOperationException( $"unknown shape '{Shape.Value}'" )
 		};
+
+		var scale = Scale.Value;
+
+		if ( scale.x == 0f || scale.y == 0f || scale.z == 0f )
+			throw new InvalidOperationException( "Scale cannot be zero on any axis" );
+
+		// SCALE FIRST, ABOUT THE PRIMITIVE'S OWN ORIGIN. Applied after the translate it would
+		// multiply the position too, so nudging a scaled box would move it by the scale factor and
+		// the number in the Position field would stop meaning where the box is.
+		if ( scale.x != 1f || scale.y != 1f || scale.z != 1f )
+			MeshTransform.Apply( mesh, Xform.Scale( scale ) );
 
 		if ( Position.Value.LengthSquared > 0f )
 			MeshTransform.Apply( mesh, Xform.Translate( Position.Value ) );

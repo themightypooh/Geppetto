@@ -124,3 +124,116 @@ internal sealed class EffigyNumericField : Widget
 		_readout.Color = invalid ? Theme.Red : Theme.TextControl.WithAlpha( 0.55f );
 	}
 }
+
+/// <summary>
+/// The coloured axis letter beside a Vec3 field, dragged sideways to scrub the number.
+///
+/// THE LETTER RATHER THAN THE FIELD. Dragging on the number itself is what Blender does, but the
+/// number here is a real LineEdit you type expressions into, and a horizontal drag there already
+/// means selecting text. Unity puts the scrub on the label for the same reason. The letter was
+/// sitting there as decoration anyway, and it is already colour-coded to the axis it drives.
+///
+/// The value is read at the START of the drag and every later position is an offset from it, never
+/// an accumulation of per-frame deltas. Accumulating drifts: each step gets clamped and rounded on
+/// its way through the parameter, and those roundings add up until the number no longer tracks the
+/// cursor. Anchoring to where the drag began means letting go and starting again always lands on
+/// the same value for the same travel.
+/// </summary>
+internal sealed class EffigyAxisHandle : Widget
+{
+	/// <summary>Units per pixel of travel. A shade under a hundredth, so a whole unit is about the
+	/// width of the dialog and the common case — nudging a part a few tenths — is a short drag.</summary>
+	public float Sensitivity { get; init; } = 0.008f;
+
+	/// <summary>Reads the value as it is now, so a drag starts from wherever typing left it.</summary>
+	public Func<float> Value { get; set; }
+
+	/// <summary>Called on every move with the new value.</summary>
+	public Action<float> Dragged { get; set; }
+
+	private readonly string _label;
+	private readonly Color _colour;
+
+	private bool _dragging;
+	private float _startValue;
+	private float _startX;
+
+	public EffigyAxisHandle( Widget parent, string label, Color colour ) : base( parent )
+	{
+		_label = label;
+		_colour = colour;
+
+		// SizeH says "this scrubs" before the first drag, which is the only hint a bare letter can
+		// give that it does anything at all.
+		Cursor = CursorShape.SizeH;
+		MouseTracking = true;
+
+		ToolTip = $"Drag to change {label} — hold Shift for fine, Ctrl for coarse";
+
+		TranslucentBackground = true;
+		NoSystemBackground = true;
+
+		FixedWidth = 16f;
+	}
+
+	protected override void OnPaint()
+	{
+		// Brighter while it is being used or pointed at, so a scrub in progress is visible even
+		// though the cursor has usually left the letter by then.
+		var strength = _dragging ? 1f : IsUnderMouse ? 0.85f : 0.65f;
+
+		Paint.SetDefaultFont( 8f, 600 );
+		Paint.SetPen( _colour.WithAlpha( strength ) );
+		Paint.DrawText( LocalRect, _label, TextFlag.Center );
+	}
+
+	protected override void OnMousePress( MouseEvent e )
+	{
+		if ( !e.LeftMouseButton || Value is null )
+			return;
+
+		_dragging = true;
+		_startValue = Value();
+		_startX = e.LocalPosition.x;
+
+		Update();
+		e.Accepted = true;
+	}
+
+	protected override void OnMouseMove( MouseEvent e )
+	{
+		if ( !_dragging )
+			return;
+
+		// The button coming up somewhere this widget never heard about — over the viewport, off the
+		// window — still ends the drag. Without this the field keeps scrubbing on a dead button.
+		if ( !e.ButtonState.HasFlag( MouseButtons.Left ) )
+		{
+			EndDrag();
+			return;
+		}
+
+		var step = Sensitivity;
+
+		if ( e.HasShift )
+			step *= 0.1f;
+		else if ( e.HasCtrl )
+			step *= 10f;
+
+		Dragged?.Invoke( _startValue + (e.LocalPosition.x - _startX) * step );
+
+		e.Accepted = true;
+	}
+
+	protected override void OnMouseReleased( MouseEvent e )
+	{
+		if ( _dragging )
+			EndDrag();
+	}
+
+	private void EndDrag()
+	{
+		_dragging = false;
+		Update();
+	}
+}

@@ -7,6 +7,10 @@ using System.IO;
 using System.Linq;
 using System.Text;
 
+// Effigy.Skeleton, not Sandbox.Skeleton - the engine has a Skeleton type of its own, and every
+// Skeleton named here is the CAD one the rig panel builds and the exporters write out.
+using Skeleton = Effigy.Skeleton;
+
 namespace Marionette.EditorTools;
 
 // ============================================================================
@@ -91,7 +95,7 @@ internal sealed class EffigyPalette
 //  double-clicking any Effigy-related asset (if/when one exists).
 // ============================================================================
 
-[EditorApp( "Effigy", "view_in_ar", "Parametric modelling, subdivision, and rig-ready mesh export" )]
+[EditorApp( "Effigy", "editor/effigy_icon.png", "Parametric modelling, subdivision, and rig-ready mesh export" )]
 public sealed class EffigyWindow : DockWindow
 {
 	// --- core state -------------------------------------------------------------------------
@@ -113,6 +117,7 @@ public sealed class EffigyWindow : DockWindow
 	private EffigyFeatureTreePanel _featureTree;
 	private EffigyFeatureDialog _dialog;
 	private EffigyPartsPanel _partsPanel;
+	private EffigyMaterialsPanel _materialsPanel;
 	private EffigyRigPanel _rigPanel;
 	private Widget _leftPanel;
 
@@ -138,23 +143,26 @@ public sealed class EffigyWindow : DockWindow
 	{
 		DeleteOnClose = true;
 		Size = new Vector2( 1440, 900 );
-		SetWindowIcon( "view_in_ar" );
+
+		if ( AppIcon() is { } icon )
+			SetWindowIcon( icon );
+		else
+			SetWindowIcon( "view_in_ar" );
 
 		_studio = new PartStudio();
 
-		// Remove is wired all the way through the kernel and has nowhere to land yet: the engine has
-		// a boolean and nothing here knows its API. Saying so at the one place a user meets it beats
-		// the kernel's generic "none installed", which is true and useless.
-		MeshBoolean.UnavailableReason ??=
-			"The engine has one, but Effigy has no adapter for it yet. Run effigy_probe_boolean in the "
-			+ "console to dump its API — that is what the adapter gets written from.";
+		// The engine boolean, in front of the kernel before anything can ask for a cut. Remove was
+		// wired end to end and waiting on exactly this one translation; see EffigyMeshBoolean.
+		EffigyMeshBoolean.Install();
 
 		BuildMenuBar();
 		BuildDocks();
 		BuildToolbar();
 		BuildStatusBar();
 
-		ApplyPalette();
+		// Last session's palette and grid choice, now that the viewport exists to receive them.
+		// ApplyPalette runs inside this.
+		RestoreSettings();
 
 		// A window that has only just opened has nothing to lose, and anything during startup that
 		// went through RebuildStudio has already set the flag. Without this, closing an untouched
@@ -163,6 +171,31 @@ public sealed class EffigyWindow : DockWindow
 		MarkClean();
 
 		Show();
+	}
+
+	/// <summary>
+	/// Green-man / oak-face mark for the window tab. The Tools menu itself only takes a Material
+	/// Icon name (see the EditorApp attribute) — a pixmap there would go blank — so this is the
+	/// place a custom drawing actually shows.
+	/// </summary>
+	internal static Pixmap AppIcon()
+	{
+		var root = Project.Current?.GetRootPath();
+		if ( string.IsNullOrEmpty( root ) )
+			return null;
+
+		foreach ( var rel in new[]
+		{
+			Path.Combine( "Editor", "EffigyEditor", "effigy_icon.png" ),
+			Path.Combine( "Assets", "editor", "effigy_icon.png" ),
+		} )
+		{
+			var path = Path.Combine( root, rel );
+			if ( File.Exists( path ) )
+				return Pixmap.FromFile( path );
+		}
+
+		return null;
 	}
 
 	// --- menu bar ---------------------------------------------------------------------------
@@ -192,6 +225,8 @@ public sealed class EffigyWindow : DockWindow
 		edit.AddOption( "Move Feature Down", "arrow_downward", MoveFeatureDown );
 		edit.AddSeparator();
 		edit.AddOption( "Toggle Suppress", "visibility", ToggleSuppressFeature );
+		edit.AddSeparator();
+		edit.AddOption( "Settings...", "settings", OpenSettings );
 
 		var view = MenuBar.FindOrCreateMenu( "View" );
 		view.Clear();
@@ -234,17 +269,9 @@ public sealed class EffigyWindow : DockWindow
 			view.AddOption( v.ToString(), "videocam", () => _viewport?.SetStandardView( v ) );
 		}
 
-		// Palette submenu
-		view.AddSeparator();
-		for ( var i = 0; i < EffigyPalette.All.Length; i++ )
-		{
-			var idx = i;
-			var pal = EffigyPalette.All[idx];
-			var opt = view.AddOption( pal.Name, "palette" );
-			opt.Checkable = true;
-			opt.Checked = idx == _paletteIndex;
-			opt.Toggled += b => { if ( b ) SetPalette( idx ); };
-		}
+		// The palette list used to sit here as four checkable options. It lives in Edit > Settings
+		// now, as a dropdown — one home per setting, because two controls reading the same value
+		// is how one of them ends up showing the wrong tick.
 	}
 
 	// --- toolbar (square icon buttons floating over the viewport) -------------------------
@@ -259,25 +286,7 @@ public sealed class EffigyWindow : DockWindow
 		_sketchStrip = new EffigySketchStrip( _viewport.Canvas );
 		_viewport.CompleteLayout( _toolStrip, _sketchStrip );
 
-		// --- creation tools (each adds a feature to the studio) ---
-		var sketchButton = AddCreateButton( EffigyIcon.Sketch, "Add a Sketch feature — draw lines/arcs on a plane", () => new SketchFeature(), width: 132f );
-		sketchButton.Label = "Sketch";
-		_toolStrip.AddGap();
-		AddCreateButton( EffigyIcon.Primitive, "Add a Primitive (Box, Cylinder, Sphere, etc.)", () => new PrimitiveFeature() );
-		AddCreateButton( EffigyIcon.Extrude, "Add an Extrude — pull a sketch profile into a solid", () => new ExtrudeFeature() );
-		AddCreateButton( EffigyIcon.Revolve, "Add a Revolve — sweep a sketch profile around an axis", () => new RevolveFeature() );
-		_toolStrip.AddGap();
-		AddCreateButton( EffigyIcon.Bevel, "Add a Bevel — chamfer sharp edges", () => new BevelFeature() );
-		AddCreateButton( EffigyIcon.Shell, "Add a Shell — hollow to a wall thickness", () => new ShellFeature() );
-		AddCreateButton( EffigyIcon.Subdivide, "Add a Subdivide — Catmull-Clark subdivision", () => new SubdivideFeature() );
-		_toolStrip.AddGap();
-		AddCreateButton( EffigyIcon.Mirror, "Add a Mirror — reflect bodies across a plane", () => new MirrorFeature() );
-		AddCreateButton( EffigyIcon.LinearPattern, "Add a Linear Pattern — copy bodies along a direction", () => new LinearPatternFeature() );
-		AddCreateButton( EffigyIcon.CircularPattern, "Add a Circular Pattern — copy bodies around an axis", () => new CircularPatternFeature() );
-		_toolStrip.AddGap();
-		AddCreateButton( EffigyIcon.Transform, "Add a Transform — move, rotate or scale bodies", () => new TransformFeature() );
-		AddCreateButton( EffigyIcon.UVProject, "Add a UV Project — re-project UVs (box or planar)", () => new UVProjectFeature() );
-		AddCreateButton( EffigyIcon.FaceMaterial, "Add a Face Material — put picked faces on a material slot", () => new FaceMaterialFeature() );
+		RefreshToolStrip( force: true );
 
 		BuildSketchToolbar();
 
@@ -451,6 +460,10 @@ public sealed class EffigyWindow : DockWindow
 
 		_viewport.EndSketch();
 
+		// Before the strip comes back, so the tools a finished sketch unlocks are already on it
+		// rather than appearing a beat later.
+		RefreshToolStrip();
+
 		_sketchStrip.Visible = false;
 		_toolStrip.Visible = true;
 
@@ -516,8 +529,221 @@ public sealed class EffigyWindow : DockWindow
 
 	/// <summary>A square strip button that appends one feature to the history. The factory runs
 	/// per click rather than the feature being built up front, so each press makes a new one.</summary>
-	private EffigyToolButton AddCreateButton( EffigyIcon icon, string tip, Func<Feature> factory, float width = EffigyToolStrip.ButtonSize ) =>
-		_toolStrip.AddButton( icon, tip, () => AddFeature( factory() ), width );
+	// --- which creation tools are on the strip -------------------------------------------------
+
+	/// <summary>
+	/// Which feature a strip button makes. An ENUM RATHER THAN A Func&lt;Feature&gt;.
+	///
+	/// The table below is static, and static state survives a hotload while the assembly under it
+	/// does not. A stored lambda therefore comes back pointing into the old assembly, which the
+	/// hotloader cannot substitute — clicking a button threw "Unable to find matching substitution
+	/// for a lambda method" and every tool was dead until the editor restarted. An enum value is an
+	/// int and migrates without any of that; the switch that turns it into a feature is ordinary
+	/// code, recompiled with everything else. Same reason no System.Type is held here either.
+	/// </summary>
+	private enum ToolKind
+	{
+		Sketch, Primitive, Extrude, Revolve, Bevel, Shell, Subdivide,
+		Mirror, LinearPattern, CircularPattern, Transform, UVProject, FaceMaterial,
+	}
+
+	/// <summary>Build one, and apply the variant chosen from its dropdown where it has one.</summary>
+	private static Feature NewFeature( ToolKind kind, int choice ) => kind switch
+	{
+		ToolKind.Sketch => new SketchFeature(),
+		ToolKind.Primitive => NewPrimitive( choice ),
+		ToolKind.Extrude => new ExtrudeFeature(),
+		ToolKind.Revolve => new RevolveFeature(),
+		ToolKind.Bevel => new BevelFeature(),
+		ToolKind.Shell => new ShellFeature(),
+		ToolKind.Subdivide => new SubdivideFeature(),
+		ToolKind.Mirror => new MirrorFeature(),
+		ToolKind.LinearPattern => new LinearPatternFeature(),
+		ToolKind.CircularPattern => new CircularPatternFeature(),
+		ToolKind.Transform => new TransformFeature(),
+		ToolKind.UVProject => new UVProjectFeature(),
+		ToolKind.FaceMaterial => new FaceMaterialFeature(),
+		_ => throw new ArgumentOutOfRangeException( nameof( kind ), kind, "no feature for this tool" )
+	};
+
+	private static PrimitiveFeature NewPrimitive( int shape )
+	{
+		var feature = new PrimitiveFeature();
+
+		if ( shape >= 0 )
+			feature.Shape.Index = shape;
+
+		return feature;
+	}
+
+	/// <summary>One button on the feature strip. Held as data rather than written straight into the
+	/// layout so the strip can be rebuilt with a subset of them.</summary>
+	private sealed class CreateTool
+	{
+		public EffigyIcon Icon;
+		public string Tip;
+		public ToolKind Kind;
+
+		/// <summary>Start a new group before this one — a wider gap, the old separator.</summary>
+		public bool GapBefore;
+
+		/// <summary>Text beside the glyph, for the one button wide enough to carry it.</summary>
+		public string Label;
+
+		public float Width = EffigyToolStrip.ButtonSize;
+
+		/// <summary>Shown from the very start. Everything else waits for a sketch — see
+		/// <see cref="RefreshToolStrip"/>.</summary>
+		public bool Starter;
+
+		/// <summary>
+		/// Variants behind this button, or null for one that just does its thing.
+		///
+		/// Where they exist the button opens a menu instead of adding anything, and the index
+		/// chosen goes to <see cref="NewFeature"/>. Primitive is the case this was built for: six
+		/// shapes that are one feature with one parameter set differently, which is a list rather
+		/// than six buttons.
+		/// </summary>
+		public string[] Choices;
+	}
+
+	/// <summary>The shapes behind the Primitive button. Taken from PrimitiveFeature.Shape rather
+	/// than written out again, so the menu cannot drift from the parameter it sets — a menu naming
+	/// a shape the feature has never heard of would set an index that means something else.
+	/// </summary>
+	private static string[] PrimitiveShapes => new PrimitiveFeature().Shape.Options;
+
+	/// <summary>
+	/// The strip's tools, BUILT FRESH ON EVERY READ rather than held in a static field.
+	///
+	/// Nothing here is expensive — it runs once per toolbar refresh, which happens when a sketch is
+	/// finished — and a property cannot carry objects from a dead assembly across a hotload the way
+	/// a static field does. Between this and ToolKind replacing the factory delegates, there is no
+	/// state left here for a reload to invalidate.
+	/// </summary>
+	private static CreateTool[] CreateTools => new CreateTool[]
+	{
+		new() { Icon = EffigyIcon.Sketch, Tip = "Add a Sketch feature — draw lines/arcs on a plane",
+			Kind = ToolKind.Sketch, Label = "Sketch", Width = 132f, Starter = true },
+
+		new() { Icon = EffigyIcon.Primitive, Tip = "Add a Primitive — pick a shape",
+			Kind = ToolKind.Primitive, GapBefore = true, Starter = true,
+			Choices = PrimitiveShapes },
+
+		new() { Icon = EffigyIcon.Extrude, Tip = "Add an Extrude — pull a sketch profile into a solid",
+			Kind = ToolKind.Extrude },
+		new() { Icon = EffigyIcon.Revolve, Tip = "Add a Revolve — sweep a sketch profile around an axis",
+			Kind = ToolKind.Revolve },
+
+		new() { Icon = EffigyIcon.Bevel, Tip = "Add a Bevel — chamfer sharp edges",
+			Kind = ToolKind.Bevel, GapBefore = true },
+		new() { Icon = EffigyIcon.Shell, Tip = "Add a Shell — hollow to a wall thickness",
+			Kind = ToolKind.Shell },
+		new() { Icon = EffigyIcon.Subdivide, Tip = "Add a Subdivide — Catmull-Clark subdivision",
+			Kind = ToolKind.Subdivide },
+
+		new() { Icon = EffigyIcon.Mirror, Tip = "Add a Mirror — reflect bodies across a plane",
+			Kind = ToolKind.Mirror, GapBefore = true },
+		new() { Icon = EffigyIcon.LinearPattern, Tip = "Add a Linear Pattern — copy bodies along a direction",
+			Kind = ToolKind.LinearPattern },
+		new() { Icon = EffigyIcon.CircularPattern, Tip = "Add a Circular Pattern — copy bodies around an axis",
+			Kind = ToolKind.CircularPattern },
+
+		new() { Icon = EffigyIcon.Transform, Tip = "Add a Transform — move, rotate or scale bodies",
+			Kind = ToolKind.Transform, GapBefore = true },
+		new() { Icon = EffigyIcon.UVProject, Tip = "Add a UV Project — re-project UVs (box or planar)",
+			Kind = ToolKind.UVProject },
+		new() { Icon = EffigyIcon.FaceMaterial, Tip = "Add a Face Material — put picked faces on a material slot",
+			Kind = ToolKind.FaceMaterial },
+	};
+
+	/// <summary>Whether the strip is currently showing everything, so a refresh that changes
+	/// nothing costs nothing.</summary>
+	private bool _fullToolsShown;
+
+	/// <summary>
+	/// A sketch with something drawn in it exists, so the rest of the tools have something to bite
+	/// on.
+	///
+	/// Curves rather than merely the feature: clicking Sketch adds the feature to the tree straight
+	/// away, before a plane is even chosen, so its presence alone would unlock the strip while
+	/// there was still nothing to extrude.
+	/// </summary>
+	private bool HasConfirmedSketch() =>
+		_studio is not null
+		&& _studio.Features.OfType<SketchFeature>().Any( f => f.Sketch is { Curves.Count: > 0 } );
+
+	/// <summary>
+	/// Show the starter tools on their own until a sketch has been drawn, then the whole strip.
+	///
+	/// TWELVE BUTTONS ON AN EMPTY STUDIO ARE TWELVE WAYS TO GET AN ERROR. Extrude, Revolve, Bevel,
+	/// Shell and the rest all need geometry to act on, and adding one before there is any produces
+	/// a feature that goes straight to red — correct, and useless as a first impression. Sketch and
+	/// Primitive are the only two that can start a part, so at the start they are the only two
+	/// offered.
+	/// </summary>
+	private void RefreshToolStrip( bool force = false )
+	{
+		if ( _toolStrip is null )
+			return;
+
+		var full = HasConfirmedSketch();
+
+		if ( !force && full == _fullToolsShown )
+			return;
+
+		_fullToolsShown = full;
+
+		_toolStrip.Clear();
+
+		var any = false;
+
+		foreach ( var tool in CreateTools )
+		{
+			if ( !full && !tool.Starter )
+				continue;
+
+			// Never a leading gap: the group break belongs BETWEEN groups, and the first tool
+			// through here may not be the one the gap was authored against.
+			if ( tool.GapBefore && any )
+				_toolStrip.AddGap();
+
+			// Only the KIND is captured, never the table entry. The closure is rebuilt on every
+			// refresh so it always belongs to the current assembly, and an enum carries across a
+			// hotload where a delegate does not.
+			var kind = tool.Kind;
+			var choices = tool.Choices;
+
+			var button = _toolStrip.AddButton( tool.Icon, tool.Tip,
+				choices is null
+					? () => AddFeature( NewFeature( kind, -1 ) )
+					: () => OpenToolChoices( kind, choices ),
+				tool.Width );
+
+			button.HasMenu = choices is not null;
+
+			if ( tool.Label is not null )
+				button.Label = tool.Label;
+
+			any = true;
+		}
+	}
+
+	/// <summary>The variant list for a tool that has one — at the cursor, so it opens where the
+	/// click was rather than somewhere the mouse has to travel to.</summary>
+	private void OpenToolChoices( ToolKind kind, string[] choices )
+	{
+		var menu = new Menu( _toolStrip );
+
+		for ( var i = 0; i < choices.Length; i++ )
+		{
+			var choice = i;
+
+			menu.AddOption( choices[choice], null, () => AddFeature( NewFeature( kind, choice ) ) );
+		}
+
+		menu.OpenAtCursor();
+	}
 
 	/// <summary>
 	/// Append a feature and leave it selected with its dialog open — Onshape's behaviour, and the
@@ -578,11 +804,18 @@ public sealed class EffigyWindow : DockWindow
 			PickableBodiesLookup = () => _studio.Bodies,
 			BodyNameLookup = id => _studio.Bodies.FirstOrDefault( b => b.Id == id )?.Name,
 			OpenedForFeature = UpdatePickTargets,
+			MaterialLookup = SlotMaterial,
+			MaterialChanged = SetSlotMaterial,
 		};
 
 		_partsPanel = new EffigyPartsPanel( this, _studio )
 		{
 			VisibilityToggled = OnPartVisibilityToggled,
+		};
+
+		_materialsPanel = new EffigyMaterialsPanel( this, _studio )
+		{
+			MaterialChanged = SetSlotMaterial,
 		};
 
 		_rigPanel = new EffigyRigPanel( this, _studio, _viewport );
@@ -619,13 +852,19 @@ public sealed class EffigyWindow : DockWindow
 		DockManager.RegisterDock( new() { Title = "Features", Icon = "account_tree", Area = DockArea.Left, CreateAction = () => _leftPanel } );
 		DockManager.RegisterDock( new() { Title = "Rig", Icon = "account_tree", Area = DockArea.Right, CreateAction = () => _rigPanel } );
 
+		// Right, tabbed behind the Rig, because both are things you do to a part that is already
+		// modelled and neither is worth permanent screen room while you are still modelling it.
+		DockManager.RegisterDock( new() { Title = "Materials", Icon = "palette", Area = DockArea.Right, CreateAction = () => _materialsPanel } );
+
 		// Bumped from Effigy1: the Parameters dock is gone and the tree moved into a shared column
 		// with the dialog. A restored Effigy1 layout would reinstate the old two-dock arrangement
 		// and BuildDefaultLayout would never run again.
 		// Bumped from Effigy2: restored Effigy2 layouts came back degenerate - the Features dock a
 		// sliver and stray chrome floating over the viewport - so anyone with one saved never got
 		// a usable window. A fresh cookie forces the known-good default layout.
-		StateCookie = "Effigy3";
+		// Bumped from Effigy3: the Materials dock is new, and a restored Effigy3 layout knows
+		// nothing about it - the panel would exist, be wired up, and never appear on screen.
+		StateCookie = "Effigy4";
 	}
 
 	/// <summary>Hide or show the bodies a feature made, from the Parts list's eye.
@@ -671,6 +910,11 @@ public sealed class EffigyWindow : DockWindow
 
 		DockManager.RaiseDock( "Features" );
 		DockManager.OpenDock( "Rig", DockArea.Right, _centralDock );
+		DockManager.OpenDock( "Materials", DockArea.Right, _centralDock );
+
+		// The Rig in front of the Materials on a fresh window: rigging is the step you reach for
+		// first, and the two share the tab.
+		DockManager.RaiseDock( "Rig" );
 	}
 
 	// --- status bar -------------------------------------------------------------------------
@@ -786,7 +1030,13 @@ public sealed class EffigyWindow : DockWindow
 		var report = _studio.Rebuild();
 		_featureTree?.Rebuild();
 		_partsPanel?.Refresh();
+		_materialsPanel?.Refresh();
 		_rigPanel?.RefreshBodyNames();
+
+		// Covers every other way the answer can change — undo back past the first sketch, deleting
+		// it, opening a saved studio. Cheap: it returns immediately unless the strip is actually
+		// showing the wrong set.
+		RefreshToolStrip();
 
 		// Show whatever DID build, errors or not. A broken feature halfway down the tree should
 		// leave the part above it on screen — going blank hides the very geometry you need to
@@ -900,6 +1150,7 @@ public sealed class EffigyWindow : DockWindow
 		_studio = new PartStudio();
 		_featureTree?.SetStudio( _studio );
 		_partsPanel?.SetStudio( _studio );
+		_materialsPanel?.SetStudio( _studio );
 		_rigPanel?.SetStudio( _studio );
 		_dialog?.Close();
 		RebuildStudio();
@@ -1197,6 +1448,7 @@ public sealed class EffigyWindow : DockWindow
 		_studio = loaded;
 		_featureTree?.SetStudio( _studio );
 		_partsPanel?.SetStudio( _studio );
+		_materialsPanel?.SetStudio( _studio );
 		_rigPanel?.SetStudio( _studio );
 		_dialog?.Close();
 
@@ -1894,10 +2146,92 @@ public sealed class EffigyWindow : DockWindow
 
 	private void SetPalette( int index )
 	{
-		_paletteIndex = index;
-		_palette = EffigyPalette.All[index];
+		_paletteIndex = Math.Clamp( index, 0, EffigyPalette.All.Length - 1 );
+		_palette = EffigyPalette.All[_paletteIndex];
+
 		ApplyPalette();
-		BuildMenuBar(); // rebuild so checkmarks update
+
+		// No BuildMenuBar() any more. It was here to redraw the View menu's checkmarks, and the
+		// palette list is a dropdown in Edit > Settings now — the combo already shows what is
+		// selected, and rebuilding the whole menu bar to update a tick that no longer exists was
+		// throwing away the Edit and View menus on every palette change.
+		EditorCookie.Set( PaletteCookie, _paletteIndex );
+	}
+
+	// --- settings ------------------------------------------------------------------------------
+
+	/// <summary>Where the two settings persist between sessions. EditorCookie is the engine's own
+	/// per-editor store — the same one the Boolean tool keeps its mode in.</summary>
+	private const string PaletteCookie = "Effigy.Palette";
+
+	/// <summary>A NEW KEY, not the old Effigy.ShowSketchGrid. That one meant "grid on the sketch
+	/// plane" and defaulted to on; this one means "grid on every plane" and defaults to off. Reusing
+	/// the key would have read a value stored against the old meaning and turned every plane's grid
+	/// on for anyone who had ever opened the settings window.</summary>
+	private const string PlaneGridCookie = "Effigy.ShowPlaneGrid";
+	private const string GridSpacingCookie = "Effigy.GridSpacing";
+	private const string SnapGridCookie = "Effigy.SnapToGrid";
+	private const string SnapPointsCookie = "Effigy.SnapToPoints";
+
+	/// <summary>The open settings window, or null. Held so a second Edit > Settings raises the one
+	/// already open rather than stacking another on top of it.</summary>
+	private EffigySettingsWindow _settingsWindow;
+
+	private void OpenSettings()
+	{
+		if ( _settingsWindow.IsValid() )
+		{
+			_settingsWindow.Focus();
+			return;
+		}
+
+		_settingsWindow = new EffigySettingsWindow( this, CurrentSettings(), ApplySettings );
+		_settingsWindow.Show();
+	}
+
+	private EffigySettingsWindow.Values CurrentSettings() => new()
+	{
+		ShowGrid = _viewport?.ShowPlaneGrid ?? false,
+		GridSpacing = _viewport?.GridSpacing ?? 0f,
+		SnapToGrid = _viewport?.SnapToGrid ?? true,
+		SnapToPoints = _viewport?.SnapToPoints ?? true,
+		PaletteIndex = _paletteIndex,
+	};
+
+	/// <summary>Take everything the settings window is showing and make it true, then remember it.
+	/// Called on every control change rather than behind an OK button — a viewport setting you
+	/// cannot see take effect is one you have to guess at.</summary>
+	private void ApplySettings( EffigySettingsWindow.Values values )
+	{
+		if ( _viewport.IsValid() )
+		{
+			_viewport.ShowPlaneGrid = values.ShowGrid;
+			_viewport.GridSpacing = values.GridSpacing;
+			_viewport.SnapToGrid = values.SnapToGrid;
+			_viewport.SnapToPoints = values.SnapToPoints;
+		}
+
+		if ( values.PaletteIndex != _paletteIndex )
+			SetPalette( values.PaletteIndex );
+
+		EditorCookie.Set( PlaneGridCookie, values.ShowGrid );
+		EditorCookie.Set( GridSpacingCookie, values.GridSpacing );
+		EditorCookie.Set( SnapGridCookie, values.SnapToGrid );
+		EditorCookie.Set( SnapPointsCookie, values.SnapToPoints );
+	}
+
+	/// <summary>Put last session's settings back, before anything is drawn with them.</summary>
+	private void RestoreSettings()
+	{
+		SetPalette( EditorCookie.Get( PaletteCookie, _paletteIndex ) );
+
+		if ( !_viewport.IsValid() )
+			return;
+
+		_viewport.ShowPlaneGrid = EditorCookie.Get( PlaneGridCookie, false );
+		_viewport.GridSpacing = EditorCookie.Get( GridSpacingCookie, 0f );
+		_viewport.SnapToGrid = EditorCookie.Get( SnapGridCookie, true );
+		_viewport.SnapToPoints = EditorCookie.Get( SnapPointsCookie, true );
 	}
 
 	/// <summary>
@@ -1914,167 +2248,18 @@ public sealed class EffigyWindow : DockWindow
 
 		_viewport.BackgroundColor = _palette.ViewportBg;
 
+		// The strips fill their own rects with this, so the gaps between their buttons read as
+		// viewport rather than as chrome. Exactly the viewport's clear colour, or the seam shows.
+		if ( _toolStrip is not null )
+			_toolStrip.GapColor = _palette.ViewportBg;
+
+		if ( _sketchStrip is not null )
+			_sketchStrip.GapColor = _palette.ViewportBg;
+
 		// Grid lines want the palette's dim text colour: it is picked to sit just above the
 		// background in every one of these palettes, which is exactly the job.
 		_viewport.PlaneColor = _palette.TextDim.WithAlpha( 0.55f );
 	}
-}
-
-// ============================================================================
-//  The left panel — a flat feature tree matching Onshape's Part Studio layout:
-//
-//    FEATURES (2)
-//    ├─ Default geometry
-//    │   ├─ Origin
-//    │   ├─ Top
-//    │   ├─ Front
-//    │   └─ Right
-//    ├─ Box
-//    └─ Subdivide
-//
-//  Selecting a feature shows its parameters in the right panel.
-//  Uses TreeView + TreeNode<T> — the same pattern as RigBonesPanel.
-// ============================================================================
-
-/// <summary>
-/// The hover-reveal "eye" a tree row uses to toggle visibility — one implementation shared by the
-/// Features tree (sketches, default geometry) and the Parts tree (bodies).
-///
-/// Before this they were two independent copies of the same idea that had quietly drifted: the
-/// Features tree reserved 34px of right margin for its secondary text and never hid it, the Parts
-/// tree reserved only 30px and hid its face count on hover instead — two different answers to the
-/// same "don't let anything sit under the eye" problem, which is exactly the kind of thing that
-/// reads as the eye behaving inconsistently between the two trees even though neither was wrong on
-/// its own. One rect, one show/hide rule, one click test, everywhere a row has an eye — and
-/// SecondaryTextRightMargin so a row's own text picks a margin that is provably wide enough
-/// rather than tracking Width by memory in a second place.
-/// </summary>
-internal static class TreeEyeIcon
-{
-	/// <summary>Width of the eye's own hit/paint rect, right-aligned to the tree.</summary>
-	public const float Width = 24f;
-
-	/// <summary>Gap kept clear between the eye and its own left edge.</summary>
-	public const float Padding = 4f;
-
-	/// <summary>How far from the row's right edge a row's OTHER text needs to stay clear of,
-	/// whether or not the eye is actually drawn on this frame — the eye still needs the room the
-	/// instant the row is hovered, so the margin cannot depend on hover state.</summary>
-	public const float SecondaryTextRightMargin = Width + Padding + 6f;
-
-	public static Rect Rect( TreeView tree, VirtualWidget item ) =>
-		new( tree.LocalRect.Right - Width - Padding, item.Rect.Top, Width, item.Rect.Height );
-
-	/// <summary>Shown on hover always, and whether or not hovered when the row is hidden — a
-	/// hidden row stays obviously hidden rather than only announcing it while the mouse happens to
-	/// be there.</summary>
-	public static bool ShouldShow( VirtualWidget item, bool visible ) => item.Hovered || !visible;
-
-	public static void Draw( TreeView tree, VirtualWidget item, bool visible )
-	{
-		if ( !ShouldShow( item, visible ) )
-			return;
-
-		Paint.SetPen( visible ? Theme.TextLight : Theme.Text );
-		Paint.DrawIcon( Rect( tree, item ), visible ? "visibility" : "visibility_off", 16, TextFlag.Center );
-	}
-
-	public static bool WasClicked( TreeView tree, VirtualWidget item, MouseEvent e ) =>
-		Rect( tree, item ).IsInside( e.LocalPosition );
-}
-
-/// <summary>What the feature tree's context menu asked the window to do. The panel knows what was
-/// clicked; the window owns the studio, the dialog and the undo stack, so it does the doing.</summary>
-internal enum EffigyFeatureCommand
-{
-	Edit,
-	Rename,
-	ToggleSuppress,
-	Delete,
-	MoveUp,
-	MoveDown,
-	RollbackTo,
-	RollForward,
-}
-
-internal sealed class EffigyFeatureTreePanel : Widget
-{
-	private interface IVisibilityNode
-	{
-		bool IsVisible { get; }
-		string VisibilityKey { get; }
-		void ToggleVisibility();
-	}
-
-	private sealed class VisibilityTreeView : TreeView
-	{
-		public VisibilityTreeView( Widget parent ) : base( parent ) { }
-		protected override bool OnItemPressed( VirtualWidget item, MouseEvent e )
-		{
-			if ( item.Object is IVisibilityNode node && TreeEyeIcon.WasClicked( this, item, e ) )
-			{
-				node.ToggleVisibility();
-				return false;
-			}
-			return base.OnItemPressed( item, e );
-		}
-	}
-	private PartStudio _studio;
-	private TreeView _tree;
-	private readonly Dictionary<Feature, FeatureNode> _nodes = new();
-
-	public Feature SelectedFeature { get; private set; }
-
-	public Action<Feature> FeatureSelected { get; set; }
-	public Action StudioChanged { get; set; }
-	public Action<string, bool> VisibilityToggled { get; set; }
-
-	/// <summary>A context-menu item was picked.</summary>
-	public Action<Feature, EffigyFeatureCommand> CommandRequested { get; set; }
-
-	/// <summary>A rename was typed and confirmed. Separate from CommandRequested because it
-	/// carries the new text, and because the window has to snapshot for undo BEFORE applying
-	/// it.</summary>
-	public Action<Feature, string> RenameCommitted { get; set; }
-
-	/// <summary>
-	/// What a sketch is attached to, shown on its row in the tree.
-	///
-	/// THE DIFFERENCE THIS MAKES IS THE WHOLE PARAMETRIC MODEL. A sketch on a face moves when that
-	/// face moves, so everything built from it follows; a sketch on Top/Front/Right is anchored in
-	/// world space and never follows anything. Both are legitimate and they look identical once
-	/// the dialog is closed, which makes "why did that not update?" impossible to answer by
-	/// looking at the tree. Now the row says which one it is.
-	/// </summary>
-	public string AttachmentLabel( SketchFeature sketch )
-	{
-		if ( sketch is null )
-			return "";
-
-		if ( sketch.Face is not { } face )
-		{
-			var offset = sketch.PlaneOffset.Value;
-
-			return offset == 0f ? sketch.Plane.Value : $"{sketch.Plane.Value} {offset:+0.##;-0.##}";
-		}
-
-		var body = _studio?.Bodies.FirstOrDefault( b => b.Id == face.BodyId );
-
-		// A face reference that resolves to nothing is the one case worth shouting about: the
-		// sketch is about to fail, or already has.
-		return body is null ? "face (missing)" : $"on {body.Name ?? "part"}";
-	}
-
-	/// <summary>True when the rollback bar sits above this feature, so it is not being evaluated.
-	/// Painted dimmer, the way Onshape greys out everything below the bar.</summary>
-	public bool IsRolledPast( Feature feature ) =>
-		_studio is not null && _studio.Features.IndexOf( feature ) >= _studio.EffectiveCount;
-
-	/// <summary>True for the FIRST feature below the bar - the one the bar is drawn above.</summary>
-	public bool IsFirstRolledPast( Feature feature ) =>
-		_studio is not null
-		&& _studio.RollbackIndex < _studio.Features.Count
-		&& _studio.Features.IndexOf( feature ) == _studio.EffectiveCount;
 
 	// --- constraining a sketch selection --------------------------------------------------------
 
@@ -2257,6 +2442,14 @@ internal sealed class EffigyFeatureTreePanel : Widget
 
 		menu.AddSeparator();
 
+		// The picker rather than the row widget the dialog and the Materials panel use: a menu closes
+		// the moment you click anything in it, and it would take an embedded row — and the modal that
+		// row had just parented to itself — down with it. Pick is the shared half that survives that.
+		var choose = menu.AddOption( $"Choose material for {_studio.NameForSlot( hit.Material )}…", "palette",
+			() => EffigyMaterialSlot.Pick( this, hit.Material, SlotMaterial( hit.Material ), SetSlotMaterial ) );
+
+		choose.StatusTip = "Browse for the material this slot exports as";
+
 		var rename = menu.AddOption( $"Rename {_studio.NameForSlot( hit.Material )}…", "edit",
 			() => BeginMaterialSlotRename( hit.Material ) );
 
@@ -2300,19 +2493,12 @@ internal sealed class EffigyFeatureTreePanel : Widget
 
 		edit.ReturnPressed += () =>
 		{
-			RecordUndo();
-
+			// Closed BEFORE the edit, because SetSlotMaterial rebuilds and this menu is a child of
+			// the window it is rebuilding.
 			var name = edit.Text?.Trim();
-
-			// Clearing it puts the slot back on its numbered default rather than leaving it blank.
-			// Every exporter has to write SOMETHING per slot, and an empty usemtl is not it.
-			if ( string.IsNullOrWhiteSpace( name ) || name == $"material_{slot}" )
-				_studio.MaterialNames.Remove( slot );
-			else
-				_studio.MaterialNames[slot] = name;
-
 			menu.Close();
-			RebuildStudio();
+
+			SetSlotMaterial( slot, name );
 		};
 
 		menu.AddWidget( edit );
@@ -2320,6 +2506,51 @@ internal sealed class EffigyFeatureTreePanel : Widget
 
 		edit.Focus();
 		edit.SelectAll();
+	}
+
+	/// <summary>
+	/// What a slot carries, or null when it is still on its numbered default.
+	///
+	/// Not NameForSlot: that answers "what do the exporters write", which is never null, and the
+	/// controls need "has anybody chosen anything", which is the question with an empty answer.
+	/// </summary>
+	private string SlotMaterial( int slot ) =>
+		_studio is not null && _studio.MaterialNames.TryGetValue( slot, out var name )
+			&& !string.IsNullOrWhiteSpace( name )
+			? name
+			: null;
+
+	/// <summary>
+	/// Give a slot a material — the one place all three controls land.
+	///
+	/// It is a document edit like any other: undo first, rebuild after. The rebuild is what repaints
+	/// every face on the slot, refreshes the Materials panel, and pushes the new value back into a
+	/// feature dialog that happens to be open on the same slot.
+	/// </summary>
+	private void SetSlotMaterial( int slot, string material )
+	{
+		if ( _studio is null || slot < 0 )
+			return;
+
+		var name = material?.Trim();
+
+		// Clearing it puts the slot back on its numbered default rather than leaving it blank. Every
+		// exporter has to write SOMETHING per slot, and an empty usemtl is not it. Typing the default
+		// back in by hand means the same thing as clearing it, and is stored the same way — otherwise
+		// the slot would read as assigned while exporting exactly what an unassigned one does.
+		var clearing = string.IsNullOrWhiteSpace( name ) || name == ObjWriter.DefaultMaterialName( slot );
+
+		if ( clearing ? !_studio.MaterialNames.ContainsKey( slot ) : SlotMaterial( slot ) == name )
+			return;
+
+		RecordUndo();
+
+		if ( clearing )
+			_studio.MaterialNames.Remove( slot );
+		else
+			_studio.MaterialNames[slot] = name;
+
+		RebuildStudio();
 	}
 
 	/// <summary>Put one face on one slot. The bookkeeping — which assignment to reuse, what happens
@@ -2335,6 +2566,163 @@ internal sealed class EffigyFeatureTreePanel : Widget
 		if ( FaceMaterialEdit.Assign( _studio, hit.Body.Id, hit.FaceIndex, hit.Reference, slot ) )
 			RebuildStudio();
 	}
+}
+
+// ============================================================================
+//  The left panel — a flat feature tree matching Onshape's Part Studio layout:
+//
+//    FEATURES (2)
+//    ├─ Default geometry
+//    │   ├─ Origin
+//    │   ├─ Top
+//    │   ├─ Front
+//    │   └─ Right
+//    ├─ Box
+//    └─ Subdivide
+//
+//  Selecting a feature shows its parameters in the right panel.
+//  Uses TreeView + TreeNode<T> — the same pattern as RigBonesPanel.
+// ============================================================================
+
+/// <summary>
+/// The hover-reveal "eye" a tree row uses to toggle visibility — one implementation shared by the
+/// Features tree (sketches, default geometry) and the Parts tree (bodies).
+///
+/// Before this they were two independent copies of the same idea that had quietly drifted: the
+/// Features tree reserved 34px of right margin for its secondary text and never hid it, the Parts
+/// tree reserved only 30px and hid its face count on hover instead — two different answers to the
+/// same "don't let anything sit under the eye" problem, which is exactly the kind of thing that
+/// reads as the eye behaving inconsistently between the two trees even though neither was wrong on
+/// its own. One rect, one show/hide rule, one click test, everywhere a row has an eye — and
+/// SecondaryTextRightMargin so a row's own text picks a margin that is provably wide enough
+/// rather than tracking Width by memory in a second place.
+/// </summary>
+internal static class TreeEyeIcon
+{
+	/// <summary>Width of the eye's own hit/paint rect, right-aligned to the tree.</summary>
+	public const float Width = 24f;
+
+	/// <summary>Gap kept clear between the eye and its own left edge.</summary>
+	public const float Padding = 4f;
+
+	/// <summary>How far from the row's right edge a row's OTHER text needs to stay clear of,
+	/// whether or not the eye is actually drawn on this frame — the eye still needs the room the
+	/// instant the row is hovered, so the margin cannot depend on hover state.</summary>
+	public const float SecondaryTextRightMargin = Width + Padding + 6f;
+
+	public static Rect Rect( TreeView tree, VirtualWidget item ) =>
+		new( tree.LocalRect.Right - Width - Padding, item.Rect.Top, Width, item.Rect.Height );
+
+	/// <summary>Shown on hover always, and whether or not hovered when the row is hidden — a
+	/// hidden row stays obviously hidden rather than only announcing it while the mouse happens to
+	/// be there.</summary>
+	public static bool ShouldShow( VirtualWidget item, bool visible ) => item.Hovered || !visible;
+
+	public static void Draw( TreeView tree, VirtualWidget item, bool visible )
+	{
+		if ( !ShouldShow( item, visible ) )
+			return;
+
+		Paint.SetPen( visible ? Theme.TextLight : Theme.Text );
+		Paint.DrawIcon( Rect( tree, item ), visible ? "visibility" : "visibility_off", 16, TextFlag.Center );
+	}
+
+	public static bool WasClicked( TreeView tree, VirtualWidget item, MouseEvent e ) =>
+		Rect( tree, item ).IsInside( e.LocalPosition );
+}
+
+/// <summary>What the feature tree's context menu asked the window to do. The panel knows what was
+/// clicked; the window owns the studio, the dialog and the undo stack, so it does the doing.</summary>
+internal enum EffigyFeatureCommand
+{
+	Edit,
+	Rename,
+	ToggleSuppress,
+	Delete,
+	MoveUp,
+	MoveDown,
+	RollbackTo,
+	RollForward,
+}
+
+internal sealed class EffigyFeatureTreePanel : Widget
+{
+	private interface IVisibilityNode
+	{
+		bool IsVisible { get; }
+		string VisibilityKey { get; }
+		void ToggleVisibility();
+	}
+
+	private sealed class VisibilityTreeView : TreeView
+	{
+		public VisibilityTreeView( Widget parent ) : base( parent ) { }
+		protected override bool OnItemPressed( VirtualWidget item, MouseEvent e )
+		{
+			if ( item.Object is IVisibilityNode node && TreeEyeIcon.WasClicked( this, item, e ) )
+			{
+				node.ToggleVisibility();
+				return false;
+			}
+			return base.OnItemPressed( item, e );
+		}
+	}
+	private PartStudio _studio;
+	private TreeView _tree;
+	private readonly Dictionary<Feature, FeatureNode> _nodes = new();
+
+	public Feature SelectedFeature { get; private set; }
+
+	public Action<Feature> FeatureSelected { get; set; }
+	public Action StudioChanged { get; set; }
+	public Action<string, bool> VisibilityToggled { get; set; }
+
+	/// <summary>A context-menu item was picked.</summary>
+	public Action<Feature, EffigyFeatureCommand> CommandRequested { get; set; }
+
+	/// <summary>A rename was typed and confirmed. Separate from CommandRequested because it
+	/// carries the new text, and because the window has to snapshot for undo BEFORE applying
+	/// it.</summary>
+	public Action<Feature, string> RenameCommitted { get; set; }
+
+	/// <summary>
+	/// What a sketch is attached to, shown on its row in the tree.
+	///
+	/// THE DIFFERENCE THIS MAKES IS THE WHOLE PARAMETRIC MODEL. A sketch on a face moves when that
+	/// face moves, so everything built from it follows; a sketch on Top/Front/Right is anchored in
+	/// world space and never follows anything. Both are legitimate and they look identical once
+	/// the dialog is closed, which makes "why did that not update?" impossible to answer by
+	/// looking at the tree. Now the row says which one it is.
+	/// </summary>
+	public string AttachmentLabel( SketchFeature sketch )
+	{
+		if ( sketch is null )
+			return "";
+
+		if ( sketch.Face is not { } face )
+		{
+			var offset = sketch.PlaneOffset.Value;
+
+			return offset == 0f ? sketch.Plane.Value : $"{sketch.Plane.Value} {offset:+0.##;-0.##}";
+		}
+
+		var body = _studio?.Bodies.FirstOrDefault( b => b.Id == face.BodyId );
+
+		// A face reference that resolves to nothing is the one case worth shouting about: the
+		// sketch is about to fail, or already has.
+		return body is null ? "face (missing)" : $"on {body.Name ?? "part"}";
+	}
+
+	/// <summary>True when the rollback bar sits above this feature, so it is not being evaluated.
+	/// Painted dimmer, the way Onshape greys out everything below the bar.</summary>
+	public bool IsRolledPast( Feature feature ) =>
+		_studio is not null && _studio.Features.IndexOf( feature ) >= _studio.EffectiveCount;
+
+	/// <summary>True for the FIRST feature below the bar - the one the bar is drawn above.</summary>
+	public bool IsFirstRolledPast( Feature feature ) =>
+		_studio is not null
+		&& _studio.RollbackIndex < _studio.Features.Count
+		&& _studio.Features.IndexOf( feature ) == _studio.EffectiveCount;
 
 	/// <summary>
 	/// Rename in place: a one-field popup at the cursor, which is what Menu.AddWidget is for.
@@ -2512,6 +2900,9 @@ internal sealed class EffigyFeatureTreePanel : Widget
 		// Feature nodes
 		foreach ( var feature in _studio.Features )
 		{
+			if ( IsHiddenFromTree( feature ) )
+				continue;
+
 			var node = new FeatureNode( this, feature );
 			_nodes[feature] = node;
 			_tree.AddItem( node );
@@ -2520,6 +2911,20 @@ internal sealed class EffigyFeatureTreePanel : Widget
 				_tree.Close( node );
 		}
 	}
+
+	/// <summary>
+	/// Features that do their job without ever needing to be looked at.
+	///
+	/// FACE MATERIALS ARE BOOKKEEPING, NOT STEPS. Right-clicking a face and picking a slot creates
+	/// one of these — one per slot, reused thereafter (FaceMaterialEdit.SlotFeature) — because the
+	/// assignment has to live in the history or the next rebuild throws it away. That is a storage
+	/// decision, and it was leaking into the tree as a row per slot: paint four faces four colours
+	/// and the recipe for the part gained four entries that say nothing about how it was built.
+	///
+	/// Hiding the row does not hide the effect — the faces stay painted, undo still steps back
+	/// through the assignments, and right-clicking the face again is how you change your mind.
+	/// </summary>
+	private static bool IsHiddenFromTree( Feature feature ) => feature is FaceMaterialFeature;
 
 	// --- tree node types --------------------------------------------------------------------
 
@@ -2691,18 +3096,32 @@ internal sealed class EffigyToolStrip : Widget
 		FixedWidth = 0f;
 	}
 
+	/// <summary>The colour to fill the strip's own rect with — set to the viewport's background so
+	/// the gaps between buttons disappear into the 3D view. See OnPaint.</summary>
+	public Color GapColor { get; set; } = Theme.ControlBackground;
+
 	/// <summary>
-	/// Paint the strip's own bar instead of trusting the transparent-background flags. In the
-	/// running editor the unpainted tail of the strip showed up as a white slab over the 3D view —
-	/// a plain widget rect painting the system background — so the strip now covers its full width
-	/// with the editor's own control colour, the way RigIconButton backgrounds its buttons. A dark
-	/// bar reading as deliberate chrome beats a white hole reading as a crash.
+	/// Fill the whole rect with the VIEWPORT'S OWN BACKGROUND, so the strip vanishes and only its
+	/// buttons are left standing on the 3D view as separate keys.
+	///
+	/// THE STRIP CANNOT SIMPLY NOT PAINT. It was doing exactly that at first, and the gaps came out
+	/// white: TranslucentBackground and NoSystemBackground were both already set — they had been
+	/// since before the strip ever had an OnPaint — and a rect this widget leaves unpainted still
+	/// ends up showing whatever was in the paint buffer. That is the same effect EffigyToolButton
+	/// documents when it repaints its own background every frame to wipe the previous frame's hover
+	/// glow. Painting something is not optional; the only choice is what.
+	///
+	/// So it paints the one colour that reads as nothing: whatever the viewport is clearing to.
+	/// EffigyWindow.ApplyPalette keeps it in step, so it stays invisible through a palette change.
+	/// The honest limit is that this matches the BACKGROUND, not the scene — geometry passing
+	/// behind the strip is covered rather than seen through. At the top-left corner where the strip
+	/// floats, that is rarely anything.
 	/// </summary>
 	protected override void OnPaint()
 	{
 		Paint.ClearPen();
-		Paint.SetBrush( Theme.ControlBackground.WithAlpha( 0.85f ) );
-		Paint.DrawRect( LocalRect, 6f );
+		Paint.SetBrush( GapColor );
+		Paint.DrawRect( LocalRect );
 	}
 
 	/// <summary>Running total of everything added, kept by hand so FixedWidth can be set outright.
@@ -2810,6 +3229,22 @@ internal sealed class EffigyToolStrip : Widget
 		Layout.AddSpacingCell( GroupSpacing - ButtonSpacing );
 		Grew( GroupSpacing - ButtonSpacing );
 	}
+
+	/// <summary>
+	/// Empty the strip so it can be filled again with a different set of tools.
+	///
+	/// REBUILT RATHER THAN HIDDEN, because the group gaps are layout SPACING CELLS and not widgets
+	/// — there is nothing there to set Visible on. Hiding buttons alone would leave their gaps
+	/// behind as holes in the strip, and _contentWidth counts what was added rather than what is
+	/// showing, so the bar would also stay full width with an empty tail.
+	/// </summary>
+	public void Clear()
+	{
+		Layout.Clear( true );
+
+		_contentWidth = 0f;
+		FixedWidth = 0f;
+	}
 }
 
 /// <summary>
@@ -2916,7 +3351,10 @@ internal sealed class EffigySketchToolButton : Widget
 			var index = i;
 			var variant = _variants[i];
 
-			var option = menu.AddOption( variant.Label, variant.Icon, () =>
+			// NO ICON. EffigyIcon is a DRAWN glyph - EffigyIcons.Draw paints into a widget's paint
+			// context - while a Menu option takes a Material Icon NAME, which is the very lookup
+			// these icons exist to get away from. The label and the check mark carry the variant.
+			var option = menu.AddOption( variant.Label, null, () =>
 			{
 				ShowVariant( index );
 				VariantChosen?.Invoke( variant );
@@ -2929,7 +3367,7 @@ internal sealed class EffigySketchToolButton : Widget
 		menu.OpenAtCursor();
 	}
 
-	public EffigySketchToolButton( Widget parent, string icon, string tip, bool checkable ) : base( parent )
+	public EffigySketchToolButton( Widget parent, EffigyIcon icon, string tip, bool checkable ) : base( parent )
 	{
 		_icon = icon;
 		_checkable = checkable;
@@ -3079,13 +3517,15 @@ internal sealed class EffigySketchStrip : Widget
 		FixedWidth = 0f;
 	}
 
-	/// <summary>Same self-painted bar as the feature strip - see EffigyToolStrip.OnPaint for why
-	/// the strip paints its own chrome instead of trusting the transparent flags.</summary>
+	/// <summary>The viewport's background, same as EffigyToolStrip.GapColor and for the same
+	/// reason — see that OnPaint for why a strip cannot just decline to paint.</summary>
+	public Color GapColor { get; set; } = Theme.ControlBackground;
+
 	protected override void OnPaint()
 	{
 		Paint.ClearPen();
-		Paint.SetBrush( Theme.ControlBackground.WithAlpha( 0.85f ) );
-		Paint.DrawRect( LocalRect, 6f );
+		Paint.SetBrush( GapColor );
+		Paint.DrawRect( LocalRect );
 	}
 
 	/// <summary>Counted by hand for the same reason as EffigyToolStrip._contentWidth.</summary>
@@ -3125,6 +3565,10 @@ internal sealed class EffigyToolButton : Widget
 	private readonly Action _clicked;
 	private bool _pressed;
 	public string Label { get; set; }
+
+	/// <summary>Draw the little chevron that says this button opens a list rather than doing one
+	/// thing. Set by the strip for the tools that have variants behind them.</summary>
+	public bool HasMenu { get; set; }
 
 	public EffigyToolButton( Widget parent, EffigyIcon icon, string tip, Action clicked ) : base( parent )
 	{
@@ -3181,6 +3625,34 @@ internal sealed class EffigyToolButton : Widget
 			Paint.SetPen( Theme.Text );
 			Paint.DrawText( LocalRect.Shrink( 56, 0, 8, 0 ), Label, TextFlag.LeftCenter );
 		}
+
+		if ( HasMenu )
+			PaintChevron();
+	}
+
+	/// <summary>
+	/// A triangle in the bottom-right corner — the same signal the sketch strip's variant buttons
+	/// give, so "this one opens a list" looks the same on both strips.
+	///
+	/// Deliberately not subtle. The first version was five pixels at half alpha and was invisible
+	/// on a 54px button: the button looked like every other one, so nothing suggested clicking it
+	/// would offer a choice.
+	/// </summary>
+	private void PaintChevron()
+	{
+		const float size = 9f;
+		const float inset = 4f;
+
+		var x = LocalRect.Width - inset;
+		var y = LocalRect.Height - inset;
+
+		Paint.ClearPen();
+		Paint.SetBrush( Theme.Text.WithAlpha( IsUnderMouse ? 1f : 0.8f ) );
+
+		Paint.DrawPolygon(
+			new Vector2( x - size, y ),
+			new Vector2( x, y - size ),
+			new Vector2( x, y ) );
 	}
 
 	protected override void OnMousePress( MouseEvent e )

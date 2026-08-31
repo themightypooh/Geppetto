@@ -280,46 +280,46 @@ internal static class EffigyIcons
 	}
 
 	/// <summary>
-	/// A turned shape and the axis it was turned about — the lathe reading.
+	/// A sketch sitting on an axis, and the spin that turns it into a solid.
 	///
-	/// Three earlier attempts drew the OPERATION: a profile, an axis and a sweeping arrow. All three
-	/// collapsed at toolbar size, because three marks that have to be told apart is two too many at
-	/// twenty-four pixels — one came out as a bar and a blob, another as an eye. Drawing the RESULT
-	/// works, because a silhouette survives being small in a way an arrow does not, and nothing else
-	/// on this strip is a curved profile.
+	/// Extrude is a straight arrow off a profile. This is the same grammar bent into a C — axis,
+	/// profile, curved arrow — which is what every CAD tool draws for Revolve and what the last
+	/// version threw out. That version drew a vase in section and hoped the silhouette would
+	/// carry it; at toolbar size it was a lumpy outline with a dashed line through its face.
+	/// Fill the profile (same weight as Bevel and Shell) and let the arrow be the operation.
 	/// </summary>
 	private static void PaintRevolve( Vector2 c, Color color )
 	{
-		// Axis of revolution, dashed, straight through it.
-		Stroked( color.WithAlpha( 0.55f ), 1.3f );
+		const float AxisX = -3.6f;
 
-		for ( var y = -9.5f; y < 9.5f; y += 4f )
-			Editor.Paint.DrawLine( At( c, 0, y ), At( c, 0, MathF.Min( y + 2.4f, 9.5f ) ) );
+		Stroked( color.WithAlpha( 0.5f ), 1.35f );
 
-		// One half of the profile, mirrored — so the shape cannot come out lopsided, which is the
-		// one thing a body of revolution can never be.
-		var half = new[]
-		{
-			new Vector2( -3.0f, -8f ),
-			new Vector2( -5.8f, -3.5f ),
-			new Vector2( -6.6f, 2.0f ),
-			new Vector2( -4.2f, 7.5f ),
-		};
+		for ( var y = -8.6f; y < 8.6f; y += 3.8f )
+			Editor.Paint.DrawLine( At( c, AxisX, y ), At( c, AxisX, MathF.Min( y + 2.2f, 8.6f ) ) );
 
-		Stroked( color, 1.8f );
+		Filled( color.WithAlpha( 0.22f ) );
+		Editor.Paint.DrawPolygon(
+			At( c, AxisX, -5.2f ), At( c, 3.4f, -5.2f ),
+			At( c, 3.4f, 5.2f ), At( c, AxisX, 5.2f ) );
 
-		for ( var i = 0; i < half.Length - 1; i++ )
-		{
-			Editor.Paint.DrawLine( At( c, half[i].x, half[i].y ), At( c, half[i + 1].x, half[i + 1].y ) );
-			Editor.Paint.DrawLine( At( c, -half[i].x, half[i].y ), At( c, -half[i + 1].x, half[i + 1].y ) );
-		}
+		Stroked( color, 1.55f );
+		Editor.Paint.DrawLine( At( c, AxisX, -5.2f ), At( c, 3.4f, -5.2f ) );
+		Editor.Paint.DrawLine( At( c, 3.4f, -5.2f ), At( c, 3.4f, 5.2f ) );
+		Editor.Paint.DrawLine( At( c, 3.4f, 5.2f ), At( c, AxisX, 5.2f ) );
 
-		Editor.Paint.DrawLine( At( c, -4.2f, 7.5f ), At( c, 4.2f, 7.5f ) );
+		const float Radius = 8.4f;
+		const float From = -80f;
+		const float To = 85f;
+		var hub = At( c, AxisX, 0 );
 
-		// The open top as an arc rather than a straight line: it is a rim seen in perspective, and
-		// that is what says the shape is round rather than flat.
-		Stroked( color, 1.5f );
-		Arc( At( c, 0, -8f ), 3.0f, 0f, 180f, 12 );
+		Stroked( color, 2.1f );
+		Arc( hub, Radius, From, To, 22 );
+
+		var end = To * MathF.PI / 180f;
+		var tip = hub + new Vector2( MathF.Cos( end ), MathF.Sin( end ) ) * Radius * _scale;
+		var tangent = new Vector2( -MathF.Sin( end ), MathF.Cos( end ) );
+
+		ArrowHead( tip, tangent, color, 3.6f );
 	}
 
 	/// <summary>
