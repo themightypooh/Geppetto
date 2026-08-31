@@ -65,6 +65,8 @@ public static class Program
 
 		RigTests.Run();
 
+		RigDiagnosticTests.Run();
+
 		ShellTests.Run();
 
 		EdgeBlendTests.Run();

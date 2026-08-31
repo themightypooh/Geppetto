@@ -12,7 +12,7 @@ it" has repeatedly been the difference between right and wrong.
 - A feature that cannot do what was asked says what it was asked, what stopped it, with this
   model's numbers, and what would work instead. A feature that did nothing is never a success.
 
-Verified as of 31 August 2026: **2080 kernel checks, 0 failing** (`./tools/test.sh`). The diagnostic
+Verified as of 31 August 2026: **2099 kernel checks, 0 failing** (`./tools/test.sh`). The diagnostic
 dialog and tree tooltip are written against the shipped `Editor.Label.WordWrap` and
 `TreeNode.GetTooltip` APIs; they have not been judged on screen.
 
@@ -585,6 +585,25 @@ as a low-level edit that fails to move the detail above it, and there is a check
 Verified by mutation, not just by the suite being green: subdividing the rest mesh instead of the
 displaced one fails 4 checks, dropping the cache invalidation in `Record` fails 2, and handing the
 brush the rest frames fails 1.
+
+### The rig says what is wrong with it
+
+`RigDiagnostics.Check` finds what the exporter and the compiler would otherwise report as something
+else: an unweighted vertex arrives as a vertex that does not move, a zero-length bone as a bone with
+no orientation, an assignment pointing at a deleted body as nothing at all. Every one is knowable
+while the numbers that caused it are still to hand.
+
+Errors and warnings, the same split features make — one error outranks any number of warnings, so a
+panel can colour its header from `Worst`. `SkinWeights.Validate`'s output is passed through verbatim
+rather than reworded, because it already names the vertex and the number.
+
+**It deliberately overlaps what `Skeleton` already refuses.** AddBone will not take a duplicate name,
+AddBoneFromPoints will not make a zero-length bone, RenameBone will not rename onto a collision — so
+a rig built through that API cannot reach most of these. What can: the `Bone` fields are public and
+get written directly, and a skeleton read back off disk has been through none of those constructors.
+Both facts were found by the tests refusing to build the broken fixtures.
+
+The panel does not show them yet.
 
 ### A mouth that lands across two faces
 

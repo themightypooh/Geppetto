@@ -58,7 +58,7 @@ should colour the icon yellow. Kernel half is tested; this is the sitting.
 ## 1. Effigy kernel
 
 The kernel is roughly **93% of phase one**. All of it is headless-testable — no s&box anywhere, and
-2080 checks say so.
+2099 checks say so.
 
 ### 1.1 Exercise the boolean past the one case that works
 
@@ -360,8 +360,17 @@ read out of the shipped Base Editor Library instead.
    one or morph targets and IK data silently break, but nothing in this repo has seen its real KV3
    shape, and a guessed one risks breaking a compile that currently works. **Method:** a real editor
    session against `citizen.vmdl`, or the Model Editor's own sequence UI. Not a guess.
-3. **The Effigy rig panel's remaining reporting** — zero-length bones, missing mapped bones, and
-   failed `SkinWeights.Validate()` results should surface as warnings.
+3. **The Effigy rig panel's remaining reporting** — the KERNEL half is done: `RigDiagnostics.Check`
+   finds zero-length bones, duplicate names, parent cycles, several roots, assignments pointing at
+   bones or bodies that are gone, and hands `SkinWeights.Validate` straight through in its own
+   words. Severity is the same error/warning split features make. 18 checks.
+
+   **What is left is showing them** — the panel does not call it yet. One list, one row per problem,
+   clicking a row selects the bone it names (`RigProblem.Bone` is there for exactly that).
+
+   Worth knowing: `Skeleton` already refuses most of these at construction, so a rig built through
+   its API cannot reach them. What can is a public `Bone` field written directly, a document read
+   off disk, and `RemoveBone` re-indexing around it.
 4. **Effigy → Rig Control convenience**: an action to create the `.ctrlrig` and open Rig Control.
    Integration sugar, explicitly not a priority — constraints and animation stay in Rig Control's
    assets.
