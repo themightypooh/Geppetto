@@ -57,3 +57,16 @@ Assets/models/rp_city/
 Assets/models/rp_kit/
 Assets/models/rp_town/
 Assets/materials/rp_kit/
+
+# Tamagotchi teardown kit: the .blend and tools/tama_gen.py are the source, and the FBX are what
+# the script exports from them - 48 MB of it, two files over 10 MB each. Same policy as the
+# compiled *.*_c above: the thing you edit is tracked, the thing a tool produces is not.
+# Regenerate with: blender --background --python tools/tama_gen.py
+Assets/models/tamagotchi/*.fbx
+
+# Blender's own backup copy.
+*.blend1
+
+# Python bytecode and the FBX unit probe's scratch output.
+tools/__pycache__/
+tools/_unit_test_*.fbx

@@ -1,58 +1,56 @@
 <!-- kv3 encoding:text:version{e21c7f3c-8a33-41c5-9977-a76d3a32aa0d} format:modeldoc30:version{8c2d7a91-9c42-4bf0-883a-5a3b1762d4f1} -->
 {
-	rootNode =
+	rootNode = 
 	{
 		_class = "RootNode"
-		children =
+		children = 
 		[
 			{
 				_class = "MaterialGroupList"
-				children =
+				children = 
 				[
 					{
 						_class = "DefaultMaterialGroup"
-						remaps =
-						[
-							{
-								from = "sw_plate.vmat"
-								to = "materials/lightswitch/sw_plate.vmat"
-							},
-						]
-						use_global_default = false
-						global_default_material = ""
+						remaps = [  ]
+						use_global_default = true
+						global_default_material = "materials/default.vmat"
 					},
 				]
 			},
 			{
 				_class = "PhysicsShapeList"
-				children =
+				children = 
 				[
 					{
 						_class = "PhysicsMeshFromRender"
 						parent_bone = ""
-						surface_prop = "plastic"
+						surface_prop = "default"
 						collision_tags = "solid"
 					},
 				]
 			},
 			{
 				_class = "RenderMeshList"
-				children =
+				children = 
 				[
 					{
 						_class = "RenderMeshFile"
 						filename = "models/lightswitch/lightswitch_toggle.fbx"
 						import_translation = [ 0.0, 0.0, 0.0 ]
-						// THE ORIGIN IS THE PIVOT AXIS. Parent this under the plate at local
-						// 0,0,0 and pitch it -- no offset object needed. Positive pitch is
-						// DOWN in Source, so +23 is OFF and -23 is ON.
-						// Same import correction as lightswitch_plate.vmdl -- see its notes.
-						import_rotation = [ 0.0, -90.0, 0.0 ]
+						import_rotation = [ 0.0, 0.0, 0.0 ]
 						import_scale = 1.0
 						align_origin_x_type = "None"
 						align_origin_y_type = "None"
 						align_origin_z_type = "None"
 						parent_bone = ""
+						import_filter = 
+						{
+							exclude_by_default = true
+							exception_list = 
+							[
+								"lightswitch_toggle",
+							]
+						}
 					},
 				]
 			},
