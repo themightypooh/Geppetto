@@ -1,0 +1,12 @@
+{
+  "SourceModel": "models/halo/grunt.vmdl",
+  "RigAsset": null,
+  "AnimationSpeed": 30,
+  "FrameCount": 90,
+  "ReferenceProps": [],
+  "BoneTracks": [],
+  "Events": [],
+  "MorphEvents": [],
+  "__references": [],
+  "__version": 0
+}
