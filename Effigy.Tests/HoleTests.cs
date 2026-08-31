@@ -41,6 +41,12 @@ public static class HoleTests
 
 		Report.Section( "holes: an opening the boolean left as a bare boundary loop" );
 		TestBoundaryLoopRepair();
+
+		Report.Section( "holes: a bridged loop splits into TWO faces rather than a pile of triangles" );
+		TestBridgedLoopSplitsIntoTwo();
+
+		Report.Section( "holes: the splitter refuses what it cannot be sure of" );
+		TestSplitRefusals();
 	}
 
 	/// <summary>
@@ -509,5 +515,126 @@ public static class HoleTests
 			acc += Vec3.Dot( mesh.FaceCentroid( f ), mesh.FaceNormal( f ) ) * mesh.FaceArea( f );
 
 		return acc / 3f;
+	}
+
+	/// <summary>
+	/// The regression this exists for: a cut left the face it went through as 29 TRIANGLES.
+	///
+	/// The mesh was correct every time - closed, manifold, right volume - so every existing test
+	/// here passed while the face a user clicks on had been shattered. A Face is the unit of
+	/// selection and of material assignment, so painting that cap meant 29 clicks. FACE COUNT is
+	/// therefore the measure, and it is the one thing none of the tests above look at.
+	///
+	/// Two is the floor, not one: a face is a single loop of corners, so a face with a hole in it
+	/// cannot be fewer.
+	/// </summary>
+	static void TestBridgedLoopSplitsIntoTwo()
+	{
+		// The same 4x4-square-with-a-2x2-hole fixture TestBridgedLoopKeepsItsHole uses.
+		var loop = new List<Vec2>
+		{
+			new( -2, -1 ), new( -1, -1 ), new( -1, 1 ), new( 1, 1 ), new( 1, -1 ), new( -1, -1 ),
+			new( -2, -1 ), new( -2, -2 ), new( 2, -2 ), new( 2, 2 ), new( -2, 2 ),
+		};
+
+		var loops = Triangulate.SplitBridgedLoop( loop );
+
+		Report.Check( "a bridged loop splits at all", loops is not null, "refused" );
+
+		if ( loops is null )
+			return;
+
+		Report.Check( "into exactly two faces", loops.Count == 2, $"{loops.Count} faces" );
+
+		foreach ( var face in loops )
+		{
+			Report.Check( "each face has at least three corners", face.Count >= 3, $"{face.Count} corners" );
+
+			// The defect the whole bridge machinery exists to avoid. A split that reintroduces it
+			// has done nothing but rename the problem.
+			Report.Check( "no face repeats a corner",
+				face.Select( i => loop[i] ).Distinct().Count() == face.Count, "repeated corner" );
+
+			Report.Check( "no face crosses itself", IsSimple( loop, face ), "self-intersecting" );
+		}
+
+		// AREA IS WHAT CATCHES A PLAUSIBLE-LOOKING WRONG SPLIT. Two faces that between them cover
+		// 16 have filled the hole back in; two that cover 12 are the annulus and nothing else. This
+		// is the measure that found the overlapping-fan bug in the ear clipper.
+		var area = loops.Sum( face => MathF.Abs( LoopArea( loop, face ) ) );
+
+		Report.Check( "the two faces cover the ring and not the hole", MathF.Abs( area - 12f ) < 1e-3f,
+			$"covered {area}, expected 12" );
+
+		// Same winding as the input, or the face points the wrong way and vanishes under culling.
+		Report.Check( "both faces keep the input's winding", loops.All( f => LoopArea( loop, f ) > 0f ),
+			"a face came back reversed" );
+	}
+
+	/// <summary>
+	/// Refusing is a feature. A wrong split is a self-intersecting face that is closed, manifold and
+	/// Euler-correct - the exact class of defect that cost this repo a day - so anything the
+	/// splitter is not certain of returns null and the caller triangulates instead.
+	/// </summary>
+	static void TestSplitRefusals()
+	{
+		var square = new List<Vec2> { new( 0, 0 ), new( 1, 0 ), new( 1, 1 ), new( 0, 1 ) };
+
+		Report.Check( "a plain polygon has no bridge to split on",
+			Triangulate.SplitBridgedLoop( square ) is null, "split a simple polygon" );
+
+		// A vertex visited three times is not a bridge, whatever else it is.
+		var tangled = new List<Vec2>
+		{
+			new( -2, -1 ), new( -1, -1 ), new( -1, 1 ), new( -1, -1 ), new( 1, 1 ),
+			new( 1, -1 ), new( -1, -1 ), new( -2, -1 ), new( -2, -2 ), new( 2, -2 ), new( 2, 2 ),
+		};
+
+		Report.Check( "a thrice-visited corner is refused",
+			Triangulate.SplitBridgedLoop( tangled ) is null, "split a tangled loop" );
+	}
+
+	static float LoopArea( List<Vec2> points, List<int> loop )
+	{
+		var sum = 0f;
+
+		for ( var i = 0; i < loop.Count; i++ )
+		{
+			var a = points[loop[i]];
+			var b = points[loop[(i + 1) % loop.Count]];
+			sum += a.x * b.y - b.x * a.y;
+		}
+
+		return sum * 0.5f;
+	}
+
+	/// <summary>No two non-adjacent edges of the loop properly cross.</summary>
+	static bool IsSimple( List<Vec2> points, List<int> loop )
+	{
+		for ( var i = 0; i < loop.Count; i++ )
+		{
+			for ( var j = i + 1; j < loop.Count; j++ )
+			{
+				// Edges sharing an endpoint meet there by construction and that is not a crossing.
+				if ( j == i || (j + 1) % loop.Count == i || (i + 1) % loop.Count == j )
+					continue;
+
+				var a = points[loop[i]];
+				var b = points[loop[(i + 1) % loop.Count]];
+				var c = points[loop[j]];
+				var d = points[loop[(j + 1) % loop.Count]];
+
+				var d1 = Vec2.Cross( b - a, c - a );
+				var d2 = Vec2.Cross( b - a, d - a );
+				var d3 = Vec2.Cross( d - c, a - c );
+				var d4 = Vec2.Cross( d - c, b - c );
+
+				if ( ((d1 > 0f && d2 < 0f) || (d1 < 0f && d2 > 0f))
+					&& ((d3 > 0f && d4 < 0f) || (d3 < 0f && d4 > 0f)) )
+					return false;
+			}
+		}
+
+		return true;
 	}
 }

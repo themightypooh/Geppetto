@@ -58,36 +58,7 @@ public static class Triangulate
 		// WithHoles never meets this because it splices indices into a shared point list and the
 		// repeat is literal. A loop arriving from outside - the shape s&box's boolean returns - has
 		// to be put into that same form first.
-		var welded = new List<Vec2>( points.Count );
-		var ring = new List<int>( points.Count );
-		var representative = new List<int>( points.Count );
-
-		for ( var i = 0; i < points.Count; i++ )
-		{
-			var index = -1;
-
-			for ( var j = 0; j < welded.Count; j++ )
-			{
-				if ( MathF.Abs( welded[j].x - points[i].x ) > WeldTolerance
-					|| MathF.Abs( welded[j].y - points[i].y ) > WeldTolerance )
-					continue;
-
-				index = j;
-				break;
-			}
-
-			if ( index < 0 )
-			{
-				index = welded.Count;
-				welded.Add( points[i] );
-
-				// Which position in the CALLER'S list this welded point stands for, so the triples
-				// come back indexed the way the caller handed its loop in.
-				representative.Add( i );
-			}
-
-			ring.Add( index );
-		}
+		WeldRing( points, out var welded, out var ring, out var representative );
 
 		var triangles = ClipRing( welded, ring, reversed: RingSignedArea( welded, ring ) < 0f );
 
@@ -127,6 +98,274 @@ public static class Triangulate
 			return new List<(int, int, int)>();
 
 		return BridgedLoop( Flatten( positions ) );
+	}
+
+	/// <summary>
+	/// Collapse a loop's coincident corners so a seam's two visits become THE SAME INDEX, which is
+	/// the form both the ear clipper and the splitter need. Shared by BridgedLoop and
+	/// SplitBridgedLoop rather than written twice: they must agree exactly on which corners are the
+	/// same point, or one of them will find a bridge the other cannot.
+	/// </summary>
+	static void WeldRing( IReadOnlyList<Vec2> points, out List<Vec2> welded, out List<int> ring,
+		out List<int> representative )
+	{
+		welded = new List<Vec2>( points.Count );
+		ring = new List<int>( points.Count );
+		representative = new List<int>( points.Count );
+
+		for ( var i = 0; i < points.Count; i++ )
+		{
+			var index = -1;
+
+			for ( var j = 0; j < welded.Count; j++ )
+			{
+				if ( MathF.Abs( welded[j].x - points[i].x ) > WeldTolerance
+					|| MathF.Abs( welded[j].y - points[i].y ) > WeldTolerance )
+					continue;
+
+				index = j;
+				break;
+			}
+
+			if ( index < 0 )
+			{
+				index = welded.Count;
+				welded.Add( points[i] );
+
+				// Which position in the CALLER'S list this welded point stands for, so the results
+				// come back indexed the way the caller handed its loop in.
+				representative.Add( i );
+			}
+
+			ring.Add( index );
+		}
+	}
+
+	/// <summary>
+	/// Split a bridged loop into TWO simple polygons instead of triangulating it. Returns index
+	/// loops into the caller's list, in the caller's own winding, or null when it will not do it.
+	///
+	/// WHY, given BridgedLoop already works. Because a Face is the unit of SELECTION and of
+	/// material assignment, and triangulating spends that unit freely. A 24-gon cap with a pocket
+	/// cut into it comes back as 29 triangles; clicking it to paint it paints one of them. The
+	/// topology genuinely forbids ONE face here - a face is one loop of corners and a face with a
+	/// hole has two boundaries - but TWO is available, and two is what someone means when they say
+	/// the cut should not have broken the face up.
+	///
+	/// THE SECOND BRIDGE IS THE WHOLE IDEA. The loop already carries one bridge joining the outer
+	/// boundary to the hole. Cut the ring a second time somewhere else and the annulus falls into
+	/// two ordinary n-gons. No new vertices, no triangles, and the quads everywhere else on the
+	/// model were never involved.
+	///
+	/// WHAT IT REFUSES, and why refusing matters more than succeeding: two holes in one face, a
+	/// loop whose repeated visits do not sit where a bridge puts them, a hole with no valid second
+	/// bridge. Each returns null and the caller falls back to BridgedLoop, which is never wrong -
+	/// only coarse. A WRONG split is a self-intersecting face that is closed, manifold and
+	/// Euler-correct, which is precisely the class of defect the cut work already lost a day to.
+	/// </summary>
+	public static List<List<int>> SplitBridgedLoop( IReadOnlyList<Vec2> points )
+	{
+		// Three corners of outer boundary, three of hole, and the bridge's two repeated visits.
+		if ( points is null || points.Count < 8 )
+			return null;
+
+		WeldRing( points, out var welded, out var ring, out var representative );
+
+		if ( !RecoverBridge( ring, out var outer, out var hole, out var a1 ) )
+			return null;
+
+		if ( !SecondBridge( welded, outer, hole, a1, out var a2, out var b2 ) )
+			return null;
+
+		// RecoverBridge walks the hole from the vertex the first bridge lands on, so that bridge is
+		// always (outer[a1], hole[0]) and only the second one needs naming.
+		var loops = new List<List<int>>
+		{
+			WalkPair( outer, hole, a1, a2, b2, 0 ),
+			WalkPair( outer, hole, a2, a1, 0, b2 ),
+		};
+
+		foreach ( var loop in loops )
+		{
+			for ( var i = 0; i < loop.Count; i++ )
+				loop[i] = representative[loop[i]];
+		}
+
+		return loops;
+	}
+
+	/// <summary>The 3D form of <see cref="SplitBridgedLoop"/>, flattened exactly as
+	/// <see cref="BridgedFace"/> does.</summary>
+	public static List<List<int>> SplitBridgedFace( IReadOnlyList<Vec3> positions )
+	{
+		if ( positions is null || positions.Count < 8 )
+			return null;
+
+		return SplitBridgedLoop( Flatten( positions ) );
+	}
+
+	/// <summary>
+	/// Take a welded ring apart into the outer boundary and the hole it bridges to.
+	///
+	/// A bridge is walked out and back, so it leaves exactly two doubled visits: the outer vertex
+	/// it leaves from and the hole vertex it arrives at, the second sitting one step inside the
+	/// first on each side. Everything about that shape is checked rather than assumed - this loop
+	/// comes from the engine, not from Bridge() above, and the cost of guessing wrong is a face
+	/// that passes validation while overlapping itself.
+	/// </summary>
+	static bool RecoverBridge( List<int> ring, out List<int> outer, out List<int> hole, out int bridgeOuter )
+	{
+		outer = null;
+		hole = null;
+		bridgeOuter = -1;
+
+		var visits = new Dictionary<int, List<int>>();
+
+		for ( var i = 0; i < ring.Count; i++ )
+		{
+			if ( !visits.TryGetValue( ring[i], out var at ) )
+			{
+				at = new List<int>();
+				visits[ring[i]] = at;
+			}
+
+			at.Add( i );
+		}
+
+		var repeated = visits.Values.Where( at => at.Count > 1 ).ToList();
+
+		// Exactly two doubled vertices and nothing visited three times: one bridge, one hole. Two
+		// holes in one face land here too and are handed back to the triangulator - splitting an
+		// n-holed face needs n+1 cuts and there has never been one to test it on.
+		if ( repeated.Count != 2 || repeated.Any( at => at.Count != 2 ) )
+			return false;
+
+		var (o, h) = repeated[0][1] - repeated[0][0] > repeated[1][1] - repeated[1][0]
+			? (repeated[0], repeated[1])
+			: (repeated[1], repeated[0]);
+
+		// The hole's seam sits one step inside the outer's on both sides. Anything else is not a
+		// bridge, whatever else it may be.
+		if ( h[0] != o[0] + 1 || h[1] != o[1] - 1 )
+			return false;
+
+		outer = new List<int>();
+
+		for ( var i = 0; i <= o[0]; i++ )
+			outer.Add( ring[i] );
+
+		for ( var i = o[1] + 1; i < ring.Count; i++ )
+			outer.Add( ring[i] );
+
+		// h[1] is the repeat that closes the hole back onto its starting vertex, and dropping it is
+		// what turns the seam back into a plain ring.
+		hole = new List<int>();
+
+		for ( var i = h[0]; i < h[1]; i++ )
+			hole.Add( ring[i] );
+
+		bridgeOuter = o[0];
+
+		return outer.Count >= 3 && hole.Count >= 3
+			&& outer.Distinct().Count() == outer.Count
+			&& hole.Distinct().Count() == hole.Count;
+	}
+
+	/// <summary>
+	/// Find a second bridge to cut the ring on, preferring the far side of it.
+	///
+	/// A bridge next door to the first one is perfectly valid and splits off a sliver beside a
+	/// nearly whole face, which is two faces in the sense that a paper cut is surgery. Starting
+	/// opposite and walking outward takes the balanced cut when there is one and still finds the
+	/// awkward one when there is not.
+	/// </summary>
+	static bool SecondBridge( List<Vec2> welded, List<int> outer, List<int> hole, int a1,
+		out int a2, out int b2 )
+	{
+		a2 = -1;
+		b2 = -1;
+
+		var firstA = welded[outer[a1]];
+		var firstB = welded[hole[0]];
+
+		for ( var step = 0; step < outer.Count; step++ )
+		{
+			var swing = step % 2 == 0 ? step / 2 : -(step / 2 + 1);
+			var candidate = ((a1 + outer.Count / 2 + swing) % outer.Count + outer.Count) % outer.Count;
+
+			if ( candidate == a1 )
+				continue;
+
+			var anchor = welded[outer[candidate]];
+
+			foreach ( var j in Enumerable.Range( 0, hole.Count )
+				.OrderBy( j => (welded[hole[j]] - anchor).LengthSquared ) )
+			{
+				// hole[0] is the first bridge's own landing, and reusing it leaves one of the two
+				// faces with no hole side at all.
+				if ( j == 0 )
+					continue;
+
+				if ( !SplitIsClear( welded, outer, hole, outer[candidate], hole[j], firstA, firstB ) )
+					continue;
+
+				a2 = candidate;
+				b2 = j;
+
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/// <summary>
+	/// The same three conditions <see cref="BridgeIsClear"/> demands - crossing no edge of either
+	/// ring, and a midpoint in the material rather than out in space or down the hole - plus one
+	/// this case adds: it must not cross the bridge already there. Two crossing bridges cut the
+	/// ring into a figure of eight, and both halves come back self-intersecting.
+	/// </summary>
+	static bool SplitIsClear( List<Vec2> points, List<int> outer, List<int> hole, int from, int to,
+		Vec2 firstA, Vec2 firstB )
+	{
+		var a = points[from];
+		var b = points[to];
+
+		if ( Crosses( points, outer, a, b, from, to ) || Crosses( points, hole, a, b, from, to ) )
+			return false;
+
+		if ( SegmentsCross( a, b, firstA, firstB ) )
+			return false;
+
+		var mid = (a + b) * 0.5f;
+
+		return Contains( points, outer, mid ) && !Contains( points, hole, mid );
+	}
+
+	/// <summary>One of the two halves: the outer boundary walked forward between the bridges, then
+	/// the hole walked forward back to where it started. Both rings are walked in the order the
+	/// original loop gave them, which is what carries the caller's winding through untouched.</summary>
+	static List<int> WalkPair( List<int> outer, List<int> hole, int aFrom, int aTo, int bFrom, int bTo )
+	{
+		var loop = new List<int>( outer.Count + hole.Count );
+
+		for ( var i = aFrom; ; i = (i + 1) % outer.Count )
+		{
+			loop.Add( outer[i] );
+
+			if ( i == aTo )
+				break;
+		}
+
+		for ( var j = bFrom; ; j = (j + 1) % hole.Count )
+		{
+			loop.Add( hole[j] );
+
+			if ( j == bTo )
+				break;
+		}
+
+		return loop;
 	}
 
 	public static List<(int A, int B, int C)> Polygon( IReadOnlyList<Vec2> points )

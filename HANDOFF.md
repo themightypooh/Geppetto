@@ -1,4 +1,4 @@
-# Handoff
+﻿# Handoff
 
 For an AI or a person picking this up cold, mid-task, with no memory of the last session. Read this
 before touching anything.
@@ -41,7 +41,7 @@ guessing — that is how `LocalTransform` was found, and how the boolean adapter
 export PATH="/c/Program Files/dotnet:$PATH" && ./tools/test.sh
 ```
 
-`dotnet` is installed but not on `PATH` in Git Bash, hence the prefix. About 25 seconds, **1395
+`dotnet` is installed but not on `PATH` in Git Bash, hence the prefix. About 25 seconds, **1407
 checks**. The script syncs the editor's kernel mirror first, then runs the suite.
 
 The Effigy kernel is engine-free, so all of it — plus every editor workflow that is "kernel calls in
@@ -144,7 +144,7 @@ Assets/shaders/pixel_arms.shader   the one shader here known to compile — the 
 Effigy/                   the CAD kernel — engine-free, the CANONICAL copy
 Editor/Effigy/            a MIRROR of the kernel. Never hand-edit
 Editor/EffigyEditor/      the CAD tool's UI
-Effigy.Tests/             1395 headless checks
+Effigy.Tests/             1407 headless checks
 
 Editor/ShaderForge/       the shader generator kernel — engine-free
 Editor/ShaderForgeEditor/ the shader tool

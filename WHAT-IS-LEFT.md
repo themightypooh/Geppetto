@@ -1,4 +1,4 @@
-# What is left
+﻿# What is left
 
 Ordered by what will actually block progress. Every item names its **method** where one is known,
 because "add rounded fillets" is not a task and "rework the cap pass alongside the bridge pass,
@@ -63,6 +63,10 @@ of these is unexercised and at least one is likely to fail:
   loop where it crosses an edge)
 - two cuts overlapping, and cutting a body that has already been cut
 - a cut that separates the body into two pieces — nothing downstream expects one body to become two
+- **two holes in one face.** `Triangulate.SplitBridgedLoop` handles exactly one bridge and refuses
+  anything else, so a face with two holes in it still comes back as triangles. That is correct but
+  coarse, and it is the first case likely to be met in practice — two pockets in one cap. Splitting
+  an n-holed face needs n+1 cuts, and there has never been one to test against.
 
 **Method:** build each in the editor and run `effigy_dump_tree`. `boundary edges`, `bridged faces`
 and `opening(s) reinstated` name the failure mode directly. Where a case fails, reproduce the mesh
@@ -121,6 +125,30 @@ Counterbore and countersink as a tool solid emitted with `Result = Remove`. Hole
 inner loops of a profile and cuts now work, so this is a parameterised shape and a dialog. It cannot
 build in the headless suite without a boolean provider — `MergeTests` installs a stub for exactly
 this, do the same.
+
+### 1.6 Point the sketch cap pass at the two-n-gon splitter
+
+*Small, self-contained, and the direct sequel to a fix that already landed.*
+
+A cut that leaves a hole in a face now comes back as **two n-gons** rather than a pile of triangles
+(`Triangulate.SplitBridgedLoop`, called from `AddFaceSplittingBridges`). A **sketch** profile with a
+hole in it does not: `Triangulate.WithHoles` builds its own bridges and finishes through the ear
+clipper, so extruding a washer still caps with triangles at both ends. Same defect, same cost — a
+`Face` is the unit of selection and of material assignment, so painting that cap is one click per
+triangle — and now a known fix.
+
+**Method:** `WithHoles` already produces exactly the bridged ring the splitter wants, so the work is
+to return that ring instead of clipping it, hand it to `SplitBridgedLoop`, and fall back to the
+existing clip when the splitter refuses. Watch the contract: `WithHoles` promises triples indexing a
+**concatenated** list (outer first, then each hole in order) and callers rely on that layout, so the
+loops must come back in the same indexing or every caller shifts underneath.
+
+**Measure it by face count**, not by looking. `HoleTests.TestBridgedLoopSplitsIntoTwo` is the
+template: count faces, check the covered **area** is the ring and not the disc, check each loop is
+simple and keeps its winding. Every one of the existing hole tests passed throughout the 29-triangle
+regression, because a shattered face is closed, manifold and exactly the right volume.
+
+Only single-hole profiles are in reach — see the two-holes bullet in 1.1.
 
 ---
 

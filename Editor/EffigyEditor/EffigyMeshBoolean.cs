@@ -1,4 +1,4 @@
-using Effigy;
+﻿using Effigy;
 using HalfEdgeMesh;
 using Sandbox;
 using System;
@@ -301,6 +301,20 @@ public sealed class EffigyMeshBoolean : IMeshBoolean
 		foreach ( var index in indices )
 			positions.Add( mesh.Positions[index] );
 
+		// TWO N-GONS FIRST, triangles only if that fails.
+		//
+		// Triangulating is correct and it is expensive in the currency the user actually spends. A
+		// Face is the unit of selection and of material assignment, so a 24-gon cap with a pocket cut
+		// into it came back as 29 triangles and clicking it to paint it painted ONE of them. Splitting
+		// the ring on a second bridge gives two n-gons instead, which is the fewest a face with a hole
+		// in it can ever be - a face is one loop of corners, so one is not on offer at any price.
+		//
+		// The splitter refuses anything it is not certain of and says so by returning null, because a
+		// wrong split is a self-intersecting face that is closed, manifold and Euler-correct. Falling
+		// through to the triangulator is never wrong, only coarse.
+		if ( TrySplitIntoFaces( mesh, indices, uvs, positions ) )
+			return;
+
 		// BridgedFace, not Face. Face routes to the simple-polygon ear clipper, which does not fail
 		// on a bridged loop - it returns an overlapping fan that covers the hole back in. See
 		// Triangulate.BridgedLoop.
@@ -318,6 +332,51 @@ public sealed class EffigyMeshBoolean : IMeshBoolean
 			mesh.AddFace( new[] { ia, ib, ic },
 				uvs is null ? null : new[] { uvs[a], uvs[b], uvs[c] } );
 		}
+	}
+
+	/// <summary>
+	/// Rebuild a bridged face as two n-gons, or report that it cannot be done and change nothing.
+	///
+	/// EVERY FACE IS BUILT BEFORE ANY IS ADDED. A split that turns out bad halfway through would
+	/// otherwise leave one good face in the mesh and the caller triangulating the same corners on top
+	/// of it, which is a doubled surface rather than a fallback.
+	/// </summary>
+	static bool TrySplitIntoFaces( PolyMesh mesh, int[] indices, Vec2[] uvs, List<Vec3> positions )
+	{
+		var loops = Triangulate.SplitBridgedFace( positions );
+
+		if ( loops is null )
+			return false;
+
+		var faces = new List<(int[] Indices, Vec2[] UVs)>( loops.Count );
+
+		foreach ( var loop in loops )
+		{
+			var faceIndices = new int[loop.Count];
+			var faceUVs = uvs is null ? null : new Vec2[loop.Count];
+
+			for ( var i = 0; i < loop.Count; i++ )
+			{
+				faceIndices[i] = indices[loop[i]];
+
+				if ( faceUVs is not null )
+					faceUVs[i] = uvs[loop[i]];
+			}
+
+			// The entire purpose of this path is to stop handing PolyMesh a face that repeats a
+			// vertex. One that does it anyway is worse than no split at all. Note this checks the MESH
+			// indices, not the loop's: two corners the mesh weld already merged are one vertex here
+			// however distinct they looked to the splitter.
+			if ( faceIndices.Length < 3 || faceIndices.Distinct().Count() != faceIndices.Length )
+				return false;
+
+			faces.Add( (faceIndices, faceUVs) );
+		}
+
+		foreach ( var (faceIndices, faceUVs) in faces )
+			mesh.AddFace( faceIndices, faceUVs );
+
+		return true;
 	}
 
 	/// <summary>Null rather than a wrong-length array when the engine has nothing to give: Face

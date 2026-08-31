@@ -1,4 +1,4 @@
-# What is built
+﻿# What is built
 
 Everything here is done and verified unless it says otherwise, and where something was verified the
 method is named — because on this project the difference between "the tests pass" and "I looked at
@@ -8,7 +8,7 @@ it" has repeatedly been the difference between right and wrong.
 wrong. Every hard bug in this repo passed most of its checks. Measure enclosed volume, covered
 area, or boundary-edge count — not "it renders and looks fine".
 
-Verified as of 30 August 2026: **1395 kernel checks, 0 failing** (`./tools/test.sh`), and the whole
+Verified as of 31 August 2026: **1407 kernel checks, 0 failing** (`./tools/test.sh`), and the whole
 project **compiles clean in the s&box editor**, 0 errors, 61 tools registered.
 
 ---
@@ -93,6 +93,11 @@ Hole walls come free: `ProfileFinder` hands holes back wound the opposite way, s
 faces them into the hole with no sign handling anywhere. The cost is the cap: a face with a hole in
 it is not a polygon, so it is triangulated rather than being a single n-gon, and it subdivides
 worse. Profiles *without* holes are untouched and still get their n-gon, pinned by a test.
+
+Sketch caps still triangulate. The two-n-gon splitter added for the boolean
+(`Triangulate.SplitBridgedLoop`) applies to loops arriving from the **engine**, not to
+`Triangulate.WithHoles`, which builds its own bridges and finishes through the ear clipper. Pointing
+the cap pass at the splitter is a small, self-contained job and is listed in WHAT-IS-LEFT.
 
 Curve types: lines, arcs, circles, **ellipses and splines**. The spline interpolates (centripetal
 Catmull-Rom) rather than using control points, which is what makes every existing constraint mean
@@ -347,8 +352,20 @@ the kernel (`ExtrudeFeature.DirectionSign`).
 **Bridged faces.** A half-edge face is one closed loop, so the engine returns a face-with-a-hole as a
 single loop running out to the hole and back along the same seam, visiting two vertices twice.
 `PolyMesh` forbids that. Handed straight to `AddFace` it produced a mesh whose OBJ Blender filled in
-solid — the tunnel was there and its mouth was covered. `AddFaceSplittingBridges` triangulates them
+solid — the tunnel was there and its mouth was covered. `AddFaceSplittingBridges` takes them apart
 on the way in.
+
+**What that first cost, and no longer does.** Taking them apart meant *triangulating* them, which is
+correct and expensive in the only currency the user spends: a `Face` is the unit of selection and of
+material assignment, so a 24-gon cylinder cap with a pocket cut into it came back as **29 triangles**
+and clicking it to paint it painted one of them. The mesh was closed, manifold and the right volume
+every time — the existing hole tests all passed while the face a person clicks on had been shattered.
+`Triangulate.SplitBridgedLoop` now recovers the outer boundary and the hole from the bridged loop and
+cuts the ring on a **second bridge**, giving **two n-gons**. Two is the floor, not one: a face is a
+single loop of corners, so a face with a hole in it cannot be fewer, and no modeller does better.
+The splitter refuses anything it is not certain of — more than one hole in a face, repeats that do not
+sit where a bridge puts them, a hole with no valid second bridge — and falls back to triangulating,
+which is never wrong, only coarse. `HoleTests` asserts the **face count**, which nothing did before.
 
 **The wrong ear clipper.** `Triangulate.Polygon` assumes a simple polygon and does not fail on a
 bridged loop — it returns an overlapping fan that covers the hole back in. `Triangulate.BridgedLoop`

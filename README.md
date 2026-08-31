@@ -1,4 +1,4 @@
-# Marionette
+﻿# Marionette
 
 Three s&box editor tools that share one thesis: **make a usable, rigged, animated, shaded model
 without leaving the editor.**
@@ -142,7 +142,7 @@ Two asset types, deliberately separate so several clips can share one rig:
 A parametric CAD modeller, built on an **engine-free kernel** — `Effigy/` contains no reference to
 any engine type anywhere in it, and compiles under s&box, Godot's C#, or a bare console runner.
 That is not tidiness; it is what makes the whole thing testable without an engine in front of you,
-and 1395 headless checks are the payoff.
+and 1407 headless checks are the payoff.
 
 ### The loop
 
