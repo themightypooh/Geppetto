@@ -4343,9 +4343,21 @@ internal sealed class EffigyToolStrip : Widget
 	public const float ButtonSize = 54f;
 
 	/// <summary>How far up the hand-painted glyphs are scaled from the nominal 18x18 box they are
-	/// authored in. 1.5 puts a 27px glyph in a 54px button - the same glyph-to-button ratio the
-	/// font-icon sketch strip uses, so the two strips still read as one piece of chrome.</summary>
-	public const float IconScale = 1.5f;
+	/// authored in. 1.8 puts a 32px glyph in a 54px button.
+	///
+	/// IT WAS 1.5, AND THE REASON IT WAS 1.5 EXPIRED. The old note said 1.5 matched "the same
+	/// glyph-to-button ratio the font-icon sketch strip uses, so the two strips still read as one
+	/// piece of chrome" - and the sketch strip has not been font icons for a while. It is drawn
+	/// from this same set now, so the ratio it was being matched to no longer exists and 1.5 was
+	/// left holding a dead argument.
+	///
+	/// What replaced the argument is a measurement. tools/iconsheet renders every glyph at this
+	/// scale and prints how much of the button each one's ink covers: at 1.5 the median was 46%,
+	/// where an icon in a button this size reads at nearer 60%. At 1.8 a glyph that fills its
+	/// authored box covers 60% and the median lands at 55%. LabelIconScale's 1.95 was picked by
+	/// eye, on the one button anybody could see the problem on, and it has been pointing at this
+	/// number the whole time.</summary>
+	public const float IconScale = 1.8f;
 
 	/// <summary>Bigger, for the one button wide enough to carry a label. The square buttons are
 	/// sized so twelve of them fit across the viewport; the Sketch button is not, and at the shared

@@ -222,6 +222,27 @@ internal static class EffigyIcons
 		}
 	}
 
+	/// <summary>An elliptical arc as a polyline. Arc() draws a circle and cannot say "this circle
+	/// is lying flat"; that foreshortening is the entire difference between a glyph that reads as
+	/// a rotation about an axis and one that reads as a spiral.</summary>
+	private static void EllipseArc( Vector2 center, float radiusX, float radiusY,
+		float fromDegrees, float toDegrees, int segments = 24 )
+	{
+		var previous = Vector2.Zero;
+
+		for ( var i = 0; i <= segments; i++ )
+		{
+			var t = fromDegrees + (toDegrees - fromDegrees) * (i / (float)segments);
+			var radians = t * MathF.PI / 180f;
+			var point = center + new Vector2( MathF.Cos( radians ) * radiusX, MathF.Sin( radians ) * radiusY ) * _scale;
+
+			if ( i > 0 )
+				Editor.Paint.DrawLine( previous, point );
+
+			previous = point;
+		}
+	}
+
 	/// <summary>A solid triangular arrow head, pointing along <paramref name="direction"/>.</summary>
 	private static void ArrowHead( Vector2 tip, Vector2 direction, Color color, float size = 3.4f )
 	{
@@ -349,36 +370,42 @@ internal static class EffigyIcons
 	/// </summary>
 	private static void PaintRevolve( Vector2 c, Color color )
 	{
-		const float AxisX = -3.6f;
+		// ONSHAPE'S OWN REVOLVE ICON: a disc with a wedge taken out of it. po pointed at it, and it
+		// is better than either drawing that came before.
+		//
+		// The first attempt stacked a dashed axis, a filled profile rectangle and a circular arrow
+		// on top of each other; the arc swept straight through the rectangle it was meant to be
+		// spinning and the three merged into a tall dark blob that read as the letter D. The
+		// second replaced it with a lathe - profile beside an axis, ellipse sweeping round it -
+		// which was legible but was three small shapes doing the work of one, and small shapes are
+		// what stop reading first when the strip is the only chrome on a 3D viewport.
+		//
+		// A disc with a mouth is ONE shape. It shows the result rather than the mechanism, which
+		// is the idiom the rest of this strip already uses - Chamfer cuts a corner off a square,
+		// Shell puts a wall inside one. The mouth is what makes it a revolve rather than a circle:
+		// the two cut faces meeting at the centre are the start and end of the sweep, and they say
+		// "this was swept through an angle" without needing an arrow to explain it. It is also
+		// square and solid, so it holds its weight next to Extrude and Loft instead of being the
+		// one thin glyph on the row.
 
-		Stroked( color.WithAlpha( 0.5f ), 1.35f );
+		const float Radius = 8.6f;
 
-		for ( var y = -8.6f; y < 8.6f; y += 3.8f )
-			Editor.Paint.DrawLine( At( c, AxisX, y ), At( c, AxisX, MathF.Min( y + 2.2f, 8.6f ) ) );
+		// How much of the disc is missing. Wide enough to read as a deliberate mouth at 32px
+		// rather than as a nick in the outline, narrow enough that the shape is still a disc.
+		const float MouthHalfAngle = 38f;
+
+		// The rim, from one cut face round to the other, then in to the centre. Closing the loop
+		// draws the second cut face, so the whole silhouette is one walk.
+		var rim = ArcPoints( c, Radius, MouthHalfAngle, 360f - MouthHalfAngle, 30 );
+		rim.Add( c );
+
+		var silhouette = rim.ToArray();
 
 		Filled( color.WithAlpha( 0.22f ) );
-		Editor.Paint.DrawPolygon(
-			At( c, AxisX, -5.2f ), At( c, 3.4f, -5.2f ),
-			At( c, 3.4f, 5.2f ), At( c, AxisX, 5.2f ) );
+		Editor.Paint.DrawPolygon( silhouette );
 
-		Stroked( color, 1.55f );
-		Editor.Paint.DrawLine( At( c, AxisX, -5.2f ), At( c, 3.4f, -5.2f ) );
-		Editor.Paint.DrawLine( At( c, 3.4f, -5.2f ), At( c, 3.4f, 5.2f ) );
-		Editor.Paint.DrawLine( At( c, 3.4f, 5.2f ), At( c, AxisX, 5.2f ) );
-
-		const float Radius = 8.4f;
-		const float From = -80f;
-		const float To = 85f;
-		var hub = At( c, AxisX, 0 );
-
-		Stroked( color, 2.1f );
-		Arc( hub, Radius, From, To, 22 );
-
-		var end = To * MathF.PI / 180f;
-		var tip = hub + new Vector2( MathF.Cos( end ), MathF.Sin( end ) ) * Radius * _scale;
-		var tangent = new Vector2( -MathF.Sin( end ), MathF.Cos( end ) );
-
-		ArrowHead( tip, tangent, color, 3.6f );
+		Stroked( color, 1.6f );
+		Outline( silhouette );
 	}
 
 	/// <summary>
@@ -627,14 +654,25 @@ internal static class EffigyIcons
 	/// <summary>One body copied along a direction — first solid, copies outlined and fading.</summary>
 	private static void PaintLinearPattern( Vector2 c, Color color )
 	{
+		// TWO FAULTS, AND THE SECOND IS THE ONE THAT MATTERED. Three 6-unit squares starting at
+		// -8.4 ran to +12, so the glyph was 20.4 units wide in a box of 18 - and, worse, its centre
+		// of mass sat 1.8 units RIGHT of the button's centre, because the run was never balanced
+		// about it. An off-centre glyph in a row of centred ones is visible long before an
+		// oversized one is, and neither is visible while looking at this icon on its own.
+		//
+		// Three 5.2 squares with 1.2 between them is 18 exactly, laid out symmetrically about c.
+		const float Square = 5.2f;
+		const float Gap = 1.2f;
+		const float First = -9f;
+
 		Filled( color );
-		Editor.Paint.DrawRect( Box( c, -8.4f, -3f, 6f, 6f ), 1.2f * _scale );
+		Editor.Paint.DrawRect( Box( c, First, -Square / 2f, Square, Square ), 1.2f * _scale );
 
 		Stroked( color.WithAlpha( 0.8f ) );
-		Editor.Paint.DrawRect( Box( c, -1.2f, -3f, 6f, 6f ), 1.2f * _scale );
+		Editor.Paint.DrawRect( Box( c, First + Square + Gap, -Square / 2f, Square, Square ), 1.2f * _scale );
 
 		Stroked( color.WithAlpha( 0.45f ) );
-		Editor.Paint.DrawRect( Box( c, 6f, -3f, 6f, 6f ), 1.2f * _scale );
+		Editor.Paint.DrawRect( Box( c, First + 2f * (Square + Gap), -Square / 2f, Square, Square ), 1.2f * _scale );
 	}
 
 	/// <summary>
@@ -887,14 +925,19 @@ internal static class EffigyIcons
 	/// </summary>
 	private static void PaintArcTool( Vector2 c, Color color )
 	{
-		var hub = At( c, 0, 5.5f );
+		// RADIUS 9, NOT 10.5, AND THE HUB SITS AT 4.2 RATHER THAN 5.5. A radius of 10.5 put the
+		// guide rails 21 units apart inside a box this file says is 18, which made this the second
+		// widest glyph on the strip - and nothing about one icon in isolation shows that. Nine
+		// fills the width exactly, and dropping the hub centres the drawing's own height in the
+		// button instead of hanging it below the middle.
+		var hub = At( c, 0, 4.2f );
 
 		Stroked( color, 1.9f );
-		Arc( hub, 10.5f, 180, 360, 20 );
+		Arc( hub, 9f, 180, 360, 20 );
 
 		Stroked( GuideColor( color ), 1f );
-		Editor.Paint.DrawLine( hub, At( c, -10.5f, 5.5f ) );
-		Editor.Paint.DrawLine( hub, At( c, 10.5f, 5.5f ) );
+		Editor.Paint.DrawLine( hub, At( c, -9f, 4.2f ) );
+		Editor.Paint.DrawLine( hub, At( c, 9f, 4.2f ) );
 
 		ClickDot( hub, 1.9f );
 	}
@@ -903,14 +946,20 @@ internal static class EffigyIcons
 	/// passes through.</summary>
 	private static void PaintArcThreePointTool( Vector2 c, Color color )
 	{
-		var hub = At( c, 0, 5.5f );
+		// A SMALLER ARC THAN PaintArcTool's, ON PURPOSE. This was the widest glyph on the strip by
+		// a distance - 24.6 units against a nominal 18 - and the arc was not what made it so: the
+		// three dots are the whole point of the tool, they sit ON the arc's ends, and a 1.8 dot at
+		// x = 10.5 reaches 12.3. The dots are part of the drawing, so the arc gives up the room for
+		// them rather than the pair of icons disagreeing about how wide an arc glyph is: both now
+		// fill exactly 18 units, which is the measurement the eye actually compares.
+		var hub = At( c, 0, 4.2f );
 
 		Stroked( color, 1.9f );
-		Arc( hub, 10.5f, 180, 360, 20 );
+		Arc( hub, 7.2f, 180, 360, 20 );
 
-		ClickDot( At( c, -10.5f, 5.5f ) );
-		ClickDot( At( c, 0, -5f ) );
-		ClickDot( At( c, 10.5f, 5.5f ) );
+		ClickDot( At( c, -7.2f, 4.2f ) );
+		ClickDot( At( c, 0, -3f ) );
+		ClickDot( At( c, 7.2f, 4.2f ) );
 	}
 
 	/// <summary>
@@ -1353,7 +1402,7 @@ internal static class EffigyIcons
 		for ( var i = 0; i <= 32; i++ )
 		{
 			var t = i / 32f;
-			var x = -8.5f + 17f * t;
+			var x = -7.5f + 15f * t;
 			var y = MathF.Sin( t * MathF.PI * 1.6f + 0.4f ) * 5.2f - 1f;
 			var point = At( c, x, y );
 
@@ -1365,9 +1414,13 @@ internal static class EffigyIcons
 
 		Filled( color );
 
+		// 15 UNITS OF CURVE, NOT 17. The end dots are centred on the curve's own ends and are 3
+		// units across, so a curve spanning 17 drew a glyph spanning 20 in a box of 18. Fifteen
+		// plus the two half-dots is exactly 18. The dot positions are recomputed from the same
+		// expression as the curve rather than being written out, so the two cannot drift apart.
 		foreach ( var t in new[] { 0f, 0.5f, 1f } )
 		{
-			var x = -8.5f + 17f * t;
+			var x = -7.5f + 15f * t;
 			var y = MathF.Sin( t * MathF.PI * 1.6f + 0.4f ) * 5.2f - 1f;
 
 			Editor.Paint.DrawRect( Box( c, x - 1.5f, y - 1.5f, 3f, 3f ), 1.5f * _scale );

@@ -386,19 +386,19 @@ Extrude. Nothing implements that today.
 The other two thirds of this item are done: right-clicking a face gives a real menu, and tree click
 selects.
 
-### 2.6 Sketch-strip icons — **drawn; now rendered, and the sizing note is confirmed by measurement**
+### 2.6 Sketch-strip icons — **rendered, measured, and resized; what is left is the drawings**
 
 **The first half of this note was stale.** All ~14 sketch-strip glyphs are hand-drawn in the
 `EffigyIcons` idiom — the enum's own comment records what they replaced ("`show_chart` for Line,
 `cached` for Arc, `crop_square` for Rectangle") — and so are the eleven sculpt glyphs, Draft, Hole
-and the six later sketch tools. Fifty-one in total. `_scale` exists and the strip passes
-`IconScale`, so the fixed-18px-glyph-in-a-big-button problem the second half named is also fixed.
+and the six later sketch tools. Fifty-one in total.
 
 **What was true is that none of them had ever been rendered.** `tools/iconsheet` fixes that without
 s&box: `EffigyIcons.cs` is LINKED into a small project alongside a shim for the four engine types it
 touches, `Editor.Paint` records to SVG instead of to a widget, and the run writes one SVG per glyph
-plus an `icon-sheet.html` contact sheet at the strip's real geometry — a 54×54 button with the glyph
-at scale 1.5, on both palettes.
+plus an `icon-sheet.html` contact sheet at the strip's real geometry, on both palettes. It reads
+`ButtonSize` and `IconScale` out of `EffigyWindow.cs` rather than copying them, because a sheet
+drawn at a stale scale is worse than no sheet — it looks like evidence.
 
 ```sh
 dotnet run --project tools/iconsheet -- out
@@ -407,25 +407,42 @@ dotnet run --project tools/iconsheet -- out
 It is exact on geometry, because geometry is all `EffigyIcons` computes. It cannot judge s&box's
 rasteriser; pen cap and join are the one guess and are sub-pixel at a 1.6px stroke.
 
-**What the first render settled, by measuring rather than by eye.** Every glyph is authored against
-a "nominal 18×18 box", and they are not:
+**What the first render found, and what was done about it.** Every glyph is authored against a
+"nominal 18×18 box", and four were not in it. The median glyph covered **46%** of its 54px button
+where an icon that size reads at nearer 60%, and the spread from smallest to largest was **2:1** —
+which is the fault that actually shows, because a strip whose glyphs vary two-fold in optical size
+reads as unfinished however good each drawing is, and looking at one icon at a time will never
+reveal it.
 
-- **The median glyph's largest dimension is 24.6px in a 54px button — 46% of it.** An icon in a
-  button of that size normally reads at nearer 60%. `IconScale` is 1.5; about 1.9 would land it
-  there. This is the "glyph sits slightly small inside it" observation, now with a number on it.
-- **The spread is 2:1, which is the bigger problem.** `CircleTool` covers 34% and
-  `ArcThreePointTool` covers 68% — 36.9px wide, which is 24.6 nominal units, well outside the 18×18
-  box the file says everything is drawn in. `ArcTool` (58%), `LinearPattern` (57%) and `SplineTool`
-  (56%) are also over. A strip whose glyphs vary two-fold in optical size reads as unfinished
-  regardless of how good each drawing is.
+- **`IconScale` 1.5 → 1.8.** The old value's stated reason had expired: its comment said 1.5 matched
+  "the same glyph-to-button ratio the font-icon sketch strip uses", and the sketch strip stopped
+  being font icons some time ago. Median coverage is now **55%**, and a glyph that fills its
+  authored box covers 60%.
+- **Four glyphs brought back inside their box.** `ArcTool`'s radius was 10.5, spanning 21 units in a
+  box of 18. `ArcThreePointTool` was 24.6 wide, and the arc was not the culprit — its three dots sit
+  on the arc's ends, so a 1.8 dot at x = 10.5 reaches 12.3; the arc gives up the room for them.
+  `SplineTool` spanned 17 units of curve plus a 3-unit dot. `LinearPattern` was 20.4 wide **and
+  1.8 units off-centre**, which is the more visible fault of the two and was invisible in isolation.
 
-**What is left is a judgement, and it now has a preview loop behind it:** raise `IconScale`, bring
-the four outliers back inside the box, and re-render. Then the drawings themselves — the sheet makes
-the weak ones visible, and the candidates are the pairs that read alike at strip size
-(`SculptLevelDown`/`SculptLevelUp`/`Subdivide` are all "a grid"; `PolygonTool` and
-`PolygonCircumscribedTool` differ only in a circle nobody will see; `Sculpt`, `SculptDraw` and
-`SculptGrab` share a silhouette) and `Sweep`, `Loft` and `SculptInflate`, which read as blobs rather
-than as operations.
+**`Revolve` was redrawn twice and is now Onshape's own icon** — a disc with a wedge taken out of it.
+The original stacked a dashed axis, a filled profile rectangle and a circular arrow on top of each
+other; the arc swept straight through the rectangle it was meant to be spinning, and at strip size
+the three merged into a tall dark blob that read as the letter D. It was also the only glyph on the
+strip taller than its own box while being half as wide as one. A lathe (profile, axis, sweeping
+ellipse) replaced it and was legible, but was three small shapes doing one shape's work. The disc
+shows the RESULT, which is the idiom the rest of the strip already uses, and it holds its weight
+next to Extrude and Loft.
+
+**Where it stands now: median 55%, spread 41–63%** (`CircleTool` to `Draft`), against 46% and
+34–68% before. `Draft` is the only glyph still over its box, by 5%, and was left alone — churning a
+drawing for 5% risks more than it fixes.
+
+**What is left is the drawings themselves, and the sheet is what makes them judgeable.** The
+candidates are the ones that read alike at strip size — `SculptLevelDown`, `SculptLevelUp` and
+`Subdivide` are all "a grid"; `PolygonTool` and `PolygonCircumscribedTool` differ only in a circle
+nobody will see at 54px; `Sculpt`, `SculptDraw` and `SculptGrab` share a silhouette — and `Sweep`,
+`Loft` and `SculptInflate`, which read as shapes rather than as operations. The small end
+(`CircleTool`, `FinishSketchTool`, `Sketch`, all near 41%) is a second, smaller pass.
 
 ### 2.7 Smaller editor gaps
 
