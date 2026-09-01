@@ -188,6 +188,20 @@ public sealed class EffigyWindow : DockWindow
 	/// diagnostic prints, it does not touch the document.</summary>
 	internal PartStudio DiagnosticStudio => _studio;
 
+	/// <summary>Which of the two strips is on screen, for the sketch probe.
+	///
+	/// EnterSketch swaps these BEFORE it does anything else, so they are the cheapest evidence in
+	/// the editor about whether entering a sketch actually happened: feature strip still up means
+	/// EnterSketch never ran, sketch strip up with no active sketch means it ran and BeginSketch
+	/// did not take. Reading them off a screenshot is what this replaces, and a screenshot cannot
+	/// tell those two apart when the swap itself is the thing in doubt.</summary>
+	internal (bool Feature, bool Sketch) DiagnosticStripState
+		=> (_toolStrip?.Visible ?? false, _sketchStrip?.Visible ?? false);
+
+	/// <summary>The feature whose sketch is open, if any - so the probe can say whether the window
+	/// and the viewport agree about that.</summary>
+	internal string DiagnosticSketchFeature => ActiveSketchFeature()?.Name;
+
 	public EffigyWindow()
 	{
 		Current = this;

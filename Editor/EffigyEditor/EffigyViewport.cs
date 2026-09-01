@@ -996,6 +996,11 @@ internal sealed partial class EffigyViewport : Widget
 		SketchFrame();
 		SculptFrame();
 
+		// AFTER SketchFrame and outside it, because SketchFrame returns early when no sketch is
+		// open and "no sketch is open" is one of the answers the probe exists to give. Off unless
+		// `effigy_probe_sketch 1` has been run.
+		SketchProbe();
+
 		// Origin on top of the planes. Hidden while sketching or picking anything - it sits at the
 		// exact spot most first clicks land, and stealing them was the first thing that broke.
 		if ( !IsSketching && !PlanePickMode && !SketchPickMode && !BodyPickMode && !BoneToolActive )

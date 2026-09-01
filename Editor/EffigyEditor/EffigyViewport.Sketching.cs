@@ -1056,7 +1056,11 @@ internal sealed partial class EffigyViewport
 
 		_pending.Clear();
 
-		Log.Info( $"[effigy-probe] BeginSketch curves={sketch?.Curves.Count} points={sketch?.Points.Count} tool={SketchTool}" );
+		// The entry marker. Once per sketch opened rather than per frame, and it is the line that
+		// says whether EnterSketch got this far at all - so turn the probe on BEFORE clicking
+		// "Edit sketch", not after.
+		if ( _probeSketch )
+			Log.Info( $"[effigy-probe] BeginSketch curves={sketch?.Curves.Count} points={sketch?.Points.Count} tool={SketchTool}" );
 
 		// The selection is a list of INDICES into the sketch that was open a moment ago. Carried
 		// into a different sketch they still resolve, to whatever points happen to sit at those
@@ -1742,22 +1746,74 @@ internal sealed partial class EffigyViewport
 
 		if ( _canvasHasCursor && _cursorOnPlaneValid && Gizmo.WasLeftMousePressed && SketchTool != SketchToolKind.Select && _dragPoint < 0 )
 			ClickTool( _cursorOnPlane );
-
-		SketchProbe();
 	}
 
-	// --- TEMPORARY DIAGNOSTIC -----------------------------------------------------------------
-	// Twice a second while a sketch is open, print everything the point handles decide from. Delete
-	// this and its call above once the hover question is settled.
+	// --- SKETCH POINT PROBE -------------------------------------------------------------------
+	//
+	// TEMPORARY, and it comes out as soon as the hover question is settled.
+	//
+	// TWO THINGS CHANGED FROM THE FIRST VERSION, BOTH BECAUSE IT COULD NOT ANSWER THE QUESTION IT
+	// WAS BUILT FOR.
+	//
+	// It was called from the end of SketchFrame, which returns early when no sketch is open - so
+	// "nothing printed" meant "no sketch open" and "the probe is not in this build" and "the
+	// console is filtered" all at once, and the first of those is a live hypothesis rather than
+	// something to rule out. It now runs from the frame tick whether or not a sketch is open, and
+	// says so in as many words. Silence now means the probe is off.
+	//
+	// And it was always on while a sketch was open, which is why nobody wants it on. It is behind
+	// `effigy_probe_sketch 1` now, so it can be turned on for the ten seconds of a repro.
+	//
+	// WHAT EACH FIELD RULES OUT, in the order the chain breaks:
+	//
+	//   featureStrip / sketchStrip  EnterSketch swaps these first of all. Feature strip still up
+	//                               means it never ran - the button, not the hit test.
+	//   sketching                   BeginSketch took. If the strips swapped and this is false, the
+	//                               swap is fine and the sketch never opened.
+	//   tool                        Point handles only run in Select. Anything else and hovering is
+	//                               working exactly as written.
+	//   onCanvas                    The cursor is over the 3D view and not flying the camera.
+	//   planeValid                  The cursor ray reached the sketch plane at all.
+	//   unitsPerPx / reach          The pick radius in sketch units. A reach of ~0 is a scale bug
+	//                               and every distance below will look enormous next to it.
+	//   nearest                     Distance to the closest point. Compare against reach: that one
+	//                               comparison is the whole hit test.
+
+	private static bool _probeSketch;
+
+	/// <summary>Turn the sketch point probe on or off: `effigy_probe_sketch 1`.</summary>
+	[ConCmd( "effigy_probe_sketch" )]
+	public static void SetSketchProbe( int on )
+	{
+		_probeSketch = on != 0;
+
+		Log.Info( _probeSketch
+			? "[effigy-probe] on - hover a sketch point and read the chain left to right; the first false is the break"
+			: "[effigy-probe] off" );
+	}
 
 	private float _lastProbe;
 
+	/// <summary>Called from the frame tick, NOT from SketchFrame - see the note above about why
+	/// running only when a sketch is open made silence unreadable.</summary>
 	private void SketchProbe()
 	{
-		if ( RealTime.Now - _lastProbe < 0.5f )
+		if ( !_probeSketch || RealTime.Now - _lastProbe < 0.5f )
 			return;
 
 		_lastProbe = RealTime.Now;
+
+		var strips = EffigyWindow.Current?.DiagnosticStripState ?? (false, false);
+		var feature = EffigyWindow.Current?.DiagnosticSketchFeature;
+
+		if ( ActiveSketch is null )
+		{
+			Log.Info( $"[effigy-probe] NO SKETCH OPEN. featureStrip={strips.Feature} sketchStrip={strips.Sketch}" +
+				$" windowFeature={feature ?? "none"} onCanvas={_canvasHasCursor}" +
+				" - the point handles do not run at all in this state, and the points you can see are"
+				+ " DrawCommittedSketches, which is display only." );
+			return;
+		}
 
 		var units = UnitsPerPixel();
 		var nearest = -1;
@@ -1774,7 +1830,8 @@ internal sealed partial class EffigyViewport
 			nearest = i;
 		}
 
-		Log.Info( $"[effigy-probe] tool={SketchTool} onCanvas={_canvasHasCursor} planeValid={_cursorOnPlaneValid}" +
+		Log.Info( $"[effigy-probe] sketching featureStrip={strips.Feature} sketchStrip={strips.Sketch}" +
+			$" tool={SketchTool} onCanvas={_canvasHasCursor} planeValid={_cursorOnPlaneValid}" +
 			$" cursor=({_cursorOnPlane.x:0.###},{_cursorOnPlane.y:0.###}) pts={ActiveSketch.Points.Count}" +
 			$" unitsPerPx={units:0.#####} reach={units * PointHandlePixels:0.####}" +
 			$" nearest={nearest}@{(nearest < 0 ? 0f : best):0.####} hover={_hoverPoint} drag={_dragPoint}" +
