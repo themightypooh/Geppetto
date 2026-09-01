@@ -386,18 +386,46 @@ Extrude. Nothing implements that today.
 The other two thirds of this item are done: right-clicking a face gives a real menu, and tree click
 selects.
 
-### 2.6 Better sketch-strip icons, and the glyph-scaling gap
+### 2.6 Sketch-strip icons — **drawn; now rendered, and the sizing note is confirmed by measurement**
 
-The sketch strip has safe, non-blank, but **generic** font glyphs (`Paint.DrawIcon`, classic
-Material Icon names), not the hand-drawn CAD-operation-specific style `EffigyIcons` uses for the
-feature strip — where Chamfer shows a corner being cut and Shell shows a wall inside a shape. Drawing
-~14 more in that style is real design work: line, rectangle ×2, circle ×2, arc ×2, polygon ×2, slot,
-point, construction, profile inspector, finish.
+**The first half of this note was stale.** All ~14 sketch-strip glyphs are hand-drawn in the
+`EffigyIcons` idiom — the enum's own comment records what they replaced ("`show_chart` for Line,
+`cached` for Arc, `crop_square` for Rectangle") — and so are the eleven sculpt glyphs, Draft, Hole
+and the six later sketch tools. Fifty-one in total. `_scale` exists and the strip passes
+`IconScale`, so the fixed-18px-glyph-in-a-big-button problem the second half named is also fixed.
 
-Alongside it: the hand-painted `EffigyIcons` glyphs are still drawn at their original nominal 18px
-weight rather than scaled with the bigger 40×40 button, so a glyph sits slightly small inside it.
-`Paint`'s scaling API was not confirmed safe to guess at from the old environment — it can now be
-read out of the shipped Base Editor Library instead.
+**What was true is that none of them had ever been rendered.** `tools/iconsheet` fixes that without
+s&box: `EffigyIcons.cs` is LINKED into a small project alongside a shim for the four engine types it
+touches, `Editor.Paint` records to SVG instead of to a widget, and the run writes one SVG per glyph
+plus an `icon-sheet.html` contact sheet at the strip's real geometry — a 54×54 button with the glyph
+at scale 1.5, on both palettes.
+
+```sh
+dotnet run --project tools/iconsheet -- out
+```
+
+It is exact on geometry, because geometry is all `EffigyIcons` computes. It cannot judge s&box's
+rasteriser; pen cap and join are the one guess and are sub-pixel at a 1.6px stroke.
+
+**What the first render settled, by measuring rather than by eye.** Every glyph is authored against
+a "nominal 18×18 box", and they are not:
+
+- **The median glyph's largest dimension is 24.6px in a 54px button — 46% of it.** An icon in a
+  button of that size normally reads at nearer 60%. `IconScale` is 1.5; about 1.9 would land it
+  there. This is the "glyph sits slightly small inside it" observation, now with a number on it.
+- **The spread is 2:1, which is the bigger problem.** `CircleTool` covers 34% and
+  `ArcThreePointTool` covers 68% — 36.9px wide, which is 24.6 nominal units, well outside the 18×18
+  box the file says everything is drawn in. `ArcTool` (58%), `LinearPattern` (57%) and `SplineTool`
+  (56%) are also over. A strip whose glyphs vary two-fold in optical size reads as unfinished
+  regardless of how good each drawing is.
+
+**What is left is a judgement, and it now has a preview loop behind it:** raise `IconScale`, bring
+the four outliers back inside the box, and re-render. Then the drawings themselves — the sheet makes
+the weak ones visible, and the candidates are the pairs that read alike at strip size
+(`SculptLevelDown`/`SculptLevelUp`/`Subdivide` are all "a grid"; `PolygonTool` and
+`PolygonCircumscribedTool` differ only in a circle nobody will see; `Sculpt`, `SculptDraw` and
+`SculptGrab` share a silhouette) and `Sweep`, `Loft` and `SculptInflate`, which read as blobs rather
+than as operations.
 
 ### 2.7 Smaller editor gaps
 

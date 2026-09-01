@@ -13,6 +13,7 @@ bin
 # csproj files; this one is hand-written and has to be in the repo for `dotnet run` to work.
 !Effigy.Tests/Effigy.Tests.csproj
 !ShaderForge.Tests/ShaderForge.Tests.csproj
+!tools/iconsheet/IconSheet.csproj
 Properties/*
 code/obj/*
 code/Properties/*
