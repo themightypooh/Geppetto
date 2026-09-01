@@ -389,6 +389,13 @@ public sealed class PartStudio
 		if ( consumer is null )
 			return null;
 
+		// A feature waiting to be pointed at a sketch resolves to NOTHING rather than to the most
+		// recent one: it consumes nothing yet, so the sketch it might end up using has to stay visible
+		// and pickable - which is how you point at it in the first place. See
+		// SketchConsumingFeature.AwaitingPick.
+		if ( consumer.IsAwaitingPick )
+			return null;
+
 		if ( !string.IsNullOrEmpty( consumer.SketchFeatureId ) )
 			return consumer.SketchFeatureId;
 

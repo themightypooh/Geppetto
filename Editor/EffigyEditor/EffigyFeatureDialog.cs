@@ -38,6 +38,11 @@ internal sealed class EffigyFeatureDialog : Widget
 	/// it back by hand or an abandoned pick would survive.</summary>
 	private string _sketchIdSnapshot;
 
+	/// <summary>The picked region when the dialog opened, for the same reason as the id above: it is
+	/// a plain field rather than an IParam, so the generic snapshot cannot see it and an abandoned
+	/// face pick would outlive the Cancel that was meant to undo it.</summary>
+	private Vec2? _regionSeedSnapshot;
+
 	/// <summary>
 	/// Whether a sketch plane has actually been chosen.
 	///
@@ -73,6 +78,20 @@ internal sealed class EffigyFeatureDialog : Widget
 
 	/// <summary>Any parameter edit — the studio rebuilds live, as Onshape does.</summary>
 	public Action Edited { get; set; }
+
+	/// <summary>
+	/// Someone has answered something on the open feature - a number typed, a plane clicked, a body
+	/// picked. EVERY user edit in this dialog goes through RaiseEdited, so this is the whole picture
+	/// rather than a flag somebody has to remember to set.
+	/// </summary>
+	private bool _touched;
+
+	/// <summary>Raise Edited and remember that it happened. See <see cref="IsUntouched"/>.</summary>
+	private void RaiseEdited()
+	{
+		_touched = true;
+		Edited?.Invoke();
+	}
 
 	/// <summary>The name was typed over, so the tree needs redrawing.</summary>
 	public Action Renamed { get; set; }
@@ -115,6 +134,25 @@ internal sealed class EffigyFeatureDialog : Widget
 
 	public Feature Feature => _feature;
 	public bool IsOpen => _feature is not null;
+
+	/// <summary>The open feature was created for this dialog and has not been ticked yet, so it
+	/// is still the toolbar's pending one - see EffigyWindow.PendingDuplicate.</summary>
+	public bool IsNew => _isNew;
+
+	/// <summary>
+	/// Nothing has been answered on the open feature yet, so it is indistinguishable from the one
+	/// another click on the same toolbar button would make.
+	///
+	/// A sketch is judged by what is DRAWN in it rather than by _touched, because the plane is
+	/// answered through this dialog and picking one would otherwise count: an empty sketch on a
+	/// chosen plane is exactly the thing a second click on Sketch should go back to.
+	/// </summary>
+	public bool IsUntouched => _feature switch
+	{
+		null => false,
+		SketchFeature sketch => sketch.Sketch is not { Curves.Count: > 0 },
+		_ => !_touched,
+	};
 
 	public EffigyFeatureDialog( Widget parent, EffigyViewport viewport ) : base( parent )
 	{
@@ -225,14 +263,24 @@ internal sealed class EffigyFeatureDialog : Widget
 		Visible = true;
 
 		ArmPendingSelection( isNew );
+
+		// AFTER the auto-arm, which assigns the only available sketch to a new Extrude and raises
+		// Edited for it. That is the dialog answering its own question, not the user answering it,
+		// and counting it would make every such feature look configured the moment it opened.
+		_touched = false;
 	}
 
 	/// <summary>
 	/// A feature opens asking for its input, the way Sketch's plane box arms on a new sketch:
 	///  - Sketch: arm the plane picker — it cannot exist without a plane.
-	///  - Extrude/Revolve: a single available sketch is assigned outright on a brand new feature
-	///    (asking would be theatre); otherwise, with no choice yet, the profile box arms and the
-	///    sketches in the viewport are already hoverable and clickable either way.
+	///  - Extrude/Revolve: the profile box arms and the sketches in the viewport become hoverable
+	///    and clickable, however many there are.
+	///
+	/// THE SINGLE SKETCH USED TO BE ASSIGNED OUTRIGHT here, on the grounds that asking would be
+	/// theatre. It was not: the assignment built the feature immediately, so an extrude appeared as
+	/// a solid a unit tall the moment the button was pressed and the box it had filled in for you
+	/// was the one thing you had not looked at. A new Extrude now arrives awaiting its pick - see
+	/// SketchConsumingFeature.AwaitingPick - and this only arms the box that answers it.
 	/// </summary>
 	private void ArmPendingSelection( bool isNew )
 	{
@@ -261,19 +309,43 @@ internal sealed class EffigyFeatureDialog : Widget
 			var hasChoice = !string.IsNullOrEmpty( consumer.SketchFeatureId )
 				&& SketchNameLookup?.Invoke( consumer.SketchFeatureId ) is not null;
 
-			var count = _viewport.PickableSketches.Count;
-
-			if ( isNew && !hasChoice && count == 1 )
-			{
-				consumer.SketchFeatureId = _viewport.PickableSketches[0].FeatureId;
-				Edited?.Invoke();
-				Rebuild();
-				return;
-			}
-
-			if ( !hasChoice && count > 0 )
+			if ( !hasChoice && _viewport.PickableSketches.Count > 0 )
 				_activeArmable?.Arm();
 		}
+	}
+
+	/// <summary>
+	/// A toolbar click that would have created a second copy of the feature already open landed
+	/// here instead: ask again for whatever that one is still waiting on.
+	///
+	/// Deliberately NOT a re-Open. Open( isNew: true ) would take a fresh snapshot and forget
+	/// _planeChosen, so a pending sketch that HAD been given its plane would redraw as though it
+	/// had not and its "Edit sketch" button would go dead. Nothing about the feature changes
+	/// here; the click only repeats the question.
+	///
+	/// False when there is nothing left to ask - a Fillet opens with its radius already typed in -
+	/// so the caller can say why the click added nothing instead of leaving it looking broken.
+	/// </summary>
+	public bool ReassertPending()
+	{
+		if ( _feature is null )
+			return false;
+
+		// Plane already answered, so the box has nothing left to ask - the sketch itself is what is
+		// waiting, and clicking Sketch means "put me back in it", same as the Edit sketch button.
+		if ( _planeChosen && _feature is SketchFeature sketch )
+		{
+			SketchRequested?.Invoke( sketch );
+			return true;
+		}
+
+		if ( _activeArmable is null )
+			return false;
+
+		// Arm() is idempotent, so a click while the box is already armed leaves it armed rather
+		// than toggling the prompt off under someone who was reaching for a plane.
+		_activeArmable.Arm();
+		return true;
 	}
 
 	public new void Close()
@@ -329,12 +401,16 @@ internal sealed class EffigyFeatureDialog : Widget
 	{
 		_snapshot.Clear();
 		_sketchIdSnapshot = null;
+		_regionSeedSnapshot = null;
 
 		if ( _feature is null )
 			return;
 
 		if ( _feature is SketchConsumingFeature consumer )
+		{
 			_sketchIdSnapshot = consumer.SketchFeatureId;
+			_regionSeedSnapshot = consumer.RegionSeed;
+		}
 
 		foreach ( var p in _feature.Parameters )
 		{
@@ -351,8 +427,16 @@ internal sealed class EffigyFeatureDialog : Widget
 
 	private void RestoreSnapshot()
 	{
-		if ( _feature is SketchConsumingFeature consumer && _sketchIdSnapshot is not null )
-			consumer.SketchFeatureId = _sketchIdSnapshot;
+		if ( _feature is SketchConsumingFeature consumer )
+		{
+			if ( _sketchIdSnapshot is not null )
+				consumer.SketchFeatureId = _sketchIdSnapshot;
+
+			// Put back unconditionally, unlike the id: null IS a value here - it means every region -
+			// so a face picked over an empty selection has to be undone as well as one picked over
+			// another face. The type check above is what stands in for "a snapshot was taken".
+			consumer.RegionSeed = _regionSeedSnapshot;
+		}
 
 		foreach ( var (p, value) in _snapshot )
 		{
@@ -516,7 +600,7 @@ internal sealed class EffigyFeatureDialog : Widget
 					return;
 			}
 
-			Edited?.Invoke();
+			RaiseEdited();
 			RefreshValues();
 			return;
 		}
@@ -632,7 +716,7 @@ internal sealed class EffigyFeatureDialog : Widget
 		if ( _feature is SketchFeature clearedFace )
 			clearedFace.Face = null;
 
-		Edited?.Invoke();
+		RaiseEdited();
 		Rebuild();
 
 		if ( _feature is SketchFeature sketch )
@@ -650,7 +734,7 @@ internal sealed class EffigyFeatureDialog : Widget
 
 		sketch.Face = face;
 
-		Edited?.Invoke();
+		RaiseEdited();
 		Rebuild();
 
 		SketchRequested?.Invoke( sketch );
@@ -689,7 +773,7 @@ internal sealed class EffigyFeatureDialog : Widget
 	/// distance and direction parameters.</summary>
 	private void OnSketchPicked()
 	{
-		Edited?.Invoke();
+		RaiseEdited();
 		Rebuild();
 	}
 
@@ -866,7 +950,7 @@ internal sealed class EffigyFeatureDialog : Widget
 				// SetValue rather than assigning through the field's text, so pushing the slider
 				// does not echo back out of the field as another edit.
 				field.SetValue( slider.Value );
-				Edited?.Invoke();
+				RaiseEdited();
 			};
 		}
 
@@ -877,7 +961,7 @@ internal sealed class EffigyFeatureDialog : Widget
 			if ( slider.IsValid() )
 				slider.Value = v;
 
-			Edited?.Invoke();
+			RaiseEdited();
 		};
 
 		if ( draggable )
@@ -936,7 +1020,7 @@ internal sealed class EffigyFeatureDialog : Widget
 			{
 				ip.Value = (int)slider.Value;
 				field.SetValue( ip.Value );
-				Edited?.Invoke();
+				RaiseEdited();
 			};
 		}
 
@@ -947,7 +1031,7 @@ internal sealed class EffigyFeatureDialog : Widget
 			if ( slider.IsValid() )
 				slider.Value = ip.Value;
 
-			Edited?.Invoke();
+			RaiseEdited();
 		};
 
 		if ( draggable )
@@ -1001,7 +1085,7 @@ internal sealed class EffigyFeatureDialog : Widget
 				}
 			}
 
-			Edited?.Invoke();
+			RaiseEdited();
 		};
 
 		layout.Add( toggle, 1 );
@@ -1025,7 +1109,7 @@ internal sealed class EffigyFeatureDialog : Widget
 					return;
 
 				cp.Index = idx;
-				Edited?.Invoke();
+				RaiseEdited();
 
 				// Which parameters exist can depend on this choice, so the dialog redraws itself.
 				Rebuild();
@@ -1112,7 +1196,7 @@ internal sealed class EffigyFeatureDialog : Widget
 		field.ValueEdited = v =>
 		{
 			set( v );
-			Edited?.Invoke();
+			RaiseEdited();
 		};
 
 		var handle = new EffigyAxisHandle( parent, label, colour )
@@ -1126,7 +1210,7 @@ internal sealed class EffigyFeatureDialog : Widget
 				// moment you scrub and the next keystroke edits a value nobody is looking at.
 				field.SetValue( v );
 
-				Edited?.Invoke();
+				RaiseEdited();
 			},
 		};
 
@@ -1167,7 +1251,7 @@ internal sealed class EffigyFeatureDialog : Widget
 	/// parameter edit: the feature's inputs changed, so it re-runs.</summary>
 	private void OnFaceSetChanged()
 	{
-		Edited?.Invoke();
+		RaiseEdited();
 		Rebuild();
 	}
 
@@ -1175,7 +1259,7 @@ internal sealed class EffigyFeatureDialog : Widget
 	/// it has to be marked dirty and re-run like any other parameter edit.</summary>
 	private void OnBodySelectionChanged()
 	{
-		Edited?.Invoke();
+		RaiseEdited();
 		Rebuild();
 	}
 }
@@ -1429,7 +1513,7 @@ internal sealed class EffigySketchSelector : Widget, IArmableSelection
 	/// <summary>The viewport click handler for this box's feature. The dialog wires it into the
 	/// viewport for as long as it is open on the consumer — sketches stay pickable the whole
 	/// time, armed or not, the way planes are while their box is armed.</summary>
-	public Action<string> Picked => OnPicked;
+	public Action<string, Vec2?> Picked => OnPicked;
 
 	/// <summary>The name of the chosen sketch, or null when nothing valid is chosen. An id the
 	/// tree no longer contains (the sketch was deleted) counts as nothing.</summary>
@@ -1510,7 +1594,8 @@ internal sealed class EffigySketchSelector : Widget, IArmableSelection
 			return;
 
 		_armed = true;
-		_viewport.SetPickPrompt( "Pick the sketch to pull into a solid" );
+		_viewport.SetPickPrompt( "Pick the sketch to pull into a solid - a filled face for just that "
+			+ "region, an edge for all of them" );
 		Update();
 	}
 
@@ -1524,9 +1609,15 @@ internal sealed class EffigySketchSelector : Widget, IArmableSelection
 		Update();
 	}
 
-	private void OnPicked( string featureId )
+	private void OnPicked( string featureId, Vec2? regionSeed )
 	{
 		_consumer.SketchFeatureId = featureId;
+
+		// Clicking a FACE means that face: the seed is the point clicked, and the feature builds only
+		// the region it falls in. Clicking a CURVE names no region, so the seed goes back to null and
+		// every closed region is built - which is also how a face pick is undone, by re-picking the
+		// same sketch by one of its edges.
+		_consumer.RegionSeed = regionSeed;
 
 		Disarm();
 		_changed?.Invoke();

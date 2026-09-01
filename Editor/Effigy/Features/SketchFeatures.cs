@@ -110,6 +110,25 @@ public abstract class SketchConsumingFeature : Feature
 	public string SketchFeatureId = "";
 
 	/// <summary>
+	/// What <see cref="SketchFeatureId"/> reads while the feature is waiting to be pointed at a
+	/// profile, and nothing should be built from it yet.
+	///
+	/// NOT THE EMPTY STRING, which already means something else and has to keep meaning it: unset is
+	/// "the most recent sketch", which is what a feature built in code - or loaded out of a document
+	/// saved before this existed - relies on. A feature a toolbar has just made needs the opposite.
+	/// Adding an Extrude used to pull the last sketch up by the default distance the instant the
+	/// button was pressed, before anyone had said which profile they meant; that solid appearing out
+	/// of nowhere is what this exists to stop.
+	///
+	/// A string no real id can collide with - ids are generated, never typed - so the distinction
+	/// survives being saved and loaded like any other reference.
+	/// </summary>
+	public const string AwaitingPick = "(awaiting pick)";
+
+	/// <summary>Waiting to be pointed at a sketch, so it builds nothing and says why.</summary>
+	public bool IsAwaitingPick => SketchFeatureId == AwaitingPick;
+
+	/// <summary>
 	/// Which closed region of the sketch to build from, as a point inside it in plane coordinates.
 	/// Null means every region, which is the old behaviour and stays the default.
 	///
@@ -156,7 +175,8 @@ public abstract class SketchConsumingFeature : Feature
 	/// the same dictionary in the same order.</summary>
 	protected string ResolveSketchId( FeatureContext ctx )
 	{
-		if ( ctx.Sketches.Count == 0 )
+		// Nothing has been picked, so there is no id to report - not "the most recent one".
+		if ( IsAwaitingPick || ctx.Sketches.Count == 0 )
 			return null;
 
 		return string.IsNullOrEmpty( SketchFeatureId ) ? ctx.Sketches.Keys.Last() : SketchFeatureId;
@@ -164,6 +184,16 @@ public abstract class SketchConsumingFeature : Feature
 
 	protected Sketch ResolveSketch( FeatureContext ctx )
 	{
+		if ( IsAwaitingPick )
+		{
+			Fail(
+				"Pick the sketch profile this builds from",
+				"This feature has just been added and has not been pointed at a sketch yet, so there is "
+					+ "nothing for it to build.",
+				"Click a sketch in the viewport - its filled face, or one of its curves",
+				"Or choose one from the Sketch box in the panel" );
+		}
+
 		if ( ctx.Sketches.Count == 0 )
 		{
 			Fail(

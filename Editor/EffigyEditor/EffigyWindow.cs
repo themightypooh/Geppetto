@@ -139,6 +139,36 @@ public sealed class EffigyWindow : DockWindow
 
 	private readonly List<EffigySketchToolButton> _sketchTools = new();
 	private EffigySketchToolButton _constructionButton;
+
+	/// <summary>
+	/// The live feature-strip buttons, by the feature they make, so the tutorial can light one up.
+	///
+	/// REBUILT INSIDE RefreshToolStrip AND NOWHERE ELSE. The strip is torn down and re-made
+	/// whenever the document gains or loses its first sketch, so a button held from before that
+	/// belongs to a widget that is gone — the same class of mistake the ToolKind enum exists to
+	/// avoid, arriving through a different door. Clearing it in the one method that clears the
+	/// strip is what keeps the two from disagreeing.
+	/// </summary>
+	private readonly Dictionary<ToolKind, EffigyToolButton> _toolButtons = new();
+
+	/// <summary>Which tool the tutorial is currently asking for, if any. Held as the target
+	/// rather than as a button for the reason above.</summary>
+	private EffigyToolTarget? _highlightedTool;
+
+	private EffigyTutorial _tutorial;
+	private EffigyTutorialPanel _tutorialPanel;
+
+	/// <summary>
+	/// Tutorial latches — things that happened and left no trace in the document to check.
+	///
+	/// Rolling back and rolling forward again leaves a studio byte-identical to one that was
+	/// never rolled back, and a bake writes a PNG and is over. Neither can be read off the
+	/// document afterwards, so the only honest check is to remember having seen it. Session-
+	/// scoped by intent: they are about what the reader has DONE, not about what the file is.
+	/// </summary>
+	private bool _sawRollback;
+	private bool _sawRollforward;
+	private bool _sawBake;
 	private DockWidget _centralDock;
 	private StatusBar _statusWidget;
 	private Editor.Label _statusInfoLabel;
@@ -190,6 +220,12 @@ public sealed class EffigyWindow : DockWindow
 		// Effigy asks whether to save an empty studio — the fastest way to teach someone to click
 		// through the very prompt that exists to save their work.
 		MarkClean();
+
+		// Opened, not started. The panel shows its start screen and waits — being dropped into
+		// step one of something you never asked for is the reason tutorials get resented, and the
+		// checkbox on that screen is how someone says never again.
+		if ( EffigyTutorial.OpenOnStartup )
+			DockManager.SetDockState( "Tutorial", true );
 
 		Show();
 	}
@@ -262,6 +298,13 @@ public sealed class EffigyWindow : DockWindow
 		edit.AddSeparator();
 		edit.AddOption( "Settings...", "settings", OpenSettings );
 
+		// The Help menu exists for exactly one thing, and that is fine. Until it was added there
+		// was no way to start the tutorial again after dismissing it, and a tutorial you can only
+		// ever see once is one nobody dares skip.
+		var help = MenuBar.FindOrCreateMenu( "Help" );
+		help.Clear();
+		help.AddOption( "Start Lamp Tutorial", "school", StartTutorial );
+
 		var view = MenuBar.FindOrCreateMenu( "View" );
 		view.Clear();
 		view.AddOption( "Frame Camera", "center_focus_strong", () => _viewport?.FrameCamera() );
@@ -283,6 +326,11 @@ public sealed class EffigyWindow : DockWindow
 		rigPanel.Checkable = true;
 		rigPanel.Checked = false;
 		rigPanel.Toggled += visible => DockManager.SetDockState( "Rig", visible );
+
+		var tutorialPanel = view.AddOption( "Tutorial", "school" );
+		tutorialPanel.Checkable = true;
+		tutorialPanel.Checked = false;
+		tutorialPanel.Toggled += visible => DockManager.SetDockState( "Tutorial", visible );
 
 		// Named views, same list Onshape puts on the cube. The cube itself is gone — this camera
 		// flies rather than orbiting a locked-up model — but snapping to a plane is still useful.
@@ -364,9 +412,13 @@ public sealed class EffigyWindow : DockWindow
 		AddSketchTool( EffigyIcon.SelectTool, "Select", "Select - drag a point to move it", SketchToolKind.Select );
 		_sketchStrip.AddGap();
 
-		AddSketchTool( EffigyIcon.LineTool, "Line", "Line - click start, click end; keeps chaining until Escape", SketchToolKind.Line );
+		AddSketchGroup(
+			new SketchToolVariant( EffigyIcon.LineTool, "Line",
+				"Line - click start, click end; keeps chaining until Escape", SketchToolKind.Line ),
+			new SketchToolVariant( EffigyIcon.LineMidpointTool, "Midpoint line",
+				"Midpoint line - click the middle, then one end; it grows both ways", SketchToolKind.LineMidpoint ) );
 
-		// The four families that have more than one way to place them. Each is ONE button with the
+		// The other families that have more than one way to place them. Each is ONE button with the
 		// alternatives behind its chevron, which is how Onshape's sketch row is arranged.
 		AddSketchGroup(
 			new SketchToolVariant( EffigyIcon.RectangleTool, "Corner rectangle",
@@ -811,6 +863,12 @@ public sealed class EffigyWindow : DockWindow
 				+ convention + "." );
 
 			Log.Info( $"[Effigy] baked normal map to {fd.SelectedFile} ({convention})" );
+
+			// Latched only after the write succeeded. A bake that threw on the way to disk has
+			// not happened, however far through it got, and ticking the step off for it would
+			// send the reader to the rig with nothing baked.
+			_sawBake = true;
+			RefreshTutorial();
 		}
 		catch ( Exception e )
 		{
@@ -1119,8 +1177,8 @@ public sealed class EffigyWindow : DockWindow
 	{
 		ToolKind.Sketch => new SketchFeature(),
 		ToolKind.Primitive => NewPrimitive( choice ),
-		ToolKind.Extrude => new ExtrudeFeature(),
-		ToolKind.Revolve => NewRevolve(),
+		ToolKind.Extrude => AwaitingPick( new ExtrudeFeature() ),
+		ToolKind.Revolve => AwaitingPick( NewRevolve() ),
 		ToolKind.Sweep => new SweepFeature(),
 		ToolKind.Loft => new LoftFeature(),
 		ToolKind.Chamfer => new ChamferFeature(),
@@ -1138,6 +1196,26 @@ public sealed class EffigyWindow : DockWindow
 		ToolKind.FaceMaterial => new FaceMaterialFeature(),
 		_ => throw new ArgumentOutOfRangeException( nameof( kind ), kind, "no feature for this tool" )
 	};
+
+	/// <summary>
+	/// A feature the toolbar just made waits to be pointed at a sketch instead of helping itself to
+	/// the most recent one.
+	///
+	/// Clicking Extrude used to put a solid on screen before you had said anything: the kernel reads
+	/// an unset reference as "the last sketch", so the default distance was applied to whatever was
+	/// nearest and the part jumped up a unit under the cursor. Handy once, startling every other
+	/// time, and it hid the question the dialog was asking.
+	///
+	/// ONLY EXTRUDE AND REVOLVE. A Sweep's path and a Loft's sections are DESIGNED around unset
+	/// references - drawing the profile and the path in either order is the point, and their
+	/// tooltips promise it - so making those ask first would take away the thing the defaults are
+	/// for.
+	/// </summary>
+	private static T AwaitingPick<T>( T feature ) where T : SketchConsumingFeature
+	{
+		feature.SketchFeatureId = SketchConsumingFeature.AwaitingPick;
+		return feature;
+	}
 
 	/// <summary>
 	/// A revolve that works on the first press.
@@ -1310,6 +1388,9 @@ public sealed class EffigyWindow : DockWindow
 
 		_toolStrip.Clear();
 
+		// Cleared with the strip, in the same breath, so the map cannot outlive the widgets in it.
+		_toolButtons.Clear();
+
 		var any = false;
 
 		foreach ( var tool in CreateTools )
@@ -1339,8 +1420,15 @@ public sealed class EffigyWindow : DockWindow
 			if ( tool.Label is not null )
 				button.Label = tool.Label;
 
+			_toolButtons[kind] = button;
+
 			any = true;
 		}
+
+		// The strip has just been re-made, so whatever the tutorial asked for is currently on
+		// nothing. Re-applying here is what makes the highlight survive the starter set being
+		// swapped for the full one — which happens on the first sketch, in the middle of step one.
+		ApplyToolHighlight();
 	}
 
 	/// <summary>The variant list for a tool that has one — at the cursor, so it opens where the
@@ -1360,12 +1448,100 @@ public sealed class EffigyWindow : DockWindow
 	}
 
 	/// <summary>
+	/// The feature the toolbar made a moment ago that this click would only make a second copy of,
+	/// or null.
+	///
+	/// PENDING is the dialog still being open on it as a NEW feature: it has not been ticked, and
+	/// its cross would delete it again. UNTOUCHED is nobody having answered anything on it yet -
+	/// nothing drawn in a sketch, no number typed into an extrude. Both halves matter: without the
+	/// first, clicking Extrude after committing one would reopen the committed extrude instead of
+	/// starting the next; without the second, there would be no way to add two of anything in a row
+	/// without ticking in between.
+	/// </summary>
+	private Feature PendingDuplicate( Feature candidate )
+	{
+		if ( _dialog is not { IsOpen: true, IsNew: true, IsUntouched: true } )
+			return null;
+
+		var pending = _dialog.Feature;
+
+		if ( pending is null || pending.GetType() != candidate.GetType() )
+			return null;
+
+		// A variant picked out of a menu is a DIFFERENT thing to make even though it is the same
+		// feature class, and reusing the pending cube would silently swallow the sphere just chosen.
+		// Sketch is exempt: its plane is answered inside the dialog, so a candidate built fresh with
+		// the default plane says nothing about what the pending one is set to.
+		if ( pending is not SketchFeature && !SameParameters( pending, candidate ) )
+			return null;
+
+		return pending;
+	}
+
+	/// <summary>
+	/// Whether two features of the same type are set up identically.
+	///
+	/// Written out by parameter type rather than through some general value accessor because IParam
+	/// deliberately has none - the parameters ARE the storage in this kernel (see Feature.cs), which
+	/// is the same reason the dialog's snapshot is a switch like this one. Exact float comparison is
+	/// correct here: both sides are constructor defaults, not the result of arithmetic.
+	/// </summary>
+	private static bool SameParameters( Feature a, Feature b )
+	{
+		var left = a.Parameters;
+		var right = b.Parameters;
+
+		if ( left.Count != right.Count )
+			return false;
+
+		for ( var i = 0; i < left.Count; i++ )
+		{
+			var same = (left[i], right[i]) switch
+			{
+				(FloatParam x, FloatParam y) => x.Value == y.Value,
+				(IntParam x, IntParam y) => x.Value == y.Value,
+				(BoolParam x, BoolParam y) => x.Value == y.Value,
+				(Vec3Param x, Vec3Param y) => x.Value.Equals( y.Value ),
+				(ChoiceParam x, ChoiceParam y) => x.Index == y.Index,
+
+				// A parameter kind nobody here knows about: treat it as a difference, so an unknown
+				// setting can never be quietly thrown away by reusing a feature that does not match.
+				_ => false,
+			};
+
+			if ( !same )
+				return false;
+		}
+
+		return true;
+	}
+
+	/// <summary>
 	/// Append a feature and leave it selected with its dialog open — Onshape's behaviour, and the
 	/// reason the buttons feel like they did something. A freshly added Extrude with no sketch
 	/// above it WILL show an error; that is correct, and the parameter panel is where you fix it.
 	/// </summary>
 	private void AddFeature( Feature feature )
 	{
+		// Pressing the same button again while the last one is still sitting there unanswered and
+		// unconfirmed goes BACK TO THAT ONE rather than stacking another copy into the tree.
+		// Impatience with a picker - clicking once more because nothing appeared to happen - produced
+		// a row of identical dead features that all had to be deleted by hand. Nothing is added here,
+		// so there is no undo step to record either.
+		if ( PendingDuplicate( feature ) is { } pending )
+		{
+			_featureTree?.Select( pending );
+
+			// Some features open with nothing left to ask for - a Fillet arrives with its radius
+			// already typed in - and a click that neither adds anything nor lights anything up reads as
+			// a broken button. Say what happened instead.
+			if ( !_dialog.ReassertPending() )
+				SetPrompt( $"{pending.Name ?? pending.TypeName} is already open above - finish it with the "
+					+ "tick, or cancel it, before adding another." );
+
+			return;
+		}
+
 		RecordUndo();
 
 		// A new feature goes AT THE ROLLBACK BAR, not at the end of the tree - same as Onshape.
@@ -1440,6 +1616,21 @@ public sealed class EffigyWindow : DockWindow
 
 		_rigPanel = new EffigyRigPanel( this, _studio, _viewport );
 
+		_tutorial = new EffigyTutorial();
+
+		_tutorialPanel = new EffigyTutorialPanel( this )
+		{
+			Tutorial = _tutorial,
+			RevealPanel = RevealDock,
+			HighlightTool = HighlightTool,
+
+			// Restart and Dismiss both change what the strip should be showing, and the panel
+			// itself has no idea a toolbar exists. Re-evaluating here also means a Restart drops
+			// straight back to whichever step the document already satisfies, rather than
+			// insisting on step one of work that is already done.
+			Changed = RefreshTutorial,
+		};
+
 		// Dialog ABOVE the tree in one column, which is where Onshape puts it. It was a separate
 		// right-hand dock at first and that was the single biggest reason the tool did not read as
 		// Onshape: the thing you are editing and the history you are editing it in belong in the
@@ -1467,6 +1658,11 @@ public sealed class EffigyWindow : DockWindow
 		// Same "before" moment, for the rig: a bone placed, deleted, renamed, or mirrored.
 		_rigPanel.RigChanging = RecordUndo;
 
+		// And the "after", which the tutorial needs: rig edits do not go through RebuildStudio,
+		// so without this the bone step would sit unticked until something unrelated forced a
+		// rebuild — the tutorial appearing not to notice four bones is worse than no check.
+		_rigPanel.RigChanged = RefreshTutorial;
+
 		_centralDock = DockManager.SetCentralWidget( _viewport );
 
 		DockManager.RegisterDock( new() { Title = "Features", Icon = "account_tree", Area = DockArea.Left, CreateAction = () => _leftPanel } );
@@ -1476,6 +1672,11 @@ public sealed class EffigyWindow : DockWindow
 		// modelled and neither is worth permanent screen room while you are still modelling it.
 		DockManager.RegisterDock( new() { Title = "Materials", Icon = "palette", Area = DockArea.Right, CreateAction = () => _materialsPanel } );
 
+		// Bottom, full width, and NOT tabbed behind anything. A tutorial that shares a tab strip
+		// is a tutorial you lose the moment you look at the thing it told you to look at — which
+		// is every step. Along the bottom it stays readable while both side docks are in use.
+		DockManager.RegisterDock( new() { Title = "Tutorial", Icon = "school", Area = DockArea.Bottom, CreateAction = () => _tutorialPanel } );
+
 		// Bumped from Effigy1: the Parameters dock is gone and the tree moved into a shared column
 		// with the dialog. A restored Effigy1 layout would reinstate the old two-dock arrangement
 		// and BuildDefaultLayout would never run again.
@@ -1484,7 +1685,10 @@ public sealed class EffigyWindow : DockWindow
 		// a usable window. A fresh cookie forces the known-good default layout.
 		// Bumped from Effigy3: the Materials dock is new, and a restored Effigy3 layout knows
 		// nothing about it - the panel would exist, be wired up, and never appear on screen.
-		StateCookie = "Effigy4";
+		// Bumped from Effigy4: the Tutorial dock is new, and the same applies — worse here,
+		// because the one person it is for is the one person guaranteed to have no saved layout
+		// only if they have never opened Effigy before, which is not who upgrades.
+		StateCookie = "Effigy5";
 	}
 
 	/// <summary>Hide or show one body, from the Parts list's eye or its Hide menu item.
@@ -1665,6 +1869,10 @@ public sealed class EffigyWindow : DockWindow
 	{
 		_resultStrip?.Bind( null, SketchHostBodyId );
 
+		// The "already open above" line belongs to a feature that is no longer pending - see
+		// AddFeature. Leaving it up would have it telling you to finish something you just did.
+		SetPrompt( "" );
+
 		if ( _viewport.IsSketching )
 			FinishSketch();
 
@@ -1678,6 +1886,7 @@ public sealed class EffigyWindow : DockWindow
 	private void OnDialogCancelled( Feature feature, bool wasNew )
 	{
 		_resultStrip?.Bind( null, SketchHostBodyId );
+		SetPrompt( "" );
 
 		if ( wasNew )
 			_studio.Remove( feature );
@@ -1763,9 +1972,129 @@ public sealed class EffigyWindow : DockWindow
 		// the feature, so the dialog's state is refreshed here rather than when it was opened.
 		_dialog?.RefreshState();
 
+		// AFTER the rebuild, never before. Every check the tutorial makes is about what the tree
+		// produced — a body with volume, a fillet that did not error — and all of those are stale
+		// or absent until Rebuild has run. Asking first would tick step one off on the rebuild
+		// after the reader finished it, which reads as the tutorial lagging a move behind.
+		RefreshTutorial();
+
 		if ( report.HasErrors )
 			Log.Warning( $"[Effigy] rebuild: {string.Join( "; ", report.Errors.Select( e => e.Message ) )}" );
 	}
+
+	// --- tutorial ------------------------------------------------------------------------------
+
+	/// <summary>Open the tutorial dock and put it back at step one. The Help menu's whole
+	/// contents, and the reason that menu exists.</summary>
+	private void StartTutorial()
+	{
+		DockManager.SetDockState( "Tutorial", true );
+		DockManager.RaiseDock( "Tutorial" );
+
+		_tutorial?.Restart();
+		RefreshTutorial();
+	}
+
+	/// <summary>Open a dock and bring it to the front, for the panel's "show me the X panel"
+	/// button. Opening without raising is not enough — a dock tabbed behind another comes back
+	/// visible and still hidden, which looks exactly like the button doing nothing.</summary>
+	private void RevealDock( string title )
+	{
+		if ( string.IsNullOrEmpty( title ) )
+			return;
+
+		DockManager.SetDockState( title, true );
+		DockManager.RaiseDock( title );
+	}
+
+	/// <summary>Re-read the document, advance the tutorial past anything already done, and repaint
+	/// the panel. Called from RebuildStudio, so a step ticks off on the same rebuild that
+	/// satisfied it rather than on whatever the reader happens to do next.</summary>
+	private void RefreshTutorial()
+	{
+		if ( _tutorial is null )
+			return;
+
+		// The rollback latch, sampled here because RebuildStudio runs on every drag of the bar.
+		// Both halves are needed and in order: seeing a rolled-back studio is not the step, and
+		// neither is seeing a rolled-forward one — the step is having been under and come back.
+		if ( _studio is not null )
+		{
+			if ( _studio.RollbackIndex < _studio.Features.Count )
+				_sawRollback = true;
+			else if ( _sawRollback )
+				_sawRollforward = true;
+		}
+
+		var state = new EffigyTutorialState(
+			_studio,
+			_rigPanel?.Skeleton,
+			_rigPanel?.BodyBoneMap,
+			_sawRollback && _sawRollforward,
+			_sawBake );
+
+		_tutorial.Evaluate( state );
+
+		// Rebuild unconditionally rather than only when Evaluate moved. The panel also renders
+		// Active, the step's own pointer affordance and the highlight, and those change on a
+		// Restart or a Dismiss that moved nothing at all.
+		_tutorialPanel?.Rebuild();
+	}
+
+	/// <summary>Told by the panel which tool the current step wants, or null for none. Stores the
+	/// target and re-applies; never stores a button.</summary>
+	private void HighlightTool( EffigyToolTarget? target )
+	{
+		_highlightedTool = target;
+		ApplyToolHighlight();
+	}
+
+	/// <summary>
+	/// Push the current highlight onto whichever buttons exist right now.
+	///
+	/// Clears every button before setting one, rather than tracking which was lit last. A strip
+	/// that was rebuilt between the two calls would otherwise keep a stale ring on a button
+	/// nobody can turn off, and the cost of being certain is one pass over about twenty widgets.
+	/// </summary>
+	private void ApplyToolHighlight()
+	{
+		if ( _toolButtons.Count == 0 )
+			return;
+
+		var wanted = _highlightedTool is { } target ? ToolKindFor( target ) : null;
+
+		foreach ( var (kind, button) in _toolButtons )
+		{
+			var lit = wanted == kind;
+
+			if ( button.Attention == lit )
+				continue;
+
+			button.Attention = lit;
+			button.Update();
+		}
+	}
+
+	/// <summary>
+	/// The tutorial's vocabulary of tools, mapped onto the strip's.
+	///
+	/// The one place the two enums meet, and the reason they are two enums: the strip's list is
+	/// free to grow without the tutorial silently claiming to teach whatever was added, and the
+	/// tutorial's list is free to name a tool the strip has not got yet — which returns null here
+	/// and lights nothing, rather than throwing in a paint path.
+	/// </summary>
+	private static ToolKind? ToolKindFor( EffigyToolTarget target ) => target switch
+	{
+		EffigyToolTarget.Sketch => ToolKind.Sketch,
+		EffigyToolTarget.Extrude => ToolKind.Extrude,
+		EffigyToolTarget.Revolve => ToolKind.Revolve,
+		EffigyToolTarget.Fillet => ToolKind.Fillet,
+		EffigyToolTarget.Shell => ToolKind.Shell,
+		EffigyToolTarget.Subdivide => ToolKind.Subdivide,
+		EffigyToolTarget.UVProject => ToolKind.UVProject,
+		EffigyToolTarget.Sculpt => ToolKind.Sculpt,
+		_ => null,
+	};
 
 	/// <summary>Push all committed sketches from the feature tree into the viewport so they
 	/// remain visible after leaving sketch mode, and push the subset a feature being edited is
@@ -4074,6 +4403,26 @@ internal sealed class EffigyToolStrip : Widget
 		Paint.DrawRect( rect.Shrink( 1f ), 6f );
 	}
 
+	/// <summary>
+	/// "The tutorial means this one." A filled wash plus a solid ring, in the same yellow the
+	/// tutorial panel uses for its current step and its bullets.
+	///
+	/// LOUDER THAN THE ARMED RING ON PURPOSE. Armed is a state you put the tool in and already
+	/// know about; this is aimed at someone who has been told to press a button they have never
+	/// seen, scanning a strip of twenty glyphs for it. The wash is what makes it findable from
+	/// the far side of the window — an outline alone reads as just another edge at this size.
+	/// </summary>
+	public static void PaintAttentionRing( Rect rect )
+	{
+		Paint.ClearPen();
+		Paint.SetBrush( Theme.Yellow.WithAlpha( 0.22f ) );
+		Paint.DrawRect( rect, 6f );
+
+		Paint.ClearBrush();
+		Paint.SetPen( Theme.Yellow.WithAlpha( 0.9f ), 2f );
+		Paint.DrawRect( rect.Shrink( 1f ), 6f );
+	}
+
 	/// <summary><paramref name="width"/> is the button's own width - wider than ButtonSize for the
 	/// one button that carries a text label. It has to be passed in rather than set on the button
 	/// afterwards, or the strip's own width would not account for it.</summary>
@@ -4440,6 +4789,19 @@ internal sealed class EffigyToolButton : Widget
 	/// thing. Set by the strip for the tools that have variants behind them.</summary>
 	public bool HasMenu { get; set; }
 
+	/// <summary>
+	/// The tutorial is asking for this button.
+	///
+	/// A THIRD STATE ON THE BUTTON RATHER THAN AN ARROW DRAWN OVER THE WINDOW, which was the first
+	/// design and is worse in every way that matters. An arrow is a position, so it is wrong the
+	/// moment a dock is dragged, the window is resized, or RefreshToolStrip swaps the starter set
+	/// for the full one — and it needs a surface to be drawn on that does not swallow the click it
+	/// is pointing at, which this editor API has no way to make (there is no transparent-for-mouse
+	/// flag anywhere in it). A state on the button itself cannot be stranded: it moves with the
+	/// button because it IS the button.
+	/// </summary>
+	public bool Attention { get; set; }
+
 	public EffigyToolButton( Widget parent, EffigyIcon icon, string tip, Action clicked ) : base( parent )
 	{
 		_icon = icon;
@@ -4478,6 +4840,14 @@ internal sealed class EffigyToolButton : Widget
 		// NOTHING PAINTED AT REST, AND NOTHING EVER CHANGES COLOUR - see
 		// EffigySketchToolButton.OnPaint. Hover and press are an edge glow and nothing else; the
 		// glyph is drawn in exactly the same colour in every state.
+		//
+		// The tutorial's ring is the one exception to "never changes colour", and it has to be:
+		// the whole job here is to be findable in a row of twenty near-identical glyphs, which a
+		// brighter version of the hover state is not. Drawn UNDER the hover glow so that hovering
+		// the button still reads as hovering it.
+		if ( Attention )
+			EffigyToolStrip.PaintAttentionRing( LocalRect );
+
 		if ( _pressed || hovered )
 			EffigyToolStrip.PaintEdgeGlow( LocalRect, _pressed ? 1.4f : 1f );
 

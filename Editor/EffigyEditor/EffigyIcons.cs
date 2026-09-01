@@ -31,6 +31,7 @@ internal enum EffigyIcon
 	// about the operation, and half of them said something actively misleading.
 	SelectTool,
 	LineTool,
+	LineMidpointTool,
 	RectangleTool,
 	RectangleCentreTool,
 	CircleTool,
@@ -141,6 +142,7 @@ internal static class EffigyIcons
 
 			case EffigyIcon.SelectTool: PaintSelectTool( center, color ); return;
 			case EffigyIcon.LineTool: PaintLineTool( center, color ); return;
+			case EffigyIcon.LineMidpointTool: PaintLineMidpointTool( center, color ); return;
 			case EffigyIcon.RectangleTool: PaintRectangleTool( center, color ); return;
 			case EffigyIcon.RectangleCentreTool: PaintRectangleCentreTool( center, color ); return;
 			case EffigyIcon.CircleTool: PaintCircleTool( center, color ); return;
@@ -809,6 +811,23 @@ internal static class EffigyIcons
 		Editor.Paint.DrawLine( At( c, -6.5f, 6 ), At( c, 6.5f, -6 ) );
 
 		ClickDot( At( c, -6.5f, 6 ) );
+		ClickDot( At( c, 6.5f, -6 ) );
+	}
+
+	/// <summary>The same line, marked at its MIDDLE - with the tick mark that means midpoint in every
+	/// CAD package there is. One click dot, because the second click is an end and the far one comes
+	/// for free.</summary>
+	private static void PaintLineMidpointTool( Vector2 c, Color color )
+	{
+		Stroked( color, 1.8f );
+		Editor.Paint.DrawLine( At( c, -6.5f, 6 ), At( c, 6.5f, -6 ) );
+
+		// Across the line rather than along it, so it reads as a mark ON the line instead of a second
+		// shorter line beside it.
+		Stroked( GuideColor( color ), 1f );
+		Editor.Paint.DrawLine( At( c, -2.1f, -2.3f ), At( c, 2.1f, 2.3f ) );
+
+		ClickDot( c, 1.9f );
 		ClickDot( At( c, 6.5f, -6 ) );
 	}
 

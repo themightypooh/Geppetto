@@ -204,6 +204,17 @@ internal sealed class EffigyRigPanel : Widget
 	public Action RigChanging { get; set; }
 
 	/// <summary>
+	/// Raised AFTER the rig has changed, for anything that needs to look at the result.
+	///
+	/// RigChanging cannot serve this. It fires before the mutation so that undo has an untouched
+	/// "before" to snapshot, which means a listener called from it sees the rig as it was — fine
+	/// for taking a copy, useless for asking a question about what now exists. Nothing in a rig
+	/// edit goes through RebuildStudio either, so without this a bone placed is invisible to the
+	/// rest of the window until some unrelated thing forces a rebuild.
+	/// </summary>
+	public Action RigChanged { get; set; }
+
+	/// <summary>
 	/// Replace the skeleton and body-bone map wholesale — the undo/redo restore path. Unlike
 	/// SetStudio, the mesh underneath hasn't changed, only the rig; still clears any in-progress
 	/// placement or body-assign tool state, since neither survives meaningfully across a jump to a
@@ -492,6 +503,7 @@ internal sealed class EffigyRigPanel : Widget
 		// is the most repetitive action this tool has.
 		_tree.Update();
 		RefreshBodyList();
+		RigChanged?.Invoke();
 	}
 
 	private List<string> BodiesOnBone( string boneName ) =>
@@ -998,6 +1010,11 @@ internal sealed class EffigyRigPanel : Widget
 		if ( Skeleton.Count == 0 )
 		{
 			_tree.AddItem( new EmptyRigNode() );
+
+			// Fires on the empty path too. Deleting the last bone is every bit as much a change
+			// as adding the first, and a listener that only ever hears about the non-empty case
+			// would keep believing in a rig that is no longer there.
+			RigChanged?.Invoke();
 			return;
 		}
 
@@ -1013,6 +1030,8 @@ internal sealed class EffigyRigPanel : Widget
 		if ( _selectedBone >= 0 && _selectedBone < Skeleton.Count
 			&& _nodes.TryGetValue( Skeleton.Bones[_selectedBone].Name, out var selected ) )
 			_tree.SelectItem( selected );
+
+		RigChanged?.Invoke();
 	}
 
 	private sealed class BoneNode : TreeNode<string>

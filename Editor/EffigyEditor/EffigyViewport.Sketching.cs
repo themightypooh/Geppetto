@@ -31,6 +31,11 @@ internal enum SketchToolKind
 	Extend,
 	Fillet,
 	Offset,
+
+	// NOT one of those six. A midpoint line is an ordinary two-click line whose first click lands in
+	// the middle rather than at an end, so its clicks go through the state machine below with the
+	// rest of them; it sits down here only because this enum is appended to, never inserted into.
+	LineMidpoint,
 }
 
 /// <summary>
@@ -161,8 +166,15 @@ internal sealed partial class EffigyViewport
 	/// the feature dialog when its sketch selection box is armed.</summary>
 	public bool SketchPickMode { get; set; }
 
-	/// <summary>Fires with the picked sketch's SketchFeature id.</summary>
-	public Action<string> SketchPicked { get; set; }
+	/// <summary>
+	/// Fires with the picked sketch's SketchFeature id, and the point inside the region that was
+	/// clicked - or null when the pick came off a curve rather than out of a face.
+	///
+	/// That point is a REGION SEED (see SketchConsumingFeature.RegionSeed): it says which closed
+	/// region of the sketch was meant, and it survives the sketch being edited in a way an index
+	/// never could. Null means the whole sketch, which is what clicking an edge asks for.
+	/// </summary>
+	public Action<string, Vec2?> SketchPicked { get; set; }
 
 	/// <summary>Raised when Escape cancels an armed pick mode, so the dialog's selection box
 	/// can stand down too — the viewport owns the key, the box owns its painted state.</summary>
@@ -176,6 +188,10 @@ internal sealed partial class EffigyViewport
 
 	/// <summary>Feature id of the sketch under the cursor this frame, or null.</summary>
 	private string _hoveredSketchId;
+
+	/// <summary>Where in that sketch the cursor is, when it is over one of its filled regions rather
+	/// than over a curve. This is what a click hands back as the region seed.</summary>
+	private Vec2? _hoveredSketchSeed;
 
 	/// <summary>Distance in sketch units within which the cursor counts as pointing at a
 	/// sketch's curves. Generous on purpose: the curves are thin and the part may be small.</summary>
@@ -195,19 +211,30 @@ internal sealed partial class EffigyViewport
 
 	/// <summary>
 	/// Hover and click resolution for sketch picking. A sketch is a set of curves on a plane, so
-	/// "pointing at it" means the cursor ray lands on that plane near one of its curves — no
-	/// hitbox exists for that shape, and a bounding slab would overlap every sketch on the same
-	/// plane. Nearest curve within SketchPickRadius wins.
+	/// "pointing at it" means the cursor ray lands on that plane — no hitbox exists for that shape,
+	/// and a bounding slab would overlap every sketch on the same plane.
+	///
+	/// TWO WAYS TO POINT AT ONE, and the second is the one people reach for. Nearest curve within
+	/// SketchPickRadius is the precise one, and it still wins. But the thing on screen that LOOKS
+	/// like the sketch is the filled region - it is drawn filled, and it is what the extrude is
+	/// going to be made of - so a click anywhere inside that face picks it too, and hitting a thin
+	/// curve is no longer the price of admission. Smallest containing region wins, so a small
+	/// profile drawn inside a large one is reachable rather than swallowed by its neighbour.
 	/// </summary>
 	private void SketchPickFrame()
 	{
 		_hoveredSketchId = null;
+		_hoveredSketchSeed = null;
 
 		if ( !SketchPickMode || IsSketching || _pickableSketches.Count == 0 || !_canvasHasCursor )
 			return;
 
 		var ray = Gizmo.CurrentRay;
 		var best = SketchPickRadius;
+
+		string regionHit = null;
+		Vec2? regionSeed = null;
+		var regionArea = float.MaxValue;
 
 		foreach ( var pickable in _pickableSketches )
 		{
@@ -230,6 +257,30 @@ internal sealed partial class EffigyViewport
 					}
 				}
 			}
+
+			// Profile.Contains is the kernel's own point-in-region test, holes and all, and it is the
+			// same one that turns a click into a face everywhere else - so the face you can click is
+			// exactly the face that gets built. Re-found every frame rather than cached: this only runs
+			// while a pick is armed, over the handful of sketches above the feature being edited, and
+			// the highlight below already walks the same finder.
+			foreach ( var profile in ProfileFinder.Find( pickable.Sketch ).Profiles )
+			{
+				if ( profile.Area >= regionArea || !profile.Contains( uv ) )
+					continue;
+
+				regionArea = profile.Area;
+				regionHit = pickable.FeatureId;
+				regionSeed = uv;
+			}
+		}
+
+		// A curve under the cursor beats a face under it: the edge is the more specific thing to be
+		// pointing at, and it is what someone aiming at an edge meant. Only a face carries a seed -
+		// an edge is shared by the regions on both sides of it and names neither.
+		if ( _hoveredSketchId is null )
+		{
+			_hoveredSketchId = regionHit;
+			_hoveredSketchSeed = regionSeed;
 		}
 
 		if ( _hoveredSketchId is null )
@@ -238,7 +289,7 @@ internal sealed partial class EffigyViewport
 		DrawSketchPickHighlight( _hoveredSketchId );
 
 		if ( Gizmo.WasLeftMousePressed )
-			SketchPicked?.Invoke( _hoveredSketchId );
+			SketchPicked?.Invoke( _hoveredSketchId, _hoveredSketchSeed );
 	}
 
 	/// <summary>Intersect a ray with any sketch plane. The active-sketch version above this is
@@ -616,6 +667,10 @@ internal sealed partial class EffigyViewport
 	/// </summary>
 	private SketchLine _dimensionLine;
 
+	/// <summary>The point the dimensioned line has to stay centred on, for a midpoint line. Null for
+	/// a line drawn end to end, where the start is what stays put instead.</summary>
+	private Vec2? _dimensionCentre;
+
 	/// <summary>What has been typed into the box so far. Empty means the box is showing the
 	/// line's measured length instead - typing the first digit is what replaces it, the same as
 	/// typing into a field whose contents were selected.</summary>
@@ -653,6 +708,7 @@ internal sealed partial class EffigyViewport
 	private void ClearDimension()
 	{
 		_dimensionLine = null;
+		_dimensionCentre = null;
 		_dimensionInput = "";
 	}
 
@@ -793,17 +849,37 @@ internal sealed partial class EffigyViewport
 
 		SketchEditing?.Invoke();
 
-		var moved = start + delta.Normal * length;
-		ActiveSketch.Points[_dimensionLine.End] = moved;
-
-		for ( var i = 0; i < _pending.Count; i++ )
+		// A midpoint line was placed about its middle, so the typed number has to move BOTH ends and
+		// leave that middle alone. Sliding only the end - right for a line drawn end to end - would
+		// put the centre somewhere nobody clicked and make the number mean half the line.
+		if ( _dimensionCentre is { } centre )
 		{
-			if ( Dist( _pending[i], end ) < 1e-5f )
-				_pending[i] = moved;
+			var half = delta.Normal * (length * 0.5f);
+
+			MovePoint( _dimensionLine.Start, centre - half );
+			MovePoint( _dimensionLine.End, centre + half );
+		}
+		else
+		{
+			MovePoint( _dimensionLine.End, start + delta.Normal * length );
 		}
 
 		ClearDimension();
 		Edited();
+
+		void MovePoint( int index, Vec2 to )
+		{
+			var was = ActiveSketch.Points[index];
+			ActiveSketch.Points[index] = to;
+
+			// Points are shared by index, so anything half-drawn that was sitting on the point which
+			// just moved has to come with it, or the chain carries on from where the corner used to be.
+			for ( var i = 0; i < _pending.Count; i++ )
+			{
+				if ( Dist( _pending[i], was ) < 1e-5f )
+					_pending[i] = to;
+			}
+		}
 	}
 
 	public void SetSketchVisibility( Sketch sketch, bool visible )
@@ -1482,8 +1558,12 @@ internal sealed partial class EffigyViewport
 		_snapper.AlignmentRadius = AlignmentPixels * unitsPerPixel;
 		_snapper.GridStep = SnapToGrid ? GridStep( unitsPerPixel ) : 0f;
 
+		// Both line tools want the same thing from the snapper: with one point down, that point is the
+		// strongest horizontal/vertical alignment target on the plane. A midpoint line's first click is
+		// its CENTRE rather than an end, but the far end is reflected through it, so aligning the click
+		// to the centre aligns the whole line.
 		var result = _snapper.Snap( ActiveSketch, raw, _pending,
-			SketchTool == SketchToolKind.Line && _pending.Count == 1 );
+			(SketchTool is SketchToolKind.Line or SketchToolKind.LineMidpoint) && _pending.Count == 1 );
 
 		_snapPoint = result.SnappedPointIndex;
 		_inferenceAxis = result.InferenceAxis;
@@ -1606,6 +1686,41 @@ internal sealed partial class EffigyViewport
 					_pending.Clear();
 					_pending.Add( last );
 				}
+				Edited();
+				break;
+			}
+
+			case SketchToolKind.LineMidpoint when _pending.Count == 2:
+			{
+				// The first click is the MIDDLE of the line, so the far end is the second click reflected
+				// through it. The middle itself is deliberately not added to the sketch: a loose point
+				// sitting on a curve is one more thing for the profile finder and the point handles to
+				// deal with, and nobody asked for it - the tool is about where the line ENDS UP.
+				var centre = _pending[0];
+				var near = _pending[1];
+				var far = centre + (centre - near);
+
+				// Same zero-length guard as the line tool above, for the click that lands back on the
+				// middle: that line has no direction and ProfileFinder counts it twice at one point.
+				if ( Dist( far, near ) > 1e-4f )
+				{
+					var midLine = Track( new SketchLine( PointIndex( far ), PointIndex( near ) ) );
+
+					if ( (_inferenceAxis & 1) != 0 )
+						ActiveSketch.AddConstraint( midLine, SketchConstraintKind.Vertical );
+					else if ( (_inferenceAxis & 2) != 0 )
+						ActiveSketch.AddConstraint( midLine, SketchConstraintKind.Horizontal );
+
+					// The typed length has to grow the line from the middle the user clicked, so the
+					// dimension remembers that centre - see ApplyDimension.
+					_dimensionLine = midLine;
+					_dimensionCentre = centre;
+					_dimensionInput = "";
+				}
+
+				// No chaining, unlike the line tool: each midpoint line is placed about its own centre,
+				// and there is no end for the next one to carry on from.
+				_pending.Clear();
 				Edited();
 				break;
 			}
@@ -2123,6 +2238,15 @@ internal sealed partial class EffigyViewport
 					LiveLength( _pending[0], _cursorOnPlane );
 					break;
 
+				case SketchToolKind.LineMidpoint:
+					// Drawn from the reflected far end THROUGH the centre to the cursor, so what you see is
+					// the whole line rather than the half you are dragging - and the number is its full
+					// length, which is the one the dimension box will accept.
+					var reflected = _pending[0] + (_pending[0] - _cursorOnPlane);
+					Gizmo.Draw.Line( PlaneToWorld( reflected ), c );
+					LiveLength( reflected, _cursorOnPlane );
+					break;
+
 				case SketchToolKind.Rectangle:
 					DrawLoopPreview( RectangleCorners(
 						new Vec2( MathF.Min( _pending[0].x, _cursorOnPlane.x ), MathF.Min( _pending[0].y, _cursorOnPlane.y ) ),
@@ -2297,6 +2421,8 @@ internal sealed partial class EffigyViewport
 	{
 		SketchToolKind.Line when _pending.Count == 0 => "Line - click the start point",
 		SketchToolKind.Line => "Line - click the end point, or press Escape to break the chain",
+		SketchToolKind.LineMidpoint when _pending.Count == 0 => "Midpoint line - click the middle of the line",
+		SketchToolKind.LineMidpoint => "Midpoint line - click one end; the line grows both ways",
 		SketchToolKind.Rectangle when _pending.Count == 0 => "Rectangle - click the first corner",
 		SketchToolKind.Rectangle => "Rectangle - click the opposite corner",
 		SketchToolKind.Circle when _pending.Count == 0 => "Circle - click the centre",

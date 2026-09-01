@@ -46,6 +46,88 @@ public static class EditorFlowTests
 		TestTheTypedAxisStillRefusesAndSaysSo();
 		TestAnEdgeAxisBuildsTheProfileAsDrawn();
 		TestOldDocumentsKeepTheAxisTheyWereSavedWith();
+
+		Report.Section( "editor flow: a new extrude waits to be pointed at a sketch" );
+		TestANewExtrudeBuildsNothingUntilItIsPicked();
+		TestPickingTheSketchBuildsTheSolid();
+		TestAnUnsetReferenceStillMeansTheMostRecentSketch();
+	}
+
+	/// <summary>A sketch with a square in it and an extrude below it, in whatever state of
+	/// pickedness the caller wants the extrude to be in.</summary>
+	static (PartStudio Studio, SketchFeature Sketch, ExtrudeFeature Extrude) SquareAndExtrude( string sketchId )
+	{
+		var studio = new PartStudio();
+		var sketch = studio.Add( new SketchFeature() );
+		sketch.Sketch.AddRectangle( new Vec2( 0f, 0f ), new Vec2( 2f, 2f ) );
+
+		var extrude = studio.Add( new ExtrudeFeature() );
+		extrude.SketchFeatureId = sketchId;
+
+		studio.Rebuild();
+
+		return (studio, sketch, extrude);
+	}
+
+	/// <summary>
+	/// THE POINT OF THE CHANGE. Pressing Extrude used to put a solid on screen before anyone had
+	/// said which profile they meant - the kernel reads an unset reference as "the most recent
+	/// sketch", so the default distance was applied to whatever was nearest. A feature the toolbar
+	/// has just made now arrives awaiting its pick and builds nothing until it gets one.
+	/// </summary>
+	static void TestANewExtrudeBuildsNothingUntilItIsPicked()
+	{
+		var (studio, _, extrude) = SquareAndExtrude( SketchConsumingFeature.AwaitingPick );
+
+		Report.Check( "a brand new extrude builds nothing", studio.Bodies.Count == 0,
+			$"{studio.Bodies.Count} bodies" );
+		Report.Check( "and does not do it silently", extrude.Error is not null, "no diagnostic" );
+		Report.Check( "the way out is to point at a sketch",
+			extrude.Diagnostic?.Remedies.Exists( r => r.Contains( "Click a sketch" ) ) == true,
+			extrude.Diagnostic is null ? "no diagnostic" : string.Join( "; ", extrude.Diagnostic.Remedies ) );
+
+		// Nothing has consumed the sketch, which is what keeps it on screen and pickable - the only
+		// way to answer the question the extrude is asking.
+		Report.Check( "and it has consumed nothing", studio.ConsumedSketchIds().Count == 0 );
+
+		var reloaded = StudioDocument.Read( StudioDocument.Write( studio ) )
+			.Features.OfType<ExtrudeFeature>().Single();
+
+		Report.Check( "a document saved mid-pick comes back still waiting", reloaded.IsAwaitingPick,
+			reloaded.SketchFeatureId );
+	}
+
+	/// <summary>What the viewport pick does: write the sketch's id into the reference and rebuild.</summary>
+	static void TestPickingTheSketchBuildsTheSolid()
+	{
+		var (studio, sketch, extrude) = SquareAndExtrude( SketchConsumingFeature.AwaitingPick );
+
+		extrude.SketchFeatureId = sketch.Id;
+		studio.MarkDirty( extrude );
+		studio.Rebuild();
+
+		Report.Check( "picking the sketch builds it", extrude.Error is null, extrude.Error ?? "" );
+		Report.Check( "into one solid", studio.Bodies.Count == 1 && studio.Bodies[0].Mesh.FaceCount > 0,
+			$"{studio.Bodies.Count} bodies" );
+		Report.Check( "and the sketch now counts as consumed",
+			studio.ConsumedSketchIds().Contains( sketch.Id ) );
+	}
+
+	/// <summary>
+	/// The empty reference still means "the most recent sketch", and it has to: it is what every
+	/// extrude built in code does, and what every document saved before the awaiting-pick state
+	/// existed comes back as. Waiting is a state the EDITOR puts a new feature into, not a new
+	/// meaning for unset.
+	/// </summary>
+	static void TestAnUnsetReferenceStillMeansTheMostRecentSketch()
+	{
+		var (studio, sketch, extrude) = SquareAndExtrude( "" );
+
+		Report.Check( "an unset reference still builds from the last sketch", extrude.Error is null,
+			extrude.Error ?? "" );
+		Report.Check( "and produces a solid", studio.Bodies.Count == 1, $"{studio.Bodies.Count} bodies" );
+		Report.Check( "which the studio reports as consuming that sketch",
+			studio.ResolveSketchFeatureId( extrude ) == sketch.Id );
 	}
 
 	/// <summary>A sketch with a rectangle straddling the origin - what somebody actually draws.</summary>
