@@ -625,9 +625,25 @@ judged from outside s&box:
    **The check that missed it is worth knowing about**, because the same trap is there for the next
    editor change. Compiling the editor sources against the kernel with the s&box assemblies ABSENT
    cannot tell a missing `using` from a missing assembly — both are CS0246 — so one forgotten
-   directive hid inside 920 identical-looking errors. A lint over `Editor/` for exactly that
-   (any file naming a type from the `Editor` namespace must import it) is what catches it, and it
-   is the first thing to run after writing editor code blind.
+   directive hid inside 920 identical-looking errors.
+
+   **That lint now exists and runs on every suite run**: `tools/lint-editor-usings.py`, called from
+   `tools/test.sh` before the tests. It is not a compiler and cannot be — nothing here knows the
+   `Editor` namespace with the engine absent. It carries a hand-curated list of the Editor types
+   this codebase uses and recognises them only where they can only be a type: a static member
+   access, a `new`, a base clause, a generic argument, a cast, a declaration. `Label` and `Frame`
+   are Editor types AND ordinary property names in this repo, so a bare name match would report
+   every file and be switched off inside a week.
+
+   **It was verified by putting the bug back**, which is the only way to trust a check that passes.
+   Stripping `using Editor;` from `EffigyViewport.Sculpting.cs` — the file that actually shipped
+   without it — makes the lint name `Widget` on line 45 and `Gizmo` on line 116.
+
+   **That test is also how a bug in the lint itself was found.** The skip for the kernel mirror was
+   a string prefix test, so `Editor/EffigyEditor` matched `Editor/Effigy` and every Effigy editor
+   file was silently skipped: it checked 34 of 59 files and reported 34 of 34. A clean report from
+   a new check is not a result, it is a hypothesis — and a check that passes because it is not
+   looking is worse than no check, because it looks like evidence.
 
    Still unproven by a compile: whether the s&box calls DO the right thing. Compiling is not
    behaving, which is the whole reason for the rest of this list.
