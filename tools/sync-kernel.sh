@@ -82,7 +82,7 @@ fi
 # s&box watches this tree and recompiles the editor assembly the moment it changes. Deleting the
 # directory hands the compiler a source tree with no Effigy in it, so the whole assembly fails with
 # several hundred "The type or namespace name 'Effigy' could not be found" errors - and it takes
-# HaloMount, ShaderForge and everything else under Editor/ down with it, none of which is at fault.
+# HaloMount and everything else under Editor/ down with it, none of which is at fault.
 # The files reappear a moment later, but the FAILED build is the one that sticks: s&box keeps
 # running the last assembly that compiled, so every edit made afterwards silently does nothing and
 # the editor shows stale results with no sign they are stale.

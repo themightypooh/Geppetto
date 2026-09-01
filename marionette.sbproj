@@ -8,9 +8,7 @@
   "Resources": null,
   "PackageReferences": [],
   "EditorReferences": null,
-  "Mounts": [
-    "halomcc"
-  ],
+  "Mounts": [],
   "IsStandaloneOnly": false,
   "Metadata": {
     "MaxPlayers": 64,
@@ -26,8 +24,8 @@
     "LeaderboardType": "None",
     "CsProjName": "",
     "StartupScene": "scenes/minimal.scene",
-    "Summary": "Control-rig animation editor - pose, keyframe and play back skinned models without leaving s&box.",
-    "Description": "Pose a skinned model's bones in a 3D viewport, keyframe them on a per-bone timeline with real easing curves, and solve two-bone IK and rotation limits. Includes undo/redo, prop-attach events, and a guided tutorial.",
-    "Tags": "animation editor tool rig ik keyframe"
+    "Summary": "s&box editor tools: a control-rig animation editor and a parametric CAD modeller.",
+    "Description": "Rig Control poses and keyframes skinned models in the editor. Effigy is a parametric CAD modeller that sketches, extrudes, booleans, rigs, and exports a real skinned .vmdl. Early — see the GitHub README for what works today.",
+    "Tags": "animation editor tool rig ik keyframe cad modeller"
   }
 }
