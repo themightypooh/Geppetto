@@ -1,4 +1,4 @@
-using Editor;
+﻿using Editor;
 using Effigy;
 using Sandbox;
 using System;
@@ -107,7 +107,10 @@ internal sealed partial class EffigyViewport
 			_pressedPoint = -1;
 		}
 
-		if ( _dragPoint >= 0 )
+		// A live drag of either kind is none of the selection's business: the cursor leaves what it
+		// grabbed the moment it starts moving, and everything it crosses on the way would otherwise
+		// be selected behind it.
+		if ( _dragPoint >= 0 || DraggingCurveHandle )
 			return;
 
 		if ( !_canvasHasCursor || !_cursorOnPlaneValid )
@@ -130,6 +133,11 @@ internal sealed partial class EffigyViewport
 
 			return;
 		}
+
+		// A grip on the curve owns the click the same way a constraint glyph does - it is drawn on
+		// the curve, so without this every grab would also toggle that curve into the selection.
+		if ( CursorOnCurveHandle )
+			return;
 
 		_hoverCurveId = CurveUnderCursor();
 

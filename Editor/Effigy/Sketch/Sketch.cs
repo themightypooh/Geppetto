@@ -349,22 +349,7 @@ public sealed class SketchArc : SketchCurve
 
 		var a0 = MathF.Atan2( s.y - c.y, s.x - c.x );
 		var a1 = MathF.Atan2( e.y - c.y, e.x - c.x );
-		var sweep = a1 - a0;
-
-		// Normalise the sweep into the requested direction. A zero sweep means the endpoints
-		// coincide, which is a full circle rather than nothing.
-		if ( Clockwise )
-		{
-			while ( sweep > 0 ) sweep -= MathF.Tau;
-			while ( sweep <= -MathF.Tau ) sweep += MathF.Tau;
-			if ( MathF.Abs( sweep ) < 1e-6f ) sweep = -MathF.Tau;
-		}
-		else
-		{
-			while ( sweep < 0 ) sweep += MathF.Tau;
-			while ( sweep >= MathF.Tau ) sweep -= MathF.Tau;
-			if ( MathF.Abs( sweep ) < 1e-6f ) sweep = MathF.Tau;
-		}
+		var sweep = Sweep( a0, a1, Clockwise );
 
 		var steps = SegmentsForArc( radius, MathF.Abs( sweep ), tolerance );
 		var points = new List<Vec2>( steps + 1 );
@@ -381,6 +366,38 @@ public sealed class SketchArc : SketchCurve
 		points[^1] = e;
 
 		return points;
+	}
+
+	/// <summary>
+	/// How far this arc turns, from its start angle to its end angle, in the requested direction.
+	/// Signed: negative clockwise.
+	///
+	/// A ZERO SWEEP IS A FULL CIRCLE, not nothing. Coincident endpoints are how a whole circle is
+	/// spelled as an arc, and the alternative reading - an arc that draws nothing at all - is not
+	/// something anybody has ever asked a sketcher for.
+	///
+	/// Pulled out of Tessellate so the handle that drags an arc's bulge can find the middle of the
+	/// same sweep the arc is drawn along. Two normalisations that were meant to agree, sitting in
+	/// different files, is how a grip ends up on the far side of its own arc.
+	/// </summary>
+	public static float Sweep( float startAngle, float endAngle, bool clockwise )
+	{
+		var sweep = endAngle - startAngle;
+
+		if ( clockwise )
+		{
+			while ( sweep > 0 ) sweep -= MathF.Tau;
+			while ( sweep <= -MathF.Tau ) sweep += MathF.Tau;
+			if ( MathF.Abs( sweep ) < 1e-6f ) sweep = -MathF.Tau;
+		}
+		else
+		{
+			while ( sweep < 0 ) sweep += MathF.Tau;
+			while ( sweep >= MathF.Tau ) sweep -= MathF.Tau;
+			if ( MathF.Abs( sweep ) < 1e-6f ) sweep = MathF.Tau;
+		}
+
+		return sweep;
 	}
 
 	/// <summary>Segment count from the sagitta — the gap between chord and arc. Fixed segment

@@ -466,6 +466,12 @@ internal sealed partial class EffigyViewport
 	/// in the kernel where they can be tested without s&amp;box. This only feeds it tolerances.</summary>
 	private readonly SketchSnapper _snapper = new();
 
+	/// <summary>Turns the point-snap pass off for one call, leaving the grid and the alignment
+	/// guides on. Set while a curve grip is being dragged - see EffigyViewport.CurveHandles.cs,
+	/// which explains why a line's middle landing on an unrelated corner is not what was asked
+	/// for.</summary>
+	private bool _suppressPointSnap;
+
 	/// <summary>Points clicked so far for the tool in progress. Cleared on completion or Escape.</summary>
 	private readonly List<Vec2> _pending = new();
 
@@ -503,6 +509,15 @@ internal sealed partial class EffigyViewport
 	/// <summary>Set once the drag has actually moved the point, so a click that grabs and releases
 	/// without moving does not push an undo step or a rebuild.</summary>
 	private bool _dragMoved;
+
+	/// <summary>The other points travelling with the one in hand: the rest of the selection when
+	/// the grabbed point belongs to it, and empty otherwise. See BeginPointDrag.</summary>
+	private readonly List<int> _dragGroup = new();
+
+	/// <summary>Where the dragged point was left LAST FRAME, which is what the group's delta is
+	/// measured from. Not where it was picked up - see DragPoint for why the difference matters
+	/// once the solver is moving points underneath the drag.</summary>
+	private Vec2 _dragFrom;
 
 	/// <summary>Handle radius in SCREEN PIXELS, converted to sketch units per frame. Sketches can
 	/// be one unit across or a thousand; a fixed world radius is either invisible or covers the
@@ -598,12 +613,46 @@ internal sealed partial class EffigyViewport
 			Gizmo.Draw.IgnoreDepth = false;
 
 			if ( Gizmo.WasLeftMousePressed )
-			{
-				_dragPoint = i;
-				_dragMoved = false;
-			}
+				BeginPointDrag( i );
 
 			break;
+		}
+	}
+
+	/// <summary>
+	/// Pick a point up, and work out what is coming with it.
+	///
+	/// GRABBING A SELECTED POINT MOVES THE WHOLE SELECTION; grabbing anything else moves that point
+	/// alone. It is the only reading of a draggable selection worth having - after picking three
+	/// corners deliberately, dragging one of them and watching the other two stay behind means the
+	/// selection was decoration. A point outside the selection was never part of that gesture, so
+	/// it travels on its own and the selection is left exactly where it is.
+	///
+	/// SELECTED CURVES ARE NOT EXPANDED into their points here. Dragging the end of a selected line
+	/// is asking for that end to move - the line's shape is what the drag is changing - while
+	/// selecting BOTH its ends and dragging is asking for the line to travel. Both readings are
+	/// available, and which one you get is which one you picked, so neither has to be guessed at.
+	/// </summary>
+	private void BeginPointDrag( int index )
+	{
+		_dragPoint = index;
+		_dragMoved = false;
+		_dragFrom = ActiveSketch.Points[index];
+
+		_dragGroup.Clear();
+
+		if ( !SketchSelection.Points.Contains( index ) )
+			return;
+
+		foreach ( var point in SketchSelection.Points )
+		{
+			// The grabbed point follows the cursor rather than the delta, so it must not also be in
+			// the group - it would be moved twice a frame and run off ahead of the hand.
+			if ( point == index || point < 0 || point >= ActiveSketch.Points.Count )
+				continue;
+
+			if ( !_dragGroup.Contains( point ) )
+				_dragGroup.Add( point );
 		}
 	}
 
@@ -638,14 +687,52 @@ internal sealed partial class EffigyViewport
 				if ( !_dragMoved )
 					SketchEditing?.Invoke();
 
+				// THE GROUP MOVES BY THE SAME DELTA, measured from where this point was last frame
+				// rather than from where it was picked up. The frame-to-frame form is what survives
+				// the solve below: an offset from the grab position would be applied to points the
+				// constraints have since moved, and the group would jump on the next mouse move.
+				var delta = target - _dragFrom;
+
 				ActiveSketch.Points[index] = target;
+
+				foreach ( var other in _dragGroup )
+				{
+					if ( other < ActiveSketch.Points.Count )
+						ActiveSketch.Points[other] = ActiveSketch.Points[other] + delta;
+				}
+
+				_dragFrom = target;
 				_dragMoved = true;
+
+				// AND THE SKETCH IS RE-SOLVED AROUND THE HAND, every frame of the drag, pinned on
+				// the point being dragged - which is what SketchSolver's own header asks the editor
+				// to do and what nothing here was doing. Without it a drag walked points straight
+				// through their own rules: a line told to be horizontal tilted, a dimensioned one
+				// changed length, and the marks drawn beside them went on claiming otherwise until
+				// something unrelated happened to solve the sketch again.
+				//
+				// Guarded on there being any rule at all, because Solve() only becomes a no-op for
+				// an unconstrained sketch after it has walked every curve - and this runs per frame.
+				if ( ActiveSketch.Constraints.Count > 0 )
+					SketchSolver.Solve( ActiveSketch, index );
 			}
 		}
 
 		Gizmo.Draw.IgnoreDepth = true;
 		Gizmo.Draw.Color = SketchDragColor;
 		Gizmo.Draw.SolidSphere( PlaneToWorld( ActiveSketch.Points[index] ), radius, 10, 10 );
+
+		// The rest of the group, in the same colour at the size of a snap target: they are
+		// following the cursor rather than being aimed at, so they should not compete with the
+		// point actually in hand.
+		var groupRadius = UnitsPerPixel() * SnapPointPixels;
+
+		foreach ( var other in _dragGroup )
+		{
+			if ( other < ActiveSketch.Points.Count )
+				Gizmo.Draw.SolidSphere( PlaneToWorld( ActiveSketch.Points[other] ), groupRadius, 10, 10 );
+		}
+
 		Gizmo.Draw.IgnoreDepth = false;
 	}
 
@@ -653,6 +740,7 @@ internal sealed partial class EffigyViewport
 	{
 		_dragPoint = -1;
 		_dragMoved = false;
+		_dragGroup.Clear();
 	}
 
 	// --- dimensions -------------------------------------------------------------------------
@@ -935,8 +1023,23 @@ internal sealed partial class EffigyViewport
 	public void BeginSketch( Sketch sketch )
 	{
 		ActiveSketch = sketch;
-		SketchTool = SketchToolKind.Line;
+
+		// A SKETCH THAT ALREADY HAS GEOMETRY OPENS IN SELECT; an empty one opens in Line.
+		//
+		// Re-opening a finished sketch is nearly always to move something already drawn, and the
+		// point handles below only run under the Select tool - so arming Line for that meant the
+		// first click on a corner drew a line from it instead of picking it up, and the geometry
+		// read as untouchable unless you knew to find the arrow on the strip first. An empty
+		// sketch has nothing to select, so there the old default is still the right one.
+		SketchTool = sketch is not null && sketch.Curves.Count > 0 ? SketchToolKind.Select : SketchToolKind.Line;
+
 		_pending.Clear();
+
+		// The selection is a list of INDICES into the sketch that was open a moment ago. Carried
+		// into a different sketch they still resolve, to whatever points happen to sit at those
+		// numbers - a selection nobody made, on geometry nobody clicked.
+		ClearSketchSelection();
+
 		// Keep the user's current camera. CursorToPlane projects onto the selected plane from any
 		// view, so entering a sketch does not need to force a new perspective or zoom level.
 		PushPrompt();
@@ -1456,6 +1559,7 @@ internal sealed partial class EffigyViewport
 	{
 		ClearDimension();
 		EndPointDrag();
+		EndCurveHandleDrag();
 		ActiveSketch = null;
 		SketchTool = SketchToolKind.Select;
 		_pending.Clear();
@@ -1554,7 +1658,7 @@ internal sealed partial class EffigyViewport
 
 		// A zero radius disables a snap pass outright rather than needing a flag inside the kernel:
 		// SketchSnapper compares against radius-squared, and nothing is ever closer than zero.
-		_snapper.PointRadius = SnapToPoints ? SnapPixels * unitsPerPixel : 0f;
+		_snapper.PointRadius = SnapToPoints && !_suppressPointSnap ? SnapPixels * unitsPerPixel : 0f;
 		_snapper.AlignmentRadius = AlignmentPixels * unitsPerPixel;
 		_snapper.GridStep = SnapToGrid ? GridStep( unitsPerPixel ) : 0f;
 
@@ -1597,11 +1701,14 @@ internal sealed partial class EffigyViewport
 		DrawDimensionBox();
 		SketchPointHandles();
 
-		// ORDER MATTERS THROUGH ALL THREE. The point handles get first refusal on the cursor, because
+		// ORDER MATTERS THROUGH ALL FOUR. The point handles get first refusal on the cursor, because
 		// a point sitting on a curve has to select the point. The constraint marks come next, since
 		// they are drawn on top of the geometry and a click on one means "delete this rule" rather
-		// than "select what is underneath". Selection is last and takes what is left.
+		// than "select what is underneath". Then the curve grips, which are drawn on their curves
+		// and so must be grabbed before the curve under them is selected. Selection is last and
+		// takes what is left.
 		ConstraintMarkFrame();
+		SketchCurveHandleFrame();
 		SketchSelectionFrame();
 
 		if ( _ignoreNextSketchClick )
@@ -2445,7 +2552,7 @@ internal sealed partial class EffigyViewport
 		SketchToolKind.Slot when _pending.Count == 1 => "Slot - click the other end of the centre line",
 		SketchToolKind.Slot => "Slot - click to set the width",
 		SketchToolKind.Point => "Point - click to place",
-		SketchToolKind.Select => "Select - drag a point to move it, or click points and curves to constrain them",
+		SketchToolKind.Select => "Select - drag a point, or the grip on a curve; click to select, and a selected point brings the rest with it",
 		_ => "Sketching - pick a tool from the sketch toolbar",
 	};
 }

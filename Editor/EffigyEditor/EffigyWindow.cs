@@ -409,7 +409,7 @@ public sealed class EffigyWindow : DockWindow
 	/// </summary>
 	private void BuildSketchToolbar()
 	{
-		AddSketchTool( EffigyIcon.SelectTool, "Select", "Select - drag a point to move it", SketchToolKind.Select );
+		AddSketchTool( EffigyIcon.SelectTool, "Select", "Select - drag a point, or the grip at the middle of a curve; click points and curves to select them, and a selected point brings the rest of the selection with it", SketchToolKind.Select );
 		_sketchStrip.AddGap();
 
 		AddSketchGroup(
