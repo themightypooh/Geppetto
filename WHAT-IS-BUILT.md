@@ -1110,6 +1110,37 @@ All of it compiles clean. Where something has not been *run*, it says so, and
   slot-shading toggle. It holds last frame's cursor ray, because `Gizmo.CurrentRay` means nothing
   inside a menu callback, and refuses the menu for a quarter second after the fly camera last moved,
   because the context-menu event arrives on button *release* and every orbit ends over the model.
+- **The Materials dock is a material browser you drag out of** (`EffigyMaterialsPanel.cs`) — every
+  `.vmat` in the project as a grid of real asset thumbnails with a search box. Drag a cell onto a
+  face and that face wears the material; double-click one and the whole part does, which is the one
+  binding a drag deliberately cannot make.
+  - **It replaced a column of slot rows** — "Slot 3 · material_3 (default) · \[Browse...\] · \[×\]",
+    eight of them — and the reason is worth keeping: that panel made you start from a *number*. To
+    put brushed steel on something you picked a slot you had no opinion about, opened a modal
+    picker, found the material, closed it, then went and painted faces. Seven eighths of the dock
+    was permanently a list of names of things that did not exist yet, and the materials themselves,
+    the only part with a picture, were never on screen at all.
+  - **The slot did not go away, it stopped being the question.** A material the document uses wears
+    its slot number as a badge, *in that slot's viewport tint* (`EffigyViewport.SlotColor`) — so the
+    green patch on the model and the green badge on the material are visibly the same fact. The
+    footer counts bound slots, which is what the old list was genuinely good for. Right-click a cell
+    to bind it to a specific slot by hand or unbind it, which is everything the eight rows could do,
+    reached from the material rather than from a number.
+  - The drag carries the asset's `RelativePath` as `Drag.Data.Text`, the same payload the editor's
+    own asset list sets — so a material dragged from *here* lands anywhere in the editor that takes
+    one, and a material dragged from the *real* asset browser lands on an Effigy face.
+  - The drop cannot borrow the cursor ray every other pick in the viewport uses: the canvas does not
+    report itself under the mouse during a drag, so `CaptureCursorRay` is still holding the ray from
+    wherever the drag began. It builds one from the drop position instead — canvas-local, scaled by
+    `DpiScale`, because the camera renders at physical pixels while Qt reports logical ones.
+  - **Which slot it lands on is the whole problem**, and it is in the kernel where it can be tested
+    (`Effigy/Features/MaterialDrop.cs`, `Effigy.Tests/MaterialDropTests.cs`). One slot per material,
+    reused — thirty faces of one material make one slot, not thirty. Slots that are *painted but
+    unnamed* are skipped, or a drop would silently repaint faces somebody had put on slot 3 by hand.
+    Slot 0 is never allocated, because it is what every unpainted face is on and handing it to a drop
+    would paint the entire part; the double-click is what deliberately reaches it. Dropping a
+    material onto the face already wearing it reports *no change*, so a near-miss does not put a
+    do-nothing step on the undo stack.
 - **Tree click selects** (`_tree.OnSelectionChanged`).
 - **Plane corner resize** — per-plane size state (`_planeHalfSize`, replacing one shared constant),
   hover handles (`DrawPlaneCornerHandles`) and a drag gesture with a minimum-size clamp.

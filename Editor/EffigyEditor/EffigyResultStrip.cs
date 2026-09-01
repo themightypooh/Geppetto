@@ -8,12 +8,16 @@ namespace Marionette.EditorTools;
 /// <summary>
 /// The ADD / REMOVE segmented control, floating under the tool strip.
 ///
-/// WHY IT EXISTS. Result is a dropdown in the feature dialog, four rows down, reading "Auto" until
-/// something changes it. That is enough to SET the mode and nowhere near enough to KNOW it: an
+/// WHY IT EXISTS. Result was a dropdown in the feature dialog, four rows down, reading "Auto" until
+/// something changed it. That was enough to SET the mode and nowhere near enough to KNOW it: an
 /// extrude that quietly added instead of cutting looks exactly like a boolean that failed, and the
 /// gap between those two readings cost a whole session of blaming the engine's boolean for a
 /// feature that was never asked to cut in the first place. A cut is the one operation here that
 /// destroys material, and the mode it is in should be readable without looking for it.
+///
+/// THE DROPDOWN IS GONE NOW. This is the only control for Result — the dialog skips that parameter
+/// (EffigyFeatureDialog.Rebuild) because a second, quieter copy of a mode indicator four rows down
+/// is not redundancy, it is somewhere else to look.
 ///
 /// FOUR SEGMENTS, NOT TWO. The mockup this is built from showed ADD | REMOVE, and two segments
 /// cannot tell the truth: the default is Auto, so the honest answer to "which of these is lit" is
@@ -21,9 +25,9 @@ namespace Marionette.EditorTools;
 /// Auto is also not a synonym for either one - it reads the sketch's attachment and can come out as
 /// either - so it gets its own segment and says what it will resolve to underneath.
 ///
-/// It is a VIEW of ExtrudeFeature.Result, not a second place that owns the value. Clicking a
-/// segment goes through the same Edited path the dropdown does, and the dropdown redraws showing
-/// the new value, because both read the one ChoiceParam.
+/// It is a VIEW of ExtrudeFeature.Result, not a second place that owns the value: clicking a segment
+/// sets the one ChoiceParam the kernel reads and then goes through the same Edited path every other
+/// parameter edit takes.
 /// </summary>
 internal sealed class EffigyResultStrip : Widget
 {

@@ -67,6 +67,20 @@ public static class DocumentTests
 		Report.Check( "the rollback bar comes back", back.RollbackIndex == studio.RollbackIndex,
 			$"{studio.RollbackIndex} became {back.RollbackIndex}" );
 
+		// THE PIVOT IS PART OF THE MODEL. It decides where every exported mesh, bone and hull sits
+		// relative to zero, so a load that dropped it would move the whole model on reopen - and
+		// silently, because nothing on screen is drawn from it.
+		Report.Check( "the pivot comes back",
+			( back.Origin - studio.Origin ).Length < 1e-6f,
+			$"{studio.Origin.x},{studio.Origin.y},{studio.Origin.z} became {back.Origin.x},{back.Origin.y},{back.Origin.z}" );
+
+		// A document that never moved the pivot must not grow an origin line, and must still read
+		// back as zero rather than as absent-meaning-something-else.
+		Report.Check( "an untouched pivot writes no line and comes back at zero",
+			!StudioDocument.Write( new PartStudio() ).Contains( "origin " )
+			&& StudioDocument.Read( StudioDocument.Write( new PartStudio() ) ).Origin.Length == 0f,
+			"an unmoved origin should be absent from the file" );
+
 		Report.Check( "material slot names come back, spaces and all",
 			back.NameForSlot( 3 ) == "brushed steel" && back.NameForSlot( 7 ) == "rubber",
 			$"{back.NameForSlot( 3 )} / {back.NameForSlot( 7 )}" );
@@ -359,6 +373,8 @@ public static class DocumentTests
 		shell.Suppressed = true;
 
 		studio.RollbackIndex = 6;
+
+		studio.Origin = new Vec3( 1.5f, -2f, 0.25f );
 
 		studio.MaterialNames[3] = "brushed steel";
 		studio.MaterialNames[7] = "rubber";

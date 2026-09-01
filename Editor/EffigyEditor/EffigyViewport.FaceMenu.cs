@@ -108,25 +108,35 @@ internal sealed partial class EffigyViewport
 
 	// --- the pick ---------------------------------------------------------------------------------
 
-	/// <summary>
-	/// The face under the cursor, against everything currently on screen.
-	///
-	/// Visible bodies only. A hidden body is not something you can point at, and letting a pick land
-	/// on one would put a material on a face nobody can see and cannot click again to change.
-	/// </summary>
+	/// <summary>The face under the cursor, against everything currently on screen.</summary>
 	public bool TryPickFaceUnderCursor( out EffigyFaceHit hit )
 	{
 		hit = default;
 
-		if ( !_cursorRayValid )
-			return false;
+		return _cursorRayValid && TryPickFace( _cursorRayOrigin, _cursorRayDirection, out hit );
+	}
+
+	/// <summary>
+	/// The face some ray hits, against everything currently on screen.
+	///
+	/// Split from the cursor version for the material drop, which aims with a ray built from the
+	/// drop position rather than from the hover — see EffigyViewport.MaterialDrop.cs for why it
+	/// cannot use the cursor ray. Everything below the ray is identical for both and was worth
+	/// having in one place rather than two that drift.
+	///
+	/// Visible bodies only. A hidden body is not something you can point at, and letting a pick land
+	/// on one would put a material on a face nobody can see and cannot click again to change.
+	/// </summary>
+	private bool TryPickFace( Vec3 origin, Vec3 direction, out EffigyFaceHit hit )
+	{
+		hit = default;
 
 		var visible = _displayBodies.Where( b => b?.Mesh is not null && b.Visible ).ToList();
 
 		if ( visible.Count == 0 )
 			return false;
 
-		if ( MeshRaycast.Raycast( visible, _cursorRayOrigin, _cursorRayDirection ) is not { } result )
+		if ( MeshRaycast.Raycast( visible, origin, direction ) is not { } result )
 			return false;
 
 		var mesh = result.Body.Mesh;

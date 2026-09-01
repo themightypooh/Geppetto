@@ -47,7 +47,11 @@ public sealed class PrimitiveFeature : Feature
 	/// </summary>
 	public readonly BoolParam UniformScale = new( "Uniform scale", false );
 
-	public readonly IntParam Material = new( "Material slot", 0, 0, 63 );
+	public readonly IntParam Material = new( "Material slot", 0, 0, 63 ) { Slider = false };
+
+	/// <summary>The slot, folded away with the other features' — a primitive is placed and sized,
+	/// and painted later from the Materials panel.</summary>
+	public override IReadOnlyList<IParam> AdvancedParameters => new IParam[] { Material };
 
 	public override IReadOnlyList<IParam> Parameters => Shape.Value switch
 	{

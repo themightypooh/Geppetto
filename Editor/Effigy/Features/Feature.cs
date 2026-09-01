@@ -74,6 +74,20 @@ public sealed class IntParam : IParam
 	public int Value;
 	public int Min, Max;
 
+	/// <summary>
+	/// Whether dragging this number through its range means anything.
+	///
+	/// A slider is for a MAGNITUDE — segment counts, subdivision levels, numbers where the values
+	/// either side of the one you have are the neighbouring answers. A material slot is an
+	/// IDENTIFIER that happens to be stored as a number: slot 7 is not "more" than slot 6, sweeping
+	/// through 40 of them on the way says nothing, and the drag bar was the widest control in the
+	/// Extrude dialog doing the least. Those get a field and no slider.
+	///
+	/// The bounds test in the dialog cannot tell the two apart — 0..63 looks exactly as draggable
+	/// as 0..6 — so the parameter says which it is.
+	/// </summary>
+	public bool Slider = true;
+
 	public IntParam( string label, int value, int min = int.MinValue, int max = int.MaxValue )
 	{
 		Label = label;
@@ -253,6 +267,23 @@ public abstract class Feature
 
 	public abstract string TypeName { get; }
 	public abstract IReadOnlyList<IParam> Parameters { get; }
+
+	/// <summary>
+	/// The subset of <see cref="Parameters"/> that belongs behind the dialog's Advanced disclosure
+	/// — folded away by default, and still every bit as much a parameter as the ones above it.
+	///
+	/// It is a SUBSET RATHER THAN A SECOND LIST. Everything generic — the snapshot Cancel restores
+	/// from, the document writer, the diagnostics that point at a parameter by label — walks
+	/// Parameters, and a parameter that only appeared here would be invisible to all of it. So this
+	/// says nothing about what a feature HAS; it only says which of them are answered once and then
+	/// left alone. Extrude is the case that asked for it: taper, a second distance and a material
+	/// slot are three rows of nothing-to-do-here sitting under the distance that is the whole point
+	/// of the feature.
+	///
+	/// Held by REFERENCE, matched by reference. Naming the parameters by label would tie which rows
+	/// fold up to the words on screen.
+	/// </summary>
+	public virtual IReadOnlyList<IParam> AdvancedParameters => Array.Empty<IParam>();
 
 	/// <summary>
 	/// Whether this feature's cached result is out of date even though nobody called MarkDirty.

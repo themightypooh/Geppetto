@@ -39,6 +39,9 @@ public static class SketchTests
 		Section( "picking one region out of a sketch" );
 		TestRegionSelection();
 
+		Section( "overlapping sketches make the middle a region too" );
+		TestOverlappingRegions();
+
 		Section( "each sketch plane builds where it should" );
 		TestPlaneOrientation();
 
@@ -222,6 +225,221 @@ public static class SketchTests
 		Check( "a seed that matches nothing reports an error", report.HasErrors, report.ToString() );
 		Check( "and produces no body from that feature", studio.Bodies.Count == 0,
 			$"{studio.Bodies.Count} bodies" );
+	}
+
+	/// <summary>
+	/// Two closed shapes that overlap are three pickable faces: each whole, and the lens in the
+	/// middle. Without that, a click in the overlap could only name one of the wholes — or, worse,
+	/// both, because both contain the point.
+	///
+	/// The sketch itself is not rewritten. Coincidence stays identity for editing; the overlay is
+	/// only how regions are found.
+	/// </summary>
+	static void TestOverlappingRegions()
+	{
+		// Two 2x2 squares sharing a 1x1. First vertex of B sits inside A, which is the case that
+		// used to classify B as a hole in A and eat both the overlap and the part that sticks out.
+		var sketch = new Sketch();
+		sketch.AddRectangle( new Vec2( 0, 0 ), new Vec2( 2, 2 ) );
+		sketch.AddRectangle( new Vec2( 1, 1 ), new Vec2( 3, 3 ) );
+
+		var curvesBefore = sketch.Curves.Count;
+		var pointsBefore = sketch.Points.Count;
+		var found = ProfileFinder.Find( sketch );
+
+		Check( "finding regions does not rewrite the sketch",
+			sketch.Curves.Count == curvesBefore && sketch.Points.Count == pointsBefore,
+			$"{sketch.Curves.Count} curves / {sketch.Points.Count} points, were {curvesBefore}/{pointsBefore}" );
+
+		Check( "two overlapping squares are three regions, not one with a hole",
+			found.Profiles.Count == 3, $"{found.Profiles.Count} regions, warnings: {string.Join( "; ", found.Warnings )}" );
+
+		Check( "and the middle is marked as an overlap, not a third whole",
+			found.Profiles.Count( p => p.FromOverlap ) == 1,
+			$"{found.Profiles.Count( p => p.FromOverlap )} overlap faces" );
+
+		if ( found.Profiles.Count == 3 )
+		{
+			var areas = found.Profiles.Select( p => p.Area ).OrderBy( a => a ).ToList();
+
+			Check( "the three areas are the lens and the two wholes (1, 4, 4)",
+				MathF.Abs( areas[0] - 1f ) < 1e-3f
+				&& MathF.Abs( areas[1] - 4f ) < 1e-3f
+				&& MathF.Abs( areas[2] - 4f ) < 1e-3f,
+				string.Join( ", ", areas.Select( a => a.ToString( "0.###" ) ) ) );
+
+			var lens = found.Profiles.First( p => p.FromOverlap );
+
+			Check( "a point in the middle is inside the lens", lens.Contains( new Vec2( 1.5f, 1.5f ) ) );
+			Check( "a point in only A is not inside the lens", !lens.Contains( new Vec2( 0.5f, 0.5f ) ) );
+			Check( "a point in only B is not inside the lens", !lens.Contains( new Vec2( 2.5f, 2.5f ) ) );
+		}
+
+		// The pick contract: exclusive A extrudes whole A, exclusive B whole B, the middle the lens.
+		static PartStudio Overlapping( out ExtrudeFeature extrude )
+		{
+			var studio = new PartStudio();
+			var feature = studio.Add( new SketchFeature() );
+			feature.Sketch.AddRectangle( new Vec2( 0, 0 ), new Vec2( 2, 2 ) );
+			feature.Sketch.AddRectangle( new Vec2( 1, 1 ), new Vec2( 3, 3 ) );
+
+			extrude = studio.Add( new ExtrudeFeature() );
+			extrude.Distance.Value = 1f;
+			extrude.Result.Index = 1; // keep bodies apart so volumes can be read
+
+			return studio;
+		}
+
+		var studio = Overlapping( out var all );
+		var report = studio.Rebuild();
+
+		Check( "no seed still extrudes the two wholes, not the lens on top of them",
+			!report.HasErrors && studio.Bodies.Count == 2, $"{studio.Bodies.Count} bodies, {report}" );
+
+		if ( studio.Bodies.Count == 2 )
+		{
+			Check( "and each whole is volume 4",
+				studio.Bodies.All( b => MathF.Abs( Volume( b.Mesh ) - 4f ) < 1e-3f ),
+				string.Join( ", ", studio.Bodies.Select( b => Volume( b.Mesh ).ToString( "0.###" ) ) ) );
+		}
+
+		studio = Overlapping( out var lensExtrude );
+		lensExtrude.RegionSeed = new Vec2( 1.5f, 1.5f );
+		report = studio.Rebuild();
+
+		Check( "a seed in the middle extrudes only the lens",
+			!report.HasErrors && studio.Bodies.Count == 1
+			&& MathF.Abs( Volume( studio.Bodies[0].Mesh ) - 1f ) < 1e-3f,
+			$"{studio.Bodies.Count} bodies, volume {(studio.Bodies.Count == 0 ? 0 : Volume( studio.Bodies[0].Mesh ))}, {report}" );
+
+		studio = Overlapping( out var left );
+		left.RegionSeed = new Vec2( 0.5f, 0.5f );
+		studio.Rebuild();
+
+		Check( "a seed in only A still extrudes whole A",
+			studio.Bodies.Count == 1 && MathF.Abs( Volume( studio.Bodies[0].Mesh ) - 4f ) < 1e-3f,
+			$"{studio.Bodies.Count} bodies, volume {(studio.Bodies.Count == 0 ? 0 : Volume( studio.Bodies[0].Mesh ))}" );
+
+		studio = Overlapping( out var right );
+		right.RegionSeed = new Vec2( 2.5f, 2.5f );
+		studio.Rebuild();
+
+		Check( "a seed in only B still extrudes whole B",
+			studio.Bodies.Count == 1 && MathF.Abs( Volume( studio.Bodies[0].Mesh ) - 4f ) < 1e-3f,
+			$"{studio.Bodies.Count} bodies, volume {(studio.Bodies.Count == 0 ? 0 : Volume( studio.Bodies[0].Mesh ))}" );
+
+		// Two overlapping circles: the same three faces, recovered from closed curves that never
+		// sit in the integer graph at all.
+		var circles = new Sketch();
+		circles.AddCircle( new Vec2( 0, 0 ), 2f );
+		circles.AddCircle( new Vec2( 2, 0 ), 2f );
+		var circleFound = ProfileFinder.Find( circles );
+
+		Check( "two overlapping circles are three regions",
+			circleFound.Profiles.Count == 3, $"{circleFound.Profiles.Count} regions" );
+		Check( "with one overlap face",
+			circleFound.Profiles.Count( p => p.FromOverlap ) == 1,
+			$"{circleFound.Profiles.Count( p => p.FromOverlap )} overlap faces" );
+
+		if ( circleFound.Profiles.Count( p => p.FromOverlap ) == 1 )
+		{
+			var lens = circleFound.Profiles.First( p => p.FromOverlap );
+
+			Check( "the circle lens contains the midpoint", lens.Contains( new Vec2( 1f, 0f ) ) );
+			Check( "and not a point that belongs to only one circle",
+				!lens.Contains( new Vec2( -1f, 0f ) ) && !lens.Contains( new Vec2( 3f, 0f ) ) );
+
+			// Two circles r=2, centres 2 apart: 2 r² acos(d/2r) − 0.5 d √(4r² − d²) = 8π/3 − 2√3.
+			var expected = 8f * MathF.PI / 3f - 2f * MathF.Sqrt( 3f );
+
+			Check( "and its area is the analytic intersection, to tessellation tolerance",
+				MathF.Abs( lens.Area - expected ) < 0.3f,
+				$"{lens.Area:0.###} vs {expected:0.###}" );
+		}
+
+		// Two rectangles that only kiss at a corner must not become a bowtie, and must not grow
+		// a zero-area overlap face.
+		var kissing = new Sketch();
+		kissing.AddRectangle( new Vec2( 0, 0 ), new Vec2( 1, 1 ) );
+		kissing.AddRectangle( new Vec2( 1, 1 ), new Vec2( 2, 2 ) );
+		var kissFound = ProfileFinder.Find( kissing );
+
+		Check( "rectangles that touch at a corner stay two regions",
+			kissFound.Profiles.Count == 2 && kissFound.Profiles.Count( p => p.FromOverlap ) == 0,
+			$"{kissFound.Profiles.Count} regions, {kissFound.Profiles.Count( p => p.FromOverlap )} overlaps" );
+
+		// THE ACTUAL CASE: two Sketch features on the same plane, not two loops in one sketch.
+		var host = new Sketch();
+		host.AddRectangle( new Vec2( 0, 0 ), new Vec2( 2, 2 ) );
+		var guest = new Sketch();
+		guest.AddRectangle( new Vec2( 1, 1 ), new Vec2( 3, 3 ) );
+
+		var alone = ProfileFinder.Find( host );
+		Check( "a sketch on its own does not invent a lens from a neighbour it was not given",
+			alone.Profiles.Count == 1 && alone.Profiles.Count( p => p.FromOverlap ) == 0,
+			$"{alone.Profiles.Count} regions, {alone.Profiles.Count( p => p.FromOverlap )} overlaps" );
+
+		var together = ProfileFinder.Find( host, new[] { guest } );
+
+		Check( "two Sketch features that overlap are the host whole plus the lens",
+			together.Profiles.Count == 2 && together.Profiles.Count( p => p.FromOverlap ) == 1,
+			$"{together.Profiles.Count} regions, {together.Profiles.Count( p => p.FromOverlap )} overlaps" );
+
+		if ( together.Profiles.Count( p => p.FromOverlap ) == 1 )
+		{
+			var lens = together.Profiles.First( p => p.FromOverlap );
+
+			Check( "the cross-sketch lens is the 1x1 in the middle",
+				MathF.Abs( lens.Area - 1f ) < 1e-3f, $"{lens.Area:0.###}" );
+			Check( "and a click there names the lens, not either whole",
+				lens.Contains( new Vec2( 1.5f, 1.5f ) ) );
+			Check( "a click in only the host is not the lens",
+				!lens.Contains( new Vec2( 0.5f, 0.5f ) ) );
+			Check( "and exclusive faces of the neighbour are not this sketch's to pick",
+				!together.Profiles.Any( p => p.Contains( new Vec2( 2.5f, 2.5f ) ) ) );
+		}
+
+		static PartStudio TwoSketchFeatures( out SketchFeature a, out SketchFeature b, out ExtrudeFeature extrude )
+		{
+			var studio = new PartStudio();
+			a = studio.Add( new SketchFeature() );
+			a.Sketch.AddRectangle( new Vec2( 0, 0 ), new Vec2( 2, 2 ) );
+			b = studio.Add( new SketchFeature() );
+			b.Sketch.AddRectangle( new Vec2( 1, 1 ), new Vec2( 3, 3 ) );
+
+			extrude = studio.Add( new ExtrudeFeature() );
+			extrude.Distance.Value = 1f;
+			extrude.Result.Index = 1;
+
+			return studio;
+		}
+
+		studio = TwoSketchFeatures( out var sketchA, out _, out var fromA );
+		fromA.SketchFeatureId = sketchA.Id;
+		fromA.RegionSeed = new Vec2( 1.5f, 1.5f );
+		report = studio.Rebuild();
+
+		Check( "extrude pointed at one sketch, seed in the overlap with the other, builds the lens",
+			!report.HasErrors && studio.Bodies.Count == 1
+			&& MathF.Abs( Volume( studio.Bodies[0].Mesh ) - 1f ) < 1e-3f,
+			$"{studio.Bodies.Count} bodies, volume {(studio.Bodies.Count == 0 ? 0 : Volume( studio.Bodies[0].Mesh ))}, {report}" );
+
+		studio = TwoSketchFeatures( out sketchA, out _, out var wholeA );
+		wholeA.SketchFeatureId = sketchA.Id;
+		studio.Rebuild();
+
+		Check( "no seed on one of two overlapping sketches still builds that whole, not the lens",
+			studio.Bodies.Count == 1 && MathF.Abs( Volume( studio.Bodies[0].Mesh ) - 4f ) < 1e-3f,
+			$"{studio.Bodies.Count} bodies, volume {(studio.Bodies.Count == 0 ? 0 : Volume( studio.Bodies[0].Mesh ))}" );
+
+		studio = TwoSketchFeatures( out sketchA, out _, out var exclusive );
+		exclusive.SketchFeatureId = sketchA.Id;
+		exclusive.RegionSeed = new Vec2( 0.5f, 0.5f );
+		studio.Rebuild();
+
+		Check( "a seed in only one sketch still builds that whole",
+			studio.Bodies.Count == 1 && MathF.Abs( Volume( studio.Bodies[0].Mesh ) - 4f ) < 1e-3f,
+			$"{studio.Bodies.Count} bodies, volume {(studio.Bodies.Count == 0 ? 0 : Volume( studio.Bodies[0].Mesh ))}" );
 	}
 
 	/// <summary>Shoelace area of a curve as the extrude actually tessellates it. Comparing against

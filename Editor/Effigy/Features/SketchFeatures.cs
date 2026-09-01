@@ -384,16 +384,33 @@ public abstract class SketchConsumingFeature : Feature
 	/// face you picked stopped existing is exactly the kind of thing you notice three features
 	/// later.
 	/// </summary>
-	protected List<Profile> ResolveProfiles( Sketch sketch )
+	protected List<Profile> ResolveProfiles( Sketch sketch, FeatureContext ctx )
 	{
-		var all = FindProfiles( sketch );
+		var others = ctx.Sketches.Values.Where( s => !ReferenceEquals( s, sketch ) );
+		var all = FindProfiles( sketch, others );
 
 		if ( RegionSeed is not { } seed )
-			return all;
+		{
+			// Overlap lenses are extra faces for a click in the middle. Building every region
+			// must not also build the lens on top of the two wholes that already contain it.
+			return all.Where( p => !p.FromOverlap ).ToList();
+		}
 
-		var picked = all.Where( p => p.Contains( seed ) ).ToList();
+		// Smallest containing region wins, same rule the viewport pick uses. Two overlapping
+		// wholes both contain a click in the lens; the lens is smaller, so that is the one
+		// that was meant. Taking every match used to extrude both wholes from that click.
+		Profile picked = null;
 
-		if ( picked.Count == 0 )
+		foreach ( var profile in all )
+		{
+			if ( !profile.Contains( seed ) )
+				continue;
+
+			if ( picked is null || profile.Area < picked.Area )
+				picked = profile;
+		}
+
+		if ( picked is null )
 		{
 			Fail(
 				"The selected region no longer exists — the sketch changed underneath it. "
@@ -403,12 +420,12 @@ public abstract class SketchConsumingFeature : Feature
 				"Clear the selection to use every closed region" );
 		}
 
-		return picked;
+		return new List<Profile> { picked };
 	}
 
-	List<Profile> FindProfiles( Sketch sketch )
+	List<Profile> FindProfiles( Sketch sketch, IEnumerable<Sketch> neighbors )
 	{
-		var found = ProfileFinder.Find( sketch );
+		var found = ProfileFinder.Find( sketch, neighbors );
 
 		// ProfileFinder reports what it could not make sense of - a point where three curves meet,
 		// for instance, which it will not guess at.
@@ -496,7 +513,7 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 	/// </summary>
 	public readonly FloatParam Taper = new( "Taper", 0f, -89f, 89f, unit: "deg" );
 
-	public readonly IntParam Material = new( "Material slot", 0, 0, 63 );
+	public readonly IntParam Material = new( "Material slot", 0, 0, 63 ) { Slider = false };
 
 	/// <summary>
 	/// Which way the extrude actually travels: +1 along the sketch plane's normal, -1 against it.
@@ -544,10 +561,22 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 		? new IParam[] { Sketch, Termination, Distance, SecondDistance, Symmetric, Flip, Taper, Result, Material }
 		: new IParam[] { Sketch, Termination, Flip, Taper, Result, Material };
 
+	/// <summary>
+	/// What an extrude is asked for once in twenty.
+	///
+	/// The distance, the direction and which sketch is what an extrude IS, and those four rows were
+	/// arriving buried under three that are draft angle, a second end position and a material slot
+	/// — each of them left at its default nearly every time. Onshape folds the same three away
+	/// behind a disclosure for the same reason. Result is not here: it is not advanced, it moved
+	/// out of the dialog entirely and lives on the ADD/REMOVE strip over the viewport.
+	/// </summary>
+	public override IReadOnlyList<IParam> AdvancedParameters =>
+		new IParam[] { SecondDistance, Taper, Material };
+
 	protected override void Execute( FeatureContext ctx )
 	{
 		var sketch = ResolveSketch( ctx );
-		var profiles = ResolveProfiles( sketch );
+		var profiles = ResolveProfiles( sketch, ctx );
 
 		var sign = DirectionSign( ctx );
 
@@ -1017,7 +1046,7 @@ public sealed class RevolveFeature : SketchConsumingFeature
 	public readonly Vec3Param AxisDirection = new( "Axis direction (sketch coords)", new Vec3( 1, 0, 0 ) );
 	public readonly FloatParam Angle = new( "Angle", 360f, unit: "deg" );
 	public readonly IntParam Segments = new( "Segments", 24, 3, 512 );
-	public readonly IntParam Material = new( "Material slot", 0, 0, 63 );
+	public readonly IntParam Material = new( "Material slot", 0, 0, 63 ) { Slider = false };
 
 	/// <summary>Index into AxisMode for the hand-typed axis. Zero so an old document, which has no
 	/// AxisMode line at all, loads with the axis it was saved with.</summary>
@@ -1029,6 +1058,10 @@ public sealed class RevolveFeature : SketchConsumingFeature
 	public override IReadOnlyList<IParam> Parameters => AxisMode.Index == AxisCustom
 		? new IParam[] { Sketch, AxisMode, AxisPoint, AxisDirection, Angle, Segments, Result, Material }
 		: new IParam[] { Sketch, AxisMode, Angle, Segments, Result, Material };
+
+	/// <summary>The slot, for the same reason Extrude folds it away — it is answered by the
+	/// Materials panel far more often than it is answered here.</summary>
+	public override IReadOnlyList<IParam> AdvancedParameters => new IParam[] { Material };
 
 	/// <summary>
 	/// The axis in sketch coordinates, from whichever mode is chosen.
@@ -1073,7 +1106,7 @@ public sealed class RevolveFeature : SketchConsumingFeature
 	protected override void Execute( FeatureContext ctx )
 	{
 		var sketch = ResolveSketch( ctx );
-		var profiles = ResolveProfiles( sketch );
+		var profiles = ResolveProfiles( sketch, ctx );
 
 		// PAST A FULL TURN THE SWEEP OVERLAPS ITSELF, and the overlap welds: the result comes back
 		// with edges shared by four or more faces and no error reported. Only exactly +-360 is

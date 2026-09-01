@@ -58,6 +58,12 @@ public static class StudioDocument
 		sb.Append( "effigy " ).Append( Version ).Append( '\n' );
 		sb.Append( "rollback " ).Append( studio.RollbackIndex ).Append( '\n' );
 
+		// Only when it has been moved. A pivot at zero is what a reader that has never heard of
+		// this line already has, so writing it unconditionally would add a line to every existing
+		// document and change the bytes of files nobody edited.
+		if ( studio.Origin.Length > 0f )
+			sb.Append( "origin " ).Append( Vec( studio.Origin ) ).Append( '\n' );
+
 		// Sorted, so two saves of the same document are the same bytes. A dictionary's order is not
 		// promised, and a format that reshuffles itself makes every diff useless.
 		foreach ( var (slot, name) in studio.MaterialNames.OrderBy( kv => kv.Key ) )
@@ -316,6 +322,12 @@ public static class StudioDocument
 			if ( line.StartsWith( "rollback " ) )
 			{
 				rollback = ParseInt( line[9..], int.MaxValue );
+				continue;
+			}
+
+			if ( line.StartsWith( "origin " ) )
+			{
+				studio.Origin = ParseVec3( line[7..] );
 				continue;
 			}
 

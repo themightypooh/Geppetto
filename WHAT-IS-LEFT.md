@@ -31,10 +31,12 @@ accepts an exact distance instead of a drag. Same sitting as item 1 — the edit
 the pictures (`camera_screenshot`, `editor_camera_screenshot`). **Do not assume the gizmo works
 until it has been run once.**
 
-**3. The sketch toolbar swapping.** Ten seconds: enter a sketch and watch the strip. The feature
-strip and the sketch strip are now the same kind of floating widget and `EnterSketch`/`FinishSketch`
-toggle both, which is the fix for them previously being two unrelated systems where nothing ever hid
-the feature strip.
+**3. The sketch toolbar swapping — ~~ten seconds~~ this is the live blocker.** It was written up here
+as a ten-second look: enter a sketch and watch the feature strip give way to the sketch strip. It
+does not happen. The 2026-09-01 probe run shows `featureStrip=True sketchStrip=False` after clicking
+Edit sketch, which means `EnterSketch` is never entered, which is also why sketch points cannot be
+picked up. **Read §2.0 before touching any of it** — the drag code, the hit test and the Select-tool
+gate have all been excluded by evidence, and four fixes have already been spent on them.
 
 **4. The Settings window** — judge the hand-painted grid switch and its slide animation, and pick a
 palette. **The dark-mode contrast call needs po's actual monitor, not RGB values** — `OnshapeDark`
@@ -266,6 +268,74 @@ this, do the same.
 ## 2. Effigy editor — the bigger gap
 
 The kernel can do things the tool cannot reach. This is now the larger half of the project.
+
+### 2.0 Sketch points cannot be picked up — **LIVE BLOCKER, and the tool never enters sketch mode**
+
+Reported four-plus times as "I can't move points when editing a sketch", and fixed four-plus times
+in the wrong place. The 2026-09-01 session settled where it is *not*, with the probe rather than by
+reading code.
+
+**What the probe says.** `effigy_probe_sketch 1`, then click Edit sketch and try to drag a point:
+
+```
+[effigy-probe] NO SKETCH OPEN. featureStrip=True sketchStrip=False windowFeature=none onCanvas=False
+```
+
+**`EnterSketch` never runs.** That is a stronger statement than it looks. `EnterSketch`
+(`EffigyWindow.cs:1040`) swaps the two strips in its first two statements, before `RebuildStudio`
+and before `BeginSketch` — so even an exception thrown inside it would still leave
+`featureStrip=False sketchStrip=True`. Feature strip still up means the method was never entered.
+
+**Therefore ruled out, and not worth touching again:** the point hit test, the Select-tool gate at
+the top of `SketchPointHandles`, `DragPoint`, the per-frame solver pinning, the
+depth-tested-hitbox fix, and everything else downstream of a sketch being open. None of it runs in
+this state. The points visible on screen are `DrawCommittedSketches` output, which is display only
+— clicking them is *expected* to do nothing.
+
+**Where it has to be**, in `EffigyFeatureDialog.BuildSketchButtonRow` (`:964`):
+
+```csharp
+Enabled = _planeChosen,
+Clicked = () => SketchRequested?.Invoke( sketch ),
+```
+
+Two candidates, both silent by construction, and they are all that is left:
+
+1. **`SketchRequested` is null or hotload-dead on that dialog instance.** `?.Invoke` swallows a null
+   handler without a word, so a dead handler and a live one that does nothing look identical from
+   the outside. The window wires it once — `SketchRequested = EnterSketch` (`EffigyWindow.cs:1606`)
+   — as an instance method group stored on a long-lived dialog.
+2. **The button is disabled.** `_planeChosen` is set to `!isNew` in `Open` (`:267`), so a re-opened
+   sketch should have it true; nothing re-establishes it if the dialog is rebuilt by another path.
+
+No `Warn` or `Error` was logged across the click, so a thrown exception is unlikely and the silent
+null-handler path is the better first suspect.
+
+**Next step, and it is one line of evidence, not a fix.** Log unconditionally at the top of the
+`Clicked` lambda and again at the top of `EnterSketch`. That separates "the click never reached the
+handler" from "the handler was null" from "EnterSketch ran and something after the strip swap undid
+it". Do not change behaviour before that line prints — four fixes have already been spent on code
+this probe has now excluded.
+
+**A second, real bug found on the way — still unfixed, and not the one above.** The sketch strip is
+built exactly once (constructor → `BuildToolbar()` `:225` → `BuildSketchToolbar()` `:403`) and is
+never cleared and rebuilt, unlike `_toolStrip` in `RefreshToolStrip()`. So on every hotload its
+`VariantChosen` closures rot:
+
+```
+[hotload/GameMenu] Warn: Unable to find matching substitution for a lambda method.
+  Member: Marionette.EditorTools.EffigyWindow.<AddSketchGroup>b__36_0
+  Path: [...].VariantChosen
+```
+
+Every sketch tool button goes dead — they still highlight and check, they just call nothing — and
+`VariantChosen` is the only route into `SetSketchTool`. There is no Select keyboard shortcut either:
+only Line and Circle have one (`:3314`). So after any hotload with the window open, the Select tool
+is unreachable and `SketchTool` freezes wherever it last was. This is the same failure the
+`ToolKind` enum comment (`:1176`) documents and fixed for the *feature* strip; the sketch strip
+never got the same treatment. Closing and reopening the window is the workaround. It is worth fixing
+on its own account — it will hide the fix for 2.0 once that lands, and it is the likeliest reason
+earlier fixes "stopped working" the moment code was edited with the window open.
 
 ### 2.1 Sweep and loft on the strip — **written, and never seen on screen**
 

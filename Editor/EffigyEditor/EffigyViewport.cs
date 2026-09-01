@@ -207,6 +207,9 @@ internal sealed partial class EffigyViewport : Widget
 
 		_gizmoInstance = _canvas.GizmoInstance;
 
+		// Materials dragged out of the browser land here - see EffigyViewport.MaterialDrop.cs.
+		EnableMaterialDrops();
+
 		// The canvas is NOT added to the layout here - the tool strip has to go above it and does
 		// not exist yet. BuildToolbar calls CompleteLayout to fill this widget's existing column
 		// layout in the right order.
@@ -351,6 +354,112 @@ internal sealed partial class EffigyViewport : Widget
 
 		// A one-unit part needs to be able to get closer than the 0.5 near plane the planes want.
 		_camera.ZNear = Math.Clamp( distance * 0.01f, 0.01f, 8f );
+	}
+
+	// --- size reference ---------------------------------------------------------------------
+
+	/// <summary>
+	/// The stand-in body: the citizen from the base addon, so it is there for everyone rather than
+	/// being something of mine, and it is the same figure anything built here ends up standing next
+	/// to in a scene.
+	/// </summary>
+	public const string SizeReferenceModelPath = "models/citizen/citizen.vmdl";
+
+	private GameObject _referenceObject;
+	private bool _showSizeReference;
+
+	/// <summary>
+	/// Whether the citizen stands at the origin as a ruler.
+	///
+	/// EFFIGY'S UNITS DO NOT SAY HOW BIG ANYTHING IS. A default Box is one unit on a side and the
+	/// reference planes are 128 across, so a part on its own fills the view at every scale and looks
+	/// the same doing it — the status bar's numbers are the only answer to "how big is this", and a
+	/// number is not a size. A body of known height beside it is one: a door is a head taller than
+	/// the citizen, a mug is lost at its feet, and you can see which you have made.
+	/// </summary>
+	public bool ShowSizeReference
+	{
+		get => _showSizeReference;
+		set
+		{
+			if ( _showSizeReference == value )
+				return;
+
+			_showSizeReference = value;
+			UpdateSizeReference();
+		}
+	}
+
+	/// <summary>Height of the loaded reference in world units, or zero when none is loaded. Read by
+	/// the settings window, which prints it under the switch — the figure is only a ruler if it says
+	/// what it measures.</summary>
+	public float SizeReferenceHeight { get; private set; }
+
+	/// <summary>
+	/// Build or tear down the stand-in.
+	///
+	/// Destroyed rather than hidden when it is off. A hidden character still sits in a scene that
+	/// ticks every frame, and rebuilding it is one Model.Load off the asset cache the next time the
+	/// switch goes on.
+	/// </summary>
+	private void UpdateSizeReference()
+	{
+		using var scope = _canvas.Scene.Push();
+
+		if ( !_showSizeReference )
+		{
+			_referenceObject?.Destroy();
+			_referenceObject = null;
+			SizeReferenceHeight = 0f;
+			return;
+		}
+
+		if ( _referenceObject.IsValid() )
+			return;
+
+		var model = Model.Load( SizeReferenceModelPath );
+
+		if ( model is null || model.IsError )
+		{
+			// The citizen is a base addon, so this is close to impossible — but an unmounted one
+			// would otherwise leave the switch sitting on with nothing on screen and no reason
+			// given for it.
+			Log.Warning( $"Effigy: size reference model '{SizeReferenceModelPath}' could not be loaded." );
+
+			_showSizeReference = false;
+			SizeReferenceHeight = 0f;
+			return;
+		}
+
+		_referenceObject = new GameObject( true, "effigy_size_reference" );
+
+		// SKINNED, unlike the part. SetModel is right to use a plain ModelRenderer — Effigy makes
+		// static meshes — but citizen.vmdl is a rigged character, and the renderer that poses bones
+		// is the one that draws a rigged character standing up. Same component RigViewport uses on
+		// the same model.
+		var renderer = _referenceObject.GetOrAddComponent<SkinnedModelRenderer>( false );
+
+		renderer.Model = model;
+		renderer.Enabled = true;
+
+		SizeReferenceHeight = model.Bounds.Size.z;
+
+		PlaceSizeReference();
+	}
+
+	/// <summary>
+	/// Stand the figure on the origin, feet on the Top plane.
+	///
+	/// Every frame rather than once at load, because the origin handle is draggable and the planes
+	/// are drawn relative to it. A reference that stayed at the world origin while the coordinate
+	/// frame moved out from under it would be measuring against nothing.
+	/// </summary>
+	private void PlaceSizeReference()
+	{
+		if ( !_referenceObject.IsValid() )
+			return;
+
+		_referenceObject.WorldPosition = OriginPosition;
 	}
 
 	// --- origin interaction -----------------------------------------------------------------
@@ -983,10 +1092,14 @@ internal sealed partial class EffigyViewport : Widget
 		// known by the time they ask — see ResolveFacePick.
 		ResolveFacePick();
 
+		// The stand-in follows the origin handle, so it moves in the same frame the handle does.
+		PlaceSizeReference();
+
 		// Draw planes first (behind everything else)
 		DrawReferencePlanes();
 		DrawCommittedSketches();
 		ShadeMaterialSlotsFrame();
+		MaterialDropFrame();
 		SketchPickFrame();
 		FacePickFrame();
 		BodyPickFrame();

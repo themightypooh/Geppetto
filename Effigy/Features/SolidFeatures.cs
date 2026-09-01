@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -628,7 +628,7 @@ public sealed class FaceMaterialFeature : Feature
 	/// its own.</summary>
 	public List<FaceRef> Faces = new();
 
-	public readonly IntParam Material = new( "Material slot", 1, 0, 63 );
+	public readonly IntParam Material = new( "Material slot", 1, 0, 63 ) { Slider = false };
 
 	public override IReadOnlyList<IParam> Parameters => new IParam[] { Material };
 

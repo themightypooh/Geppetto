@@ -53,6 +53,15 @@ internal sealed class EffigyFeatureDialog : Widget
 	/// </summary>
 	private bool _planeChosen;
 
+	/// <summary>
+	/// Whether the Advanced disclosure is folded open.
+	///
+	/// On the dialog for the same reason <see cref="_planeChosen"/> is: Rebuild destroys every row
+	/// and builds new ones, and a great many things rebuild — every choice change, every sketch
+	/// pick. Held on the header widget it would fold itself shut a frame after being opened.
+	/// </summary>
+	private bool _advancedOpen;
+
 	// --- widgets ---
 	private Widget _header;
 	private LineEdit _nameEdit;
@@ -131,6 +140,9 @@ internal sealed class EffigyFeatureDialog : Widget
 	/// or it would keep offering to repaint the slot you just left.</summary>
 	private Widget _materialRow;
 	private int _materialRowSlot = -1;
+
+	/// <summary>The Advanced header, kept so a diagnostic can unfold it — see RefreshState.</summary>
+	private EffigyDisclosure _advancedHeader;
 
 	public Feature Feature => _feature;
 	public bool IsOpen => _feature is not null;
@@ -464,6 +476,7 @@ internal sealed class EffigyFeatureDialog : Widget
 
 		_materialRow = null;
 		_materialRowSlot = -1;
+		_advancedHeader = null;
 	}
 
 	/// <summary>Re-read every parameter into its row, for when something outside the dialog is
@@ -500,6 +513,13 @@ internal sealed class EffigyFeatureDialog : Widget
 		{
 			highlight.Highlighted = true;
 			highlight.Color = diagnostic.Severity == DiagnosticSeverity.Error ? Theme.Red : Theme.Yellow;
+
+			// A ring drawn round a row nobody can see is not a message. Extrude fails on Taper —
+			// an 89 degree draft closes the far cap to nothing — and taper is one of the rows that
+			// folds away, so the fold opens itself rather than leaving the status text pointing at
+			// a parameter that is not on screen.
+			if ( !highlight.Visible )
+				_advancedHeader?.SetOpen( true );
 		}
 	}
 
@@ -658,8 +678,7 @@ internal sealed class EffigyFeatureDialog : Widget
 			_activeArmable = faceSelector;
 			AddRow( faceSelector );
 
-			foreach ( var param in _feature.Parameters )
-				AddRow( BuildParamRow( param ) );
+			AddParamRows( _feature.Parameters );
 
 			if ( _feature is not FaceMaterialFeature material )
 				return;
@@ -686,8 +705,13 @@ internal sealed class EffigyFeatureDialog : Widget
 			_viewport.SketchPickMode = true;
 			_viewport.SketchPicked = sketchSelector.Picked;
 
-			foreach ( var param in _feature.Parameters.Where( p => !ReferenceEquals( p, consumer.Sketch ) ) )
-				AddRow( BuildParamRow( param ) );
+			// RESULT IS NOT HERE ANY MORE. It is the ADD/REMOVE strip floating under the tool
+			// strip — see EffigyResultStrip, which was already a full view of this very parameter
+			// and already bound to whatever feature this dialog opens. Two controls for one value
+			// meant the dropdown was a quieter, worse copy of the one you can read from across the
+			// viewport, four rows down where a cut mode is exactly what you do not want to have to
+			// go looking for. Skipped by reference, the same way the sketch is.
+			AddParamRows( _feature.Parameters, consumer.Sketch, consumer.Result );
 
 			return;
 		}
@@ -695,8 +719,78 @@ internal sealed class EffigyFeatureDialog : Widget
 		_viewport.SketchPickMode = false;
 		_viewport.SketchPicked = null;
 
-		foreach ( var param in _feature.Parameters )
+		AddParamRows( _feature.Parameters );
+	}
+
+	/// <summary>
+	/// The generic rows: every parameter except the ones with a home of their own.
+	///
+	/// <paramref name="skip"/> is for a parameter another control already owns — a selection box, or
+	/// the result strip over the viewport. Anything the feature calls advanced is skipped too, and
+	/// comes back under the disclosure at the bottom.
+	/// </summary>
+	private void AddParamRows( IReadOnlyList<IParam> parameters, params IParam[] skip )
+	{
+		var advanced = _feature.AdvancedParameters;
+
+		foreach ( var param in parameters )
+		{
+			if ( skip.Any( s => ReferenceEquals( s, param ) ) )
+				continue;
+
+			if ( advanced.Any( a => ReferenceEquals( a, param ) ) )
+				continue;
+
 			AddRow( BuildParamRow( param ) );
+		}
+
+		AddAdvancedRows( parameters );
+	}
+
+	/// <summary>
+	/// The folded section at the bottom, or nothing when the feature has no advanced parameters.
+	///
+	/// Its rows are ordinary rows in the same column, hidden rather than reparented — a layout
+	/// leaves out what is not visible, so folding is one flag per row and the dialog shrinks to fit
+	/// exactly as it does when a parameter stops existing. Which is the other half of this: only
+	/// parameters the feature is DECLARING right now get a row, because Extrude drops Second
+	/// distance from the list the moment Termination is not Blind, and a disclosure holding a
+	/// control the kernel will not read is worse than no disclosure.
+	/// </summary>
+	private void AddAdvancedRows( IReadOnlyList<IParam> parameters )
+	{
+		var advanced = _feature.AdvancedParameters
+			.Where( a => parameters.Any( p => ReferenceEquals( p, a ) ) )
+			.ToList();
+
+		if ( advanced.Count == 0 )
+			return;
+
+		var header = new EffigyDisclosure( _body, "Advanced", _advancedOpen );
+
+		_advancedHeader = header;
+		AddRow( header );
+
+		var rows = new List<Widget>();
+
+		foreach ( var param in advanced )
+		{
+			if ( BuildParamRow( param ) is not { } row )
+				continue;
+
+			row.Visible = _advancedOpen;
+
+			rows.Add( row );
+			AddRow( row );
+		}
+
+		header.Toggled = open =>
+		{
+			_advancedOpen = open;
+
+			foreach ( var row in rows.Where( r => r.IsValid() ) )
+				row.Visible = open;
+		};
 	}
 
 	/// <summary>
@@ -995,7 +1089,9 @@ internal sealed class EffigyFeatureDialog : Widget
 		var row = NewRow( out var layout, highlightLabel: ip.Label );
 		layout.Add( new Editor.Label( ip.Label ) { FixedWidth = 110 } );
 
-		var draggable = Draggable( ip.Min, ip.Max );
+		// The parameter's own answer first: a slot number is inside every reasonable range and
+		// still has nothing to drag. See IntParam.Slider.
+		var draggable = ip.Slider && Draggable( ip.Min, ip.Max );
 
 		var field = new EffigyNumericField( row, ip.Clamped )
 		{
@@ -1285,6 +1381,115 @@ internal sealed class HighlightBox : Widget
 
 /// <summary>A selection box the dialog can arm and disarm from the outside — so a brand new
 /// feature can start waiting for a pick the moment it is added, and Escape can stand it down.</summary>
+/// <summary>
+/// The fold-away header over a dialog's advanced rows: a caret, a word, and a click.
+///
+/// HAND-PAINTED, THOUGH THE LIBRARY HAS ExpandGroup. That one owns its content — you hand it a
+/// widget, it positions it absolutely under the header and animates its own fixed height to suit.
+/// The rows here are built by the same code that builds every other row, into the dialog's one
+/// column, carrying highlight boxes the diagnostics look up by label. Handing them to a container
+/// that repositions them would have made the folded rows a different kind of row from the rest,
+/// for a caret and a click. This paints the caret and flips a flag; the layout does the folding,
+/// the same way it already handles a parameter that stops existing.
+/// </summary>
+internal sealed class EffigyDisclosure : Widget
+{
+	private const float RowHeight = 26f;
+
+	/// <summary>Where the caret sits, and how much of the row it takes. The label starts after it,
+	/// so the two never overlap at any width.</summary>
+	private const float CaretWidth = 18f;
+
+	private readonly string _title;
+
+	public bool Open { get; private set; }
+
+	/// <summary>Fires on every change, including SetOpen's — whoever owns the rows shows and hides
+	/// them, because this widget deliberately does not know what it is folding.</summary>
+	public Action<bool> Toggled { get; set; }
+
+	public EffigyDisclosure( Widget parent, string title, bool open ) : base( parent )
+	{
+		_title = title;
+		Open = open;
+
+		// Same pair every hand-painted widget in this tool sets: a plain Widget paints the system
+		// background, which here is a pale band across the dialog.
+		TranslucentBackground = true;
+		NoSystemBackground = true;
+		MouseTracking = true;
+
+		Cursor = CursorShape.Finger;
+		FixedHeight = RowHeight;
+	}
+
+	/// <summary>Fold from outside — a diagnostic pointing at a row in here has to be able to
+	/// open it.</summary>
+	public void SetOpen( bool open )
+	{
+		if ( Open == open )
+			return;
+
+		Open = open;
+		Update();
+
+		Toggled?.Invoke( open );
+	}
+
+	protected override void OnPaint()
+	{
+		var hovered = IsUnderMouse;
+
+		// A hairline above, so the fold reads as the start of a section rather than as another
+		// parameter row that happens to have a triangle on it.
+		Paint.SetPen( Theme.ControlBackground.WithAlpha( 0.9f ), 1f );
+		Paint.DrawLine( new Vector2( 8f, 0.5f ), new Vector2( Width - 8f, 0.5f ) );
+
+		var text = Theme.TextLight.WithAlpha( hovered || Open ? 0.95f : 0.6f );
+
+		Paint.SetPen( text );
+		Paint.DrawIcon( new Rect( 8f, 0f, CaretWidth, Height ), Open ? "arrow_drop_down" : "arrow_right",
+			16, TextFlag.Center );
+
+		Paint.SetDefaultFont( 8, 500 );
+		Paint.SetPen( text );
+		Paint.DrawText( LocalRect.Shrink( 8f + CaretWidth + 2f, 0f, 0f, 0f ), _title, TextFlag.LeftCenter );
+	}
+
+	/// <summary>Taking the press is what guarantees the release arrives here rather than at
+	/// whatever is underneath — the same reason every other painted button in this tool accepts
+	/// it.</summary>
+	protected override void OnMousePress( MouseEvent e )
+	{
+		if ( !e.LeftMouseButton )
+			return;
+
+		e.Accepted = true;
+	}
+
+	protected override void OnMouseReleased( MouseEvent e )
+	{
+		// Released off the header means the click was dragged away to cancel it.
+		if ( !e.LeftMouseButton || !IsUnderMouse )
+			return;
+
+		SetOpen( !Open );
+		e.Accepted = true;
+	}
+
+	protected override void OnMouseLeave()
+	{
+		base.OnMouseLeave();
+		Update();
+	}
+
+	protected override void OnMouseEnter()
+	{
+		base.OnMouseEnter();
+		Update();
+	}
+}
+
 internal interface IArmableSelection
 {
 	void Arm();

@@ -1140,9 +1140,9 @@ public sealed class EffigyWindow : DockWindow
 	/// A click on the ADD/REMOVE strip. The parameter is already set by the time this runs; what
 	/// is left is everything a dropdown change would have done.
 	///
-	/// The dialog rebuild is not optional. Result decides which parameters a feature even declares
-	/// in some cases, and the dropdown four rows down still shows the old value until it is redrawn
-	/// - two controls disagreeing about the same value being precisely the failure this is fixing.
+	/// The dialog rebuild is not optional even though the dropdown is gone: Result decides which
+	/// parameters a feature declares in some cases, and a dialog still showing rows for the mode it
+	/// was in before is the same disagreement in a different place.
 	/// </summary>
 	private void OnResultStripChanged()
 	{
@@ -1623,9 +1623,13 @@ public sealed class EffigyWindow : DockWindow
 			RenameCommitted = OnPartRenamed,
 		};
 
+		// The Materials dock is the material BROWSER - a grid of the project's materials you drag
+		// onto faces - not the column of slot rows it used to be. It edits nothing itself: a drag is
+		// reported by the VIEWPORT, which is where it lands, and the two clicks come back here.
 		_materialsPanel = new EffigyMaterialsPanel( this, _studio )
 		{
 			MaterialChanged = SetSlotMaterial,
+			MaterialActivated = SetBaseMaterial,
 		};
 
 		_rigPanel = new EffigyRigPanel( this, _studio, _viewport );
@@ -1661,7 +1665,20 @@ public sealed class EffigyWindow : DockWindow
 		_leftPanel.Layout.Add( _partsPanel );
 
 		_viewport.SketchEdited = OnSketchEdited;
+
+		// The origin is the model's pivot, so moving it changes the exported result and has to be
+		// recorded. Dead until now for want of anything downstream that cared.
+		_viewport.OriginMoved = OnOriginMoved;
+
+		// APPLYING OR DELETING A CONSTRAINT MOVES THE SKETCH, so it is a sketch edit and has to
+		// reach the same place every other one does. This event had no subscriber at all: the solver
+		// ran, the points moved on screen, and nothing was ever marked dirty - so an extrude above
+		// the sketch went on standing on the profile from before the constraint. Exactly the fault
+		// the point drag had, one event over.
+		_viewport.SketchConstraintApplied = OnSketchEdited;
+
 		_viewport.FaceContextMenuRequested = OpenFaceMaterialMenu;
+		_viewport.MaterialDropped = OnMaterialDropped;
 		_viewport.SketchConstraintMenuRequested = OpenSketchConstraintMenu;
 
 		// Fired BEFORE the viewport changes a sketch, which is the only moment a useful "before"
@@ -1702,7 +1719,10 @@ public sealed class EffigyWindow : DockWindow
 		// Bumped from Effigy4: the Tutorial dock is new, and the same applies — worse here,
 		// because the one person it is for is the one person guaranteed to have no saved layout
 		// only if they have never opened Effigy before, which is not who upgrades.
-		StateCookie = "Effigy5";
+		// Bumped from Effigy5: the Materials dock is now the material browser rather than a column
+		// of slot rows, and it wants room to show a grid. A restored Effigy5 layout would give the
+		// new panel the width the old list was sized for and it would come back one cell wide.
+		StateCookie = "Effigy6";
 	}
 
 	/// <summary>Hide or show one body, from the Parts list's eye or its Hide menu item.
@@ -2192,6 +2212,11 @@ public sealed class EffigyWindow : DockWindow
 		_materialsPanel?.SetStudio( _studio );
 		_rigPanel?.SetStudio( _studio );
 		_dialog?.Close();
+
+		// The handle has to show the pivot the document carries, or opening a file would leave the
+		// marker at zero while the export used the saved value. SetOrigin raises OriginMoved and so
+		// dirties the document; both callers MarkClean() below, after this.
+		SyncOriginFromStudio();
 		RebuildStudio();
 
 		_documentPath = null;
@@ -2526,6 +2551,11 @@ public sealed class EffigyWindow : DockWindow
 		_rigPanel?.SetStudio( _studio );
 		_dialog?.Close();
 
+		// The handle has to show the pivot the document carries, or opening a file would leave the
+		// marker at zero while the export used the saved value. SetOrigin raises OriginMoved and so
+		// dirties the document; both callers MarkClean() below, after this.
+		SyncOriginFromStudio();
+
 		// History belongs to the document that was open. Carrying it across a load would let Ctrl+Z
 		// paste the previous model's features into this one.
 		_undoStack.Clear();
@@ -2623,6 +2653,9 @@ public sealed class EffigyWindow : DockWindow
 		try
 		{
 			var report = CollisionBuilder.Build( _studio );
+
+			ApplyPivot( report.Shapes );
+
 			var node = VmdlPhysics.ShapeList( report.Shapes );
 
 			if ( node.Length == 0 )
@@ -2664,6 +2697,119 @@ public sealed class EffigyWindow : DockWindow
 			: $"Collision: {report.Shapes.Count} hull(s) — {report.Reason}. See the console." );
 	}
 
+	// --- the pivot -----------------------------------------------------------------------------
+
+	/// <summary>
+	/// The offset that moves the model's origin to (0,0,0), which is what every writer applies on
+	/// the way out. See PartStudio.Origin for what the pivot IS; this is only the arithmetic.
+	///
+	/// EffigyViewport.ToWorldDir is the identity, so the viewport's Vector3 and the kernel's Vec3
+	/// are the same three numbers and no axis mapping belongs here. If that ever stops being true,
+	/// this is the conversion that has to learn about it.
+	/// </summary>
+	private Vec3 PivotOffset => _studio is null ? default : -_studio.Origin;
+
+	/// <summary>Whether the pivot has been moved off zero at all. The untouched case — which is
+	/// most documents — then does no work and cannot walk vertices through a float add that was
+	/// only ever going to add nothing.</summary>
+	private bool HasPivot => PivotOffset.Length > 1e-6f;
+
+	/// <summary>
+	/// Shift a mesh onto the pivot.
+	///
+	/// Safe to mutate in place: ToMesh and ToMeshWithBodies merge the bodies into a FRESH PolyMesh
+	/// every call, so this never touches geometry the studio is still holding. Handing it a body's
+	/// own mesh would move the model itself, one export at a time.
+	/// </summary>
+	private void ApplyPivot( PolyMesh mesh )
+	{
+		if ( mesh is not null && HasPivot )
+			MeshTransform.Apply( mesh, Xform.Translate( PivotOffset ) );
+	}
+
+	/// <summary>
+	/// The skeleton shifted onto the pivot, as a COPY — the rig panel is still holding the original
+	/// and exporting a model must not move the user's bones.
+	///
+	/// ONLY THE ROOTS MOVE. Every other bone's Local is relative to its parent, so shifting a root
+	/// carries its whole chain; shifting the children too would move them once per level of depth.
+	/// </summary>
+	private Skeleton PivotedSkeleton( Skeleton skeleton )
+	{
+		if ( skeleton is null || !HasPivot )
+			return skeleton;
+
+		var copy = skeleton.Clone();
+		var shift = Xform.Translate( PivotOffset );
+
+		foreach ( var bone in copy.Bones )
+		{
+			if ( bone.Parent < 0 )
+				bone.Local = shift * bone.Local;
+		}
+
+		return copy;
+	}
+
+	/// <summary>Shift built collision onto the pivot, so the hulls stay where the mesh went. Without
+	/// this the render mesh moves and the physics stays behind, which reads in game as a model you
+	/// walk through and a wall where nothing is.</summary>
+	private void ApplyPivot( List<CollisionShape> shapes )
+	{
+		if ( shapes is null || !HasPivot )
+			return;
+
+		var offset = PivotOffset;
+
+		foreach ( var shape in shapes )
+		{
+			shape.Position += offset;
+
+			if ( shape.Points is null )
+				continue;
+
+			for ( var i = 0; i < shape.Points.Count; i++ )
+				shape.Points[i] += offset;
+		}
+	}
+
+	/// <summary>
+	/// The origin handle was dragged, or set from a number field.
+	///
+	/// This event had no subscriber at all until the origin became the pivot, which is why the
+	/// handle used to move a marker and nothing else. It does NOT rebuild: the kernel builds in its
+	/// own coordinates and the viewport draws in the same ones, so the pivot changes only what the
+	/// writers subtract. It does dirty the DOCUMENT, because a pivot that is not saved is not a
+	/// pivot.
+	/// </summary>
+	/// <summary>Push the document's pivot onto the origin handle. The other direction of
+	/// <see cref="OnOriginMoved"/>, for load and for New.</summary>
+	private void SyncOriginFromStudio()
+	{
+		if ( _studio is null || _viewport is null )
+			return;
+
+		var o = _studio.Origin;
+
+		_viewport.SetOrigin( new Vector3( o.x, o.y, o.z ) );
+	}
+
+	private void OnOriginMoved()
+	{
+		if ( _studio is null || _viewport is null )
+			return;
+
+		var o = _viewport.OriginPosition;
+
+		_studio.Origin = new Vec3( o.x, o.y, o.z );
+		// Same two lines every other unsaved edit uses; there is no shared helper to call.
+		if ( !_dirty )
+		{
+			_dirty = true;
+			UpdateTitle();
+		}
+	}
+
 	private void ExportObj()
 	{
 		var report = _studio.Rebuild();
@@ -2680,7 +2826,10 @@ public sealed class EffigyWindow : DockWindow
 
 		// Slot names go through so the file names its materials the way the user did, rather than
 		// material_0..63. NameForSlot falls back to the numbers for anything unnamed.
-		ObjWriter.WriteFile( _studio.ToMesh(), objPath, "effigy_export",
+		var mesh = _studio.ToMesh();
+		ApplyPivot( mesh );
+
+		ObjWriter.WriteFile( mesh, objPath, "effigy_export",
 			materialName: _studio.NameForSlot );
 		Log.Info( $"[Effigy] exported {objPath}" );
 	}
@@ -2710,6 +2859,13 @@ public sealed class EffigyWindow : DockWindow
 			var weights = SkinBinder.BindBodies( mesh, ranges, rig.BodyBoneMap, skeleton );
 			weights = SkinBinder.SmoothWeights( mesh, weights );
 			mesh.Skin = weights;
+
+			// AFTER binding, and both together. The weights come from distances between vertices and
+			// bones, so shifting either side before the bind would rig the model to where the bones
+			// used to be. Shifting both afterwards moves the bind pose and leaves the weights - which
+			// are indices and scalars, not positions - saying exactly what they said.
+			ApplyPivot( mesh );
+			skeleton = PivotedSkeleton( skeleton );
 
 			// DMX, not SMD. ModelDoc's loader takes FBX, DMX, OBJ and VOX and nothing else (see
 			// DmxWriter for the exact string it prints), so DMX is the only supported format that
@@ -2755,7 +2911,10 @@ public sealed class EffigyWindow : DockWindow
 
 		// STATIC PATH: no bones — export a weightless OBJ.
 		var staticObjPath = Path.Combine( folder, "export.obj" );
-		ObjWriter.WriteFile( _studio.ToMesh(), staticObjPath, "effigy_export",
+		var staticMesh = _studio.ToMesh();
+		ApplyPivot( staticMesh );
+
+		ObjWriter.WriteFile( staticMesh, staticObjPath, "effigy_export",
 			materialName: _studio.NameForSlot );
 
 		var staticVmdlPath = Path.Combine( folder, "export.vmdl" );
@@ -3368,6 +3527,11 @@ public sealed class EffigyWindow : DockWindow
 	private const string SnapGridCookie = "Effigy.SnapToGrid";
 	private const string SnapPointsCookie = "Effigy.SnapToPoints";
 
+	/// <summary>Defaults to off. The stand-in is a whole character in the viewport and most parts
+	/// are not built at body scale, so it is something you ask for rather than something you have
+	/// to turn off before you can see what you are making.</summary>
+	private const string SizeReferenceCookie = "Effigy.ShowSizeReference";
+
 	/// <summary>The open settings window, or null. Held so a second Edit > Settings raises the one
 	/// already open rather than stacking another on top of it.</summary>
 	private EffigySettingsWindow _settingsWindow;
@@ -3391,12 +3555,14 @@ public sealed class EffigyWindow : DockWindow
 		SnapToGrid = _viewport?.SnapToGrid ?? true,
 		SnapToPoints = _viewport?.SnapToPoints ?? true,
 		PaletteIndex = _paletteIndex,
+		ShowSizeReference = _viewport?.ShowSizeReference ?? false,
+		SizeReferenceHeight = _viewport?.SizeReferenceHeight ?? 0f,
 	};
 
 	/// <summary>Take everything the settings window is showing and make it true, then remember it.
 	/// Called on every control change rather than behind an OK button — a viewport setting you
 	/// cannot see take effect is one you have to guess at.</summary>
-	private void ApplySettings( EffigySettingsWindow.Values values )
+	private EffigySettingsWindow.Values ApplySettings( EffigySettingsWindow.Values values )
 	{
 		if ( _viewport.IsValid() )
 		{
@@ -3404,6 +3570,14 @@ public sealed class EffigyWindow : DockWindow
 			_viewport.GridSpacing = values.GridSpacing;
 			_viewport.SnapToGrid = values.SnapToGrid;
 			_viewport.SnapToPoints = values.SnapToPoints;
+			_viewport.ShowSizeReference = values.ShowSizeReference;
+
+			// READ BACK, not echoed. The viewport turns the switch off again if the citizen will
+			// not load, and it is the only thing that knows how tall the one that did load is - so
+			// what goes back to the settings window is what actually happened, not what was asked
+			// for.
+			values.ShowSizeReference = _viewport.ShowSizeReference;
+			values.SizeReferenceHeight = _viewport.SizeReferenceHeight;
 		}
 
 		if ( values.PaletteIndex != _paletteIndex )
@@ -3413,6 +3587,9 @@ public sealed class EffigyWindow : DockWindow
 		EditorCookie.Set( GridSpacingCookie, values.GridSpacing );
 		EditorCookie.Set( SnapGridCookie, values.SnapToGrid );
 		EditorCookie.Set( SnapPointsCookie, values.SnapToPoints );
+		EditorCookie.Set( SizeReferenceCookie, values.ShowSizeReference );
+
+		return values;
 	}
 
 	/// <summary>Put last session's settings back, before anything is drawn with them.</summary>
@@ -3427,6 +3604,7 @@ public sealed class EffigyWindow : DockWindow
 		_viewport.GridSpacing = EditorCookie.Get( GridSpacingCookie, 0f );
 		_viewport.SnapToGrid = EditorCookie.Get( SnapGridCookie, true );
 		_viewport.SnapToPoints = EditorCookie.Get( SnapPointsCookie, true );
+		_viewport.ShowSizeReference = EditorCookie.Get( SizeReferenceCookie, false );
 	}
 
 	/// <summary>
@@ -3772,6 +3950,66 @@ public sealed class EffigyWindow : DockWindow
 
 		if ( FaceMaterialEdit.Assign( _studio, hit.Body.Id, hit.FaceIndex, hit.Reference, slot ) )
 			RebuildStudio();
+	}
+
+	/// <summary>
+	/// A material was dragged out of the browser and dropped on a face.
+	///
+	/// The same shape as AssignFaceMaterial above — undo, edit, rebuild — with one difference that
+	/// is the whole reason MaterialDrop exists: the drop names a material and no slot, so the edit
+	/// CHOOSES a slot, and the choice has to be said out loud. Nothing else on screen explains why
+	/// the face went that particular shade of the slot palette, and the number is what you need if
+	/// you then want to rename or rebind it from the Materials panel.
+	/// </summary>
+	private void OnMaterialDropped( EffigyFaceHit hit, string material )
+	{
+		if ( _studio is null || hit.Body is null || string.IsNullOrWhiteSpace( material ) )
+			return;
+
+		RecordUndo();
+
+		if ( MaterialDrop.Drop( _studio, hit.Body.Id, hit.FaceIndex, hit.Reference, material, out var slot ) )
+		{
+			RebuildStudio();
+			SetPrompt( $"{MaterialFileName( material )} → slot {slot}. Ctrl+Z puts it back." );
+
+			return;
+		}
+
+		// Nothing happened, which is two different situations and worth telling apart. A drop on a
+		// face that already wears the material is an ordinary near-miss and needs no alarm; running
+		// out of slots is a wall you have hit, and saying nothing there looks like the drag failed.
+		SetPrompt( slot < 0
+			? $"All {MaterialDrop.HighestSlot} material slots are in use — free one from the Materials panel."
+			: $"That face is already on slot {slot}." );
+	}
+
+	/// <summary>
+	/// Double-clicking a material in the browser: bind the part's BASE material, slot 0.
+	///
+	/// Slot 0 is every face nobody has painted, so this is "the part is made of this" — usually the
+	/// largest surface on the model and the first thing you want bound. Dragging cannot do it,
+	/// deliberately: MaterialDrop never allocates slot 0 because a drop points at ONE face, and
+	/// giving it the slot the rest of the part is on would paint everything.
+	/// </summary>
+	private void SetBaseMaterial( string material )
+	{
+		if ( string.IsNullOrWhiteSpace( material ) )
+			return;
+
+		SetSlotMaterial( 0, material );
+		SetPrompt( $"{MaterialFileName( material )} is the part's base material. Ctrl+Z puts it back." );
+	}
+
+	/// <summary>The last segment of a material path, for a status line that has no room for the
+	/// rest of it. The same trimming EffigyMaterialSlot's label does, and for the same reason: the
+	/// folders are what tell two materials apart in a picker, and noise in one line of feedback.
+	/// </summary>
+	private static string MaterialFileName( string path )
+	{
+		var cut = path.LastIndexOfAny( new[] { '/', '\\' } );
+
+		return cut >= 0 && cut < path.Length - 1 ? path[(cut + 1)..] : path;
 	}
 }
 

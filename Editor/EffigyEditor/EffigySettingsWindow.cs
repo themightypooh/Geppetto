@@ -166,6 +166,13 @@ internal sealed class EffigySettingsWindow : Window
 		public bool SnapToGrid;
 		public bool SnapToPoints;
 		public int PaletteIndex;
+		public bool ShowSizeReference;
+
+		/// <summary>OUT ONLY — the height of the loaded stand-in, in world units, which only the
+		/// viewport can know because only it has the model. Whatever is set on the way in is
+		/// ignored; the applied values coming back carry the real number, and the caption under
+		/// the switch prints it.</summary>
+		public float SizeReferenceHeight;
 	}
 
 	/// <summary>The spacings the dropdown offers, in sketch units. Zero is Automatic — the adaptive
@@ -174,9 +181,25 @@ internal sealed class EffigySettingsWindow : Window
 
 	private Values _values;
 
-	private readonly Action<Values> _changed;
+	/// <summary>
+	/// Apply, and hand back what was actually applied.
+	///
+	/// A one-way callback was enough while every setting was a value this window already had.
+	/// The size reference is not: its height is a property of a model this window never loads, so
+	/// the only way to print it is to ask for it after the switch has been flipped and the viewport
+	/// has done the loading.
+	/// </summary>
+	private readonly Func<Values, Values> _changed;
 
-	public EffigySettingsWindow( Widget owner, Values values, Action<Values> changed )
+	/// <summary>The line under the size-reference switch, kept so a flip can rewrite it.</summary>
+	private Editor.Label _referenceNote;
+
+	/// <summary>The size-reference switch itself, kept for the one case where the answer comes back
+	/// different from the question: the citizen would not load, so the viewport is off and the
+	/// switch has to go back to off with it rather than sit on over an empty floor.</summary>
+	private EffigyToggleSwitch _referenceToggle;
+
+	public EffigySettingsWindow( Widget owner, Values values, Func<Values, Values> changed )
 	{
 		_values = values;
 		_changed = changed;
@@ -196,7 +219,7 @@ internal sealed class EffigySettingsWindow : Window
 			| WindowFlags.WindowSystemMenuHint | WindowFlags.WindowTitle;
 
 		WindowTitle = "Effigy Settings";
-		Size = new Vector2( 400, 340 );
+		Size = new Vector2( 400, 420 );
 
 		SetWindowIcon( "settings" );
 
@@ -268,6 +291,22 @@ internal sealed class EffigySettingsWindow : Window
 			_values.SnapToPoints,
 			value => { _values.SnapToPoints = value; Changed(); } );
 
+		// --- the size reference ---------------------------------------------------------------
+
+		Heading( canvas, "Reference" );
+
+		_referenceToggle = AddSwitch( canvas, "Show citizen",
+			"Stand the base citizen at the origin, to build against. It is scenery only - it takes "
+			+ "no clicks, joins no feature and is never exported.",
+			_values.ShowSizeReference,
+			value => { _values.ShowSizeReference = value; Changed(); } );
+
+		_referenceNote = canvas.Layout.Add( new Editor.Label( ReferenceNote( _values ) ) );
+
+		// Dim and small, because it is a readout rather than a control - it sits under the switch
+		// the way a hint does, not in the column of things you can change.
+		_referenceNote.SetStyles( "color: #808080; font-size: 11px;" );
+
 		// --- the palette ---------------------------------------------------------------------
 
 		Heading( canvas, "Appearance" );
@@ -295,7 +334,40 @@ internal sealed class EffigySettingsWindow : Window
 		Canvas = canvas;
 	}
 
-	private void Changed() => _changed?.Invoke( _values );
+	/// <summary>Apply, then take the applied values back - the viewport fills in what it alone
+	/// knows, and the caption is rewritten from that rather than from a guess made here.</summary>
+	private void Changed()
+	{
+		if ( _changed is null )
+			return;
+
+		_values = _changed( _values );
+
+		if ( _referenceNote.IsValid() )
+			_referenceNote.Text = ReferenceNote( _values );
+
+		// notify false: this is the applied value coming home, not a new request. Notifying would
+		// hand it straight back to Changed and round the loop again.
+		_referenceToggle?.SetValue( _values.ShowSizeReference, notify: false );
+	}
+
+	/// <summary>
+	/// What the stand-in is worth as a ruler: its height, in the units every other number in Effigy
+	/// is in.
+	///
+	/// A height of zero with the switch on means the model did not load - the citizen addon is not
+	/// mounted. Saying so here is the only place that failure is visible, since the viewport's own
+	/// answer to a missing model is an empty patch of floor.
+	/// </summary>
+	private static string ReferenceNote( Values values )
+	{
+		if ( !values.ShowSizeReference )
+			return "The citizen from the base addon, standing at the origin.";
+
+		return values.SizeReferenceHeight > 0f
+			? $"The citizen stands {values.SizeReferenceHeight:0.#} units tall."
+			: "The citizen could not be loaded - is the base citizen addon mounted?";
+	}
 
 	private static void Heading( Widget canvas, string text )
 	{
@@ -306,7 +378,7 @@ internal sealed class EffigySettingsWindow : Window
 
 	/// <summary>A labelled row with the switch pushed out to the right edge, which is the shape
 	/// every one of these settings wants.</summary>
-	private static void AddSwitch( Widget canvas, string label, string tip, bool value, Action<bool> changed )
+	private static EffigyToggleSwitch AddSwitch( Widget canvas, string label, string tip, bool value, Action<bool> changed )
 	{
 		var row = canvas.Layout.AddRow();
 
@@ -318,6 +390,8 @@ internal sealed class EffigySettingsWindow : Window
 		toggle.ValueChanged = changed;
 
 		row.Add( toggle );
+
+		return toggle;
 	}
 
 	/// <summary>Zero is the adaptive step rather than "no grid", so it has to say so — a dropdown

@@ -246,14 +246,16 @@ public sealed class SweepFeature : SketchConsumingFeature
 	public string PathSketchId = "";
 
 	public readonly FloatParam Twist = new( "Twist", 0f, unit: "deg" );
-	public readonly IntParam Material = new( "Material slot", 0, 0, 63 );
+	public readonly IntParam Material = new( "Material slot", 0, 0, 63 ) { Slider = false };
 
 	public override IReadOnlyList<IParam> Parameters => new IParam[] { Twist, Result, Material };
+
+	public override IReadOnlyList<IParam> AdvancedParameters => new IParam[] { Material };
 
 	protected override void Execute( FeatureContext ctx )
 	{
 		var sketch = ResolveProfileSketch( ctx );
-		var profiles = ResolveProfiles( sketch );
+		var profiles = ResolveProfiles( sketch, ctx );
 		var path = ResolvePath( ctx, sketch );
 
 		if ( path.Count < 2 )
@@ -520,9 +522,11 @@ public sealed class LoftFeature : SketchConsumingFeature
 	public readonly IntParam Segments = new( "Segments", 24, 3, 512 );
 
 	public readonly BoolParam Closed = new( "Closed", false );
-	public readonly IntParam Material = new( "Material slot", 0, 0, 63 );
+	public readonly IntParam Material = new( "Material slot", 0, 0, 63 ) { Slider = false };
 
 	public override IReadOnlyList<IParam> Parameters => new IParam[] { Segments, Closed, Result, Material };
+
+	public override IReadOnlyList<IParam> AdvancedParameters => new IParam[] { Material };
 
 	protected override void Execute( FeatureContext ctx )
 	{

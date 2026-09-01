@@ -107,6 +107,7 @@ public static class Program
 
 		FaceMaterialTests.Run();
 		FaceMenuTests.Run();
+		MaterialDropTests.Run();
 		RenderTests.Run();
 		ConstraintToolTests.Run();
 

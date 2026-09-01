@@ -18,6 +18,17 @@ public sealed class Profile
 	public bool HasHoles => Holes.Count > 0;
 
 	/// <summary>
+	/// True when this region is the intersection of two or more other profiles, not a loop of the
+	/// curve graph. Two overlapping rectangles are three pickable faces: each whole, and the lens
+	/// in the middle. The lens is this, and it is how a click in the overlap names the overlap
+	/// rather than whichever whole happened to be smaller.
+	///
+	/// Features that build every region (no <c>RegionSeed</c>) skip these, or the lens would be
+	/// extruded on top of the two wholes that already contain it.
+	/// </summary>
+	public bool FromOverlap;
+
+	/// <summary>
 	/// Whether a point in plane coordinates falls inside this region — within the outer loop and
 	/// not down any of its holes.
 	///
@@ -70,12 +81,44 @@ public sealed class ProfileResult
 /// arc and a line leave the same point, the straight-line direction can order them the wrong way
 /// round, and the wrong order picks the wrong face. Tessellating and taking the first segment gets
 /// the tangent for free and reuses the sampling everything else already agrees on.
+///
+/// OVERLAPPING LOOPS ARE THREE FACES, NOT TWO WHOLES. Two rectangles that cross without sharing a
+/// vertex are two cycles of the integer graph, and the lens between them is not a cycle of either.
+/// Nesting used to read that as a hole whenever one loop's first vertex sat inside the other, which
+/// ate the overlap and the part that stuck out. Crossing is not nesting: a hole is strictly inside
+/// and does not cross. The lens is recovered by imprinting those crossings on a copy
+/// (<see cref="SketchArrangement"/>) and keeping any arrangement face that sits inside two or more
+/// originals. The originals stay pickable as wholes; the lens is pickable as itself. The source
+/// sketch is not mutated — coincidence-as-identity is still the editing model.
+///
+/// TWO SKETCH FEATURES ON THE SAME PLANE ARE THE SAME PROBLEM. The lens between them is not a
+/// cycle of either graph. Pass the other sketches in; they are overlaid in this plane's
+/// coordinates, imprinted, and any arrangement face that sits in this sketch AND in at least one
+/// other is kept as an overlap. Exclusive faces of the neighbours are not — this sketch does not
+/// own them.
 /// </summary>
 public static class ProfileFinder
 {
-	public static ProfileResult Find( Sketch sketch )
+	public static ProfileResult Find( Sketch sketch ) => Find( sketch, null );
+
+	public static ProfileResult Find( Sketch sketch, IEnumerable<Sketch> neighbors )
 	{
 		var result = new ProfileResult();
+		var loops = CollectLoops( sketch, result );
+
+		NestInto( result, loops );
+		AddOverlapRegions( sketch, neighbors, result );
+
+		return result;
+	}
+
+	/// <summary>
+	/// Every closed loop the unsplit sketch already knows about: closed curves (circles, ellipses,
+	/// closed splines) plus the faces of the integer graph. Overlap lenses are not in this list;
+	/// those come from the arrangement pass afterwards.
+	/// </summary>
+	static List<List<Vec2>> CollectLoops( Sketch sketch, ProfileResult result )
+	{
 		var loops = new List<List<Vec2>>();
 
 		// A closed curve — circle, ellipse, closed spline — is a region on its own and never
@@ -102,35 +145,24 @@ public static class ProfileFinder
 			.Where( c => !c.Construction && !c.IsClosed )
 			.ToList();
 
-		// point index -> the curves touching it, by their two ends only. An arc's centre is not a
-		// connection point, which is why this uses explicit ends rather than PointRefs.
-		var adjacency = new Dictionary<int, List<SketchCurve>>();
-
-		void Link( int point, SketchCurve curve )
-		{
-			if ( !adjacency.TryGetValue( point, out var list ) )
-				adjacency[point] = list = new List<SketchCurve>();
-
-			list.Add( curve );
-		}
-
-		foreach ( var curve in edges )
-		{
-			var (a, b) = Ends( curve );
-			Link( a, curve );
-			Link( b, curve );
-		}
-
 		loops.AddRange( FindFaces( sketch, edges, result ) );
 
-		// Nesting: a loop inside an odd number of other loops is a hole.
+		return loops;
+	}
+
+	/// <summary>
+	/// Nesting: a loop inside an odd number of other loops is a hole. Crossing is not inside —
+	/// two overlapping rectangles are two outers, not one with the other cut out of it.
+	/// </summary>
+	static void NestInto( ProfileResult result, List<List<Vec2>> loops )
+	{
 		var depths = new int[loops.Count];
 
-		for ( var i = 0; i < loops.Count; i++)
+		for ( var i = 0; i < loops.Count; i++ )
 		{
 			for ( var j = 0; j < loops.Count; j++ )
 			{
-				if ( i != j && Contains( loops[j], loops[i][0] ) )
+				if ( i != j && StrictlyInside( loops[j], loops[i] ) )
 					depths[i]++;
 			}
 		}
@@ -142,17 +174,271 @@ public static class ProfileFinder
 
 			var profile = new Profile { Outer = Orient( loops[i], counterClockwise: true ) };
 
-			// Immediate children only: nested one level deeper AND geometrically inside this one.
+			// Immediate children only: nested one level deeper AND strictly inside this one.
 			for ( var j = 0; j < loops.Count; j++ )
 			{
-				if ( j != i && depths[j] == depths[i] + 1 && Contains( loops[i], loops[j][0] ) )
+				if ( j != i && depths[j] == depths[i] + 1 && StrictlyInside( loops[i], loops[j] ) )
 					profile.Holes.Add( Orient( loops[j], counterClockwise: false ) );
 			}
 
 			result.Profiles.Add( profile );
 		}
+	}
 
-		return result;
+	/// <summary>
+	/// The lens (and any n-way overlap) as its own profile, so a click in the middle names the
+	/// middle. Originals are left in place: clicking the part that belongs to only one loop still
+	/// picks that whole, which is the thing people already could pick.
+	///
+	/// Neighbours are other sketches on the same plane. Their outers count toward "sits in two
+	/// or more", but a face that misses this sketch entirely is not added — exclusive faces of
+	/// a neighbour belong to that neighbour.
+	///
+	/// Skipped when fewer than two outers exist across host and neighbours, or when no pair of
+	/// them even overlap in bounds — a hole is not an overlap, and two disjoint squares must
+	/// not pay for an imprint.
+	/// </summary>
+	static void AddOverlapRegions( Sketch sketch, IEnumerable<Sketch> neighbors, ProfileResult result )
+	{
+		var hostOuters = result.Profiles.Where( p => !p.FromOverlap ).ToList();
+		var allOuters = new List<Profile>( hostOuters );
+
+		if ( neighbors is not null )
+		{
+			foreach ( var guest in neighbors )
+			{
+				if ( guest is null || ReferenceEquals( guest, sketch )
+					|| !SketchArrangement.Coplanar( sketch.Plane, guest.Plane ) )
+					continue;
+
+				foreach ( var profile in Originals( guest ) )
+					allOuters.Add( ProjectProfile( profile, guest.Plane, sketch.Plane ) );
+			}
+		}
+
+		if ( allOuters.Count < 2 || !AnyBoundsOverlap( allOuters ) )
+			return;
+
+		var working = SketchArrangement.ImprintCrossings( SketchArrangement.Overlay( sketch, neighbors ) );
+
+		if ( ReferenceEquals( working, sketch ) )
+			return;
+
+		var discarded = new ProfileResult();
+		var faces = CollectLoops( working, discarded );
+
+		foreach ( var face in faces )
+		{
+			if ( face.Count < 3 )
+				continue;
+
+			var loop = Orient( face, counterClockwise: true );
+			var seed = InteriorPoint( loop );
+			var hostHits = 0;
+			var allHits = 0;
+
+			foreach ( var outer in hostOuters )
+			{
+				if ( outer.Contains( seed ) )
+					hostHits++;
+			}
+
+			if ( hostHits == 0 )
+				continue;
+
+			allHits = hostHits;
+
+			for ( var i = hostOuters.Count; i < allOuters.Count; i++ )
+			{
+				if ( allOuters[i].Contains( seed ) )
+					allHits++;
+			}
+
+			if ( allHits < 2 )
+				continue;
+
+			result.Profiles.Add( new Profile { Outer = loop, FromOverlap = true } );
+		}
+	}
+
+	/// <summary>This sketch's own closed regions, without overlap extras and without looking at
+	/// neighbours — the outers that a neighbour contributes to a combined arrangement.</summary>
+	static List<Profile> Originals( Sketch sketch )
+	{
+		var result = new ProfileResult();
+		NestInto( result, CollectLoops( sketch, result ) );
+		return result.Profiles;
+	}
+
+	static Profile ProjectProfile( Profile profile, SketchPlane from, SketchPlane to ) => new()
+	{
+		Outer = ProjectLoop( profile.Outer, from, to ),
+		Holes = profile.Holes.Select( h => ProjectLoop( h, from, to ) ).ToList()
+	};
+
+	static List<Vec2> ProjectLoop( List<Vec2> loop, SketchPlane from, SketchPlane to )
+	{
+		if ( from.Origin.AlmostEquals( to.Origin )
+			&& from.XAxis.AlmostEquals( to.XAxis )
+			&& from.YAxis.AlmostEquals( to.YAxis ) )
+			return loop;
+
+		var projected = new List<Vec2>( loop.Count );
+
+		foreach ( var p in loop )
+			projected.Add( to.ToPlane( from.ToWorld( p ) ) );
+
+		return projected;
+	}
+
+	static bool AnyBoundsOverlap( List<Profile> outers )
+	{
+		for ( var i = 0; i < outers.Count; i++ )
+		{
+			var a = Bounds( outers[i].Outer );
+
+			for ( var j = i + 1; j < outers.Count; j++ )
+			{
+				var b = Bounds( outers[j].Outer );
+
+				if ( a.min.x <= b.max.x && a.max.x >= b.min.x
+					&& a.min.y <= b.max.y && a.max.y >= b.min.y )
+					return true;
+			}
+		}
+
+		return false;
+	}
+
+	static (Vec2 min, Vec2 max) Bounds( List<Vec2> loop )
+	{
+		var min = new Vec2( float.MaxValue, float.MaxValue );
+		var max = new Vec2( float.MinValue, float.MinValue );
+
+		foreach ( var p in loop )
+		{
+			min = new Vec2( MathF.Min( min.x, p.x ), MathF.Min( min.y, p.y ) );
+			max = new Vec2( MathF.Max( max.x, p.x ), MathF.Max( max.y, p.y ) );
+		}
+
+		return (min, max);
+	}
+
+	/// <summary>
+	/// Inner is a hole in outer only when it sits entirely inside and the two do not cross.
+	///
+	/// EVERY VERTEX, not one interior point. The centroid of a rectangle with a circle in the
+	/// middle sits inside that circle, so a single-point test flipped nesting and produced no
+	/// outer at all. An overlapping neighbour can have one vertex inside without being a hole;
+	/// requiring every vertex rejects that, and <see cref="Crosses"/> rejects the rest.
+	/// </summary>
+	static bool StrictlyInside( List<Vec2> outer, List<Vec2> inner )
+	{
+		if ( inner.Count == 0 || Crosses( outer, inner ) )
+			return false;
+
+		foreach ( var p in inner )
+		{
+			if ( !Contains( outer, p ) )
+				return false;
+		}
+
+		return true;
+	}
+
+	/// <summary>
+	/// A point strictly inside the polygon, not a vertex. Nesting used to probe <c>loop[0]</c>,
+	/// which for an overlapping neighbour is often on another loop's boundary, where ray-casting
+	/// is undefined.
+	///
+	/// The area centroid is the first choice: it sits well inside a convex face (the lens) and
+	/// inside a shallow crescent (one circle not the other). Stepping off an edge is the fallback
+	/// for a C-shape whose centroid has fallen out of the polygon — and it is a fallback because
+	/// an inset off the dent of a crescent can land in the lens, which would then be counted as
+	/// inside both originals.
+	/// </summary>
+	static Vec2 InteriorPoint( List<Vec2> loop )
+	{
+		if ( loop.Count == 0 )
+			return Vec2.Zero;
+
+		var area2 = 0f;
+		var cx = 0f;
+		var cy = 0f;
+
+		for ( var i = 0; i < loop.Count; i++ )
+		{
+			var a = loop[i];
+			var b = loop[(i + 1) % loop.Count];
+			var cross = a.x * b.y - b.x * a.y;
+			area2 += cross;
+			cx += (a.x + b.x) * cross;
+			cy += (a.y + b.y) * cross;
+		}
+
+		if ( MathF.Abs( area2 ) > 1e-12f )
+		{
+			var centroid = new Vec2( cx / ( 3f * area2 ), cy / ( 3f * area2 ) );
+
+			if ( Contains( loop, centroid ) )
+				return centroid;
+		}
+
+		var sign = area2 >= 0f ? 1f : -1f;
+
+		for ( var i = 0; i < loop.Count; i++ )
+		{
+			var a = loop[i];
+			var b = loop[(i + 1) % loop.Count];
+			var edge = b - a;
+			var length = edge.Length;
+
+			if ( length < 1e-8f )
+				continue;
+
+			var inset = MathF.Min( 1e-3f, length * 0.1f );
+			var left = new Vec2( -edge.y, edge.x ) / length;
+			var probe = new Vec2(
+				(a.x + b.x) * 0.5f + left.x * sign * inset,
+				(a.y + b.y) * 0.5f + left.y * sign * inset );
+
+			if ( Contains( loop, probe ) )
+				return probe;
+		}
+
+		return loop[0];
+	}
+
+	/// <summary>Proper edge crossings, ignoring vertices the two loops already share.</summary>
+	static bool Crosses( List<Vec2> a, List<Vec2> b )
+	{
+		const float eps = 1e-5f;
+
+		for ( var i = 0; i < a.Count; i++ )
+		{
+			var a0 = a[i];
+			var a1 = a[(i + 1) % a.Count];
+			var da = a1 - a0;
+
+			for ( var j = 0; j < b.Count; j++ )
+			{
+				var b0 = b[j];
+				var b1 = b[(j + 1) % b.Count];
+				var db = b1 - b0;
+				var denom = Vec2.Cross( da, db );
+
+				if ( MathF.Abs( denom ) < eps )
+					continue;
+
+				var t = Vec2.Cross( b0 - a0, db ) / denom;
+				var u = Vec2.Cross( b0 - a0, da ) / denom;
+
+				if ( t is > eps and < 1f - eps && u is > eps and < 1f - eps )
+					return true;
+			}
+		}
+
+		return false;
 	}
 
 	/// <summary>One direction along one curve. Two of these per curve, and each belongs to exactly

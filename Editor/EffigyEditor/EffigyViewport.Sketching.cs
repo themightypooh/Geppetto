@@ -219,7 +219,9 @@ internal sealed partial class EffigyViewport
 	/// like the sketch is the filled region - it is drawn filled, and it is what the extrude is
 	/// going to be made of - so a click anywhere inside that face picks it too, and hitting a thin
 	/// curve is no longer the price of admission. Smallest containing region wins, so a small
-	/// profile drawn inside a large one is reachable rather than swallowed by its neighbour.
+	/// profile drawn inside a large one is reachable rather than swallowed by its neighbour, and
+	/// so is the lens between two overlapping wholes - that face is smaller than either whole,
+	/// including when the two wholes live in separate Sketch features on the same plane.
 	/// </summary>
 	private void SketchPickFrame()
 	{
@@ -260,10 +262,11 @@ internal sealed partial class EffigyViewport
 
 			// Profile.Contains is the kernel's own point-in-region test, holes and all, and it is the
 			// same one that turns a click into a face everywhere else - so the face you can click is
-			// exactly the face that gets built. Re-found every frame rather than cached: this only runs
-			// while a pick is armed, over the handful of sketches above the feature being edited, and
-			// the highlight below already walks the same finder.
-			foreach ( var profile in ProfileFinder.Find( pickable.Sketch ).Profiles )
+			// exactly the face that gets built. Neighbours go in so the lens between two Sketch
+			// features on this plane is a face, not a hole in the pick. Re-found every frame rather
+			// than cached: this only runs while a pick is armed, over the handful of sketches above
+			// the feature being edited, and the highlight below already walks the same finder.
+			foreach ( var profile in ProfileFinder.Find( pickable.Sketch, NeighborsOf( pickable ) ).Profiles )
 			{
 				if ( profile.Area >= regionArea || !profile.Contains( uv ) )
 					continue;
@@ -286,7 +289,7 @@ internal sealed partial class EffigyViewport
 		if ( _hoveredSketchId is null )
 			return;
 
-		DrawSketchPickHighlight( _hoveredSketchId );
+		DrawSketchPickHighlight( _hoveredSketchId, _hoveredSketchSeed );
 
 		if ( Gizmo.WasLeftMousePressed )
 			SketchPicked?.Invoke( _hoveredSketchId, _hoveredSketchSeed );
@@ -317,9 +320,11 @@ internal sealed partial class EffigyViewport
 		return true;
 	}
 
-	/// <summary>Redraw the hovered sketch bright and filled so the pick target is unambiguous —
-	/// the same fill-in treatment the reference planes get while picking one.</summary>
-	private void DrawSketchPickHighlight( string featureId )
+	/// <summary>Redraw the hovered face bright and filled so the pick target is unambiguous —
+	/// the same fill-in treatment the reference planes get while picking one. A seed means a
+	/// region, so only that region lights up: two overlapping wholes must not both fill when the
+	/// cursor is in the lens. No seed is an edge pick, which names the whole sketch.</summary>
+	private void DrawSketchPickHighlight( string featureId, Vec2? regionSeed )
 	{
 		var pickable = _pickableSketches.FirstOrDefault( s => s.FeatureId == featureId );
 
@@ -328,29 +333,89 @@ internal sealed partial class EffigyViewport
 
 		var sketch = pickable.Sketch;
 		var plane = sketch.Plane;
+		var profiles = ProfileFinder.Find( sketch, NeighborsOf( pickable ) ).Profiles;
 
 		Gizmo.Draw.IgnoreDepth = true;
 
 		Gizmo.Draw.Color = new Color( 0.25f, 0.65f, 1f, 0.25f );
-		foreach ( var profile in ProfileFinder.Find( sketch ).Profiles )
-			DrawRegionFan( plane, profile.Outer );
+
+		Profile region = null;
+
+		if ( regionSeed is { } seed )
+		{
+			foreach ( var profile in profiles )
+			{
+				if ( !profile.Contains( seed ) )
+					continue;
+
+				if ( region is null || profile.Area < region.Area )
+					region = profile;
+			}
+		}
+
+		if ( region is not null )
+		{
+			DrawRegionFan( plane, region.Outer );
+			DrawRegionOutline( plane, region.Outer );
+		}
+		else
+		{
+			foreach ( var profile in profiles )
+			{
+				if ( profile.FromOverlap )
+					continue;
+
+				DrawRegionFan( plane, profile.Outer );
+			}
+
+			Gizmo.Draw.LineThickness = 3f;
+			Gizmo.Draw.Color = new Color( 0.45f, 0.85f, 1f, 1f );
+
+			foreach ( var curve in sketch.Curves )
+			{
+				if ( curve.Construction )
+					continue;
+
+				var pts = curve.Tessellate( sketch, sketch.Tolerance );
+
+				for ( var i = 0; i < pts.Count - 1; i++ )
+					Gizmo.Draw.Line( PlaneToWorld( plane, pts[i] ), PlaneToWorld( plane, pts[i + 1] ) );
+			}
+
+			Gizmo.Draw.LineThickness = 1f;
+		}
+
+		Gizmo.Draw.IgnoreDepth = false;
+	}
+
+	/// <summary>Every other pickable sketch. Profile finding overlays the coplanar ones so the
+	/// lens between two Sketch features is a face of this one.</summary>
+	private IEnumerable<Sketch> NeighborsOf( PickableSketch host )
+	{
+		foreach ( var pickable in _pickableSketches )
+		{
+			if ( pickable.FeatureId != host.FeatureId )
+				yield return pickable.Sketch;
+		}
+	}
+
+	/// <summary>The boundary of one region, so a lens highlight does not also stroke both wholes.</summary>
+	private void DrawRegionOutline( SketchPlane plane, List<Vec2> loop )
+	{
+		if ( loop.Count < 2 )
+			return;
 
 		Gizmo.Draw.LineThickness = 3f;
 		Gizmo.Draw.Color = new Color( 0.45f, 0.85f, 1f, 1f );
 
-		foreach ( var curve in sketch.Curves )
+		for ( var i = 0; i < loop.Count; i++ )
 		{
-			if ( curve.Construction )
-				continue;
-
-			var pts = curve.Tessellate( sketch, sketch.Tolerance );
-
-			for ( var i = 0; i < pts.Count - 1; i++ )
-				Gizmo.Draw.Line( PlaneToWorld( plane, pts[i] ), PlaneToWorld( plane, pts[i + 1] ) );
+			var a = loop[i];
+			var b = loop[(i + 1) % loop.Count];
+			Gizmo.Draw.Line( PlaneToWorld( plane, a ), PlaneToWorld( plane, b ) );
 		}
 
 		Gizmo.Draw.LineThickness = 1f;
-		Gizmo.Draw.IgnoreDepth = false;
 	}
 
 	/// <summary>Wash the hovered plane in its own colour so the pick target is unambiguous.
@@ -684,9 +749,18 @@ internal sealed partial class EffigyViewport
 		// Released: commit once, with a rebuild, rather than on every frame of the drag.
 		if ( !Gizmo.IsLeftMouseDown )
 		{
+			// READ THE FLAG BEFORE ENDING THE DRAG, WHICH CLEARS IT. Tested after EndPointDrag it is
+			// always false, so Edited() never ran and the point moved on screen while nothing
+			// downstream was told. PartStudio caches a CLONE of the sketch after the feature runs, so
+			// with nothing marked dirty an extrude standing on the sketch went on rebuilding from the
+			// profile as it was before the drag - the sketch and the solid it made disagreed, and it
+			// read as the drag being cosmetic rather than as a rebuild that never happened.
+			// DragCurveHandle copies its flags out for exactly this reason.
+			var moved = _dragMoved;
+
 			EndPointDrag();
 
-			if ( _dragMoved )
+			if ( moved )
 				Edited();
 
 			return;
@@ -1422,6 +1496,20 @@ internal sealed partial class EffigyViewport
 		new( 0.35f, 0.85f, 0.85f, 1f ),
 		new( 0.70f, 0.45f, 0.95f, 1f ),
 	};
+
+	/// <summary>
+	/// The colour this viewport tints a slot with.
+	///
+	/// Exposed so the Materials dock can badge a material in the colour of the patch it puts on the
+	/// model. That connection is the whole point of the badge — a green patch on the part and a
+	/// green badge on the material that made it — and it only holds while both read the same array,
+	/// which is why this is a lookup here rather than a second palette over there.
+	///
+	/// Slot 0 has no colour of its own and is not passed here; the viewport does not tint it, and
+	/// the badge draws it neutral for the same reason.
+	/// </summary>
+	public static Color SlotColor( int slot ) =>
+		slot <= 0 ? Color.Transparent : SlotColors[(slot - 1) % SlotColors.Length];
 
 	/// <summary>
 	/// Tint each face that has been put on a material slot.

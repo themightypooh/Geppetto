@@ -87,6 +87,22 @@ public sealed class PartStudio
 	/// </summary>
 	public HashSet<string> HiddenBodyIds = new();
 
+	/// <summary>
+	/// THE MODEL'S PIVOT, in the same coordinates every feature builds in.
+	///
+	/// Everything the kernel makes is built where the features put it; this says which point of
+	/// that is (0,0,0) to whatever consumes the model. The writers subtract it on the way out, so a
+	/// part built ten units up exports standing on zero with its origin under its feet rather than
+	/// floating ten units above it. Nothing inside the rebuild reads it — moving the pivot cannot
+	/// change what the features produce, only where the result is measured from, which is why
+	/// dragging the handle does not dirty a single feature.
+	///
+	/// On the studio rather than on the viewport because it is a property of the MODEL and has to
+	/// survive being saved: a pivot that is lost on reopen is not a pivot, it is a camera setting.
+	/// </summary>
+	public Vec3 Origin;
+
+
 	/// <summary>Result of the last rebuild.</summary>
 	public List<Body> Bodies { get; private set; } = new();
 
