@@ -22,5 +22,11 @@ fi
 # never pass against source the editor is not actually compiling.
 "$root/tools/sync-kernel.sh" >/dev/null
 
+# The editor assembly is not compiled by anything in this container, so the one class of editor
+# mistake that can be caught without s&box is caught here instead. See the script's own header:
+# a missing `using Editor;` is indistinguishable from a missing assembly when the engine is absent,
+# so it hides inside hundreds of identical CS0246s and survives a "compiles clean" claim.
+python3 "$root/tools/lint-editor-usings.py"
+
 cd "$root/Effigy.Tests"
 exec dotnet run --  "${1:-out}"
