@@ -565,9 +565,22 @@ internal sealed partial class EffigyViewport
 	/// <summary>
 	/// Hit-test, highlight and drag the active sketch's points.
 	///
-	/// The hitbox/hover/press dance is the editor's own gizmo machinery, the same as the origin
-	/// handle and RigViewport's bone handles, so a point competes for the cursor on equal terms
-	/// with everything else in the scene instead of being hit-tested by hand.
+	/// MEASURED ON THE SKETCH PLANE, NOT WITH A GIZMO HITBOX, and that is a fix rather than a
+	/// preference. Each point used to register a Gizmo.Hitbox.Sphere and ask Gizmo.IsHovered, which
+	/// is the same machinery the origin handle and the bone handles use — and which is DEPTH TESTED
+	/// against what is rendered. A sketch with an extrude standing on it is the ordinary case in
+	/// this editor, and there the solid is drawn straight through the points: the sketch itself
+	/// stayed visible, because everything here draws with IgnoreDepth, but every one of its points
+	/// was buried inside the body as far as the cursor was concerned. Nothing hovered, so nothing
+	/// could be picked up, so editing a sketch that anything was built on was impossible - and it
+	/// looked like the drag was broken rather than like the points were behind something, because
+	/// they were in plain sight the whole time. DepthBias cannot reach it; the bias is a hair and
+	/// the solid is however thick the extrude is.
+	///
+	/// The cursor is already intersected with the sketch plane every frame for the drawing tools,
+	/// so comparing against that costs nothing and cannot be occluded by anything. It is also how
+	/// the constraint glyphs and the curve grips are picked, which makes the order between the
+	/// three of them something this file states rather than something the projection decides.
 	///
 	/// The drag itself is direct rather than a three-arrow control: a sketch point has two degrees
 	/// of freedom, both in the plane, and it follows the cursor through the same snapping every
@@ -587,7 +600,8 @@ internal sealed partial class EffigyViewport
 		if ( _dragPoint >= ActiveSketch.Points.Count )
 			EndPointDrag();
 
-		var radius = UnitsPerPixel() * PointHandlePixels;
+		var units = UnitsPerPixel();
+		var radius = units * PointHandlePixels;
 
 		if ( _dragPoint >= 0 )
 		{
@@ -595,28 +609,35 @@ internal sealed partial class EffigyViewport
 			return;
 		}
 
+		if ( !_canvasHasCursor || !_cursorOnPlaneValid )
+			return;
+
+		// The NEAREST point within reach, not the first one found. Points pile up at a corner two
+		// curves share, and taking the first would hand the cursor to whichever was added earliest
+		// rather than to the one being aimed at.
+		var best = units * PointHandlePixels;
+
 		for ( var i = 0; i < ActiveSketch.Points.Count; i++ )
 		{
-			using var scope = Gizmo.Scope( $"sketch-point-{i}", new Transform( PlaneToWorld( ActiveSketch.Points[i] ) ) );
+			var distance = Dist( _cursorOnPlane, ActiveSketch.Points[i] );
 
-			Gizmo.Hitbox.DepthBias = 0.01f;
-			Gizmo.Hitbox.Sphere( new Sphere( 0f, radius ) );
-
-			if ( !Gizmo.IsHovered )
+			if ( distance >= best )
 				continue;
 
+			best = distance;
 			_hoverPoint = i;
-
-			Gizmo.Draw.IgnoreDepth = true;
-			Gizmo.Draw.Color = SketchDragColor;
-			Gizmo.Draw.SolidSphere( 0f, radius, 10, 10 );
-			Gizmo.Draw.IgnoreDepth = false;
-
-			if ( Gizmo.WasLeftMousePressed )
-				BeginPointDrag( i );
-
-			break;
 		}
+
+		if ( _hoverPoint < 0 )
+			return;
+
+		Gizmo.Draw.IgnoreDepth = true;
+		Gizmo.Draw.Color = SketchDragColor;
+		Gizmo.Draw.SolidSphere( PlaneToWorld( ActiveSketch.Points[_hoverPoint] ), radius, 10, 10 );
+		Gizmo.Draw.IgnoreDepth = false;
+
+		if ( Gizmo.WasLeftMousePressed )
+			BeginPointDrag( _hoverPoint );
 	}
 
 	/// <summary>

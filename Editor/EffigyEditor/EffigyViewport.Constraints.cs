@@ -338,7 +338,12 @@ internal sealed partial class EffigyViewport
 		var offset = units * MarkerOffsetPixels;
 		var reach = units * MarkerPickPixels;
 
-		var hoverable = SketchTool == SketchToolKind.Select && _canvasHasCursor && _cursorOnPlaneValid;
+		// The point handles get first refusal on the cursor, and now that they are picked on the
+		// plane rather than by a depth-tested hitbox they and the glyphs can genuinely both be in
+		// reach at once. A glyph sits a few pixels off the geometry it belongs to, so the overlap is
+		// small - but a click landing on both would grab the point AND delete the rule.
+		var hoverable = SketchTool == SketchToolKind.Select && _canvasHasCursor && _cursorOnPlaneValid
+			&& _hoverPoint < 0 && _dragPoint < 0;
 
 		foreach ( var marker in ConstraintTools.Markers( ActiveSketch ) )
 		{
