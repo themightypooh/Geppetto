@@ -1056,6 +1056,8 @@ internal sealed partial class EffigyViewport
 
 		_pending.Clear();
 
+		Log.Info( $"[effigy-probe] BeginSketch curves={sketch?.Curves.Count} points={sketch?.Points.Count} tool={SketchTool}" );
+
 		// The selection is a list of INDICES into the sketch that was open a moment ago. Carried
 		// into a different sketch they still resolve, to whatever points happen to sit at those
 		// numbers - a selection nobody made, on geometry nobody clicked.
@@ -1740,6 +1742,43 @@ internal sealed partial class EffigyViewport
 
 		if ( _canvasHasCursor && _cursorOnPlaneValid && Gizmo.WasLeftMousePressed && SketchTool != SketchToolKind.Select && _dragPoint < 0 )
 			ClickTool( _cursorOnPlane );
+
+		SketchProbe();
+	}
+
+	// --- TEMPORARY DIAGNOSTIC -----------------------------------------------------------------
+	// Twice a second while a sketch is open, print everything the point handles decide from. Delete
+	// this and its call above once the hover question is settled.
+
+	private float _lastProbe;
+
+	private void SketchProbe()
+	{
+		if ( RealTime.Now - _lastProbe < 0.5f )
+			return;
+
+		_lastProbe = RealTime.Now;
+
+		var units = UnitsPerPixel();
+		var nearest = -1;
+		var best = float.MaxValue;
+
+		for ( var i = 0; i < ActiveSketch.Points.Count; i++ )
+		{
+			var d = Dist( _cursorOnPlane, ActiveSketch.Points[i] );
+
+			if ( d >= best )
+				continue;
+
+			best = d;
+			nearest = i;
+		}
+
+		Log.Info( $"[effigy-probe] tool={SketchTool} onCanvas={_canvasHasCursor} planeValid={_cursorOnPlaneValid}" +
+			$" cursor=({_cursorOnPlane.x:0.###},{_cursorOnPlane.y:0.###}) pts={ActiveSketch.Points.Count}" +
+			$" unitsPerPx={units:0.#####} reach={units * PointHandlePixels:0.####}" +
+			$" nearest={nearest}@{(nearest < 0 ? 0f : best):0.####} hover={_hoverPoint} drag={_dragPoint}" +
+			$" leftDown={Gizmo.IsLeftMouseDown}" );
 	}
 
 	/// <summary>Feed one click to whichever tool is active. Each tool collects the points it needs
