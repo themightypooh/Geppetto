@@ -1,4 +1,4 @@
-using Editor;
+﻿using Editor;
 using Sandbox;
 using System;
 
@@ -47,7 +47,7 @@ internal sealed class EffigyToggleSwitch : Widget
 		Cursor = CursorShape.Finger;
 		MouseTracking = true;
 
-		// Same reasoning as EffigyToolButton: a plain Widget paints the system background, which
+		// Same reasoning as the tool bar's buttons: a plain Widget paints the system background, which
 		// is a pale square sitting behind a rounded control.
 		TranslucentBackground = true;
 		NoSystemBackground = true;

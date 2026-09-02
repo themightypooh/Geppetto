@@ -161,6 +161,16 @@ the obvious thing when pointed at a spline point. `ProfileFinder` no longer swit
 undo takes them back, which is the line Onshape draws too. `SketchIntersect` is exact for line/line,
 line/circle and circle/circle; splines and ellipses fall back to sampled tessellations and say so.
 
+**Cut is trim swept rather than clicked.** `SketchCut` takes one segment of a drag — the piece of
+path the cursor covered since the last sample — finds every curve it crossed, and hands each
+crossing point to `SketchEdit.Trim`. Deliberately the same call, so the two tools cannot disagree:
+swiping a rectangle's edge takes the whole edge because its corners are where it meets its
+neighbours, and swiping a lone line takes the line because a curve crossing nothing has no piece
+smaller than itself. Splines and ellipses, which trim refuses, are removed whole — a cut tool that
+silently does nothing when dragged through one reads as broken rather than as careful. The stroke
+is never geometry; only the editor holds it, and one drag is one undo step, taken on the first cut
+rather than on the press so an empty sweep is not a Ctrl+Z that restores an identical sketch.
+
 ### The constraint solver
 
 Levenberg-Marquardt over the constraint residuals. Each rule contributes an equation reading zero

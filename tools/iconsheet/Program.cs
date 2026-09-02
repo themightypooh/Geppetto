@@ -1,12 +1,17 @@
-// Writes the contact sheet.
+﻿// Writes the contact sheet.
 //
-// The geometry is the editor's own: EffigyToolStrip.ButtonSize is 54 and IconScale is 1.5, so
-// every glyph is drawn at the centre of a ButtonSize square at IconScale - the same numbers the strip
-// passes. That matters more than it sounds. A glyph authored against a nominal 18x18 box and shown
-// at 18px reads fine and says nothing about how it sits in a 54px button, which is the open
-// question this sheet exists to answer.
+// The geometry is the editor's own: every glyph is drawn at the centre of a button-sized square at
+// the bar's own IconScale - the same numbers EffigyStageBar passes. That matters more than it
+// sounds. A glyph authored against a nominal 18x18 box and shown at 18px reads fine and says
+// nothing about how it sits in the button it will actually live in, which is the open question this
+// sheet exists to answer.
 //
-// Two colours per glyph rather than one, because the strip's colour comes from Theme.Text and the
+// THE NUMBERS CHANGED WHEN THE STRIPS BECAME A BAR, and this sheet reads them rather than knowing
+// them, so it followed on its own. They were a 54px square at scale 1.8 - a glyph alone on a button
+// with no label, which had to carry the button by itself. They are now a 30px-tall button at scale
+// 1.05, because the label carries the naming and the glyph sits at text weight beside it.
+//
+// Two colours per glyph rather than one, because the glyph colour comes from Theme.Text and the
 // editor has both palettes. A stroke weight that reads on dark can close up on light.
 
 using System;
@@ -23,21 +28,21 @@ namespace Marionette.IconSheet;
 
 internal static class Program
 {
-	// --- the strip's own numbers, read rather than copied -------------------------------------
+	// --- the bar's own numbers, read rather than copied ---------------------------------------
 	//
 	// These two decide everything the sheet is for: how big the button is and how far up the glyph
-	// is scaled inside it. Copying them here would make the sheet answer a question about a strip
-	// that does not exist the moment somebody edits EffigyWindow - which is precisely the failure
+	// is scaled inside it. Copying them here would make the sheet answer a question about chrome
+	// that does not exist the moment somebody edits EffigyStageBar - which is precisely the failure
 	// this sheet was built to catch, so it must not be the failure the sheet itself has. They are
-	// parsed out of EffigyToolStrip instead, the same way the glyph source is linked rather than
+	// parsed out of EffigyToolChrome instead, the same way the glyph source is linked rather than
 	// copied. If the parse ever fails the run stops; a sheet drawn at a guessed scale is worse
 	// than no sheet, because it looks like evidence.
 
-	private static readonly float ButtonSize = StripConstant( "ButtonSize" );
-	private static readonly float IconScale = StripConstant( "IconScale" );
+	private static readonly float ButtonSize = ChromeConstant( "ButtonHeight" );
+	private static readonly float IconScale = ChromeConstant( "IconScale" );
 
-	/// <summary>Reads `public const float NAME = VALUE;` out of EffigyWindow.cs.</summary>
-	private static float StripConstant( string name )
+	/// <summary>Reads `public const float NAME = VALUE;` out of EffigyStageBar.cs.</summary>
+	private static float ChromeConstant( string name )
 	{
 		var source = FindEditorSource();
 		var text = File.ReadAllText( source );
@@ -58,14 +63,14 @@ internal static class Program
 
 		while ( directory is not null )
 		{
-			var candidate = Path.Combine( directory.FullName, "Editor", "EffigyEditor", "EffigyWindow.cs" );
+			var candidate = Path.Combine( directory.FullName, "Editor", "EffigyEditor", "EffigyStageBar.cs" );
 
 			if ( File.Exists( candidate ) ) return candidate;
 
 			directory = directory.Parent;
 		}
 
-		throw new FileNotFoundException( "no Editor/EffigyEditor/EffigyWindow.cs above the working directory - run this from inside the repo" );
+		throw new FileNotFoundException( "no Editor/EffigyEditor/EffigyStageBar.cs above the working directory - run this from inside the repo" );
 	}
 
 	/// <summary>Theme.Text on the dark palette, and on the light one. Read off the editor's own

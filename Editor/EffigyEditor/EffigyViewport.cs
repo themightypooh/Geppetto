@@ -276,57 +276,57 @@ internal sealed partial class EffigyViewport : Widget
 
 	// --- layout helpers ---------------------------------------------------------------------
 
-	/// <summary>The 3D canvas, exposed so the window can parent floating overlays (the tool strip)
-	/// onto it rather than into the layout.</summary>
+	/// <summary>The 3D canvas, exposed so the window can parent floating overlays (the ADD/REMOVE
+	/// strip, the sculpt number bar) onto it rather than into the layout.</summary>
 	public Widget Canvas => _canvas;
 
 	/// <summary>
-	/// Give the canvas the whole viewport and float <paramref name="overlay"/> on top of it at the
-	/// top-left. Called once from BuildToolbar, after the tool strip is built.
+	/// Stack <paramref name="toolBar"/> above the canvas and give the canvas everything left, then
+	/// float <paramref name="resultOverlay"/> on top of it at the top-left. Called once from
+	/// BuildToolbar, after the bar is built.
 	///
-	/// The overlay is deliberately NOT a layout row above the canvas. A row takes a band off the
-	/// top of the viewport and paints window chrome across it; parenting to the canvas instead
-	/// lets the 3D scene fill the widget with the buttons sitting on it, which is what the tool
-	/// strip was always described as doing.
+	/// THE TOOL BAR IS A LAYOUT ROW ABOVE THE CANVAS, and it took an argument to get there. The
+	/// note that used to sit here said a row "takes a band off the top of the viewport and paints
+	/// window chrome across it" and that parenting to the canvas instead let the 3D scene fill the
+	/// widget with the buttons sitting on it. The first half was true and the second half was not:
+	/// a widget that declines to paint keeps whatever was in the frame buffer, so the floating
+	/// strip had to fill its own rect with the viewport's clear colour and was an opaque band over
+	/// the model the whole time — a band that also sat exactly where a part's top-left corner is.
+	/// It cost the same pixels and covered the geometry as well. See EffigyStageBar.
+	///
+	/// The overlays that ARE still parented to the canvas are the ones that belong to the model
+	/// rather than to the toolset: the ADD/REMOVE strip and the sculpt number bar.
 	///
 	/// Note this fills the layout the constructor already made rather than assigning a fresh one.
 	/// It runs after DockManager.SetCentralWidget has sized the viewport, and replacing the layout
 	/// at that point orphans the canvas: it keeps whatever tiny geometry it had and renders the
 	/// whole 3D scene into a sliver, leaving the rest of the viewport black.
 	/// </summary>
-	public void CompleteLayout( Widget featureOverlay, Widget sketchOverlay, Widget resultOverlay = null )
+	public void CompleteLayout( Widget toolBar, Widget resultOverlay = null )
 	{
+		// The bar first, the canvas taking everything left. One bar, so there is no longer any
+		// question of two pieces of tool chrome being visible at once — that used to be enforced
+		// by three Visible flags nobody could see the state of.
+		if ( toolBar is not null )
+			Layout.Add( toolBar );
+
 		Layout.Add( _canvas, 1 );
 
-		// Both strips sit in the SAME spot and only one is ever visible at a time - entering a
-		// sketch is supposed to REPLACE the feature strip with the sketch one, not add a second
-		// row alongside it. They used to be two unrelated widget systems (this floating strip and
-		// a window-docked ToolBar that showed and hid itself independently), which is exactly why
-		// the feature strip stayed on screen through the whole time anyone was sketching - nothing
-		// ever told it to get out of the way.
-		_overlay = featureOverlay;
-		_overlay.Position = OverlayMargin;
-
-		_sketchOverlay = sketchOverlay;
-		sketchOverlay.Position = OverlayMargin;
-		sketchOverlay.Visible = false;
-
-		// A SECOND ROW, not a third thing sharing the first spot. The two strips above swap with
-		// each other because only one can be relevant at a time; this one is about the feature
-		// being edited and is orthogonal to both, so it sits under whichever is showing.
+		// Still floating, and still parented to the canvas: this one is about the feature being
+		// EDITED rather than about which tool is armed, so it belongs next to the model.
 		if ( resultOverlay is not null )
 		{
 			_resultOverlay = resultOverlay;
-			resultOverlay.Position = OverlayMargin + new Vector2( 0f, EffigyToolStrip.ButtonSize + 8f );
+			resultOverlay.Position = OverlayMargin;
 		}
 	}
 
-	/// <summary>Inset of the floating tool strip from the canvas's top-left corner.</summary>
+	/// <summary>Inset of a floating overlay from the canvas's top-left corner.</summary>
 	private static readonly Vector2 OverlayMargin = new( 10f, 10f );
 
-	/// <summary>The floating tool strip, so the frame loop can keep camera drags out of it.</summary>
-	private Widget _overlay;
-	private Widget _sketchOverlay;
+	/// <summary>The floating overlays, so the frame loop can keep camera drags out of them. The
+	/// tool bar is not among them any more — it is a layout row outside the canvas, so the canvas
+	/// never reports the cursor as being over it in the first place.</summary>
 	private Widget _resultOverlay;
 
 	// --- model management -------------------------------------------------------------------
@@ -708,12 +708,22 @@ internal sealed partial class EffigyViewport : Widget
 			var sketchY = new Vector3( sketchPlane.YAxis.x, sketchPlane.YAxis.y, sketchPlane.YAxis.z );
 			var sketchColor = new Color( 0.95f, 0.82f, 0.25f, 0.65f );
 
-			DrawPlaneOutline( sketchCenter, sketchX, sketchY, s, sketchColor );
-
-			if ( ShowPlaneGrid )
+			// A SKETCH ON A FACE FILLS THAT FACE, not a rectangle around it. The plane is
+			// infinite; the square was only ever a stand-in for it, and on a face it was the
+			// wrong square - a fixed 128 units across, so it hung out past a small face and was
+			// swallowed by a large one. Either way the ruled paper stopped somewhere that means
+			// nothing, and the eye reads that edge as a boundary of the work. The face already
+			// has a boundary, drawn in green a few lines from here, so the grid is clipped to
+			// it and the two say one thing.
+			if ( !DrawSketchFaceGrid( sketchColor ) )
 			{
-				DrawPlaneGrid( sketchCenter, sketchX, sketchY, s, DrawnGridStep( sketchCenter, s ),
-					sketchColor.WithAlpha( 0.3f ) );
+				DrawPlaneOutline( sketchCenter, sketchX, sketchY, s, sketchColor );
+
+				if ( ShowPlaneGrid )
+				{
+					DrawPlaneGrid( sketchCenter, sketchX, sketchY, s, DrawnGridStep( sketchCenter, s ),
+						sketchColor.WithAlpha( 0.3f ) );
+				}
 			}
 
 			Gizmo.Draw.IgnoreDepth = false;
@@ -867,6 +877,114 @@ internal sealed partial class EffigyViewport : Widget
 
 				Gizmo.Draw.Line( center + up * d - right * halfSize, center + up * d + right * halfSize );
 				Gizmo.Draw.Line( center + right * d - up * halfSize, center + right * d + up * halfSize );
+			}
+		}
+	}
+
+	/// <summary>
+	/// Fill the face a sketch is sitting on with a grid, clipped to that face's own outline.
+	///
+	/// THE FACE IS THE PAPER. A sketch derived from a face is about that face, and the ruled grid
+	/// is only useful where the face is - so it stops where the face stops, including around a
+	/// hole through it, rather than at the edge of an arbitrary rectangle. Crossings are counted
+	/// even-odd along each grid line, which is why a hole comes out as a gap for free: its rim is
+	/// in the outline like any other edge.
+	///
+	/// SAME STEP AS THE SNAP, through DrawnGridStep, and aligned to the sketch plane's origin
+	/// rather than to the face - so an intersection you can see is an intersection the cursor
+	/// lands on, which is the only reason to draw the lines at all.
+	/// </summary>
+	/// <returns>False when there is no face underneath - a sketch on a global plane - in which
+	/// case the caller falls back to drawing the plane as a rectangle.</returns>
+	private bool DrawSketchFaceGrid( Color color )
+	{
+		if ( ActiveSketchReference is not { IsEmpty: false } reference || ActiveSketch?.Plane is null )
+			return false;
+
+		// The face is handled, and the rectangle stays gone even with the grid switched off: the
+		// green outline already says where the face is, and the yellow square said nothing the
+		// switch was ever about.
+		if ( !ShowPlaneGrid )
+			return true;
+
+		var min = reference.Points[0];
+		var max = min;
+
+		foreach ( var p in reference.Points )
+		{
+			min = new Vec2( MathF.Min( min.x, p.x ), MathF.Min( min.y, p.y ) );
+			max = new Vec2( MathF.Max( max.x, p.x ), MathF.Max( max.y, p.y ) );
+		}
+
+		var half = MathF.Max( MathF.Max( max.x - min.x, max.y - min.y ) * 0.5f, 1e-4f );
+		var centre = (min + max) * 0.5f;
+		var step = DrawnGridStep( PlaneToWorld( centre ), half );
+
+		if ( step <= 0f )
+			return true;
+
+		Gizmo.Draw.LineThickness = 1f;
+		Gizmo.Draw.Color = color.WithAlpha( 0.3f );
+
+		DrawFaceGridLines( reference, min.x, max.x, step, true );
+		DrawFaceGridLines( reference, min.y, max.y, step, false );
+
+		return true;
+	}
+
+	/// <summary>One family of grid lines across a face - the ones at constant u when
+	/// <paramref name="alongX"/>, at constant v otherwise. Split out because the two directions
+	/// are the same walk with the components swapped, and writing it twice is how one of them
+	/// ends up subtly different.</summary>
+	private void DrawFaceGridLines( SketchReference reference, float low, float high, float step, bool alongX )
+	{
+		var first = (int)MathF.Ceiling( low / step );
+		var last = (int)MathF.Floor( high / step );
+
+		if ( last - first > MaxGridLines )
+			return;
+
+		var crossings = new List<float>();
+
+		for ( var i = first; i <= last; i++ )
+		{
+			var line = i * step;
+
+			crossings.Clear();
+
+			for ( var e = 0; e < reference.Edges.Count; e++ )
+			{
+				var (a, b) = reference.Segment( e );
+
+				var from = alongX ? a.x : a.y;
+				var to = alongX ? b.x : b.y;
+
+				// Half-open, so a vertex sitting exactly on the line is counted by one of its two
+				// edges rather than by both or neither. Both would pair the crossing with itself
+				// and leave the span beyond it unfilled.
+				if ( from <= line == to <= line )
+					continue;
+
+				var t = (line - from) / (to - from);
+
+				crossings.Add( alongX
+					? a.y + (b.y - a.y) * t
+					: a.x + (b.x - a.x) * t );
+			}
+
+			if ( crossings.Count < 2 )
+				continue;
+
+			crossings.Sort();
+
+			// In pairs: inside the face between the first and second crossing, outside between the
+			// second and third, and so on around a hole and back.
+			for ( var c = 0; c + 1 < crossings.Count; c += 2 )
+			{
+				var a = alongX ? new Vec2( line, crossings[c] ) : new Vec2( crossings[c], line );
+				var b = alongX ? new Vec2( line, crossings[c + 1] ) : new Vec2( crossings[c + 1], line );
+
+				Gizmo.Draw.Line( PlaneToWorld( a ), PlaneToWorld( b ) );
 			}
 		}
 	}
@@ -1113,13 +1231,10 @@ internal sealed partial class EffigyViewport : Widget
 		if ( _canvas.Scene is { } scene )
 			scene.EditorTick( RealTime.Now, RealTime.Delta );
 
-		// The floating tool strips sit inside the canvas, so "cursor over the canvas" is true while
-		// you are aiming at a button. Without excluding them, pressing a tool also grabs the orbit
+		// The floating overlays sit inside the canvas, so "cursor over the canvas" is true while
+		// you are aiming at one. Without excluding them, pressing a control also grabs the orbit
 		// camera, the click drags the view, and sketch tools place points on the plane.
-		var overAnyOverlay = (_overlay?.IsUnderMouse ?? false)
-			|| (_sketchOverlay?.IsUnderMouse ?? false)
-			|| (_resultOverlay?.IsUnderMouse ?? false)
-			|| (_sculptOverlay?.IsUnderMouse ?? false)
+		var overAnyOverlay = (_resultOverlay?.IsUnderMouse ?? false)
 			|| (_sculptBarOverlay?.IsUnderMouse ?? false);
 		var overCanvas = _canvas.IsUnderMouse && !overAnyOverlay;
 

@@ -25,6 +25,11 @@ namespace Marionette.EditorTools;
 ///   pick a curve or a point under the cursor rather than placing anything. The kernel does the
 ///   work and hands back a reason when it will not — SketchEdit was written that way, and every
 ///   refusal here is its words rather than ours.
+///
+/// AND ONE THAT IS NEITHER: **Cut DRAGS.** It is the only tool in the sketcher driven by a held
+/// button, so it never reaches ClickTool at all — CutStrokeFrame takes the mouse a frame earlier,
+/// which is what keeps one stroke to one undo step instead of one per press. See it at the bottom
+/// of this file.
 /// </summary>
 internal sealed partial class EffigyViewport
 {
@@ -37,11 +42,13 @@ internal sealed partial class EffigyViewport
 	private const float CornerPickPixels = 10f;
 
 	/// <summary>True when this tool is one of the six here rather than one of the original twelve.
-	/// Use joined them later - it is the same shape of thing, a pick rather than a placement.</summary>
+	/// Use joined them later - it is the same shape of thing, a pick rather than a placement - and
+	/// so did Cut, which is a THIRD kind again: it is neither a click nor a pick but a drag, and it
+	/// is here because the alternative was a fourth branch through the twelve-tool machine.</summary>
 	private static bool IsNewSketchTool( SketchToolKind tool ) => tool
 		is SketchToolKind.Ellipse or SketchToolKind.Spline or SketchToolKind.Trim
 		or SketchToolKind.Extend or SketchToolKind.Fillet or SketchToolKind.Offset
-		or SketchToolKind.Use;
+		or SketchToolKind.Use or SketchToolKind.Cut;
 
 	// --- clicks ---------------------------------------------------------------------------------
 
@@ -92,6 +99,14 @@ internal sealed partial class EffigyViewport
 			case SketchToolKind.Use:
 				_pending.Clear();
 				ApplyUse();
+				return true;
+
+			// A click never reaches here: CutStrokeFrame takes the press a step earlier in the frame
+			// and SketchFrame returns. The case exists so that if that order is ever disturbed the
+			// click is swallowed rather than falling through to the twelve-tool machine, which would
+			// answer a press of the cut tool by placing a point.
+			case SketchToolKind.Cut:
+				_pending.Clear();
 				return true;
 
 			case SketchToolKind.Trim:
@@ -490,6 +505,10 @@ internal sealed partial class EffigyViewport
 
 				break;
 			}
+
+			case SketchToolKind.Cut:
+				DrawCutStroke();
+				break;
 		}
 
 		return true;
@@ -580,6 +599,8 @@ internal sealed partial class EffigyViewport
 			SketchToolKind.Offset when _offsetCurveId is null => "Offset - click the curve to offset",
 			SketchToolKind.Offset => "Offset - click which side, and how far",
 
+			SketchToolKind.Cut => "Cut - hold the left button and drag a line through what you want gone",
+
 			_ => null,
 		};
 	}
@@ -595,5 +616,223 @@ internal sealed partial class EffigyViewport
 		_splinePoints.Clear();
 		_filletCorner = -1;
 		_offsetCurveId = null;
+
+		_cutStroke.Clear();
+		_cutting = false;
+		_cutBroken = false;
+		_cutCount = 0;
+		_cutSnapshot = false;
+	}
+
+	// --- the cut stroke ---------------------------------------------------------------------------
+
+	/// <summary>The path of the stroke in sketch coordinates, from the press to the last sample.
+	/// Empty when no stroke is running. It is never geometry - nothing here ever reaches the sketch
+	/// - it exists to be drawn, and to be handed to the kernel one segment at a time.</summary>
+	private readonly List<Vec2> _cutStroke = new();
+
+	/// <summary>True between the press and the release.</summary>
+	private bool _cutting;
+
+	/// <summary>Set while the cursor is off the canvas or off the plane mid-stroke, so the path
+	/// starts again where it comes back rather than joining up across the gap.</summary>
+	private bool _cutBroken;
+
+	/// <summary>How many curves this stroke has cut, for the line the status bar shows when it
+	/// ends.</summary>
+	private int _cutCount;
+
+	/// <summary>Whether this stroke has taken its undo snapshot yet - see CutAlong for why it is
+	/// taken on the first cut rather than on the press.</summary>
+	private bool _cutSnapshot;
+
+	/// <summary>How far, in SCREEN PIXELS, the cursor has to travel before the stroke takes another
+	/// sample. Small enough that a fast drag still traces the path it looks like it traced, large
+	/// enough that a hand resting on a held button does not hand the kernel a hundred zero-length
+	/// segments a second.</summary>
+	private const float CutSamplePixels = 2f;
+
+	/// <summary>Half the width of the X drawn at the cursor, in SCREEN PIXELS.</summary>
+	private const float CutCursorPixels = 5f;
+
+	/// <summary>The colour of a stroke that is about to remove things. Warm, and close to the one
+	/// the profile inspector paints a gap in, because both are saying the same word.</summary>
+	private static readonly Color SketchCutColor = new( 1f, 0.4f, 0.3f, 0.95f );
+
+	/// <summary>
+	/// The cut tool's whole interaction: press, drag, release.
+	///
+	/// THE ONLY TOOL IN THIS SKETCHER DRIVEN BY A HELD BUTTON, which is why it returns a bool the
+	/// way the click hook does. SketchFrame stops at a true and never runs the click machine, and
+	/// it has to: ClickTool takes an undo snapshot on every press, and the press here is the start
+	/// of a drag whose whole stroke is meant to be one step.
+	///
+	/// EACH SAMPLE IS CUT AS IT ARRIVES rather than the path being cut on release, because the
+	/// point of dragging a line through geometry is watching the geometry go. The sketch is drawn
+	/// straight from ActiveSketch every frame, so a curve cut on the fourth sample is gone on the
+	/// fourth frame. What waits for the release is the REBUILD - exactly as a dragged point waits,
+	/// and for the same reason: a solid re-extruded forty times during one stroke is thirty-nine
+	/// rebuilds nobody asked for.
+	/// </summary>
+	private bool CutStrokeFrame()
+	{
+		if ( ActiveSketch is null || SketchTool != SketchToolKind.Cut )
+		{
+			// The tool changed, or the sketch closed, with the button still down. The cuts already
+			// made are real and the sketch on screen already shows them, so this FINISHES the stroke
+			// rather than dropping it - the alternative is a rebuild that never happens and a solid
+			// that disagrees with the sketch it was made from.
+			if ( _cutting )
+				EndCutStroke();
+
+			return false;
+		}
+
+		if ( !_cutting )
+		{
+			if ( _canvasHasCursor && _cursorOnPlaneValid && Gizmo.WasLeftMousePressed )
+				BeginCutStroke( _cursorOnPlane );
+
+			return true;
+		}
+
+		if ( Gizmo.IsLeftMouseDown )
+		{
+			// The cursor leaving the canvas does NOT end the stroke, the same as the sculpt brush:
+			// a drag that swings out over the tool strip and back is one gesture. It stops new
+			// samples, and the path starts again where it returns - joined up, it would cut a
+			// straight line through everything the cursor flew over on the way.
+			if ( !_canvasHasCursor || !_cursorOnPlaneValid )
+				_cutBroken = true;
+			else if ( _cutBroken )
+				RestartCutStroke( _cursorOnPlane );
+			else
+				CutAlong( _cursorOnPlane );
+
+			return true;
+		}
+
+		// Released. There is no WasLeftMouseReleased in the Gizmo input this editor uses, so the end
+		// of a stroke is the frame the button is no longer down - SculptFrame infers it the same way
+		// and says so at more length.
+		EndCutStroke();
+
+		return true;
+	}
+
+	private void BeginCutStroke( Vec2 at )
+	{
+		_cutting = true;
+		_cutBroken = false;
+		_cutCount = 0;
+		_cutSnapshot = false;
+
+		_cutStroke.Clear();
+		_cutStroke.Add( at );
+	}
+
+	private void RestartCutStroke( Vec2 at )
+	{
+		_cutBroken = false;
+
+		_cutStroke.Clear();
+		_cutStroke.Add( at );
+	}
+
+	/// <summary>
+	/// Extend the stroke to here, and cut whatever the new piece of path went through.
+	///
+	/// All of the geometry is in <see cref="SketchCut"/>, where a test can hold both ends of a
+	/// segment still. What is left here is the sampling rate and the undo step, which are the two
+	/// things that only mean anything with a hand on a mouse.
+	/// </summary>
+	private void CutAlong( Vec2 to )
+	{
+		var from = _cutStroke[^1];
+
+		// The sample threshold is in SCREEN PIXELS, like every other reach in this viewport and for
+		// the same reason: a sketch can be one unit across or a thousand, so a fixed distance in
+		// sketch units is either every frame or never.
+		if ( (to - from).Length < UnitsPerPixel() * CutSamplePixels )
+			return;
+
+		_cutStroke.Add( to );
+
+		var crossings = SketchCut.Crossings( ActiveSketch, from, to );
+
+		if ( crossings.Count == 0 )
+			return;
+
+		// THE UNDO SNAPSHOT IS TAKEN ON THE FIRST CUT, not on the press. A stroke swept across empty
+		// space changes nothing, and an undo step that restores an identical sketch is a Ctrl+Z that
+		// looks broken. Once per stroke after that, so the whole drag goes back in one press - the
+		// same rule the point drag follows.
+		if ( !_cutSnapshot )
+		{
+			SketchEditing?.Invoke();
+			_cutSnapshot = true;
+		}
+
+		_cutCount += SketchCut.Apply( ActiveSketch, crossings );
+	}
+
+	private void EndCutStroke()
+	{
+		var cut = _cutCount;
+
+		_cutting = false;
+		_cutBroken = false;
+		_cutCount = 0;
+		_cutSnapshot = false;
+		_cutStroke.Clear();
+
+		if ( cut == 0 )
+		{
+			// Worth saying rather than leaving silent. A stroke drawn NEXT TO a line instead of
+			// through it looks identical while it is being drawn, and "nothing happened" is the one
+			// outcome the user cannot tell apart from the tool being broken.
+			SetSketchPrompt( "Cut - nothing was under that stroke; drag the line through a curve to cut it." );
+			return;
+		}
+
+		SetSketchPrompt( cut == 1
+			? "Cut - took 1 piece out of the sketch."
+			: $"Cut - took {cut} pieces out of the sketch." );
+
+		Edited();
+	}
+
+	/// <summary>The stroke so far, plus the leg to the cursor so the line reaches the hand rather
+	/// than the last sample - a couple of pixels behind is small, but a stroke that lags the cursor
+	/// reads as the tool dropping input.</summary>
+	private void DrawCutStroke()
+	{
+		Gizmo.Draw.Color = SketchCutColor;
+		Gizmo.Draw.LineThickness = 2.5f;
+
+		for ( var i = 0; i < _cutStroke.Count - 1; i++ )
+			Gizmo.Draw.Line( PlaneToWorld( _cutStroke[i] ), PlaneToWorld( _cutStroke[i + 1] ) );
+
+		if ( _cutStroke.Count > 0 && !_cutBroken )
+			Gizmo.Draw.Line( PlaneToWorld( _cutStroke[^1] ), PlaneToWorld( _cursorOnPlane ) );
+
+		DrawCutCursor();
+	}
+
+	/// <summary>An X at the cursor. Every drawing tool marks the cursor with a dot, and a dot means
+	/// "a point will land here" - this tool places nothing, so it gets a mark that says otherwise.
+	/// </summary>
+	private void DrawCutCursor()
+	{
+		var size = UnitsPerPixel() * CutCursorPixels;
+		var c = _cursorOnPlane;
+
+		Gizmo.Draw.Color = SketchCutColor;
+		Gizmo.Draw.LineThickness = 2f;
+
+		Gizmo.Draw.Line( PlaneToWorld( new Vec2( c.x - size, c.y - size ) ),
+			PlaneToWorld( new Vec2( c.x + size, c.y + size ) ) );
+		Gizmo.Draw.Line( PlaneToWorld( new Vec2( c.x - size, c.y + size ) ),
+			PlaneToWorld( new Vec2( c.x + size, c.y - size ) ) );
 	}
 }

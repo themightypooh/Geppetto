@@ -77,6 +77,9 @@ internal enum EffigyIcon
 	// --- taking the face's own outline into the sketch -------------------------------------------
 	UseTool,
 	UseAllTool,
+
+	// --- the one sketch tool driven by a drag ----------------------------------------------------
+	CutTool,
 }
 
 /// <summary>
@@ -185,6 +188,8 @@ internal static class EffigyIcons
 
 			case EffigyIcon.UseTool: PaintUseTool( center, color ); return;
 			case EffigyIcon.UseAllTool: PaintUseAllTool( center, color ); return;
+
+			case EffigyIcon.CutTool: PaintCutTool( center, color ); return;
 		}
 	}
 
@@ -1533,6 +1538,45 @@ internal static class EffigyIcons
 		Outline( At( c, -7, -7 ), At( c, 7, -7 ), At( c, 7, 7 ), At( c, -7, 7 ) );
 	}
 
+	/// <summary>
+	/// A freehand stroke swept across three lines, with the pieces it went through dashed away.
+	///
+	/// The STROKE is the subject and is drawn in the red the viewport draws it in, because that is
+	/// the thing the button is offering to let you do. Trim's glyph shows one clean crossing; this
+	/// one shows a wobble through several, which is the difference between the two tools.
+	/// </summary>
+	private static void PaintCutTool( Vector2 c, Color color )
+	{
+		// Three uprights, each with the piece the stroke went through faded out. The gap is what the
+		// tool does; the two solid ends are what it leaves.
+		for ( var i = 0; i < 3; i++ )
+		{
+			var x = -6f + i * 6f;
+
+			Stroked( color, 1.8f );
+			Editor.Paint.DrawLine( At( c, x, -8.5f ), At( c, x, -2.5f ) );
+			Editor.Paint.DrawLine( At( c, x, 3.5f ), At( c, x, 8.5f ) );
+
+			Stroked( color.WithAlpha( 0.28f ), 1.4f );
+			Editor.Paint.DrawLine( At( c, x, -2.5f ), At( c, x, 3.5f ) );
+		}
+
+		// The stroke itself, sagging so that it passes through all three gaps rather than running
+		// straight - straight would be Trim's glyph with two more lines in it.
+		Stroked( CutColor, 2.1f );
+
+		var previous = At( c, -9f, -2f );
+
+		for ( var i = 1; i <= 12; i++ )
+		{
+			var t = i / 12f;
+			var point = At( c, -9f + 18f * t, -2f + MathF.Sin( t * MathF.PI ) * 3.5f );
+
+			Editor.Paint.DrawLine( previous, point );
+			previous = point;
+		}
+	}
+
 	/// <summary>The part of a Use glyph that is still only scenery.</summary>
 	private static void Faint( Color color ) => Stroked( color.WithAlpha( 0.4f ), 1.3f );
 
@@ -1540,4 +1584,10 @@ internal static class EffigyIcons
 	/// EffigyViewport.Sketching.cs. Kept in step by eye rather than shared, because that one carries
 	/// an alpha for drawing in the world and this one has to read on a small dark button.</summary>
 	private static readonly Color ReferenceColor = new( 0.45f, 1f, 0.6f, 1f );
+
+	/// <summary>The red a cut stroke is drawn in - see SketchCutColor in
+	/// EffigyViewport.SketchTools.cs. Kept in step by eye, the same as ReferenceColor above: that
+	/// one carries an alpha for drawing in the world and this one has to read on a small dark
+	/// button.</summary>
+	private static readonly Color CutColor = new( 1f, 0.45f, 0.35f, 1f );
 }

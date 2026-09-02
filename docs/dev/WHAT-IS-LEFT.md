@@ -317,10 +317,9 @@ handler" from "the handler was null" from "EnterSketch ran and something after t
 it". Do not change behaviour before that line prints — four fixes have already been spent on code
 this probe has now excluded.
 
-**A second, real bug found on the way — still unfixed, and not the one above.** The sketch strip is
-built exactly once (constructor → `BuildToolbar()` `:225` → `BuildSketchToolbar()` `:403`) and is
-never cleared and rebuilt, unlike `_toolStrip` in `RefreshToolStrip()`. So on every hotload its
-`VariantChosen` closures rot:
+**A second, real bug found on the way — since FIXED, and not the one above.** The sketch strip was
+built exactly once and never cleared and rebuilt, unlike the feature strip in `RefreshToolStrip()`.
+So on every hotload its `VariantChosen` closures rotted:
 
 ```
 [hotload/GameMenu] Warn: Unable to find matching substitution for a lambda method.
@@ -328,14 +327,22 @@ never cleared and rebuilt, unlike `_toolStrip` in `RefreshToolStrip()`. So on ev
   Path: [...].VariantChosen
 ```
 
-Every sketch tool button goes dead — they still highlight and check, they just call nothing — and
-`VariantChosen` is the only route into `SetSketchTool`. There is no Select keyboard shortcut either:
-only Line and Circle have one (`:3314`). So after any hotload with the window open, the Select tool
-is unreachable and `SketchTool` freezes wherever it last was. This is the same failure the
-`ToolKind` enum comment (`:1176`) documents and fixed for the *feature* strip; the sketch strip
-never got the same treatment. Closing and reopening the window is the workaround. It is worth fixing
-on its own account — it will hide the fix for 2.0 once that lands, and it is the likeliest reason
-earlier fixes "stopped working" the moment code was edited with the window open.
+Every sketch tool button went dead — they still highlighted and checked, they just called nothing —
+and `VariantChosen` was the only route into `SetSketchTool`. After any hotload with the window open,
+Select was unreachable and `SketchTool` froze wherever it last was. It is the likeliest reason
+earlier fixes appeared to "stop working" the moment code was edited with the window open.
+
+The strips are gone (see the stage bar, below) and the fix came with them: the tool tables are
+rebuilt outright on `[Event( "hotloaded" )]` — `EffigyWindow.RebuildStages` — rather than relying on
+some unrelated refresh happening to tear them down. Nothing is lost in the rebuild, because every
+piece of state on a tool is a fact about the viewport and is re-derived from it. This now covers the
+feature tools too, which were only ever safe by accident.
+
+**The strips became a stage bar.** `EffigyToolStrip`, `EffigySketchStrip`, `EffigyToolButton` and
+`EffigySketchToolButton` are deleted; `EffigyStageBar.cs` replaces all four. Fifty anonymous 54px
+squares taking turns in one floating spot on the canvas are now a docked two-row bar: stage tabs
+over the five or six NAMED buttons belonging to the selected stage. The `Starter` flag is gone with
+them — tools that need geometry are no longer hidden, they sit behind a dimmed tab that says why.
 
 ### 2.1 Sweep and loft on the strip — **written, and never seen on screen**
 

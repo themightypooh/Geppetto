@@ -1,4 +1,4 @@
-using Editor;
+﻿using Editor;
 using Effigy;
 using Sandbox;
 using System;
@@ -41,26 +41,21 @@ internal sealed partial class EffigyViewport
 	/// model.</summary>
 	private MeshHit? _sculptCursor;
 
-	// The floating sculpt widgets, held for the same reason the other overlays are: the frame loop
-	// has to keep camera drags out of them, or pressing a brush button also flies the view.
-	private Widget _sculptOverlay;
+	// The floating number bar, held for the same reason the result strip is: the frame loop has to
+	// keep camera drags out of it, or dragging the radius slider also flies the view.
 	private Widget _sculptBarOverlay;
 
 	/// <summary>
-	/// Put the sculpt strip and its number bar on the canvas.
+	/// Put the sculpt number bar on the canvas.
 	///
-	/// The strip shares the top-left spot with the feature and sketch strips - exactly one of the
-	/// three is ever visible - and the bar sits under it where the result strip sits, because it is
-	/// about the thing being sculpted rather than about which tool is armed.
+	/// The brushes themselves are stages on the tool bar now. This is the one sculpt control that
+	/// stayed floating, because it is about the STROKE - radius, strength, the level you are on -
+	/// rather than about which tool is armed, and it wants to be near the thing being brushed.
 	/// </summary>
-	public void AddSculptOverlays( Widget strip, Widget bar )
+	public void AddSculptOverlay( Widget bar )
 	{
-		_sculptOverlay = strip;
-		strip.Position = OverlayMargin;
-		strip.Visible = false;
-
 		_sculptBarOverlay = bar;
-		bar.Position = OverlayMargin + new Vector2( 0f, EffigyToolStrip.ButtonSize + 8f );
+		bar.Position = OverlayMargin + new Vector2( 0f, 46f );
 		bar.Visible = false;
 	}
 

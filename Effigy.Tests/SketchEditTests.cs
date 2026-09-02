@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -29,6 +29,9 @@ public static class SketchEditTests
 
 		Report.Section( "sketch offset" );
 		TestOffset();
+
+		Report.Section( "sketch cut stroke" );
+		TestCut();
 	}
 
 	static void TestFillet()
@@ -323,6 +326,141 @@ public static class SketchEditTests
 		Report.Check( "offsetting a spline is refused with a reason",
 			!SketchEdit.Offset( unsupported, new SketchCurve[] { wiggle }, 1f, out _, out var wiggleError ) &&
 			wiggleError.Contains( "not supported" ), wiggleError );
+	}
+
+	/// <summary>
+	/// The cut stroke — one segment of a drag, and what it takes with it.
+	///
+	/// EVERY CASE HERE IS "WHAT DID THE STROKE LEAVE BEHIND", not "did the call return true". The
+	/// whole risk in a tool driven by a drag is that it takes slightly more or slightly less than
+	/// the thing you swiped through, and a call that succeeded says nothing about which.
+	/// </summary>
+	static void TestCut()
+	{
+		// A line crossing nothing has no piece smaller than itself, so a swipe through it takes it.
+		var lonely = new Sketch();
+		lonely.AddLine( new Vec2( 0f, 0f ), new Vec2( 4f, 0f ) );
+
+		Report.Check( "a stroke through a lone line takes it",
+			SketchCut.Cut( lonely, new Vec2( 2f, -1f ), new Vec2( 2f, 1f ) ) == 1 && lonely.Curves.Count == 0,
+			$"{lonely.Curves.Count} curves left" );
+
+		// And a stroke that goes nowhere near it takes nothing. An eraser that fires on a miss is
+		// worse than one that misses, because the drag is continuous and every frame of it is
+		// another chance.
+		var missed = new Sketch();
+		missed.AddLine( new Vec2( 0f, 0f ), new Vec2( 4f, 0f ) );
+
+		Report.Check( "a stroke that misses cuts nothing",
+			SketchCut.Cut( missed, new Vec2( 2f, 1f ), new Vec2( 2f, 3f ) ) == 0 && missed.Curves.Count == 1,
+			$"{missed.Curves.Count} curves left" );
+
+		// DRAWN ALONG A LINE RATHER THAN ACROSS IT. Collinear is not a crossing, and the whole
+		// difference between the two is one degenerate case in SegmentCross - so it is worth its own
+		// check: without it, dragging down an edge to reach the thing past it eats the edge.
+		var alongside = new Sketch();
+		alongside.AddLine( new Vec2( 0f, 0f ), new Vec2( 4f, 0f ) );
+
+		Report.Check( "a stroke drawn along a line does not eat it",
+			SketchCut.Cut( alongside, new Vec2( 1f, 0f ), new Vec2( 3f, 0f ) ) == 0 && alongside.Curves.Count == 1,
+			$"{alongside.Curves.Count} curves left" );
+
+		// THE CUT STOPS AT THE NEIGHBOURS, which is the whole difference between this and deleting
+		// whatever is under the cursor. A rectangle's edge ends at two corners, so swiping it takes
+		// that edge and leaves the other three - the shape opens up rather than vanishing.
+		var box = new Sketch();
+		box.AddRectangle( new Vec2( 0f, 0f ), new Vec2( 4f, 3f ) );
+
+		Report.Check( "a stroke across one edge of a rectangle takes that edge",
+			SketchCut.Cut( box, new Vec2( 2f, -1f ), new Vec2( 2f, 1f ) ) == 1 && box.Curves.Count == 3,
+			$"{box.Curves.Count} edges left" );
+
+		Report.Check( "and it is the edge that was crossed",
+			!box.Curves.OfType<SketchLine>().Any( l =>
+				MathF.Abs( box.Points[l.Start].y ) < 1e-4f && MathF.Abs( box.Points[l.End].y ) < 1e-4f ),
+			string.Join( "; ", box.Curves.OfType<SketchLine>()
+				.Select( l => $"{box.Points[l.Start]}->{box.Points[l.End]}" ) ) );
+
+		// A cut through the middle of a crossed line leaves the outer pieces standing - the same
+		// bite the Trim tool's click takes, because it is the same call underneath.
+		var cross = new Sketch();
+		cross.AddLine( new Vec2( -4f, 0f ), new Vec2( 4f, 0f ) );
+		cross.AddLine( new Vec2( -1f, -2f ), new Vec2( -1f, 2f ) );
+		cross.AddLine( new Vec2( 1f, -2f ), new Vec2( 1f, 2f ) );
+
+		Report.Check( "a stroke through a crossed line bites out the middle",
+			SketchCut.Cut( cross, new Vec2( 0f, -0.5f ), new Vec2( 0f, 0.5f ) ) == 1 );
+
+		var spans = cross.Curves.OfType<SketchLine>()
+			.Where( l => MathF.Abs( cross.Points[l.Start].y ) < 1e-6f && MathF.Abs( cross.Points[l.End].y ) < 1e-6f )
+			.ToList();
+
+		Report.Check( "leaving the two outer pieces rather than nothing", spans.Count == 2,
+			$"{spans.Count} pieces" );
+
+		Report.Check( "and neither piece covers the bite",
+			spans.All( p => MathF.Min( cross.Points[p.Start].x, cross.Points[p.End].x ) >= 1f - 1e-3f ||
+				MathF.Max( cross.Points[p.Start].x, cross.Points[p.End].x ) <= -1f + 1e-3f ),
+			string.Join( "; ", spans.Select( p => $"{cross.Points[p.Start]}->{cross.Points[p.End]}" ) ) );
+
+		// ONE SEGMENT, SEVERAL CURVES. A drag covers ground between frames, and the piece of path
+		// handed down can easily span three lines - so a segment has to cut all of what it went
+		// through rather than the first thing it found.
+		var fence = new Sketch();
+
+		for ( var i = 0; i < 3; i++ )
+			fence.AddLine( new Vec2( i, -1f ), new Vec2( i, 1f ) );
+
+		var crossings = SketchCut.Crossings( fence, new Vec2( -0.5f, 0f ), new Vec2( 2.5f, 0f ) );
+
+		Report.Check( "one segment finds every curve it went through", crossings.Count == 3,
+			$"{crossings.Count} crossings" );
+
+		Report.Check( "in the order the stroke reached them",
+			crossings.Count == 3 && crossings[0].At.x < crossings[1].At.x && crossings[1].At.x < crossings[2].At.x,
+			string.Join( "; ", crossings.Select( c => c.At.ToString() ) ) );
+
+		Report.Check( "and cuts all of them", SketchCut.Apply( fence, crossings ) == 3 && fence.Curves.Count == 0,
+			$"{fence.Curves.Count} curves left" );
+
+		// A closed curve crossed twice by ONE segment is reported once. Cutting at both is not a
+		// thing that can happen in one pass - the first cut replaces the circle with an arc, and the
+		// second crossing then names a curve the sketch no longer has.
+		var hoop = new Sketch();
+		hoop.AddCircle( new Vec2( 0f, 0f ), 2f );
+
+		Report.Check( "a segment through both sides of a circle reports it once",
+			SketchCut.Crossings( hoop, new Vec2( -3f, 1f ), new Vec2( 3f, 1f ) ).Count == 1 );
+
+		Report.Check( "and a circle crossing nothing else goes whole",
+			SketchCut.Cut( hoop, new Vec2( -3f, 1f ), new Vec2( 3f, 1f ) ) == 1 && hoop.Curves.Count == 0,
+			$"{hoop.Curves.Count} curves left" );
+
+		// The same circle with something to cut against keeps the part away from the stroke, which
+		// is Trim's rule and not a second one.
+		var capped = new Sketch();
+		capped.AddCircle( new Vec2( 0f, 0f ), 2f );
+		capped.AddLine( new Vec2( -3f, 1f ), new Vec2( 3f, 1f ) );
+
+		Report.Check( "a circle crossed by a line loses only the piece swiped through",
+			SketchCut.Cut( capped, new Vec2( 0f, 1.5f ), new Vec2( 0f, 2.5f ) ) == 1 &&
+			capped.Curves.OfType<SketchArc>().Count() == 1 && !capped.Curves.OfType<SketchCircle>().Any(),
+			$"{capped.Curves.OfType<SketchCircle>().Count()} circles, {capped.Curves.OfType<SketchArc>().Count()} arcs" );
+
+		var kept = capped.Curves.OfType<SketchArc>().First();
+
+		Report.Check( "and what is kept is the part away from the stroke",
+			capped.Points[kept.Start].y < 1f + 1e-3f && capped.Points[kept.End].y < 1f + 1e-3f,
+			$"{capped.Points[kept.Start]} to {capped.Points[kept.End]}" );
+
+		// Trim refuses splines, so the cut tool removes them rather than doing nothing - see
+		// SketchCut's header for why silence is the worse of the two answers.
+		var wiggly = new Sketch();
+		wiggly.AddSpline( false, new Vec2( 0f, 0f ), new Vec2( 1f, 2f ), new Vec2( 2f, 0f ) );
+
+		Report.Check( "a spline, which trim will not cut, goes whole",
+			SketchCut.Cut( wiggly, new Vec2( 1f, 0f ), new Vec2( 1f, 3f ) ) == 1 && wiggly.Curves.Count == 0,
+			$"{wiggly.Curves.Count} curves left" );
 	}
 
 	static float DistanceToSegment( Vec2 p, Vec2 a, Vec2 b )

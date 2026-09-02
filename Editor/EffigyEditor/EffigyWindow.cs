@@ -133,35 +133,54 @@ public sealed class EffigyWindow : DockWindow
 	/// for every dock it was only supposed to be reading.</summary>
 	private bool _syncingDockChecks;
 
-	/// <summary>The creation-tool strip of square buttons floating over the viewport. Lives on
-	/// the viewport rather than in a window toolbar row, so the tools sit on the thing they
-	/// act on.</summary>
-	private EffigyToolStrip _toolStrip;
-
-	/// <summary>The sketch tool strip - floats in the SAME spot as the feature strip and replaces
-	/// it while a sketch is open, the way Onshape's toolbar swaps rather than stacks a second row.
-	/// Its tools mean nothing outside sketch mode, and leaving them visible but dead is worse than
-	/// hiding them - which is exactly what the previous window-docked ToolBar version did, since
-	/// hiding IT never touched the unrelated floating feature strip sitting on the canvas.</summary>
-	private EffigySketchStrip _sketchStrip;
+	/// <summary>
+	/// The tool chrome: a row of stage tabs over the tools belonging to the selected stage, docked
+	/// above the viewport.
+	///
+	/// ONE BAR WHERE THERE WERE THREE STRIPS. EffigyStageBar's header carries the whole argument;
+	/// the short of it is that fifty anonymous 54px squares taking turns in one floating spot
+	/// could not say which of the three sets was showing, could not afford to label any of them,
+	/// and covered the corner of the part while failing to.
+	/// </summary>
+	private EffigyStageBar _stageBar;
 
 	/// <summary>The ADD/REMOVE mode strip, shown only while a feature that HAS a Result is open.
 	/// See EffigyResultStrip for why it is on the canvas rather than in the dialog.</summary>
 	private EffigyResultStrip _resultStrip;
 
-	private readonly List<EffigySketchToolButton> _sketchTools = new();
-	private EffigySketchToolButton _constructionButton;
+	/// <summary>
+	/// The stage sets, one per mode, built once at startup and kept.
+	///
+	/// DATA, NOT WIDGETS. The bar paints from these and never owns them, so entering a sketch is
+	/// handing it a different list rather than tearing down and rebuilding a row of buttons — and
+	/// a tool's live state (which variant is on its face, whether it is armed) survives every
+	/// stage change and every mode swap, because it was never on a widget to begin with.
+	/// </summary>
+	private List<EffigyStage> _partStages;
+	private List<EffigyStage> _sketchStages;
+	private List<EffigyStage> _sculptStages;
+
+	/// <summary>Which mode's stages the bar is showing. The cheapest evidence in the editor about
+	/// whether entering a sketch actually happened — see DiagnosticStripState.</summary>
+	private EffigyBarMode _barMode = EffigyBarMode.Part;
+
+	/// <summary>The sketch tools by the kind they arm, so a tool armed from a shortcut can have its
+	/// tick put on the right button — which may be sitting on a stage nobody is looking at.</summary>
+	private readonly List<(EffigyStageTool Tool, SketchToolKind Kind, int Variant)> _sketchTools = new();
+
+	private EffigyStageTool _constructionTool;
+	private EffigyStageTool _inspectorTool;
 
 	/// <summary>
-	/// The live feature-strip buttons, by the feature they make, so the tutorial can light one up.
+	/// The feature tools, by the feature they make, so the tutorial can light one up.
 	///
-	/// REBUILT INSIDE RefreshToolStrip AND NOWHERE ELSE. The strip is torn down and re-made
-	/// whenever the document gains or loses its first sketch, so a button held from before that
-	/// belongs to a widget that is gone — the same class of mistake the ToolKind enum exists to
-	/// avoid, arriving through a different door. Clearing it in the one method that clears the
-	/// strip is what keeps the two from disagreeing.
+	/// SAFE TO HOLD, which the button dictionary this replaced was not. That one had to be cleared
+	/// and refilled inside the strip refresh and nowhere else, because the strip was torn down
+	/// whenever the document gained its first sketch and every button held from before belonged to
+	/// a widget that was gone. These are data objects owned for the life of the window; there is
+	/// no torn-down widget left for a stale reference to point at.
 	/// </summary>
-	private readonly Dictionary<ToolKind, EffigyToolButton> _toolButtons = new();
+	private readonly Dictionary<ToolKind, EffigyStageTool> _featureTools = new();
 
 	/// <summary>Which tool the tutorial is currently asking for, if any. Held as the target
 	/// rather than as a button for the reason above.</summary>
@@ -200,15 +219,18 @@ public sealed class EffigyWindow : DockWindow
 	/// diagnostic prints, it does not touch the document.</summary>
 	internal PartStudio DiagnosticStudio => _studio;
 
-	/// <summary>Which of the two strips is on screen, for the sketch probe.
+	/// <summary>Which stage set the bar is showing, for the sketch probe.
 	///
-	/// EnterSketch swaps these BEFORE it does anything else, so they are the cheapest evidence in
-	/// the editor about whether entering a sketch actually happened: feature strip still up means
-	/// EnterSketch never ran, sketch strip up with no active sketch means it ran and BeginSketch
-	/// did not take. Reading them off a screenshot is what this replaces, and a screenshot cannot
-	/// tell those two apart when the swap itself is the thing in doubt.</summary>
+	/// EnterSketch swaps the mode BEFORE it does anything else, so this is the cheapest evidence in
+	/// the editor about whether entering a sketch actually happened: still Part means EnterSketch
+	/// never ran, Sketch with no active sketch means it ran and BeginSketch did not take. Reading
+	/// it off a screenshot is what this replaces, and a screenshot cannot tell those two apart when
+	/// the swap itself is the thing in doubt.
+	///
+	/// Kept in the shape the probe already speaks — two bools — because the modes are exclusive by
+	/// construction now and "both true" has become unrepresentable rather than merely unlikely.</summary>
 	internal (bool Feature, bool Sketch) DiagnosticStripState
-		=> (_toolStrip?.Visible ?? false, _sketchStrip?.Visible ?? false);
+		=> (_barMode == EffigyBarMode.Part, _barMode == EffigyBarMode.Sketch);
 
 	/// <summary>The feature whose sketch is open, if any - so the probe can say whether the window
 	/// and the viewport agree about that.</summary>
@@ -435,264 +457,626 @@ public sealed class EffigyWindow : DockWindow
 			option.Checked = DockManager.IsDockOpen( dockTitle );
 	}
 
-	// --- toolbar (square icon buttons floating over the viewport) -------------------------
+	// --- the stage bar -------------------------------------------------------------------------
+
+	/// <summary>Stage names. Constants because the lock rule below has to name one of them, and a
+	/// typo in a string literal there would silently lock the starter stage instead.</summary>
+	private const string StageSketch = "Sketch";
+	private const string StageSolid = "Solid";
+	private const string StageDetail = "Detail";
+	private const string StageRepeat = "Repeat";
+	private const string StageFinish = "Finish";
 
 	private void BuildToolbar()
 	{
-		// The creation tools float ON the 3D view at its top-left, one square per button, rather
-		// than in a window toolbar row - the viewport is the thing the tools act on. They are
-		// parented to the canvas and positioned by the viewport, so the scene fills the whole
-		// widget and nothing eats a band off the top of it.
-		_toolStrip = new EffigyToolStrip( _viewport.Canvas );
-		_sketchStrip = new EffigySketchStrip( _viewport.Canvas );
+		// DOCKED ABOVE THE VIEWPORT, not floating on it. The strips this replaced sat on the canvas
+		// at its top-left, which is exactly where a part's own top-left corner is, and they could
+		// not be transparent - a widget that declines to paint keeps whatever was in the buffer, so
+		// the "floating" strip was an opaque band over the model the whole time. A bar of five or
+		// six NAMED buttons is chrome you read rather than a wall you want off your part, so it
+		// takes its own band and gives the 3D view back its corner.
+		_stageBar = new EffigyStageBar( _viewport ) { StageChanged = OnStageChanged };
 
-		// Under the tool strip rather than in the dialog, because the question it answers - "is
-		// this about to cut?" - is asked while looking at the MODEL, not at the parameter list.
+		// Still on the canvas, and still under the tools: the question it answers - "is this about
+		// to cut?" - is asked while looking at the MODEL, not at the parameter list.
 		_resultStrip = new EffigyResultStrip( _viewport.Canvas ) { Changed = OnResultStripChanged };
 
-		_viewport.CompleteLayout( _toolStrip, _sketchStrip, _resultStrip );
+		_viewport.CompleteLayout( _stageBar, _resultStrip );
 
-		// The sculpt strip shares the top-left spot with the other two; its number bar sits under it
-		// where the result strip sits. Added through the viewport rather than CompleteLayout so the
-		// three existing call sites keep the signature they have.
-		_sculptStrip = new EffigySketchStrip( _viewport.Canvas );
+		// The sculpt number bar keeps its floating spot - it belongs to the stroke you are making,
+		// not to the tool you picked, and it wants to be near the model rather than up in chrome.
 		_sculptBar = new EffigySculptBar( _viewport.Canvas ) { Changed = OnSculptBarChanged };
 
-		_viewport.AddSculptOverlays( _sculptStrip, _sculptBar );
+		_viewport.AddSculptOverlay( _sculptBar );
 
 		_viewport.SculptStrokeFinished = NoteSculptEdited;
 		_viewport.SculptSettingsChanged = OnSculptSettingsChanged;
 
-		RefreshToolStrip( force: true );
+		// BUILT ONCE, ALL THREE, at startup. The bar paints from these lists and never owns them,
+		// so a mode change is an assignment rather than a teardown - which is what lets a tool's
+		// armed state and its chosen variant survive leaving a sketch and coming back to it.
+		_partStages = BuildPartStages();
+		_sketchStages = BuildSketchStages();
+		_sculptStages = BuildSculptStages();
 
-		BuildSketchToolbar();
-		BuildSculptToolbar();
-
-		// Belt and braces: the two strips share one spot and exactly one may show. CompleteLayout
-		// hides the sketch strip before any button exists; restate it once both strips are fully
-		// built so a restored window state can never leak both on screen at once.
-		_toolStrip.Visible = true;
-		_sketchStrip.Visible = false;
-		_sculptStrip.Visible = false;
+		ShowPartStages( force: true );
 	}
 
-	// --- sketch toolbar ----------------------------------------------------------------------
+	/// <summary>
+	/// The bar moved to another stage, so whatever lives on its buttons has to be pushed onto the
+	/// ones now showing.
+	///
+	/// The state itself never moved - it is on the tool objects, not the buttons - but the row only
+	/// paints the stage in front of it, and the tutorial highlight has to be re-evaluated because
+	/// the button it wants may have just arrived on screen or left it.
+	/// </summary>
+	private void OnStageChanged()
+	{
+		if ( _barMode == EffigyBarMode.Part )
+			_partStage = _stageBar.SelectedIndex;
+
+		ApplyToolHighlight();
+	}
+
+	/// <summary>Which part-studio stage was last looked at, so leaving a sketch comes back to where
+	/// you were rather than to the front of the bar.</summary>
+	private int _partStage;
+
+	/// <summary>
+	/// Rebuild the three stage tables after a hotload.
+	///
+	/// EVERY ACTION ON A STAGE TOOL IS A LAMBDA, and the tables holding them outlive the assembly
+	/// those lambdas were compiled into. That is not a theoretical worry in this editor: the sketch
+	/// strip this replaced was built exactly once and never rebuilt, so on every hotload its
+	/// VariantChosen closures rotted, the hotloader logged "Unable to find matching substitution
+	/// for a lambda method", and every sketch tool went quietly dead - still highlighting, still
+	/// checking, calling nothing. The feature strip escaped it only because RefreshToolStrip tore
+	/// the whole thing down and rebuilt the closures whenever a sketch was finished.
+	///
+	/// Stages are never torn down by ordinary use, so there is no refresh to hide behind and the
+	/// rebuild has to be asked for outright. Nothing is lost by it: every piece of state on a tool
+	/// is a fact about the VIEWPORT - which sketch tool is armed, whether construction is on, what
+	/// the sculpt session is doing - so the fresh tables are re-derived from the thing that
+	/// actually knows, rather than copied off the objects being thrown away.
+	/// </summary>
+	[Event( "hotloaded" )]
+	private static void OnHotloaded() => Current?.RebuildStages();
+
+	private void RebuildStages()
+	{
+		if ( _stageBar is null )
+			return;
+
+		var stage = _stageBar.SelectedIndex;
+
+		// The registries point at the old tools; clearing them here is what stops the rebuilt ones
+		// being added alongside a set of dead duplicates.
+		_featureTools.Clear();
+		_sketchTools.Clear();
+		_brushTools.Clear();
+
+		_partStages = BuildPartStages();
+		_sketchStages = BuildSketchStages();
+		_sculptStages = BuildSculptStages();
+
+		// A method group rather than a lambda, so this one migrates on its own - but it costs
+		// nothing to be certain, and a bar with no StageChanged is a tutorial highlight that
+		// silently stops following the reader.
+		_stageBar.StageChanged = OnStageChanged;
+
+		switch ( _barMode )
+		{
+			case EffigyBarMode.Sketch:
+				_stageBar.SetFinish( "Finish", FinishSketch );
+				_stageBar.SetStages( _sketchStages, stage );
+
+				UpdateSketchToolChecks( _viewport?.SketchTool ?? SketchToolKind.Select );
+
+				if ( _constructionTool is not null )
+					_constructionTool.Checked = _viewport?.ConstructionMode ?? false;
+
+				if ( _inspectorTool is not null )
+					_inspectorTool.Checked = _viewport?.ProfileInspector ?? true;
+
+				_stageBar.Refresh();
+				break;
+
+			case EffigyBarMode.Sculpt:
+				_stageBar.SetFinish( "Finish", FinishSculpt );
+				_stageBar.SetStages( _sculptStages, stage );
+
+				UpdateSculptChecks();
+				break;
+
+			default:
+				_partStage = stage;
+				ShowPartStages( force: true );
+				break;
+		}
+	}
+
+	// --- part stages ---------------------------------------------------------------------------
+
+	/// <summary>
+	/// The creation tools, grouped by the CreateTools table's own Stage column.
+	///
+	/// GROUPED FROM THE TABLE rather than listed again here, so there is still exactly one place
+	/// that says what tools exist. The old strip read the same table and drew all nineteen in a
+	/// row with a wider gap every four or five; the gaps were the grouping, they were unlabelled,
+	/// and at 30px between buttons they read as uneven spacing rather than as meaning anything.
+	/// The stage names are those gaps, said out loud.
+	/// </summary>
+	private List<EffigyStage> BuildPartStages()
+	{
+		var stages = new List<EffigyStage>();
+
+		foreach ( var tool in CreateTools )
+		{
+			var stage = stages.FirstOrDefault( s => s.Name == tool.Stage );
+
+			if ( stage is null )
+			{
+				stage = new EffigyStage { Name = tool.Stage };
+				stages.Add( stage );
+			}
+
+			// Only the KIND is captured, never the table entry. An enum carries across a hotload
+			// where a reference into a table built by a dead assembly does not.
+			var kind = tool.Kind;
+
+			var entry = new EffigyStageTool
+			{
+				Icon = tool.Icon,
+				Label = tool.Label,
+				Tip = tool.Tip,
+			};
+
+			// Variants OR a plain action, never both: a button with variants runs the one on its
+			// face, so a Clicked sitting behind that would be unreachable rather than harmless.
+			if ( tool.Choices is { Length: > 0 } )
+				entry.Variants = ChoiceVariants( tool, kind );
+			else
+				entry.Clicked = () => AddFeature( NewFeature( kind, -1 ) );
+
+			stage.Add( entry );
+
+			_featureTools[kind] = entry;
+		}
+
+		return stages;
+	}
+
+	/// <summary>
+	/// A feature that comes in several shapes - Primitive - as one button with the shapes behind
+	/// its chevron.
+	///
+	/// A CHANGE OF BEHAVIOUR, and a deliberate one. Clicking Primitive used to open the shape menu
+	/// and nothing else, so adding a second cube was two clicks every time. It now works like every
+	/// other tool that has variants: the button makes whatever is on its face, and the chevron
+	/// picks a different shape and leaves it there.
+	/// </summary>
+	private EffigyStageVariant[] ChoiceVariants( CreateTool tool, ToolKind kind )
+	{
+		var variants = new EffigyStageVariant[tool.Choices.Length];
+
+		for ( var i = 0; i < tool.Choices.Length; i++ )
+		{
+			var choice = i;
+
+			variants[i] = new EffigyStageVariant
+			{
+				Icon = tool.Icon,
+				Label = tool.Choices[choice],
+				Tip = tool.Tip,
+				Chosen = () => AddFeature( NewFeature( kind, choice ) ),
+			};
+		}
+
+		return variants;
+	}
+
+	/// <summary>
+	/// Put the part-studio stages on the bar, with the lock state recomputed.
+	///
+	/// Cheap enough to call whenever anything might have changed: it compares the lock it wants
+	/// against the lock each stage already has and does nothing at all when they agree, which is
+	/// the common case.
+	/// </summary>
+	private void ShowPartStages( bool force = false )
+	{
+		if ( _stageBar is null || _partStages is null )
+			return;
+
+		var reason = StarterLockReason();
+		var changed = force || _barMode != EffigyBarMode.Part;
+
+		// Was everything past the starter stage locked a moment ago? Asked before the loop
+		// rewrites it, because the answer decides where to land.
+		var wasLocked = _partStages.Any( s => s.Locked );
+
+		foreach ( var stage in _partStages )
+		{
+			var locked = stage.Name == StageSketch ? null : reason;
+
+			if ( stage.LockedReason == locked )
+				continue;
+
+			stage.LockedReason = locked;
+			changed = true;
+		}
+
+		if ( !changed )
+			return;
+
+		_barMode = EffigyBarMode.Part;
+
+		_stageBar.Mode = null;
+		_stageBar.SetFinish( null, null );
+
+		// JUST UNLOCKED means the first sketch was finished a moment ago, and the thing anybody
+		// wants next is to pull it into a solid. Landing back on the starter stage would be
+		// landing on the two tools that have just stopped being the only option.
+		var land = wasLocked && reason is null
+			? _partStages.FindIndex( s => s.Name == StageSolid )
+			: _partStage;
+
+		_stageBar.SetStages( _partStages, land );
+	}
+
+	/// <summary>
+	/// Why everything past the starter stage is unavailable, or null when it is not.
+	///
+	/// SOMETHING TO ACT ON, not specifically a sketch. Extrude, Fillet, Shell and the rest all need
+	/// geometry, and adding one before there is any produces a feature that goes straight to red.
+	/// The strip this replaced enforced that by HIDING seventeen of nineteen buttons until a sketch
+	/// had curves in it - which also meant a studio begun with a Primitive, the other tool on the
+	/// starter stage and a perfectly good way to start a part, sat there with a cube on screen and
+	/// no fillet, no shell and no mirror to use on it. A body counts too, and the rule is now
+	/// written on a dimmed tab instead of being enforced by disappearance.
+	/// </summary>
+	private string StarterLockReason() =>
+		HasConfirmedSketch() || (_studio?.Bodies.Count ?? 0) > 0
+			? null
+			: "Draw a sketch or add a primitive first — these tools need something to act on";
+
+	// --- sketch stages -------------------------------------------------------------------------
 
 	/// <summary>
 	/// The tools from Onshape's sketch row that this kernel can actually build.
 	///
 	/// Line, rectangle, circle, arc, polygon and point all map onto SketchLine / SketchArc /
-	/// SketchCircle. The rest of Onshape's row — spline, trim, extend, offset, dimensions,
-	/// constraints — has no kernel behind it (the handoff notes the constraint solver is the one
-	/// sketcher piece not built), so those buttons are absent rather than present and dead.
+	/// SketchCircle. The rest of Onshape's row — dimensions, constraints — has no kernel behind it,
+	/// so those buttons are absent rather than present and dead.
+	///
+	/// SELECT IS ON EVERY STAGE. It is the neutral state every other tool falls back to - Escape
+	/// lands on it, finishing a shape lands on it - so putting it behind a tab would make the most
+	/// returned-to tool in sketch mode the only one that costs a stage change. It is one tool
+	/// object appearing in four lists, not four tools, so its armed state cannot disagree with
+	/// itself.
 	/// </summary>
-	private void BuildSketchToolbar()
+	private List<EffigyStage> BuildSketchStages()
 	{
-		AddSketchTool( EffigyIcon.SelectTool, "Select", "Select - drag a point, or the grip at the middle of a curve; click points and curves to select them, and a selected point brings the rest of the selection with it", SketchToolKind.Select );
-		_sketchStrip.AddGap();
+		var select = SketchTool( EffigyIcon.SelectTool, "Select",
+			"Select - drag a point, or the grip at the middle of a curve; click points and curves to select them, and a selected point brings the rest of the selection with it",
+			SketchToolKind.Select );
 
-		AddSketchGroup(
+		var draw = new EffigyStage { Name = "Draw" };
+
+		draw.Add( select );
+
+		draw.Add( SketchGroup(
 			new SketchToolVariant( EffigyIcon.LineTool, "Line",
 				"Line - click start, click end; keeps chaining until Escape", SketchToolKind.Line ),
 			new SketchToolVariant( EffigyIcon.LineMidpointTool, "Midpoint line",
-				"Midpoint line - click the middle, then one end; it grows both ways", SketchToolKind.LineMidpoint ) );
+				"Midpoint line - click the middle, then one end; it grows both ways", SketchToolKind.LineMidpoint ) ) );
 
-		// The other families that have more than one way to place them. Each is ONE button with the
+		// The families that have more than one way to place them. Each is ONE button with the
 		// alternatives behind its chevron, which is how Onshape's sketch row is arranged.
-		AddSketchGroup(
-			new SketchToolVariant( EffigyIcon.RectangleTool, "Corner rectangle",
+		draw.Add( SketchGroup(
+			new SketchToolVariant( EffigyIcon.RectangleTool, "Rectangle",
 				"Corner rectangle - click two opposite corners", SketchToolKind.Rectangle ),
-			new SketchToolVariant( EffigyIcon.RectangleCentreTool, "Centre point rectangle",
-				"Centre rectangle - click the centre, then a corner", SketchToolKind.RectangleCentre ) );
+			new SketchToolVariant( EffigyIcon.RectangleCentreTool, "Centre rectangle",
+				"Centre rectangle - click the centre, then a corner", SketchToolKind.RectangleCentre ) ) );
 
-		AddSketchGroup(
-			new SketchToolVariant( EffigyIcon.CircleTool, "Centre circle",
+		draw.Add( SketchGroup(
+			new SketchToolVariant( EffigyIcon.CircleTool, "Circle",
 				"Centre circle - click the centre, then a point on the rim", SketchToolKind.Circle ),
 			new SketchToolVariant( EffigyIcon.CircleThreePointTool, "3 point circle",
-				"3-point circle - click three points on the rim", SketchToolKind.CircleThreePoint ) );
+				"3-point circle - click three points on the rim", SketchToolKind.CircleThreePoint ) ) );
 
-		AddSketchGroup(
-			new SketchToolVariant( EffigyIcon.ArcTool, "Centre arc",
+		draw.Add( SketchGroup(
+			new SketchToolVariant( EffigyIcon.ArcTool, "Arc",
 				"Centre arc - click the centre, the start, then the end direction", SketchToolKind.Arc ),
 			new SketchToolVariant( EffigyIcon.ArcThreePointTool, "3 point arc",
-				"3-point arc - click start, end, then a point it passes through", SketchToolKind.ArcThreePoint ) );
+				"3-point arc - click start, end, then a point it passes through", SketchToolKind.ArcThreePoint ) ) );
 
-		AddSketchGroup(
-			new SketchToolVariant( EffigyIcon.PolygonTool, "Inscribed polygon",
+		draw.Add( SketchTool( EffigyIcon.PointTool, "Point", "Point - click to place", SketchToolKind.Point ) );
+
+		var shapes = new EffigyStage { Name = "Shapes" };
+
+		shapes.Add( select );
+
+		shapes.Add( SketchGroup(
+			new SketchToolVariant( EffigyIcon.PolygonTool, "Polygon",
 				"Inscribed polygon - click the centre, then a corner", SketchToolKind.Polygon ),
 			new SketchToolVariant( EffigyIcon.PolygonCircumscribedTool, "Circumscribed polygon",
-				"Circumscribed polygon - click the centre, then an edge midpoint", SketchToolKind.PolygonCircumscribed ) );
+				"Circumscribed polygon - click the centre, then an edge midpoint", SketchToolKind.PolygonCircumscribed ) ) );
 
-		AddSketchTool( EffigyIcon.SlotTool, "Slot", "Slot - click both ends of the centre line, then the width", SketchToolKind.Slot );
+		shapes.Add( SketchTool( EffigyIcon.SlotTool, "Slot",
+			"Slot - click both ends of the centre line, then the width", SketchToolKind.Slot ) );
+		shapes.Add( SketchTool( EffigyIcon.EllipseTool, "Ellipse",
+			"Ellipse - centre, the long axis, then the bulge", SketchToolKind.Ellipse ) );
+		shapes.Add( SketchTool( EffigyIcon.SplineTool, "Spline",
+			"Spline - click points, Enter finishes", SketchToolKind.Spline ) );
 
-		// Ellipse and spline belong with the other DRAWING tools; the four that edit what is already
-		// there get their own group below, because clicking one of those on empty space does nothing
-		// and the grouping is what says why.
-		AddSketchTool( EffigyIcon.EllipseTool, "Ellipse", "Ellipse - centre, the long axis, then the bulge",
-			SketchToolKind.Ellipse );
-		AddSketchTool( EffigyIcon.SplineTool, "Spline", "Spline - click points, Enter finishes",
-			SketchToolKind.Spline );
+		// The four that EDIT what is already there get their own stage, because clicking one of
+		// them on empty space does nothing and the grouping is what says why.
+		var modify = new EffigyStage { Name = "Modify" };
 
-		AddSketchTool( EffigyIcon.PointTool, "Point", "Point - click to place", SketchToolKind.Point );
+		modify.Add( select );
 
-		_sketchStrip.AddGap();
+		modify.Add( SketchTool( EffigyIcon.TrimTool, "Trim",
+			"Trim - click the piece of a curve you want gone", SketchToolKind.Trim ) );
+		modify.Add( SketchTool( EffigyIcon.ExtendTool, "Extend",
+			"Extend - click the end of a curve to stretch it", SketchToolKind.Extend ) );
+		modify.Add( SketchTool( EffigyIcon.SketchFilletTool, "Fillet",
+			"Fillet - click a corner, then set the radius", SketchToolKind.Fillet ) );
+		modify.Add( SketchTool( EffigyIcon.OffsetTool, "Offset",
+			"Offset - click a curve, then which side and how far", SketchToolKind.Offset ) );
 
-		AddSketchTool( EffigyIcon.TrimTool, "Trim", "Trim - click the piece of a curve you want gone",
-			SketchToolKind.Trim );
-		AddSketchTool( EffigyIcon.ExtendTool, "Extend", "Extend - click the end of a curve to stretch it",
-			SketchToolKind.Extend );
-		AddSketchTool( EffigyIcon.SketchFilletTool, "Fillet", "Fillet - click a corner, then set the radius",
-			SketchToolKind.Fillet );
-		AddSketchTool( EffigyIcon.OffsetTool, "Offset", "Offset - click a curve, then which side and how far",
-			SketchToolKind.Offset );
+		// CUT sits with the four edits because that is what it does, but it is worked differently
+		// from every other tool here: hold the button and drag, and the line you draw cuts what it
+		// passes through. It is Trim swept rather than clicked - same call underneath - so crossing
+		// an edge that ends at two corners takes that whole edge, and crossing a lone line takes
+		// the line.
+		modify.Add( SketchTool( EffigyIcon.CutTool, "Cut",
+			"Cut - hold the left button and drag a line through the curves you want gone",
+			SketchToolKind.Cut ) );
 
-		_sketchStrip.AddGap();
+		// USE and its neighbours reach OUTSIDE the sketch. Everything on the stages above draws or
+		// edits what the sketch already contains; these take the outline of the FACE the sketch is
+		// sitting on and make it geometry the sketch owns. Until one of them is pressed that
+		// outline is scenery - you can snap to it and you cannot build from it, which is the
+		// distinction Onshape's Use tool exists to make.
+		var reference = new EffigyStage { Name = "Reference" };
 
-		// USE, and its own group, because it is the only tool here that reaches outside the sketch.
-		// Everything to the left draws or edits what the sketch already contains; these two take the
-		// outline of the FACE the sketch is sitting on and make it geometry the sketch owns. Until
-		// one of them is pressed that outline is scenery - you can snap to it and you cannot build
-		// from it, which is the distinction Onshape's Use tool exists to make.
-		AddSketchTool( EffigyIcon.UseTool, "Use",
+		reference.Add( select );
+
+		var use = SketchTool( EffigyIcon.UseTool, "Use",
 			"Use - click a green edge of the face this sketch is on to copy it into the sketch",
 			SketchToolKind.Use );
 
-		// A press rather than a mode: there is nothing to aim at, so arming a tool for it would be a
-		// step that does nothing but wait for a click anywhere.
-		var useAll = _sketchStrip.AddButton( EffigyIcon.UseAllTool,
-			"Use all - copy the whole outline of the face this sketch is on into the sketch, so a "
-			+ "line drawn across it has something to close against",
-			checkable: false, clicked: () => _viewport.UseAllReferenceEdges() );
+		use.IconColor = EffigyToolChrome.ReferenceColor;
+		reference.Add( use );
 
-		useAll.IconColor = EffigyToolStrip.ReferenceColor;
-
-		_sketchStrip.AddGap();
+		// A press rather than a mode: there is nothing to aim at, so arming a tool for it would be
+		// a step that does nothing but wait for a click anywhere.
+		reference.Add( new EffigyStageTool
+		{
+			Icon = EffigyIcon.UseAllTool,
+			Label = "Use all",
+			Tip = "Use all - copy the whole outline of the face this sketch is on into the sketch, so a "
+				+ "line drawn across it has something to close against",
+			IconColor = EffigyToolChrome.ReferenceColor,
+			Clicked = () => _viewport.UseAllReferenceEdges(),
+		} );
 
 		// Construction geometry is a modifier on whatever tool is active, not a tool of its own -
 		// same as Onshape's toggle. SketchCurve.Construction and ProfileFinder's handling of it
 		// were already in the kernel with nothing in the UI able to set them.
-		_constructionButton = _sketchStrip.AddButton( EffigyIcon.ConstructionTool,
-			"Construction geometry - reference lines that never become part of a profile",
-			checkable: true, clicked: null );
-		_constructionButton.Clicked = () => _viewport.ConstructionMode = _constructionButton.Checked;
+		_constructionTool = new EffigyStageTool
+		{
+			Icon = EffigyIcon.ConstructionTool,
+			Label = "Construction",
+			Tip = "Construction geometry (Q) - reference lines that never become part of a profile",
+			Checkable = true,
+		};
 
-		_sketchStrip.AddGap();
+		_constructionTool.Clicked = () => _viewport.ConstructionMode = _constructionTool.Checked;
 
-		var inspector = _sketchStrip.AddButton( EffigyIcon.ProfileInspectorTool,
-			"Profile Inspector - shade closed regions and highlight loose ends",
-			checkable: true, clicked: null );
-		inspector.Checked = true;
-		inspector.Clicked = () => _viewport.ProfileInspector = inspector.Checked;
+		reference.Add( _constructionTool );
 
-		var finish = _sketchStrip.AddButton( EffigyIcon.FinishSketchTool,
-			"Finish Sketch - leave sketch mode and go back to the feature tree",
-			checkable: false, clicked: FinishSketch );
+		_inspectorTool = new EffigyStageTool
+		{
+			Icon = EffigyIcon.ProfileInspectorTool,
+			Label = "Inspector",
+			Tip = "Profile Inspector - shade closed regions and highlight loose ends",
+			Checkable = true,
+			Checked = true,
+		};
 
-		finish.IconColor = EffigyToolStrip.ConfirmColor;
+		_inspectorTool.Clicked = () => _viewport.ProfileInspector = _inspectorTool.Checked;
+
+		reference.Add( _inspectorTool );
+
+		return new List<EffigyStage> { draw, shapes, modify, reference };
 	}
 
 	/// <summary>A tool with only one way to place it: one variant, so no chevron appears.</summary>
-	private void AddSketchTool( EffigyIcon icon, string label, string tip, SketchToolKind kind ) =>
-		AddSketchGroup( new SketchToolVariant( icon, label, tip, kind ) );
+	private EffigyStageTool SketchTool( EffigyIcon icon, string label, string tip, SketchToolKind kind ) =>
+		SketchGroup( new SketchToolVariant( icon, label, tip, kind ) );
 
 	/// <summary>
 	/// One button for a family of tools. The first variant is what it shows to begin with; the
 	/// rest sit behind its chevron and take its place once picked.
 	/// </summary>
-	private void AddSketchGroup( params SketchToolVariant[] variants )
+	private EffigyStageTool SketchGroup( params SketchToolVariant[] variants )
 	{
-		var button = _sketchStrip.AddButton( variants[0].Icon, variants[0].Tip, checkable: true, clicked: null );
-
-		button.SetVariants( variants );
-		button.Checked = variants[0].Kind == SketchToolKind.Select;
-
-		button.VariantChosen = variant =>
+		var tool = new EffigyStageTool
 		{
-			_viewport.SetSketchTool( variant.Kind );
-			UpdateSketchToolChecks( variant.Kind );
+			Icon = variants[0].Icon,
+			Label = variants[0].Label,
+			Tip = variants[0].Tip,
+			Checkable = true,
+			Checked = variants[0].Kind == SketchToolKind.Select,
+			Variants = new EffigyStageVariant[variants.Length],
 		};
 
-		_sketchTools.Add( button );
+		for ( var i = 0; i < variants.Length; i++ )
+		{
+			var variant = variants[i];
+
+			tool.Variants[i] = new EffigyStageVariant
+			{
+				Icon = variant.Icon,
+				Label = variant.Label,
+				Tip = variant.Tip,
+				Chosen = () =>
+				{
+					_viewport.SetSketchTool( variant.Kind );
+					UpdateSketchToolChecks( variant.Kind );
+				},
+			};
+
+			// Every variant is registered, not just the one on the face: arming a centre rectangle
+			// from anywhere else has to be able to find the button that shows it.
+			_sketchTools.Add( (tool, variant.Kind, i) );
+		}
+
+		return tool;
 	}
 
-	/// <summary>Only one tool can be active, so the rest have to visibly let go. The floating strip
-	/// has no radio-group concept of its own, so the exclusivity is enforced here.</summary>
+	/// <summary>
+	/// Only one sketch tool can be active, so the rest have to visibly let go.
+	///
+	/// Works on the tool DATA rather than on buttons, which is what lets it be right about a tool
+	/// sitting on a stage that is not currently painted - arm Circle from the C shortcut while the
+	/// Modify stage is showing and the tick is already correct by the time Reveal brings Draw to
+	/// the front.
+	/// </summary>
 	private void UpdateSketchToolChecks( SketchToolKind active )
 	{
-		foreach ( var button in _sketchTools )
+		EffigyStageTool armed = null;
+		var armedVariant = 0;
+
+		foreach ( var (tool, kind, variant) in _sketchTools )
 		{
-			var index = -1;
+			if ( kind != active )
+				continue;
 
-			for ( var i = 0; i < button.Variants.Count; i++ )
-			{
-				if ( button.Variants[i].Kind == active )
-					index = i;
-			}
+			armed = tool;
+			armedVariant = variant;
+		}
 
-			button.Checked = index >= 0;
+		foreach ( var (tool, _, _) in _sketchTools )
+			tool.Checked = tool == armed;
 
-			// A tool armed from somewhere else - a keyboard shortcut, or Escape dropping back to
-			// Select - has to appear on the face of its button, or the strip would show one thing
-			// while the viewport did another.
-			if ( index >= 0 )
-				button.ShowVariant( index );
+		// A tool armed from somewhere else - a keyboard shortcut, or Escape dropping back to
+		// Select - has to appear on the face of its button, or the bar would show one thing while
+		// the viewport did another.
+		if ( armed is not null )
+			armed.Current = armedVariant;
+
+		_stageBar?.Refresh();
+	}
+
+	/// <summary>Bring the stage holding the armed tool to the front. Separate from the check
+	/// update because a click on a button that is already on screen must not make the bar jump,
+	/// and Reveal is a no-op in exactly that case.</summary>
+	private void RevealSketchTool( SketchToolKind active )
+	{
+		foreach ( var (tool, kind, _) in _sketchTools )
+		{
+			if ( kind != active )
+				continue;
+
+			_stageBar?.Reveal( tool );
+			return;
 		}
 	}
 
 	// --- sculpt mode ---------------------------------------------------------------------------
-
-	/// <summary>The sculpt strip. Same widget class as the sketch strip - a floating row of
-	/// checkable icon buttons is a floating row of checkable icon buttons - and it shares the same
-	/// spot, so exactly one of the three strips is visible at a time.</summary>
-	private EffigySketchStrip _sculptStrip;
 
 	private EffigySculptBar _sculptBar;
 
 	/// <summary>The feature being sculpted, so finishing knows what to mark dirty.</summary>
 	private SculptFeature _sculptFeature;
 
-	private readonly List<(EffigySketchToolButton Button, BrushKind Kind)> _brushButtons = new();
-	private EffigySketchToolButton _maskButton;
-	private EffigySketchToolButton _symmetryButton;
+	private readonly List<(EffigyStageTool Tool, BrushKind Kind)> _brushTools = new();
+	private EffigyStageTool _maskTool;
+	private EffigyStageTool _symmetryTool;
 
-	private void BuildSculptToolbar()
+	private List<EffigyStage> BuildSculptStages()
 	{
-		AddBrushTool( EffigyIcon.SculptDraw, "Draw — push the surface out along its normal", BrushKind.Draw );
-		AddBrushTool( EffigyIcon.SculptSmooth, "Smooth — pull a region towards its own neighbours", BrushKind.Smooth );
-		AddBrushTool( EffigyIcon.SculptInflate, "Inflate — push out in every direction at once", BrushKind.Inflate );
-		AddBrushTool( EffigyIcon.SculptGrab, "Grab — drag the surface sideways", BrushKind.Grab );
-		AddBrushTool( EffigyIcon.SculptFlatten, "Flatten — cut a region back towards a plane", BrushKind.Flatten );
-		AddBrushTool( EffigyIcon.SculptPinch, "Pinch — gather the surface towards the stroke", BrushKind.Pinch );
+		var brush = new EffigyStage { Name = "Brush" };
 
-		_sculptStrip.AddGap();
+		brush.Add( BrushTool( EffigyIcon.SculptDraw, "Draw", "Draw — push the surface out along its normal", BrushKind.Draw ) );
+		brush.Add( BrushTool( EffigyIcon.SculptSmooth, "Smooth", "Smooth — pull a region towards its own neighbours", BrushKind.Smooth ) );
+		brush.Add( BrushTool( EffigyIcon.SculptInflate, "Inflate", "Inflate — push out in every direction at once", BrushKind.Inflate ) );
+		brush.Add( BrushTool( EffigyIcon.SculptGrab, "Grab", "Grab — drag the surface sideways", BrushKind.Grab ) );
+		brush.Add( BrushTool( EffigyIcon.SculptFlatten, "Flatten", "Flatten — cut a region back towards a plane", BrushKind.Flatten ) );
+		brush.Add( BrushTool( EffigyIcon.SculptPinch, "Pinch", "Pinch — gather the surface towards the stroke", BrushKind.Pinch ) );
 
-		_maskButton = _sculptStrip.AddButton( EffigyIcon.SculptMask,
-			"Mask (M) — paint the part you want held still", true, ToggleSculptMasking );
+		// The two that change what a stroke DOES rather than which stroke it is. Their own stage
+		// because they compose with all six brushes above - they are not a seventh brush.
+		var stroke = new EffigyStage { Name = "Stroke" };
 
-		_symmetryButton = _sculptStrip.AddButton( EffigyIcon.Mirror,
-			"Symmetry (X) — mirror every stroke across X", true, ToggleSculptSymmetry );
+		_maskTool = new EffigyStageTool
+		{
+			Icon = EffigyIcon.SculptMask,
+			Label = "Mask",
+			Tip = "Mask (M) — paint the part you want held still",
+			Checkable = true,
+		};
 
-		_sculptStrip.AddGap();
+		_maskTool.Clicked = ToggleSculptMasking;
 
-		_sculptStrip.AddButton( EffigyIcon.SculptLevelDown, "Show one level coarser", false,
-			() => StepSculptLevel( -1 ) );
+		_symmetryTool = new EffigyStageTool
+		{
+			Icon = EffigyIcon.Mirror,
+			Label = "Symmetry",
+			Tip = "Symmetry (X) — mirror every stroke across X",
+			Checkable = true,
+		};
 
-		_sculptStrip.AddButton( EffigyIcon.SculptLevelUp, "Show — or add — one level finer", false,
-			() => StepSculptLevel( 1 ) );
+		_symmetryTool.Clicked = ToggleSculptSymmetry;
 
-		_sculptStrip.AddGap();
+		stroke.Add( _maskTool );
+		stroke.Add( _symmetryTool );
 
-		_sculptStrip.AddButton( EffigyIcon.SculptBake,
-			"Bake a normal map from this sculpt onto the cage", false, BakeSculpt );
+		var levels = new EffigyStage { Name = "Levels" };
 
-		var finish = _sculptStrip.AddButton( EffigyIcon.FinishSketchTool, "Finish sculpting", false, FinishSculpt );
-		finish.IconColor = EffigyToolStrip.ConfirmColor;
+		levels.Add( new EffigyStageTool
+		{
+			Icon = EffigyIcon.SculptLevelDown,
+			Label = "Coarser",
+			Tip = "Show one level coarser",
+			Clicked = () => StepSculptLevel( -1 ),
+		} );
+
+		levels.Add( new EffigyStageTool
+		{
+			Icon = EffigyIcon.SculptLevelUp,
+			Label = "Finer",
+			Tip = "Show — or add — one level finer",
+			Clicked = () => StepSculptLevel( 1 ),
+		} );
+
+		levels.Add( new EffigyStageTool
+		{
+			Icon = EffigyIcon.SculptBake,
+			Label = "Bake",
+			Tip = "Bake a normal map from this sculpt onto the cage",
+			Clicked = BakeSculpt,
+		} );
+
+		return new List<EffigyStage> { brush, stroke, levels };
 	}
 
-	private void AddBrushTool( EffigyIcon icon, string tip, BrushKind kind )
+	private EffigyStageTool BrushTool( EffigyIcon icon, string label, string tip, BrushKind kind )
 	{
-		var button = _sculptStrip.AddButton( icon, tip, true, () => SetSculptBrush( kind ) );
-		_brushButtons.Add( (button, kind) );
+		var tool = new EffigyStageTool
+		{
+			Icon = icon,
+			Label = label,
+			Tip = tip,
+			Checkable = true,
+			Clicked = () => SetSculptBrush( kind ),
+		};
+
+		_brushTools.Add( (tool, kind) );
+
+		return tool;
 	}
 
 	/// <summary>
@@ -719,11 +1103,14 @@ public sealed class EffigyWindow : DockWindow
 
 		_sculptFeature = feature;
 
-		// One strip at a time, and the dialog closed: a sculpt is not edited through a parameter
-		// list, so leaving one open would be two controls claiming the same feature.
-		_toolStrip.Visible = false;
-		_sketchStrip.Visible = false;
-		_sculptStrip.Visible = true;
+		// The bar becomes the sculpt bar, and says so: brushes and levels behind the tabs, SCULPT
+		// and the way out at the right. The dialog closes too — a sculpt is not edited through a
+		// parameter list, so leaving one open would be two controls claiming the same feature.
+		_barMode = EffigyBarMode.Sculpt;
+
+		_stageBar.Mode = "SCULPT";
+		_stageBar.SetFinish( "Finish", FinishSculpt );
+		_stageBar.SetStages( _sculptStages );
 
 		_rigPanel?.CancelBoneTool();
 
@@ -747,10 +1134,7 @@ public sealed class EffigyWindow : DockWindow
 		_viewport.EndSculpt();
 		_sculptBar.Bind( null );
 
-		_sculptStrip.Visible = false;
-		_toolStrip.Visible = true;
-
-		RefreshToolStrip();
+		ShowPartStages( force: true );
 
 		var feature = _sculptFeature;
 		_sculptFeature = null;
@@ -809,14 +1193,16 @@ public sealed class EffigyWindow : DockWindow
 	{
 		var session = _viewport?.SculptSession;
 
-		foreach ( var (button, kind) in _brushButtons )
-			button.Checked = session is not null && !session.Masking && session.Brush == kind;
+		foreach ( var (tool, kind) in _brushTools )
+			tool.Checked = session is not null && !session.Masking && session.Brush == kind;
 
-		if ( _maskButton is not null )
-			_maskButton.Checked = session?.Masking ?? false;
+		if ( _maskTool is not null )
+			_maskTool.Checked = session?.Masking ?? false;
 
-		if ( _symmetryButton is not null )
-			_symmetryButton.Checked = session?.MirrorX ?? false;
+		if ( _symmetryTool is not null )
+			_symmetryTool.Checked = session?.MirrorX ?? false;
+
+		_stageBar?.Refresh();
 	}
 
 	/// <summary>
@@ -1124,12 +1510,18 @@ public sealed class EffigyWindow : DockWindow
 	/// </summary>
 	private void EnterSketch( SketchFeature feature )
 	{
-		// The sketch strip REPLACES the feature strip - same spot, one visible at a time - rather
-		// than the two of them being independent widget systems that both stayed on screen.  Do
-		// this BEFORE the rebuild so the toolbar swaps instantly instead of waiting for the
-		// (potentially slow) PartStudio rebuild to finish.
-		_toolStrip.Visible = false;
-		_sketchStrip.Visible = true;
+		// The bar's stages become the SKETCH stages, and the mode goes on the bar next to the
+		// control that leaves it. Do this BEFORE the rebuild so the swap is instant instead of
+		// waiting for the (potentially slow) PartStudio rebuild to finish.
+		//
+		// The feature's own name is the mode label rather than a bare "SKETCH": a document with
+		// four sketches in it makes "which one am I in" a real question, and the feature tree is
+		// the only other place that answers it.
+		_barMode = EffigyBarMode.Sketch;
+
+		_stageBar.Mode = feature?.Name?.ToUpperInvariant() ?? "SKETCH";
+		_stageBar.SetFinish( "Finish", FinishSketch );
+		_stageBar.SetStages( _sketchStages );
 
 		// Sketching and the bone tool both drive left-clicks in the viewport; only one may own
 		// them. The bone tool refuses to arm on top of an open sketch (see SetBoneToolActive), so
@@ -1148,10 +1540,11 @@ public sealed class EffigyWindow : DockWindow
 
 		_viewport.ConstructionMode = false;
 
-		if ( _constructionButton is not null )
-			_constructionButton.Checked = false;
+		if ( _constructionTool is not null )
+			_constructionTool.Checked = false;
 
 		UpdateSketchToolChecks( _viewport.SketchTool );
+		RevealSketchTool( _viewport.SketchTool );
 	}
 
 	private void FinishSketch()
@@ -1161,12 +1554,9 @@ public sealed class EffigyWindow : DockWindow
 
 		_viewport.EndSketch();
 
-		// Before the strip comes back, so the tools a finished sketch unlocks are already on it
-		// rather than appearing a beat later.
-		RefreshToolStrip();
-
-		_sketchStrip.Visible = false;
-		_toolStrip.Visible = true;
+		// The part stages come back with their locks recomputed, so the stages this sketch just
+		// unlocked are already open rather than opening a beat later.
+		ShowPartStages( force: true );
 
 		UpdateSketchToolChecks( SketchToolKind.Select );
 
@@ -1374,17 +1764,19 @@ public sealed class EffigyWindow : DockWindow
 		public string Tip;
 		public ToolKind Kind;
 
-		/// <summary>Start a new group before this one — a wider gap, the old separator.</summary>
-		public bool GapBefore;
+		/// <summary>
+		/// Which stage tab this tool sits behind.
+		///
+		/// THE COLUMN THAT REPLACED GapBefore AND Starter. A bool saying "put a wider gap before
+		/// this one" grouped the tools without naming the groups, and a bool saying "show this one
+		/// from the start" hid the rest rather than explaining them. A stage name does both jobs
+		/// out loud: it is the group's label on the tab, and it is what the lock rule tests.
+		/// </summary>
+		public string Stage;
 
-		/// <summary>Text beside the glyph, for the one button wide enough to carry it.</summary>
+		/// <summary>Text beside the glyph. On every tool now — showing one stage at a time is what
+		/// bought the room, and the names are the whole reason to do it.</summary>
 		public string Label;
-
-		public float Width = EffigyToolStrip.ButtonSize;
-
-		/// <summary>Shown from the very start. Everything else waits for a sketch — see
-		/// <see cref="RefreshToolStrip"/>.</summary>
-		public bool Starter;
 
 		/// <summary>
 		/// Variants behind this button, or null for one that just does its thing.
@@ -1413,162 +1805,102 @@ public sealed class EffigyWindow : DockWindow
 	/// </summary>
 	private static CreateTool[] CreateTools => new CreateTool[]
 	{
-		new() { Icon = EffigyIcon.Sketch, Tip = "Add a Sketch feature — draw lines/arcs on a plane",
-			Kind = ToolKind.Sketch, Label = "Sketch", Width = 132f, Starter = true },
+		// --- Sketch: the two tools that can start a part from nothing ---------------------------
+		new() { Icon = EffigyIcon.Sketch, Label = "Sketch", Stage = StageSketch,
+			Tip = "Add a Sketch feature — draw lines/arcs on a plane",
+			Kind = ToolKind.Sketch },
 
-		new() { Icon = EffigyIcon.Primitive, Tip = "Add a Primitive — pick a shape",
-			Kind = ToolKind.Primitive, GapBefore = true, Starter = true,
-			Choices = PrimitiveShapes },
+		new() { Icon = EffigyIcon.Primitive, Label = "Primitive", Stage = StageSketch,
+			Tip = "Add a Primitive — pick a shape",
+			Kind = ToolKind.Primitive, Choices = PrimitiveShapes },
 
-		new() { Icon = EffigyIcon.Extrude, Tip = "Add an Extrude — pull a sketch profile into a solid",
+		// --- Solid: profiles become bodies ------------------------------------------------------
+		new() { Icon = EffigyIcon.Extrude, Label = "Extrude", Stage = StageSolid,
+			Tip = "Add an Extrude — pull a sketch profile into a solid",
 			Kind = ToolKind.Extrude },
-		new() { Icon = EffigyIcon.Revolve, Tip = "Add a Revolve — sweep a sketch profile around an axis",
+		new() { Icon = EffigyIcon.Revolve, Label = "Revolve", Stage = StageSolid,
+			Tip = "Add a Revolve — sweep a sketch profile around an axis",
 			Kind = ToolKind.Revolve },
 
 		// Neither of these needs its selector filled in to do something: an empty
 		// SweepFeature.PathSketchId means "the sketch before the profile's", and a LoftFeature with
 		// fewer than two Sections lofts every sketch there is. Both are the order a person draws
 		// them in, so the tooltips say so rather than sending them to a dialog first.
-		new() { Icon = EffigyIcon.Sweep, Tip = "Add a Sweep — run a sketch profile along a path sketch",
+		new() { Icon = EffigyIcon.Sweep, Label = "Sweep", Stage = StageSolid,
+			Tip = "Add a Sweep — run a sketch profile along a path sketch",
 			Kind = ToolKind.Sweep },
-		new() { Icon = EffigyIcon.Loft, Tip = "Add a Loft — skin a surface between two or more sketches",
+		new() { Icon = EffigyIcon.Loft, Label = "Loft", Stage = StageSolid,
+			Tip = "Add a Loft — skin a surface between two or more sketches",
 			Kind = ToolKind.Loft },
 
+		// --- Detail: refine a body that already exists ------------------------------------------
 		// Fillet before Chamfer, which is the order Onshape puts them in and the order people reach
 		// for them: rounding an edge is the common case and chamfering it is the deliberate one.
-		new() { Icon = EffigyIcon.Fillet, Tip = "Add a Fillet — round sharp edges to a radius",
-			Kind = ToolKind.Fillet, GapBefore = true },
-		new() { Icon = EffigyIcon.Chamfer, Tip = "Add a Chamfer — cut sharp edges back by a distance",
+		new() { Icon = EffigyIcon.Fillet, Label = "Fillet", Stage = StageDetail,
+			Tip = "Add a Fillet — round sharp edges to a radius",
+			Kind = ToolKind.Fillet },
+		new() { Icon = EffigyIcon.Chamfer, Label = "Chamfer", Stage = StageDetail,
+			Tip = "Add a Chamfer — cut sharp edges back by a distance",
 			Kind = ToolKind.Chamfer },
-		new() { Icon = EffigyIcon.Shell, Tip = "Add a Shell — hollow to a wall thickness",
+		new() { Icon = EffigyIcon.Shell, Label = "Shell", Stage = StageDetail,
+			Tip = "Add a Shell — hollow to a wall thickness",
 			Kind = ToolKind.Shell },
 
-		// Both act on picked faces of a solid that already exists, which is what puts them next to
-		// Shell rather than next to Extrude.
-		new() { Icon = EffigyIcon.Draft, Tip = "Add a Draft — taper picked faces so the part leaves a mould",
+		// Both act on picked faces of a solid that already exists, which is what puts them with
+		// Shell rather than with Extrude.
+		new() { Icon = EffigyIcon.Draft, Label = "Draft", Stage = StageDetail,
+			Tip = "Add a Draft — taper picked faces so the part leaves a mould",
 			Kind = ToolKind.Draft },
-		new() { Icon = EffigyIcon.Hole, Tip = "Add a Hole — drill, counterbore or countersink into a face",
+		new() { Icon = EffigyIcon.Hole, Label = "Hole", Stage = StageDetail,
+			Tip = "Add a Hole — drill, counterbore or countersink into a face",
 			Kind = ToolKind.Hole },
-		new() { Icon = EffigyIcon.Subdivide, Tip = "Add a Subdivide — Catmull-Clark subdivision",
+
+		// --- Repeat: copy and move whole bodies -------------------------------------------------
+		new() { Icon = EffigyIcon.Mirror, Label = "Mirror", Stage = StageRepeat,
+			Tip = "Add a Mirror — reflect bodies across a plane",
+			Kind = ToolKind.Mirror },
+		new() { Icon = EffigyIcon.LinearPattern, Label = "Linear", Stage = StageRepeat,
+			Tip = "Add a Linear Pattern — copy bodies along a direction",
+			Kind = ToolKind.LinearPattern },
+		new() { Icon = EffigyIcon.CircularPattern, Label = "Circular", Stage = StageRepeat,
+			Tip = "Add a Circular Pattern — copy bodies around an axis",
+			Kind = ToolKind.CircularPattern },
+		new() { Icon = EffigyIcon.Transform, Label = "Transform", Stage = StageRepeat,
+			Tip = "Add a Transform — move, rotate or scale bodies",
+			Kind = ToolKind.Transform },
+
+		// --- Finish: the cage and the skin it carries downstream --------------------------------
+		// This is the stage the README's pipeline names: CAD is done, and what is left is getting
+		// the mesh ready for a sculpt, a bake and a rig.
+		new() { Icon = EffigyIcon.Subdivide, Label = "Subdivide", Stage = StageFinish,
+			Tip = "Add a Subdivide — Catmull-Clark subdivision",
 			Kind = ToolKind.Subdivide },
 
 		// Next to Subdivide because it REPLACES it on a part you mean to sculpt: the levels are the
 		// subdivision, and a Subdivide underneath would hand the sculpt a dense mesh as its cage.
-		new() { Icon = EffigyIcon.Sculpt, Tip = "Add a Sculpt — brush detail onto the cage in levels",
+		new() { Icon = EffigyIcon.Sculpt, Label = "Sculpt", Stage = StageFinish,
+			Tip = "Add a Sculpt — brush detail onto the cage in levels",
 			Kind = ToolKind.Sculpt },
 
-		new() { Icon = EffigyIcon.Mirror, Tip = "Add a Mirror — reflect bodies across a plane",
-			Kind = ToolKind.Mirror, GapBefore = true },
-		new() { Icon = EffigyIcon.LinearPattern, Tip = "Add a Linear Pattern — copy bodies along a direction",
-			Kind = ToolKind.LinearPattern },
-		new() { Icon = EffigyIcon.CircularPattern, Tip = "Add a Circular Pattern — copy bodies around an axis",
-			Kind = ToolKind.CircularPattern },
-
-		new() { Icon = EffigyIcon.Transform, Tip = "Add a Transform — move, rotate or scale bodies",
-			Kind = ToolKind.Transform, GapBefore = true },
-		new() { Icon = EffigyIcon.UVProject, Tip = "Add a UV Project — re-project UVs (box or planar)",
+		new() { Icon = EffigyIcon.UVProject, Label = "UV Project", Stage = StageFinish,
+			Tip = "Add a UV Project — re-project UVs (box or planar)",
 			Kind = ToolKind.UVProject },
-		new() { Icon = EffigyIcon.FaceMaterial, Tip = "Add a Face Material — put picked faces on a material slot",
+		new() { Icon = EffigyIcon.FaceMaterial, Label = "Face Material", Stage = StageFinish,
+			Tip = "Add a Face Material — put picked faces on a material slot",
 			Kind = ToolKind.FaceMaterial },
 	};
-
-	/// <summary>Whether the strip is currently showing everything, so a refresh that changes
-	/// nothing costs nothing.</summary>
-	private bool _fullToolsShown;
 
 	/// <summary>
 	/// A sketch with something drawn in it exists, so the rest of the tools have something to bite
 	/// on.
 	///
 	/// Curves rather than merely the feature: clicking Sketch adds the feature to the tree straight
-	/// away, before a plane is even chosen, so its presence alone would unlock the strip while
-	/// there was still nothing to extrude.
+	/// away, before a plane is even chosen, so its presence alone would unlock the bar while there
+	/// was still nothing to extrude.
 	/// </summary>
 	private bool HasConfirmedSketch() =>
 		_studio is not null
 		&& _studio.Features.OfType<SketchFeature>().Any( f => f.Sketch is { Curves.Count: > 0 } );
-
-	/// <summary>
-	/// Show the starter tools on their own until a sketch has been drawn, then the whole strip.
-	///
-	/// THIRTEEN BUTTONS ON AN EMPTY STUDIO ARE THIRTEEN WAYS TO GET AN ERROR. Extrude, Revolve,
-	/// Sweep, Loft, Fillet, Shell and the rest all need geometry to act on, and adding one before
-	/// there is any produces a feature that goes straight to red — correct, and useless as a first
-	/// impression. Sketch and Primitive are the only two that can start a part, so at the start
-	/// they are the only two offered.
-	/// </summary>
-	private void RefreshToolStrip( bool force = false )
-	{
-		if ( _toolStrip is null )
-			return;
-
-		var full = HasConfirmedSketch();
-
-		if ( !force && full == _fullToolsShown )
-			return;
-
-		_fullToolsShown = full;
-
-		_toolStrip.Clear();
-
-		// Cleared with the strip, in the same breath, so the map cannot outlive the widgets in it.
-		_toolButtons.Clear();
-
-		var any = false;
-
-		foreach ( var tool in CreateTools )
-		{
-			if ( !full && !tool.Starter )
-				continue;
-
-			// Never a leading gap: the group break belongs BETWEEN groups, and the first tool
-			// through here may not be the one the gap was authored against.
-			if ( tool.GapBefore && any )
-				_toolStrip.AddGap();
-
-			// Only the KIND is captured, never the table entry. The closure is rebuilt on every
-			// refresh so it always belongs to the current assembly, and an enum carries across a
-			// hotload where a delegate does not.
-			var kind = tool.Kind;
-			var choices = tool.Choices;
-
-			var button = _toolStrip.AddButton( tool.Icon, tool.Tip,
-				choices is null
-					? () => AddFeature( NewFeature( kind, -1 ) )
-					: () => OpenToolChoices( kind, choices ),
-				tool.Width );
-
-			button.HasMenu = choices is not null;
-
-			if ( tool.Label is not null )
-				button.Label = tool.Label;
-
-			_toolButtons[kind] = button;
-
-			any = true;
-		}
-
-		// The strip has just been re-made, so whatever the tutorial asked for is currently on
-		// nothing. Re-applying here is what makes the highlight survive the starter set being
-		// swapped for the full one — which happens on the first sketch, in the middle of step one.
-		ApplyToolHighlight();
-	}
-
-	/// <summary>The variant list for a tool that has one — at the cursor, so it opens where the
-	/// click was rather than somewhere the mouse has to travel to.</summary>
-	private void OpenToolChoices( ToolKind kind, string[] choices )
-	{
-		var menu = new Menu( _toolStrip );
-
-		for ( var i = 0; i < choices.Length; i++ )
-		{
-			var choice = i;
-
-			menu.AddOption( choices[choice], null, () => AddFeature( NewFeature( kind, choice ) ) );
-		}
-
-		menu.OpenAtCursor();
-	}
 
 	/// <summary>
 	/// The feature the toolbar made a moment ago that this click would only make a second copy of,
@@ -2086,10 +2418,11 @@ public sealed class EffigyWindow : DockWindow
 		_materialsPanel?.Refresh();
 		_rigPanel?.RefreshBodyNames();
 
-		// Covers every other way the answer can change — undo back past the first sketch, deleting
-		// it, opening a saved studio. Cheap: it returns immediately unless the strip is actually
-		// showing the wrong set.
-		RefreshToolStrip();
+		// Covers every other way the lock can change — undo back past the first sketch, deleting
+		// it, opening a saved studio. Cheap: it returns immediately unless a stage's lock is
+		// actually wrong.
+		if ( _barMode == EffigyBarMode.Part )
+			ShowPartStages();
 
 		// Show whatever DID build, errors or not. A broken feature halfway down the tree should
 		// leave the part above it on screen — going blank hides the very geometry you need to
@@ -2210,29 +2543,40 @@ public sealed class EffigyWindow : DockWindow
 	}
 
 	/// <summary>
-	/// Push the current highlight onto whichever buttons exist right now.
+	/// Push the current highlight onto the tools, and bring the one it wants into view.
 	///
-	/// Clears every button before setting one, rather than tracking which was lit last. A strip
-	/// that was rebuilt between the two calls would otherwise keep a stale ring on a button
-	/// nobody can turn off, and the cost of being certain is one pass over about twenty widgets.
+	/// Clears every tool before setting one, rather than tracking which was lit last: the cost of
+	/// being certain is one pass over nineteen objects, and a stale ring on a button nobody can
+	/// turn off is the failure it buys out of.
+	///
+	/// REVEALING IS THE HALF THE STRIP COULD NOT DO. A tutorial that says "press Extrude" used to
+	/// be pointing at a button that was either on screen or hidden by the starter set, with
+	/// nothing in between; now the tool always exists, and lighting it also opens the stage it
+	/// lives on so the reader is looking at it.
 	/// </summary>
 	private void ApplyToolHighlight()
 	{
-		if ( _toolButtons.Count == 0 )
+		if ( _featureTools.Count == 0 || _barMode != EffigyBarMode.Part )
 			return;
 
 		var wanted = _highlightedTool is { } target ? ToolKindFor( target ) : null;
 
-		foreach ( var (kind, button) in _toolButtons )
+		EffigyStageTool lit = null;
+
+		foreach ( var (kind, tool) in _featureTools )
 		{
-			var lit = wanted == kind;
+			tool.Attention = wanted == kind;
 
-			if ( button.Attention == lit )
-				continue;
-
-			button.Attention = lit;
-			button.Update();
+			if ( tool.Attention )
+				lit = tool;
 		}
+
+		// Only when it is not already in front of the reader — Reveal is a no-op on the current
+		// stage, so this cannot fight somebody who has just navigated somewhere themselves.
+		if ( lit is not null )
+			_stageBar?.Reveal( lit );
+
+		_stageBar?.Refresh();
 	}
 
 	/// <summary>
@@ -3618,11 +3962,17 @@ public sealed class EffigyWindow : DockWindow
 	[Shortcut( "effigy.sketch.construction", "Q", ShortcutType.Window )]
 	private void ShortcutConstruction()
 	{
-		if ( _viewport?.IsSketching != true || _constructionButton is null )
+		if ( _viewport?.IsSketching != true || _constructionTool is null )
 			return;
 
-		_constructionButton.Checked = !_constructionButton.Checked;
-		_viewport.ConstructionMode = _constructionButton.Checked;
+		_constructionTool.Checked = !_constructionTool.Checked;
+		_viewport.ConstructionMode = _constructionTool.Checked;
+
+		// The toggle lives on the Reference stage, which is probably not the one showing — a
+		// modifier flipped by a shortcut that leaves no mark anywhere on screen is a mode you
+		// forget you are in.
+		_stageBar?.Reveal( _constructionTool );
+		_stageBar?.Refresh();
 	}
 
 	/// <summary>A sketch tool key outside sketch mode has nothing to arm, and silently switching a
@@ -3633,7 +3983,9 @@ public sealed class EffigyWindow : DockWindow
 			return;
 
 		_viewport.SetSketchTool( kind );
+
 		UpdateSketchToolChecks( kind );
+		RevealSketchTool( kind );
 	}
 
 	// --- palette / theming ------------------------------------------------------------------
@@ -3766,16 +4118,11 @@ public sealed class EffigyWindow : DockWindow
 
 		_viewport.BackgroundColor = _palette.ViewportBg;
 
-		// The strips fill their own rects with this, so the gaps between their buttons read as
-		// viewport rather than as chrome. Exactly the viewport's clear colour, or the seam shows.
-		if ( _toolStrip is not null )
-			_toolStrip.GapColor = _palette.ViewportBg;
-
-		if ( _sketchStrip is not null )
-			_sketchStrip.GapColor = _palette.ViewportBg;
-
-		if ( _sculptStrip is not null )
-			_sculptStrip.GapColor = _palette.ViewportBg;
+		// The bar is CHROME and takes the chrome colour. The strips it replaced took the viewport's
+		// background instead, because they sat on the 3D view and had to disappear into it; the bar
+		// sits above the view and is meant to be seen.
+		if ( _stageBar is not null )
+			_stageBar.ChromeColor = _palette.Chrome;
 
 		if ( _sculptBar is not null )
 			_sculptBar.GapColor = _palette.ViewportBg;
@@ -4826,252 +5173,15 @@ internal sealed class EffigyFeatureTreePanel : Widget
 	}
 }
 
-// ============================================================================
-//  The tool strip — a row of square icon buttons sitting at the top of the
-//  viewport's Column layout, one square per creation tool. It replaces the
-//  old window toolbar row: the buttons sit on the viewport they act on, at
-//  the same edge the sketch toolbar appears when a sketch opens.
-//
-//  The strip is added to the viewport's Column layout above the 3D canvas,
-//  which fills the rest of the space. Same painting pattern as the
-//  hand-painted RigIconButton in the rig editor.
-// ============================================================================
-
-internal sealed class EffigyToolStrip : Widget
-{
-	/// <summary>Gap between buttons inside a group. Every one is identical - the strip was
-	/// previously left to the layout's own distribution, which spread twelve buttons across the
-	/// full width of the viewport at whatever intervals happened to fall out.</summary>
-	public const float ButtonSpacing = 10f;
-
-	/// <summary>Gap between tool groups. Wider than ButtonSpacing and used nowhere else, so the
-	/// grouping reads as deliberate rather than as uneven spacing.</summary>
-	public const float GroupSpacing = 30f;
-
-	public EffigyToolStrip( Widget parent ) : base( parent )
-	{
-		Layout = Layout.Row();
-		Layout.Spacing = ButtonSpacing;
-		Layout.Margin = new Sandbox.UI.Margin( 0 );
-
-		// No background of its own: the strip floats on the 3D view and only its buttons should
-		// be visible. Anything painted here would read as a chrome band across the viewport.
-		TranslucentBackground = true;
-		NoSystemBackground = true;
-
-		FixedHeight = ButtonSize;
-		FixedWidth = 0f;
-	}
-
-	/// <summary>The colour to fill the strip's own rect with — set to the viewport's background so
-	/// the gaps between buttons disappear into the 3D view. See OnPaint.</summary>
-	public Color GapColor { get; set; } = Theme.ControlBackground;
-
-	/// <summary>
-	/// Fill the whole rect with the VIEWPORT'S OWN BACKGROUND, so the strip vanishes and only its
-	/// buttons are left standing on the 3D view as separate keys.
-	///
-	/// THE STRIP CANNOT SIMPLY NOT PAINT. It was doing exactly that at first, and the gaps came out
-	/// white: TranslucentBackground and NoSystemBackground were both already set — they had been
-	/// since before the strip ever had an OnPaint — and a rect this widget leaves unpainted still
-	/// ends up showing whatever was in the paint buffer. That is the same effect EffigyToolButton
-	/// documents when it repaints its own background every frame to wipe the previous frame's hover
-	/// glow. Painting something is not optional; the only choice is what.
-	///
-	/// So it paints the one colour that reads as nothing: whatever the viewport is clearing to.
-	/// EffigyWindow.ApplyPalette keeps it in step, so it stays invisible through a palette change.
-	/// The honest limit is that this matches the BACKGROUND, not the scene — geometry passing
-	/// behind the strip is covered rather than seen through. At the top-left corner where the strip
-	/// floats, that is rarely anything.
-	/// </summary>
-	protected override void OnPaint()
-	{
-		Paint.ClearPen();
-		Paint.SetBrush( GapColor );
-		Paint.DrawRect( LocalRect );
-	}
-
-	/// <summary>Running total of everything added, kept by hand so FixedWidth can be set outright.
-	///
-	/// This used to call AdjustSize() and let the widget size itself. That does not survive
-	/// spacing CELLS - the strip came out narrower than its contents and the buttons past the cut
-	/// simply were not there. Counting what we add is exact and cannot silently lose a cell.</summary>
-	private float _contentWidth;
-
-	private void Grew( float cellWidth )
-	{
-		_contentWidth += (_contentWidth > 0f ? ButtonSpacing : 0f) + cellWidth;
-		FixedWidth = _contentWidth;
-	}
-
-	/// <summary>Button edge length, shared with EffigySketchToolButton so both strips size
-	/// identically. 40 -> 54: the squares are the only chrome on the 3D view and were reading as a
-	/// cramped against it, and with no background box left (see OnPaint) they need the extra room
-	/// for the glyph itself to carry the button.</summary>
-	public const float ButtonSize = 54f;
-
-	/// <summary>How far up the hand-painted glyphs are scaled from the nominal 18x18 box they are
-	/// authored in. 1.8 puts a 32px glyph in a 54px button.
-	///
-	/// IT WAS 1.5, AND THE REASON IT WAS 1.5 EXPIRED. The old note said 1.5 matched "the same
-	/// glyph-to-button ratio the font-icon sketch strip uses, so the two strips still read as one
-	/// piece of chrome" - and the sketch strip has not been font icons for a while. It is drawn
-	/// from this same set now, so the ratio it was being matched to no longer exists and 1.5 was
-	/// left holding a dead argument.
-	///
-	/// What replaced the argument is a measurement. tools/iconsheet renders every glyph at this
-	/// scale and prints how much of the button each one's ink covers: at 1.5 the median was 46%,
-	/// where an icon in a button this size reads at nearer 60%. At 1.8 a glyph that fills its
-	/// authored box covers 60% and the median lands at 55%. LabelIconScale's 1.95 was picked by
-	/// eye, on the one button anybody could see the problem on, and it has been pointing at this
-	/// number the whole time.</summary>
-	public const float IconScale = 1.8f;
-
-	/// <summary>Bigger, for the one button wide enough to carry a label. The square buttons are
-	/// sized so twelve of them fit across the viewport; the Sketch button is not, and at the shared
-	/// scale its glyph was the smallest thing on the largest button. 1.95 puts a 35px pencil in a
-	/// 54px button, which is where the wood, the ferrule and the eraser start telling apart.</summary>
-	public const float LabelIconScale = 1.95f;
-
-	/// <summary>Point size of a tool button's label.</summary>
-	public const float LabelFontSize = 12f;
-
-	/// <summary>
-	/// The colour of every CONFIRM action in this editor - accept a feature, finish a sketch,
-	/// validate a binding.
-	///
-	/// A tick drawn in the same grey as everything else is a shape you have to go looking for, and
-	/// the two on screen at once - accept the feature, finish the sketch - are the two most
-	/// consequential buttons in the tool. Green for commit is one of the few colour conventions
-	/// everyone already reads without being taught. Anything new that commits something should use
-	/// this rather than picking its own green.
-	/// </summary>
-	public static Color ConfirmColor => Theme.Green;
-
-	/// <summary>
-	/// The colour the sketcher paints the outline of the face being sketched on, so a button that
-	/// acts on that outline wears it too.
-	///
-	/// NOT ConfirmColor, even though both are green. That one means "this commits what you have
-	/// been doing" and is spent carefully - two on screen at once is already the most it should be.
-	/// This one means "this is about the part underneath", and it matches SketchReferenceColor in
-	/// the viewport rather than the theme.
-	/// </summary>
-	public static Color ReferenceColor => new( 0.45f, 1f, 0.6f, 1f );
-
-	/// <summary>
-	/// The ONLY thing a tool button does when you interact with it: a faint halo hugging its outer
-	/// edge. Nothing about the button changes colour - not the glyph, not a background box - so a
-	/// strip sitting on the 3D view stays still instead of flickering between fills as the cursor
-	/// crosses it.
-	///
-	/// Drawn as concentric rounded rects fading INWARD from the edge, because a widget clips its
-	/// own painting: a halo drawn outside LocalRect would simply be cut off. The glyph only fills
-	/// the middle half of the button, so there is room for the halo to read as an outside edge.
-	/// </summary>
-	public static void PaintEdgeGlow( Rect rect, float strength )
-	{
-		const int Rings = 5;
-
-		Paint.ClearBrush();
-
-		for ( var i = 0; i < Rings; i++ )
-		{
-			var falloff = 1f - i / (float)Rings;
-
-			Paint.SetPen( Theme.Text.WithAlpha( strength * falloff * falloff * 0.5f ), 1f );
-			Paint.DrawRect( rect.Shrink( 0.5f + i ), 6f );
-		}
-	}
-
-	/// <summary>A crisp ring at the edge, for a mode that is armed and has to stay visibly armed
-	/// with the cursor somewhere else. A ring rather than a tint - same no-colour-change rule as
-	/// PaintEdgeGlow, so armed reads as a different SHAPE, not a different colour.</summary>
-	public static void PaintEdgeRing( Rect rect )
-	{
-		Paint.ClearBrush();
-		Paint.SetPen( Theme.Text.WithAlpha( 0.75f ), 1.5f );
-		Paint.DrawRect( rect.Shrink( 1f ), 6f );
-	}
-
-	/// <summary>
-	/// "The tutorial means this one." A filled wash plus a solid ring, in the same yellow the
-	/// tutorial panel uses for its current step and its bullets.
-	///
-	/// LOUDER THAN THE ARMED RING ON PURPOSE. Armed is a state you put the tool in and already
-	/// know about; this is aimed at someone who has been told to press a button they have never
-	/// seen, scanning a strip of twenty glyphs for it. The wash is what makes it findable from
-	/// the far side of the window — an outline alone reads as just another edge at this size.
-	/// </summary>
-	public static void PaintAttentionRing( Rect rect )
-	{
-		Paint.ClearPen();
-		Paint.SetBrush( Theme.Yellow.WithAlpha( 0.22f ) );
-		Paint.DrawRect( rect, 6f );
-
-		Paint.ClearBrush();
-		Paint.SetPen( Theme.Yellow.WithAlpha( 0.9f ), 2f );
-		Paint.DrawRect( rect.Shrink( 1f ), 6f );
-	}
-
-	/// <summary><paramref name="width"/> is the button's own width - wider than ButtonSize for the
-	/// one button that carries a text label. It has to be passed in rather than set on the button
-	/// afterwards, or the strip's own width would not account for it.</summary>
-	public EffigyToolButton AddButton( EffigyIcon icon, string tip, Action clicked, float width = ButtonSize )
-	{
-		var button = new EffigyToolButton( this, icon, tip, clicked );
-		button.FixedWidth = width;
-
-		Layout.Add( button );
-		Grew( width );
-
-		return button;
-	}
-
-	/// <summary>A spacer standing in for the old toolbar's separators, keeping the tool groups
-	/// readable. Sized to the difference so the visible gap is exactly GroupSpacing.
-	///
-	/// A LAYOUT CELL, NOT A WIDGET. This used to add an empty Widget, and an empty Widget paints
-	/// the system background - which is where the white blocks between the right-hand tool groups
-	/// came from. A spacing cell reserves the room without there being anything there to paint.</summary>
-	public void AddGap()
-	{
-		Layout.AddSpacingCell( GroupSpacing - ButtonSpacing );
-		Grew( GroupSpacing - ButtonSpacing );
-	}
-
-	/// <summary>
-	/// Empty the strip so it can be filled again with a different set of tools.
-	///
-	/// REBUILT RATHER THAN HIDDEN, because the group gaps are layout SPACING CELLS and not widgets
-	/// — there is nothing there to set Visible on. Hiding buttons alone would leave their gaps
-	/// behind as holes in the strip, and _contentWidth counts what was added rather than what is
-	/// showing, so the bar would also stay full width with an empty tail.
-	/// </summary>
-	public void Clear()
-	{
-		Layout.Clear( true );
-
-		_contentWidth = 0f;
-		FixedWidth = 0f;
-	}
-}
-
 /// <summary>
-/// A sketch-tool button in the floating sketch strip - same visual language and sizing as
-/// EffigyToolButton (the feature strip's), but font-icon-drawn rather than hand-painted, and
-/// checkable, since sketch tools are mutually exclusive modes rather than one-shot commands.
+/// One entry in a sketch tool's dropdown: the same kind of tool, done a different way. A corner
+/// rectangle and a centre rectangle are one button in Onshape, not two.
 ///
-/// FONT ICONS, NOT DRAWN ONES, and that is a smaller scope than it looks. EffigyIcons only covers
-/// the twelve feature-creation tools; drawing another dozen-plus glyphs for every sketch tool in
-/// the same hand-painted style is real design work of its own (see WHAT-IS-LEFT.md 2.6)
-/// and is deliberately not attempted here. Every name used is a CLASSIC Material Icon already
-/// audited against the same s&box-ships-classic-not-Symbols problem EffigyIcons exists to dodge -
-/// see WHAT-IS-BUILT.md on icons - so this does not reintroduce the blank-icon bug, it just
-/// does not yet look as considered as the feature strip.
+/// A BUILD-TIME DESCRIPTION, not something the bar ever sees. BuildSketchStages turns each of
+/// these into an EffigyStageVariant carrying a closure, which is what the bar understands; this
+/// type exists so the stage table can be written as a list of tools and kinds rather than a list
+/// of lambdas, and so registering every variant against its SketchToolKind stays one line.
 /// </summary>
-/// <summary>One entry in a sketch tool's dropdown: the same kind of tool, done a different way.
-/// A corner rectangle and a centre rectangle are one button in Onshape, not two.</summary>
 internal sealed class SketchToolVariant
 {
 	public readonly EffigyIcon Icon;
@@ -5085,443 +5195,6 @@ internal sealed class SketchToolVariant
 		Label = label;
 		Tip = tip;
 		Kind = kind;
-	}
-}
-
-internal sealed class EffigySketchToolButton : Widget
-{
-	private EffigyIcon _icon;
-	private readonly bool _checkable;
-	private bool _pressed;
-	private bool _pressedChevron;
-
-	public bool Checked { get; set; }
-	public Action Clicked { get; set; }
-
-	/// <summary>Overrides the glyph colour for a button that means something in particular - the
-	/// finish-sketch tick is green like every other confirm. Null leaves it as ordinary chrome.</summary>
-	public Color? IconColor { get; set; }
-
-	/// <summary>
-	/// The variants this button can arm, or empty for a button that does one thing.
-	///
-	/// Twelve drawing tools in a row is a wall to read every time you want a circle. Onshape puts
-	/// the variants of one idea behind one button - rectangle, circle, arc, polygon each have two
-	/// or three ways to place them - and shows the one you used last. Four buttons come off the
-	/// strip and nothing becomes unreachable.
-	/// </summary>
-	private readonly List<SketchToolVariant> _variants = new();
-
-	public IReadOnlyList<SketchToolVariant> Variants => _variants;
-
-	/// <summary>Which variant the button currently shows and arms when clicked. Onshape keeps the
-	/// last one you picked on the face of the button, so the second use is a single click.</summary>
-	public int Current { get; private set; }
-
-	/// <summary>Raised when a variant is chosen, whether by clicking the button or picking from
-	/// its menu.</summary>
-	public Action<SketchToolVariant> VariantChosen { get; set; }
-
-	/// <summary>Width of the strip on the right edge that opens the menu instead of arming the
-	/// tool. Onshape splits its buttons the same way: glyph on the left, chevron on the right.</summary>
-	private const float ChevronWidth = 15f;
-
-	private bool HasMenu => _variants.Count > 1;
-
-	public void SetVariants( IEnumerable<SketchToolVariant> variants )
-	{
-		_variants.Clear();
-		_variants.AddRange( variants );
-
-		if ( _variants.Count > 0 )
-			ShowVariant( 0 );
-	}
-
-	/// <summary>Put a variant on the face of the button without arming it - used when a tool is
-	/// armed from somewhere else (a keyboard shortcut, or Escape falling back to Select) and the
-	/// strip has to agree with what the viewport is actually doing.</summary>
-	public void ShowVariant( int index )
-	{
-		if ( index < 0 || index >= _variants.Count )
-			return;
-
-		Current = index;
-		_icon = _variants[index].Icon;
-		ToolTip = _variants[index].Tip;
-		StatusTip = _variants[index].Tip;
-		Update();
-	}
-
-	private void OpenVariantMenu()
-	{
-		var menu = new Menu( this );
-
-		for ( var i = 0; i < _variants.Count; i++ )
-		{
-			var index = i;
-			var variant = _variants[i];
-
-			// NO ICON. EffigyIcon is a DRAWN glyph - EffigyIcons.Draw paints into a widget's paint
-			// context - while a Menu option takes a Material Icon NAME, which is the very lookup
-			// these icons exist to get away from. The label and the check mark carry the variant.
-			var option = menu.AddOption( variant.Label, null, () =>
-			{
-				ShowVariant( index );
-				VariantChosen?.Invoke( variant );
-			} );
-
-			option.Checkable = true;
-			option.Checked = i == Current;
-		}
-
-		menu.OpenAtCursor();
-	}
-
-	public EffigySketchToolButton( Widget parent, EffigyIcon icon, string tip, bool checkable ) : base( parent )
-	{
-		_icon = icon;
-		_checkable = checkable;
-
-		ToolTip = tip;
-		StatusTip = tip;
-		Cursor = CursorShape.Finger;
-		MouseTracking = true;
-
-		// THE BUTTON HAS NO BACKGROUND OF ITS OWN EITHER. Only the strips set these, and a plain
-		// Widget paints the system background - a white square. That went unnoticed while every
-		// button painted an opaque rect over itself; the moment they stopped, the strip turned
-		// into a white slab with near-white glyphs invisible on top of it. It is also what left
-		// the hover glow smeared on screen after the cursor moved away: with nothing clearing the
-		// widget's rect between paints, whatever was drawn last frame just stayed there.
-		TranslucentBackground = true;
-		NoSystemBackground = true;
-
-		FixedSize = new Vector2( EffigyToolStrip.ButtonSize, EffigyToolStrip.ButtonSize );
-	}
-
-	protected override void OnPaint()
-	{
-		Paint.Antialiasing = true;
-
-		// Always repaint the strip background over our rect to wipe any stale glow from the
-		// previous frame. Without this, TranslucentBackground leaves the old rings in the paint
-		// buffer and the halo never fully disappears.
-		Paint.ClearPen();
-		Paint.SetBrush( Theme.ControlBackground.WithAlpha( 0.85f ) );
-		Paint.DrawRect( LocalRect, 6f );
-
-		var hovered = IsUnderMouse;
-
-		// NOTHING PAINTED AT REST, AND NOTHING EVER CHANGES COLOUR. The strip floats on the 3D
-		// view; a box behind every button turned it into a chrome band, and swapping fills and
-		// glyph colours per state made the whole row flicker as the cursor crossed it. Hover and
-		// press are an edge glow, armed is an edge ring - see PaintEdgeGlow.
-		if ( Checked )
-			EffigyToolStrip.PaintEdgeRing( LocalRect );
-
-		if ( _pressed || hovered )
-			EffigyToolStrip.PaintEdgeGlow( LocalRect, _pressed ? 1.4f : 1f );
-
-		// With a menu the glyph shifts left to make room for the chevron, so the two never sit on
-		// top of each other and the button still reads as one thing.
-		var glyphRect = HasMenu ? LocalRect.Shrink( 0, 0, ChevronWidth, 0 ) : LocalRect;
-
-		Paint.SetPen( IconColor ?? Theme.Text );
-		// Drawn rather than looked up in a font, same as the feature strip. See EffigyIcons for what
-		// the font names were costing: half this row was showing a Material glyph that had nothing to
-		// do with the operation behind it.
-		EffigyIcons.Draw( _icon, glyphRect.Center, IconColor ?? Theme.Text, EffigyToolStrip.IconScale );
-
-		if ( !HasMenu )
-			return;
-
-		Paint.SetPen( Theme.TextLight.WithAlpha( hovered ? 0.9f : 0.55f ) );
-		Paint.DrawIcon( ChevronRect, "arrow_drop_down", 16, TextFlag.Center );
-	}
-
-	private Rect ChevronRect => new( LocalRect.Right - ChevronWidth, LocalRect.Top, ChevronWidth, LocalRect.Height );
-
-	protected override void OnMousePress( MouseEvent e )
-	{
-		if ( !e.LeftMouseButton )
-			return;
-
-		// Which half was pressed decides what the release does. Recorded on PRESS so a drag that
-		// starts on the chevron and ends over the glyph cannot arm a tool you did not ask for.
-		_pressedChevron = HasMenu && ChevronRect.IsInside( e.LocalPosition );
-		_pressed = true;
-
-		Update();
-		e.Accepted = true;
-	}
-
-	protected override void OnMouseReleased( MouseEvent e )
-	{
-		if ( !_pressed )
-			return;
-
-		var chevron = _pressedChevron;
-
-		_pressed = false;
-		_pressedChevron = false;
-		Update();
-
-		if ( !IsUnderMouse )
-			return;
-
-		if ( chevron )
-		{
-			OpenVariantMenu();
-			return;
-		}
-
-		if ( _checkable )
-			Checked = !Checked;
-
-		// A button with variants arms the one on its face; anything else just does its one job.
-		if ( _variants.Count > 0 )
-		{
-			VariantChosen?.Invoke( _variants[Current] );
-			return;
-		}
-
-		Clicked?.Invoke();
-	}
-
-	protected override void OnMouseEnter()
-	{
-		base.OnMouseEnter();
-		Update();
-	}
-
-	protected override void OnMouseLeave()
-	{
-		base.OnMouseLeave();
-
-		_pressed = false;
-		Update();
-	}
-}
-
-/// <summary>
-/// The floating sketch tool strip. Same shape as EffigyToolStrip - no background of its own,
-/// floats on the 3D view, positioned by EffigyViewport.CompleteLayout at the identical spot the
-/// feature strip uses, so showing one and hiding the other reads as one strip changing rather than
-/// two unrelated pieces of chrome.
-/// </summary>
-internal sealed class EffigySketchStrip : Widget
-{
-	private const float ButtonSpacing = EffigyToolStrip.ButtonSpacing;
-	private const float GroupSpacing = EffigyToolStrip.GroupSpacing;
-
-	public EffigySketchStrip( Widget parent ) : base( parent )
-	{
-		Layout = Layout.Row();
-		Layout.Spacing = ButtonSpacing;
-		Layout.Margin = new Sandbox.UI.Margin( 0 );
-
-		TranslucentBackground = true;
-		NoSystemBackground = true;
-
-		FixedHeight = EffigyToolStrip.ButtonSize;
-		FixedWidth = 0f;
-	}
-
-	/// <summary>The viewport's background, same as EffigyToolStrip.GapColor and for the same
-	/// reason — see that OnPaint for why a strip cannot just decline to paint.</summary>
-	public Color GapColor { get; set; } = Theme.ControlBackground;
-
-	protected override void OnPaint()
-	{
-		Paint.ClearPen();
-		Paint.SetBrush( GapColor );
-		Paint.DrawRect( LocalRect );
-	}
-
-	/// <summary>Counted by hand for the same reason as EffigyToolStrip._contentWidth.</summary>
-	private float _contentWidth;
-
-	private void Grew( float cellWidth )
-	{
-		_contentWidth += (_contentWidth > 0f ? ButtonSpacing : 0f) + cellWidth;
-		FixedWidth = _contentWidth;
-	}
-
-	public EffigySketchToolButton AddButton( EffigyIcon icon, string tip, bool checkable, Action clicked )
-	{
-		var button = new EffigySketchToolButton( this, icon, tip, checkable ) { Clicked = clicked };
-
-		Layout.Add( button );
-		Grew( EffigyToolStrip.ButtonSize );
-
-		return button;
-	}
-
-	/// <summary>Same layout cell as EffigyToolStrip.AddGap, and for the same reason - an empty
-	/// spacer Widget paints the system background over the 3D view.</summary>
-	public void AddGap()
-	{
-		Layout.AddSpacingCell( GroupSpacing - ButtonSpacing );
-		Grew( GroupSpacing - ButtonSpacing );
-	}
-}
-
-
-/// <summary>One square of the strip — a hand-painted icon button, EffigyToolStrip.ButtonSize
-/// square, transparent at rest and picking up the editor's own button states on hover/press.</summary>
-internal sealed class EffigyToolButton : Widget
-{
-	private readonly EffigyIcon _icon;
-	private readonly Action _clicked;
-	private bool _pressed;
-	public string Label { get; set; }
-
-	/// <summary>Draw the little chevron that says this button opens a list rather than doing one
-	/// thing. Set by the strip for the tools that have variants behind them.</summary>
-	public bool HasMenu { get; set; }
-
-	/// <summary>
-	/// The tutorial is asking for this button.
-	///
-	/// A THIRD STATE ON THE BUTTON RATHER THAN AN ARROW DRAWN OVER THE WINDOW, which was the first
-	/// design and is worse in every way that matters. An arrow is a position, so it is wrong the
-	/// moment a dock is dragged, the window is resized, or RefreshToolStrip swaps the starter set
-	/// for the full one — and it needs a surface to be drawn on that does not swallow the click it
-	/// is pointing at, which this editor API has no way to make (there is no transparent-for-mouse
-	/// flag anywhere in it). A state on the button itself cannot be stranded: it moves with the
-	/// button because it IS the button.
-	/// </summary>
-	public bool Attention { get; set; }
-
-	public EffigyToolButton( Widget parent, EffigyIcon icon, string tip, Action clicked ) : base( parent )
-	{
-		_icon = icon;
-		_clicked = clicked;
-
-		ToolTip = tip;
-		StatusTip = tip;
-		Cursor = CursorShape.Finger;
-		MouseTracking = true;
-
-		// THE BUTTON HAS NO BACKGROUND OF ITS OWN EITHER. Only the strips set these, and a plain
-		// Widget paints the system background - a white square. That went unnoticed while every
-		// button painted an opaque rect over itself; the moment they stopped, the strip turned
-		// into a white slab with near-white glyphs invisible on top of it. It is also what left
-		// the hover glow smeared on screen after the cursor moved away: with nothing clearing the
-		// widget's rect between paints, whatever was drawn last frame just stayed there.
-		TranslucentBackground = true;
-		NoSystemBackground = true;
-
-		FixedSize = new Vector2( EffigyToolStrip.ButtonSize, EffigyToolStrip.ButtonSize );
-	}
-
-	protected override void OnPaint()
-	{
-		Paint.Antialiasing = true;
-
-		// Always repaint the strip background over our rect to wipe any stale glow from the
-		// previous frame. Without this, TranslucentBackground leaves the old rings in the paint
-		// buffer and the halo never fully disappears.
-		Paint.ClearPen();
-		Paint.SetBrush( Theme.ControlBackground.WithAlpha( 0.85f ) );
-		Paint.DrawRect( LocalRect, 6f );
-
-		var hovered = IsUnderMouse;
-
-		// NOTHING PAINTED AT REST, AND NOTHING EVER CHANGES COLOUR - see
-		// EffigySketchToolButton.OnPaint. Hover and press are an edge glow and nothing else; the
-		// glyph is drawn in exactly the same colour in every state.
-		//
-		// The tutorial's ring is the one exception to "never changes colour", and it has to be:
-		// the whole job here is to be findable in a row of twenty near-identical glyphs, which a
-		// brighter version of the hover state is not. Drawn UNDER the hover glow so that hovering
-		// the button still reads as hovering it.
-		if ( Attention )
-			EffigyToolStrip.PaintAttentionRing( LocalRect );
-
-		if ( _pressed || hovered )
-			EffigyToolStrip.PaintEdgeGlow( LocalRect, _pressed ? 1.4f : 1f );
-
-		// The glyphs are authored in a nominal 18x18 box and scaled to the button by EffigyIcons
-		// itself, so growing ButtonSize grows the drawing with it.
-		if ( string.IsNullOrEmpty( Label ) )
-		{
-			EffigyIcons.Draw( _icon, LocalRect.Center, Theme.Text, EffigyToolStrip.IconScale );
-		}
-		else
-		{
-			EffigyIcons.Draw( _icon, new Vector2( 31, LocalRect.Center.y ), Theme.Text, EffigyToolStrip.LabelIconScale );
-
-			Paint.SetDefaultFont( EffigyToolStrip.LabelFontSize, 500 );
-			Paint.SetPen( Theme.Text );
-			Paint.DrawText( LocalRect.Shrink( 56, 0, 8, 0 ), Label, TextFlag.LeftCenter );
-		}
-
-		if ( HasMenu )
-			PaintChevron();
-	}
-
-	/// <summary>
-	/// A triangle in the bottom-right corner — the same signal the sketch strip's variant buttons
-	/// give, so "this one opens a list" looks the same on both strips.
-	///
-	/// Deliberately not subtle. The first version was five pixels at half alpha and was invisible
-	/// on a 54px button: the button looked like every other one, so nothing suggested clicking it
-	/// would offer a choice.
-	/// </summary>
-	private void PaintChevron()
-	{
-		const float size = 9f;
-		const float inset = 4f;
-
-		var x = LocalRect.Width - inset;
-		var y = LocalRect.Height - inset;
-
-		Paint.ClearPen();
-		Paint.SetBrush( Theme.Text.WithAlpha( IsUnderMouse ? 1f : 0.8f ) );
-
-		Paint.DrawPolygon(
-			new Vector2( x - size, y ),
-			new Vector2( x, y - size ),
-			new Vector2( x, y ) );
-	}
-
-	protected override void OnMousePress( MouseEvent e )
-	{
-		if ( !e.LeftMouseButton )
-			return;
-
-		_pressed = true;
-		Update();
-		e.Accepted = true;
-	}
-
-	protected override void OnMouseReleased( MouseEvent e )
-	{
-		if ( !_pressed )
-			return;
-
-		_pressed = false;
-		Update();
-
-		// Only fires if released while still over the button - dragging off to cancel is
-		// what every other button does.
-		if ( IsUnderMouse )
-			_clicked?.Invoke();
-	}
-
-	protected override void OnMouseEnter()
-	{
-		base.OnMouseEnter();
-		Update();
-	}
-
-	protected override void OnMouseLeave()
-	{
-		base.OnMouseLeave();
-
-		_pressed = false;
-		Update();
 	}
 }
 

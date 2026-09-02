@@ -1,4 +1,4 @@
-using Editor;
+﻿using Editor;
 using Effigy;
 using Sandbox;
 using System;
@@ -147,7 +147,7 @@ internal sealed class EffigyResultStrip : Widget
 	{
 		Paint.Antialiasing = true;
 
-		// The strip cannot decline to paint - see EffigyToolStrip.OnPaint for why an unpainted rect
+		// The strip cannot decline to paint - an unpainted rect keeps whatever was in the buffer
 		// keeps whatever was in the buffer. The pill's own body IS the background here.
 		//
 		// EVERYTHING BELOW IS BUILT FROM Width AND Height AND NOTHING ELSE. Rect.Left and

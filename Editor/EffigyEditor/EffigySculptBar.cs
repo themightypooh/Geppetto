@@ -1,4 +1,4 @@
-using Editor;
+﻿using Editor;
 using Effigy;
 using Sandbox;
 using System;
@@ -71,7 +71,8 @@ internal sealed class EffigySculptBar : Widget
 	}
 
 	/// <summary>The viewport's background, so the gaps between controls disappear into the 3D view.
-	/// See EffigyToolStrip.OnPaint for why a floating strip cannot simply decline to paint.</summary>
+	/// A floating strip cannot simply decline to paint: a rect a widget leaves alone keeps
+	/// whatever the previous frame put there.</summary>
 	public Color GapColor { get; set; } = Theme.ControlBackground;
 
 	protected override void OnPaint()

@@ -204,8 +204,8 @@ internal sealed class EffigyFeatureDialog : Widget
 			IconSize = 16,
 			Background = Color.Transparent,
 
-			// Green, like every confirm in the tool - see EffigyToolStrip.ConfirmColor.
-			Foreground = EffigyToolStrip.ConfirmColor,
+			// Green, like every confirm in the tool - see EffigyToolChrome.ConfirmColor.
+			Foreground = EffigyToolChrome.ConfirmColor,
 		} );
 
 		_header.Layout.Add( new IconButton( "close", Cancel )

@@ -41,6 +41,11 @@ internal enum SketchToolKind
 	/// EffigyViewport.SketchTools.cs - it edits rather than draws, and it picks what is under the
 	/// cursor rather than placing anything.</summary>
 	Use,
+
+	/// <summary>Drag a line across the sketch and it cuts whatever it goes through. The only tool
+	/// here driven by a HELD BUTTON rather than by clicks, which is why it never reaches ClickTool
+	/// at all - see CutStrokeFrame in EffigyViewport.SketchTools.cs.</summary>
+	Cut,
 }
 
 /// <summary>
@@ -461,6 +466,12 @@ internal sealed partial class EffigyViewport
 
 	/// <summary>Which tool the next click feeds.</summary>
 	public SketchToolKind SketchTool { get; set; } = SketchToolKind.Select;
+
+	/// <summary>Tools whose cursor is a POSITION rather than a point about to be placed, and which
+	/// therefore must not be rounded onto the grid or pulled onto existing geometry. Select reads
+	/// what is already there; Cut draws a path the hand made.</summary>
+	private static bool IsFreehandSketchTool( SketchToolKind tool ) =>
+		tool is SketchToolKind.Select or SketchToolKind.Cut;
 
 	/// <summary>Change the active sketch tool through one state boundary. Switching tools abandons
 	/// the half-finished entity, matching CAD sketchers instead of carrying stale clicks into the
@@ -1915,14 +1926,23 @@ internal sealed partial class EffigyViewport
 		// Select does not snap - it picks up what is already there - so nothing consults the face's
 		// outline this frame and last frame's lit corner has to go. A highlight that outlives the
 		// snap it was reporting says a click will land somewhere it will not.
-		if ( !_cursorOnPlaneValid || SketchTool == SketchToolKind.Select )
+		//
+		// NEITHER DOES CUT, for a different reason: a stroke is a path the hand drew, not a point
+		// being placed. Snapped, the samples would jump from grid line to grid line and the stroke
+		// would cross curves it was never dragged through.
+		//
+		// _snapPoint goes with them, which it did not before. It is only ever drawn, so a stale one
+		// was a ring left lit on a sketch point that nothing was snapping to - the exact fault the
+		// paragraph above describes, one variable short of being fixed.
+		if ( !_cursorOnPlaneValid || IsFreehandSketchTool( SketchTool ) )
 		{
+			_snapPoint = -1;
 			_snapReferencePoint = -1;
 			_snapReferenceEdge = -1;
 		}
 
 		if ( _cursorOnPlaneValid )
-			_cursorOnPlane = SketchTool == SketchToolKind.Select ? raw : SnapPoint( raw );
+			_cursorOnPlane = IsFreehandSketchTool( SketchTool ) ? raw : SnapPoint( raw );
 
 		DrawSketchReference();
 		DrawSketch();
@@ -1945,6 +1965,12 @@ internal sealed partial class EffigyViewport
 			_ignoreNextSketchClick = false;
 			return;
 		}
+
+		// The cut tool is a DRAG, so it takes the mouse before the click machine below ever sees it
+		// - see CutStrokeFrame. Letting the press through as well would take an undo snapshot per
+		// press for a tool whose whole stroke is one undo step.
+		if ( CutStrokeFrame() )
+			return;
 
 		if ( _canvasHasCursor && _cursorOnPlaneValid && Gizmo.WasLeftMousePressed && SketchTool != SketchToolKind.Select && _dragPoint < 0 )
 			ClickTool( _cursorOnPlane );
