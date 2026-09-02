@@ -1,4 +1,4 @@
-using Editor;
+﻿using Editor;
 using Effigy;
 using System;
 using System.Collections.Generic;
@@ -384,10 +384,14 @@ internal sealed class EffigyTutorial
 	/// which panels you want to see is not a property of the lamp you happen to have open. Its
 	/// own key, separate from Rig Control's: dismissing one tutorial is not a statement about
 	/// the other.
+	///
+	/// DEFAULTS TO FALSE. Effigy opens with the feature tree and the viewport and nothing else,
+	/// and a tutorial that shows up uninvited is an extra panel to close like any other. It is in
+	/// Help > Start Lamp Tutorial and in View > Tutorial, both one click.
 	/// </summary>
 	public static bool OpenOnStartup
 	{
-		get => EditorCookie.Get( "effigy.tutorial.openonstartup", true );
+		get => EditorCookie.Get( "effigy.tutorial.openonstartup", false );
 		set => EditorCookie.Set( "effigy.tutorial.openonstartup", value );
 	}
 

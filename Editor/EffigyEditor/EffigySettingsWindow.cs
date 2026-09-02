@@ -165,6 +165,7 @@ internal sealed class EffigySettingsWindow : Window
 		public float GridSpacing;
 		public bool SnapToGrid;
 		public bool SnapToPoints;
+		public bool SnapToFaceEdges;
 		public int PaletteIndex;
 		public bool ShowSizeReference;
 
@@ -290,6 +291,13 @@ internal sealed class EffigySettingsWindow : Window
 			+ "extrude.",
 			_values.SnapToPoints,
 			value => { _values.SnapToPoints = value; Changed(); } );
+
+		AddSwitch( canvas, "Snap to the face underneath",
+			"While sketching on the face of a part, jump the cursor onto that face's own corners "
+			+ "and slide it along its edges. Off leaves the outline drawn but inert - useful when "
+			+ "you want to draw across a face rather than measure from it.",
+			_values.SnapToFaceEdges,
+			value => { _values.SnapToFaceEdges = value; Changed(); } );
 
 		// --- the size reference ---------------------------------------------------------------
 

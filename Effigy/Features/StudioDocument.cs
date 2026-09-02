@@ -72,6 +72,15 @@ public static class StudioDocument
 				sb.Append( "material " ).Append( slot ).Append( ' ' ).Append( OneLine( name ) ).Append( '\n' );
 		}
 
+		// Only the slots somebody has resized. A slot at 1:1 renders exactly as a reader that has
+		// never heard of this line already renders it, so writing them all would add lines to every
+		// existing document and change the bytes of files nobody edited — the same rule the origin
+		// follows above. MaterialScale.SetScale removes the entry when it returns to 1:1, so this
+		// stays true without a check here.
+		foreach ( var (slot, scale) in studio.MaterialScales.OrderBy( kv => kv.Key ) )
+			sb.Append( "materialscale " ).Append( slot ).Append( ' ' )
+				.Append( Num( scale.x ) ).Append( ' ' ).Append( Num( scale.y ) ).Append( '\n' );
+
 		foreach ( var (id, name) in studio.BodyNames.OrderBy( kv => kv.Key, StringComparer.Ordinal ) )
 		{
 			if ( !string.IsNullOrWhiteSpace( id ) && !string.IsNullOrWhiteSpace( name ) )
@@ -328,6 +337,26 @@ public static class StudioDocument
 			if ( line.StartsWith( "origin " ) )
 			{
 				studio.Origin = ParseVec3( line[7..] );
+				continue;
+			}
+
+			// BEFORE "material ", so the longer key is never read as the shorter one with a strange
+			// name. They do not actually collide today — "materialscale" has no space at index 8 —
+			// but that is a property of the spelling rather than of the parser, and the next key
+			// starting with "material" would not be so lucky.
+			if ( line.StartsWith( "materialscale " ) )
+			{
+				var parts = line[14..].Split( ' ', StringSplitOptions.RemoveEmptyEntries );
+
+				if ( parts.Length >= 3 )
+				{
+					// Through SetScale rather than straight into the dictionary, so a hand-edited
+					// zero is caught here rather than dividing every UV on the slot into infinity,
+					// and a 1:1 written by an older tool leaves no entry behind.
+					MaterialScale.SetScale( studio, ParseInt( parts[0], -1 ),
+						new Vec2( ParseFloat( parts[1] ), ParseFloat( parts[2] ) ) );
+				}
+
 				continue;
 			}
 

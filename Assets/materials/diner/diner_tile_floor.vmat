@@ -1,0 +1,18 @@
+// Diner checkerboard tile floor -- 1950s vinyl composition tile.
+// Written by tools/diner_tile_gen.py; re-running it overwrites the textures.
+// Do not hand-edit the maps -- edit the generator.
+//
+// SCALE: one texture repeat is 4 tiles across. s&box units are inches, so for 12"
+// tiles repeat the UV every 48 units; for the tighter 9" VCT a period diner would
+// actually have been laid with, every 36.
+Layer0
+{
+	shader "shaders/complex.shader"
+	TextureColor "materials/diner/diner_tile_floor_color.png"
+	TextureNormal "materials/diner/diner_tile_floor_normal.png"
+	TextureRoughness "materials/diner/diner_tile_floor_rough.png"
+	TextureAmbientOcclusion "materials/diner/diner_tile_floor_ao.png"
+	g_flModelTintAmount "0.000000"
+	g_flMetalness "0.000000"
+	g_flRoughness "1.000000"
+}

@@ -121,6 +121,18 @@ public sealed class EffigyWindow : DockWindow
 	private EffigyRigPanel _rigPanel;
 	private Widget _leftPanel;
 
+	// --- View menu dock toggles ----------------------------------------------------------------
+
+	/// <summary>The View menu's one-per-dock checkable options, kept so their ticks can be pointed
+	/// back at what DockManager actually has open. Held as fields because the menu is built before
+	/// the docks exist, so the ticks cannot be right at the moment they are created.</summary>
+	private Option _featuresDockOption, _materialsDockOption, _rigDockOption, _tutorialDockOption;
+
+	/// <summary>Set while SyncDockChecks writes the ticks. Assigning Checked fires Toggled just as
+	/// a click does, and without this the sync would turn straight round and re-issue SetDockState
+	/// for every dock it was only supposed to be reading.</summary>
+	private bool _syncingDockChecks;
+
 	/// <summary>The creation-tool strip of square buttons floating over the viewport. Lives on
 	/// the viewport rather than in a window toolbar row, so the tools sit on the thing they
 	/// act on.</summary>
@@ -246,6 +258,10 @@ public sealed class EffigyWindow : DockWindow
 		if ( EffigyTutorial.OpenOnStartup )
 			DockManager.SetDockState( "Tutorial", true );
 
+		// After the docks, because BuildMenuBar ran before them and after StateCookie, because a
+		// restored layout is the case where the ticks would otherwise be furthest from the truth.
+		SyncDockChecks();
+
 		Show();
 	}
 
@@ -335,21 +351,18 @@ public sealed class EffigyWindow : DockWindow
 		// was drawing nothing at all - see EffigyIcons for why that whole class of name is unsafe.
 		view.AddOption( "Reset Origin", "settings_backup_restore", () => _viewport?.ResetOrigin() );
 
+		// EVERY DOCK GETS A LINE HERE, and the Material Browser was the one that did not have one.
+		// It is registered, it is wired up, and until now the only way to see it was a default
+		// layout that happened to open it - so anyone who closed the tab had lost it for good.
+		//
+		// The ticks are set from DockManager itself (SyncDockChecks, run once the layout exists)
+		// rather than hardcoded here: this menu is built BEFORE the docks are, and a hardcoded
+		// tick is a lie the moment a saved layout restores something different.
 		view.AddSeparator();
-		var featuresPanel = view.AddOption( "Feature Tree", "account_tree" );
-		featuresPanel.Checkable = true;
-		featuresPanel.Checked = true;
-		featuresPanel.Toggled += visible => DockManager.SetDockState( "Features", visible );
-
-		var rigPanel = view.AddOption( "Rig", "polyline" );
-		rigPanel.Checkable = true;
-		rigPanel.Checked = false;
-		rigPanel.Toggled += visible => DockManager.SetDockState( "Rig", visible );
-
-		var tutorialPanel = view.AddOption( "Tutorial", "school" );
-		tutorialPanel.Checkable = true;
-		tutorialPanel.Checked = false;
-		tutorialPanel.Toggled += visible => DockManager.SetDockState( "Tutorial", visible );
+		_featuresDockOption = AddDockOption( view, "Feature Tree", "account_tree", "Features" );
+		_materialsDockOption = AddDockOption( view, "Material Browser", "palette", "Materials" );
+		_rigDockOption = AddDockOption( view, "Rig", "polyline", "Rig" );
+		_tutorialDockOption = AddDockOption( view, "Tutorial", "school", "Tutorial" );
 
 		// Named views, same list Onshape puts on the cube. The cube itself is gone — this camera
 		// flies rather than orbiting a locked-up model — but snapping to a plane is still useful.
@@ -373,6 +386,53 @@ public sealed class EffigyWindow : DockWindow
 		// The palette list used to sit here as four checkable options. It lives in Edit > Settings
 		// now, as a dropdown — one home per setting, because two controls reading the same value
 		// is how one of them ends up showing the wrong tick.
+	}
+
+	/// <summary>One checkable View entry for one registered dock. The label and the dock title are
+	/// separate arguments because they differ: the dock the menu calls "Feature Tree" is registered
+	/// as "Features", and SetDockState only answers to the registered name.</summary>
+	private Option AddDockOption( Menu menu, string label, string icon, string dockTitle )
+	{
+		var option = menu.AddOption( label, icon );
+		option.Checkable = true;
+
+		option.Toggled += visible =>
+		{
+			if ( _syncingDockChecks )
+				return;
+
+			DockManager.SetDockState( dockTitle, visible );
+		};
+
+		return option;
+	}
+
+	/// <summary>Point the View menu's ticks at the docks that are actually open.
+	///
+	/// Called once the layout exists and again after anything here opens a dock. A tick that
+	/// disagrees with the screen is worse than no tick: clicking a ticked entry for a closed dock
+	/// "closes" it again and the panel never appears, which reads as a dead menu item.</summary>
+	private void SyncDockChecks()
+	{
+		_syncingDockChecks = true;
+
+		try
+		{
+			SetDockCheck( _featuresDockOption, "Features" );
+			SetDockCheck( _materialsDockOption, "Materials" );
+			SetDockCheck( _rigDockOption, "Rig" );
+			SetDockCheck( _tutorialDockOption, "Tutorial" );
+		}
+		finally
+		{
+			_syncingDockChecks = false;
+		}
+	}
+
+	private void SetDockCheck( Option option, string dockTitle )
+	{
+		if ( option is not null )
+			option.Checked = DockManager.IsDockOpen( dockTitle );
 	}
 
 	// --- toolbar (square icon buttons floating over the viewport) -------------------------
@@ -485,6 +545,26 @@ public sealed class EffigyWindow : DockWindow
 			SketchToolKind.Fillet );
 		AddSketchTool( EffigyIcon.OffsetTool, "Offset", "Offset - click a curve, then which side and how far",
 			SketchToolKind.Offset );
+
+		_sketchStrip.AddGap();
+
+		// USE, and its own group, because it is the only tool here that reaches outside the sketch.
+		// Everything to the left draws or edits what the sketch already contains; these two take the
+		// outline of the FACE the sketch is sitting on and make it geometry the sketch owns. Until
+		// one of them is pressed that outline is scenery - you can snap to it and you cannot build
+		// from it, which is the distinction Onshape's Use tool exists to make.
+		AddSketchTool( EffigyIcon.UseTool, "Use",
+			"Use - click a green edge of the face this sketch is on to copy it into the sketch",
+			SketchToolKind.Use );
+
+		// A press rather than a mode: there is nothing to aim at, so arming a tool for it would be a
+		// step that does nothing but wait for a click anywhere.
+		var useAll = _sketchStrip.AddButton( EffigyIcon.UseAllTool,
+			"Use all - copy the whole outline of the face this sketch is on into the sketch, so a "
+			+ "line drawn across it has something to close against",
+			checkable: false, clicked: () => _viewport.UseAllReferenceEdges() );
+
+		useAll.IconColor = EffigyToolStrip.ReferenceColor;
 
 		_sketchStrip.AddGap();
 
@@ -1061,6 +1141,11 @@ public sealed class EffigyWindow : DockWindow
 
 		_viewport.BeginSketch( feature.Sketch );
 
+		// AFTER BeginSketch, which clears whatever the last sketch was sitting on. The plane the
+		// outline is expressed in is the one the rebuild just assigned, so this cannot move above
+		// RebuildStudio either.
+		RefreshSketchReference( feature );
+
 		_viewport.ConstructionMode = false;
 
 		if ( _constructionButton is not null )
@@ -1102,6 +1187,25 @@ public sealed class EffigyWindow : DockWindow
 
 		RebuildStudio();
 		_dialog?.Rebuild();
+	}
+
+	/// <summary>
+	/// Give the sketcher the outline of the face the open sketch sits on, so it can be seen and
+	/// snapped to. Null for a sketch on Top/Front/Right, which has nothing underneath it.
+	///
+	/// REBUILT FROM THE MODEL EVERY TIME rather than cached on the feature. The face moves - that
+	/// is the whole point of attaching a sketch to one - and an outline held over from before the
+	/// move is not a stale drawing, it is a set of snap targets sitting where the face used to be.
+	/// Wrong in the one way that looks exactly like right.
+	/// </summary>
+	private void RefreshSketchReference( SketchFeature feature )
+	{
+		if ( _viewport is null )
+			return;
+
+		_viewport.SetSketchReference( feature?.Face is { } face
+			? SketchReference.FromFace( _studio.Bodies, face, feature.Sketch.Plane )
+			: null );
 	}
 
 	/// <summary>The feature that owns the sketch currently being drawn on, by identity.</summary>
@@ -1635,6 +1739,7 @@ public sealed class EffigyWindow : DockWindow
 		{
 			MaterialChanged = SetSlotMaterial,
 			MaterialActivated = SetBaseMaterial,
+			ScaleChanged = SetMaterialScale,
 		};
 
 		_rigPanel = new EffigyRigPanel( this, _studio, _viewport );
@@ -1727,7 +1832,10 @@ public sealed class EffigyWindow : DockWindow
 		// Bumped from Effigy5: the Materials dock is now the material browser rather than a column
 		// of slot rows, and it wants room to show a grid. A restored Effigy5 layout would give the
 		// new panel the width the old list was sized for and it would come back one cell wide.
-		StateCookie = "Effigy6";
+		// Bumped from Effigy6: the default layout opens the feature tree and nothing else. Which
+		// docks are open lives in the saved layout, so without a new cookie everyone who has
+		// already opened Effigy keeps starting with the Rig and Materials columns forever.
+		StateCookie = "Effigy7";
 	}
 
 	/// <summary>Hide or show one body, from the Parts list's eye or its Hide menu item.
@@ -1838,18 +1946,19 @@ public sealed class EffigyWindow : DockWindow
 		}
 	}
 
+	/// <summary>The window a fresh Effigy opens as: the feature tree on the left, the viewport
+	/// taking everything else, and nothing else on screen.
+	///
+	/// THE RIG AND MATERIALS DOCKS ARE REGISTERED BUT DELIBERATELY NOT OPENED. Both are for work
+	/// that comes after there is a shape to do it to, and a window that starts with three panels
+	/// open spends its first minute being closed rather than used. Each is one click away in View,
+	/// which is the whole reason every dock now has a line in that menu.</summary>
 	protected override void BuildDefaultLayout()
 	{
 		var featuresDock = DockManager.OpenDock( "Features", DockArea.Left, _centralDock );
 		DockManager.SetSplitterProportions( featuresDock, 0.26f, 0.74f );
 
 		DockManager.RaiseDock( "Features" );
-		DockManager.OpenDock( "Rig", DockArea.Right, _centralDock );
-		DockManager.OpenDock( "Materials", DockArea.Right, _centralDock );
-
-		// The Rig in front of the Materials on a fresh window: rigging is the step you reach for
-		// first, and the two share the tab.
-		DockManager.RaiseDock( "Rig" );
 	}
 
 	// --- status bar -------------------------------------------------------------------------
@@ -2010,6 +2119,13 @@ public sealed class EffigyWindow : DockWindow
 
 		UpdateDisplaySketches();
 
+		// The face an open sketch is drawn on has just been rebuilt, so its outline is a rebuild
+		// out of date. This is what makes editing the block underneath while its sketch is open
+		// work rather than quietly snap to where that block used to be — and it is why the outline
+		// lives here rather than being handed over once on entry.
+		if ( _viewport?.IsSketching == true && ActiveSketchFeature() is { } openSketch )
+			RefreshSketchReference( openSketch );
+
 		// Feature.Error and Feature.Warning are only meaningful once the studio has tried to run
 		// the feature, so the dialog's state is refreshed here rather than when it was opened.
 		_dialog?.RefreshState();
@@ -2032,6 +2148,7 @@ public sealed class EffigyWindow : DockWindow
 	{
 		DockManager.SetDockState( "Tutorial", true );
 		DockManager.RaiseDock( "Tutorial" );
+		SyncDockChecks();
 
 		_tutorial?.Restart();
 		RefreshTutorial();
@@ -2047,6 +2164,7 @@ public sealed class EffigyWindow : DockWindow
 
 		DockManager.SetDockState( title, true );
 		DockManager.RaiseDock( title );
+		SyncDockChecks();
 	}
 
 	/// <summary>Re-read the document, advance the tutorial past anything already done, and repaint
@@ -2144,9 +2262,10 @@ public sealed class EffigyWindow : DockWindow
 	/// consume a sketch that has not run yet.</summary>
 	private void UpdateDisplaySketches() => UpdatePickTargets( _dialog?.Feature );
 
-	/// <summary>Turn the material-slot tint on and off. On by default: a slot you cannot see is a
-	/// slot you cannot check, and slot 0 - which is every face until someone says otherwise - is
-	/// not tinted at all, so a model with no materials assigned looks exactly as it did.</summary>
+	/// <summary>Turn the material-slot tint on and off. OFF by default, because the preview now
+	/// renders the real vmat bound to each slot and a tint over the top of that is a lie about what
+	/// the part is made of. Turn it on to ask the other question - which SLOT a face is on, which two
+	/// slots sharing one material or an unbound slot cannot be read off the rendered colour.</summary>
 	private void ToggleMaterialShading()
 	{
 		if ( _viewport is null )
@@ -2954,19 +3073,32 @@ public sealed class EffigyWindow : DockWindow
 	/// Same one-node RenderMeshFile shape as EffigyTool.BuildVmdl, plus whatever PhysicsShapeList
 	/// VmdlPhysics built - an empty string when there is none.
 	///
-	/// THE -90 YAW IS NOT DECORATION. ModelDoc's OBJ importer does not land the mesh in the
-	/// coordinates the file gives it: a bar written along +x comes out of the compiler lying along
-	/// +y. That was survivable while the .vmdl carried no collision - the part was simply a quarter
-	/// turn from how it was drawn - and it stops being survivable the moment physics shapes go in,
-	/// because those ARE in the file's own coordinates and would sit at ninety degrees to the model
-	/// they belong to. Collision that misses the thing it is attached to is the worst of the three
-	/// possible outcomes here.
+	/// THE -90 PITCH AND -90 YAW ARE NOT DECORATION. ModelDoc's OBJ importer does not land the mesh
+	/// in the coordinates the file gives it. It reads the file as Y-up (the OBJ convention) and then
+	/// turns it another quarter turn, so the whole thing arrives cyclically permuted:
 	///
-	/// MEASURED, and both signs were tried: a bar occupying x = 0..10 was compiled with a matching
-	/// PhysicsShapeBox over the same range, and the two physics volumes were unioned. At +90 the
-	/// union read 20 across - the mesh had gone to x = -10..0 - and at -90 it read 10, which is the
-	/// two coinciding exactly. The whole two-box export then came back 13 x 4 x 4 in both render and
-	/// physics, which is the number it is drawn as.
+	///     engine.x = obj.z    engine.y = obj.x    engine.z = obj.y
+	///
+	/// The kernel is Z-up - its sketch planes are named "Top (XY)", "Front (XZ)", "Right (YZ)" - so
+	/// this is TWO errors stacked, and only one of them used to be corrected here. A bare -90 yaw
+	/// undoes the extra turn and leaves the Y-up reading in place, landing the mesh at
+	/// (obj.x, -obj.z, obj.y): a part drawn lying flat comes out standing on its side. [-90, -90, 0]
+	/// is the full inverse of the permutation above and puts the mesh back in the coordinates the
+	/// file was written in.
+	///
+	/// MEASURED. A two-box part whose OBJ bounds are 155 x 159 x 84 compiled to 84 x 155 x 159 at
+	/// rotation zero - the permutation, read straight off the numbers - and to 155 x 159 x 84 at
+	/// [-90, -90, 0], with the bar still pointing along +x and the raised lip still on top, so this
+	/// is the identity and not some other transform that happens to share its bounds.
+	///
+	/// The old measurement was not wrong, it was too narrow: it unioned a bar along x = 0..10 with a
+	/// matching PhysicsShapeBox and checked only that ONE axis came back 10 wide. A -90 yaw does
+	/// hold x still, which is why it passed while y and z stayed swapped.
+	///
+	/// This matters most for collision. The shapes BuildPhysics emits come from CollisionBuilder
+	/// over the studio, i.e. in kernel coordinates, and import_rotation does not touch them - so the
+	/// mesh has to arrive in kernel coordinates too, or the collision sits at an angle to the model
+	/// it belongs to.
 	///
 	/// The DMX path does not get this and must not: it is only the OBJ importer that turns the mesh,
 	/// and the rigged export uses PhysicsMeshFromRender anyway, so its physics follows its mesh
@@ -2992,7 +3124,7 @@ public sealed class EffigyWindow : DockWindow
 		"\t\t\t\t\t\t]\n" +
 		$"\t\t\t\t\t\tfilename = \"{meshFilename}\"\n" +
 		"\t\t\t\t\t\timport_translation = [ 0.0, 0.0, 0.0 ]\n" +
-		"\t\t\t\t\t\timport_rotation = [ 0.0, -90.0, 0.0 ]\n" +
+		"\t\t\t\t\t\timport_rotation = [ -90.0, -90.0, 0.0 ]\n" +
 		"\t\t\t\t\t\timport_scale = 1.0\n" +
 		"\t\t\t\t\t\talign_origin_x_type = \"None\"\n" +
 		"\t\t\t\t\t\talign_origin_y_type = \"None\"\n" +
@@ -3534,6 +3666,7 @@ public sealed class EffigyWindow : DockWindow
 	private const string GridSpacingCookie = "Effigy.GridSpacing";
 	private const string SnapGridCookie = "Effigy.SnapToGrid";
 	private const string SnapPointsCookie = "Effigy.SnapToPoints";
+	private const string SnapFaceEdgesCookie = "Effigy.SnapToFaceEdges";
 
 	/// <summary>Defaults to off. The stand-in is a whole character in the viewport and most parts
 	/// are not built at body scale, so it is something you ask for rather than something you have
@@ -3562,6 +3695,7 @@ public sealed class EffigyWindow : DockWindow
 		GridSpacing = _viewport?.GridSpacing ?? 0f,
 		SnapToGrid = _viewport?.SnapToGrid ?? true,
 		SnapToPoints = _viewport?.SnapToPoints ?? true,
+		SnapToFaceEdges = _viewport?.SnapToFaceEdges ?? true,
 		PaletteIndex = _paletteIndex,
 		ShowSizeReference = _viewport?.ShowSizeReference ?? false,
 		SizeReferenceHeight = _viewport?.SizeReferenceHeight ?? 0f,
@@ -3578,6 +3712,7 @@ public sealed class EffigyWindow : DockWindow
 			_viewport.GridSpacing = values.GridSpacing;
 			_viewport.SnapToGrid = values.SnapToGrid;
 			_viewport.SnapToPoints = values.SnapToPoints;
+			_viewport.SnapToFaceEdges = values.SnapToFaceEdges;
 			_viewport.ShowSizeReference = values.ShowSizeReference;
 
 			// READ BACK, not echoed. The viewport turns the switch off again if the citizen will
@@ -3595,6 +3730,7 @@ public sealed class EffigyWindow : DockWindow
 		EditorCookie.Set( GridSpacingCookie, values.GridSpacing );
 		EditorCookie.Set( SnapGridCookie, values.SnapToGrid );
 		EditorCookie.Set( SnapPointsCookie, values.SnapToPoints );
+		EditorCookie.Set( SnapFaceEdgesCookie, values.SnapToFaceEdges );
 		EditorCookie.Set( SizeReferenceCookie, values.ShowSizeReference );
 
 		return values;
@@ -3612,6 +3748,7 @@ public sealed class EffigyWindow : DockWindow
 		_viewport.GridSpacing = EditorCookie.Get( GridSpacingCookie, 0f );
 		_viewport.SnapToGrid = EditorCookie.Get( SnapGridCookie, true );
 		_viewport.SnapToPoints = EditorCookie.Get( SnapPointsCookie, true );
+		_viewport.SnapToFaceEdges = EditorCookie.Get( SnapFaceEdgesCookie, true );
 		_viewport.ShowSizeReference = EditorCookie.Get( SizeReferenceCookie, false );
 	}
 
@@ -3848,6 +3985,8 @@ public sealed class EffigyWindow : DockWindow
 
 		rename.StatusTip = "The name every exporter writes for this slot";
 
+		AddTextureScaleMenu( menu, hit );
+
 		var shade = menu.AddOption( "Shade Material Slots", "palette",
 			() => _viewport.ShadeMaterialSlots = !_viewport.ShadeMaterialSlots );
 
@@ -3856,6 +3995,141 @@ public sealed class EffigyWindow : DockWindow
 
 		menu.OpenAtCursor();
 	}
+
+	/// <summary>
+	/// The size of the material on the face you right-clicked, as a submenu.
+	///
+	/// WHY HERE FIRST. A material that is the wrong size is something you notice by LOOKING at it,
+	/// and what you do next is right-click the thing that looks wrong. Every other route — a field
+	/// in a dock, a UV Project feature in the tree — asks you to leave the face and go find the
+	/// control, which is exactly the walk that made this feel like it did not exist.
+	///
+	/// THE VERBS ARE THE MESH EDITOR'S. s&amp;box's FaceTool offers doubling and halving buttons and a
+	/// Fit with a repeat count, rather than a number field, because texture size is a thing you
+	/// converge on by eye: you cannot look at a floor and say "38", you can say "bigger" four times.
+	/// Fit is the one exact answer available without measuring anything, and it is also the only
+	/// entry that is honest on an extrude SIDE, whose UVs are not in units at all — it measures the
+	/// face rather than assuming what its numbers mean.
+	///
+	/// SLOT 0 IS EXCLUDED. It is every face nobody has painted, so resizing it from one face resizes
+	/// most of the part — the same reason MaterialDrop refuses to allocate it. The entry is left
+	/// visible and disabled rather than hidden, so the menu does not change shape depending on where
+	/// you clicked.
+	/// </summary>
+	private void AddTextureScaleMenu( Menu menu, EffigyFaceHit hit )
+	{
+		var slot = hit.Material;
+		var scale = MaterialScale.ScaleFor( _studio, slot );
+
+		// Shown on the parent entry, because the current size is the thing you came to find out and
+		// making you open a submenu to read it is a click for nothing.
+		var square = MathF.Abs( scale.x - scale.y ) < 0.01f;
+		var reading = square ? $"{Round( scale.x )}" : $"{Round( scale.x )} × {Round( scale.y )}";
+
+		var scaleMenu = menu.AddMenu( $"Texture scale — {reading} u/tile", "aspect_ratio" );
+
+		if ( slot <= 0 )
+		{
+			// AddOption rather than a note, so the reason is attached to something that looks like
+			// the thing you were reaching for.
+			var blocked = scaleMenu.AddOption( "Put this face on a material slot first", "block" );
+			blocked.Enabled = false;
+			blocked.StatusTip = "Slot 0 is every unpainted face — resizing it would resize the part";
+
+			return;
+		}
+
+		scaleMenu.AddOption( "Bigger  (×2)", "zoom_in", () => ScaleFaceMaterial( slot, 2f ) );
+		scaleMenu.AddOption( "Smaller  (÷2)", "zoom_out", () => ScaleFaceMaterial( slot, 0.5f ) );
+
+		scaleMenu.AddSeparator();
+
+		// One, two and four repeats rather than one alone: fitting a floor to a single repeat is a
+		// tile the size of the room, which is right for a sign and never right for a tile.
+		foreach ( var repeats in new[] { 1, 2, 4 } )
+		{
+			var count = repeats;
+
+			scaleMenu.AddOption( count == 1 ? "Fit to face" : $"Fit — {count} across", "fit_screen",
+				() => FitFaceMaterial( hit, count ) );
+		}
+
+		scaleMenu.AddSeparator();
+
+		// The sizes a game texture is actually authored at, in inches. 48 is on the list because a
+		// 12-inch tile four to a repeat is the case that started all of this.
+		foreach ( var preset in new[] { 16f, 32f, 48f, 64f, 128f, 256f } )
+		{
+			var value = preset;
+
+			var option = scaleMenu.AddOption( $"{Round( value )} u/tile", "straighten",
+				() => SetMaterialScale( slot, new Vec2( value, value ) ) );
+
+			option.Checkable = true;
+			option.Checked = square && MathF.Abs( scale.x - value ) < 0.01f;
+		}
+
+		scaleMenu.AddSeparator();
+
+		var reset = scaleMenu.AddOption( "Reset to 1:1", "restart_alt",
+			() => SetMaterialScale( slot, MaterialScale.Unscaled ) );
+
+		reset.StatusTip = "One repeat per unit — how the model was mapped before anything was set";
+
+		// Off when there is nothing to reset, so the menu says whether this slot has been touched
+		// without anyone having to read the number at the top and know what 1 means.
+		reset.Enabled = _studio.MaterialScales.ContainsKey( slot );
+	}
+
+	/// <summary>Multiply a slot's size, which is the doubling and halving pair.</summary>
+	private void ScaleFaceMaterial( int slot, float factor ) =>
+		SetMaterialScale( slot, MaterialScale.ScaleFor( _studio, slot ) * factor );
+
+	/// <summary>
+	/// Size a slot so its material repeats a set number of times across the face that was clicked.
+	///
+	/// The face is looked up on the CURRENT bodies rather than through the FaceRef, because the
+	/// index came out of a raycast against exactly those bodies moments ago and nothing has rebuilt
+	/// since. The reference matters when an edit has to survive a rebuild; this one is consumed
+	/// before the next one.
+	/// </summary>
+	private void FitFaceMaterial( EffigyFaceHit hit, int repeats )
+	{
+		if ( hit.Body?.Mesh is not { } mesh )
+			return;
+
+		SetMaterialScale( hit.Material,
+			MaterialScale.Fit( mesh, hit.FaceIndex, MaterialScale.ScaleFor( _studio, hit.Material ), repeats ) );
+	}
+
+	/// <summary>
+	/// Resize a slot — the one place every scale control lands, exactly as SetSlotMaterial is for
+	/// naming one.
+	///
+	/// A document edit like any other: undo first, rebuild after. The rebuild is what re-divides the
+	/// UVs, since MaterialScale.Apply runs at the end of one; nothing here touches a mesh directly.
+	/// </summary>
+	private void SetMaterialScale( int slot, Vec2 scale )
+	{
+		if ( _studio is null )
+			return;
+
+		RecordUndo();
+
+		if ( !MaterialScale.SetScale( _studio, slot, scale ) )
+			return;
+
+		RebuildStudio();
+
+		var now = MaterialScale.ScaleFor( _studio, slot );
+
+		SetPrompt( $"{_studio.NameForSlot( slot )} at {Round( now.x )} × {Round( now.y )} units per tile." );
+	}
+
+	/// <summary>A size as you would say it out loud: 48 rather than 48.000, 0.5 rather than
+	/// 0.500.</summary>
+	private static string Round( float value ) =>
+		value.ToString( MathF.Abs( value - MathF.Round( value ) ) < 0.005f ? "0" : "0.##" );
 
 	/// <summary>
 	/// Which slots the menu offers: zero through seven, plus anything the document already uses.
@@ -3976,10 +4250,29 @@ public sealed class EffigyWindow : DockWindow
 
 		RecordUndo();
 
-		if ( MaterialDrop.Drop( _studio, hit.Body.Id, hit.FaceIndex, hit.Reference, material, out var slot ) )
+		// The slot the material is about to land on, asked BEFORE the drop, so "was this slot in use
+		// already" has an answer. A material joining a slot it is already on must keep the size that
+		// slot was given — the whole point of one-slot-per-material is that the second drop is the
+		// same material, and re-guessing its size would undo a number somebody typed.
+		var fresh = MaterialDrop.SlotCarrying( _studio, material ) < 0;
+
+		if ( MaterialDrop.Drop( _studio, hit.Body.Id, hit.FaceIndex, hit.Reference, material,
+			out var slot, out var released ) )
 		{
+			// Only a slot this drop INVENTED gets a guessed size. See EffigyMaterialSize for where
+			// the number comes from and why it is the editor's own rule rather than one of ours.
+			if ( fresh && slot > 0 )
+				MaterialScale.SetScale( _studio, slot, EffigyMaterialSize.For( material ) );
+
 			RebuildStudio();
-			SetPrompt( $"{MaterialFileName( material )} → slot {slot}. Ctrl+Z puts it back." );
+
+			// The freed slot is said out loud for the same reason the chosen one is. Changing your
+			// mind about a face used to leave the material you rejected bound to a slot forever,
+			// which is invisible here and turns up as an export full of materials the part does not
+			// wear. Now it is cleaned up — and a cleanup nobody is told about is its own surprise.
+			SetPrompt( released >= 0
+				? $"{MaterialFileName( material )} → slot {slot}, and slot {released} was freed. Ctrl+Z puts it back."
+				: $"{MaterialFileName( material )} → slot {slot}. Ctrl+Z puts it back." );
 
 			return;
 		}
@@ -4158,6 +4451,12 @@ internal sealed class EffigyFeatureTreePanel : Widget
 	/// world space and never follows anything. Both are legitimate and they look identical once
 	/// the dialog is closed, which makes "why did that not update?" impossible to answer by
 	/// looking at the tree. Now the row says which one it is.
+	///
+	/// WORDED EXACTLY AS THE PLANE BOX WORDS IT — "Face of Extrude 1", not "on Extrude 1". They are
+	/// the same fact stated in two places a few pixels apart, and two phrasings of one fact read as
+	/// two different facts: the box named a face and the row named something else, so the row had
+	/// to be decoded rather than read. See EffigyFeatureDialog.FaceLabel, which is the other half
+	/// of this and must keep saying the same thing.
 	/// </summary>
 	public string AttachmentLabel( SketchFeature sketch )
 	{
@@ -4175,7 +4474,16 @@ internal sealed class EffigyFeatureTreePanel : Widget
 
 		// A face reference that resolves to nothing is the one case worth shouting about: the
 		// sketch is about to fail, or already has.
-		return body is null ? "face (missing)" : $"on {body.Name ?? "part"}";
+		if ( body is null )
+			return "Face of (missing)";
+
+		var raised = sketch.PlaneOffset.Value;
+
+		// The offset applies to a face-attached sketch exactly as it does to a global plane, and
+		// leaving it off the row here said the sketch was ON a face when it was floating above it.
+		return raised == 0f
+			? $"Face of {body.Name ?? "part"}"
+			: $"Face of {body.Name ?? "part"} {raised:+0.##;-0.##}";
 	}
 
 	/// <summary>True when the rollback bar sits above this feature, so it is not being evaluated.
@@ -4639,6 +4947,17 @@ internal sealed class EffigyToolStrip : Widget
 	/// this rather than picking its own green.
 	/// </summary>
 	public static Color ConfirmColor => Theme.Green;
+
+	/// <summary>
+	/// The colour the sketcher paints the outline of the face being sketched on, so a button that
+	/// acts on that outline wears it too.
+	///
+	/// NOT ConfirmColor, even though both are green. That one means "this commits what you have
+	/// been doing" and is spent carefully - two on screen at once is already the most it should be.
+	/// This one means "this is about the part underneath", and it matches SketchReferenceColor in
+	/// the viewport rather than the theme.
+	/// </summary>
+	public static Color ReferenceColor => new( 0.45f, 1f, 0.6f, 1f );
 
 	/// <summary>
 	/// The ONLY thing a tool button does when you interact with it: a faint halo hugging its outer

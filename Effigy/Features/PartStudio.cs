@@ -63,6 +63,17 @@ public sealed class PartStudio
 	/// </summary>
 	public Dictionary<int, string> MaterialNames = new();
 
+	/// <summary>
+	/// How many world units one repeat of a slot's material covers, for the slots somebody has
+	/// resized. Absent means one-to-one — see <see cref="MaterialScale"/> for why that is the
+	/// default and why the number lives on the slot rather than on the face.
+	///
+	/// Beside MaterialNames because it is the same kind of fact about the same thing: what the slot
+	/// carries, and how big it is. A dictionary keyed the same way, saved on the same line-per-slot
+	/// rule, and cleared by the same drop that retires a name.
+	/// </summary>
+	public Dictionary<int, Vec2> MaterialScales = new();
+
 	/// <summary>The name for a slot, falling back to the numbered default. Pass this straight to any
 	/// of the exporters.</summary>
 	public string NameForSlot( int slot ) =>
@@ -307,6 +318,14 @@ public sealed class PartStudio
 
 		Bodies = ctx.Bodies;
 		ApplyBodyPresentation();
+
+		// AFTER the feature loop, for the same reason ApplyBodyPresentation is: the features produce
+		// the UVs this divides, so running it any earlier would hand already-scaled UVs to the
+		// feature above and scale them twice. Safe to run on a rebuild that re-evaluated nothing,
+		// because the cache holds clones taken inside the loop and ctx.Bodies was cloned back out of
+		// it — what this touches is never what the next rebuild reads.
+		MaterialScale.Apply( this );
+
 		_dirtyFrom = count;
 
 		return report;

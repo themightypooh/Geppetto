@@ -36,10 +36,12 @@ internal sealed partial class EffigyViewport
 	/// reason: a sketch can be one unit across or a thousand.</summary>
 	private const float CornerPickPixels = 10f;
 
-	/// <summary>True when this tool is one of the six here rather than one of the original twelve.</summary>
+	/// <summary>True when this tool is one of the six here rather than one of the original twelve.
+	/// Use joined them later - it is the same shape of thing, a pick rather than a placement.</summary>
 	private static bool IsNewSketchTool( SketchToolKind tool ) => tool
 		is SketchToolKind.Ellipse or SketchToolKind.Spline or SketchToolKind.Trim
-		or SketchToolKind.Extend or SketchToolKind.Fillet or SketchToolKind.Offset;
+		or SketchToolKind.Extend or SketchToolKind.Fillet or SketchToolKind.Offset
+		or SketchToolKind.Use;
 
 	// --- clicks ---------------------------------------------------------------------------------
 
@@ -86,6 +88,11 @@ internal sealed partial class EffigyViewport
 				PushPrompt();
 				return true;
 			}
+
+			case SketchToolKind.Use:
+				_pending.Clear();
+				ApplyUse();
+				return true;
 
 			case SketchToolKind.Trim:
 				_pending.Clear();
@@ -157,6 +164,80 @@ internal sealed partial class EffigyViewport
 
 	private int _filletCorner = -1;
 	private string _offsetCurveId;
+
+	// --- Use ------------------------------------------------------------------------------------
+
+	/// <summary>
+	/// Copy the face edge under the cursor into the sketch, turning it from scenery into geometry.
+	///
+	/// THE PICK IS ALREADY DONE. Every non-Select tool runs the cursor through SnapPoint each frame,
+	/// and that reports which reference edge it slid onto - the same one drawn lit. So this tool
+	/// needs no hit test of its own, and what you get is exactly the edge you can see highlighted,
+	/// which is the property that makes a picking tool trustworthy.
+	/// </summary>
+	private void ApplyUse()
+	{
+		if ( ActiveSketchReference is not { } reference )
+		{
+			SetSketchPrompt( "Use - this sketch is on a global plane, so there is nothing underneath it to use." );
+			return;
+		}
+
+		if ( _snapReferenceEdge < 0 )
+		{
+			SetSketchPrompt( "Use - hover one of the green edges of the face until it lights up, then click it." );
+			return;
+		}
+
+		// NO SketchEditing HERE. ClickTool already took the undo snapshot before handing the click
+		// on - the same as Trim and Extend, which is why neither of them takes one either. A second
+		// snapshot for one action makes the first Ctrl+Z look like it did nothing.
+		if ( reference.UseEdge( ActiveSketch, _snapReferenceEdge ) is null )
+		{
+			SetSketchPrompt( "Use - that edge is already in the sketch." );
+			return;
+		}
+
+		Edited();
+	}
+
+	/// <summary>
+	/// Take the WHOLE outline in one press, which is what the tool is nearly always for: four edges
+	/// and then a line across them is the shape of the job, and clicking each edge in turn is four
+	/// chances to miss one and wonder why the region will not close.
+	///
+	/// Not a mode - it happens on the press and there is nothing to aim, so it is a plain button
+	/// rather than a tool that arms.
+	/// </summary>
+	public void UseAllReferenceEdges()
+	{
+		if ( ActiveSketch is null )
+			return;
+
+		if ( ActiveSketchReference is not { } reference )
+		{
+			SetSketchPrompt( "Use all - this sketch is on a global plane, so there is nothing underneath it to use." );
+			return;
+		}
+
+		// This one DOES snapshot: it comes from a button rather than a viewport click, so ClickTool
+		// never ran and nothing else has recorded the state to go back to.
+		SketchEditing?.Invoke();
+
+		var added = reference.UseAll( ActiveSketch );
+
+		if ( added == 0 )
+		{
+			SetSketchPrompt( "Use all - the face's outline is already in the sketch." );
+			return;
+		}
+
+		SetSketchPrompt( added == 1
+			? "Use all - took 1 edge of the face into the sketch."
+			: $"Use all - took {added} edges of the face into the sketch." );
+
+		Edited();
+	}
 
 	// --- the four edits -------------------------------------------------------------------------
 
@@ -483,7 +564,12 @@ internal sealed partial class EffigyViewport
 
 			SketchToolKind.Spline when _splinePoints.Count == 0 => "Spline - click to place points",
 			SketchToolKind.Spline when _splinePoints.Count == 1 => "Spline - click another point (Enter finishes)",
-			SketchToolKind.Spline => $"Spline - {_splinePoints.Count} points, Enter finishes, Escape abandons",
+			SketchToolKind.Spline => $"Spline - {_splinePoints.Count} points, Enter finishes, right-click or Escape abandons",
+
+			SketchToolKind.Use when ActiveSketchReference is null
+				=> "Use - this sketch is on a global plane; there is no face underneath it to use",
+			SketchToolKind.Use
+				=> "Use - click a green edge of the face to copy it into the sketch",
 
 			SketchToolKind.Trim => "Trim - click the piece of a curve you want gone",
 			SketchToolKind.Extend => "Extend - click the end of a curve you want stretched",

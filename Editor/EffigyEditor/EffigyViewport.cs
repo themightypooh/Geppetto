@@ -132,6 +132,10 @@ internal sealed partial class EffigyViewport : Widget
 	/// panel can sync its tree selection. The int is the bone index, or -1 for deselected.</summary>
 	public Action<int> BoneSelectionChanged { get; set; }
 
+	/// <summary>The cubemap the reflection probe lights off. s&amp;box's own default scene uses this
+	/// one, which is the point — the reflections in the viewport are the reflections in game.</summary>
+	private const string SkyCubemap = "textures/cubemaps/default2.vtex";
+
 	private Color _backgroundColor = new( 0.82f, 0.84f, 0.86f, 1f );
 
 	/// <summary>
@@ -186,21 +190,13 @@ internal sealed partial class EffigyViewport : Widget
 			_camera.ZNear = 0.5f;
 			_camera.ZFar = 8192;
 			_camera.FieldOfView = 45f;
+			// Post processing is what runs the tonemapper below. Explicit rather than relying on
+			// the default, because everything under it is chosen to match a runtime scene and
+			// silently losing the tonemapper puts the washed-out look straight back.
+			_camera.EnablePostProcessing = true;
 			_camera.Enabled = true;
 
-			var sun = new GameObject( true, "sun" ).GetOrAddComponent<DirectionalLight>( false );
-			sun.WorldRotation = Rotation.From( 45, 45, 0 );
-			sun.LightColor = Color.White;
-			sun.Enabled = true;
-
-			var fill = new GameObject( true, "fill" ).GetOrAddComponent<DirectionalLight>( false );
-			fill.WorldRotation = Rotation.From( -30, -120, 0 );
-			fill.LightColor = new Color( 0.6f, 0.6f, 0.6f, 1f );
-			fill.Enabled = true;
-
-			var ambient = new GameObject( true, "ambient" ).GetOrAddComponent<AmbientLight>( false );
-			ambient.Color = new Color( 0.6f, 0.6f, 0.6f, 1f );
-			ambient.Enabled = true;
+			BuildRuntimeLighting();
 
 			_canvas.Camera = _camera;
 		}
@@ -215,6 +211,67 @@ internal sealed partial class EffigyViewport : Widget
 		// layout in the right order.
 
 		FrameCamera();
+	}
+
+	/// <summary>
+	/// Light the viewport the way a runtime scene is lit, so a material looks here like it looks
+	/// in game.
+	///
+	/// The rig this replaced was a light box: a full-strength white sun, a 0.6 fill from behind,
+	/// and a flat 0.6 ambient on top. That is roughly 2.2x white light on a face pointing at the
+	/// sun, with no tonemapper after it to roll the top end off, so a 0.5 grey rendered at about
+	/// 0.88 and every pastel arrived at the screen as near-white. Materials could be told apart in
+	/// it but not judged, which is no use once the preview is wearing the real vmats.
+	///
+	/// The values are the ones s&amp;box's own default scene ships with — one sun slightly cool, a
+	/// dim neutral ambient, a cubemap for reflections — so "how it looks in Effigy" and "how it
+	/// looks in game" are answers to the same question.
+	/// </summary>
+	private void BuildRuntimeLighting()
+	{
+		// Key light. Kept at the viewport's own 45/45 rather than the template's angle: this one is
+		// aimed to read a part sitting on the origin from the default camera, and the colour is
+		// what makes the difference to a material, not the direction.
+		var sun = new GameObject( true, "sun" ).GetOrAddComponent<DirectionalLight>( false );
+		sun.WorldRotation = Rotation.From( 45, 45, 0 );
+		sun.LightColor = new Color( 0.914f, 0.980f, 1f, 1f );
+		// The legacy sky term, off. Ambient comes from the AmbientLight below — s&amp;box's own
+		// tooltip on this property says to do it that way, and doubling the two is how the old rig
+		// ended up over-lit.
+		sun.SkyColor = Color.Black;
+		sun.Enabled = true;
+
+		// NO FILL LIGHT. A second sun with no shadow is what a photographer does to a subject, not
+		// what a game does to a prop, and it was the single biggest reason the unlit side of a part
+		// read a completely different colour here than in game.
+
+		var ambient = new GameObject( true, "ambient" ).GetOrAddComponent<AmbientLight>( false );
+		ambient.Color = new Color( 0.237f, 0.237f, 0.237f, 1f );
+		ambient.Enabled = true;
+
+		// The sky, for REFLECTIONS ONLY — deliberately a probe and not a SkyBox2D. A 2D sky takes
+		// over the camera's background (its own docs say the background colour applies only when
+		// there is no 2D sky in the scene), and the background here belongs to the View menu's
+		// palette. A probe pointed at the same cubemap lights off it without drawing it.
+		var sky = new GameObject( true, "sky" ).GetOrAddComponent<EnvmapProbe>( false );
+		sky.Texture = Texture.Load( SkyCubemap );
+		// Bounds are the probe's reach, and they have to cover wherever the camera can fly, which is
+		// the far plane. Everything else about the probe is left at its shipped default on purpose.
+		sky.Bounds = new BBox( new Vector3( -8192f ), new Vector3( 8192f ) );
+		sky.Enabled = true;
+
+		// Tonemapping, WITH AUTO EXPOSURE OFF. The tonemapper is the half that has to match: runtime
+		// rolls its highlights off and the viewport used to clip them, which is why a pastel came
+		// out white. Auto exposure is the half deliberately not copied — it re-exposes the shot as
+		// geometry appears and disappears, so the same material would render a different colour
+		// depending on what else happened to be on screen. That is the exact complaint this rig
+		// exists to answer, so exposure is pinned.
+		var tonemap = _camera.GameObject.GetOrAddComponent<Tonemapping>( false );
+		tonemap.AutoExposureEnabled = false;
+		tonemap.MinimumExposure = 1f;
+		tonemap.MaximumExposure = 1f;
+		tonemap.ExposureCompensation = 0f;
+		tonemap.Enabled = true;
 	}
 
 	// --- layout helpers ---------------------------------------------------------------------

@@ -35,6 +35,9 @@ public static class SnapTests
 
 		Report.Section( "snapping: point reuse and inference" );
 		TestReuseAndInference();
+
+		Report.Section( "snapping: a reported axis lock is true of the point that comes back" );
+		TestInferenceIsTrue();
 	}
 
 	/// <summary>How many sketch units a pixel covers with a part of this size framed in a ~700px
@@ -241,5 +244,121 @@ public static class SnapTests
 		Report.Check( "landing on a committed point reports its index",
 			onto.SnappedPointIndex == 0 && onto.Point.x == 3f && onto.Point.y == 3f,
 			$"index {onto.SnappedPointIndex}, point {onto.Point}" );
+	}
+
+	/// <summary>
+	/// InferenceAxis says one thing and one thing only: THIS POINT SHARES A COORDINATE WITH THE
+	/// START OF THE LINE BEING DRAWN.
+	///
+	/// It is not advisory. The line tool reads bit 1 and adds a real Vertical constraint to the line
+	/// it commits (EffigyViewport.Sketching.cs, the SketchToolKind.Line and LineMidpoint cases), and
+	/// the sketcher draws its guide through pending[0] on the strength of the same bit. A bit that is
+	/// true of something ELSE - of a committed point the cursor happened to land on, of some
+	/// unrelated corner the alignment pass lined up with - is not a weaker version of that claim. It
+	/// is a false one, and the cost is a rule the geometry breaks: the solver enforces it on the next
+	/// rebuild and drags the point off wherever it was put.
+	///
+	/// Every check here failed before the bits were verified against pending[0].
+	/// </summary>
+	static void TestInferenceIsTrue()
+	{
+		const float size = 10f;
+		var upp = UnitsPerPixel( size );
+		var start = new Vec2( 0f, 0f );
+
+		// --- the two false positives -------------------------------------------------------
+
+		// A committed point sitting a few pixels OFF the vertical through the line's start. The
+		// near-vertical aim locks x, and then the point pass overrides it and wins - the click lands
+		// on the point, which is right, and the line through it is not vertical, which the bit used
+		// to keep insisting it was.
+		var offAxis = new Sketch();
+		offAxis.AddPoint( new Vec2( 4f * upp, 5f ) );
+
+		var ontoPoint = ScreenSpace( upp )
+			.Snap( offAxis, new Vec2( 6f * upp, 5f ), new[] { start }, lineInProgress: true );
+
+		Report.Check( "snapping onto an off-axis point drops the vertical lock",
+			ontoPoint.SnappedPointIndex == 0 && (ontoPoint.InferenceAxis & 1) == 0,
+			$"index {ontoPoint.SnappedPointIndex}, axis {ontoPoint.InferenceAxis}, x {ontoPoint.Point.x}" );
+
+		// Lining up with the x of SOME OTHER point. A useful snap - it is how you get a corner
+		// directly above another one - and it says nothing whatever about the line from the start
+		// point to here being vertical, because that other x is not the start point's x.
+		var elsewhere = new Sketch();
+		elsewhere.AddPoint( new Vec2( 3f, 7f ) );
+
+		var linedUp = ScreenSpace( upp )
+			.Snap( elsewhere, new Vec2( 3f + 2f * upp, 2f ), new[] { start }, lineInProgress: true );
+
+		Report.Check( "lining up with an unrelated point's x is not a vertical line",
+			(linedUp.InferenceAxis & 1) == 0,
+			$"axis {linedUp.InferenceAxis}, x {linedUp.Point.x} vs start {start.x}" );
+
+		Report.Check( "and the snap itself still happens - only the claim was dropped",
+			MathF.Abs( linedUp.Point.x - 3f ) < 1e-4f, $"x {linedUp.Point.x}" );
+
+		// --- the true positives, which must survive ----------------------------------------
+
+		var real = ScreenSpace( upp )
+			.Snap( new Sketch(), new Vec2( 3f * upp, 5f ), new[] { start }, lineInProgress: true );
+
+		Report.Check( "a genuinely near-vertical click still locks and still reports it",
+			(real.InferenceAxis & 1) != 0 && MathF.Abs( real.Point.x - start.x ) < 1e-6f,
+			$"axis {real.InferenceAxis}, x {real.Point.x}" );
+
+		// THE GRID USED TO CANCEL THE LOCK. The line pass puts the cursor exactly on the start's x;
+		// rounding then puts it on the nearest grid line, which is the same number only when the
+		// start happens to sit on the grid. It usually does - it was grid-snapped too - so this hid
+		// until the start came from somewhere else, a committed corner or a face's vertex.
+		var offGrid = new Vec2( 0.07f, 0f );
+
+		var throughGrid = ScreenSpace( upp )
+			.Snap( new Sketch(), offGrid + new Vec2( 3f * upp, 5f ), new[] { offGrid }, lineInProgress: true );
+
+		Report.Check( "an off-grid start still gives a truly vertical line",
+			(throughGrid.InferenceAxis & 1) != 0
+			&& MathF.Abs( throughGrid.Point.x - offGrid.x ) < 1e-6f,
+			$"axis {throughGrid.InferenceAxis}, x {throughGrid.Point.x} vs start {offGrid.x}" );
+
+		// --- the postcondition, swept ------------------------------------------------------
+
+		// The property itself rather than three examples of it: wherever the cursor is, whatever it
+		// lands on, a reported bit is true of the point that came back. Run over a sketch with
+		// enough in it that every pass gets a chance to fire.
+		var busy = new Sketch();
+		busy.AddPoint( new Vec2( 0f, 0f ) );
+		busy.AddPoint( new Vec2( 3f, 7f ) );
+		busy.AddPoint( new Vec2( 4f * upp, 5f ) );
+		busy.AddPoint( new Vec2( -2.5f, 1.25f ) );
+
+		var pendingStart = new Vec2( 0.07f, 0.13f );
+		var lies = 0;
+		var locks = 0;
+
+		for ( var ix = -40; ix <= 40; ix++ )
+		{
+			for ( var iy = -40; iy <= 40; iy++ )
+			{
+				var raw = new Vec2( ix * 0.19f, iy * 0.17f );
+				var result = ScreenSpace( upp ).Snap( busy, raw, new[] { pendingStart }, lineInProgress: true );
+
+				if ( result.InferenceAxis == 0 )
+					continue;
+
+				locks++;
+
+				if ( (result.InferenceAxis & 1) != 0 && MathF.Abs( result.Point.x - pendingStart.x ) > 1e-4f )
+					lies++;
+				else if ( (result.InferenceAxis & 2) != 0 && MathF.Abs( result.Point.y - pendingStart.y ) > 1e-4f )
+					lies++;
+			}
+		}
+
+		Report.Check( "over 6561 clicks, every reported lock is true of the point returned",
+			lies == 0, $"{lies} false locks out of {locks} reported" );
+
+		// And the sweep is worth something: it has to have found locks to report on.
+		Report.Check( "the sweep did exercise the inference passes", locks > 100, $"{locks} locks" );
 	}
 }

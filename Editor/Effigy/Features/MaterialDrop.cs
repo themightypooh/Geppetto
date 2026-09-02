@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -19,6 +19,11 @@ namespace Effigy;
 /// <see cref="SlotFor"/> hands back the slot that already carries the material if there is one, so
 /// dropping the same material on thirty faces produces one slot and one assignment feature rather
 /// than thirty of each. Only a material nobody has used yet takes a fresh slot.
+///
+/// AND IT PUTS BACK WHAT IT TOOK. A drop that moves a face off a slot nothing else is holding
+/// retires that slot's name too — see <see cref="ReleaseVacatedSlot"/>. Without it, changing your
+/// mind about one face is a one-way ratchet: the slot count only ever goes up, the rejected
+/// materials stay bound to slots no face wears, and the exporters write every one of them.
 ///
 /// It edits the HISTORY, never the mesh, exactly as FaceMaterialEdit does, and for the same reason:
 /// bodies are remade from scratch on every rebuild.
@@ -116,9 +121,23 @@ public static class MaterialDrop
 	/// does not: a caller dropping onto several faces should pay for one rebuild, not one each.
 	/// </summary>
 	public static bool Drop( PartStudio studio, string bodyId, int faceIndex, FaceRef reference,
-		string material, out int slot )
+		string material, out int slot ) =>
+		Drop( studio, bodyId, faceIndex, reference, material, out slot, out _ );
+
+	/// <summary>
+	/// The same drop, also reporting the slot it retired — see <see cref="ReleaseVacatedSlot"/> —
+	/// or -1 when it retired none.
+	///
+	/// Worth saying out loud rather than doing quietly. The drop already has to announce the slot it
+	/// chose, because nothing else on screen explains where the material went; a slot that stopped
+	/// existing on the same gesture is the same kind of fact, and the Materials panel's count is
+	/// about to change because of it.
+	/// </summary>
+	public static bool Drop( PartStudio studio, string bodyId, int faceIndex, FaceRef reference,
+		string material, out int slot, out int released )
 	{
 		slot = -1;
+		released = -1;
 
 		if ( studio is null )
 			return false;
@@ -156,10 +175,85 @@ public static class MaterialDrop
 		// an optimisation: dropping a material onto the face already wearing it is the ordinary way
 		// to MISS by a few pixels, and reporting it as an edit puts a do-nothing step on the undo
 		// stack that then has to be pressed through.
-		var moved = FaceSlot( studio, bodyId, faceIndex ) != slot
+		var previous = FaceSlot( studio, bodyId, faceIndex );
+		var moved = previous != slot
 			&& FaceMaterialEdit.Assign( studio, bodyId, faceIndex, reference, slot );
 
-		return named || moved;
+		// The face has left a slot behind. If it was the last thing holding that slot, the slot goes
+		// with it — otherwise re-dropping onto one face walks it through a trail of named slots that
+		// nothing wears and every exporter still writes.
+		if ( moved && ReleaseVacatedSlot( studio, previous, slot ) )
+			released = previous;
+
+		return named || moved || released >= 0;
+	}
+
+	/// <summary>
+	/// Let go of the binding on the slot a drop just emptied, and say whether it did.
+	///
+	/// WHY A DROP HAS TO CLEAN UP AFTER ITSELF. Every other way of naming a slot names a slot you
+	/// picked; a drop invents the number, so the numbers it invents are the ones nobody is watching.
+	/// Changing your mind about one face five times walks it through five slots, and Detach does
+	/// retire the four assignment features it emptied — but the four NAMES stay, and a name is what
+	/// the exporters write. A box wearing three materials exports nine, and the first anyone hears
+	/// of it is a material list in the engine that does not match the part.
+	///
+	/// NARROW ON PURPOSE. This retires ONE slot — the one this face just left — and only when
+	/// nothing else is holding it:
+	///
+	/// - An assignment feature still targeting it means other faces are on it. A SUPPRESSED one
+	///   counts as holding it too, because un-suppressing is one click away and the name has to
+	///   still be there when it happens.
+	/// - More than one face on it in the mesh means the slot did not come from an assignment at all
+	///   — a feature that built geometry straight onto it — and those faces still wear it. The mesh
+	///   read here is the one from BEFORE this edit, so the face being moved is still counted on its
+	///   old slot: a count of one is that face alone, two is somebody else as well.
+	///
+	/// Slot 0 is never retired. It is the absence of an assignment rather than a binding this drop
+	/// is entitled to clear, and a name on it is the part's base material that every untouched face
+	/// is still wearing.
+	///
+	/// A slot named in the Materials panel and never painted is untouched by all of this, because no
+	/// face ever left it. Reserving a slot now and filling it in later stays a thing you can do.
+	/// </summary>
+	private static bool ReleaseVacatedSlot( PartStudio studio, int vacated, int landedOn )
+	{
+		if ( vacated <= 0 || vacated == landedOn )
+			return false;
+
+		if ( !studio.MaterialNames.ContainsKey( vacated ) )
+			return false;
+
+		if ( studio.Features.OfType<FaceMaterialFeature>().Any( f => f.Material.Clamped == vacated ) )
+			return false;
+
+		if ( FacesOn( studio, vacated ) > 1 )
+			return false;
+
+		// The SIZE goes with the name. A slot number that has been handed back is going to be handed
+		// out again by SlotFor, and a scale left on it is inherited by whatever material lands there
+		// next — brushed steel arriving at 48 units per tile because a floor tile used to be on slot
+		// 3. The scale is only meaningful alongside the binding it was chosen for.
+		MaterialScale.SetScale( studio, vacated, MaterialScale.Unscaled );
+
+		return studio.MaterialNames.Remove( vacated );
+	}
+
+	/// <summary>How many faces sit on a slot, across every body, in the mesh as it currently
+	/// stands.</summary>
+	private static int FacesOn( PartStudio studio, int slot )
+	{
+		var count = 0;
+
+		foreach ( var body in studio.Bodies ?? Enumerable.Empty<Body>() )
+		{
+			if ( body?.Mesh is not { } mesh )
+				continue;
+
+			count += mesh.Faces.Count( f => f.Material == slot );
+		}
+
+		return count;
 	}
 
 	/// <summary>

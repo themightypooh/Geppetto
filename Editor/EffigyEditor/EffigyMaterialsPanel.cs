@@ -136,6 +136,8 @@ internal sealed class EffigyMaterialsPanel : Widget, AssetSystem.IEventListener
 		_list.ItemContextMenu = item => OpenCellMenu( item as AssetEntry );
 		_list.ItemDrag = BeginDrag;
 
+		BuildScaleStrip();
+
 		var footer = Layout.AddRow();
 		footer.Margin = new Sandbox.UI.Margin( 8, 2, 8, 6 );
 
@@ -151,6 +153,161 @@ internal sealed class EffigyMaterialsPanel : Widget, AssetSystem.IEventListener
 		Refresh();
 	}
 
+	// --- how big the material is -----------------------------------------------------------------
+	//
+	// The face menu is where you FIX a material that is the wrong size, because that is where you
+	// notice it. This is where you READ one: which of the materials the part uses have been resized,
+	// and to what. Same fact, two questions, and the grid is the only place that can answer the
+	// second — a menu shows you one slot at a time and only if you can find a face wearing it.
+	//
+	// It mirrors the mesh editor's "Texture Selection" group, minus Fit, which needs a face and has
+	// no meaning against a cell in a browser.
+
+	private Widget _scaleStrip;
+	private Editor.Label _scaleLabel;
+	private EffigyNumericField _scaleU;
+	private EffigyNumericField _scaleV;
+
+	/// <summary>The slot the strip is currently editing, or -1 when it is hidden. Held rather than
+	/// re-derived from the selection, because the fields fire after a rebuild has already moved the
+	/// selection on.</summary>
+	private int _scaleSlot = -1;
+
+	/// <summary>A slot was resized. Wired to the window for the same reason MaterialChanged is: the
+	/// panel reports the edit, the window owns the studio, the undo stack and the rebuild.</summary>
+	public Action<int, Vec2> ScaleChanged { get; set; }
+
+	private void BuildScaleStrip()
+	{
+		_scaleStrip = Layout.Add( new Widget( this ) );
+		_scaleStrip.Layout = Layout.Row();
+		_scaleStrip.Layout.Margin = new Sandbox.UI.Margin( 8, 2, 8, 2 );
+		_scaleStrip.Layout.Spacing = 4;
+
+		_scaleLabel = new Editor.Label( "" ) { Color = Theme.TextLight.WithAlpha( 0.75f ) };
+		_scaleStrip.Layout.Add( _scaleLabel );
+		_scaleStrip.Layout.AddStretchCell();
+
+		// Two fields rather than one linked number, matching the Vector2 the mesh editor shows.
+		// A tile is usually square and a plank never is, and a single field cannot say so.
+		_scaleU = new EffigyNumericField( _scaleStrip, 1f, "u" ) { Min = 0.0001f, FixedWidth = 74 };
+		_scaleU.ValueEdited = _ => PushScale();
+		_scaleU.ToolTip = "Units across one repeat";
+		_scaleStrip.Layout.Add( _scaleU );
+
+		_scaleV = new EffigyNumericField( _scaleStrip, 1f, "u" ) { Min = 0.0001f, FixedWidth = 74 };
+		_scaleV.ValueEdited = _ => PushScale();
+		_scaleV.ToolTip = "Units up one repeat";
+		_scaleStrip.Layout.Add( _scaleV );
+
+		var smaller = new Button( "", "zoom_out", _scaleStrip ) { FixedWidth = 26, ToolTip = "Half the size" };
+		smaller.Clicked = () => Nudge( 0.5f );
+		_scaleStrip.Layout.Add( smaller );
+
+		var bigger = new Button( "", "zoom_in", _scaleStrip ) { FixedWidth = 26, ToolTip = "Twice the size" };
+		bigger.Clicked = () => Nudge( 2f );
+		_scaleStrip.Layout.Add( bigger );
+
+		_scaleStrip.Visible = false;
+	}
+
+	/// <summary>
+	/// Point the strip at whatever is selected, or hide it.
+	///
+	/// UNBOUND MATERIALS HIDE IT rather than showing a disabled row. A size is a fact about a slot,
+	/// and a material nobody has dropped is not on one — offering a field there would take a number
+	/// with nowhere to put it, and the fix is to drag the material onto a face, which the grid is
+	/// already for.
+	/// </summary>
+	private void ShowScaleFor( object item )
+	{
+		if ( !_scaleStrip.IsValid() )
+			return;
+
+		var slot = item is AssetEntry entry && _slots.TryGetValue( entry, out var found ) ? found : -1;
+
+		_scaleSlot = slot;
+		_scaleStrip.Visible = slot >= 0;
+
+		if ( slot < 0 )
+			return;
+
+		var scale = MaterialScale.ScaleFor( _studio, slot );
+
+		_scaleLabel.Text = $"Slot {slot} · units per tile";
+
+		PullScale();
+	}
+
+	/// <summary>
+	/// Bring the strip up to date with the studio, on every rebuild.
+	///
+	/// TWO THINGS, and the second is the one with a trap in it. The slot can stop existing under the
+	/// strip — a drop elsewhere frees it — and a size field pointed at a binding that is gone is
+	/// worse than no field. And the number can move without the fields having touched it, because
+	/// the face menu resizes the same slot.
+	///
+	/// THE TRAP: this also runs on the rebuild caused by the keystroke you are still in the middle
+	/// of. Type 4 into a 48 and the edit lands, the model rebuilds, and writing the value back would
+	/// put "4" in the box under your cursor and move the caret before you reached the 8. So the
+	/// write goes through <see cref="PullScale"/>, which asks the field whether it is being typed in
+	/// first. EffigyFeatureDialog splits the same two jobs for the same reason — RefreshState after
+	/// every rebuild, RefreshValues only when something else is driving the number.
+	/// </summary>
+	private void RefreshScale()
+	{
+		if ( !_scaleStrip.IsValid() || _scaleSlot < 0 )
+			return;
+
+		if ( _studio is null || !_studio.MaterialNames.ContainsKey( _scaleSlot ) )
+		{
+			_scaleSlot = -1;
+			_scaleStrip.Visible = false;
+
+			return;
+		}
+
+		// The face menu can resize the slot this strip is pointed at, and a rebuild is all the
+		// notice the panel gets. So the numbers are re-read after all — just never into a box
+		// somebody is typing in, which is the case the split exists for.
+		PullScale();
+	}
+
+	/// <summary>Put the studio's number into the fields, unless they are being typed in.</summary>
+	private void PullScale()
+	{
+		if ( !_scaleStrip.IsValid() || _scaleSlot < 0 )
+			return;
+
+		if ( _scaleU.IsEditing || _scaleV.IsEditing )
+			return;
+
+		var scale = MaterialScale.ScaleFor( _studio, _scaleSlot );
+
+		// SetValue, not the text, so this cannot echo back out as an edit and drive the two in a
+		// loop.
+		_scaleU.SetValue( scale.x );
+		_scaleV.SetValue( scale.y );
+	}
+
+	private void PushScale()
+	{
+		if ( _scaleSlot >= 0 )
+			ScaleChanged?.Invoke( _scaleSlot, new Vec2( _scaleU.Value, _scaleV.Value ) );
+	}
+
+	private void Nudge( float factor )
+	{
+		if ( _scaleSlot < 0 )
+			return;
+
+		ScaleChanged?.Invoke( _scaleSlot, MaterialScale.ScaleFor( _studio, _scaleSlot ) * factor );
+
+		// After the invoke, because it rebuilds synchronously and the number the buttons produce is
+		// one nobody typed — the fields have no other way to hear about it.
+		PullScale();
+	}
+
 	/// <summary>
 	/// Bring the panel up to date with the studio.
 	///
@@ -163,6 +320,7 @@ internal sealed class EffigyMaterialsPanel : Widget, AssetSystem.IEventListener
 	{
 		MapSlots();
 		ShowSummary();
+		RefreshScale();
 
 		// Repaint, because the badges are drawn from _slots and nothing else would ask for a frame.
 		_list?.Update();
@@ -519,6 +677,8 @@ internal sealed class EffigyMaterialsPanel : Widget, AssetSystem.IEventListener
 
 	private void ShowItem( object item )
 	{
+		ShowScaleFor( item );
+
 		if ( !_status.IsValid() )
 			return;
 

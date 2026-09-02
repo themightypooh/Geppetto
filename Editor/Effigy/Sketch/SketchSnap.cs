@@ -18,11 +18,27 @@ public readonly struct SnapResult
 	/// Vertical/Horizontal constraints.</summary>
 	public readonly int InferenceAxis;
 
+	/// <summary>Index into <see cref="SketchSnapper.Reference"/>'s points that the cursor landed
+	/// on, or -1. A corner of the face being sketched on, not of the sketch — nothing is added to
+	/// the sketch by landing here, the click simply lands exactly on that corner.</summary>
+	public readonly int ReferencePointIndex;
+
+	/// <summary>Index into the reference's edges the cursor slid onto, or -1. Only ever set when
+	/// no point of any kind won, since a corner is always the better answer than the edge running
+	/// through it.</summary>
+	public readonly int ReferenceEdgeIndex;
+
 	public SnapResult( Vec2 point, int snappedPointIndex, int inferenceAxis )
+		: this( point, snappedPointIndex, inferenceAxis, -1, -1 ) { }
+
+	public SnapResult( Vec2 point, int snappedPointIndex, int inferenceAxis,
+		int referencePointIndex, int referenceEdgeIndex )
 	{
 		Point = point;
 		SnappedPointIndex = snappedPointIndex;
 		InferenceAxis = inferenceAxis;
+		ReferencePointIndex = referencePointIndex;
+		ReferenceEdgeIndex = referenceEdgeIndex;
 	}
 }
 
@@ -54,6 +70,23 @@ public sealed class SketchSnapper
 
 	/// <summary>Grid rounding, or zero for none. See <see cref="AutoGridStep"/>.</summary>
 	public float GridStep;
+
+	/// <summary>
+	/// Geometry from outside the sketch that the cursor may also land on — the boundary of the face
+	/// the sketch is attached to. Null for a sketch on one of the global planes, which has nothing
+	/// underneath it to reference.
+	/// </summary>
+	public SketchReference Reference;
+
+	/// <summary>How close the cursor must be to a corner of the reference geometry to land on it.
+	/// Zero disables the pass, the same way <see cref="PointRadius"/> does.</summary>
+	public float ReferencePointRadius;
+
+	/// <summary>How close the cursor must be to a reference EDGE to slide onto it. Kept separate
+	/// from the corner radius because the two want different numbers: an edge is a whole line of
+	/// targets and pulls far more often than a corner does, so being greedier about it than about
+	/// the corners would make the corners hard to hit.</summary>
+	public float ReferenceEdgeRadius;
 
 	/// <summary>
 	/// A point index to leave out of snapping, or -1 for none.
@@ -140,8 +173,15 @@ public sealed class SketchSnapper
 			}
 		}
 
+		// Where the cursor was before any point pass moved it. The reference passes below measure
+		// against THIS rather than against the running `raw`, so "which target is nearer" is one
+		// comparison of two distances from the same place - the point passes chain their own
+		// candidates and their `best` is not measured from a fixed origin.
+		var cursor = raw;
+
 		var best = PointRadius * PointRadius;
 		var snappedIndex = -1;
+		var pendingWon = false;
 
 		for ( var i = 0; i < pending.Count; i++ )
 		{
@@ -152,6 +192,7 @@ public sealed class SketchSnapper
 
 			best = dist;
 			raw = pending[i];
+			pendingWon = true;
 		}
 
 		for ( var i = 0; i < sketch.Points.Count; i++ )
@@ -168,16 +209,88 @@ public sealed class SketchSnapper
 			snappedIndex = i;
 		}
 
+		// A corner of the geometry the sketch is drawn ON - the face's own vertices. Competes with
+		// the sketch's own points on distance, and LOSES A TIE, because closing a chain onto a
+		// point that is already in the sketch is the snap that a profile depends on and nothing
+		// should be allowed to steal it.
+		var referencePoint = NearestReferencePoint( cursor, out var referenceDistance );
+
+		if ( referencePoint >= 0 && (snappedIndex >= 0 || pendingWon) )
+		{
+			var claimed = ((snappedIndex >= 0 ? sketch.Points[snappedIndex] : raw) - cursor).LengthSquared;
+
+			if ( claimed <= referenceDistance )
+				referencePoint = -1;
+		}
+
+		// NO INFERENCE REPORTED ALONGSIDE A REFERENCE SNAP, here or on the edge path below.
+		//
+		// InferenceAxis is not decoration: the line tool turns it into a real Vertical or Horizontal
+		// CONSTRAINT on the line it commits. The alignment pass above moved the cursor onto that
+		// axis, and then this pass moved it somewhere else - onto a corner of the face, which is
+		// under no obligation to be square with anything. Reporting the axis anyway would attach a
+		// rule the geometry does not satisfy, and the solver would then drag the point off the
+		// corner to satisfy it. The corner is what the user asked for; it wins outright.
+		if ( referencePoint >= 0 )
+			return new SnapResult( Reference.Points[referencePoint], -1, 0, referencePoint, -1 );
+
 		// Landing exactly on a committed point beats every other consideration - no grid rounding,
 		// no inference, or the snap would be nudged back off the point it just found.
+		//
+		// AND THAT INCLUDES THE AXIS LOCK, which is why the inference goes through Verified here.
+		// The pass at the top moved the cursor onto the line's axis; this pass then moved it
+		// somewhere else entirely - onto a committed point, which is under no obligation to be
+		// square with the line being drawn. See Verified for what a false bit costs.
 		if ( snappedIndex >= 0 )
-			return new SnapResult( sketch.Points[snappedIndex], snappedIndex, inference );
+			return new SnapResult( sketch.Points[snappedIndex], snappedIndex,
+				Verified( inference, sketch.Points[snappedIndex], pending ) );
 
 		var snapped = GridStep > 0f
 			? new Vec2(
 				MathF.Round( raw.x / GridStep ) * GridStep,
 				MathF.Round( raw.y / GridStep ) * GridStep )
 			: raw;
+
+		// AN AXIS THE LINE PASS LOCKED SURVIVES THE GRID.
+		//
+		// Without this the two features quietly cancel: the pass at the top puts the cursor exactly
+		// on the start point's x, and then rounding puts it on the nearest grid line instead, which
+		// is the same number only when the start point happens to sit on the grid. It usually does -
+		// it was grid-snapped too - so the failure hides until the start point came from somewhere
+		// else, an existing corner or a face's vertex, and then a line drawn deliberately vertical
+		// is a fraction off vertical and Verified below strips the lock it was promised.
+		//
+		// Only the top pass can have set a bit this early, so this restores exactly the axis the
+		// user aimed down and leaves the other one on the grid.
+		if ( (inference & 1) != 0 )
+			snapped = new Vec2( raw.x, snapped.y );
+
+		if ( (inference & 2) != 0 )
+			snapped = new Vec2( snapped.x, raw.y );
+
+		// An EDGE of the geometry underneath, which is a whole line of targets rather than one.
+		//
+		// Decided from where the cursor actually is, but landed from the grid-rounded point: the
+		// result is on the edge, at a round distance along it wherever the edge runs along an axis.
+		// "10 units in from that corner, along that edge" is most of what anyone wants a face's
+		// outline for, and it comes out of those two lines rather than out of a dimension typed
+		// afterwards.
+		//
+		// Last of the snaps and first to give way - a corner or a sketch point has already returned
+		// by the time this runs, and a pending point is excluded here, since every one of them is a
+		// better answer than the line passing through it. Closing a rectangle onto its own first
+		// corner must not be stolen by the edge of the block it is being drawn on.
+		var edgeIndex = pendingWon ? -1 : NearestReferenceEdge( cursor );
+
+		if ( edgeIndex >= 0 )
+		{
+			var (from, to) = Reference.Segment( edgeIndex );
+
+			// Inference dropped, for the reason given at the corner path above: the point is on the
+			// edge now, not on the inferred axis, and a Vertical constraint saying otherwise would
+			// be pulled straight back off it by the solver.
+			return new SnapResult( ClosestOnSegment( from, to, snapped ), -1, 0, -1, edgeIndex );
+		}
 
 		// Line up with any existing point on either axis, and with the sketch origin, which is what
 		// the zero-initialised targets below mean.
@@ -209,13 +322,50 @@ public sealed class SketchSnapper
 			}
 		}
 
-		if ( xDistance <= AlignmentRadius )
+		// And with the corners of the face underneath, on the same footing as the sketch's own
+		// points. Lining a new rectangle up with the corner of the block it sits on is the whole
+		// reason that outline is drawn; a guide that stopped at the sketch's own geometry would
+		// show the corner and then refuse to help you meet it.
+		//
+		// NOT WHEN A PENDING POINT ALREADY TOOK THE CURSOR. `raw` is then exactly a corner the user
+		// placed a moment ago, and nudging it a couple of pixels to line up with the face beneath is
+		// how a rectangle stops closing on itself - which is the failure this whole snapper exists
+		// to prevent.
+		if ( ReferencePointRadius > 0f && Reference is not null && !pendingWon )
+		{
+			foreach ( var point in Reference.Points )
+			{
+				var dx = MathF.Abs( snapped.x - point.x );
+
+				if ( dx < xDistance )
+				{
+					xDistance = dx;
+					xTarget = point.x;
+				}
+
+				var dy = MathF.Abs( snapped.y - point.y );
+
+				if ( dy < yDistance )
+				{
+					yDistance = dy;
+					yTarget = point.y;
+				}
+			}
+		}
+
+		// AN AXIS THE LINE PASS ALREADY LOCKED IS NOT UP FOR RE-ALIGNMENT, which is what the two bit
+		// tests are doing here. Lining up with the nearest x on the plane is the weaker claim of the
+		// two - the line pass locked that axis because the user is drawing DOWN it - and letting the
+		// weaker one move the coordinate is how a deliberately vertical line ends up a fraction off
+		// vertical, pulled sideways onto the origin or onto some unrelated corner that happened to
+		// be within seven pixels.
+		if ( (inference & 1) == 0 && xDistance <= AlignmentRadius )
 		{
 			snapped = new Vec2( xTarget, snapped.y );
 			inference |= 1;
 		}
 
-		if ( yDistance <= AlignmentRadius )
+		if ( (inference & 2) == 0 && yDistance <= AlignmentRadius )
 		{
 			snapped = new Vec2( snapped.x, yTarget );
 			inference |= 2;
@@ -241,6 +391,122 @@ public sealed class SketchSnapper
 			}
 		}
 
-		return new SnapResult( snapped, -1, inference );
+		return new SnapResult( snapped, -1, Verified( inference, snapped, pending ) );
+	}
+
+	/// <summary>
+	/// Drop any axis bit the returned point does not actually satisfy.
+	///
+	/// INFERENCE IS NOT A HINT. The line tool turns InferenceAxis into a real Vertical or Horizontal
+	/// CONSTRAINT on the line it commits, and the sketcher draws its guide through pending[0] on the
+	/// strength of the same bit. Both readings mean one thing: "this point shares a coordinate with
+	/// the start of the line being drawn". A bit that is true of something else is not a weaker
+	/// version of that claim, it is a false one - the solver enforces the rule and drags the point
+	/// off wherever the user put it, and the guide is drawn through a place the point is not.
+	///
+	/// The alignment pass is where they diverge. It lines the cursor up with the nearest x of ANY
+	/// point on the plane and sets bit 1 for it, which is a genuinely useful snap and simply not the
+	/// statement the bit makes. Lining up with some other corner says nothing about whether the line
+	/// from pending[0] to here is vertical. So the snap stays and the bit goes.
+	///
+	/// With no pending point there is no line, nothing for a bit to be true OF, and no consumer -
+	/// the guide and the constraint both require one - so the whole set goes.
+	/// </summary>
+	static int Verified( int inference, Vec2 point, IReadOnlyList<Vec2> pending )
+	{
+		if ( inference == 0 || pending.Count == 0 )
+			return 0;
+
+		var start = pending[0];
+
+		if ( (inference & 1) != 0 && !Same( point.x, start.x ) )
+			inference &= ~1;
+
+		if ( (inference & 2) != 0 && !Same( point.y, start.y ) )
+			inference &= ~2;
+
+		return inference;
+	}
+
+	/// <summary>
+	/// Whether two coordinates are the same number, at any part size.
+	///
+	/// Every pass that legitimately sets a bit ASSIGNS the coordinate rather than computing it, so
+	/// exact equality would do - but a tolerance that scales is the difference between this staying
+	/// correct and it becoming another fixed constant for someone to find the hard way, which is the
+	/// mistake this whole class was rewritten to stop making. Sub-pixel at every size the sketcher
+	/// is tested at, so nothing visibly off-axis can ever pass.
+	/// </summary>
+	static bool Same( float a, float b ) =>
+		MathF.Abs( a - b ) <= 1e-5f * MathF.Max( 1f, MathF.Max( MathF.Abs( a ), MathF.Abs( b ) ) );
+
+	/// <summary>The reference corner nearest <paramref name="cursor"/> within
+	/// <see cref="ReferencePointRadius"/>, or -1, reporting its squared distance so the caller can
+	/// weigh it against a sketch point without measuring twice.</summary>
+	int NearestReferencePoint( Vec2 cursor, out float distanceSquared )
+	{
+		distanceSquared = float.MaxValue;
+
+		if ( Reference is null || ReferencePointRadius <= 0f )
+			return -1;
+
+		var best = ReferencePointRadius * ReferencePointRadius;
+		var found = -1;
+
+		for ( var i = 0; i < Reference.Points.Count; i++ )
+		{
+			var dist = (Reference.Points[i] - cursor).LengthSquared;
+
+			if ( dist >= best )
+				continue;
+
+			best = dist;
+			found = i;
+		}
+
+		if ( found >= 0 )
+			distanceSquared = best;
+
+		return found;
+	}
+
+	/// <summary>The reference edge nearest <paramref name="cursor"/> within
+	/// <see cref="ReferenceEdgeRadius"/>, or -1.</summary>
+	int NearestReferenceEdge( Vec2 cursor )
+	{
+		if ( Reference is null || ReferenceEdgeRadius <= 0f )
+			return -1;
+
+		var best = ReferenceEdgeRadius * ReferenceEdgeRadius;
+		var found = -1;
+
+		for ( var i = 0; i < Reference.Edges.Count; i++ )
+		{
+			var (a, b) = Reference.Segment( i );
+			var dist = (ClosestOnSegment( a, b, cursor ) - cursor).LengthSquared;
+
+			if ( dist >= best )
+				continue;
+
+			best = dist;
+			found = i;
+		}
+
+		return found;
+	}
+
+	/// <summary>The point of segment a-b nearest <paramref name="p"/>, clamped to the segment so a
+	/// short edge never pulls the cursor out past its own end.</summary>
+	public static Vec2 ClosestOnSegment( Vec2 a, Vec2 b, Vec2 p )
+	{
+		var along = b - a;
+		var lengthSquared = along.LengthSquared;
+
+		if ( lengthSquared < 1e-12f )
+			return a;
+
+		var t = Vec2.Dot( p - a, along ) / lengthSquared;
+
+		return a + along * MathF.Max( 0f, MathF.Min( 1f, t ) );
 	}
 }

@@ -73,6 +73,10 @@ internal enum EffigyIcon
 	ExtendTool,
 	SketchFilletTool,
 	OffsetTool,
+
+	// --- taking the face's own outline into the sketch -------------------------------------------
+	UseTool,
+	UseAllTool,
 }
 
 /// <summary>
@@ -178,6 +182,9 @@ internal static class EffigyIcons
 			case EffigyIcon.ExtendTool: PaintExtendTool( center, color ); return;
 			case EffigyIcon.SketchFilletTool: PaintSketchFilletTool( center, color ); return;
 			case EffigyIcon.OffsetTool: PaintOffsetTool( center, color ); return;
+
+			case EffigyIcon.UseTool: PaintUseTool( center, color ); return;
+			case EffigyIcon.UseAllTool: PaintUseAllTool( center, color ); return;
 		}
 	}
 
@@ -1499,4 +1506,38 @@ internal static class EffigyIcons
 		Arc( At( c, -1.5f, -2f ), 8f, 180f, 270f, 12 );
 		Editor.Paint.DrawLine( At( c, -1.5f, -10f ), At( c, 5, -10f ) );
 	}
+
+	/// <summary>The face's outline drawn faint, with ONE of its edges taken - solid, and in the
+	/// green the viewport paints reference geometry, so the button and the thing it acts on are
+	/// obviously the same thing.</summary>
+	private static void PaintUseTool( Vector2 c, Color color )
+	{
+		Faint( color );
+		Outline( At( c, -7, -7 ), At( c, 7, -7 ), At( c, 7, 7 ), At( c, -7, 7 ) );
+
+		// The one edge that has been taken.
+		Stroked( ReferenceColor, 2.6f );
+		Editor.Paint.DrawLine( At( c, -7, 7 ), At( c, 7, 7 ) );
+
+		ClickDot( At( c, 0, 7 ) );
+	}
+
+	/// <summary>The same square with every edge taken, which is what the button does in one press.
+	/// </summary>
+	private static void PaintUseAllTool( Vector2 c, Color color )
+	{
+		Faint( color );
+		Editor.Paint.DrawLine( At( c, -7, 0 ), At( c, 7, 0 ) );
+
+		Stroked( ReferenceColor, 2.6f );
+		Outline( At( c, -7, -7 ), At( c, 7, -7 ), At( c, 7, 7 ), At( c, -7, 7 ) );
+	}
+
+	/// <summary>The part of a Use glyph that is still only scenery.</summary>
+	private static void Faint( Color color ) => Stroked( color.WithAlpha( 0.4f ), 1.3f );
+
+	/// <summary>The green the sketcher paints a face's outline in - see SketchReferenceColor in
+	/// EffigyViewport.Sketching.cs. Kept in step by eye rather than shared, because that one carries
+	/// an alpha for drawing in the world and this one has to read on a small dark button.</summary>
+	private static readonly Color ReferenceColor = new( 0.45f, 1f, 0.6f, 1f );
 }

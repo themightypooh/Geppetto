@@ -1,4 +1,4 @@
-using Editor;
+﻿using Editor;
 using Effigy;
 using Sandbox;
 using System;
@@ -48,6 +48,16 @@ internal sealed class EffigyNumericField : Widget
 	private float _value;
 
 	public float Value => _value;
+
+	/// <summary>
+	/// Whether the box is the one being typed in.
+	///
+	/// For controls that re-read their value after every rebuild. The rebuild a keystroke causes
+	/// arrives while you are still typing, so a refresh that pushed the value back would replace
+	/// "4" with "4" — and setting the text moves the caret, which is how typing 48 into a field
+	/// becomes typing 4, then 8 somewhere else. Asking first is the difference.
+	/// </summary>
+	public bool IsEditing => _edit.IsValid() && _edit.IsFocused;
 
 	public EffigyNumericField( Widget parent, float value, string unit = null ) : base( parent )
 	{
@@ -139,9 +149,28 @@ internal sealed class EffigyNumericField : Widget
 /// </summary>
 internal abstract class EffigyScrub : Widget
 {
-	/// <summary>Units per pixel of travel. A shade under a hundredth, so a whole unit is about the
-	/// width of the dialog and the common case — nudging a part a few tenths — is a short drag.</summary>
+	/// <summary>Units per pixel of travel for the off-grid drag under Shift. A shade under a
+	/// hundredth, so a whole unit is about the width of the dialog and the common case — easing a
+	/// dimension a few tenths — is a short, controllable drag.</summary>
 	public float Sensitivity { get; init; } = 0.008f;
+
+	/// <summary>The grid a plain drag lands on, in the parameter's own units — whole numbers by
+	/// default, tens under Ctrl, nothing at all under Shift.
+	///
+	/// A dimension is nearly always meant to be a round number, and a continuous scrub can only
+	/// ever arrive at one by accident: Distance would read 1.088 when 1 was what the drag was
+	/// reaching for, and the only way to get the round number was to stop dragging and type it.
+	/// Snapping makes the plain drag say the thing you meant and leaves the exact value to Shift,
+	/// which is the arrangement every modeller uses (Blender's Ctrl, Fusion's snap increments).</summary>
+	public float Snap { get; init; } = 1f;
+
+	/// <summary>How far a plain drag may be asked to travel for one <see cref="Snap"/> step.
+	///
+	/// A snapped drag must not be slower than its own grid. At the declared sensitivity a whole
+	/// unit of an unbounded length is most of the dialog's width, which is a fine rate to slide
+	/// through decimals at and a hopeless one to count notches at — ten units would be a drag
+	/// across two monitors. So the snapped rate is whichever of the two is faster.</summary>
+	private const float PixelsPerStep = 16f;
 
 	/// <summary>The range the scrub is held to. Unbounded by default, so a length with no declared
 	/// maximum drags to any distance; a min-bounded parameter (a positive-only thickness) stops at
@@ -196,14 +225,16 @@ internal abstract class EffigyScrub : Widget
 			return;
 		}
 
-		var step = Sensitivity;
+		var travel = e.LocalPosition.x - _startX;
 
-		if ( e.HasShift )
-			step *= 0.1f;
-		else if ( e.HasCtrl )
-			step *= 10f;
+		// Ctrl widens the grid rather than only speeding the cursor up, so coarse lands on tens the
+		// same way a plain drag lands on ones. Shift takes the grid away entirely.
+		var snap = e.HasShift ? 0f : e.HasCtrl ? Snap * 10f : Snap;
 
-		var v = _startValue + (e.LocalPosition.x - _startX) * step;
+		var v = snap > 0f
+			? MathF.Round( (_startValue + travel * MathF.Max( Sensitivity, snap / PixelsPerStep )) / snap ) * snap
+			: _startValue + travel * Sensitivity;
+
 		Dragged?.Invoke( Math.Clamp( v, Min, Max ) );
 
 		e.Accepted = true;
@@ -240,7 +271,7 @@ internal sealed class EffigyAxisHandle : EffigyScrub
 		_label = label;
 		_colour = colour;
 
-		ToolTip = $"Drag to change {label} — hold Shift for fine, Ctrl for coarse";
+		ToolTip = $"Drag to change {label} — hold Shift for decimals, Ctrl for coarse";
 
 		FixedWidth = 16f;
 	}
@@ -276,7 +307,7 @@ internal sealed class EffigyScrubLabel : EffigyScrub
 	{
 		_label = label;
 
-		ToolTip = $"Drag to change {label} — hold Shift for fine, Ctrl for coarse";
+		ToolTip = $"Drag to change {label} — hold Shift for decimals, Ctrl for coarse";
 
 		FixedWidth = 110f;
 	}

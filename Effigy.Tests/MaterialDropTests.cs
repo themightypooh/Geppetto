@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -44,6 +44,115 @@ public static class MaterialDropTests
 
 		Report.Section( "material drop: which slot already carries a material" );
 		TestSlotCarrying();
+
+		Report.Section( "material drop: changing your mind frees the slot you left" );
+		TestVacatedSlotIsFreed();
+
+		Report.Section( "material drop: a slot somebody else is holding is not freed" );
+		TestOccupiedSlotSurvives();
+	}
+
+	/// <summary>
+	/// THE ONE THIS WAS ADDED FOR. Dropping four materials onto one face used to leave four bound
+	/// slots — the face wears the last, and the other three are named, wear nothing, and get written
+	/// by every exporter. Nothing on screen counts them except the Materials panel's footer, which
+	/// is where it was noticed: "9 bound" on a part with three painted faces.
+	/// </summary>
+	static void TestVacatedSlotIsFreed()
+	{
+		var studio = Boxed( out var body );
+		var top = FaceIndexFacing( body.Mesh, new Vec3( 0, 0, 1 ) );
+
+		Drop( studio, body, top, "materials/a.vmat", out var first );
+
+		studio.Rebuild();
+		body = studio.Bodies.Single();
+		top = FaceIndexFacing( body.Mesh, new Vec3( 0, 0, 1 ) );
+
+		var changed = Drop( studio, body, top, "materials/b.vmat", out var second, out var released );
+
+		Report.Check( "the second material still gets its own slot", first == 1 && second == 2,
+			$"{first} then {second}" );
+
+		Report.Check( "the drop reports the slot it retired", changed && released == first,
+			$"released {released}" );
+
+		Report.Check( "and only the material actually worn is left bound",
+			studio.MaterialNames.Count == 1
+			&& studio.MaterialNames[second] == "materials/b.vmat",
+			string.Join( ", ", studio.MaterialNames.Select( kv => $"{kv.Key}={kv.Value}" ) ) );
+
+		var report = studio.Rebuild();
+
+		Report.Check( "and it builds", !report.HasErrors, report.ToString() );
+
+		var mesh = studio.Bodies.Single().Mesh;
+
+		Report.Check( "with the face on the second slot and nothing on the first",
+			mesh.Faces.Count( f => f.Material == second ) == 1
+			&& mesh.Faces.Count( f => f.Material == first ) == 0 );
+
+		// Third and fourth changes of mind, to show the count does not creep. Slot 1 is free again
+		// after the release above, so this walks 2 -> 1 -> 2 rather than climbing.
+		studio.Rebuild();
+		body = studio.Bodies.Single();
+		top = FaceIndexFacing( body.Mesh, new Vec3( 0, 0, 1 ) );
+		Drop( studio, body, top, "materials/c.vmat", out _ );
+
+		studio.Rebuild();
+		body = studio.Bodies.Single();
+		top = FaceIndexFacing( body.Mesh, new Vec3( 0, 0, 1 ) );
+		Drop( studio, body, top, "materials/d.vmat", out _ );
+
+		Report.Check( "four materials onto one face still leaves one bound slot",
+			studio.MaterialNames.Count == 1,
+			string.Join( ", ", studio.MaterialNames.Select( kv => $"{kv.Key}={kv.Value}" ) ) );
+	}
+
+	/// <summary>
+	/// The other half, and the reason the release is not just "drop any slot with no faces on it".
+	/// A slot two faces share must survive one of them leaving, and a slot somebody named in the
+	/// Materials panel before painting anything must survive full stop — it has no faces by
+	/// definition, and reserving one is a thing you are allowed to do.
+	/// </summary>
+	static void TestOccupiedSlotSurvives()
+	{
+		var studio = Boxed( out var body );
+
+		Drop( studio, body, FaceIndexFacing( body.Mesh, new Vec3( 0, 0, 1 ) ), "materials/a.vmat", out var shared );
+
+		studio.Rebuild();
+		body = studio.Bodies.Single();
+
+		Drop( studio, body, FaceIndexFacing( body.Mesh, new Vec3( 0, 0, -1 ) ), "materials/a.vmat", out _ );
+
+		// A slot named and never painted, exactly as the Materials panel leaves one.
+		studio.MaterialNames[9] = "materials/reserved.vmat";
+
+		studio.Rebuild();
+		body = studio.Bodies.Single();
+
+		// One of the two faces moves away. The other is still on the slot.
+		var top = FaceIndexFacing( body.Mesh, new Vec3( 0, 0, 1 ) );
+		Drop( studio, body, top, "materials/b.vmat", out var moved, out var released );
+
+		Report.Check( "nothing was retired", released == -1, $"released {released}" );
+
+		Report.Check( "the shared slot keeps its material",
+			studio.MaterialNames.TryGetValue( shared, out var name ) && name == "materials/a.vmat" );
+
+		Report.Check( "the reserved slot is untouched",
+			studio.MaterialNames.TryGetValue( 9, out var reserved ) && reserved == "materials/reserved.vmat" );
+
+		var report = studio.Rebuild();
+
+		Report.Check( "and it builds", !report.HasErrors, report.ToString() );
+
+		var mesh = studio.Bodies.Single().Mesh;
+
+		Report.Check( "one face left behind on the shared slot, one on the new one",
+			mesh.Faces.Count( f => f.Material == shared ) == 1
+			&& mesh.Faces.Count( f => f.Material == moved ) == 1 );
 	}
 
 	/// <summary>
@@ -262,11 +371,15 @@ public static class MaterialDropTests
 
 	// --- helpers, the same ones FaceMenuTests uses ----------------------------------------------
 
-	static bool Drop( PartStudio studio, Body body, int faceIndex, string material, out int slot )
+	static bool Drop( PartStudio studio, Body body, int faceIndex, string material, out int slot ) =>
+		Drop( studio, body, faceIndex, material, out slot, out _ );
+
+	static bool Drop( PartStudio studio, Body body, int faceIndex, string material, out int slot,
+		out int released )
 	{
 		var reference = FacePlane.Capture( body, faceIndex, body.Mesh.FaceCentroid( body.Mesh.Faces[faceIndex] ) );
 
-		return MaterialDrop.Drop( studio, body.Id, faceIndex, reference, material, out slot );
+		return MaterialDrop.Drop( studio, body.Id, faceIndex, reference, material, out slot, out released );
 	}
 
 	static bool Assign( PartStudio studio, Body body, int faceIndex, int slot )

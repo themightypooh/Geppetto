@@ -162,13 +162,30 @@ internal sealed partial class EffigyViewport
 		if ( RealTime.Now - _cameraMovedAt < 0.25f )
 			return;
 
-		// Inside a sketch the right button means something else: constrain what is selected. The
-		// bodies are not what you are pointing at in there, and a material menu over a half-drawn
-		// profile would be answering a question nobody asked.
+		// Inside a sketch the right button means something else. The bodies are not what you are
+		// pointing at in there, and a material menu over a half-drawn profile would be answering a
+		// question nobody asked. What it means instead, most-live thing first:
+		//
+		// 1. BACK OUT of the entity being drawn. Right-click to stop the line you are dragging out is
+		//    the reflex every CAD sketcher trains, and until now the only way to break a chain was a
+		//    key press — with both hands already on the mouse.
+		// 2. CONSTRAIN the selection, when there is one and nothing is half-drawn.
+		// 3. STAND THE TOOL DOWN, so a second right-click gets back to Select the way a second Escape
+		//    does. Harmless in Select with nothing selected, which is the only other case reaching it.
+		//
+		// Note this is NOT Escape's order — Escape drops the selection before it touches the half-drawn
+		// entity. It cannot be, because the two buttons want opposite things from a selection: Escape
+		// is there to get rid of it, and the right button is how you act on it. So the half-drawn
+		// entity, which is the thing actually moving under the cursor, goes first here.
 		if ( IsSketching )
 		{
+			if ( CancelHalfDrawnSketchEntity() )
+				return;
+
 			if ( HasSketchSelection )
 				SketchConstraintMenuRequested?.Invoke();
+			else
+				CancelSketchTool();
 
 			return;
 		}

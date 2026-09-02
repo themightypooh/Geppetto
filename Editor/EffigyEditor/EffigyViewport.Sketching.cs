@@ -36,6 +36,11 @@ internal enum SketchToolKind
 	// the middle rather than at an end, so its clicks go through the state machine below with the
 	// rest of them; it sits down here only because this enum is appended to, never inserted into.
 	LineMidpoint,
+
+	/// <summary>Copy an edge of the face being sketched on into the sketch. Handled with the six in
+	/// EffigyViewport.SketchTools.cs - it edits rather than draws, and it picks what is under the
+	/// cursor rather than placing anything.</summary>
+	Use,
 }
 
 /// <summary>
@@ -527,9 +532,34 @@ internal sealed partial class EffigyViewport
 	/// apart and ProfileFinder refuses the open loop.</summary>
 	public bool SnapToPoints { get; set; } = true;
 
+	/// <summary>Whether the corners and edges of the face a sketch sits on are snap targets. Only
+	/// ever has anything to act on while <see cref="ActiveSketchReference"/> is set, which is only
+	/// while sketching on a face.</summary>
+	public bool SnapToFaceEdges { get; set; } = true;
+
 	/// <summary>Snapping and point reuse, which are sketch maths rather than UI and therefore live
 	/// in the kernel where they can be tested without s&amp;box. This only feeds it tolerances.</summary>
 	private readonly SketchSnapper _snapper = new();
+
+	/// <summary>
+	/// The outline of the face the active sketch is drawn on, in that sketch's plane coordinates -
+	/// null for a sketch on one of the global planes, which has nothing underneath it.
+	///
+	/// Pushed in by the window, which is the only thing here that has the bodies. Rebuilt on every
+	/// entry rather than cached with the feature, because a stale outline is worse than none: it
+	/// looks exactly like a correct one and snaps the cursor to where the face used to be.
+	/// </summary>
+	public SketchReference ActiveSketchReference { get; private set; }
+
+	/// <summary>Reference corner the cursor is over, or -1. Drawn as a ring exactly the way an
+	/// existing sketch point is, so "this click will land on that corner" reads the same whichever
+	/// kind of thing it is landing on.</summary>
+	private int _snapReferencePoint = -1;
+
+	/// <summary>Reference edge the cursor has slid onto, or -1. Drawn lit along its whole length,
+	/// because what the click is committing to is the LINE - the position along it is still
+	/// yours.</summary>
+	private int _snapReferenceEdge = -1;
 
 	/// <summary>Turns the point-snap pass off for one call, leaving the grid and the alignment
 	/// guides on. Set while a curve grip is being dragged - see EffigyViewport.CurveHandles.cs,
@@ -1083,6 +1113,11 @@ internal sealed partial class EffigyViewport
 	/// point snapping: alignment should assist a click, not pull it across the sketch.</summary>
 	private const float AlignmentPixels = 7f;
 
+	/// <summary>Cursor-to-face-edge snapping distance, in SCREEN PIXELS. Between the point radius
+	/// and the alignment radius: an edge should catch a click aimed at it without competing with
+	/// the corners at either end of it.</summary>
+	private const float EdgeSnapPixels = 8f;
+
 	/// <summary>Roughly how far apart the snap grid should look on screen, in pixels.</summary>
 	private const float GridPixels = 14f;
 
@@ -1115,9 +1150,30 @@ internal sealed partial class EffigyViewport
 		return halfHeight / MathF.Max( _canvas.Size.y * 0.5f, 1f );
 	}
 
+	/// <summary>
+	/// Hand the sketcher the outline of whatever the sketch is sitting on, or null for a sketch on
+	/// a global plane.
+	///
+	/// SEPARATE FROM BeginSketch, and called after it, because only the window can build this - it
+	/// needs the studio's bodies and the sketch feature's FaceRef, neither of which the viewport
+	/// has. Same division as SetPickableBodies and SetDisplaySketches.
+	/// </summary>
+	public void SetSketchReference( SketchReference reference )
+	{
+		ActiveSketchReference = reference is { IsEmpty: false } ? reference : null;
+
+		_snapReferencePoint = -1;
+		_snapReferenceEdge = -1;
+	}
+
 	public void BeginSketch( Sketch sketch )
 	{
 		ActiveSketch = sketch;
+
+		// Cleared rather than carried: the outline belongs to the sketch that is closing, and the
+		// one opening gets its own from the window a moment from now. Left in place it would be an
+		// outline of some other part's face, floating on this sketch's plane.
+		SetSketchReference( null );
 
 		// A SKETCH THAT ALREADY HAS GEOMETRY OPENS IN SELECT; an empty one opens in Line.
 		//
@@ -1476,9 +1532,17 @@ internal sealed partial class EffigyViewport
 		_displayBodies = bodies?.ToList() ?? new List<Body>();
 	}
 
-	/// <summary>Whether faces carrying a non-zero material slot are tinted. On by default; the View
-	/// menu turns it off.</summary>
-	public bool ShadeMaterialSlots { get; set; } = true;
+	/// <summary>
+	/// Whether faces carrying a non-zero material slot are tinted. OFF by default; the View menu
+	/// turns it on.
+	///
+	/// It defaulted on back when the preview was one flat grey and a slot was otherwise invisible.
+	/// Now that the preview wears the real vmat, an always-on 28% wash over every assigned face is
+	/// exactly why the colours in the viewport are not the colours of the materials: a pastel blue
+	/// under a green slot tint reads teal, and nothing on screen says a tint is what you are looking
+	/// at. The default has to be the honest picture — the slot layout is the thing you ask for.
+	/// </summary>
+	public bool ShadeMaterialSlots { get; set; }
 
 	/// <summary>
 	/// Distinct, and distinct FROM the pick colours — a tint has to be readable next to the blue of
@@ -1674,12 +1738,43 @@ internal sealed partial class EffigyViewport
 		ClearDimension();
 		EndPointDrag();
 		EndCurveHandleDrag();
+		SetSketchReference( null );
 		ActiveSketch = null;
 		SketchTool = SketchToolKind.Select;
 		_pending.Clear();
 		_chainStartIndex = -1;
 		_ignoreNextSketchClick = false;
 		SketchPromptChanged?.Invoke( "" );
+	}
+
+	/// <summary>True while a tool is part-way through an entity - a line with its first point down,
+	/// a chain waiting for its next corner, a spline still collecting clicks. False between
+	/// entities, however long the tool has been armed.</summary>
+	public bool HasHalfDrawnSketchEntity => IsSketching && (_pending.Count > 0 || _splinePoints.Count > 0);
+
+	/// <summary>
+	/// Abandon the half-drawn entity and leave the tool armed for the next one.
+	///
+	/// Returns whether there was one to abandon, which is what lets the right button share this with
+	/// Escape: right-click has a menu to fall through to when nothing is half-drawn, and the answer
+	/// has to come from here rather than from the caller reading _pending itself.
+	/// </summary>
+	public bool CancelHalfDrawnSketchEntity()
+	{
+		if ( !HasHalfDrawnSketchEntity )
+			return false;
+
+		ClearDimension();
+		_pending.Clear();
+		_chainStartIndex = -1;
+
+		// The six newer tools hold their own half-state - a named fillet corner, a chosen offset
+		// curve - and it has to go with _pending or the next click lands mid-way through an entity
+		// the user already backed out of.
+		ResetNewSketchTools();
+		PushPrompt();
+
+		return true;
 	}
 
 	/// <summary>Cancel the half-drawn thing, or the tool itself if nothing is half-drawn. Same
@@ -1689,13 +1784,8 @@ internal sealed partial class EffigyViewport
 		ClearDimension();
 		EndPointDrag();
 
-		if ( _pending.Count > 0 )
-		{
-			_pending.Clear();
-			_chainStartIndex = -1;
-			PushPrompt();
+		if ( CancelHalfDrawnSketchEntity() )
 			return;
-		}
 
 		SketchTool = SketchToolKind.Select;
 		PushPrompt();
@@ -1776,6 +1866,19 @@ internal sealed partial class EffigyViewport
 		_snapper.AlignmentRadius = AlignmentPixels * unitsPerPixel;
 		_snapper.GridStep = SnapToGrid ? GridStep( unitsPerPixel ) : 0f;
 
+		// The face underneath. Suppressed alongside the sketch's own points while a curve grip is
+		// being dragged, for the same reason: the middle of a line landing on the corner of the
+		// block below it is not what the drag asked for.
+		var referenceOn = SnapToFaceEdges && !_suppressPointSnap;
+
+		_snapper.Reference = referenceOn ? ActiveSketchReference : null;
+		_snapper.ReferencePointRadius = referenceOn ? SnapPixels * unitsPerPixel : 0f;
+
+		// Tighter than the corners on purpose. An edge is a whole line of targets and comes within
+		// reach far more often than any one corner does, so matching the two radii made the corners
+		// - the more useful of the two - hard to land on near the ends of an edge.
+		_snapper.ReferenceEdgeRadius = referenceOn ? EdgeSnapPixels * unitsPerPixel : 0f;
+
 		// Both line tools want the same thing from the snapper: with one point down, that point is the
 		// strongest horizontal/vertical alignment target on the plane. A midpoint line's first click is
 		// its CENTRE rather than an end, but the far end is reflected through it, so aligning the click
@@ -1784,6 +1887,8 @@ internal sealed partial class EffigyViewport
 			(SketchTool is SketchToolKind.Line or SketchToolKind.LineMidpoint) && _pending.Count == 1 );
 
 		_snapPoint = result.SnappedPointIndex;
+		_snapReferencePoint = result.ReferencePointIndex;
+		_snapReferenceEdge = result.ReferenceEdgeIndex;
 		_inferenceAxis = result.InferenceAxis;
 
 		return result.Point;
@@ -1807,9 +1912,19 @@ internal sealed partial class EffigyViewport
 		if ( _canvasHasCursor )
 			_cursorOnPlaneValid = CursorToPlane( out raw );
 
+		// Select does not snap - it picks up what is already there - so nothing consults the face's
+		// outline this frame and last frame's lit corner has to go. A highlight that outlives the
+		// snap it was reporting says a click will land somewhere it will not.
+		if ( !_cursorOnPlaneValid || SketchTool == SketchToolKind.Select )
+		{
+			_snapReferencePoint = -1;
+			_snapReferenceEdge = -1;
+		}
+
 		if ( _cursorOnPlaneValid )
 			_cursorOnPlane = SketchTool == SketchToolKind.Select ? raw : SnapPoint( raw );
 
+		DrawSketchReference();
 		DrawSketch();
 		DrawPendingPreview();
 		DrawDimensionBox();
@@ -2325,6 +2440,78 @@ internal sealed partial class EffigyViewport
 	private static readonly Color SketchDragColor = new( 1f, 0.78f, 0.25f, 1f );
 	private static readonly Color SketchConstrainedColor = new( 0.08f, 0.08f, 0.08f, 1f );
 
+	/// <summary>
+	/// The outline of the face being sketched on.
+	///
+	/// GREEN, AND THE ONLY GREEN IN THE SKETCHER. The sketch itself is blue, its previews amber,
+	/// its construction geometry violet, and a gap red - so a fifth thing drawn in any of those
+	/// would read as a fourth kind of sketch geometry, which is precisely the wrong idea. Nothing
+	/// here belongs to the sketch or will ever extrude. A hue nothing else uses is the cheapest way
+	/// to say "this is the part underneath, not something you drew".
+	/// </summary>
+	private static readonly Color SketchReferenceColor = new( 0.35f, 0.85f, 0.5f, 0.55f );
+
+	/// <summary>The same green at full strength, for the corner or edge a click would land on.
+	/// Brightness rather than a different hue: it is still the face underneath, it is just the part
+	/// of it about to be used.</summary>
+	private static readonly Color SketchReferenceLitColor = new( 0.45f, 1f, 0.6f, 1f );
+
+	/// <summary>A corner of the face underneath. Sized between a resting sketch point and a snap
+	/// target, so it is visibly there to aim at without competing with the sketch's own.</summary>
+	private const float ReferencePointPixels = 3f;
+
+	/// <summary>
+	/// Draw the outline of the face the sketch sits on: its corners and its edges.
+	///
+	/// FIRST OF EVERYTHING, so the sketch is drawn over it rather than under it. What is being
+	/// drawn is the foreground even when it is one line long, and the face is the paper.
+	///
+	/// IgnoreDepth, like the active sketch, and for the same reason: a sketch on the top face of a
+	/// block with anything standing on it has both buried inside the solid. Depth-testing this
+	/// would show the outline exactly where the surface is already visible - which is where it is
+	/// least needed - and hide it everywhere it is doing work.
+	/// </summary>
+	private void DrawSketchReference()
+	{
+		if ( ActiveSketchReference is not { } reference || ActiveSketch is null )
+			return;
+
+		var units = UnitsPerPixel();
+
+		Gizmo.Draw.IgnoreDepth = true;
+		Gizmo.Draw.LineThickness = 1.5f;
+		Gizmo.Draw.Color = SketchReferenceColor;
+
+		for ( var i = 0; i < reference.Edges.Count; i++ )
+		{
+			var (a, b) = reference.Segment( i );
+
+			// The one the cursor has landed on, thicker and brighter. The snap has already happened
+			// by the time this is drawn - the cursor is ON that edge - so this is not a hint about
+			// what a click might do, it is a readout of what the cursor has already become.
+			var lit = i == _snapReferenceEdge;
+
+			Gizmo.Draw.Color = lit ? SketchReferenceLitColor : SketchReferenceColor;
+			Gizmo.Draw.LineThickness = lit ? 3f : 1.5f;
+
+			Gizmo.Draw.Line( PlaneToWorld( a ), PlaneToWorld( b ) );
+		}
+
+		Gizmo.Draw.LineThickness = 1f;
+
+		for ( var i = 0; i < reference.Points.Count; i++ )
+		{
+			var lit = i == _snapReferencePoint;
+
+			Gizmo.Draw.Color = lit ? SketchReferenceLitColor : SketchReferenceColor;
+
+			Gizmo.Draw.SolidSphere( PlaneToWorld( reference.Points[i] ),
+				units * (lit ? SnapPointPixels : ReferencePointPixels), 10, 10 );
+		}
+
+		Gizmo.Draw.IgnoreDepth = false;
+	}
+
 	/// <summary>Draw every curve already in the sketch, plus its points.</summary>
 	private void DrawSketch()
 	{
@@ -2731,7 +2918,7 @@ internal sealed partial class EffigyViewport
 	private string CurrentPrompt() => NewSketchToolPrompt() ?? SketchTool switch
 	{
 		SketchToolKind.Line when _pending.Count == 0 => "Line - click the start point",
-		SketchToolKind.Line => "Line - click the end point, or press Escape to break the chain",
+		SketchToolKind.Line => "Line - click the end point; right-click or Escape breaks the chain",
 		SketchToolKind.LineMidpoint when _pending.Count == 0 => "Midpoint line - click the middle of the line",
 		SketchToolKind.LineMidpoint => "Midpoint line - click one end; the line grows both ways",
 		SketchToolKind.Rectangle when _pending.Count == 0 => "Rectangle - click the first corner",
