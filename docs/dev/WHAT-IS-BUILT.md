@@ -1110,16 +1110,29 @@ All of it compiles clean. Where something has not been *run*, it says so, and
   slot-shading toggle. It holds last frame's cursor ray, because `Gizmo.CurrentRay` means nothing
   inside a menu callback, and refuses the menu for a quarter second after the fly camera last moved,
   because the context-menu event arrives on button *release* and every orbit ends over the model.
-- **The Materials dock is a material browser you drag out of** (`EffigyMaterialsPanel.cs`) — every
-  `.vmat` in the project as a grid of real asset thumbnails with a search box. Drag a cell onto a
-  face and that face wears the material; double-click one and the whole part does, which is the one
-  binding a drag deliberately cannot make.
+- **The Materials dock is a material browser you drag out of** (`EffigyMaterialsPanel.cs`) — the
+  project's `.vmat` files **in their folders**, as a grid of real asset thumbnails. Drag a cell onto
+  a face and that face wears the material; double-click one and the whole part does, which is the
+  one binding a drag deliberately cannot make.
   - **It replaced a column of slot rows** — "Slot 3 · material_3 (default) · \[Browse...\] · \[×\]",
     eight of them — and the reason is worth keeping: that panel made you start from a *number*. To
     put brushed steel on something you picked a slot you had no opinion about, opened a modal
     picker, found the material, closed it, then went and painted faces. Seven eighths of the dock
     was permanently a list of names of things that did not exist yet, and the materials themselves,
     the only part with a picture, were never on screen at all.
+  - **Then it replaced a flat alphabetical grid, which is why it navigates.** This project can see
+    **1248 materials, 363 of them its own**, and most are
+    `materials/halo/characters/<something>/halo_0…halo_12.vmat` — hundreds of cells all named
+    `halo_3`. The folder is where the meaning is: `elite` tells you what you are looking at and
+    `halo_3` tells you nothing, so a listing that discards the folders and sorts the leaves
+    alphabetically is worse than no listing. You land in `materials`, folders come first with a
+    count each, double-click descends, and a path bar walks you back out. Search is recursive **from
+    where you are standing** and matches the whole relative path, so "elite" finds the twelve
+    materials in that folder, none of which are called that. A scope button toggles project-only —
+    the default, because 363 is the number you want and 1248 is engine and mounted content.
+  - The path bar is **one hand-painted widget with no child buttons**, deliberately: a row of
+    buttons rebuilt on navigation means rebuilding the row from inside the `Clicked` callback of one
+    of the buttons being deleted — the same hazard the old panel documented about its `×`.
   - **The slot did not go away, it stopped being the question.** A material the document uses wears
     its slot number as a badge, *in that slot's viewport tint* (`EffigyViewport.SlotColor`) — so the
     green patch on the model and the green badge on the material are visibly the same fact. The

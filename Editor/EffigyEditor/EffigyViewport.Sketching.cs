@@ -1514,12 +1514,11 @@ internal sealed partial class EffigyViewport
 	/// <summary>
 	/// Tint each face that has been put on a material slot.
 	///
-	/// THE PREVIEW CANNOT SHOW THIS. EffigyPreview builds one Mesh with one flat dev material,
-	/// because Effigy's slots are integers with no binding to real materials — there is no vmat to
-	/// load per slot, and inventing paths for materials that may not exist in the project is how you
-	/// get a model that renders as nothing. Drawing the tint here uses only what the rest of this
-	/// file already draws with, and says the one thing the user needs to know: which faces are on
-	/// which slot.
+	/// A SLOT DIAGNOSTIC, NOT THE MATERIAL. EffigyPreview now renders the real vmat bound to each
+	/// slot, so the model already shows what its faces are made of. This overlay answers the other
+	/// question — which SLOT a face is on — which the rendered material cannot, because two slots
+	/// can carry the same vmat and an unbound slot carries none. It is a toggle (ShadeMaterialSlots)
+	/// for exactly that reason: turn it on to see the slot layout, off to see the part as it looks.
 	///
 	/// Slot number to colour is by index into a fixed list, wrapping. Two slots twelve apart sharing
 	/// a colour is a real limitation and a mild one — nobody is eyeballing thirty slots at once —

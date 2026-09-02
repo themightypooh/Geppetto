@@ -202,6 +202,11 @@ public sealed class EffigyWindow : DockWindow
 	/// and the viewport agree about that.</summary>
 	internal string DiagnosticSketchFeature => ActiveSketchFeature()?.Name;
 
+	/// <summary>The viewport, for the drop probe — which needs to ask it about its canvas and its
+	/// camera from a static console command, with no drag in progress to carry the question.
+	/// </summary>
+	internal EffigyViewport DiagnosticViewport => _viewport;
+
 	public EffigyWindow()
 	{
 		Current = this;
@@ -1981,7 +1986,10 @@ public sealed class EffigyWindow : DockWindow
 		// leave the part above it on screen — going blank hides the very geometry you need to
 		// look at to work out what the failing feature is missing.
 		// Preview shows only what is visible; export below deliberately still takes everything.
-		var preview = EffigyPreview.Build( _studio.ToVisibleMesh() );
+		// Each face's slot resolves to the material dropped on it, so the preview wears the real
+		// vmats rather than one flat placeholder. Unbound slots come back null and fall back.
+		var preview = EffigyPreview.Build( _studio.ToVisibleMesh(),
+			slot => _studio.MaterialNames.TryGetValue( slot, out var name ) ? name : null );
 
 		// Frame only when geometry first appears. Every later rebuild leaves the camera alone,
 		// because rebuilds also happen on every parameter tick and the view must hold still

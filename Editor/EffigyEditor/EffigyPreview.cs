@@ -15,15 +15,20 @@ namespace Marionette.EditorTools;
 /// path never touches the disk.
 ///
 /// It is deliberately NOT a second geometry pipeline: it shares MeshNormals with ObjWriter, so
-/// what you see here and what the compiler bakes are smoothed by the same rule. What it skips is
-/// materials (one dev material for everything) and per-face material slots, neither of which the
-/// preview has anything to say about yet.
+/// what you see here and what the compiler bakes are smoothed by the same rule.
+///
+/// MATERIALS RENDER HERE NOW. A face carries a slot number and PartStudio.MaterialNames binds the
+/// slot to a vmat, so the preview groups faces by the material they resolve to and builds one
+/// submesh per material — the same grouping the exporters express as usemtl runs. Faces on slot 0,
+/// on a slot nothing is bound to, or on a slot whose vmat will not load fall back to the flat
+/// placeholder rather than rendering as nothing. Pass no resolver — the sculpt preview does — and
+/// the whole model is the placeholder, which is the old behaviour.
 /// </summary>
 internal static class EffigyPreview
 {
 	/// <summary>
-	/// FLAT grey, with no pattern on it at all. Effigy's material slots are integers with no
-	/// binding to real materials yet, so there is nothing better to pick per face.
+	/// FLAT grey, with no pattern on it at all. The fallback for a face whose slot names no
+	/// material, or names one that will not load.
 	///
 	/// It used to be dev/reflectivity_30, and that material actively lies about scale: its texture
 	/// is a grid with the number "30" printed in every tile - the material's reflectivity, nothing
@@ -33,26 +38,99 @@ internal static class EffigyPreview
 	/// </summary>
 	private const string PreviewMaterial = "materials/dev/gray_50.vmat";
 
-	public static Model Build( PolyMesh mesh, float smoothingAngleDegrees = MeshNormals.DefaultSmoothingAngleDegrees )
+	/// <summary>
+	/// Build a Model from the mesh, optionally resolving each face's material slot to a real vmat.
+	/// </summary>
+	/// <param name="materialForSlot">Slot number to bound material path, or null / empty for an
+	/// unbound slot. Pass null to render everything on the placeholder.</param>
+	public static Model Build( PolyMesh mesh, Func<int, string> materialForSlot = null,
+		float smoothingAngleDegrees = MeshNormals.DefaultSmoothingAngleDegrees )
 	{
 		if ( mesh is null || mesh.FaceCount == 0 || mesh.VertexCount == 0 )
 			return null;
 
 		var (cornerNormals, normals) = MeshNormals.ComputeCornerNormals( mesh, smoothingAngleDegrees );
 
-		// One vertex per face corner rather than per position. Corner normals are the whole point
-		// of MeshNormals - sharing a vertex between two faces that disagree about the normal is
-		// exactly what rounds off a box's edges.
-		var vertices = new List<SimpleVertex>( mesh.FaceCount * 4 );
-		var indices = new List<int>( mesh.FaceCount * 6 );
+		var placeholder = Material.Load( PreviewMaterial );
+		var bounds = BoundsOf( mesh );
+
+		// Faces bucketed by the material they render with. One drop of brushed steel onto three
+		// faces is one bucket and one submesh; a part nobody assigned is one bucket on the
+		// placeholder. The slot is resolved once and cached, not once per face.
+		var buckets = new Dictionary<Material, List<int>>();
+		var slotCache = new Dictionary<int, Material>();
 
 		for ( var fi = 0; fi < mesh.FaceCount; fi++ )
 		{
+			if ( mesh.Faces[fi].Count < 3 )
+				continue;
+
+			var material = ResolveMaterial( mesh.Faces[fi].Material, materialForSlot, placeholder, slotCache );
+
+			if ( !buckets.TryGetValue( material, out var faces ) )
+				buckets[material] = faces = new List<int>();
+
+			faces.Add( fi );
+		}
+
+		var builder = Model.Builder;
+		var any = false;
+
+		foreach ( var (material, faces) in buckets )
+		{
+			if ( BuildSubmesh( mesh, faces, cornerNormals, normals, material, bounds ) is { } sub )
+			{
+				builder.AddMesh( sub );
+				any = true;
+			}
+		}
+
+		return any ? builder.Create() : null;
+	}
+
+	/// <summary>
+	/// The material a slot renders with: the vmat bound to it, or the flat placeholder.
+	///
+	/// Slot 0 is the slot every face starts on and never carries a material, so it is the
+	/// placeholder without a lookup. A named slot whose vmat will not load — a path into a package
+	/// that is not installed, a material deleted since it was assigned — also falls back rather
+	/// than rendering the part as nothing, which is the failure the single-material preview used
+	/// to avoid wholesale.
+	/// </summary>
+	private static Material ResolveMaterial( int slot, Func<int, string> materialForSlot,
+		Material placeholder, Dictionary<int, Material> cache )
+	{
+		if ( slot <= 0 || materialForSlot is null )
+			return placeholder;
+
+		if ( cache.TryGetValue( slot, out var cached ) )
+			return cached;
+
+		var name = materialForSlot( slot );
+		var material = string.IsNullOrWhiteSpace( name ) ? null : Material.Load( name );
+
+		// A named slot whose vmat would not load is the one case the fallback hides — the face
+		// renders as placeholder grey and nothing says why. Say why, once per slot per build.
+		if ( material is null && !string.IsNullOrWhiteSpace( name ) )
+			Log.Warning( $"[effigy-preview] slot {slot}: material '{name}' failed to load — using placeholder" );
+
+		return cache[slot] = material ?? placeholder;
+	}
+
+	/// <summary>One Mesh over a subset of the faces, all sharing one material.</summary>
+	private static Mesh BuildSubmesh( PolyMesh mesh, List<int> faceIndices, int[][] cornerNormals,
+		List<Vec3> normals, Material material, BBox bounds )
+	{
+		// One vertex per face corner rather than per position. Corner normals are the whole point
+		// of MeshNormals - sharing a vertex between two faces that disagree about the normal is
+		// exactly what rounds off a box's edges.
+		var vertices = new List<SimpleVertex>( faceIndices.Count * 4 );
+		var indices = new List<int>( faceIndices.Count * 6 );
+
+		foreach ( var fi in faceIndices )
+		{
 			var face = mesh.Faces[fi];
 			var corners = cornerNormals[fi];
-
-			if ( face.Count < 3 )
-				continue;
 
 			var first = vertices.Count;
 
@@ -88,14 +166,12 @@ internal static class EffigyPreview
 		if ( indices.Count == 0 )
 			return null;
 
-		var sbMesh = new Mesh( Material.Load( PreviewMaterial ) );
+		var sbMesh = new Mesh( material );
 		sbMesh.CreateVertexBuffer<SimpleVertex>( vertices.Count, vertices );
 		sbMesh.CreateIndexBuffer( indices.Count, indices );
-		sbMesh.Bounds = BoundsOf( mesh );
+		sbMesh.Bounds = bounds;
 
-		return Model.Builder
-			.AddMesh( sbMesh )
-			.Create();
+		return sbMesh;
 	}
 
 	/// <summary>

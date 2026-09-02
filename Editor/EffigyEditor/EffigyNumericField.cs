@@ -126,24 +126,28 @@ internal sealed class EffigyNumericField : Widget
 }
 
 /// <summary>
-/// The coloured axis letter beside a Vec3 field, dragged sideways to scrub the number.
-///
-/// THE LETTER RATHER THAN THE FIELD. Dragging on the number itself is what Blender does, but the
-/// number here is a real LineEdit you type expressions into, and a horizontal drag there already
-/// means selecting text. Unity puts the scrub on the label for the same reason. The letter was
-/// sitting there as decoration anyway, and it is already colour-coded to the axis it drives.
+/// Drag-to-scrub, shared by the coloured axis letters and the plain row labels.
 ///
 /// The value is read at the START of the drag and every later position is an offset from it, never
 /// an accumulation of per-frame deltas. Accumulating drifts: each step gets clamped and rounded on
 /// its way through the parameter, and those roundings add up until the number no longer tracks the
 /// cursor. Anchoring to where the drag began means letting go and starting again always lands on
 /// the same value for the same travel.
+///
+/// A subclass supplies only what it paints. Min/Max default to unbounded, so a handle that does
+/// not set them scrubs freely — which is exactly what an extrude Distance wants.
 /// </summary>
-internal sealed class EffigyAxisHandle : Widget
+internal abstract class EffigyScrub : Widget
 {
 	/// <summary>Units per pixel of travel. A shade under a hundredth, so a whole unit is about the
 	/// width of the dialog and the common case — nudging a part a few tenths — is a short drag.</summary>
 	public float Sensitivity { get; init; } = 0.008f;
+
+	/// <summary>The range the scrub is held to. Unbounded by default, so a length with no declared
+	/// maximum drags to any distance; a min-bounded parameter (a positive-only thickness) stops at
+	/// its floor instead of pushing a value the feature will reject.</summary>
+	public float Min { get; init; } = float.MinValue;
+	public float Max { get; init; } = float.MaxValue;
 
 	/// <summary>Reads the value as it is now, so a drag starts from wherever typing left it.</summary>
 	public Func<float> Value { get; set; }
@@ -151,40 +155,19 @@ internal sealed class EffigyAxisHandle : Widget
 	/// <summary>Called on every move with the new value.</summary>
 	public Action<float> Dragged { get; set; }
 
-	private readonly string _label;
-	private readonly Color _colour;
-
-	private bool _dragging;
+	protected bool Dragging;
 	private float _startValue;
 	private float _startX;
 
-	public EffigyAxisHandle( Widget parent, string label, Color colour ) : base( parent )
+	protected EffigyScrub( Widget parent ) : base( parent )
 	{
-		_label = label;
-		_colour = colour;
-
-		// SizeH says "this scrubs" before the first drag, which is the only hint a bare letter can
+		// SizeH says "this scrubs" before the first drag, which is the only hint the control can
 		// give that it does anything at all.
 		Cursor = CursorShape.SizeH;
 		MouseTracking = true;
 
-		ToolTip = $"Drag to change {label} — hold Shift for fine, Ctrl for coarse";
-
 		TranslucentBackground = true;
 		NoSystemBackground = true;
-
-		FixedWidth = 16f;
-	}
-
-	protected override void OnPaint()
-	{
-		// Brighter while it is being used or pointed at, so a scrub in progress is visible even
-		// though the cursor has usually left the letter by then.
-		var strength = _dragging ? 1f : IsUnderMouse ? 0.85f : 0.65f;
-
-		Paint.SetDefaultFont( 8f, 600 );
-		Paint.SetPen( _colour.WithAlpha( strength ) );
-		Paint.DrawText( LocalRect, _label, TextFlag.Center );
 	}
 
 	protected override void OnMousePress( MouseEvent e )
@@ -192,7 +175,7 @@ internal sealed class EffigyAxisHandle : Widget
 		if ( !e.LeftMouseButton || Value is null )
 			return;
 
-		_dragging = true;
+		Dragging = true;
 		_startValue = Value();
 		_startX = e.LocalPosition.x;
 
@@ -202,7 +185,7 @@ internal sealed class EffigyAxisHandle : Widget
 
 	protected override void OnMouseMove( MouseEvent e )
 	{
-		if ( !_dragging )
+		if ( !Dragging )
 			return;
 
 		// The button coming up somewhere this widget never heard about — over the viewport, off the
@@ -220,20 +203,90 @@ internal sealed class EffigyAxisHandle : Widget
 		else if ( e.HasCtrl )
 			step *= 10f;
 
-		Dragged?.Invoke( _startValue + (e.LocalPosition.x - _startX) * step );
+		var v = _startValue + (e.LocalPosition.x - _startX) * step;
+		Dragged?.Invoke( Math.Clamp( v, Min, Max ) );
 
 		e.Accepted = true;
 	}
 
 	protected override void OnMouseReleased( MouseEvent e )
 	{
-		if ( _dragging )
+		if ( Dragging )
 			EndDrag();
 	}
 
 	private void EndDrag()
 	{
-		_dragging = false;
+		Dragging = false;
 		Update();
+	}
+}
+
+/// <summary>
+/// The coloured axis letter beside a Vec3 field, dragged sideways to scrub the number.
+///
+/// THE LETTER RATHER THAN THE FIELD. Dragging on the number itself is what Blender does, but the
+/// number here is a real LineEdit you type expressions into, and a horizontal drag there already
+/// means selecting text. Unity puts the scrub on the label for the same reason. The letter was
+/// sitting there as decoration anyway, and it is already colour-coded to the axis it drives.
+/// </summary>
+internal sealed class EffigyAxisHandle : EffigyScrub
+{
+	private readonly string _label;
+	private readonly Color _colour;
+
+	public EffigyAxisHandle( Widget parent, string label, Color colour ) : base( parent )
+	{
+		_label = label;
+		_colour = colour;
+
+		ToolTip = $"Drag to change {label} — hold Shift for fine, Ctrl for coarse";
+
+		FixedWidth = 16f;
+	}
+
+	protected override void OnPaint()
+	{
+		// Brighter while it is being used or pointed at, so a scrub in progress is visible even
+		// though the cursor has usually left the letter by then.
+		var strength = Dragging ? 1f : IsUnderMouse ? 0.85f : 0.65f;
+
+		Paint.SetDefaultFont( 8f, 600 );
+		Paint.SetPen( _colour.WithAlpha( strength ) );
+		Paint.DrawText( LocalRect, _label, TextFlag.Center );
+	}
+}
+
+/// <summary>
+/// A parameter row's label that also scrubs its number.
+///
+/// The scalar rows carried a dead label while a Vec3's coloured letters could be dragged, so a
+/// part's position could be nudged by hand but an extrude's Distance — the number you most want to
+/// feel your way to — could only be typed, or dragged on a slider that exists only when the
+/// parameter declares finite bounds, which Distance does not. This puts the scrub every Vec3 axis
+/// already had onto the label of any scalar row, which is where Onshape and Fusion both put "drag
+/// to any distance". Left-aligned and full width because it is still the row's label; the SizeH
+/// cursor and the tint under the mouse are the tell that it does more than name the row.
+/// </summary>
+internal sealed class EffigyScrubLabel : EffigyScrub
+{
+	private readonly string _label;
+
+	public EffigyScrubLabel( Widget parent, string label ) : base( parent )
+	{
+		_label = label;
+
+		ToolTip = $"Drag to change {label} — hold Shift for fine, Ctrl for coarse";
+
+		FixedWidth = 110f;
+	}
+
+	protected override void OnPaint()
+	{
+		var active = Dragging || IsUnderMouse;
+
+		Paint.SetDefaultFont( 8f );
+		Paint.SetPen( active ? Theme.Blue : Theme.TextControl.WithAlpha( 0.9f ) );
+		Paint.DrawText( LocalRect, _label, TextFlag.LeftCenter );
 	}
 }

@@ -1015,7 +1015,6 @@ internal sealed class EffigyFeatureDialog : Widget
 	private Widget BuildFloatRow( FloatParam fp )
 	{
 		var row = NewRow( out var layout, highlightLabel: fp.Label );
-		layout.Add( new Editor.Label( fp.Label ) { FixedWidth = 110 } );
 
 		var draggable = Draggable( fp.Min, fp.Max );
 
@@ -1048,6 +1047,27 @@ internal sealed class EffigyFeatureDialog : Widget
 			};
 		}
 
+		// The label scrubs, so an unbounded length that never earns a slider can still be dragged
+		// to any distance. Writes the same way the slider does — value onto the parameter, SetValue
+		// into the field so the drag does not echo back out as an edit.
+		var scrub = new EffigyScrubLabel( row, fp.Label )
+		{
+			Min = fp.Min,
+			Max = fp.Max,
+			Sensitivity = fp.Unit == "deg" ? 0.25f : 0.008f,
+			Value = () => fp.Value,
+			Dragged = v =>
+			{
+				fp.Value = v;
+				field.SetValue( v );
+
+				if ( slider.IsValid() )
+					slider.Value = v;
+
+				RaiseEdited();
+			},
+		};
+
 		field.ValueEdited = v =>
 		{
 			fp.Value = v;
@@ -1057,6 +1077,8 @@ internal sealed class EffigyFeatureDialog : Widget
 
 			RaiseEdited();
 		};
+
+		layout.Add( scrub );
 
 		if ( draggable )
 		{
@@ -1087,7 +1109,6 @@ internal sealed class EffigyFeatureDialog : Widget
 	private Widget BuildIntRow( IntParam ip )
 	{
 		var row = NewRow( out var layout, highlightLabel: ip.Label );
-		layout.Add( new Editor.Label( ip.Label ) { FixedWidth = 110 } );
 
 		// The parameter's own answer first: a slot number is inside every reasonable range and
 		// still has nothing to drag. See IntParam.Slider.
@@ -1129,6 +1150,30 @@ internal sealed class EffigyFeatureDialog : Widget
 
 			RaiseEdited();
 		};
+
+		// A magnitude scrubs from its label like a length does; an identifier — Slider false, e.g.
+		// a material slot — keeps a dead label, because sweeping through slot numbers means nothing.
+		Widget label = ip.Slider
+			? new EffigyScrubLabel( row, ip.Label )
+			{
+				Min = ip.Min,
+				Max = ip.Max,
+				Sensitivity = 0.1f,
+				Value = () => ip.Value,
+				Dragged = v =>
+				{
+					ip.Value = (int)MathF.Round( v );
+					field.SetValue( ip.Value );
+
+					if ( slider.IsValid() )
+						slider.Value = ip.Value;
+
+					RaiseEdited();
+				},
+			}
+			: new Editor.Label( ip.Label ) { FixedWidth = 110 };
+
+		layout.Add( label );
 
 		if ( draggable )
 		{
