@@ -1,0 +1,279 @@
+using Sandbox;
+using Sandbox.Utility;
+using System.Collections.Generic;
+using System.Linq;
+
+namespace Marionette;
+
+// A keyframed clip authored against a RigDocument: a diamond-per-bone timeline of FK poses,
+// plus AnimEvents (prop attach/detach) and morph triggers layered over the same frame range.
+// Replaces the older RigEventsAsset, which only carried events and had nothing to actually pose
+// or play back - this is the real shape of the tool (see RigDocument for the rig/constraint half).
+[AssetType( Name = "Rig Animation", Extension = "riganim", Category = "Marionette" )]
+public sealed class RigAnimDocument : GameResource
+{
+	[Property, Group( "Source" )] public Model SourceModel { get; set; }
+	[Property, Group( "Source" ), Title( "Rig Asset Path" )] public RigDocument RigAsset { get; set; }
+	[Property, Group( "Source" ), Title( "Animation Speed" )] public int AnimationSpeed { get; set; } = 30;
+	/// <summary>How many frames long the clip is.
+	///
+	/// 900 - thirty seconds at the default 30fps. The old default of 30 gave a clip exactly ONE
+	/// SECOND long, which read as the timeline being broken rather than as the clip being short.
+	///
+	/// The editor's timeline never goes below thirty seconds regardless of this value, so an
+	/// existing clip saved at the old default still gets room to work in; see
+	/// RigTimeline.MinimumTimelineFrames. This number is what the clip itself claims to be.</summary>
+	[Property, Group( "Source" ), Title( "Frame Count" )] public int FrameCount { get; set; } = 900;
+
+	/// <summary>
+	/// Static models shown in the viewport purely to pose against - the switch a hand reaches for,
+	/// the weapon it grips, the surface it rests on.
+	///
+	/// They are NOT part of the animation: nothing is keyframed, nothing plays back. They exist so
+	/// a grip can be aimed at something real rather than at empty space, which is otherwise
+	/// guesswork you only discover was wrong once it's in game. That's also why they need no
+	/// bones - a reference is something you animate AGAINST, not something you animate.
+	///
+	/// Distinct from AnimEvents, which attach a prop TO a bone for a frame range and are part of
+	/// the clip. A reference prop stays where the world puts it; an event prop follows the hand.
+	/// </summary>
+	[Property, Group( "Reference" )] public List<ReferenceProp> ReferenceProps { get; set; } = new();
+
+	[Property] public List<BoneTrack> BoneTracks { get; set; } = new();
+	[Property] public List<RigEvent> Events { get; set; } = new();
+	[Property] public List<MorphEvent> MorphEvents { get; set; } = new();
+
+	public BoneTrack FindTrack( string bone ) => BoneTracks.FirstOrDefault( t => t.BoneName == bone );
+
+	public BoneTrack GetOrAddTrack( string bone )
+	{
+		var track = FindTrack( bone );
+
+		if ( track is null )
+		{
+			track = new BoneTrack { BoneName = bone };
+			BoneTracks.Add( track );
+		}
+
+		return track;
+	}
+}
+
+/// <summary>One static model in the viewport to pose against. See RigAnimDocument.ReferenceProps.</summary>
+public sealed class ReferenceProp
+{
+	[Property] public string Name { get; set; } = "reference";
+
+	[Property] public Model Model { get; set; }
+
+	/// <summary>
+	/// Further models carried by this same prop, sharing its transform.
+	///
+	/// A "prop" is usually more than one model - a light switch is a plate and a toggle, a door is
+	/// a frame and a leaf. Held as separate props they had separate transforms, so lining them up
+	/// meant placing each one and then moving both every time you changed your mind, keeping two
+	/// sets of numbers in agreement by hand.
+	///
+	/// Extra rather than replacing Model, because Model is what every existing .riganim on disk
+	/// already stores. Renaming it would silently drop the prop out of clips that already work.
+	/// </summary>
+	[Property, Title( "Extra Models" )] public List<Model> ExtraModels { get; set; } = new();
+
+	/// <summary>Every model this prop draws - the primary and the extras, skipping empty slots.
+	/// One place to ask, so nothing has to remember that Model is special.</summary>
+	public IEnumerable<Model> AllModels
+	{
+		get
+		{
+			if ( Model is not null )
+				yield return Model;
+
+			if ( ExtraModels is null )
+				yield break;
+
+			foreach ( var extra in ExtraModels )
+			{
+				if ( extra is not null )
+					yield return extra;
+			}
+		}
+	}
+
+	/// <summary>Hidden rather than deleted, so a prop can be got out of the way for a moment
+	/// without losing the placement you spent time getting right.</summary>
+	[Property] public bool Visible { get; set; } = true;
+
+	[Property, Group( "Transform" )] public Vector3 Position { get; set; }
+	[Property, Group( "Transform" )] public Angles Rotation { get; set; }
+	[Property, Group( "Transform" )] public float Scale { get; set; } = 1f;
+
+	/// <summary>Optional. Named bone this prop follows, for a reference that should move with the
+	/// rig rather than sit still in the world - a weapon already in the hand, say. Empty means it
+	/// stays where Position puts it.</summary>
+	[Property, Group( "Transform" ), Title( "Follow Bone" )] public string FollowBone { get; set; } = "";
+
+	/// <summary>Position/Rotation/Scale as one transform, for the viewport. Hidden from the
+	/// property sheet - it's derived from the three fields directly above it, so showing it gave
+	/// every prop a second, read-only copy of its own transform sitting under the real one.</summary>
+	[Hide]
+	public Transform LocalTransform => new( Position, Rotation.ToRotation(), Scale );
+}
+
+public sealed class BoneTrack
+{
+	[Property] public string BoneName { get; set; } = "";
+	[Property] public List<BoneKeyframe> Keyframes { get; set; } = new();
+
+	/// <summary>The bone's local (parent-space) transform at a given frame, interpolated between
+	/// the keyframes either side of it. Constant before the first key and after the last.
+	///
+	/// The easing between two keys is set by the FIRST of them - a key governs the segment leaving
+	/// it. See KeyInterpolation for why the default isn't linear.</summary>
+	public Transform Evaluate( float frame )
+	{
+		if ( Keyframes.Count == 0 )
+			return Transform.Zero;
+
+		EnsureSorted();
+
+		if ( frame <= Keyframes[0].Frame )
+			return Keyframes[0].Local;
+
+		if ( frame >= Keyframes[^1].Frame )
+			return Keyframes[^1].Local;
+
+		for ( var i = 0; i < Keyframes.Count - 1; i++ )
+		{
+			var a = Keyframes[i];
+			var b = Keyframes[i + 1];
+
+			if ( frame < a.Frame || frame > b.Frame )
+				continue;
+
+			var span = b.Frame - a.Frame;
+			var t = span > 0 ? (frame - a.Frame) / span : 0f;
+
+			return Transform.Lerp( a.Local, b.Local, a.Ease( t ), true );
+		}
+
+		return Keyframes[0].Local;
+	}
+
+	/// <summary>Evaluate walks the list in order, so it has to be in order. This used to be an
+	/// OrderBy().ToList() inside Evaluate itself - a sort and an allocation per bone per frame,
+	/// which at ~95 bones and 60fps is thousands of throwaway lists a second. Keyframes are
+	/// almost always already sorted (they're inserted in place), so this scans first and only
+	/// sorts - in place, no allocation - when something actually moved.</summary>
+	private void EnsureSorted()
+	{
+		for ( var i = 1; i < Keyframes.Count; i++ )
+		{
+			if ( Keyframes[i - 1].Frame <= Keyframes[i].Frame )
+				continue;
+
+			Keyframes.Sort( ( x, y ) => x.Frame.CompareTo( y.Frame ) );
+			return;
+		}
+	}
+
+	public void SetKeyframe( int frame, Transform local )
+	{
+		var existing = Keyframes.FirstOrDefault( k => k.Frame == frame );
+
+		if ( existing is not null )
+		{
+			existing.Local = local;
+			return;
+		}
+
+		// Inserted in place rather than appended, so the list stays sorted and EnsureSorted's
+		// scan stays the fast path.
+		var index = Keyframes.FindIndex( k => k.Frame > frame );
+
+		if ( index < 0 )
+			Keyframes.Add( new BoneKeyframe { Frame = frame, Local = local } );
+		else
+			Keyframes.Insert( index, new BoneKeyframe { Frame = frame, Local = local } );
+	}
+}
+
+/// <summary>
+/// How a keyframe eases into the next one.
+///
+/// Smooth is the default, deliberately. Straight linear interpolation moves a bone at a constant
+/// speed and then stops dead - no acceleration, no settle - which reads as robotic no matter how
+/// good the poses either side of it are. It's the most common reason hand-keyed animation looks
+/// amateur, and it isn't fixable by posing harder.
+/// </summary>
+/// <summary>
+/// How a keyframe's outgoing segment is timed.
+///
+/// NEW VALUES ARE APPENDED, NEVER INSERTED. These serialize into .riganim by ordinal, so putting
+/// EaseIn between Smooth and Linear would silently turn every existing Linear key into an EaseIn
+/// one - a corruption with no error and no obvious symptom beyond "my clip feels different".
+/// </summary>
+public enum KeyInterpolation
+{
+	/// <summary>Ease out of this key and into the next. The sane default for body motion.</summary>
+	Smooth,
+
+	/// <summary>Constant speed. Right for mechanical motion, and for a straight pass between two
+	/// breakdowns you intend to smooth later.</summary>
+	Linear,
+
+	/// <summary>Hold this pose until the next key, then snap. For pops, blinks, and anything that
+	/// should read as instant.</summary>
+	Stepped,
+
+	/// <summary>Start slow, arrive at full speed. The wind-up half of an action - a limb loading
+	/// before it fires.</summary>
+	[Title( "Ease In" )]
+	EaseIn,
+
+	/// <summary>Leave at full speed, settle slowly. The half you want arriving at a pose, and the
+	/// one that makes a movement look like it has weight rather than being switched off.</summary>
+	[Title( "Ease Out" )]
+	EaseOut
+}
+
+public sealed class BoneKeyframe
+{
+	[Property] public int Frame { get; set; }
+	[Property] public Transform Local { get; set; } = Transform.Zero;
+
+	/// <summary>Governs the segment LEAVING this key, not arriving at it.</summary>
+	[Property] public KeyInterpolation Interpolation { get; set; } = KeyInterpolation.Smooth;
+
+	/// <summary>
+	/// Remap a 0..1 position within this key's outgoing segment.
+	///
+	/// THE CURVES COME FROM Sandbox.Utility.Easing, not from here. This used to hand-roll its own
+	/// smoothstep, which is a curve the engine already ships - and shipping only one eased mode
+	/// meant there was no way to ask for ease-in without ease-out, which is the distinction an
+	/// animator reaches for most: a limb loads slowly and arrives fast on the way out, and the
+	/// reverse on the way in.
+	///
+	/// MovieMaker maps its own InterpolationMode onto the same functions
+	/// (editor/MovieMaker/Code/Interpolation.cs), so a clip authored here eases the way the rest
+	/// of the editor does.
+	/// </summary>
+	public float Ease( float t ) => Interpolation switch
+	{
+		KeyInterpolation.Smooth => Easing.QuadraticInOut( t ),
+		KeyInterpolation.EaseIn => Easing.QuadraticIn( t ),
+		KeyInterpolation.EaseOut => Easing.QuadraticOut( t ),
+		KeyInterpolation.Stepped => 0f,
+		_ => t
+	};
+}
+
+public sealed class MorphEvent
+{
+	[Property] public string Name { get; set; } = "morph";
+	[Property, Title( "Start Frame" )] public int StartFrame { get; set; }
+	[Property, Title( "End Frame" )] public int EndFrame { get; set; } = 1;
+	[Property, Title( "Morph Name" )] public string MorphName { get; set; } = "";
+	[Property] public float Value { get; set; } = 1f;
+
+	public bool IsActive( float frame ) => frame >= StartFrame && frame <= EndFrame;
+}
