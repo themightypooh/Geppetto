@@ -80,6 +80,7 @@ public static class RigDiagnostics
 		}
 
 		CheckBones( skeleton, problems );
+		CheckSoft( skeleton, problems );
 		CheckMap( skeleton, bodyBoneMap, bodyIds, problems );
 		CheckWeights( skeleton, mesh, problems );
 
@@ -184,6 +185,71 @@ public static class RigDiagnostics
 				"Most engines and every retargeting tool assume a single root, and several roots are "
 				+ "usually a bone that lost its parent rather than a decision.",
 				"Parent the strays to the main root" ) );
+		}
+	}
+
+	/// <summary>
+	/// Softness that will not do what it says - see <see cref="SoftBone"/>.
+	///
+	/// EVERY ONE OF THESE IS SILENT AT RUNTIME. The solver clamps what it can and skips what it
+	/// cannot, so a bone authored with nonsense on it does not crash or warn, it just sits there
+	/// being rigid while the panel shows it as soft. That is the worst way for authoring data to
+	/// fail, and it is the whole reason these are checks rather than exceptions in the solver: a
+	/// number being edited passes through invalid on its way to valid, and a solver that threw on
+	/// the way past would make the slider unusable.
+	/// </summary>
+	static void CheckSoft( Skeleton skeleton, List<RigProblem> problems )
+	{
+		for ( var i = 0; i < skeleton.Count; i++ )
+		{
+			var bone = skeleton.Bones[i];
+			var soft = bone.Soft;
+
+			if ( soft is null )
+				continue;
+
+			// The solver skips a bone with no length, because a tail on top of its head has no
+			// direction to swing. It is already an error above; this says what it costs HERE.
+			if ( bone.Length < MinimumBoneLength )
+			{
+				problems.Add( new RigProblem( RigSeverity.Error,
+					$"Soft bone '{bone.Name}' has no length",
+					"The solver simulates a bone's tail, and a bone with no length has no tail to simulate, so its softness is skipped entirely.",
+					"Give it a length, or take the softness off it", i ) );
+			}
+
+			if ( soft.Stiffness < 0f )
+			{
+				problems.Add( new RigProblem( RigSeverity.Error,
+					$"Soft bone '{bone.Name}' has negative stiffness",
+					$"Stiffness {soft.Stiffness:0.##} is a spring that pushes AWAY from the pose. The solver clamps it to zero, so the bone is dead rather than springy.",
+					"Zero for a dead limb, or a positive number for a spring", i ) );
+			}
+
+			if ( soft.Damping < 0f || soft.Damping > 1f )
+			{
+				problems.Add( new RigProblem( RigSeverity.Warning,
+					$"Soft bone '{bone.Name}' has damping outside 0 to 1",
+					$"Damping is the fraction of speed kept after a second, so {soft.Damping:0.##} is not a fraction. The solver clamps it.",
+					"Use 0 to 1 - low settles fast, near 1 rings for a long time", i ) );
+			}
+
+			// The one that produces a bone which LOOKS authored and cannot move: a cone of zero.
+			if ( soft.MaxAngle <= 0f && soft.Stiffness >= 0f )
+			{
+				problems.Add( new RigProblem( RigSeverity.Warning,
+					$"Soft bone '{bone.Name}' has a zero cone",
+					$"MaxAngle {soft.MaxAngle:0.##} clamps the bone back onto its animated direction every step, so it is soft in the panel and rigid on screen.",
+					"Open the cone, or take the softness off it", i ) );
+			}
+
+			if ( soft.MaxAngle > 180f )
+			{
+				problems.Add( new RigProblem( RigSeverity.Warning,
+					$"Soft bone '{bone.Name}' has a cone over 180 degrees",
+					$"A cone is a half-angle from the bone's own direction, so {soft.MaxAngle:0.##} means the same as 180 - unlimited.",
+					"Use 180 if you meant unlimited", i ) );
+			}
 		}
 	}
 

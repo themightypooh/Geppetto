@@ -13,7 +13,8 @@ namespace Effigy;
 ///
 /// Length exists because a bone needs a tail as well as a head. The head is the transform's
 /// origin; the tail is Length along the bone's own +Y. That is Blender's convention, and it is
-/// what auto-weighting needs — a bone is a SEGMENT to measure distance to, not a point.
+/// what auto-weighting needs — a bone is a SEGMENT to measure distance to, not a point. It is also
+/// what <see cref="SoftSolver"/> simulates: the tail is the particle, the head follows the parent.
 /// </summary>
 public sealed class Bone
 {
@@ -28,6 +29,12 @@ public sealed class Bone
 
 	public float Length;
 
+	/// <summary>
+	/// Physical softness, or null for a rigid bone - which is nearly all of them, and why this
+	/// hangs off the bone rather than adding four fields to every one. See <see cref="SoftBone"/>.
+	/// </summary>
+	public SoftBone Soft;
+
 	public Bone( string name, int parent, Xform local, float length )
 	{
 		Name = name;
@@ -36,7 +43,7 @@ public sealed class Bone
 		Length = length;
 	}
 
-	public Bone Clone() => new( Name, Parent, Local, Length );
+	public Bone Clone() => new( Name, Parent, Local, Length ) { Soft = Soft?.Clone() };
 }
 
 /// <summary>
