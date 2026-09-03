@@ -57,7 +57,11 @@ public sealed class NoteSession
 	/// per-note arguments, because that is how the toolbar presents them.</summary>
 	public int Color;
 
-	public float Width = 0.4f;
+	/// <summary>Line thickness in SCREEN PIXELS, not world units - see Note.Width. Unlike the three
+	/// distances below it therefore does not scale with the model, which is right: a note is
+	/// something you read, and handwriting that gets thinner as you zoom out is handwriting you
+	/// cannot read.</summary>
+	public float Width = 2f;
 
 	/// <summary>
 	/// How far apart two samples have to be, in world units, before the second is kept.
@@ -65,18 +69,57 @@ public sealed class NoteSession
 	/// A mouse reports far more positions than a stroke needs, and keeping them all costs both the
 	/// file and the draw loop for a line nobody can see the difference in. Big enough to thin a
 	/// slow careful stroke, small enough that a tight circle still reads as round.
+	///
+	/// The value here is only the fallback for an empty studio - see <see cref="ScaleTo"/>, which
+	/// is what actually sets it.
 	/// </summary>
-	public float Spacing = 0.25f;
+	public float Spacing = 0.015f;
 
 	/// <summary>How far off the surface a sample sits, in world units. Without it a stroke drawn on
 	/// a face z-fights the face and reads as a dotted line that flickers when the camera moves.
-	/// </summary>
-	public float Lift = 0.15f;
+	/// Set by <see cref="ScaleTo"/>.</summary>
+	public float Lift = 0.006f;
 
 	/// <summary>How near the cursor has to be for a note to be picked or erased, in world units.
-	/// Generous on purpose: a thin ribbon is a small target and an erase that misses is more
-	/// annoying than one that is easy to aim.</summary>
-	public float PickRadius = 1.5f;
+	/// Generous relative to the stroke: a thin ribbon is a small target and an erase that misses is
+	/// more annoying than one that is easy to aim. Set by <see cref="ScaleTo"/>.</summary>
+	public float PickRadius = 0.05f;
+
+	/// <summary>
+	/// Size the three distances above to the model, rather than to a number somebody guessed.
+	///
+	/// EFFIGY'S UNITS ARE DIMENSIONLESS - PolyMesh.BoundsDiagonal says so at length: a default
+	/// primitive is one unit across and a room is hundreds. A constant that feels right on one of
+	/// those is unusable on the other, and this class shipped with three of them tuned for a part
+	/// tens of units wide. On a default one-unit box that made Spacing a quarter of the whole part
+	/// (four samples across a face), Lift a visible fraction of it (handwriting floating off the
+	/// model), and PickRadius wider than the entire model - so every click after the first note
+	/// landed on that note and opened its caption box instead of drawing.
+	///
+	/// The fractions are the sculpt brush's rule (SculptSession.SuggestedRadius) applied to a
+	/// different job: a fraction of the diagonal, with a fallback for the empty studio where there
+	/// is no diagonal to take a fraction of.
+	/// </summary>
+	public void ScaleTo( float diagonal )
+	{
+		// An empty studio still has to be drawable - a note on nothing is a legitimate first act -
+		// and it has no bounds to measure. One unit is the default primitive, which is the part
+		// about to be made.
+		if ( !(diagonal > 1e-6f) )
+			diagonal = 1f;
+
+		// ~65 samples across the part. Fine enough that a tight circle reads as round, coarse
+		// enough that a slow hand does not write a thousand points into the document.
+		Spacing = diagonal / 65f;
+
+		// Just off the surface. Big enough to beat depth precision, small enough that the note
+		// still reads as being ON the face rather than hovering over it.
+		Lift = diagonal / 160f;
+
+		// A comfortably bigger target than the line is thick, and still a small fraction of the
+		// part, so notes on opposite sides of a model are never both under the cursor.
+		PickRadius = diagonal / 20f;
+	}
 
 	public bool IsStroking => _working is not null;
 

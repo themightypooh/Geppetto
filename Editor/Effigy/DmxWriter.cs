@@ -63,7 +63,7 @@ public static class DmxWriter
 	/// <summary>The "model" format version. 22 is the Source 2 era one; the compiler carries a
 	/// CDmFormatUpdater_model for older files, so this is the version to write rather than the
 	/// oldest one that might still be accepted.</summary>
-	private const int ModelFormatVersion = 22;
+	internal const int ModelFormatVersion = 22;
 
 	// The DmeVertexData field names, in the <semantic>$<set> spelling the compiler keys a vertex
 	// format on. $0 is the first set of each; a second UV channel would be texcoord$1. Named here
@@ -161,59 +161,12 @@ public static class DmxWriter
 
 		w.OpenElement( "DmElement", idRoot, "root" );
 
-		w.OpenAttributeElement( "skeleton", "DmeModel", idModel, modelName );
-		{
-			WriteTransform( w, "transform", idModelTransform, modelName, Xform.Identity );
-			w.Attribute( "shape", "element", "" );
-			w.Attribute( "visible", "bool", "1" );
-
+		WriteSkeletonModel( w, skeleton, modelName, idModel, idModelTransform,
+			boneDagIds, boneTransformIds, bindTransformIds,
 			// children: the bone hierarchy's roots, then the mesh. A DmeDag is both a transform
 			// node and a place to hang geometry, which is why bones and meshes share one list.
-			w.OpenArray( "children", "element_array" );
-
-			for ( var i = 0; i < skeleton.Count; i++ )
-			{
-				if ( skeleton.Bones[i].Parent < 0 )
-					WriteBoneDag( w, skeleton, i, boneDagIds, boneTransformIds );
-			}
-
-			WriteMeshDag( w, idMeshDag, idMeshTransform, idMesh, idVertexData,
-				mesh, skin, skeleton, cornerNormals, normals, materialName );
-
-			w.CloseArray();
-
-			// jointList: what jointIndices in the vertex data index INTO. Written in skeleton
-			// order, so a bone's index in Skeleton.Bones is its index here — the one invariant
-			// that makes the weights mean anything.
-			w.OpenArray( "jointList", "element_array" );
-
-			for ( var i = 0; i < skeleton.Count; i++ )
-				w.ArrayReference( boneDagIds[i] );
-
-			w.CloseArray();
-
-			// baseStates: the bind pose, as its own copy of every bone transform. It has to agree
-			// with the dag hierarchy above; both are written from Bone.Local, once each.
-			w.OpenArray( "baseStates", "element_array" );
-			w.OpenArrayElement( "DmeTransformList", w.NextId(), "bind pose" );
-			w.OpenArray( "transforms", "element_array" );
-
-			for ( var i = 0; i < skeleton.Count; i++ )
-				WriteTransformElement( w, bindTransformIds[i], skeleton.Bones[i].Name, skeleton.Bones[i].Local );
-
-			w.CloseArray();
-			w.CloseElement();
-			w.CloseArray();
-
-			// Z up, Y forward — the axes the kernel builds in, stated rather than left to a guess
-			// at import time.
-			w.OpenAttributeElement( "axisSystem", "DmeAxisSystem", w.NextId(), "axisSystem" );
-			w.Attribute( "upAxis", "int", "3" );
-			w.Attribute( "forwardParity", "int", "1" );
-			w.Attribute( "coordSys", "int", "0" );
-			w.CloseElement();
-		}
-		w.CloseElement();
+			() => WriteMeshDag( w, idMeshDag, idMeshTransform, idMesh, idVertexData,
+				mesh, skin, skeleton, cornerNormals, normals, materialName ) );
 
 		// The model and the skeleton are the same element — one is the geometry's root, the other
 		// the pose's, and in a single-model file they are one DmeModel.
@@ -280,6 +233,77 @@ public static class DmxWriter
 	///
 	/// The mesh's own dag stays a DmeDag. Only bones are joints.
 	/// </summary>
+	/// <summary>
+	/// The `skeleton` DmeModel: bone hierarchy, joint list, bind pose and axis system — everything
+	/// a DMX says about a rig before geometry or animation is hung off it.
+	///
+	/// SHARED WITH THE ANIMATION WRITER ON PURPOSE, and that sharing is the point rather than a
+	/// tidiness. An animation DMX is this same block with channels added and no mesh (see
+	/// <see cref="DmxAnimWriter"/>), and ModelDoc matches a clip to a model by walking both
+	/// skeletons. Two copies of this code is how the two bind poses quietly stop agreeing, and a
+	/// clip authored against a bind pose the mesh does not share does not fail to compile — it
+	/// plays back subtly, unfindably wrong.
+	///
+	/// <paramref name="writeExtraChildren"/> is the mesh dag for a model export, and nothing at all
+	/// for an animation one.
+	/// </summary>
+	internal static void WriteSkeletonModel( DmxText w, Skeleton skeleton, string modelName,
+		string idModel, string idModelTransform,
+		string[] boneDagIds, string[] boneTransformIds, string[] bindTransformIds,
+		Action writeExtraChildren )
+	{
+		w.OpenAttributeElement( "skeleton", "DmeModel", idModel, modelName );
+		{
+			WriteTransform( w, "transform", idModelTransform, modelName, Xform.Identity );
+			w.Attribute( "shape", "element", "" );
+			w.Attribute( "visible", "bool", "1" );
+
+			w.OpenArray( "children", "element_array" );
+
+			for ( var i = 0; i < skeleton.Count; i++ )
+			{
+				if ( skeleton.Bones[i].Parent < 0 )
+					WriteBoneDag( w, skeleton, i, boneDagIds, boneTransformIds );
+			}
+
+			writeExtraChildren?.Invoke();
+
+			w.CloseArray();
+
+			// jointList: what jointIndices in the vertex data index INTO. Written in skeleton
+			// order, so a bone's index in Skeleton.Bones is its index here — the one invariant
+			// that makes the weights mean anything.
+			w.OpenArray( "jointList", "element_array" );
+
+			for ( var i = 0; i < skeleton.Count; i++ )
+				w.ArrayReference( boneDagIds[i] );
+
+			w.CloseArray();
+
+			// baseStates: the bind pose, as its own copy of every bone transform. It has to agree
+			// with the dag hierarchy above; both are written from Bone.Local, once each.
+			w.OpenArray( "baseStates", "element_array" );
+			w.OpenArrayElement( "DmeTransformList", w.NextId(), "bind pose" );
+			w.OpenArray( "transforms", "element_array" );
+
+			for ( var i = 0; i < skeleton.Count; i++ )
+				WriteTransformElement( w, bindTransformIds[i], skeleton.Bones[i].Name, skeleton.Bones[i].Local );
+
+			w.CloseArray();
+			w.CloseElement();
+			w.CloseArray();
+
+			// Z up, Y forward — the axes the kernel builds in, stated rather than left to a guess
+			// at import time.
+			w.OpenAttributeElement( "axisSystem", "DmeAxisSystem", w.NextId(), "axisSystem" );
+			w.Attribute( "upAxis", "int", "3" );
+			w.Attribute( "forwardParity", "int", "1" );
+			w.Attribute( "coordSys", "int", "0" );
+			w.CloseElement();
+		}
+		w.CloseElement();
+	}
+
 	static void WriteBoneDag( DmxText w, Skeleton skeleton, int index, string[] dagIds, string[] transformIds )
 	{
 		var bone = skeleton.Bones[index];
@@ -682,6 +706,17 @@ internal sealed class DmxText
 	// --- formatting ---------------------------------------------------------------------------
 
 	public static string Number( float v ) => v.ToString( "0.######", CultureInfo.InvariantCulture );
+
+	/// <summary>
+	/// A time in seconds, as DMX writes them: fixed to four decimals rather than trimmed.
+	///
+	/// Separate from <see cref="Number"/> on purpose. Number drops trailing zeros, so frame zero
+	/// comes out as "0" where every time value fbx2dmx writes is "0.0000". The reader accepts
+	/// both, but a `time` attribute that does not look like the reference is the first thing to
+	/// suspect when a clip loads and plays wrong, and being able to diff against the reference
+	/// without noise is worth one format string.
+	/// </summary>
+	public static string Time( float seconds ) => seconds.ToString( "0.0000", CultureInfo.InvariantCulture );
 
 	public static string Vector2( Vec2 v ) => $"{Number( v.x )} {Number( v.y )}";
 

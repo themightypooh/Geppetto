@@ -80,6 +80,13 @@ internal enum EffigyIcon
 
 	// --- the one sketch tool driven by a drag ----------------------------------------------------
 	CutTool,
+
+	// --- grease pencil: annotation, not geometry -------------------------------------------------
+	// Both are drawn as the real-world objects rather than as marks, because that is the one thing
+	// that says "this is not a modelling operation" before the tooltip gets a chance to. Every other
+	// glyph in the bar is a shape being changed; these are stationery.
+	NoteTool,
+	NoteEraseTool,
 }
 
 /// <summary>
@@ -178,6 +185,9 @@ internal static class EffigyIcons
 
 			case EffigyIcon.Draft: PaintDraft( center, color ); return;
 			case EffigyIcon.Hole: PaintHole( center, color ); return;
+
+			case EffigyIcon.NoteTool: PaintNoteTool( center, color ); return;
+			case EffigyIcon.NoteEraseTool: PaintNoteEraseTool( center, color ); return;
 
 			case EffigyIcon.EllipseTool: PaintEllipseTool( center, color ); return;
 			case EffigyIcon.SplineTool: PaintSplineTool( center, color ); return;
@@ -1269,6 +1279,88 @@ internal static class EffigyIcons
 
 	/// <summary>A dense surface collapsing into a flat square: the sculpt becoming a texture, which
 	/// is the whole point of the pipeline and the one operation here that produces a file.</summary>
+	/// <summary>
+	/// A grease pencil laid over a wavy scribble.
+	///
+	/// NOT THE SKETCH PENCIL, which this sits two buttons away from and must not be mistaken for.
+	/// That one is a sharp #2 drawing a straight line and it makes geometry; this is a fat blunt
+	/// marker over a loose squiggle, and the squiggle is doing the work — a scribble is what
+	/// handwriting looks like at 18px, and nothing that produces a solid in this bar is drawn
+	/// scribbly.
+	/// </summary>
+	private static void PaintNoteTool( Vector2 c, Color color )
+	{
+		// The scribble first, so the marker sits on top of it the way a pen sits on its own line.
+		Stroked( color.WithAlpha( 0.75f ), 1.5f );
+
+		var previous = At( c, -8f, 5.5f );
+
+		for ( var i = 1; i <= 20; i++ )
+		{
+			var t = i / 20f;
+			var point = At( c, -8f + 13f * t, 5.5f + MathF.Sin( t * MathF.PI * 2.2f ) * 1.8f );
+
+			Editor.Paint.DrawLine( previous, point );
+			previous = point;
+		}
+
+		// The barrel, drawn as a slab on the diagonal rather than the sketch pencil's thin shaft.
+		var tip = At( c, -5.5f, 1.5f );
+		var along = (At( c, 7f, -7.5f ) - tip).Normal;
+		var across = new Vector2( -along.y, along.x ) * (2.6f * _scale);
+
+		Stroked( color, 1.5f );
+		Outline(
+			tip + across * 0.35f,
+			At( c, 7f, -7.5f ) + across,
+			At( c, 8.5f, -8.5f ) + across,
+			At( c, 8.5f, -8.5f ) - across,
+			At( c, 7f, -7.5f ) - across,
+			tip - across * 0.35f );
+
+		// The nib, filled: the one part of a marker that is a different colour from the barrel, and
+		// what makes the shape read as pointing at the scribble rather than away from it.
+		Filled( color );
+		Editor.Paint.DrawPolygon( tip, At( c, -3.2f, -0.4f ) + across * 0.75f, At( c, -3.2f, -0.4f ) - across * 0.75f );
+	}
+
+	/// <summary>An eraser on the same scribble, taking a bite out of it. The gap in the line is the
+	/// whole glyph — an eraser drawn hovering over an intact scribble is just a second block
+	/// shape.</summary>
+	private static void PaintNoteEraseTool( Vector2 c, Color color )
+	{
+		// Left half of the scribble survives; the right half is where the eraser has been.
+		Stroked( color.WithAlpha( 0.75f ), 1.5f );
+
+		var previous = At( c, -8.5f, 5.5f );
+
+		for ( var i = 1; i <= 10; i++ )
+		{
+			var t = i / 20f;
+			var point = At( c, -8.5f + 13f * t, 5.5f + MathF.Sin( t * MathF.PI * 2.2f ) * 1.8f );
+
+			Editor.Paint.DrawLine( previous, point );
+			previous = point;
+		}
+
+		// The block, tilted so it reads as being pushed along the line rather than parked on it.
+		var down = new Vector2( 0.34f, 0.94f );
+		var side = new Vector2( -down.y, down.x );
+		var centre = At( c, 3f, -1f );
+		var half = 4.6f * _scale;
+		var length = 5.6f * _scale;
+
+		Stroked( color, 1.5f );
+		Outline(
+			centre - down * length + side * half,
+			centre + down * length + side * half,
+			centre + down * length - side * half,
+			centre - down * length - side * half );
+
+		// The ferrule line across it, which is what separates an eraser from a plain rectangle.
+		Editor.Paint.DrawLine( centre + side * half, centre - side * half );
+	}
+
 	private static void PaintSculptBake( Vector2 c, Color color )
 	{
 		// The sculpted surface, up top.

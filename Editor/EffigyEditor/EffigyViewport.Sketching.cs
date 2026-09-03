@@ -1280,7 +1280,16 @@ internal sealed partial class EffigyViewport
 		// says whether EnterSketch got this far at all - so turn the probe on BEFORE Edit Sketch
 		// in the tree, not after.
 		if ( _probeSketch )
-			Log.Info( $"[effigy-probe] BeginSketch curves={sketch?.Curves.Count} points={sketch?.Points.Count} tool={SketchTool}" );
+		{
+			// The plane goes on this line because "the grid is in the wrong place" is a question
+			// about the plane and nothing else: a sketch that kept the default XY plane - because
+			// its face reference failed to resolve and the feature threw - reads as origin 0,0,0
+			// here while the face it was placed on is somewhere else entirely.
+			var probePlane = sketch?.Plane;
+
+			Log.Info( $"[effigy-probe] BeginSketch curves={sketch?.Curves.Count} points={sketch?.Points.Count} "
+				+ $"tool={SketchTool} planeOrigin={probePlane?.Origin} planeNormal={probePlane?.Normal}" );
+		}
 
 		// The selection is a list of INDICES into the sketch that was open a moment ago. Carried
 		// into a different sketch they still resolve, to whatever points happen to sit at those
@@ -2095,6 +2104,10 @@ internal sealed partial class EffigyViewport
 
 	private static bool _probeSketch;
 
+	/// <summary>Whether the probe is on, so the window can log the half of the story it owns —
+	/// which face a sketch resolved to, and whether it resolved at all.</summary>
+	public static bool ProbeSketch => _probeSketch;
+
 	/// <summary>Turn the sketch point probe on or off: `effigy_probe_sketch 1`.</summary>
 	[ConCmd( "effigy_probe_sketch" )]
 	public static void SetSketchProbe( int on )
@@ -2631,10 +2644,17 @@ internal sealed partial class EffigyViewport
 
 		// Closed regions are selectable areas in Onshape, not just wire loops. The fill is drawn
 		// behind the edge work so it never hides the actual geometry.
+		//
+		// SHADED THROUGH ShadedRegions, NOT Profiles, so the fill is laid down exactly once per
+		// spot. Profiles is the PICKING answer - two overlapping rectangles are two wholes plus a
+		// lens, all three clickable - and painting all of it stacked two and three coats of a
+		// translucent colour on the shared area, which came out as an opaque slab with a seam
+		// across it the moment a second rectangle touched the first. ShadedRegions hands back the
+		// same material cut into pieces that do not overlap.
 		Gizmo.Draw.IgnoreDepth = true;
 		Gizmo.Draw.Color = SketchRegionColor;
-		foreach ( var profile in profiles.Profiles )
-			DrawRegionFan( profile.Outer );
+		foreach ( var region in ProfileFinder.ShadedRegions( ActiveSketch, profiles ) )
+			DrawRegionFan( ActiveSketch.Plane, region );
 
 		Gizmo.Draw.IgnoreDepth = true;
 		Gizmo.Draw.LineThickness = 2f;
@@ -2712,6 +2732,36 @@ internal sealed partial class EffigyViewport
 
 	private void DrawRegionFan( List<Vec2> loop ) => DrawRegionFan( ActiveSketch.Plane, loop );
 
+	/// <summary>
+	/// A whole region, HOLES SUBTRACTED. The loop-only overload fills straight over an inner ring,
+	/// so a plate with a bolt hole shaded as though it were solid - the same fill the extrude will
+	/// not build there. Triangulate.WithHoles is what the extrude cap itself uses, and it indexes
+	/// the outer loop's points followed by each hole's, so the vertex list is built in that order
+	/// and the triples map straight across.
+	/// </summary>
+	private void DrawRegionFan( SketchPlane plane, Profile region )
+	{
+		if ( region is null || region.Outer.Count < 3 )
+			return;
+
+		if ( region.Holes.Count == 0 )
+		{
+			DrawRegionFan( plane, region.Outer );
+			return;
+		}
+
+		var points = new List<Vec2>( region.Outer );
+
+		foreach ( var hole in region.Holes )
+			points.AddRange( hole );
+
+		foreach ( var (a, b, c) in Triangulate.WithHoles( region.Outer, region.Holes.Cast<IReadOnlyList<Vec2>>().ToList() ) )
+		{
+			Gizmo.Draw.SolidTriangle( new Triangle(
+				PlaneToWorld( plane, points[a] ), PlaneToWorld( plane, points[b] ), PlaneToWorld( plane, points[c] ) ) );
+		}
+	}
+
 	private void DrawRegionFan( SketchPlane plane, List<Vec2> loop )
 	{
 		if ( loop.Count < 3 )
@@ -2752,10 +2802,10 @@ internal sealed partial class EffigyViewport
 
 			var profiles = ProfileFinder.Find( sketch );
 
-			// Shade closed regions
+			// Shade closed regions, once per spot - see DrawSketch for why this is not Profiles.
 			Gizmo.Draw.Color = SketchRegionColor.WithAlpha( 0.08f );
-			foreach ( var profile in profiles.Profiles )
-				DrawRegionFan( sketch.Plane, profile.Outer );
+			foreach ( var region in ProfileFinder.ShadedRegions( sketch, profiles ) )
+				DrawRegionFan( sketch.Plane, region );
 
 			// Draw curves
 			foreach ( var curve in sketch.Curves )

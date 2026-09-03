@@ -328,6 +328,7 @@ public sealed class EffigyWindow : DockWindow
 		file.AddSeparator();
 		file.AddOption( "Export OBJ", "file_download", ExportObj );
 		file.AddOption( "Compile .vmdl", "build", CompileVmdl );
+		file.AddOption( "Animation Clips...", "movie", OpenAnimClips );
 		file.AddOption( "Collision Report", "fitness_center", ReportCollision );
 		file.AddSeparator();
 		file.AddOption( "Close", "close", Close );
@@ -494,6 +495,9 @@ public sealed class EffigyWindow : DockWindow
 		_viewport.SculptStrokeFinished = NoteSculptEdited;
 		_viewport.SculptSettingsChanged = OnSculptSettingsChanged;
 
+		_viewport.NoteChanged = OnNoteEdited;
+		_viewport.NoteTextRequested = PromptNoteText;
+
 		// BUILT ONCE, ALL THREE, at startup. The bar paints from these lists and never owns them,
 		// so a mode change is an assignment rather than a teardown - which is what lets a tool's
 		// armed state and its chosen variant survive leaving a sketch and coming back to it.
@@ -645,7 +649,73 @@ public sealed class EffigyWindow : DockWindow
 			_featureTools[kind] = entry;
 		}
 
+		AddNoteTools( stages );
+
 		return stages;
+	}
+
+	/// <summary>
+	/// The grease pencil, on the end of the Sketch stage.
+	///
+	/// NOT IN THE CreateTools TABLE, even though it sits among tools that are. Every entry in that
+	/// table is a FEATURE — it carries a ToolKind and its button calls AddFeature — and a note is
+	/// deliberately not one of those (see PartStudio.Notes). Giving it a fake ToolKind to get it
+	/// onto the bar would put annotation one careless switch statement away from the feature tree,
+	/// which is precisely the coupling the whole design is avoiding. It is added here instead, to
+	/// the stage the table already built.
+	///
+	/// The SKETCH stage because that is where the other thing you do with a pointer and a plane
+	/// lives, and because it is the one stage that is never locked — a note on an empty studio
+	/// ("start from the bracket drawing") is a reasonable first thing to want, and every other
+	/// stage is dimmed until there is a body to act on.
+	/// </summary>
+	private void AddNoteTools( List<EffigyStage> stages )
+	{
+		if ( stages.FirstOrDefault( s => s.Name == StageSketch ) is not { } sketch )
+			return;
+
+		_noteTool = new EffigyStageTool
+		{
+			Icon = EffigyIcon.NoteTool,
+			Label = "Note",
+			Tip = "Grease pencil — scribble notes over the part. Never exported.",
+			Checkable = true,
+		};
+
+		_noteTool.Clicked = ToggleNotePen;
+
+		// Variants rather than a second checkable button, so the colour lives where you already are
+		// when you decide you want a different one. Built from the palette rather than written out
+		// again, for the same reason the Primitive menu is built from PrimitiveFeature.Shape: a
+		// menu naming a colour the kernel has never heard of would set an index meaning something
+		// else.
+		_noteColorTool = new EffigyStageTool
+		{
+			Icon = EffigyIcon.NoteTool,
+			Label = "Colour",
+			Tip = "The colour the next note is drawn in",
+			Variants = Enumerable.Range( 0, NotePalette.Count ).Select( i => new EffigyStageVariant
+			{
+				Icon = EffigyIcon.NoteTool,
+				Label = NotePalette.NameAt( i ),
+				Tip = $"Draw notes in {NotePalette.NameAt( i ).ToLowerInvariant()}",
+				Chosen = () => SetNoteColor( i ),
+			} ).ToArray(),
+		};
+
+		_noteEraseTool = new EffigyStageTool
+		{
+			Icon = EffigyIcon.NoteEraseTool,
+			Label = "Erase",
+			Tip = "Eraser (E) — click a note to delete it",
+			Checkable = true,
+		};
+
+		_noteEraseTool.Clicked = ToggleNoteEraser;
+
+		sketch.Add( _noteTool );
+		sketch.Add( _noteColorTool );
+		sketch.Add( _noteEraseTool );
 	}
 
 	/// <summary>
@@ -1189,6 +1259,228 @@ public sealed class EffigyWindow : DockWindow
 		_sculptBar?.Refresh();
 	}
 
+	// --- grease pencil -------------------------------------------------------------------------
+
+	private EffigyStageTool _noteTool, _noteColorTool, _noteEraseTool;
+
+	/// <summary>
+	/// Arm or put down the pen.
+	///
+	/// NOT AN EffigyBarMode. Sketch and sculpt each take the whole bar over because they replace
+	/// what every button on it means; the pen adds one thing you can do with the pointer and takes
+	/// nothing away, so it stays on the Part bar as an armed tool. That also means notes can be
+	/// scribbled between two feature edits without leaving and re-entering a mode, which is when
+	/// people actually write them.
+	/// </summary>
+	private void ToggleNotePen()
+	{
+		if ( _viewport is null )
+			return;
+
+		if ( _viewport.IsNoting )
+		{
+			_viewport.EndNotes();
+			UpdateNoteChecks();
+
+			return;
+		}
+
+		// Sketching owns the click while it is open, so the two cannot both be armed. Sculpting
+		// cannot be running here at all - it holds a different bar.
+		if ( _viewport.IsSketching )
+			FinishSketch();
+
+		var session = new NoteSession( _studio.Notes )
+		{
+			Color = _noteColorTool?.Current ?? 0,
+			Pivot = _studio.Origin,
+		};
+
+		session.SetBodies( _studio.Bodies );
+		session.ScaleTo( NotePartSize() );
+
+		// Point the viewport at the studio's list HERE rather than waiting for the next rebuild.
+		// RefreshNotes is the other half of this and runs from RebuildStudio, which is fine for a
+		// document swap and useless for the case that actually matters: arm the pen on a studio
+		// nobody has touched since it opened, draw, and let go. Nothing rebuilds on a scribble - a
+		// note is not in the history - so without this line the note the user just drew would not
+		// be painted until they happened to edit a feature.
+		_viewport.Notes = _studio.Notes;
+		_viewport.PartSize = NotePartSize();
+
+		_viewport.BeginNotes( session );
+		UpdateNoteChecks();
+	}
+
+	private void ToggleNoteEraser()
+	{
+		if ( _viewport is null )
+			return;
+
+		// Reaching for the eraser with the pen down means you want to erase, not nothing. Arming
+		// the pen first is the reading that leaves the button doing something.
+		if ( !_viewport.IsNoting )
+			ToggleNotePen();
+
+		if ( _viewport.IsNoting )
+			_viewport.NoteErasing = !_viewport.NoteErasing;
+
+		UpdateNoteChecks();
+	}
+
+	private void SetNoteColor( int index )
+	{
+		// Picking a colour is also how you reach for the pen, the same way picking a primitive
+		// shape makes one rather than only remembering the choice.
+		if ( _viewport is not null && !_viewport.IsNoting )
+			ToggleNotePen();
+
+		if ( _viewport?.NoteSession is { } session )
+		{
+			session.Color = index;
+
+			// A colour is a decision about the next stroke, never about the one that is running.
+			_viewport.NoteErasing = false;
+		}
+
+		UpdateNoteChecks();
+	}
+
+	/// <summary>Put the bar's ticks back in step with the viewport, which the E and H shortcuts can
+	/// change from under it. Same job UpdateSculptChecks does.</summary>
+	private void UpdateNoteChecks()
+	{
+		var noting = _viewport?.IsNoting == true;
+
+		if ( _noteTool is not null )
+			_noteTool.Checked = noting;
+
+		if ( _noteEraseTool is not null )
+			_noteEraseTool.Checked = noting && _viewport.NoteErasing;
+
+		if ( _noteColorTool is not null && _viewport?.NoteSession is { } session )
+			_noteColorTool.Current = session.Color;
+
+		_stageBar?.Refresh();
+		_viewport?.Update();
+	}
+
+	/// <summary>
+	/// A stroke landed or a note was erased.
+	///
+	/// Dirties the document and NOTHING ELSE - no rebuild, no feature tree refresh. A note is not
+	/// in the history, so there is nothing to re-evaluate, and rebuilding on every scribble would
+	/// re-run the whole model to change a line the model has never heard of.
+	/// </summary>
+	private void OnNoteEdited()
+	{
+		if ( !_dirty )
+		{
+			_dirty = true;
+			UpdateTitle();
+		}
+
+		_viewport?.Update();
+	}
+
+	/// <summary>
+	/// Ask for the words that go with a note, and hang them on it.
+	///
+	/// Through the session rather than by assigning Note.Text, so the caption lands on the same
+	/// undo stack as the stroke it belongs to - a typo you cannot take back is worse than no
+	/// caption.
+	/// </summary>
+	private void PromptNoteText( Note note )
+	{
+		if ( note is null || _viewport?.NoteSession is not { } session )
+			return;
+
+		// The same one-field popup every tree in this tool renames with - see
+		// EffigyRigPanel.BeginRename. A note's caption is a rename in everything but name, and
+		// inventing a second way to type one short string would be a second thing to get wrong.
+		var menu = new Menu( _viewport );
+		var edit = new LineEdit( note.Text ?? "", menu ) { FixedWidth = 260, PlaceholderText = "What does this one say?" };
+
+		edit.ReturnPressed += () =>
+		{
+			var text = edit.Text?.Trim();
+
+			menu.Close();
+
+			// Trimmed to null rather than kept as an empty string: a caption of "" would still draw
+			// its leader line up to a label with nothing in it, which reads as a bug rather than as
+			// a note somebody cleared.
+			if ( session.SetText( note, string.IsNullOrWhiteSpace( text ) ? null : text ) )
+				OnNoteEdited();
+		};
+
+		menu.AddWidget( edit );
+		menu.OpenAtCursor();
+
+		edit.Focus();
+		edit.SelectAll();
+	}
+
+	/// <summary>
+	/// Point the viewport and the live session at the studio's current notes and bodies.
+	///
+	/// Called from RebuildStudio, which is the one place every document change funnels through -
+	/// an edit, an undo, a New, an Open. The session holds the studio's list BY REFERENCE, so most
+	/// rebuilds need nothing done here; the case that does is a document swap, where the old
+	/// session is still writing into the list belonging to a studio nobody can see any more.
+	/// </summary>
+	private void RefreshNotes()
+	{
+		if ( _viewport is null )
+			return;
+
+		_viewport.Notes = _studio.Notes;
+
+		if ( _viewport.NoteSession is not { } session )
+			return;
+
+		if ( !ReferenceEquals( session.Notes, _studio.Notes ) )
+		{
+			// A new document. Re-arm rather than carrying the old session across, which would also
+			// carry an undo stack that can paste the previous model's scribbles into this one.
+			_viewport.EndNotes();
+			ToggleNotePen();
+
+			return;
+		}
+
+		// The bodies a stroke lands on have just been rebuilt. Without this a note drawn after an
+		// extrude sinks to where the surface used to be.
+		session.SetBodies( _studio.Bodies );
+		session.Pivot = _studio.Origin;
+
+		// And the part may be a different size than it was when the pen was armed - an extrude on an
+		// empty studio takes it from nothing to something - so the distances that scale with it are
+		// re-derived rather than left at what the first guess said.
+		var size = NotePartSize();
+
+		session.ScaleTo( size );
+		_viewport.PartSize = size;
+	}
+
+	/// <summary>
+	/// How big the part is, for everything about a note that has to scale with it.
+	///
+	/// ToMesh rather than ToVisibleMesh: hiding a body is about what you want to look at, and a note
+	/// suddenly changing how finely it samples because a body was hidden would be a surprise with no
+	/// cause the user could see. Zero on an empty studio, which ScaleTo reads as "assume the default
+	/// primitive".
+	/// </summary>
+	private float NotePartSize()
+	{
+		if ( _studio is null || _studio.Bodies.Count == 0 )
+			return 1f;
+
+		var diagonal = _studio.ToMesh().BoundsDiagonal;
+
+		return diagonal > 1e-6f ? diagonal : 1f;
+	}
+
 	private void ToggleSculptMasking()
 	{
 		if ( _viewport?.SculptSession is not { } session )
@@ -1629,9 +1921,25 @@ public sealed class EffigyWindow : DockWindow
 		if ( _viewport is null )
 			return;
 
-		_viewport.SetSketchReference( feature?.Face is { } face
+		var reference = feature?.Face is { } face
 			? SketchReference.FromFace( _studio.Bodies, face, feature.Sketch.Plane )
-			: null );
+			: null;
+
+		// The other half of the BeginSketch probe line. That one says where the sketch plane ended
+		// up; this says whether the face it was supposed to come from was found at all, and where
+		// that face is - so "grid in the wrong place" resolves to either "the reference is gone" or
+		// "the reference is fine and the plane still went elsewhere" in one repro.
+		if ( EffigyViewport.ProbeSketch && feature?.Face is { } probed )
+		{
+			var found = FacePlane.TryResolveFace( _studio.Bodies, probed, out var body, out var index );
+
+			Log.Info( $"[effigy-probe] SketchReference body={probed.BodyId} resolved={found} "
+				+ $"to={body?.Id}#{index} refPoint={probed.Point} refNormal={probed.Normal} "
+				+ $"faceCentroid={(found ? body.Mesh.FaceCentroid( body.Mesh.Faces[index] ).ToString() : "-")} "
+				+ $"outlinePoints={reference?.Points.Count ?? 0} error={feature.Diagnostic?.Problem}" );
+		}
+
+		_viewport.SetSketchReference( reference );
 	}
 
 	/// <summary>The feature that owns the sketch currently being drawn on, by identity.</summary>
@@ -2496,6 +2804,10 @@ public sealed class EffigyWindow : DockWindow
 		// tints the faces that carry one instead, and needs the bodies to do it - the mesh handed to
 		// EffigyPreview above has already been flattened into one and lost which body it came from.
 		_viewport?.SetDisplayBodies( _studio.Bodies );
+
+		// Notes are not in the history and nothing above rebuilt them, but the surfaces they land
+		// on have just moved and a New or an Open has swapped the list out from under the pen.
+		RefreshNotes();
 
 		// Rebuild() above discarded every tree node, taking the highlight with it. The feature
 		// being edited has to stay visibly selected or the tree and the dialog disagree about
@@ -3366,6 +3678,36 @@ public sealed class EffigyWindow : DockWindow
 		return _studio.Rebuild();
 	}
 
+	/// <summary>
+	/// The clips queued for the next compile.
+	///
+	/// Held on the window rather than in the document, because they are an EXPORT setting and the
+	/// .effigy document is the parametric model. That is a real trade and worth naming: the list
+	/// does not survive closing the tool, and a clip added yesterday has to be added again. Putting
+	/// it in the document means a saved model referencing a .riganim that references a model, which
+	/// is a loop the loader would have to break; that is a bigger decision than this one and is not
+	/// made here.
+	/// </summary>
+	private readonly List<EffigyAnimExport.ClipSource> _animClips = new();
+
+	private EffigyAnimClipsWindow _animClipsWindow;
+
+	private void OpenAnimClips()
+	{
+		// One dialog. Reopening brings the existing one forward rather than stacking a second list
+		// over the first, both editing the same clips.
+		if ( _animClipsWindow.IsValid() )
+		{
+			_animClipsWindow.Focus();
+			return;
+		}
+
+		// No dirty mark. The clip list is not saved into the .effigy (see _animClips), so putting a
+		// * in the title would promise a save that does not carry it.
+		_animClipsWindow = new EffigyAnimClipsWindow( this, _animClips );
+		_animClipsWindow.Show();
+	}
+
 	private void ExportObj()
 	{
 		var report = RebuildForExport( "OBJ export" );
@@ -3436,9 +3778,19 @@ public sealed class EffigyWindow : DockWindow
 
 			Log.Info( $"[Effigy] wrote {dmxPath} - {skeleton.Count} bones, {mesh.VertexCount} vertices" );
 
+			// The clips, written beside the mesh and BEFORE the folder is registered, so the asset
+			// system sees the .dmx files at the same moment it sees the .vmdl that names them.
+			//
+			// The skeleton passed here is the PIVOTED one, the same one the mesh was written
+			// against. A clip sampled against the unpivoted rig would pose the model correctly
+			// relative to bones that had since moved, which is a whole-model offset that only
+			// appears once the clip plays.
+			var clips = EffigyAnimExport.WriteClips( _animClips, folder, "models/effigy", skeleton );
+
 			var vmdlPath = Path.Combine( folder, "export.vmdl" );
 			File.WriteAllText( vmdlPath, BuildSkinnedVmdl( "models/effigy/export.dmx", skeleton,
-				BuildPhysics( rigged: true ), VmdlMaterials.GroupList( _studio, mesh ) ) );
+				BuildPhysics( rigged: true ), VmdlMaterials.GroupList( _studio, mesh ),
+				VmdlAnimation.AnimationList( clips.ToArray() ) ) );
 
 			var result = EffigyAssetFolder.Register( folder );
 			Log.Info( $"[Effigy] wrote {vmdlPath} - {result.Registered} registered" );
@@ -3585,8 +3937,14 @@ public sealed class EffigyWindow : DockWindow
 	/// bind pose, and per-vertex weights). ModelDoc imports the skeleton from the SMD and bakes
 	/// everything into the compiled model.
 	/// </summary>
+	/// <summary>
+	/// <paramref name="animations"/> is the AnimationList node. Empty means the bind pose alone,
+	/// which is what this always wrote — `VmdlAnimation.AnimationList()` with no clips is
+	/// byte-identical to `BindPoseList()`, and a test holds that, so the no-clips path is
+	/// unchanged rather than merely equivalent.
+	/// </summary>
 	static string BuildSkinnedVmdl( string meshFilename, Skeleton skeleton, string physics = "",
-		string materials = "" ) =>
+		string materials = "", string animations = null ) =>
 		"<!-- kv3 encoding:text:version{e21c7f3c-8a33-41c5-9977-a76d3a32aa0d} format:modeldoc29:version{3cec427c-1b0e-4d48-a90a-0436f33a6041} -->\n" +
 		"{\n" +
 		"\trootNode = \n" +
@@ -3619,8 +3977,9 @@ public sealed class EffigyWindow : DockWindow
 		VmdlAnimation.BoneMarkupList( skeleton ) +
 		// THE BIND POSE, which a non-static model is documented as needing or morph targets and IK
 		// data break quietly. It was absent until the node's real shape could be read off a shipping
-		// file rather than guessed - see VmdlAnimation.
-		VmdlAnimation.BindPoseList() +
+		// file rather than guessed - see VmdlAnimation. Clips join it in the same node rather than
+		// replacing it.
+		(string.IsNullOrEmpty( animations ) ? VmdlAnimation.BindPoseList() : animations) +
 		physics +
 		"\t\t]\n" +
 		"\t\tmodel_archetype = \"\"\n" +
@@ -4013,6 +4372,20 @@ public sealed class EffigyWindow : DockWindow
 			return;
 		}
 
+		// THE PEN FALLS THROUGH WHERE SCULPTING DOES NOT, and the difference is that sculpt mode is
+		// exclusive and the pen is not. Sculpting owns undo outright because the studio's undo
+		// restores a feature list its live session may not survive; a note is not in that list at
+		// all, so once the pen's own stack is empty the next Ctrl+Z is unambiguously about the
+		// model. Owning it anyway would mean arming the pen quietly disabled undo for everything
+		// else on the bar.
+		if ( _viewport?.NoteSession is { CanUndo: true } noting )
+		{
+			noting.Undo();
+			OnNoteEdited();
+
+			return;
+		}
+
 		if ( _undoStack.Count == 0 )
 			return;
 
@@ -4031,6 +4404,16 @@ public sealed class EffigyWindow : DockWindow
 		if ( _viewport?.SculptSession is not null )
 		{
 			StepSculptHistory( redo: true );
+			return;
+		}
+
+		// Falls through once the pen's stack is empty - see Undo above for why the pen does not own
+		// the shortcut the way sculpting does.
+		if ( _viewport?.NoteSession is { CanRedo: true } noting )
+		{
+			noting.Redo();
+			OnNoteEdited();
+
 			return;
 		}
 

@@ -1281,6 +1281,13 @@ internal sealed partial class EffigyViewport : Widget
 		SketchFrame();
 		SculptFrame();
 
+		// AFTER the pick passes and after sculpting, so a note is drawn over everything it is about
+		// and an erase click is resolved against a hover the other modes have already declined.
+		// DrawNotes runs unconditionally where NoteFrame returns early: notes are visible whether or
+		// not the pen is armed — see EffigyViewport.Notes.cs.
+		NoteFrame();
+		DrawNotes();
+
 		// AFTER SketchFrame and outside it, because SketchFrame returns early when no sketch is
 		// open and "no sketch is open" is one of the answers the probe exists to give. Off unless
 		// `effigy_probe_sketch 1` has been run.
@@ -1629,6 +1636,12 @@ internal sealed partial class EffigyViewport : Widget
 
 		// Sculpting owns X and M while it is running, and owns nothing at all when it is not.
 		if ( HandleSculptKey( e ) )
+			return;
+
+		// The pen owns E and H while it is armed, and nothing when it is not. Same shape as the
+		// line above, and it has to sit above the bone shortcuts for the same reason that one does:
+		// a mode you are actively in gets first refusal on a letter.
+		if ( HandleNoteKey( e ) )
 			return;
 
 		// The spline is the one tool with no fixed number of clicks, so Enter is how it ends. After

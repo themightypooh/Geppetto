@@ -317,6 +317,109 @@ public static class ProfileFinder
 		result.OpenChains = recovered.OpenChains;
 	}
 
+	/// <summary>
+	/// The same material <see cref="Find"/> reports, cut into pieces whose interiors DO NOT
+	/// OVERLAP EACH OTHER — a tiling of the union rather than a pile of wholes.
+	///
+	/// WHY THIS IS NOT JUST Profiles. Find deliberately reports two overlapping rectangles as two
+	/// wholes plus a lens, because all three are things you can click, and picking wants that. A
+	/// SHADER wants the opposite: paint the wholes and the shared strip gets two coats, paint the
+	/// lens too and it gets three, and a translucent fill laid over itself is opaque. The viewport
+	/// showed the overlap of two rectangles as a solid slab with a seam through it, and no amount
+	/// of tuning the alpha fixes that — the stacking is proportional to how many regions happen to
+	/// cover a spot.
+	///
+	/// So this asks the arrangement instead. ImprintCrossings gives a copy where every crossing is
+	/// a shared vertex, and the faces of THAT graph are minimal: their interiors are disjoint by
+	/// construction, and together they cover exactly the same area. Keep the ones that land in a
+	/// host profile's material and the union is tiled once over, with no boolean library and no
+	/// second notion of what a region is.
+	///
+	/// PICKING MUST NOT USE THIS. A click in the lens should be able to name the lens, or either
+	/// whole; the tiling has thrown that structure away on purpose.
+	///
+	/// KNOWN GAP: a closed curve — a circle, an ellipse — is a region on its own and never enters
+	/// the graph, so a circle overlapping a rectangle still comes back as two pieces that overlap,
+	/// and still double-coats. Imprinting would have to split closed curves for that, which is a
+	/// change to the arrangement rather than to this.
+	/// </summary>
+	public static List<Profile> ShadedRegions( Sketch sketch, ProfileResult result )
+	{
+		var hosts = result?.Profiles.Where( p => !p.FromOverlap ).ToList() ?? new List<Profile>();
+
+		// One region cannot overlap itself, and a hole is not an overlap — the caller subtracts
+		// holes when it triangulates. Nothing to take apart.
+		if ( sketch is null || hosts.Count < 2 )
+			return hosts;
+
+		var working = SketchArrangement.ImprintCrossings( sketch );
+
+		// Nothing crosses, so the loops are nested or disjoint and already tile their own union.
+		if ( ReferenceEquals( working, sketch ) )
+			return hosts;
+
+		var discarded = new ProfileResult();
+		var pieces = new ProfileResult();
+
+		NestInto( pieces, CollectLoops( working, discarded ) );
+
+		var kept = new List<Profile>();
+
+		foreach ( var piece in pieces.Profiles )
+		{
+			var seed = MaterialPoint( piece );
+
+			if ( hosts.Any( h => h.Contains( seed ) ) )
+				kept.Add( piece );
+		}
+
+		// An arrangement that covered none of the material is an arrangement that went wrong, and
+		// shading nothing reads as "there is no region here" — a worse lie than a double coat.
+		return kept.Count > 0 ? kept : hosts;
+	}
+
+	/// <summary>
+	/// A point in a profile's MATERIAL: inside its outer loop and outside every hole.
+	///
+	/// InteriorPoint only knows about one loop, so on a washer it happily returns the centre — the
+	/// middle of the hole — and a caller asking "is this piece part of the shape" would be told no
+	/// about a piece that plainly is.
+	/// </summary>
+	static Vec2 MaterialPoint( Profile profile )
+	{
+		var seed = InteriorPoint( profile.Outer );
+
+		if ( profile.Holes.Count == 0 || !profile.Holes.Any( h => Contains( h, seed ) ) )
+			return seed;
+
+		// Step just inside each edge of the outer loop in turn. A ring of any thickness has such a
+		// point on its outer boundary; the inset is the same one InteriorPoint uses.
+		var area2 = SignedArea( profile.Outer );
+		var sign = area2 >= 0f ? 1f : -1f;
+
+		for ( var i = 0; i < profile.Outer.Count; i++ )
+		{
+			var a = profile.Outer[i];
+			var b = profile.Outer[(i + 1) % profile.Outer.Count];
+			var edge = b - a;
+			var length = edge.Length;
+
+			if ( length < 1e-8f )
+				continue;
+
+			var inset = MathF.Min( 1e-3f, length * 0.1f );
+			var left = new Vec2( -edge.y, edge.x ) / length;
+			var probe = new Vec2(
+				(a.x + b.x) * 0.5f + left.x * sign * inset,
+				(a.y + b.y) * 0.5f + left.y * sign * inset );
+
+			if ( Contains( profile.Outer, probe ) && !profile.Holes.Any( h => Contains( h, probe ) ) )
+				return probe;
+		}
+
+		return seed;
+	}
+
 	/// <summary>This sketch's own closed regions, without overlap extras and without looking at
 	/// neighbours — the outers that a neighbour contributes to a combined arrangement.</summary>
 	static List<Profile> Originals( Sketch sketch )

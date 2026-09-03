@@ -27,17 +27,63 @@ namespace Effigy;
 public static class VmdlAnimation
 {
 	/// <summary>
+	/// One clip to compile into the model: what it will be called, the animation file it comes
+	/// from, and whether it loops.
+	///
+	/// <paramref name="SourceFilename"/> is a path the COMPILER resolves, so it is relative to the
+	/// game's content root the same way a RenderMeshFile's filename is — "models/thing/wave.dmx",
+	/// not a path on disk. A path that does not resolve is not an error at compile time; the clip
+	/// is simply not there afterwards.
+	/// </summary>
+	public readonly record struct ClipEntry( string Name, string SourceFilename, bool Looping = false );
+
+	/// <summary>
 	/// The AnimationList node, indented to sit among a RootNode's children.
 	///
 	/// It is only ever wanted on a SKINNED model. A static export has no bones for a bind pose to be
 	/// about, and adding one there would be a node that means nothing.
 	/// </summary>
-	public static string BindPoseList() =>
-		"\t\t\t{\n"
-		+ "\t\t\t\t_class = \"AnimationList\"\n"
-		+ "\t\t\t\tchildren = \n"
-		+ "\t\t\t\t[\n"
-		+ "\t\t\t\t\t{\n"
+	public static string BindPoseList() => AnimationList();
+
+	/// <summary>
+	/// The same node, carrying clips as well as the bind pose.
+	///
+	/// THE BIND POSE STAYS EVEN WHEN THERE ARE CLIPS. It is tempting to read "a non-static model
+	/// needs an AnimBindPose or morph targets and IK break" as a requirement that clips satisfy
+	/// too — they do not; the bind pose is what the model is when nothing is playing, and citizen's
+	/// own animation list carries one alongside several hundred clips.
+	///
+	/// Clips come after it in the list, in the order given. ModelDoc also allows `Folder` nodes for
+	/// grouping, which nothing here writes: a folder changes only what the ModelDoc UI looks like,
+	/// and every extra node shape is one more thing to have got wrong.
+	/// </summary>
+	public static string AnimationList( params ClipEntry[] clips )
+	{
+		var sb = new StringBuilder();
+
+		sb.Append( "\t\t\t{\n" );
+		sb.Append( "\t\t\t\t_class = \"AnimationList\"\n" );
+		sb.Append( "\t\t\t\tchildren = \n" );
+		sb.Append( "\t\t\t\t[\n" );
+		sb.Append( BindPose() );
+
+		if ( clips is not null )
+		{
+			foreach ( var clip in clips )
+				sb.Append( AnimFile( clip ) );
+		}
+
+		sb.Append( "\t\t\t\t]\n" );
+		sb.Append( "\t\t\t\tdefault_root_bone_name = \"\"\n" );
+		sb.Append( "\t\t\t},\n" );
+
+		return sb.ToString();
+	}
+
+	/// <summary>The AnimBindPose child, on its own. See the class header for where every field came
+	/// from.</summary>
+	static string BindPose() =>
+		"\t\t\t\t\t{\n"
 		+ "\t\t\t\t\t\t_class = \"AnimBindPose\"\n"
 		+ "\t\t\t\t\t\tname = \"bindPose\"\n"
 		+ "\t\t\t\t\t\tactivity_name = \"\"\n"
@@ -55,10 +101,50 @@ public static class VmdlAnimation
 		+ "\t\t\t\t\t\tenable_scale = false\n"
 		+ "\t\t\t\t\t\tframe_count = 1\n"
 		+ "\t\t\t\t\t\tframe_rate = 30\n"
-		+ "\t\t\t\t\t},\n"
-		+ "\t\t\t\t]\n"
-		+ "\t\t\t\tdefault_root_bone_name = \"\"\n"
-		+ "\t\t\t},\n";
+		+ "\t\t\t\t\t},\n";
+
+	/// <summary>
+	/// One AnimFile child — a clip the compiler reads out of an external animation file.
+	///
+	/// COPIED, NOT GUESSED, from `citizen_animationlist.vmdl_prefab`, which ships as source at
+	/// `addons/citizen/Assets/models/citizen/prefabs/` and carries several hundred of these. Same
+	/// rule as the bind pose above and for the same reason: a KV3 node with fields missing is not
+	/// a node with them at their defaults, and the compiler's defaults are not documented anywhere
+	/// this project can read.
+	///
+	/// THE THREE FIELDS THAT LOOK LIKE PLACEHOLDERS ARE NOT. `start_frame` and `end_frame` at -1
+	/// mean "the whole file" — a real frame range here would trim the clip. `framerate` at -1.0
+	/// means "whatever the source says", which is what a baked DMX carries in its own time values,
+	/// and setting a number here resamples the clip instead of describing it.
+	///
+	/// `fade_in_time` and `fade_out_time` are 0.05 rather than the bind pose's 0.2 because that is
+	/// what citizen's clips use; they are blend times AnimGraph reads when a transition does not
+	/// specify its own, so they are a default rather than a constant.
+	/// </summary>
+	public static string AnimFile( ClipEntry clip ) =>
+		"\t\t\t\t\t{\n"
+		+ "\t\t\t\t\t\t_class = \"AnimFile\"\n"
+		+ $"\t\t\t\t\t\tname = \"{clip.Name}\"\n"
+		+ "\t\t\t\t\t\tactivity_name = \"\"\n"
+		+ "\t\t\t\t\t\tactivity_weight = 1\n"
+		+ "\t\t\t\t\t\tweight_list_name = \"\"\n"
+		+ "\t\t\t\t\t\tfade_in_time = 0.05\n"
+		+ "\t\t\t\t\t\tfade_out_time = 0.05\n"
+		+ $"\t\t\t\t\t\tlooping = {(clip.Looping ? "true" : "false")}\n"
+		+ "\t\t\t\t\t\tdelta = false\n"
+		+ "\t\t\t\t\t\tworldSpace = false\n"
+		+ "\t\t\t\t\t\thidden = false\n"
+		+ "\t\t\t\t\t\tanim_markup_ordered = false\n"
+		+ "\t\t\t\t\t\tdisable_compression = false\n"
+		+ "\t\t\t\t\t\tdisable_interpolation = false\n"
+		+ "\t\t\t\t\t\tenable_scale = false\n"
+		+ $"\t\t\t\t\t\tsource_filename = \"{clip.SourceFilename}\"\n"
+		+ "\t\t\t\t\t\tstart_frame = -1\n"
+		+ "\t\t\t\t\t\tend_frame = -1\n"
+		+ "\t\t\t\t\t\tframerate = -1.0\n"
+		+ "\t\t\t\t\t\ttake = 0\n"
+		+ "\t\t\t\t\t\treverse = false\n"
+		+ "\t\t\t\t\t},\n";
 
 	/// <summary>
 	/// Every bone marked do_not_discard, so ModelDoc keeps bones this export gives it no other

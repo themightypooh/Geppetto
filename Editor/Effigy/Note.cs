@@ -42,8 +42,16 @@ public sealed class Note
 	/// document instead of only new ones.</summary>
 	public int Color;
 
-	/// <summary>Line thickness in world units.</summary>
-	public float Width = 0.4f;
+	/// <summary>
+	/// Line thickness in SCREEN PIXELS.
+	///
+	/// Pixels rather than world units, which is the odd one out among the distances this feature
+	/// carries and is deliberate. Everything else about a note is world-space so it stays put on the
+	/// model; the thickness of the line is about legibility at whatever zoom you are at, and a
+	/// world-space thickness would make a note on a big part unreadably thin and one on a small part
+	/// a blob.
+	/// </summary>
+	public float Width = 2f;
 
 	/// <summary>Where the caption hangs, and where an erase click measures from.</summary>
 	public Vec3 Anchor => Points.Count > 0 ? Points[0] : Vec3.Zero;
