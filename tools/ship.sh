@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 #
-# Ship a change: kernel sync, commit, tests, push - in that order.
+# Ship a change: kernel sync, commit, tests, push, publish - in that order.
 #
 # WHY THIS EXISTS. Getting one fix in front of people took five commands in a fixed order, and the
 # order was load-bearing in ways nothing said out loud - sync the kernel BEFORE committing, or the
@@ -11,14 +11,19 @@
 # where the product and the kernel that built it sat in two separate checkouts, which meant every
 # change needed the same commit made twice; that is over.
 #
-# WHAT IT DOES NOT DO: publish the library package to s&box. There IS a command for it now -
-# `geppetto_publish`, in the editor console - but it runs inside the editor, not the shell, so
-# this script cannot call it and ends by pointing at it instead. Deliberate as well as technical:
-# a published version cannot be taken back, so the send stays a thing a person types.
+# ALL THREE CHANNELS. Two git repos and the s&box package - the copy that reaches people who
+# INSTALLED Geppetto rather than cloned it. The package used to be the one a script could not
+# reach; tools/publish.sh reaches it now, by driving the editor's console over its MCP bridge, so
+# shipping is one command again instead of one command and a thing to remember afterwards.
+#
+# THE PACKAGE NEEDS THE EDITOR OPEN, on this project, because the upload is the editor's. If it is
+# not, publish.sh says so and this still exits 0: the commit is pushed either way, and a closed
+# editor should not read as a failed ship. Run tools/publish.sh --commit later to finish it.
 #
 #   tools/ship.sh -m "message"    commit everything staged and unstaged, then ship
 #   tools/ship.sh                 ship what is already committed
 #   tools/ship.sh --no-test       skip the suite (use when you have just run it)
+#   tools/ship.sh --no-publish    git only, leave the package alone
 #
 set -eu
 
@@ -27,11 +32,13 @@ cd "$root"
 
 message=""
 run_tests=1
+publish=1
 
 while [ $# -gt 0 ]; do
 	case "$1" in
 		-m) shift; message=${1:-}; [ -n "$message" ] || { echo "-m needs a message" >&2; exit 1; } ;;
 		--no-test) run_tests=0 ;;
+		--no-publish) publish=0 ;;
 		# Comment lines only, from the header's first line until the code starts, so adding a
 		# paragraph above never drags `set -eu` into the help text.
 		-h|--help) awk 'NR>2 && /^#/ { sub(/^# ?/, ""); print; next } NR>2 { exit }' "$0"; exit 0 ;;
@@ -81,11 +88,11 @@ echo ""
 echo "shipped $( git rev-parse --short HEAD ) - $( git log -1 --format=%s )"
 echo ""
 echo "  https://github.com/themightypooh/Geppetto"
-echo ""
-echo "The s&box package is a separate channel - the people who INSTALLED Geppetto rather than"
-echo "cloned it. To send this to them, in the editor console:"
-echo ""
-echo "    geppetto_publish            what would go, uploads nothing"
-echo "    geppetto_publish commit     send it, notes taken from the commit above"
-echo ""
-echo "Left deliberate rather than automatic: a published version cannot be taken back."
+
+# LAST, because it is the only step that cannot be taken back. Everything before this is a commit
+# you can amend or a push you can force over; a published version is out. Putting it at the end
+# means a run that fails anywhere earlier has published nothing.
+if [ "$publish" -eq 1 ]; then
+	echo ""
+	tools/publish.sh --commit
+fi

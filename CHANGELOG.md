@@ -9,6 +9,13 @@ past, so this file is the record that survives either way.
 
 ## Unreleased
 
+### Tooling
+- `tools/ship.sh` now updates the s&box package too, so one command covers the
+  repo and the library instead of leaving the package as a thing to remember
+  afterwards. It needs the editor open on Geppetto — if it isn't, the push
+  still happens and it tells you to run `tools/publish.sh --commit` later.
+  `--no-publish` skips it.
+
 ### Effigy
 - Select first, then pick the tool. Click a face or a part in the viewport and
   the next feature you add starts already pointed at it, instead of making you
