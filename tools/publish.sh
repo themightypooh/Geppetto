@@ -93,8 +93,11 @@ i=0
 while [ "$i" -lt 90 ]; do
 	log=$( call read_console "{\"filter\":\"[publish]\",\"limit\":40,\"since\":$since}" | text )
 
+	# NOT "published": that line is logged before the version is read back, and the read waits for
+	# the backend to settle, so stopping there printed the run without its result - the one line
+	# that says whether a new revision exists.
 	case "$log" in
-		*"DRY RUN"*|*"] published "*|*"failed:"*) break ;;
+		*"DRY RUN"*|*"[publish] version"*|*"version did not move"*|*"failed:"*) break ;;
 	esac
 
 	i=$(( i + 1 ))
