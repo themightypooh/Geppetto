@@ -62,10 +62,31 @@ public static class KernelSyncTests
 		var srcFiles = RelativeCsFiles( src );
 		var dstFiles = RelativeCsFiles( dst );
 
-		var missing = srcFiles.Except( dstFiles ).ToList();
+		// THE RUNTIME SUBSET IS DELIBERATELY NOT IN THE EDITOR MIRROR. These four go to Code/ for
+		// the game assembly, the editor assembly references that assembly, and a type declared in
+		// both is CS0436 on every use - 1857 warnings, and a Vec2 from one side that will not go
+		// where a Vec2 from the other is expected. The editor gets them from the reference.
+		//
+		// tools/sync-kernel.sh keeps this list; it is repeated here rather than parsed out of the
+		// shell so that changing one without the other fails the suite instead of quietly
+		// reintroducing the duplicate.
+		var runtimeSubset = new[] { "Vec.cs", "Xform.cs", "Rig/Skeleton.cs", "Rig/SoftBone.cs" };
+
+		var mirrored = srcFiles.Where( f => !runtimeSubset.Contains( f ) ).ToList();
+
+		var missing = mirrored.Except( dstFiles ).ToList();
 		var extra = dstFiles.Except( srcFiles ).ToList();
 
+		var duplicated = dstFiles.Where( f => runtimeSubset.Contains( f ) ).ToList();
+
 		Report.Check( "no kernel file missing from the mirror", missing.Count == 0, string.Join( ", ", missing ) );
+
+		Report.Check( "the runtime subset is not duplicated into the editor mirror",
+			duplicated.Count == 0,
+			duplicated.Count == 0
+				? ""
+				: string.Join( ", ", duplicated ) + " - these come from the game assembly; "
+					+ "mirroring them too is what CS0436 complains about" );
 		Report.Check( "no stale file left in the mirror", extra.Count == 0, string.Join( ", ", extra ) );
 
 		// Byte-for-byte rather than token-for-token. A whitespace-only difference is harmless in

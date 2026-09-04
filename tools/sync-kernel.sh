@@ -17,6 +17,10 @@ set -eu
 
 root=$( cd "$( dirname "$0" )/.." && pwd )
 src="$root/Effigy"
+
+# The handful of kernel files the GAME assembly also compiles - see THE RUNTIME SUBSET below.
+# Declared up here because the editor mirror has to skip them.
+runtime_files="Vec.cs Xform.cs Rig/Skeleton.cs Rig/SoftBone.cs"
 # ONE REPO, TWO COPIES, both here. `Effigy/` is the canonical kernel and `Editor/Effigy/` is the
 # mirror s&box actually compiles - the engine only builds `Code/` and `Editor/`, so a top-level
 # `Effigy/` is invisible to it, and the kernel cannot live in `Code/` because its writers call
@@ -88,7 +92,26 @@ mkdir -p "$dst"
 
 # Source only. The README documents the canonical copy and would be a lie sitting in the mirror.
 # Unchanged files are skipped so the watcher sees as few writes as possible.
+#
+# EXCEPT THE RUNTIME SUBSET, which is the one place two copies is one too many. Those files go to
+# Code/ as well, the editor assembly references the game assembly, and a type defined in both is
+# CS0436: "the type 'Vec2' in Editor/Effigy/Vec.cs conflicts with the imported type 'Vec2' in
+# package.pooh.geppetto". The compiler picks the local one and warns - 1857 times, which is a
+# warning list nobody reads, hiding the ones that matter.
+#
+# It is also a real hazard rather than only noise: a Vec2 built by game code and a Vec2 built by
+# editor code are different types that look identical in the source, so anything passing one
+# across that boundary fails to compile for a reason the error does not explain.
+#
+# So the editor gets these from the game assembly it already references, and the mirror leaves
+# them out.
 ( cd "$src" && find . -name '*.cs' -print ) | while read -r f; do
+	rel=${f#./}
+
+	case " $runtime_files " in
+		*" $rel "*) continue ;;
+	esac
+
 	mkdir -p "$dst/$( dirname "$f" )"
 	cmp -s "$src/$f" "$dst/$f" 2>/dev/null || cp "$src/$f" "$dst/$f"
 done
@@ -96,6 +119,14 @@ done
 # Mirror-only files are refused above, so this only ever fires under --force. Removing them after
 # the copy rather than wiping the tree first keeps the no-broken-intermediate-state guarantee.
 ( cd "$dst" && find . -name '*.cs' -print ) | while read -r f; do
+	rel=${f#./}
+
+	# A runtime-subset file sitting in the mirror is left over from before the split above and is
+	# the thing generating the CS0436 flood, so it goes whether or not the kernel still has it.
+	case " $runtime_files " in
+		*" $rel "*) rm -f "$dst/$rel"; continue ;;
+	esac
+
 	[ -f "$src/$f" ] || rm -f "$dst/$f"
 done
 find "$dst" -mindepth 1 -type d -empty -delete 2>/dev/null || true
@@ -114,7 +145,6 @@ echo "synced $( find "$dst" -name '*.cs' | wc -l | tr -d ' ' ) kernel files into
 # "everything that does not mention System.IO": a file quietly growing a dependency should break
 # this sync loudly instead of silently enlarging what the game assembly is asked to compile.
 runtime="$root/Code/Effigy"
-runtime_files="Vec.cs Xform.cs Rig/Skeleton.cs Rig/SoftBone.cs"
 
 mkdir -p "$runtime"
 for f in $runtime_files; do

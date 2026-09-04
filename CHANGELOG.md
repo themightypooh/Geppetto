@@ -10,6 +10,10 @@ past, so this file is the record that survives either way.
 ## Unreleased
 
 ### Tooling
+- The editor assembly no longer compiles its own copy of the four kernel files
+  the game assembly already provides, so `Vec2` and friends are one type again
+  instead of two that look identical. That was 1857 compiler warnings hiding
+  every warning worth reading.
 - `tools/changelist.sh` prints the notes below as lines ready to paste into
   the changelist form on sbox.game. The site is the only place a changelist can
   be made — the editor's API can read them and not write them — so this cuts the
