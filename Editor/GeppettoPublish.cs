@@ -139,9 +139,9 @@ public static class GeppettoPublish
 			// backend knows the answer, so ask it: a VersionId that moved is the difference
 			// between a new revision and a no-op, and it is the number to quote when somebody
 			// says which version broke.
-			var after = await VersionOf( publisher.TargetPackageIdent );
-
 			Log.Info( $"[publish] published {publisher.TargetPackageIdent}" );
+
+			var after = await SettledVersion( publisher.TargetPackageIdent, before );
 
 			if ( before is not null && after is not null && after.VersionId == before.VersionId )
 			{
@@ -163,6 +163,34 @@ public static class GeppettoPublish
 			Log.Error( $"[publish] failed: {e}" );
 			Log.Error( "[publish] the editor's own Publish dialog still works - use that." );
 		}
+	}
+
+	/// <summary>
+	/// The new revision, once the backend is actually serving it.
+	///
+	/// Publish returns as soon as the manifest is accepted, and for a moment after that the
+	/// backend still answers with the OLD revision. Asking once and reporting the answer said
+	/// "version did not move" about a publish that had moved it - the worst kind of wrong, since
+	/// the natural next move is to publish again.
+	///
+	/// So give it a few seconds to settle. Coming back with the old revision after that is a real
+	/// answer worth printing; coming back with it immediately never was.
+	/// </summary>
+	static async Task<Package.IRevision> SettledVersion( string ident, Package.IRevision before )
+	{
+		Package.IRevision after = null;
+
+		for ( var attempt = 0; attempt < 10; attempt++ )
+		{
+			after = await VersionOf( ident );
+
+			if ( before is null || after is null || after.VersionId != before.VersionId )
+				return after;
+
+			await Task.Delay( 1000 );
+		}
+
+		return after;
 	}
 
 	/// <summary>

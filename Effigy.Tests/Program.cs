@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Runtime.CompilerServices;
 using System.Linq;
 using Effigy;
 
@@ -18,6 +19,23 @@ namespace Effigy.Tests;
 /// </summary>
 public static class Program
 {
+	/// <summary>
+	/// Effigy.Tests/out, wherever this file happens to live - NOT "out" relative to whatever
+	/// directory the suite was launched from.
+	///
+	/// A plain relative path put the samples wherever you happened to be standing. Run through
+	/// tools/test.sh they landed in Effigy.Tests/out, which is the tracked copy; run as
+	/// `dotnet run --project Effigy.Tests` from the repo root - the obvious thing to type - they
+	/// landed in a second `out/` beside the .sbproj. That one is gitignored, so it is invisible to
+	/// every check that would have caught it, and s&box publishes project files rather than
+	/// tracked files: 46 sample OBJs went out in the library package before anyone noticed.
+	///
+	/// CallerFilePath is the compiler telling us where this source file was, which is the one
+	/// answer that does not depend on the caller's working directory.
+	/// </summary>
+	static string DefaultOutDir( [CallerFilePath] string thisFile = "" ) =>
+		Path.Combine( Path.GetDirectoryName( thisFile ) ?? ".", "out" );
+
 	public static int Main( string[] rawArgs )
 	{
 		// `dotnet run --nologo` hands the flag straight through to us. The first positional
@@ -26,9 +44,9 @@ public static class Program
 		var args = rawArgs.Where( a => !a.StartsWith( "--" ) || a == "--tree" ).ToArray();
 
 		if ( args.Length > 0 && args[0] == "--tree" )
-			return TreeGen.Run( args.Length > 1 ? args[1] : "out" );
+			return TreeGen.Run( args.Length > 1 ? args[1] : DefaultOutDir() );
 
-		var outDir = args.Length > 0 ? args[0] : "out";
+		var outDir = args.Length > 0 ? args[0] : DefaultOutDir();
 
 		Section( "primitives are valid and manifold" );
 		TestPrimitiveValidity();

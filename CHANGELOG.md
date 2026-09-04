@@ -10,6 +10,10 @@ past, so this file is the record that survives either way.
 ## Unreleased
 
 ### Tooling
+- `tools/changelist.sh` prints the notes below as lines ready to paste into
+  the changelist form on sbox.game. The site is the only place a changelist can
+  be made — the editor's API can read them and not write them — so this cuts the
+  retyping rather than the step.
 - `tools/ship.sh` now updates the s&box package too, so one command covers the
   repo and the library instead of leaving the package as a thing to remember
   afterwards. It needs the editor open on Geppetto — if it isn't, the push
