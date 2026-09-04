@@ -35,6 +35,10 @@ forgotten.
 
 ## Unreleased
 
+Nothing yet.
+
+## v367389 — 2026-09-04
+
 ### Fixed
 - A new feature added while the rollback bar sat at the end of the tree was
   never evaluated. It appeared in the tree, it was saved to the file, and it did
