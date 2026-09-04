@@ -1247,6 +1247,61 @@ internal sealed partial class EffigyViewport
 		GridSpacing > 0f ? GridSpacing : SketchSnapper.AutoGridStep( unitsPerPixel, GridPixels );
 
 	/// <summary>
+	/// The step the cursor should round to right now — the FACE's step while sketching on one, the
+	/// camera's otherwise.
+	///
+	/// Sketching on a face rules the grid to the face rather than to the camera, so this is where
+	/// the snap finds out about that. Off a face there is nothing to fit to and it falls through to
+	/// exactly what it always did.
+	///
+	/// Same extent and the same fitting call the drawing uses, deliberately: two ways of computing
+	/// "the step for this face" would agree until one of them was edited, and the symptom would be
+	/// a cursor landing a fraction off lines it appears to be on.
+	/// </summary>
+	private float ActiveGridStep( float unitsPerPixel )
+	{
+		if ( GridSpacing > 0f )
+			return GridSpacing;
+
+		if ( !TryFaceExtent( out _, out _, out var span, out var world ) )
+			return GridStep( unitsPerPixel );
+
+		return FaceGridStep( world, span );
+	}
+
+	/// <summary>
+	/// The bounding box of the face the active sketch sits on, in plane coordinates, plus its
+	/// longest side and the world position of its centre.
+	///
+	/// One walk, two callers - the drawing and the snap - because those two have to reach the same
+	/// step or the lines mean nothing. They were the same eight lines written twice for about ten
+	/// minutes, which is exactly long enough to prove the point.
+	/// </summary>
+	/// <returns>False when the sketch is on a global plane and there is no face to measure.</returns>
+	private bool TryFaceExtent( out Vec2 min, out Vec2 max, out float span, out Vector3 world )
+	{
+		min = max = Vec2.Zero;
+		span = 0f;
+		world = Vector3.Zero;
+
+		if ( ActiveSketchReference is not { IsEmpty: false } reference || ActiveSketch?.Plane is null )
+			return false;
+
+		min = max = reference.Points[0];
+
+		foreach ( var p in reference.Points )
+		{
+			min = new Vec2( MathF.Min( min.x, p.x ), MathF.Min( min.y, p.y ) );
+			max = new Vec2( MathF.Max( max.x, p.x ), MathF.Max( max.y, p.y ) );
+		}
+
+		span = MathF.Max( MathF.Max( max.x - min.x, max.y - min.y ), 1e-4f );
+		world = PlaneToWorld( (min + max) * 0.5f );
+
+		return true;
+	}
+
+	/// <summary>
 	/// How many sketch units one screen pixel covers, at the sketch plane's depth.
 	///
 	/// EVERY SNAP TOLERANCE IS DERIVED FROM THIS, and that is the whole fix. They used to be fixed
@@ -1359,6 +1414,7 @@ internal sealed partial class EffigyViewport
 	public void SetPickableBodies( IEnumerable<Body> bodies )
 	{
 		_pickableBodies = bodies?.ToList() ?? new List<Body>();
+		ForgetSurfaces();
 	}
 
 	private List<Body> _pickableBodies = new();
@@ -1515,7 +1571,7 @@ internal sealed partial class EffigyViewport
 		if ( !_canvasHasCursor || _facePickHit is not { } hit )
 			return;
 
-		if ( !MeshRaycast.ClosestEdge( hit.Body.Mesh, hit.Hit.FaceIndex, hit.Hit.Point, out var key, out _, out _ ) )
+		if ( !TryClosestEdge( hit.Body.Mesh, hit.Hit.FaceIndex, hit.Hit.Point, out var key, out _ ) )
 			return;
 
 		_hoveredFaceBodyId = hit.Body.Id;
@@ -1541,6 +1597,26 @@ internal sealed partial class EffigyViewport
 		}
 	}
 
+	/// <summary>
+	/// The nearest edge of the SURFACE under the cursor, and how far away it is.
+	///
+	/// Not the nearest edge of the n-gon the ray hit, which is what this used to be. The seams
+	/// inside a boolean-fragmented wall are edges of the mesh and not edges of the part: they sit
+	/// in the middle of a flat surface, a fillet along one does nothing, and lighting one up in
+	/// pick blue was the viewport promising something the model cannot deliver. On a wall returned
+	/// as dozens of triangles it also meant an edge was always within a few pixels of the cursor,
+	/// so the face underneath could not be picked at all.
+	/// </summary>
+	private bool TryClosestEdge( PolyMesh mesh, int faceIndex, Vec3 point, out EdgeKey key,
+		out float distance )
+	{
+		key = default;
+		distance = float.MaxValue;
+
+		return SurfaceOf( mesh, faceIndex ) is { IsEmpty: false } surface
+			&& surface.TryClosestEdge( point, out key, out distance );
+	}
+
 	private void DrawEdge( Body body, EdgeKey key, Color color )
 	{
 		if ( body?.Mesh is not { } mesh
@@ -1559,48 +1635,102 @@ internal sealed partial class EffigyViewport
 		Gizmo.Draw.LineThickness = 1f;
 	}
 
-	/// <summary>As DrawHoveredFace, in a given colour - the hover blue, or the amber of a face
-	/// already chosen.</summary>
+	/// <summary>
+	/// As DrawHoveredFace, in a given colour - the hover blue, or the amber of a face already
+	/// chosen.
+	///
+	/// THE SURFACE, NOT THE n-GON THE RAY HIT. See FaceSurface: a wall that has been through a
+	/// boolean is dozens of coplanar fragments, and this used to light exactly one of them - so
+	/// hovering a plain-looking wall lit a triangle in the middle of it, and hovering a hand's
+	/// width to the left lit a different triangle. The sketch grid was already drawn over the whole
+	/// surface, which meant the two disagreed on screen at the same time.
+	///
+	/// Each face is shaded on its own rather than the outline being triangulated as one polygon.
+	/// That is what makes a surface with a hole through it come out right for free: the hole is
+	/// simply where no member face is, and no ear clipper has to be told about it.
+	/// </summary>
 	private void DrawFace( Body body, int faceIndex, Color color )
 	{
 		if ( body?.Mesh is not { } mesh || faceIndex < 0 || faceIndex >= mesh.Faces.Count )
 			return;
 
-		var face = mesh.Faces[faceIndex];
-
-		if ( face.Count < 3 )
+		if ( SurfaceOf( mesh, faceIndex ) is not { IsEmpty: false } surface )
 			return;
 
 		var eye = _camera.WorldPosition;
-		var corners = new List<Vector3>( face.Count );
-		var flat = new List<Vec3>( face.Count );
-
-		for ( var i = 0; i < face.Count; i++ )
-		{
-			var p = mesh.Positions[face.Indices[i]];
-			// Lifted proportionally to distance, because depth precision is: a fixed nudge that
-			// clears the surface up close is invisible across a large part, and vice versa.
-			flat.Add( p );
-			corners.Add( Lift( p, eye ) );
-		}
 
 		Gizmo.Draw.IgnoreDepth = false;
-
 		Gizmo.Draw.Color = color.WithAlpha( 0.22f );
 
-		foreach ( var (a, b, c) in Triangulate.Face( flat ) )
-			Gizmo.Draw.SolidTriangle( new Triangle( corners[a], corners[b], corners[c] ) );
+		var flat = new List<Vec3>();
+		var corners = new List<Vector3>();
 
+		foreach ( var index in surface.Faces )
+		{
+			var face = mesh.Faces[index];
+
+			if ( face.Count < 3 )
+				continue;
+
+			flat.Clear();
+			corners.Clear();
+
+			for ( var i = 0; i < face.Count; i++ )
+			{
+				var p = mesh.Positions[face.Indices[i]];
+
+				// Lifted proportionally to distance, because depth precision is: a fixed nudge that
+				// clears the surface up close is invisible across a large part, and vice versa.
+				flat.Add( p );
+				corners.Add( Lift( p, eye ) );
+			}
+
+			foreach ( var (a, b, c) in Triangulate.Face( flat ) )
+				Gizmo.Draw.SolidTriangle( new Triangle( corners[a], corners[b], corners[c] ) );
+		}
+
+		// ONLY THE SILHOUETTE IS STROKED. Outlining every member face would draw the seams between
+		// the fragments, which is the artefact the shading was just merged to hide.
 		Gizmo.Draw.Color = color;
 		Gizmo.Draw.LineThickness = 2.5f;
 
-		for ( var i = 0; i < corners.Count; i++ )
-			Gizmo.Draw.Line( corners[i], corners[(i + 1) % corners.Count] );
+		for ( var i = 0; i < surface.Boundary.Count; i++ )
+		{
+			var (a, b) = surface.Segment( i );
+			Gizmo.Draw.Line( Lift( a, eye ), Lift( b, eye ) );
+		}
 
-		DrawFaceFootprints( body, mesh, face, flat, eye );
+		DrawFaceFootprints( body, surface, eye );
 
 		Gizmo.Draw.LineThickness = 1f;
 	}
+
+	/// <summary>
+	/// The surface a face belongs to, worked out once per mesh rather than once per frame.
+	///
+	/// Growing a surface reads every face of the mesh to build its adjacency, and this is called
+	/// from hover - so on a subdivided part it is a per-frame walk over tens of thousands of
+	/// corners for an answer that cannot have changed. Bodies are rebuilt from scratch on every
+	/// edit, so a new PolyMesh instance IS the invalidation signal and the cache is dropped
+	/// whenever the viewport is handed a new set of them.
+	/// </summary>
+	private FaceSurface SurfaceOf( PolyMesh mesh, int faceIndex )
+	{
+		if ( _surfaces.TryGetValue( (mesh, faceIndex), out var cached ) )
+			return cached;
+
+		var surface = FaceSurface.FromFace( mesh, faceIndex );
+
+		_surfaces[(mesh, faceIndex)] = surface;
+
+		return surface;
+	}
+
+	private readonly Dictionary<(PolyMesh Mesh, int Face), FaceSurface> _surfaces = new();
+
+	/// <summary>Drop every cached surface. Called whenever the viewport is given new bodies, which
+	/// is the only moment the meshes underneath them can have changed.</summary>
+	private void ForgetSurfaces() => _surfaces.Clear();
 
 	/// <summary>
 	/// Outline where OTHER bodies meet this face.
@@ -1614,21 +1744,26 @@ internal sealed partial class EffigyViewport
 	/// the face's entire infinite plane, and the parts of it beyond this face's edges belong to
 	/// nothing being highlighted.
 	/// </summary>
-	private void DrawFaceFootprints( Body body, PolyMesh mesh, Face face, List<Vec3> flat, Vector3 eye )
+	private void DrawFaceFootprints( Body body, FaceSurface surface, Vector3 eye )
 	{
 		var others = _displayBodies.Count > 0 ? _displayBodies : _pickableBodies;
 
-		if ( others.Count < 2 )
+		if ( others.Count < 2 || surface.Boundary.Count < 3 )
 			return;
 
-		var normal = mesh.FaceNormal( face );
-		var centroid = mesh.FaceCentroid( face );
-		var plane = FacePlane.FromPointAndNormal( centroid, normal );
+		var plane = FacePlane.FromPointAndNormal( surface.Origin, surface.Normal );
 
-		var outline = new List<Vec2>( flat.Count );
+		// The silhouette in plane coordinates. UNORDERED SEGMENTS RATHER THAN A RING, because a
+		// surface with a hole through it is two rings and a surface welded out of fragments has no
+		// natural starting corner. Nothing below needs the order: both the split and the
+		// inside test count crossings, and a crossing count does not care which loop it crossed.
+		var outline = new List<(Vec2 A, Vec2 B)>( surface.Boundary.Count );
 
-		foreach ( var p in flat )
-			outline.Add( plane.ToPlane( p ) );
+		for ( var i = 0; i < surface.Boundary.Count; i++ )
+		{
+			var (a, b) = surface.Segment( i );
+			outline.Add( (plane.ToPlane( a ), plane.ToPlane( b )) );
+		}
 
 		Gizmo.Draw.LineThickness = 2f;
 
@@ -1637,31 +1772,31 @@ internal sealed partial class EffigyViewport
 			if ( other?.Mesh is null || ReferenceEquals( other, body ) )
 				continue;
 
-			foreach ( var (a, b) in MeshSection.CrossSection( other.Mesh, centroid, normal ) )
+			foreach ( var (a, b) in MeshSection.CrossSection( other.Mesh, surface.Origin, surface.Normal ) )
 			{
-				foreach ( var (from, to) in ClipToPolygon( plane.ToPlane( a ), plane.ToPlane( b ), outline ) )
+				foreach ( var (from, to) in ClipToOutline( plane.ToPlane( a ), plane.ToPlane( b ), outline ) )
 					Gizmo.Draw.Line( Lift( plane.ToWorld( from ), eye ), Lift( plane.ToWorld( to ), eye ) );
 			}
 		}
 	}
 
-	/// <summary>The parts of a segment that lie inside a polygon, in plane coordinates. Split at
-	/// every edge crossing, then keep the pieces whose midpoint is inside - which needs no
-	/// special cases for a segment that enters and leaves several times.</summary>
-	private static List<(Vec2 From, Vec2 To)> ClipToPolygon( Vec2 start, Vec2 end, List<Vec2> polygon )
+	/// <summary>The parts of a segment that lie inside an outline, in plane coordinates. Split at
+	/// every boundary crossing, then keep the pieces whose midpoint is inside - which needs no
+	/// special cases for a segment that enters and leaves several times, or for a hole.</summary>
+	private static List<(Vec2 From, Vec2 To)> ClipToOutline( Vec2 start, Vec2 end,
+		List<(Vec2 A, Vec2 B)> outline )
 	{
 		var kept = new List<(Vec2, Vec2)>();
 		var direction = end - start;
 
-		if ( direction.LengthSquared < 1e-12f || polygon.Count < 3 )
+		if ( direction.LengthSquared < 1e-12f || outline.Count < 3 )
 			return kept;
 
 		var cuts = new List<float> { 0f, 1f };
 
-		for ( var i = 0; i < polygon.Count; i++ )
+		foreach ( var (a, b) in outline )
 		{
-			var a = polygon[i];
-			var edge = polygon[(i + 1) % polygon.Count] - a;
+			var edge = b - a;
 			var denominator = Vec2.Cross( direction, edge );
 
 			if ( MathF.Abs( denominator ) < 1e-12f )
@@ -1681,7 +1816,7 @@ internal sealed partial class EffigyViewport
 			var from = start + direction * cuts[i];
 			var to = start + direction * cuts[i + 1];
 
-			if ( Inside( (from + to) * 0.5f, polygon ) )
+			if ( Inside( (from + to) * 0.5f, outline ) )
 				kept.Add( (from, to) );
 		}
 
@@ -1689,16 +1824,14 @@ internal sealed partial class EffigyViewport
 	}
 
 	/// <summary>Crossing count: a ray from the point crosses the boundary an odd number of times
-	/// exactly when the point is inside.</summary>
-	private static bool Inside( Vec2 point, List<Vec2> polygon )
+	/// exactly when the point is inside. Fed the outline as loose segments, which works because the
+	/// segments of a silhouette always close into loops however they are ordered.</summary>
+	private static bool Inside( Vec2 point, List<(Vec2 A, Vec2 B)> outline )
 	{
 		var inside = false;
 
-		for ( int i = 0, j = polygon.Count - 1; i < polygon.Count; j = i++ )
+		foreach ( var (a, b) in outline )
 		{
-			var a = polygon[i];
-			var b = polygon[j];
-
 			if ( a.y > point.y != b.y > point.y
 				&& point.x < (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x )
 			{
@@ -1734,6 +1867,7 @@ internal sealed partial class EffigyViewport
 	public void SetDisplayBodies( IEnumerable<Body> bodies )
 	{
 		_displayBodies = bodies?.ToList() ?? new List<Body>();
+		ForgetSurfaces();
 		PruneIdleSelection();
 	}
 
@@ -2075,7 +2209,13 @@ internal sealed partial class EffigyViewport
 		// SketchSnapper compares against radius-squared, and nothing is ever closer than zero.
 		_snapper.PointRadius = SnapToPoints && !_suppressPointSnap ? SnapPixels * unitsPerPixel : 0f;
 		_snapper.AlignmentRadius = AlignmentPixels * unitsPerPixel;
-		_snapper.GridStep = SnapToGrid ? GridStep( unitsPerPixel ) : 0f;
+		// THE STEP THE GRID IS DRAWN AT, not a second one worked out the same way. On a face that
+		// step is fitted to the face (FaceGridStep) rather than to the camera, and a snap that kept
+		// using the camera's number would put the cursor on intervals that are not the lines you
+		// can see. A grid you cannot land on is decoration - the same argument that made the drawn
+		// lattice use the snap's step in the first place, now that the step has somewhere else to
+		// come from.
+		_snapper.GridStep = SnapToGrid ? ActiveGridStep( unitsPerPixel ) : 0f;
 
 		// The face underneath. Suppressed alongside the sketch's own points while a curve grip is
 		// being dragged, for the same reason: the middle of a line landing on the corner of the

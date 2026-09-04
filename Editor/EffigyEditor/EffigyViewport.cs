@@ -323,6 +323,17 @@ internal sealed partial class EffigyViewport : Widget
 	/// <summary>Inset of a floating overlay from the canvas's top-left corner.</summary>
 	private static readonly Vector2 OverlayMargin = new( 10f, 10f );
 
+	/// <summary>
+	/// The grid switch that lives at the end of the tool row, so the frame loop can show it only
+	/// while a sketch is open.
+	///
+	/// The bar owns its own position - it is a child of the tool row, not a floating overlay - so
+	/// the only thing kept here is when it is on screen. That has to be driven from the frame loop
+	/// rather than from EnterSketch and FinishSketch, because a sketch also ends by being deleted,
+	/// undone, or rolled past, and every one of those would need its own line.
+	/// </summary>
+	public Widget SketchGridBar { get; set; }
+
 	/// <summary>The floating overlays, so the frame loop can keep camera drags out of them. The
 	/// tool bar is not among them any more — it is a layout row outside the canvas, so the canvas
 	/// never reports the cursor as being over it in the first place.</summary>
@@ -893,6 +904,13 @@ internal sealed partial class EffigyViewport : Widget
 	/// SAME STEP AS THE SNAP, through DrawnGridStep, and aligned to the sketch plane's origin
 	/// rather than to the face - so an intersection you can see is an intersection the cursor
 	/// lands on, which is the only reason to draw the lines at all.
+	///
+	/// SIZED AND FADED FROM THE FACE ITSELF, because "any face that can be sketched on" runs from
+	/// a two-unit tab to a two-thousand-unit floor. A step that fits one is a solid sheet of ink on
+	/// the other, so the step is widened until the face can hold the lines and the ink is thinned
+	/// as the lines close up on screen. A face seen nearly edge-on fades out entirely, the way the
+	/// reference planes already do - it is a bright smear across the middle of the view and never
+	/// a ruler.
 	/// </summary>
 	/// <returns>False when there is no face underneath - a sketch on a global plane - in which
 	/// case the caller falls back to drawing the plane as a rectangle.</returns>
@@ -907,29 +925,109 @@ internal sealed partial class EffigyViewport : Widget
 		if ( !ShowPlaneGrid )
 			return true;
 
-		var min = reference.Points[0];
-		var max = min;
+		// The same measurement the snap uses - see TryFaceExtent, which exists so the lines drawn
+		// and the intervals landed on cannot come from two different walks over the same points.
+		if ( !TryFaceExtent( out var min, out var max, out var span, out var world ) )
+			return true;
 
-		foreach ( var p in reference.Points )
-		{
-			min = new Vec2( MathF.Min( min.x, p.x ), MathF.Min( min.y, p.y ) );
-			max = new Vec2( MathF.Max( max.x, p.x ), MathF.Max( max.y, p.y ) );
-		}
-
-		var half = MathF.Max( MathF.Max( max.x - min.x, max.y - min.y ) * 0.5f, 1e-4f );
-		var centre = (min + max) * 0.5f;
-		var step = DrawnGridStep( PlaneToWorld( centre ), half );
+		var half = span * 0.5f;
+		var step = FaceGridStep( world, span );
 
 		if ( step <= 0f )
 			return true;
 
+		// The cap belongs here rather than inside the line walk, which used to answer "too many
+		// lines" by drawing NONE of them - so a face big enough relative to the step simply had no
+		// grid, with nothing on screen to say why. Doubling until it fits is the same answer the
+		// reference planes give, and it always leaves something to read.
+		//
+		// Bounded, because this runs on geometry rather than on a promise: a face whose extent came
+		// back infinite through a broken rebuild would otherwise spin here forever, and a viewport
+		// that hangs is worse than one drawing a coarse grid.
+		for ( var i = 0; i < 64 && (LinesAcross( min.x, max.x, step ) > MaxGridLines
+			|| LinesAcross( min.y, max.y, step ) > MaxGridLines); i++ )
+		{
+			step *= 2f;
+		}
+
+		var units = WorldRadiusAt( world, 1f );
+
+		// How far apart the lines land ON SCREEN, which is the only thing that decides whether a
+		// grid reads as a ruler or as a wash. DrawnGridStep aims for GridPixels and misses it
+		// whenever the cap above has taken over, or whenever the camera is a long way from a face
+		// large enough to keep its own step.
+		var spacing = units > 0f ? step / units : GridPixels;
+		var density = MathF.Min( spacing / GridPixels, 1f );
+
+		// Straight down the sketch plane's normal, so a face turned nearly edge-on fades out
+		// instead of collapsing into a bright line across everything behind it.
+		var normal = new Vector3( ActiveSketch.Plane.Normal.x, ActiveSketch.Plane.Normal.y,
+			ActiveSketch.Plane.Normal.z );
+		var facing = MathF.Abs( Vector3.Dot( normal, _camera.WorldRotation.Forward ) );
+		var viewFade = MathF.Min( facing / EdgeOnFade, 1f );
+
+		var alpha = color.a * 0.45f * density * viewFade;
+
+		if ( alpha <= 0.01f )
+			return true;
+
 		Gizmo.Draw.LineThickness = 1f;
-		Gizmo.Draw.Color = color.WithAlpha( 0.3f );
+		Gizmo.Draw.Color = color.WithAlpha( alpha );
 
 		DrawFaceGridLines( reference, min.x, max.x, step, true );
 		DrawFaceGridLines( reference, min.y, max.y, step, false );
 
 		return true;
+	}
+
+	/// <summary>How many grid lines at <paramref name="step"/> fall between two coordinates.
+	/// Negative when the span is too narrow to hold one, which is a legitimate answer for the short
+	/// axis of a long thin face.</summary>
+	private static int LinesAcross( float low, float high, float step ) =>
+		(int)MathF.Floor( high / step ) - (int)MathF.Ceiling( low / step ) + 1;
+
+	/// <summary>
+	/// Roughly how many squares the grid should put across a face, on Automatic.
+	///
+	/// A DIVISION COUNT, NOT A DISTANCE, because the faces this has to serve differ by three orders
+	/// of magnitude in the same document — the 2.75-unit dial on this grill and the 72-unit slab it
+	/// is set into. A fixed distance is graph paper on one and a solid wash on the other. Around a
+	/// dozen squares reads as ruled paper at any size, which is what a grid is for.
+	/// </summary>
+	private const float FaceGridDivisions = 12f;
+
+	/// <summary>
+	/// The step to rule a FACE at: fitted to the face, then held back to what the screen can
+	/// actually show.
+	///
+	/// The reference planes size their grid from the camera alone (see DrawnGridStep), which is
+	/// right for a plane — it has no size of its own worth speaking of, it is a stand-in for an
+	/// infinite one. A face does have a size, and it is the thing being drawn on, so the grid
+	/// belongs to it: the step is the 1/2/5 round number nearest span/FaceGridDivisions, which puts
+	/// about a dozen squares across whatever you picked and lands the lines on whole numbers rather
+	/// than on whatever the face's width happened to leave over.
+	///
+	/// THEN THE CAMERA GETS A VETO, one way only. Fitting to the face alone would rule a 72-unit
+	/// slab at 5 units and keep ruling it at 5 units as you zoom out to the whole grill, where those
+	/// lines are a pixel apart and the face fills with ink. Taking whichever step is COARSER means
+	/// the face decides while you are working on it and the camera takes over once the face is too
+	/// small on screen to hold that many lines. It never goes the other way, so zooming in cannot
+	/// make the grid finer than the face asked for — the squares you measured against stay the
+	/// squares you measured against.
+	///
+	/// An explicit GridSpacing skips all of it. A number someone typed is not a suggestion.
+	/// </summary>
+	private float FaceGridStep( Vector3 centre, float span )
+	{
+		if ( GridSpacing > 0f )
+			return GridSpacing;
+
+		// AutoGridStep answers "what round step is about `pixels` across, at this scale" — feeding
+		// it the face's own scale rather than the camera's asks the same question about the face.
+		var fitted = SketchSnapper.AutoGridStep( span / FaceGridDivisions, 1f );
+		var camera = SketchSnapper.AutoGridStep( WorldRadiusAt( centre, 1f ), GridPixels );
+
+		return MathF.Max( fitted, camera );
 	}
 
 	/// <summary>One family of grid lines across a face - the ones at constant u when
@@ -940,9 +1038,6 @@ internal sealed partial class EffigyViewport : Widget
 	{
 		var first = (int)MathF.Ceiling( low / step );
 		var last = (int)MathF.Floor( high / step );
-
-		if ( last - first > MaxGridLines )
-			return;
 
 		var crossings = new List<float>();
 
@@ -1234,6 +1329,12 @@ internal sealed partial class EffigyViewport : Widget
 		// The floating overlays sit inside the canvas, so "cursor over the canvas" is true while
 		// you are aiming at one. Without excluding them, pressing a control also grabs the orbit
 		// camera, the click drags the view, and sketch tools place points on the plane.
+		// Only while there is a sketch to grid. Outside one the switch still means something - the
+		// reference planes read it too - but it would be a control on the sketch toolbar for a mode
+		// nobody is in, and Edit > Settings is its home for that case.
+		if ( SketchGridBar.IsValid() )
+			SketchGridBar.Visible = IsSketching;
+
 		var overAnyOverlay = (_resultOverlay?.IsUnderMouse ?? false)
 			|| (_sculptBarOverlay?.IsUnderMouse ?? false);
 		var overCanvas = _canvas.IsUnderMouse && !overAnyOverlay;

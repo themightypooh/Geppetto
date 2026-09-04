@@ -658,7 +658,20 @@ public sealed class FaceMaterialFeature : Feature
 				continue;
 			}
 
-			body.Mesh.Faces[faceIndex].Material = Material.Clamped;
+			// THE WHOLE SURFACE, not the one n-gon the reference resolved to. A wall a boolean has
+			// returned as fragments is one face to look at and one face to click, and the viewport
+			// lights all of it - painting a single fragment would turn a third of a wall red and
+			// leave the rest as it was, which is the highlight promising something the click does
+			// not deliver. FaceSurface stops at a neighbour already on another slot, so this can
+			// never eat an assignment somebody else made.
+			var surface = FaceSurface.FromFace( body.Mesh, faceIndex );
+
+			if ( surface.IsEmpty )
+				body.Mesh.Faces[faceIndex].Material = Material.Clamped;
+			else
+				foreach ( var index in surface.Faces )
+					body.Mesh.Faces[index].Material = Material.Clamped;
+
 			painted++;
 		}
 

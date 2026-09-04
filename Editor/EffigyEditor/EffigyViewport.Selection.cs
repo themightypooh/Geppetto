@@ -415,8 +415,7 @@ internal sealed partial class EffigyViewport
 		edge = default;
 		key = default;
 
-		if ( !MeshRaycast.ClosestEdge( hit.Body.Mesh, hit.FaceIndex, hit.Reference.Point, out key, out _,
-			out var distance ) )
+		if ( !TryClosestEdge( hit.Body.Mesh, hit.FaceIndex, hit.Reference.Point, out key, out var distance ) )
 			return false;
 
 		var point = hit.Reference.Point;

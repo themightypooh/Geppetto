@@ -87,6 +87,21 @@ internal enum EffigyIcon
 	// glyph in the bar is a shape being changed; these are stationery.
 	NoteTool,
 	NoteEraseTool,
+
+	// --- lighting: viewport scenery, not geometry ------------------------------------------------
+	// Drawn as lamps and as what a lamp DOES to a shape, for the same reason the notes above are
+	// drawn as stationery: nothing on this stage changes the model, and the glyphs should say so
+	// before the tooltip gets a chance to. The three rigs are the same sphere lit three ways, which
+	// is the only honest way to draw the difference between them.
+	LightFullBright,
+	LightPoint,
+	LightSpot,
+	LightSun,
+	LightRigThreePoint,
+	LightRigRim,
+	LightRigTop,
+	LightRigKey,
+	LightClear,
 }
 
 /// <summary>
@@ -188,6 +203,16 @@ internal static class EffigyIcons
 
 			case EffigyIcon.NoteTool: PaintNoteTool( center, color ); return;
 			case EffigyIcon.NoteEraseTool: PaintNoteEraseTool( center, color ); return;
+
+			case EffigyIcon.LightFullBright: PaintLightFullBright( center, color ); return;
+			case EffigyIcon.LightPoint: PaintLightPoint( center, color ); return;
+			case EffigyIcon.LightSpot: PaintLightSpot( center, color ); return;
+			case EffigyIcon.LightSun: PaintLightSun( center, color ); return;
+			case EffigyIcon.LightRigThreePoint: PaintLightRigThreePoint( center, color ); return;
+			case EffigyIcon.LightRigRim: PaintLightRigRim( center, color ); return;
+			case EffigyIcon.LightRigTop: PaintLightRigTop( center, color ); return;
+			case EffigyIcon.LightRigKey: PaintLightRigKey( center, color ); return;
+			case EffigyIcon.LightClear: PaintLightClear( center, color ); return;
 
 			case EffigyIcon.EllipseTool: PaintEllipseTool( center, color ); return;
 			case EffigyIcon.SplineTool: PaintSplineTool( center, color ); return;
@@ -1682,4 +1707,197 @@ internal static class EffigyIcons
 	/// one carries an alpha for drawing in the world and this one has to read on a small dark
 	/// button.</summary>
 	private static readonly Color CutColor = new( 1f, 0.45f, 0.35f, 1f );
+
+	// --- lighting ------------------------------------------------------------------------------
+	//
+	// THE THREE RIGS ARE THE SAME SPHERE, LIT THREE WAYS. Three-point, rim and top-down differ only
+	// in where the light comes from, so drawing them as three different objects would invent a
+	// distinction that is not there. Each is a circle with the lit part filled and the rest left as
+	// outline, which is the difference itself rather than a symbol standing in for it.
+
+	/// <summary>The lit sphere the rig glyphs share: an outlined circle with a filled crescent on
+	/// whichever side the light is on. <paramref name="from"/> is the direction the light arrives
+	/// from, in icon space.</summary>
+	private static void LitSphere( Vector2 c, Color color, Vector2 from, float radius = 5.2f )
+	{
+		var d = from.Normal;
+
+		// The terminator is perpendicular to the light, so the lit cap runs 180 degrees centred on
+		// the light's own bearing. Drawn as a filled polygon fan rather than an arc, because an
+		// outline would read as a second circle rather than as brightness.
+		var bearing = MathF.Atan2( d.y, d.x ) * 180f / MathF.PI;
+		var points = new List<Vector2>();
+
+		for ( var i = 0; i <= 18; i++ )
+		{
+			var t = (bearing - 90f) + 180f * (i / 18f);
+			var radians = t * MathF.PI / 180f;
+			points.Add( At( c, MathF.Cos( radians ) * radius, MathF.Sin( radians ) * radius ) );
+		}
+
+		Filled( color.WithAlpha( 0.85f ) );
+		Editor.Paint.DrawPolygon( points.ToArray() );
+
+		Stroked( color, 1.4f );
+		Arc( c, radius, 0f, 360f, 28 );
+	}
+
+	/// <summary>A short ray coming in toward the sphere, so the glyph says which side the lamp is
+	/// on as well as which side is bright.</summary>
+	private static void LightRay( Vector2 c, Color color, Vector2 from, float outer = 8.6f, float inner = 6.4f )
+	{
+		var d = from.Normal;
+
+		Stroked( color.WithAlpha( 0.9f ), 1.3f );
+		Editor.Paint.DrawLine( At( c, d.x * outer, d.y * outer ), At( c, d.x * inner, d.y * inner ) );
+	}
+
+	/// <summary>Even light from every side: a circle with rays all the way round, none of them
+	/// longer than the others. Full bright has no key direction and the glyph must not imply
+	/// one — that is the entire difference between this and the sun below.</summary>
+	private static void PaintLightFullBright( Vector2 c, Color color )
+	{
+		Filled( color.WithAlpha( 0.9f ) );
+		Editor.Paint.DrawCircle( c, 4.1f * _scale );
+
+		Stroked( color, 1.3f );
+
+		for ( var i = 0; i < 8; i++ )
+		{
+			var radians = i * 45f * MathF.PI / 180f;
+			var d = new Vector2( MathF.Cos( radians ), MathF.Sin( radians ) );
+
+			Editor.Paint.DrawLine( At( c, d.x * 6f, d.y * 6f ), At( c, d.x * 8.4f, d.y * 8.4f ) );
+		}
+	}
+
+	/// <summary>A bulb: glass, a screw base, and three rays. The one lamp with no direction, drawn
+	/// as the object rather than as its effect.</summary>
+	private static void PaintLightPoint( Vector2 c, Color color )
+	{
+		Stroked( color, 1.5f );
+		Arc( c, 4.2f, 0f, 360f, 24 );
+
+		// The base, under the glass.
+		Editor.Paint.DrawLine( At( c, -2.2f, 5.2f ), At( c, 2.2f, 5.2f ) );
+		Editor.Paint.DrawLine( At( c, -1.6f, 7f ), At( c, 1.6f, 7f ) );
+		Editor.Paint.DrawLine( At( c, -2.2f, 5.2f ), At( c, -1.6f, 7f ) );
+		Editor.Paint.DrawLine( At( c, 2.2f, 5.2f ), At( c, 1.6f, 7f ) );
+
+		Stroked( color.WithAlpha( 0.8f ), 1.2f );
+		Editor.Paint.DrawLine( At( c, -7.4f, -4.6f ), At( c, -5.6f, -3.4f ) );
+		Editor.Paint.DrawLine( At( c, 0f, -8.2f ), At( c, 0f, -6.2f ) );
+		Editor.Paint.DrawLine( At( c, 7.4f, -4.6f ), At( c, 5.6f, -3.4f ) );
+	}
+
+	/// <summary>A cone of light widening downward, with the pool it lands in. Aimed, which is the
+	/// property that separates it from the bulb.</summary>
+	private static void PaintLightSpot( Vector2 c, Color color )
+	{
+		// The housing.
+		Stroked( color, 1.5f );
+		Outline(
+			At( c, -3f, -7.6f ),
+			At( c, 3f, -7.6f ),
+			At( c, 2.2f, -4.4f ),
+			At( c, -2.2f, -4.4f ) );
+
+		// The cone, dimmer than the lamp that casts it.
+		Stroked( color.WithAlpha( 0.75f ), 1.3f );
+		Editor.Paint.DrawLine( At( c, -2.2f, -4.4f ), At( c, -6.4f, 5.2f ) );
+		Editor.Paint.DrawLine( At( c, 2.2f, -4.4f ), At( c, 6.4f, 5.2f ) );
+
+		// The pool on the floor, flattened so it reads as ground rather than as a ball.
+		EllipseArc( At( c, 0f, 5.2f ), 6.4f, 1.9f, 0f, 360f, 26 );
+	}
+
+	/// <summary>Parallel rays at an angle: a directional light has no position, only a bearing, and
+	/// parallel is the one thing that says "these rays never converge".</summary>
+	private static void PaintLightSun( Vector2 c, Color color )
+	{
+		Filled( color.WithAlpha( 0.9f ) );
+		Editor.Paint.DrawCircle( At( c, -3.4f, -3.4f ), 3.2f * _scale );
+
+		Stroked( color.WithAlpha( 0.85f ), 1.3f );
+
+		// Three rays on the same bearing, spaced across the diagonal. Arrow heads because a sun is
+		// the only lamp here whose glyph would otherwise be three plain lines.
+		for ( var i = -1; i <= 1; i++ )
+		{
+			var offset = new Vector2( i * 4.6f, -i * 4.6f );
+			var tail = At( c, 1.4f + offset.x, 1.4f + offset.y );
+			var tip = At( c, 6.6f + offset.x, 6.6f + offset.y );
+
+			Editor.Paint.DrawLine( tail, tip );
+			ArrowHead( tip, new Vector2( 1f, 1f ), color.WithAlpha( 0.85f ), 2.8f );
+			Stroked( color.WithAlpha( 0.85f ), 1.3f );
+		}
+	}
+
+	/// <summary>Key, fill and rim: the sphere lit from the upper right, with the two weaker lamps
+	/// marked as rays on the sides they come from.</summary>
+	private static void PaintLightRigThreePoint( Vector2 c, Color color )
+	{
+		LitSphere( c, color, new Vector2( 1f, -1f ) );
+
+		LightRay( c, color, new Vector2( 1f, -1f ) );
+		LightRay( c, color.WithAlpha( 0.5f ), new Vector2( -1f, -0.2f ) );
+		LightRay( c, color.WithAlpha( 0.65f ), new Vector2( -0.3f, 1f ) );
+	}
+
+	/// <summary>Lit from behind: the far edge glows and the face is dark. The one rig whose whole
+	/// point is the outline rather than the surface.</summary>
+	private static void PaintLightRigRim( Vector2 c, Color color )
+	{
+		Stroked( color.WithAlpha( 0.55f ), 1.4f );
+		Arc( c, 5.2f, 0f, 360f, 28 );
+
+		// Only the far crescent, drawn heavy. No fill at all, because a rim light leaves the body
+		// of the shape unlit and filling it would be the opposite of what this means.
+		Stroked( color, 2.4f );
+		Arc( c, 5.2f, -155f, -25f, 20 );
+
+		LightRay( c, color, new Vector2( 0.2f, -1f ) );
+	}
+
+	/// <summary>Lit from straight above: the lamp is drawn, and the top of the sphere is bright.</summary>
+	private static void PaintLightRigTop( Vector2 c, Color color )
+	{
+		Stroked( color, 1.4f );
+		Editor.Paint.DrawLine( At( c, -4.2f, -8f ), At( c, 4.2f, -8f ) );
+
+		Stroked( color.WithAlpha( 0.8f ), 1.2f );
+		Editor.Paint.DrawLine( At( c, -2.6f, -7.2f ), At( c, -3.6f, -5f ) );
+		Editor.Paint.DrawLine( At( c, 0f, -7.2f ), At( c, 0f, -5f ) );
+		Editor.Paint.DrawLine( At( c, 2.6f, -7.2f ), At( c, 3.6f, -5f ) );
+
+		LitSphere( At( c, 0f, 1.6f ), color, new Vector2( 0f, -1f ), 4.6f );
+	}
+
+	/// <summary>One lamp and nothing else: the sphere lit hard from one side, the other side left
+	/// empty. No fill ray anywhere, which is the difference from three-point.</summary>
+	private static void PaintLightRigKey( Vector2 c, Color color )
+	{
+		LitSphere( c, color, new Vector2( 1f, -1f ) );
+		LightRay( c, color, new Vector2( 1f, -1f ) );
+	}
+
+	/// <summary>A bulb with a stroke through it. Clear is the only button on the stage that takes
+	/// light away, and a struck-through glyph is the one shape that reads as removal without
+	/// needing a colour to say so.</summary>
+	private static void PaintLightClear( Vector2 c, Color color )
+	{
+		var dim = color.WithAlpha( 0.55f );
+
+		Stroked( dim, 1.5f );
+		Arc( At( c, 0f, -1f ), 4.2f, 0f, 360f, 24 );
+
+		Editor.Paint.DrawLine( At( c, -2.2f, 4.2f ), At( c, 2.2f, 4.2f ) );
+		Editor.Paint.DrawLine( At( c, -1.6f, 6f ), At( c, 1.6f, 6f ) );
+		Editor.Paint.DrawLine( At( c, -2.2f, 4.2f ), At( c, -1.6f, 6f ) );
+		Editor.Paint.DrawLine( At( c, 2.2f, 4.2f ), At( c, 1.6f, 6f ) );
+
+		Stroked( color, 1.9f );
+		Editor.Paint.DrawLine( At( c, -7f, 7f ), At( c, 7f, -7f ) );
+	}
 }

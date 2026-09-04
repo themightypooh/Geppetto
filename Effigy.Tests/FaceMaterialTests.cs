@@ -29,6 +29,74 @@ public static class FaceMaterialTests
 
 		Report.Section( "face materials: when the faces go away" );
 		TestLostFaces();
+
+		Report.Section( "face materials: a new assignment lands where it will be evaluated" );
+		TestAssignRespectsRollback();
+	}
+
+	/// <summary>
+	/// Where Assign puts the feature it creates, relative to the rollback bar.
+	///
+	/// A NEW FEATURE MUST END UP ABOVE THE BAR, because EffectiveCount is exclusive: a feature at
+	/// index N runs only while the bar is at N+1 or later. Assign used to test `RollbackIndex <
+	/// Features.Count` and append when that was false - so a bar sitting at exactly Features.Count,
+	/// which is where finishing an edit on the last feature leaves it, appended the assignment ONTO
+	/// the bar. It was in the tree, it was in the file, and it never ran: the face stayed the colour
+	/// it was, with nothing anywhere saying why.
+	///
+	/// The editor carried the same comparison in the same shape for every feature it adds, and the
+	/// symptom there was a sketch that never executed and therefore never got a plane.
+	/// </summary>
+	static void TestAssignRespectsRollback()
+	{
+		foreach ( var (label, bar) in new[]
+		{
+			("with the bar at the end of the tree", -1),
+			("with the bar at exactly Features.Count", 0),
+			("with the bar part-way up the tree", 1),
+		} )
+		{
+			var studio = Boxed( out var body );
+			var top = FaceIndexFacing( body.Mesh, new Vec3( 0, 0, 1 ) );
+			var reference = FacePlane.Capture( body, top, body.Mesh.FaceCentroid( body.Mesh.Faces[top] ) );
+
+			studio.RollbackIndex = bar switch
+			{
+				-1 => int.MaxValue,
+				0 => studio.Features.Count,
+				_ => studio.Features.Count,
+			};
+
+			Report.Check( $"{label}: the assignment is made",
+				FaceMaterialEdit.Assign( studio, body.Id, top, reference, 5 ) );
+
+			var paint = studio.Features.OfType<FaceMaterialFeature>().Single();
+			var index = studio.Features.IndexOf( paint );
+
+			// The whole point: evaluated, not merely present.
+			Report.Check( $"{label}: it is above the bar",
+				index < studio.EffectiveCount,
+				$"index {index}, effective {studio.EffectiveCount}" );
+
+			studio.Rebuild();
+
+			var painted = studio.Bodies.Single().Mesh.Faces.Count( f => f.Material == 5 );
+
+			Report.Check( $"{label}: and the face actually comes out painted",
+				painted == 1, $"{painted} faces on slot 5" );
+		}
+
+		// The bar meaning "everything" has to stay meaning that. Pinning it to a real number on
+		// every add would quietly stop the NEXT feature appended from being evaluated - which is
+		// the same bug one step later.
+		var open = Boxed( out var openBody );
+		var openTop = FaceIndexFacing( openBody.Mesh, new Vec3( 0, 0, 1 ) );
+
+		FaceMaterialEdit.Assign( open, openBody.Id, openTop,
+			FacePlane.Capture( openBody, openTop, openBody.Mesh.FaceCentroid( openBody.Mesh.Faces[openTop] ) ), 5 );
+
+		Report.Check( "an unrolled studio still has no rollback bar afterwards",
+			open.RollbackIndex == int.MaxValue, $"{open.RollbackIndex}" );
 	}
 
 	static void TestAssignment()

@@ -17,6 +17,12 @@ Write for whoever installed the package, not for whoever works on it. Trailing
 file references in backticks are fine — `changelist.sh` strips them on the way
 out, so they stay useful here and never reach the store page.
 
+KEEP THE STORE-PAGE BULLETS SHORT. An entry here can be a paragraph — the file
+has room to explain itself, and should. The form does not: every line you paste
+becomes its own bullet, and a five-sentence bullet reads as a wall of text on a
+package page. Split each entry into one-idea lines on the way out, and leave
+behind anything only somebody working on the repo would feel.
+
 When you publish a revision, rename **Unreleased** to its version, then run
 `tools/changelist.sh <version>` and paste each block into its box on the site.
 `tools/changelist.sh` with no argument prints Unreleased.
@@ -30,6 +36,13 @@ forgotten.
 ## Unreleased
 
 ### Fixed
+- A new feature added while the rollback bar sat at the end of the tree was
+  never evaluated. It appeared in the tree, it was saved to the file, and it did
+  nothing — the bar landed exactly on it rather than below it. Sketching on a
+  face is where this showed: the plane is worked out when the sketch feature
+  runs, so a sketch that never ran stayed on the global XY plane, and the face
+  outline drawn on it collapsed to a single line lying flat through the model.
+  Materials dropped on a face could go the same way.
 - Exporting no longer overwrites the last thing you exported. Every part studio
   compiled to `models/effigy/export.vmdl` — one name for the whole project — so
   compiling the spatula replaced the grill, and anything already placed in a
@@ -37,7 +50,35 @@ forgotten.
   `.smd` now take the document's own name, and an unsaved studio is asked for
   one instead of being given a name that collides with the next.
 
+### Added
+- A grid switch and a spacing dropdown at the right-hand end of the sketch tool
+  row, shown while a sketch is open. Both were already in Edit → Settings, which
+  is the right home for setting up how the tool behaves and the wrong one for
+  changing paper mid-drawing. They are the same two values, not a second copy —
+  change one and the other follows.
+- **View → Console** docks the editor's own console inside Effigy, along the
+  bottom. It is the real one, not a copy — the same level filters, term filter,
+  stack traces and command entry — so compile failures and anything you log
+  show up without leaving the part you are working on.
+
 ### Improved
+- Hovering a face lights up the whole face, whatever shape or size it is. A
+  wall that a cut or a boolean left as many flat pieces used to light up one of
+  those pieces — a triangle in the middle of it, a different triangle if you
+  moved the mouse a hand's width — while the sketch grid covered the whole
+  wall, so the highlight and the paper disagreed on screen at once. The
+  highlight, the edge picker, the sketch outline, the material you drop on a
+  face and the edges Fillet takes from one now all mean the same face.
+- The seams inside such a wall are no longer offered as edges to pick. They are
+  not edges of the part — rounding one does nothing — and on a heavily cut wall
+  one was always within a few pixels of the cursor, which made the face
+  underneath very hard to click at all.
+- The grid on the face you are sketching on holds up at any size. It used to
+  draw nothing at all once a face was large enough to want more lines than the
+  cap allows; it now widens the spacing until the lines fit. It also thins out
+  as the lines close up on screen instead of filling the face with solid
+  colour, and fades away as the face turns edge-on, the way the reference
+  planes already did.
 - A `.effigy` part studio shows the model it builds in the asset browser, and
   in the inspector's preview panel, instead of the generic document icon every
   unrecognised file gets. It is the real thing, turning on the spot, wearing

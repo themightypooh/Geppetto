@@ -13,6 +13,43 @@ namespace Marionette.EditorTools;
 /// vanish when the window closes. A lamp that survived into a compiled vmdl would be a lighting
 /// setup leaking into a mesh, which is the wrong file.
 /// </summary>
+/// <summary>What kind of lamp a placed light is. Point is the original and still the default:
+/// it needs no aiming, so it is the one you can drop and drag without thinking about facing.</summary>
+internal enum EffigyLightKind
+{
+	Point,
+	Spot,
+	Sun,
+}
+
+/// <summary>
+/// A named arrangement of lamps, placed in one click.
+///
+/// WHY PRESETS AND NOT JUST "ADD LIGHT". Placing one lamp tells you very little: a single source
+/// leaves half the part black, which is exactly the problem full bright exists to avoid. The
+/// arrangements that actually show a shape are all several lamps in a known relationship, and
+/// building one by hand means placing three lights and dragging each into position past the
+/// geometry you are trying to look at. These are the standard ones, sized to whatever is on
+/// screen.
+/// </summary>
+internal enum EffigyLightRig
+{
+	/// <summary>Key, fill and rim — the default portrait setup. Shows form without flattening it.</summary>
+	ThreePoint,
+
+	/// <summary>One bright source behind and above, so the silhouette lights up and the front goes
+	/// dark. The setup for judging an outline rather than a surface.</summary>
+	Rim,
+
+	/// <summary>A single lamp overhead. Reads like a workbench, and it is the light that makes
+	/// horizontal detail — panel lines, engraving — most legible.</summary>
+	TopDown,
+
+	/// <summary>One key light and nothing else. The harshest of the four, and the one that shows
+	/// exactly where your normals are wrong.</summary>
+	KeyOnly,
+}
+
 internal sealed partial class EffigyViewport
 {
 	/// <summary>
@@ -61,31 +98,44 @@ internal sealed partial class EffigyViewport
 	/// the part you judge; intensity is just enough to see it.</summary>
 	private static readonly Color PlacedLightColor = new Color( 1f, 0.96f, 0.88f ) * 4f;
 
+	/// <summary>Colours for the three roles a rig lamp plays. The key is the warm one you judge
+	/// the material under, the fill is cool and weak so the shadow side stays readable rather than
+	/// going black, and the rim is bright and neutral because its whole job is an edge.</summary>
+	private static readonly Color KeyColor = new Color( 1f, 0.95f, 0.86f ) * 5f;
+	private static readonly Color FillColor = new Color( 0.82f, 0.88f, 1f ) * 1.6f;
+	private static readonly Color RimColor = new Color( 1f, 0.98f, 0.94f ) * 7f;
+
+	/// <summary>Typed as the abstract <see cref="Light"/> rather than PointLight, because a spot
+	/// and a sun are not point lights and everything done to a lamp here — enable it, colour it —
+	/// is on the base. Reach is kept alongside rather than read back off the component: only two
+	/// of the three kinds HAVE a Radius, and the gizmo needs a number for all of them.</summary>
 	private sealed class PlacedLight
 	{
 		public GameObject Object;
-		public PointLight Light;
+		public Light Light;
+		public EffigyLightKind Kind;
+		public float Reach;
 	}
 
+	/// <summary>Drop a point light. Kept by name because the View menu asks for exactly this, and a
+	/// point light is still the sane default — it is the one kind with nothing to aim.</summary>
+	public void AddPointLight() => AddLight( EffigyLightKind.Point );
+
 	/// <summary>
-	/// Drop a point light in front of whatever is on screen, select it, and switch out of full
-	/// bright so the lamp actually lights the part. Adding a light you cannot see is how this
-	/// would look broken.
+	/// Drop a lamp in front of whatever is on screen, select it, and switch out of full bright so
+	/// it actually lights the part. Adding a light you cannot see is how this would look broken.
+	///
+	/// Spots and suns are AIMED AT THE PART on the way in rather than left pointing along +x. A
+	/// directional light's position means nothing to the renderer — only its rotation does — but
+	/// it is still placed off to the side, so its gizmo has somewhere to be that is not inside
+	/// the mesh.
 	/// </summary>
-	public void AddPointLight()
+	public void AddLight( EffigyLightKind kind )
 	{
 		using var scope = _canvas.Scene.Push();
 
-		var go = new GameObject( true, "effigy_light" );
-		var light = go.GetOrAddComponent<PointLight>( false );
+		Spawn( kind, DefaultLightPosition(), CurrentFocus(), PlacedLightColor );
 
-		go.WorldPosition = DefaultLightPosition();
-		light.Radius = DefaultLightRadius();
-		light.LightColor = PlacedLightColor;
-		light.Shadows = true;
-		light.Enabled = true;
-
-		_lights.Add( new PlacedLight { Object = go, Light = light } );
 		_selectedLight = _lights.Count - 1;
 		_draggingLight = false;
 
@@ -93,12 +143,132 @@ internal sealed partial class EffigyViewport
 		DeselectBone();
 
 		// Full bright would swallow the lamp. Flip it off here rather than asking the caller to
-		// remember — the Settings switch and the View menu both land in this method.
+		// remember — every route that adds a light lands in this method.
 		if ( _fullBright )
 			_fullBright = false;
 
 		ApplyLighting();
 		LightingChanged?.Invoke();
+	}
+
+	/// <summary>
+	/// Replace whatever is placed with a named arrangement, sized to the part on screen.
+	///
+	/// REPLACE RATHER THAN ADD. A rig is a complete answer to "how is this lit"; dropping a second
+	/// one on top of the first gives you six lamps in two conflicting setups and no way to tell
+	/// which belongs to which. Clearing first makes picking a different rig one click that always
+	/// lands somewhere predictable.
+	/// </summary>
+	public void ApplyRig( EffigyLightRig rig )
+	{
+		using var scope = _canvas.Scene.Push();
+
+		foreach ( var placed in _lights )
+			placed.Object?.Destroy();
+
+		_lights.Clear();
+
+		var center = CurrentFocus();
+		var r = LightSceneRadius();
+		var cam = _camera.WorldRotation;
+
+		// POSITIONS ARE IN CAMERA SPACE, not world space. A rig anchored to world axes is a
+		// different rig depending on which way you happen to be orbiting — the key light ends up
+		// behind the part about half the time. Relative to the camera, "key up and to the right"
+		// means the same thing from every angle, and that is what makes these worth one click.
+		var right = cam.Right;
+		var up = cam.Up;
+		var forward = cam.Forward;
+
+		switch ( rig )
+		{
+			case EffigyLightRig.ThreePoint:
+				Spawn( EffigyLightKind.Spot, center + right * r * 1.6f + up * r * 1.2f - forward * r * 1.4f,
+					center, KeyColor );
+				Spawn( EffigyLightKind.Point, center - right * r * 1.8f + up * r * 0.3f - forward * r * 1.1f,
+					center, FillColor );
+				Spawn( EffigyLightKind.Spot, center - right * r * 0.7f + up * r * 1.5f + forward * r * 1.9f,
+					center, RimColor );
+				break;
+
+			case EffigyLightRig.Rim:
+				Spawn( EffigyLightKind.Spot, center + right * r * 1.1f + up * r * 1.3f + forward * r * 2f,
+					center, RimColor );
+				Spawn( EffigyLightKind.Point, center - right * r * 1.5f + up * r * 0.4f - forward * r * 1.3f,
+					center, FillColor * 0.5f );
+				break;
+
+			case EffigyLightRig.TopDown:
+				// Straight down in WORLD terms, deliberately breaking the camera-space rule above:
+				// "overhead" means overhead, and a top light that tilts as you orbit is not one.
+				Spawn( EffigyLightKind.Spot, center + Vector3.Up * r * 2.6f, center, KeyColor );
+				break;
+
+			case EffigyLightRig.KeyOnly:
+				Spawn( EffigyLightKind.Spot, center + right * r * 1.6f + up * r * 1.2f - forward * r * 1.4f,
+					center, KeyColor );
+				break;
+		}
+
+		_selectedLight = -1;
+		_draggingLight = false;
+
+		if ( _fullBright )
+			_fullBright = false;
+
+		ApplyLighting();
+		LightingChanged?.Invoke();
+	}
+
+	/// <summary>Build one lamp and add it to the list. Deliberately does not touch selection, full
+	/// bright or the event: a rig fires those once for the whole set rather than once per lamp.</summary>
+	private void Spawn( EffigyLightKind kind, Vector3 position, Vector3 aimAt, Color color )
+	{
+		var go = new GameObject( true, "effigy_light" );
+		var reach = DefaultLightRadius();
+
+		go.WorldPosition = position;
+
+		// Aiming is harmless on a point light and essential on the other two, so it is done for
+		// all three rather than guarded per kind. A zero-length direction would give a NaN
+		// rotation, so a lamp sitting exactly on the focus keeps identity instead.
+		var toTarget = aimAt - position;
+
+		if ( !toTarget.IsNearlyZero() )
+			go.WorldRotation = Rotation.LookAt( toTarget.Normal );
+
+		Light light = kind switch
+		{
+			EffigyLightKind.Spot => BuildSpot( go, reach ),
+			EffigyLightKind.Sun => go.GetOrAddComponent<DirectionalLight>( false ),
+			_ => BuildPoint( go, reach ),
+		};
+
+		light.LightColor = color;
+		light.Shadows = true;
+		light.Enabled = true;
+
+		_lights.Add( new PlacedLight { Object = go, Light = light, Kind = kind, Reach = reach } );
+	}
+
+	private static Light BuildPoint( GameObject go, float reach )
+	{
+		var light = go.GetOrAddComponent<PointLight>( false );
+		light.Radius = reach;
+		return light;
+	}
+
+	private static Light BuildSpot( GameObject go, float reach )
+	{
+		var light = go.GetOrAddComponent<SpotLight>( false );
+		light.Radius = reach;
+
+		// Wide enough to cover a part framed in the viewport from the distance the rigs place it
+		// at. A tight cone reads as a spotlight EFFECT rather than as lighting, which is not what
+		// these are for.
+		light.ConeInner = 25f;
+		light.ConeOuter = 45f;
+		return light;
 	}
 
 	/// <summary>Remove the selected light, or do nothing if none is selected.</summary>
@@ -252,7 +422,15 @@ internal sealed partial class EffigyViewport
 			Gizmo.Draw.Color = new Color( 1f, 0.72f, 0.22f, 1f );
 			Gizmo.Draw.SolidSphere( 0f, radius * 1.35f, 12, 12 );
 			Gizmo.Draw.Color = new Color( 1f, 0.72f, 0.22f, 0.35f );
-			Gizmo.Draw.LineSphere( new Sphere( Vector3.Zero, placed.Light.Radius ), 4 );
+
+			// A sun has no radius to draw — its reach is the whole scene — so the falloff sphere
+			// would be a lie. It gets the aim line below instead, which is the only thing about a
+			// directional light you can actually move.
+			if ( placed.Kind != EffigyLightKind.Sun )
+				Gizmo.Draw.LineSphere( new Sphere( Vector3.Zero, placed.Reach ), 4 );
+
+			DrawLightAim( placed );
+
 			Gizmo.Draw.IgnoreDepth = false;
 
 			return;
@@ -281,6 +459,27 @@ internal sealed partial class EffigyViewport
 			DeselectOrigin();
 			DeselectBone();
 		}
+	}
+
+	/// <summary>
+	/// A short line out of the bulb along the way it faces, for the two kinds where facing is the
+	/// whole setting.
+	///
+	/// A point light is left alone: it throws light every way, so a line out of one side of it
+	/// would claim a direction it does not have. Drawn inside the caller's gizmo scope, so the
+	/// coordinates are local to the lamp and the direction is simply the object's own forward
+	/// brought back out of world space.
+	/// </summary>
+	private void DrawLightAim( PlacedLight placed )
+	{
+		if ( placed.Kind == EffigyLightKind.Point || !placed.Object.IsValid() )
+			return;
+
+		var length = WorldRadiusAt( placed.Object.WorldPosition, 4.5f ) * 6f;
+		var direction = placed.Object.WorldRotation.Forward;
+
+		Gizmo.Draw.Color = new Color( 1f, 0.72f, 0.22f, 0.55f );
+		Gizmo.Draw.Line( Vector3.Zero, direction * length );
 	}
 
 }

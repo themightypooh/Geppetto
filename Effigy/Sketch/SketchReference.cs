@@ -114,14 +114,13 @@ public sealed class SketchReference
 	/// <summary>
 	/// The boundary of the face a sketch is attached to, in that sketch's plane.
 	///
-	/// THE BOUNDARY OF THE COPLANAR REGION, NOT OF ONE n-GON. A face that has been through a
-	/// boolean is usually several faces sharing a plane, and outlining each of them separately
-	/// draws the seams where they were split — lines that are not edges of anything, sitting in the
-	/// middle of what looks like one flat surface, and snapping to them is snapping to an artefact
-	/// of how the mesh happens to be cut up. So the region is collected first (every face of the
-	/// body lying in this plane and pointing the same way) and only the edges used ONCE within it
-	/// survive, which is precisely its silhouette. A hole through the face keeps its rim, because a
-	/// rim edge is used once too.
+	/// THE BOUNDARY OF THE SURFACE, NOT OF ONE n-GON. A face that has been through a boolean is
+	/// usually several faces sharing a plane, and outlining each of them separately draws the seams
+	/// where they were split — lines that are not edges of anything, sitting in the middle of what
+	/// looks like one flat surface, and snapping to them is snapping to an artefact of how the mesh
+	/// happens to be cut up. FaceSurface is what decides where the surface stops, and it is the
+	/// same answer the viewport highlights and the edge picker offers: three things that used to
+	/// each work it out for themselves and disagree on screen at the same time.
 	///
 	/// PROJECTED, NOT INTERSECTED, so a sketch with an offset still gets the face's outline —
 	/// directly below where it will be drawn, which is what makes the offset useful for a boss
@@ -135,90 +134,26 @@ public sealed class SketchReference
 			return result;
 
 		var mesh = body.Mesh;
-		var normal = plane.Normal;
-
-		// How far the face sits from the sketch plane along the normal: zero when the sketch sits
-		// straight on it, the offset distance when it is raised off it. Measured from the resolved
-		// face's centroid, so the whole coplanar region shares one number and "is this vertex in
-		// the face's plane" is one comparison against it.
-		var depth = Vec3.Dot( mesh.FaceCentroid( mesh.Faces[faceIndex] ) - plane.Origin, normal );
 
 		// Scaled to the part, for the same reason every other tolerance in the sketcher is: a
 		// constant that is generous on a 100-unit block silently merges every vertex of a 0.1-unit
 		// one. See SketchSnapper's header for what fixed tolerances did to this sketcher.
 		var tolerance = MathF.Max( mesh.BoundsDiagonal * 1e-4f, 1e-5f );
 
-		bool InPlane( Vec3 p ) => MathF.Abs( Vec3.Dot( p - plane.Origin, normal ) - depth ) <= tolerance;
-
-		var coplanar = new List<Face>();
-
-		for ( var i = 0; i < mesh.Faces.Count; i++ )
-		{
-			var face = mesh.Faces[i];
-
-			if ( face.Count < 3 )
-				continue;
-
-			// Facing the same way, which matters on a thin part: the far side of a near-zero
-			// thickness sliver would otherwise join the region and cancel out every edge it shares,
-			// leaving an outline with nothing in it.
-			if ( Vec3.Dot( mesh.FaceNormal( face ), normal ) <= 0f )
-				continue;
-
-			var flat = true;
-
-			for ( var c = 0; c < face.Count && flat; c++ )
-				flat = InPlane( mesh.Positions[face.Indices[c]] );
-
-			if ( flat )
-				coplanar.Add( face );
-		}
-
-		// A face too warped to pass its own flatness test still deserves an outline — it is the one
-		// the user picked. Better a slightly-off polygon than a sketcher that shows nothing on the
-		// face it is sitting on and never says why.
-		if ( coplanar.Count == 0 )
-			coplanar.Add( mesh.Faces[faceIndex] );
-
-		var uses = new Dictionary<EdgeKey, int>();
-
-		foreach ( var face in coplanar )
-		{
-			for ( var c = 0; c < face.Count; c++ )
-				Count( uses, new EdgeKey( face.Indices[c], face.Indices[(c + 1) % face.Count] ) );
-		}
-
+		var surface = FaceSurface.FromFace( mesh, faceIndex );
 		var mapped = new Dictionary<int, int>();
-		var taken = new HashSet<EdgeKey>();
 
-		// Walked in face order rather than over the dictionary, so the output is the same list every
-		// time it is built. Dictionary order is not promised, and an outline whose points renumber
-		// between two identical calls makes every index the viewport is holding meaningless.
-		foreach ( var face in coplanar )
+		foreach ( var (from, to) in surface.Boundary )
 		{
-			for ( var c = 0; c < face.Count; c++ )
-			{
-				var from = face.Indices[c];
-				var to = face.Indices[(c + 1) % face.Count];
-				var key = new EdgeKey( from, to );
+			var a = Map( result, mapped, mesh, plane, tolerance, from );
+			var b = Map( result, mapped, mesh, plane, tolerance, to );
 
-				// Used twice within the region means an interior seam between two coplanar faces.
-				if ( uses[key] != 1 || !taken.Add( key ) )
-					continue;
-
-				var a = Map( result, mapped, mesh, plane, tolerance, from );
-				var b = Map( result, mapped, mesh, plane, tolerance, to );
-
-				if ( a != b )
-					result.Edges.Add( (a, b) );
-			}
+			if ( a != b )
+				result.Edges.Add( (a, b) );
 		}
 
 		return result;
 	}
-
-	static void Count( Dictionary<EdgeKey, int> uses, EdgeKey key ) =>
-		uses[key] = uses.TryGetValue( key, out var n ) ? n + 1 : 1;
 
 	/// <summary>Mesh vertex to reference point, projected and de-duplicated. Two mesh vertices at
 	/// the same position — which a boolean leaves behind routinely — must become ONE snap target,

@@ -158,7 +158,8 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 	/// <summary>The View menu's one-per-dock checkable options, kept so their ticks can be pointed
 	/// back at what DockManager actually has open. Held as fields because the menu is built before
 	/// the docks exist, so the ticks cannot be right at the moment they are created.</summary>
-	private Option _featuresDockOption, _materialsDockOption, _rigDockOption, _tutorialDockOption;
+	private Option _featuresDockOption, _materialsDockOption, _rigDockOption, _tutorialDockOption,
+		_consoleDockOption;
 
 	/// <summary>Set while SyncDockChecks writes the ticks. Assigning Checked fires Toggled just as
 	/// a click does, and without this the sync would turn straight round and re-issue SetDockState
@@ -220,6 +221,7 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 
 	private EffigyTutorial _tutorial;
 	private EffigyTutorialPanel _tutorialPanel;
+	private EffigyConsolePanel _consolePanel;
 
 	/// <summary>
 	/// Tutorial latches — things that happened and left no trace in the document to check.
@@ -421,6 +423,7 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		_materialsDockOption = AddDockOption( view, "Material Browser", "palette", "Materials" );
 		_rigDockOption = AddDockOption( view, "Rig", "polyline", "Rig" );
 		_tutorialDockOption = AddDockOption( view, "Tutorial", "school", "Tutorial" );
+		_consoleDockOption = AddDockOption( view, "Console", "terminal", "Console" );
 
 		// Named views, same list Onshape puts on the cube. The cube itself is gone — this camera
 		// flies rather than orbiting a locked-up model — but snapping to a plane is still useful.
@@ -480,6 +483,7 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 			SetDockCheck( _materialsDockOption, "Materials" );
 			SetDockCheck( _rigDockOption, "Rig" );
 			SetDockCheck( _tutorialDockOption, "Tutorial" );
+			SetDockCheck( _consoleDockOption, "Console" );
 		}
 		finally
 		{
@@ -524,6 +528,15 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		_sculptBar = new EffigySculptBar( _viewport.Canvas ) { Changed = OnSculptBarChanged };
 
 		_viewport.AddSculptOverlay( _sculptBar );
+
+		// The grid switch, at the right-hand end of the tool row and only while a sketch is open.
+		// On the chrome with the tools rather than floating on the model: it belongs to the mode
+		// you are in, the way the tool buttons beside it do. Changed saves the setting through the
+		// same path the settings dialog uses, so flipping it here is remembered.
+		_gridBar = new EffigySketchGridBar( _stageBar, _viewport ) { Changed = OnGridBarChanged };
+
+		_stageBar.SetToolRowTrailing( _gridBar );
+		_viewport.SketchGridBar = _gridBar;
 
 		_viewport.SculptStrokeFinished = NoteSculptEdited;
 		_viewport.SculptSettingsChanged = OnSculptSettingsChanged;
@@ -1890,6 +1903,22 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		// bone tool happened to be armed.
 		_rigPanel?.CancelBoneTool();
 
+		// THE SKETCH BEING EDITED HAS TO BE ONE THAT RUNS. Sketch.Plane is only assigned when
+		// SketchFeature.Execute does it, so a sketch sitting at or below the bar is still on the
+		// default XY plane however carefully its face was picked - and everything downstream of the
+		// plane is then wrong in a way that looks like a drawing bug rather than a rollback one.
+		//
+		// EnterSculpt has made exactly this guarantee for sculpts since it was written, for the
+		// same reason: the cage does not exist until the features above it have run. This is that
+		// line, for the other mode that edits something a feature has to build first.
+		var index = _studio.Features.IndexOf( feature );
+
+		if ( index >= 0 && _studio.EffectiveCount <= index )
+		{
+			_rollbackBeforeEdit ??= _studio.RollbackIndex;
+			_studio.RollbackIndex = index + 1;
+		}
+
 		RebuildStudio();
 
 		_viewport.BeginSketch( feature.Sketch );
@@ -1969,7 +1998,50 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 			Log.Info( $"[effigy-probe] SketchReference body={probed.BodyId} resolved={found} "
 				+ $"to={body?.Id}#{index} refPoint={probed.Point} refNormal={probed.Normal} "
 				+ $"faceCentroid={(found ? body.Mesh.FaceCentroid( body.Mesh.Faces[index] ).ToString() : "-")} "
-				+ $"outlinePoints={reference?.Points.Count ?? 0} error={feature.Diagnostic?.Problem}" );
+				+ $"outlinePoints={reference?.Points.Count ?? 0} outlineEdges={reference?.Edges.Count ?? 0} "
+				+ $"error={feature.Diagnostic?.Problem}" );
+
+			// WHOSE SketchFeature THIS IS. The plane above came back as the global XY, which is
+			// what Sketch.Plane holds until SketchFeature.Execute overwrites it - so either the
+			// feature never executed, or the object being read is not the one that did. Those want
+			// opposite fixes, and only the tree can tell them apart.
+			var inTree = _studio.Features.IndexOf( feature );
+			var live = inTree >= 0 ? _studio.Features[inTree] as SketchFeature : null;
+
+			Log.Info( $"[effigy-probe]   feature index={inTree} of {_studio.Features.Count} "
+				+ $"rollback={_studio.RollbackIndex} effective={_studio.EffectiveCount} "
+				+ $"suppressed={feature.Suppressed} sameObject={ReferenceEquals( live, feature )} "
+				+ $"sameSketch={ReferenceEquals( live?.Sketch, feature.Sketch )} "
+				+ $"livePlaneOrigin={live?.Sketch?.Plane?.Origin.ToString() ?? "-"} "
+				+ $"faceSet={feature.Face.HasValue}" );
+
+			// WHERE THE OUTLINE CAME FROM, when the counts above are not what the geometry says
+			// they should be. The same body and face fed to the same kernel outside the editor
+			// gives four points and four edges; in here it gives two, so the disagreement is in
+			// the mesh rather than in the rule, and this prints the mesh.
+			if ( found )
+			{
+				var mesh = body.Mesh;
+				var faceCorners = mesh.Faces[index].Count;
+				var surface = FaceSurface.FromFace( mesh, index );
+				var corners = string.Join( " ", mesh.Faces[index].Indices
+					.Select( i => $"{i}:{mesh.Positions[i]}" ) );
+
+				Log.Info( $"[effigy-probe]   mesh faces={mesh.Faces.Count} verts={mesh.Positions.Count} "
+					+ $"diag={mesh.BoundsDiagonal:F4} faceCorners={faceCorners} "
+					+ $"surfaceFaces={surface.Faces.Count} surfaceBoundary={surface.Boundary.Count}" );
+
+				Log.Info( $"[effigy-probe]   corners {corners}" );
+
+				if ( feature.Sketch?.Plane is { } sp )
+				{
+					var flat = string.Join( " ", mesh.Faces[index].Indices
+						.Select( i => sp.ToPlane( mesh.Positions[i] ).ToString() ) );
+
+					Log.Info( $"[effigy-probe]   planeOrigin={sp.Origin} x={sp.XAxis} y={sp.YAxis} "
+						+ $"inPlane {flat}" );
+				}
+			}
 		}
 
 		_viewport.SetSketchReference( reference );
@@ -2384,15 +2456,32 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		// Appending would drop it below the bar, where it does not get evaluated: you would add an
 		// Extrude while rolled back, watch nothing happen, and have no way to tell why. The bar
 		// moves down past it so the thing you just added is the last one running.
-		if ( _studio.RollbackIndex < _studio.Features.Count )
-		{
-			_studio.Insert( _studio.RollbackIndex, feature );
-			_studio.RollbackIndex++;
-		}
+		//
+		// THE BAR AT EXACTLY Features.Count IS THE CASE THAT WAS MISSING, and it is the ordinary
+		// one rather than an edge case: finishing an edit on the LAST feature leaves the bar at
+		// index+1, which is Features.Count - a finite number that means "everything runs" today and
+		// "everything except the next thing you add" a moment later. The old test was `<`, so that
+		// bar took the append branch and never moved, the new feature landed exactly ON the bar,
+		// and EffectiveCount excluded it. It was added to the tree, drawn in the tree, and never
+		// executed.
+		//
+		// For a sketch on a face that is invisible until you look closely: SketchFeature.Execute is
+		// what derives the plane from the face, so a sketch that never ran keeps the default XY
+		// plane. The face outline then gets projected onto XY, which throws away Z, folds the
+		// face's four corners onto two, and draws one green line lying flat through the middle of
+		// the model. Every part of that is downstream of this comparison.
+		var at = Math.Min( _studio.RollbackIndex, _studio.Features.Count );
+
+		if ( at < _studio.Features.Count )
+			_studio.Insert( at, feature );
 		else
-		{
 			_studio.Add( feature );
-		}
+
+		// Only when the bar is a real position. int.MaxValue already means "evaluate everything"
+		// and must stay that way, or every add would pin it to a number that stops meaning "the
+		// end" the next time something is appended.
+		if ( _studio.RollbackIndex < _studio.Features.Count )
+			_studio.RollbackIndex = at + 1;
 
 		RebuildStudio();
 
@@ -2458,6 +2547,11 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		};
 
 		_rigPanel = new EffigyRigPanel( this, _studio, _viewport );
+
+		// Built here with the rest so the dock's CreateAction has something to hand back. The
+		// engine's console widget goes inside it - see EffigyConsolePanel for why that takes any
+		// code at all.
+		_consolePanel = new EffigyConsolePanel( this );
 
 		_tutorial = new EffigyTutorial();
 
@@ -2535,6 +2629,13 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		// is every step. Along the bottom it stays readable while both side docks are in use.
 		DockManager.RegisterDock( new() { Title = "Tutorial", Icon = "school", Area = DockArea.Bottom, CreateAction = () => _tutorialPanel } );
 
+		// Bottom as well, and tabbing with the Tutorial is fine here in a way it is not for the
+		// Rig: the tutorial's whole objection to sharing a tab strip is that you lose it the moment
+		// you look at what it told you to look at, and nobody follows the tutorial and reads the
+		// console at the same time. Along the bottom is also where every editor puts a console, and
+		// full width is what a stack trace needs.
+		DockManager.RegisterDock( new() { Title = "Console", Icon = "terminal", Area = DockArea.Bottom, CreateAction = () => _consolePanel } );
+
 		// Bumped from Effigy1: the Parameters dock is gone and the tree moved into a shared column
 		// with the dialog. A restored Effigy1 layout would reinstate the old two-dock arrangement
 		// and BuildDefaultLayout would never run again.
@@ -2552,7 +2653,10 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		// Bumped from Effigy6: the default layout opens the feature tree and nothing else. Which
 		// docks are open lives in the saved layout, so without a new cookie everyone who has
 		// already opened Effigy keeps starting with the Rig and Materials columns forever.
-		StateCookie = "Effigy7";
+		// Bumped from Effigy7: the Console dock is new. A restored Effigy7 layout knows nothing
+		// about it, so the panel would exist, be registered, and have nowhere on screen to go -
+		// the same failure the Materials and Tutorial docks each hit when they arrived.
+		StateCookie = "Effigy8";
 	}
 
 	/// <summary>The Parts list clicked a row. That is a whole-part selection — faces drop, the
@@ -4764,6 +4868,29 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 	/// already open rather than stacking another on top of it.</summary>
 	private EffigySettingsWindow _settingsWindow;
 
+	/// <summary>The grid switch floating over the sketch, or null before the viewport is built.
+	/// </summary>
+	private EffigySketchGridBar _gridBar;
+
+	/// <summary>
+	/// The overlay changed the grid. It has already written the viewport; this is the rest of what
+	/// the settings window's own callback does — remember it, and put the open settings window
+	/// straight if it happens to be showing the value that just changed.
+	///
+	/// Both controls edit ONE value rather than each keeping their own, so the only thing that can
+	/// go wrong is a stale view, and that is what the refresh below is for.
+	/// </summary>
+	private void OnGridBarChanged()
+	{
+		if ( !_viewport.IsValid() )
+			return;
+
+		EditorCookie.Set( PlaneGridCookie, _viewport.ShowPlaneGrid );
+		EditorCookie.Set( GridSpacingCookie, _viewport.GridSpacing );
+
+		_settingsWindow?.Sync( CurrentSettings() );
+	}
+
 	private void OpenSettings()
 	{
 		if ( _settingsWindow.IsValid() )
@@ -4906,6 +5033,11 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 
 		if ( _sculptBar is not null )
 			_sculptBar.GapColor = _palette.ViewportBg;
+
+		// The chrome colour, not the viewport's: this one sits ON the bar, so its gaps have to
+		// disappear into the bar the way the tool buttons beside it do.
+		if ( _gridBar is not null )
+			_gridBar.GapColor = _palette.Chrome;
 
 		// Grid lines want the palette's dim text colour: it is picked to sit just above the
 		// background in every one of these palettes, which is exactly the job.

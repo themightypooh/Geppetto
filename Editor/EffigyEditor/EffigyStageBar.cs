@@ -329,6 +329,15 @@ internal sealed class EffigyStageBar : Widget
 		FixedHeight = EffigyToolChrome.BarHeight;
 	}
 
+	/// <summary>Park a widget at the right-hand end of the TOOL row - the row with the tool buttons
+	/// on it, not the stage tabs above. Built by the window, which owns it and decides when it is
+	/// visible; the bar only says where it goes.</summary>
+	public void SetToolRowTrailing( Widget widget )
+	{
+		widget.Parent = _tools;
+		_tools.Trailing = widget;
+	}
+
 	public IReadOnlyList<EffigyStage> Stages => _stages;
 
 	public EffigyStage Current =>
@@ -689,6 +698,34 @@ internal sealed class EffigyStageToolRow : Widget
 	public EffigyStageBar Bar { get; set; }
 	public Color ChromeColor { get; set; } = Theme.ControlBackground;
 
+	/// <summary>
+	/// A real widget parked at the right-hand end of the row, or null.
+	///
+	/// The row is painted rather than laid out — every tool on it is a rect this widget draws and
+	/// hit-tests itself — so a control that has to be a genuine Qt widget (a dropdown that opens a
+	/// popup, say) cannot be one of them. It gets flush-right instead, where the tools growing and
+	/// shrinking with the stage never reaches it.
+	///
+	/// Positioned from the paint pass because that is the one place this row reliably learns its
+	/// own width; it is also the only mutation, so a repaint that changes nothing costs an
+	/// assignment.
+	/// </summary>
+	public Widget Trailing { get; set; }
+
+	/// <summary>Gap between the trailing widget and the right edge, matching the row's own inset
+	/// on the left.</summary>
+	private const float TrailingMargin = 7f;
+
+	private void PlaceTrailing()
+	{
+		if ( Trailing is not { IsValid: true } trailing || !trailing.Visible )
+			return;
+
+		trailing.Position = new Vector2(
+			Width - trailing.Width - TrailingMargin,
+			(Height - trailing.Height) * 0.5f );
+	}
+
 	/// <summary>Where each tool was drawn. Same cache-what-was-painted arrangement as the tab row.
 	/// Parallel to the current stage's Tools list.</summary>
 	private readonly List<Rect> _rects = new();
@@ -734,6 +771,8 @@ internal sealed class EffigyStageToolRow : Widget
 
 		Paint.SetPen( Theme.Text.WithAlpha( 0.10f ), 1f );
 		Paint.DrawLine( new Vector2( 0f, Height - 0.5f ), new Vector2( Width, Height - 0.5f ) );
+
+		PlaceTrailing();
 
 		_rects.Clear();
 

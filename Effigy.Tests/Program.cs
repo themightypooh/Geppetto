@@ -115,6 +115,8 @@ public static class Program
 
 		DiagnosticTests.Run();
 
+		FaceSurfaceTests.Run();
+
 		FaceSketchTests.Run();
 
 		ConstraintTests.Run();

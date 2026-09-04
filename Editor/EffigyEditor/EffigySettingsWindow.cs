@@ -186,7 +186,11 @@ internal sealed class EffigySettingsWindow : Window
 
 	/// <summary>The spacings the dropdown offers, in sketch units. Zero is Automatic — the adaptive
 	/// 1/2/5 step that keeps the grid about a constant size on screen at any zoom.</summary>
-	private static readonly float[] Spacings = { 0f, 0.1f, 0.25f, 0.5f, 1f, 2f, 5f, 10f, 25f };
+	///
+	/// Internal because the sketch grid overlay offers the same list. Two lists would be two lists
+	/// that drift: a value on one dropdown and not on the other reads as the setting having been
+	/// lost when you switch between them.
+	internal static readonly float[] Spacings = { 0f, 0.1f, 0.25f, 0.5f, 1f, 2f, 5f, 10f, 25f };
 
 	private Values _values;
 
@@ -504,5 +508,5 @@ internal sealed class EffigySettingsWindow : Window
 
 	/// <summary>Zero is the adaptive step rather than "no grid", so it has to say so — a dropdown
 	/// reading "0" next to a visible lattice is a puzzle.</summary>
-	private static string Describe( float step ) => step <= 0f ? "Automatic" : $"{step:0.###} u";
+	internal static string Describe( float step ) => step <= 0f ? "Automatic" : $"{step:0.###} u";
 }

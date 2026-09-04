@@ -54,15 +54,22 @@ public static class FaceMaterialEdit
 
 			// AT THE ROLLBACK BAR, not at the end. Below the bar a feature is not evaluated, so the
 			// face would sit there unpainted with nothing on screen to explain why.
-			if ( studio.RollbackIndex < studio.Features.Count )
-			{
-				studio.Insert( studio.RollbackIndex, target );
-				studio.RollbackIndex++;
-			}
+			//
+			// AND THE BAR SITTING AT EXACTLY Features.Count COUNTS AS "at the bar". A `<` test here
+			// sends that case to Add, which appends the new assignment ONTO the bar rather than
+			// above it, and EffectiveCount then leaves it out - the face stays unpainted, which is
+			// the precise failure this insert exists to prevent. The editor had the same
+			// comparison in the same shape and it cost a sketch its plane.
+			var at = Math.Min( studio.RollbackIndex, studio.Features.Count );
+
+			if ( at < studio.Features.Count )
+				studio.Insert( at, target );
 			else
-			{
 				studio.Add( target );
-			}
+
+			// int.MaxValue already means "evaluate everything" and has to stay that way.
+			if ( studio.RollbackIndex < studio.Features.Count )
+				studio.RollbackIndex = at + 1;
 		}
 
 		target.Faces.Add( reference );
@@ -87,6 +94,13 @@ public static class FaceMaterialEdit
 		var changed = false;
 		var emptied = new List<FaceMaterialFeature>();
 
+		// MATCHED ACROSS THE WHOLE SURFACE, because that is what gets painted. An assignment made
+		// by clicking one fragment of a wall resolves to whichever fragment it captured, and a
+		// later click landing on a different fragment of the same wall is the same face to the
+		// person doing it - matching on the index alone left the old assignment in the tree,
+		// invisible on screen and still written to the file.
+		var surface = FaceSurfaceOf( studio, bodyId, faceIndex );
+
 		foreach ( var feature in studio.Features.OfType<FaceMaterialFeature>().ToList() )
 		{
 			var removed = false;
@@ -99,7 +113,10 @@ public static class FaceMaterialEdit
 				if ( !FacePlane.TryResolveFace( studio.Bodies, feature.Faces[i], out var body, out var index ) )
 					continue;
 
-				if ( body.Id != bodyId || index != faceIndex )
+				if ( body.Id != bodyId )
+					continue;
+
+				if ( index != faceIndex && !(surface?.Contains( index ) ?? false) )
 					continue;
 
 				feature.Faces.RemoveAt( i );
@@ -123,6 +140,20 @@ public static class FaceMaterialEdit
 			studio.Remove( feature );
 
 		return changed;
+	}
+
+	/// <summary>The surface a body's face belongs to, or null when the body is not in the studio.
+	/// Null rather than an empty surface so a caller can tell "nothing to widen to" from "widened
+	/// to nothing".</summary>
+	static FaceSurface FaceSurfaceOf( PartStudio studio, string bodyId, int faceIndex )
+	{
+		foreach ( var body in studio.Bodies )
+		{
+			if ( body?.Mesh is { } mesh && body.Id == bodyId )
+				return FaceSurface.FromFace( mesh, faceIndex );
+		}
+
+		return null;
 	}
 
 	/// <summary>

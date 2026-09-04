@@ -335,8 +335,16 @@ public static class FacePlane
 		return new EdgeRef( body.Id, (a + b) * 0.5f, b - a );
 	}
 
-	/// <summary>Every unique edge of a face, captured as EdgeRefs. Selecting a face and then
-	/// Fillet means "these edges" in Onshape, and this is that translation.</summary>
+	/// <summary>
+	/// Every unique edge of a face, captured as EdgeRefs. Selecting a face and then Fillet means
+	/// "these edges" in Onshape, and this is that translation.
+	///
+	/// THE SURFACE'S EDGES, NOT THE n-GON'S. On a wall a boolean has returned as fragments this
+	/// used to hand back one triangle's three sides, two of which are seams in the middle of the
+	/// wall - so "select the wall, then Fillet" rounded a third of one edge of it and blended
+	/// nothing along two lines drawn across the flat. FaceSurface is the same rule the viewport
+	/// highlighted the wall with, so what gets blended is what was lit.
+	/// </summary>
 	public static List<EdgeRef> CaptureBoundary( Body body, int faceIndex )
 	{
 		var list = new List<EdgeRef>();
@@ -344,12 +352,12 @@ public static class FacePlane
 		if ( body?.Mesh is not { } mesh || faceIndex < 0 || faceIndex >= mesh.Faces.Count )
 			return list;
 
-		var face = mesh.Faces[faceIndex];
+		var surface = FaceSurface.FromFace( mesh, faceIndex );
 		var seen = new HashSet<EdgeKey>();
 
-		for ( var i = 0; i < face.Count; i++ )
+		foreach ( var (a, b) in surface.Boundary )
 		{
-			var key = new EdgeKey( face.Indices[i], face.Indices[(i + 1) % face.Count] );
+			var key = new EdgeKey( a, b );
 
 			if ( !seen.Add( key ) )
 				continue;

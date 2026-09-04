@@ -95,3 +95,10 @@ Libraries/*/.version
 # Private dev notes and scratch scripts: this repo is public.
 docs/
 tools/diner_tile_gen.py
+
+# Local scratch assets. Assets/ carries exactly one tracked file - the editor icon - and
+# everything else in here is a part studio or a material made while testing. They are not
+# library content, and git add -A in tools/ship.sh would otherwise push them into the
+# package, the way 46 sample meshes once landed in 367356's.
+Assets/materials/
+Assets/test/
