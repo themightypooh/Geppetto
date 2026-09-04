@@ -44,6 +44,9 @@ internal static class RigWaveBuilder
 	private const int FrameDown = 62;
 	private const int FrameCount = 70;
 
+	// CONSOLE ONLY, NO [Menu] — see RigSampleBuilder.Build. `modelPath` already defaults, so
+	// `rig_build_wave` with no arguments is what the menu entry used to do; the BuildDefault
+	// wrapper that existed only to hang a menu item on went with it.
 	[ConCmd( "rig_build_wave" )]
 	public static void Build( string modelPath = DefaultModel )
 	{
@@ -254,7 +257,4 @@ internal static class RigWaveBuilder
 
 		return false;
 	}
-
-	[Menu( "Editor", "Marionette/Build Grunt Wave", "waving_hand" )]
-	public static void BuildDefault() => Build( DefaultModel );
 }

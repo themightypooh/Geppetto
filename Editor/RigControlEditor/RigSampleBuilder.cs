@@ -34,8 +34,11 @@ internal static class RigSampleBuilder
 	private const int FrameSettle = 22;
 	private const int FrameReturn = 28;
 
+	// CONSOLE ONLY, NO [Menu]. This regenerates a clip that ships as an example, which is a
+	// thing this repo does to itself and not a thing a person who installed Geppetto has any use
+	// for — it was putting a "Marionette" menu in their editor whose every entry was scaffolding
+	// for someone else's tests.
 	[ConCmd( "rig_build_sample" )]
-	[Menu( "Editor", "Marionette/Rebuild Example Clip", "auto_fix_high" )]
 	public static void Build()
 	{
 		var model = Model.Load( ModelPath );
