@@ -35,6 +35,10 @@ forgotten.
 
 ## Unreleased
 
+Nothing yet.
+
+## v367420 — 2026-09-04
+
 ### Added
 - Faces of a part can be extruded. Click a face of anything on screen —
   a primitive, a boolean, something twenty features old — press Extrude,
