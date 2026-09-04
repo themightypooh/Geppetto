@@ -38,12 +38,41 @@ namespace Toolshed.Publishing;
 /// </summary>
 public static class GeppettoPublish
 {
+	/// <summary>What the next frame should do: nothing, a dry run, or a real publish.</summary>
+	static int _pending;
+
 	[ConCmd( "geppetto_publish" )]
 	public static void Run( string mode = "" )
 	{
 		var commit = string.Equals( mode, "commit", StringComparison.OrdinalIgnoreCase );
 
-		_ = PublishAsync( commit );
+		// DO NOT START THE WORK HERE. A console command does not promise to run on the editor's
+		// main thread - typed into the console it does, but driven through the editor's MCP bridge
+		// (which is how tools/publish.sh reaches it) it arrives on a request thread. Publishing
+		// from there dies inside ProjectPublisher.UploadFile with a NullReferenceException out of
+		// MainThread.Queue, because the machinery it queues onto belongs to the main thread and is
+		// not there to be found. Worse, it dies HALFWAY: the manifest is built, some files are
+		// sent, and the console says failed with no clue that the thread was the problem.
+		//
+		// This only ever showed up once there were files to send. A publish with nothing to upload
+		// never calls UploadFile, so the whole path passed its first test looking healthy.
+		//
+		// So hand it to the frame loop, which is the main thread by definition. One frame of delay,
+		// and every await after it resumes where the editor's own Publish wizard resumes.
+		_pending = commit ? 2 : 1;
+	}
+
+	[EditorEvent.Frame]
+	public static void OnFrame()
+	{
+		var pending = _pending;
+
+		if ( pending == 0 )
+			return;
+
+		_pending = 0;
+
+		_ = PublishAsync( pending == 2 );
 	}
 
 	static async Task PublishAsync( bool commit )
@@ -132,7 +161,10 @@ public static class GeppettoPublish
 		{
 			// The whole point of the dry run is that a shape change shows up here rather than as a
 			// bad version on the backend. Say which step, and leave the wizard as the way through.
-			Log.Error( $"[publish] failed: {e.Message}" );
+			// ToString, not Message: the message alone was "Object reference not set to an
+			// instance of an object", which says nothing about which step or which thread. The
+			// stack is what turned that into a diagnosis.
+			Log.Error( $"[publish] failed: {e}" );
 			Log.Error( "[publish] the editor's own Publish dialog still works - use that." );
 		}
 	}
