@@ -1,0 +1,38 @@
+# LF in the repo and LF in the working tree, on every platform.
+#
+# This is not a style preference. Effigy/ is the canonical kernel and
+# Libraries/pooh.geppetto/{Editor,Code}/Effigy/ are byte-for-byte copies of it,
+# kept in sync by tools/sync-kernel.sh and checked by KernelSyncTests. Let git
+# hand one copy CRLF on checkout and the compare fails on line endings alone,
+# for a file nobody touched.
+
+*.cs    text eol=lf
+*.md    text eol=lf
+*.txt   text eol=lf
+*.json  text eol=lf
+*.sh    text eol=lf
+*.py    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+
+# Editor and engine files that live in the repo as text.
+*.sbproj      text eol=lf
+*.csproj      text eol=lf
+*.editorconfig text eol=lf
+*.shader      text eol=lf
+*.vmat        text eol=lf
+
+# Exported sample output. Tracked so a format regression shows up as a diff,
+# which only works if the bytes are stable.
+*.dmx   text eol=lf
+*.vmdl  text eol=lf
+*.smd   text eol=lf
+*.obj   text eol=lf
+*.svg   text eol=lf
+*.fbx   binary
+
+*.png   binary
+*.jpg   binary
+*.tga   binary
+*.vtex  binary
+*.vpk   binary
