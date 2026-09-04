@@ -154,6 +154,33 @@ public sealed class BodySelectionParam : IParam
 	public bool Matches( Body b ) => BodyIds.Count == 0 || BodyIds.Contains( b.Id );
 }
 
+/// <summary>
+/// What geometry a tool will take from the selection you already made.
+///
+/// ONE DECLARATION BECAUSE THERE WERE THREE. "Which tools consume a face" was written down in three
+/// places that could not see each other - the type switch in <see cref="Feature.ApplyGeometrySelection"/>,
+/// the prose the editor paints under the viewport, and the per-dialog pick-mode flags - so the strip
+/// could be right while the hint was a lie, and a tool could be missing from a list it belonged on
+/// with nothing to catch it. Nothing DECLARED it, so nothing could ASK.
+///
+/// A FLAGS ENUM ON A VIRTUAL PROPERTY, deliberately, and for the same reason EffigyWindow.ToolKind
+/// is an enum rather than a Func: an int survives a hotload, a lambda or a System.Type held in
+/// static editor state comes back pointing into the dead assembly.
+///
+/// This says what a tool will USE, not what it needs to run. Fillet accepts a body because selecting
+/// a part and pressing Fillet fillets that part; it does not follow that a fillet with no selection
+/// is invalid.
+/// </summary>
+[Flags]
+public enum GeometryKind
+{
+	None = 0,
+	Face = 1,
+	Edge = 2,
+	Body = 4,
+	SketchRegion = 8,
+}
+
 // --- features ---------------------------------------------------------------------------------
 
 /// <summary>The state a feature reads and writes as it runs.</summary>
@@ -301,11 +328,23 @@ public abstract class Feature
 	public virtual bool IsStale => false;
 
 	/// <summary>
+	/// Which kinds of picked geometry this feature will actually use.
+	///
+	/// The one place that knows. <see cref="ApplyGeometrySelection"/> is what DOES the consuming, and
+	/// the two are kept honest against each other by AcceptsTests rather than by hope: a feature that
+	/// stores FaceRefs and forgets to say Face here fails a test, not a user.
+	///
+	/// Must be cheap and must not touch the studio - the editor asks this while painting the toolbar.
+	/// </summary>
+	public virtual GeometryKind Accepts => GeometryKind.None;
+
+	/// <summary>
 	/// Seed this feature from geometry that was already picked, the way Onshape's tools consume
 	/// the current selection instead of making you pick again after the button.
 	///
 	/// Faces go to anything that stores FaceRefs — a sketch's plane, draft, hole, face material,
-	/// subdivide. Body ids go onto every BodySelectionParam. A face selection with no explicit
+	/// subdivide, move face, and now EXTRUDE, which pulls the face itself. Body ids go onto every
+	/// BodySelectionParam. A face selection with no explicit
 	/// body list still names those faces' bodies, so clicking a face and then Fillet fillets that
 	/// part rather than every part.
 	///
@@ -340,6 +379,8 @@ public abstract class Feature
 			DraftFeature draft => draft.Faces,
 			HoleFeature hole => hole.Faces,
 			SubdivideFeature subdivide => subdivide.Faces,
+			MoveFaceFeature move => move.Faces,
+			ExtrudeFeature extrude => extrude.Faces,
 			_ => null,
 		};
 
@@ -348,6 +389,15 @@ public abstract class Feature
 			pickedFaces.Clear();
 			pickedFaces.AddRange( faces );
 		}
+
+		// A FACE ANSWERS THE QUESTION AwaitingPick WAS ASKING. An Extrude created from the toolbar
+		// starts out refusing to help itself to the nearest sketch (see SketchConsumingFeature
+		// .AwaitingPick), and pointing it at a face is an answer just as much as pointing it at a
+		// sketch is. Leaving the flag set would have the feature build correctly from the face while
+		// every panel that reads it still said "pick a profile".
+		if ( this is SketchConsumingFeature awaiting && faces.Count > 0
+			&& pickedFaces is not null && awaiting.IsAwaitingPick )
+			awaiting.SketchFeatureId = "";
 
 		ApplyBlendEdges( faces, edges, bodies );
 

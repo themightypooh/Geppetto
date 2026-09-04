@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Linq;
 using Effigy;
 using static Effigy.Tests.Report;
@@ -84,16 +84,27 @@ public static class DiagnosticTests
 		Check( "and the sign is positive", box.SignedVolume() > 0f );
 	}
 
+	// THE NUMBERS IN THE THREE BLEND TESTS BELOW MOVED, and it is worth knowing why before moving
+	// them again. Every one of them turns on the ENCLOSED VOLUME of a blended box, and that number
+	// used to be wrong: EdgeBlend emitted its vertex caps wound inwards, so the corner triangles
+	// subtracted their own contribution instead of adding it (see the note in EdgeBlend.Finish). A
+	// chamfered unit box measured 0.811 against a true 0.883.
+	//
+	// So these radii were chosen against a ruler that read low, and once the ruler was fixed a
+	// 0.85 fillet on a 2-unit cube stopped being "inside out" and became what it always actually
+	// was: a very rounded cube, and a perfectly good solid. The sizes here are re-picked against
+	// the corrected volumes, and every assertion they make is unchanged.
+
 	static void TestOversizedFillet()
 	{
 		var studio = StudioWithBox();
 		var fillet = studio.Add( new FilletFeature() );
-		fillet.Radius.Value = 0.85f;
+		fillet.Radius.Value = 1.3f;
 		fillet.AngleThreshold.Value = 15f;
 		fillet.Segments.Value = 4;
 		studio.Rebuild();
 
-		Check( "Fillet(cube, 0.85) is an error", fillet.Error is not null, "built anyway" );
+		Check( "Fillet(cube, 1.3) is an error", fillet.Error is not null, "built anyway" );
 		Check( "it is structured", fillet.Diagnostic is { Severity: DiagnosticSeverity.Error } );
 		Check( "the cause has a number from this model",
 			HasNumber( fillet.Diagnostic?.Cause ), fillet.Diagnostic?.Cause );
@@ -103,7 +114,7 @@ public static class DiagnosticTests
 			studio.Bodies.Count == 1 && studio.Bodies[0].Mesh.SignedVolume() > 0f,
 			$"{studio.Bodies[0].Mesh.SignedVolume()}" );
 		Check( "a suggested radius is offered",
-			fillet.Diagnostic?.SuggestedValue is > 0f and < 0.85f,
+			fillet.Diagnostic?.SuggestedValue is > 0f and < 1.3f,
 			$"{fillet.Diagnostic?.SuggestedValue}" );
 	}
 
@@ -127,12 +138,12 @@ public static class DiagnosticTests
 	{
 		var studio = StudioWithBox();
 		var fillet = studio.Add( new FilletFeature() );
-		fillet.Radius.Value = 0.8f;
+		fillet.Radius.Value = 0.9f;
 		fillet.AngleThreshold.Value = 15f;
 		fillet.Segments.Value = 4;
 		studio.Rebuild();
 
-		Check( "Fillet(cube, 0.8) still builds", fillet.Error is null, fillet.Error );
+		Check( "Fillet(cube, 0.9) still builds", fillet.Error is null, fillet.Error );
 		Check( "but warns that more than half the solid is gone",
 			fillet.Warning is not null && fillet.Diagnostic is { Severity: DiagnosticSeverity.Warning },
 			fillet.Warning ?? "no warning" );
@@ -193,16 +204,16 @@ public static class DiagnosticTests
 	{
 		var studio = StudioWithBox();
 		var chamfer = studio.Add( new ChamferFeature() );
-		chamfer.Width.Value = 1.1f;
+		chamfer.Width.Value = 1.3f;
 		chamfer.AngleThreshold.Value = 15f;
 		studio.Rebuild();
 
-		Check( "Chamfer(cube, 1.1) is an error", chamfer.Error is not null, "built anyway" );
+		Check( "Chamfer(cube, 1.3) is an error", chamfer.Error is not null, "built anyway" );
 		Check( "the body is not handed downstream inverted",
 			studio.Bodies.Count == 1 && studio.Bodies[0].Mesh.SignedVolume() > 0f,
 			$"{studio.Bodies[0].Mesh.SignedVolume()}" );
 		Check( "a suggested distance is offered",
-			chamfer.Diagnostic?.SuggestedValue is > 0f and < 1.1f,
+			chamfer.Diagnostic?.SuggestedValue is > 0f and < 1.3f,
 			$"{chamfer.Diagnostic?.SuggestedValue}" );
 	}
 

@@ -1,4 +1,4 @@
-# Changelog
+﻿# Changelog
 
 What shipped in each Geppetto package revision on sbox.game.
 
@@ -35,7 +35,102 @@ forgotten.
 
 ## Unreleased
 
-Nothing yet.
+### Added
+- Faces of a part can be extruded. Click a face of anything on screen —
+  a primitive, a boolean, something twenty features old — press Extrude,
+  and it pulls. There is no sketch involved and none is asked for. Taper,
+  Up to next, Through all, a second distance and New body all work from a
+  face exactly as they do from a sketch profile. `SketchFeatures.cs`
+- A plain pull is done by MOVING the face rather than by growing a boss on
+  top of it, so the part stays a clean single solid you can still Shell
+  afterwards. `FaceMove.cs`
+- Move Face, a new tool on the Detail stage. Offset pushes each picked face
+  along its own normal, so picking both sides of a wall makes it thicker or
+  thinner. Translate moves them together along one direction, so the wall
+  SLIDES and keeps its thickness — material added on one side and taken from
+  the other. `FaceMove.cs`, `SolidFeatures.cs`
+- Both refuse rather than guess: a face that is not flat, a face moving while
+  a flat neighbour stays put, or a move far enough to turn the part inside
+  out, each say which of those it was and what to do instead.
+- The distance can be dragged instead of typed. Open Extrude or Move Face,
+  pick the faces, and a set of arrows appears on them — turned to the face
+  rather than to the world, so the blue one is always straight out. Pull it
+  and the solid grows under the cursor, with the number in the panel
+  counting up as it goes. It only ever sets the open tool's distance: no
+  feature is created by dragging, and the arrows are gone the moment the
+  tool is closed. `EffigyViewport.FaceDrag.cs`, `EffigyFeatureDialog.cs`
+- The Profiles box in the Extrude panel picks faces. Press Extrude with
+  nothing selected and the faces of your part are live straight away —
+  hover one, click it, and that is your profile. Click it again to take it
+  back off. No sketch has to exist and none is asked for. Sketch regions are
+  still pickable in the same box at the same time, and a sketch in front of a
+  face gets the click. `EffigyFeatureDialog.cs`, `EffigyViewport.Sketching.cs`
+- Right-click a face of a part and every tool that can use that face is on the
+  menu — Sketch, Fillet, Chamfer, Shell, Draft, Hole, Subdivide and Face
+  Material — each opening already pointed at the face you clicked. Picking one
+  is the same as selecting the face and pressing the button on the bar, so
+  there is nothing new to learn. The menu's material entries are still there,
+  under their own heading. `EffigyWindow.cs`, `EffigyViewport.Selection.cs`
+
+### Improved
+- The panel no longer says "No sketch yet — add a Sketch first" at a part
+  that has faces you can point at. That message was painted whenever the
+  document had no sketches, which is the normal state of a part built out of
+  primitives — so it sent you off to draw a rectangle in order to pull the
+  rectangle you were already pointing at. It now says what you can click, and
+  the box stops being red once a face answers it. Revolve, Sweep and Loft
+  still ask for a sketch, because a face is not something they can use.
+  `EffigyFeatureDialog.cs`
+- The line under the viewport that tells you what your selection is good for
+  now asks the tools rather than reciting a list somebody typed. It had already
+  drifted once — Subdivide learned to take faces and the sentence had to be
+  edited by hand to admit it — and a tool that starts accepting a face now
+  says so there by itself. `Feature.cs`, `EffigyWindow.cs`
+- Subdivide asks which part you mean instead of taking the whole document. It
+  read an empty selection as "everything", so one click could quadruple the
+  triangle count of every part you had — including the ones off screen, and
+  including a cage you were about to sculpt. Click a part in the Parts list and
+  you get that part entire, or pick faces in the viewport and you get those.
+  Subdividing a whole part is still there and still the one that smooths; it
+  just will not guess which part.
+- The grease pencil's colour picker is folded into the pen button itself
+  instead of sitting next to it as a second control — click the pen to draw or
+  put it down, open its dropdown to change colour. The eraser now works like
+  the sketch Cut tool: hold the left button and drag through the notes you
+  want gone, rather than clicking each one in turn. `EffigyWindow.cs`,
+  `EffigyStageBar.cs`, `EffigyViewport.Notes.cs`
+- The Edit menu is shorter and reads in groups instead of as one list of
+  fifteen. The five sculpt-mask commands are behind a single "Sculpt Mask"
+  submenu — they only do anything while a Sculpt feature is open, so they no
+  longer sit in front of everyone else. The three "Normal Map:" entries were
+  toggles whose only feedback was a status line that had already scrolled
+  away; they move to Edit > Settings under "Normal map bake" as switches and a
+  size dropdown you can actually read, and they are remembered between
+  sessions now. `EffigyWindow.cs`, `EffigySettingsWindow.cs`
+
+### Fixed
+- Chamfered and filleted parts measured smaller than they are. The little
+  triangles that cap each corner were being built inside-out, so they
+  subtracted from the enclosed volume instead of adding to it — a chamfered
+  1-unit box measured 0.811 against a true 0.883. Nothing looked wrong,
+  because nothing was wrong to look at: the mesh was closed, valid and
+  correctly shaped, and only the numbers taken off it were out. Those numbers
+  are what collision hulls and physics are built from. `EdgeBlend.cs`
+
+### Known Issues
+- An oversized fillet or chamfer is not always refused any more. The check
+  that catches "the blends have met through the middle" measures enclosed
+  volume, and some of what it used to catch it was catching only because of
+  the inside-out corners fixed above. On a 2-unit cube a fillet radius
+  between about 1.0 and 1.25 now builds a part that is quietly
+  self-intersecting instead of saying so. Below and above that band it still
+  refuses correctly. `EdgeBlend.cs`
+- A compiled model arrives with no material on it. Open one in Marionette, or
+  drop it in a scene, and it renders in the bright red missing-material shader
+  until you assign one by hand. The geometry, the UVs and the skinning are all
+  fine — it is only the material reference that does not survive the compile —
+  but the first thing anyone sees after their first export is a broken-looking
+  model, which reads as the exporter having failed.
 
 ## v367389 — 2026-09-04
 

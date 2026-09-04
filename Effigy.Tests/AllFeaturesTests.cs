@@ -162,6 +162,21 @@ public static class AllFeaturesTests
 			return;
 		}
 
+		// Move face wants a face like the three above, and the TOP is the one a person would grab.
+		if ( feature is MoveFaceFeature move )
+		{
+			for ( var i = 0; i < mesh.Faces.Count; i++ )
+			{
+				if ( mesh.FaceNormal( mesh.Faces[i] ).z > 0.99f )
+				{
+					move.Faces.Add( FacePlane.Capture( body, i, mesh.FaceCentroid( mesh.Faces[i] ) ) );
+					return;
+				}
+			}
+
+			return;
+		}
+
 		if ( feature is not FaceMaterialFeature material )
 			return;
 

@@ -16,6 +16,10 @@ public sealed class SketchFeature : Feature
 {
 	public override string TypeName => "Sketch";
 
+	/// <summary>A picked face is the plane it draws on - that is the cube-then-sketch-on-its-face
+	/// flow, and it is the only thing a sketch takes from a selection.</summary>
+	public override GeometryKind Accepts => GeometryKind.Face;
+
 	public Sketch Sketch = new();
 
 	public readonly ChoiceParam Plane = new( "Plane", new[] { "Top (XY)", "Front (XZ)", "Right (YZ)" } );
@@ -128,6 +132,10 @@ public abstract class SketchConsumingFeature : Feature
 	/// <summary>Waiting to be pointed at a sketch, so it builds nothing and says why.</summary>
 	public bool IsAwaitingPick => SketchFeatureId == AwaitingPick;
 
+	/// <summary>The profile, and one region of it where a region was picked. NOT Face - a mesh face
+	/// is not something any of these can consume today, which is exactly the gap §6.3 fills.</summary>
+	public override GeometryKind Accepts => GeometryKind.SketchRegion;
+
 	/// <summary>
 	/// Closed regions this feature builds from, as points inside them in the consumed sketch's
 	/// plane coordinates. Empty means every region of that sketch, which is the old default.
@@ -192,6 +200,10 @@ public abstract class SketchConsumingFeature : Feature
 	/// possibility.</summary>
 	protected const int ResultRemove = 3;
 
+	/// <summary>Index into Result for a body of its own, named for the same reason ResultRemove
+	/// is.</summary>
+	protected const int ResultNewBody = 1;
+
 	/// <summary>Which sketch feature this consumes, resolved the same way ResolveSketch resolves
 	/// the sketch itself. Both have to agree about what "the most recent one" means, so they read
 	/// the same dictionary in the same order.</summary>
@@ -252,9 +264,19 @@ public abstract class SketchConsumingFeature : Feature
 	/// it rather than produce something wrong. That refusal is the honest failure and it is why
 	/// merging is not silently forced on features that never asked for it.
 	/// </summary>
-	protected void Emit( FeatureContext ctx, PolyMesh mesh )
+	protected void Emit( FeatureContext ctx, PolyMesh mesh ) => Emit( ctx, mesh, null );
+
+	/// <summary>
+	/// The same, for a solid built from a FACE rather than a sketch.
+	///
+	/// The host is known outright here — the face belongs to a body, there is nothing to infer — so
+	/// Auto adds to that body instead of starting a new part, and Add and Remove never reach
+	/// ResolveTarget's "more than one body and nothing says which" refusal. New body still means new
+	/// body: it was asked for explicitly.
+	/// </summary>
+	protected void Emit( FeatureContext ctx, PolyMesh mesh, Body host )
 	{
-		var target = ResolveTarget( ctx );
+		var target = host is not null && Result.Index != ResultNewBody ? host : ResolveTarget( ctx );
 
 		if ( target is null )
 		{
@@ -573,6 +595,23 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 	public override string TypeName => "Extrude";
 
 	/// <summary>
+	/// Faces of solids that already exist, pulled instead of a sketch profile.
+	///
+	/// THE THING THAT WAS MISSING. Select a face of a part built entirely from primitives, press
+	/// Extrude, and this used to answer "no sketch yet — add a Sketch first": a part with a dozen
+	/// bodies and no sketches sending you off to draw one in order to pull a face you were already
+	/// pointing at. A face is a profile — it is a closed planar loop, which is the only thing a
+	/// prism ever needed — so the whole of taper, termination, second distance and Result works from
+	/// one unchanged.
+	///
+	/// A face selection WINS over the sketch when both are set. It is the more specific answer and
+	/// it is the one that was just clicked.
+	/// </summary>
+	public List<FaceRef> Faces = new();
+
+	public override GeometryKind Accepts => GeometryKind.SketchRegion | GeometryKind.Face;
+
+	/// <summary>
 	/// Where the extrude stops.
 	///
 	/// Blind is a typed distance and is what it has always done. The other two ask the model instead:
@@ -671,12 +710,23 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 
 	protected override void Execute( FeatureContext ctx )
 	{
+		// A picked FACE wins over the sketch: it is the more specific answer and it is the one that
+		// was just clicked. See the Faces field for what used to happen instead.
+		if ( Faces.Count > 0 )
+		{
+			ExecuteFromFaces( ctx );
+			return;
+		}
+
 		var sketch = ResolveSketch( ctx );
 		var profiles = ResolveProfiles( sketch, ctx );
 
 		var sign = DirectionSign( ctx );
 
-		var reach = Termination.Index == 0 ? Distance.Value : MeasuredDistance( ctx, sketch, profiles, sign );
+		var reach = Termination.Index == 0
+			? Distance.Value
+			: MeasuredDistance( ctx, sketch.Plane.Origin, sketch.Plane.Normal * sign,
+				SampleOrigins( sketch, profiles ) );
 
 		if ( MathF.Abs( reach ) < 1e-6f )
 		{
@@ -687,30 +737,215 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 		}
 
 		var distance = reach * sign;
-		var second = MathF.Abs( SecondDistance.Value );
 
-		// Three ways to place the two ends, in priority order: symmetric splits the one distance,
-		// a second distance runs back the other way from the plane, and otherwise it starts at the
-		// plane. Flip mirrors all of it, which is why `second` is applied against the sign of
-		// `distance` rather than against the plane's normal directly.
-		var near = 0f;
-		var far = distance;
-
-		if ( Symmetric.Value )
-		{
-			near = -distance * 0.5f;
-			far = distance * 0.5f;
-		}
-		else if ( second > 1e-6f )
-		{
-			near = distance >= 0f ? -second : second;
-		}
+		var (near, far) = Ends( distance );
 
 		foreach ( var profile in profiles )
 		{
 			var mesh = BuildPrism( sketch.Plane, profile, near, far, Taper.Clamped, Material.Clamped );
 			Emit( ctx, mesh );
 		}
+	}
+
+	/// <summary>
+	/// Pull the picked faces rather than a sketch.
+	///
+	/// THE SPLIT BETWEEN A MOVE AND A PRISM, which is the one genuinely surprising thing here.
+	/// Pulling a whole face straight out and ADDING it looks like it should build a prism and merge
+	/// it on. It must not. Emit's append path deliberately does not cut the interface between the
+	/// two meshes — right for a boss standing on a face — so the original face would stay buried
+	/// inside the solid as a coincident double surface. That is non-manifold, and ShellFeature would
+	/// then correctly refuse the part. MOVING the face reaches the same shape with fewer polygons and
+	/// a clean topology, so that is what a plain pull does.
+	///
+	/// Everything else is a genuine prism, built and merged exactly the way a sketch profile is:
+	/// a cut, a taper, a second distance, a symmetric pull, or a new body. Those all want a separate
+	/// solid, and a cut needs one by definition.
+	/// </summary>
+	void ExecuteFromFaces( FeatureContext ctx )
+	{
+		var byBody = new Dictionary<Body, List<int>>();
+		var lost = 0;
+
+		foreach ( var reference in Faces )
+		{
+			if ( !FacePlane.TryResolveFace( ctx.Bodies, reference, out var body, out var index ) )
+			{
+				lost++;
+				continue;
+			}
+
+			if ( !byBody.TryGetValue( body, out var list ) )
+				byBody[body] = list = new List<int>();
+
+			if ( !list.Contains( index ) )
+				list.Add( index );
+		}
+
+		if ( byBody.Count == 0 )
+		{
+			Fail(
+				"None of the picked faces are on the model any more",
+				$"All {Faces.Count} of them named geometry that the features above this one no longer produce.",
+				"Pick the faces again on the current model",
+				"Move this feature back below the edit that changed them" );
+		}
+
+		if ( IsAPlainPull )
+			PullFaces( byBody );
+		else
+			PrismFromFaces( ctx, byBody );
+
+		if ( lost > 0 )
+		{
+			Warn(
+				$"{lost} of {Faces.Count} picked faces are no longer on the model",
+				"They named geometry the features above this one no longer produce, so they were skipped.",
+				"Pick them again on the current model" );
+		}
+	}
+
+	/// <summary>A whole face, a blind distance, and material added to the body it belongs to —
+	/// see ExecuteFromFaces for why this one case is a move rather than a prism.</summary>
+	bool IsAPlainPull =>
+		Termination.Index == 0
+		&& !Symmetric.Value
+		&& MathF.Abs( SecondDistance.Value ) < 1e-6f
+		&& MathF.Abs( Taper.Clamped ) < 1e-6f
+		&& Result.Index is 0 or 2;
+
+	void PullFaces( Dictionary<Body, List<int>> byBody )
+	{
+		var distance = Distance.Value * (Flip.Value ? -1f : 1f);
+
+		if ( MathF.Abs( distance ) < 1e-6f )
+		{
+			FailOn( "Distance",
+				"Distance cannot be zero",
+				"An extrude with no distance produces no solid.",
+				"Enter a distance greater than zero" );
+		}
+
+		var pulled = new List<(Body Body, PolyMesh Mesh)>();
+
+		// Solved before anything is assigned, so a failure on the third of four leaves the model as
+		// it was rather than half pulled.
+		foreach ( var (body, faces) in byBody )
+		{
+			try
+			{
+				pulled.Add( (body, FaceMove.Offset( body.Mesh, faces, distance )) );
+			}
+			catch ( InvalidOperationException e )
+			{
+				FailOn( "Distance",
+					"That face cannot be pulled this far",
+					e.Message,
+					"Use a smaller distance",
+					"Select the whole flat surface rather than part of it" );
+			}
+		}
+
+		foreach ( var (body, mesh) in pulled )
+			body.Mesh = mesh;
+	}
+
+	/// <summary>
+	/// The face as an ordinary profile, put through the same prism builder a sketch goes through.
+	///
+	/// FACES HERE ARE ALWAYS SIMPLE LOOPS, so there is no hole handling to write: CoplanarMerge holds
+	/// the invariant that a surface with n holes is n + 1 faces, never one face carrying holes.
+	///
+	/// The direction is the face's own OUTWARD normal, and a cut travels the other way — into the
+	/// material — for exactly the reason DirectionSign gives for a sketch drawn on a face. Here the
+	/// host body is known directly rather than looked up through ctx.SketchHostBodies, so it needs no
+	/// guessing at all.
+	/// </summary>
+	void PrismFromFaces( FeatureContext ctx, Dictionary<Body, List<int>> byBody )
+	{
+		var sign = Flip.Value ? -1f : 1f;
+
+		if ( Result.Index == ResultRemove )
+			sign = -sign;
+
+		// EVERY PROFILE READ BEFORE ANY OF THEM IS EMITTED, and it has to be that way round. A
+		// Remove replaces the target's mesh outright, so a face index taken from the old mesh means
+		// something else — or nothing — by the time the second face of the same body is reached.
+		var jobs = new List<(Body Body, SketchPlane Plane, Profile Profile)>();
+
+		foreach ( var (body, faces) in byBody )
+		{
+			foreach ( var index in faces )
+			{
+				var face = body.Mesh.Faces[index];
+				var plane = FacePlane.FromPointAndNormal(
+					body.Mesh.FaceCentroid( face ), body.Mesh.FaceNormal( face ) );
+
+				var profile = new Profile();
+
+				foreach ( var corner in face.Indices )
+					profile.Outer.Add( plane.ToPlane( body.Mesh.Positions[corner] ) );
+
+				jobs.Add( (body, plane, profile) );
+			}
+		}
+
+		foreach ( var (body, plane, profile) in jobs )
+		{
+			var reach = Termination.Index == 0
+				? Distance.Value
+				: MeasuredDistance( ctx, plane.Origin, plane.Normal * sign, SampleOrigins( profile, plane ) );
+
+			if ( MathF.Abs( reach ) < 1e-6f )
+			{
+				FailOn( "Distance",
+					"Distance cannot be zero",
+					"An extrude with no distance produces no solid.",
+					"Enter a distance greater than zero" );
+			}
+
+			var (near, far) = Ends( reach * sign );
+
+			Emit( ctx, BuildPrism( plane, profile, near, far, Taper.Clamped, Material.Clamped ), body );
+		}
+	}
+
+	/// <summary>SampleOrigins for a single profile that is not in a sketch — same points, same
+	/// reason: the centroid alone reads one point of the target and calls it the answer.</summary>
+	static IEnumerable<Vec3> SampleOrigins( Profile profile, SketchPlane plane )
+	{
+		var centroid = Vec2.Zero;
+
+		foreach ( var p in profile.Outer )
+			centroid += p;
+
+		centroid /= profile.Outer.Count;
+
+		yield return plane.ToWorld( centroid );
+
+		foreach ( var p in profile.Outer )
+			yield return plane.ToWorld( p + (centroid - p) * 0.05f );
+	}
+
+	/// <summary>
+	/// Where the two caps sit, measured from the plane the profile lies in.
+	///
+	/// Three ways to place them, in priority order: symmetric splits the one distance, a second
+	/// distance runs back the other way from the plane, and otherwise it starts at the plane. Flip
+	/// mirrors all of it, which is why `second` is applied against the sign of `distance` rather
+	/// than against the plane's normal directly.
+	/// </summary>
+	(float Near, float Far) Ends( float distance )
+	{
+		var second = MathF.Abs( SecondDistance.Value );
+
+		if ( Symmetric.Value )
+			return (-distance * 0.5f, distance * 0.5f);
+
+		if ( second > 1e-6f )
+			return (distance >= 0f ? -second : second, distance);
+
+		return (0f, distance);
 	}
 
 	/// <summary>
@@ -727,10 +962,8 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 	/// rather than silent, and warned about besides: if the sample rays disagree about the distance,
 	/// the target is not parallel and the feature says so.
 	/// </summary>
-	float MeasuredDistance( FeatureContext ctx, Sketch sketch, List<Profile> profiles, float sign )
+	float MeasuredDistance( FeatureContext ctx, Vec3 origin, Vec3 direction, IEnumerable<Vec3> samples )
 	{
-		var direction = sketch.Plane.Normal * sign;
-
 		// Everything already built. A sketch drawn on a face of one of these starts ON it, which is
 		// what the epsilon below is for.
 		var targets = ctx.Bodies.Where( b => b.Mesh is { FaceCount: > 0 } ).ToList();
@@ -747,19 +980,20 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 		}
 
 		if ( Termination.Index == 2 )
-			return ThroughAll( targets, sketch, direction );
+			return ThroughAll( targets, origin, direction );
 
 		var nearest = float.MaxValue;
 		var furthest = 0f;
 		var hits = 0;
 
-		foreach ( var origin in SampleOrigins( sketch, profiles ) )
+		foreach ( var sample in samples )
 		{
-			if ( MeshRaycast.Raycast( targets, origin, direction ) is not { } hit )
+			if ( MeshRaycast.Raycast( targets, sample, direction ) is not { } hit )
 				continue;
 
 			// A sketch ON a face starts flush with it, and that face is not something to stop at —
-			// it is where the extrude begins.
+			// it is where the extrude begins. Same for a face being pulled: the ray leaves from the
+			// face itself.
 			if ( hit.Hit.Distance < 1e-4f )
 				continue;
 
@@ -780,7 +1014,7 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 
 		if ( furthest - nearest > 1e-3f )
 		{
-			Warning = $"The face ahead is not parallel to the sketch: it is between {nearest:0.###} and "
+			Warning = $"The face ahead is not parallel to this profile: it is between {nearest:0.###} and "
 				+ $"{furthest:0.###} away. The extrude stops flat at the nearest point, so it will not "
 				+ "meet the far side.";
 		}
@@ -791,9 +1025,8 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 	/// <summary>Far enough to clear everything: the furthest any target reaches along the direction,
 	/// plus a margin. A prism that stops exactly on a surface is a coplanar face waiting to confuse
 	/// whatever consumes it next.</summary>
-	static float ThroughAll( List<Body> targets, Sketch sketch, Vec3 direction )
+	static float ThroughAll( List<Body> targets, Vec3 origin, Vec3 direction )
 	{
-		var origin = sketch.Plane.Origin;
 		var reach = 0f;
 
 		foreach ( var body in targets )

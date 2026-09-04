@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -598,7 +598,31 @@ public static class EdgeBlend
 			if ( distinct.Count < 3 )
 				continue;
 
-			result.AddFace( distinct.ToArray(), material: mesh.Faces[loop[0]].Material );
+			// THE WALK GOES ROUND THE VERTEX, BUT NOT NECESSARILY THE RIGHT WAY ROUND.
+			// WalkFacesAroundVertex follows nextEdgeAtVertex, which is consistent but carries no
+			// guarantee about which way that is as seen from OUTSIDE the solid — and on a fully
+			// chamfered box it comes out backwards at every one of the eight corners.
+			//
+			// Nothing caught it for a long time, which is rule 1 of the work order exactly: the mesh
+			// stays valid, closed, manifold and Euler-correct, it renders without a mark on it, and
+			// the only thing wrong is that eight tiny triangles face into the solid instead of out of
+			// it. What that costs is every NUMBER taken off a chamfered part — a chamfered unit box
+			// measured 0.811 against a true 0.883, because each inverted triangle subtracts its own
+			// contribution instead of adding it. Enclosed volume is what the collision hull, the
+			// physics probe and half this project's own tests are measured with.
+			//
+			// The faces meeting at this vertex already point outward, so their sum is the direction
+			// the cap has to agree with. One dot product per corner.
+			var cap = distinct.ToArray();
+			var outward = Vec3.Zero;
+
+			foreach ( var f in loop )
+				outward += faceNormals[f];
+
+			if ( Vec3.Dot( result.FaceNormal( new Face( cap ) ), outward ) < 0f )
+				Array.Reverse( cap );
+
+			result.AddFace( cap, material: mesh.Faces[loop[0]].Material );
 		}
 
 		return RemoveUnusedVertices( result );

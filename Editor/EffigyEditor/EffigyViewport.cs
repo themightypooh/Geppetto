@@ -1418,6 +1418,11 @@ internal sealed partial class EffigyViewport : Widget
 		// behind it. Idle hover/click only runs when no dialog owns the mouse.
 		IdleSelectionFrame();
 
+		// AFTER the selection, because the handle belongs to whatever that pass just settled on, and
+		// before nothing in particular - Gizmo.Control registers its own hitbox, which is what stops the
+		// click that grabs an arrow from also landing on the face behind it.
+		FaceDragFrame();
+
 		// BoneToolActive and BodyPickMode: the same "you can click here" signal every other live
 		// pick mode already gets from Gizmo.HasHovered/_hoveredSketchId/_hoveredFaceBodyId. Without
 		// it, placing a bone or assigning a body was the only click-to-act mode in the whole tool

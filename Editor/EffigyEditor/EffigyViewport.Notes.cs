@@ -115,7 +115,10 @@ internal sealed partial class EffigyViewport
 			{
 				_noteHovered = NoteSession.Pick( origin, direction );
 
-				if ( Gizmo.WasLeftMousePressed && NoteSession.Erase( origin, direction ) )
+				// HELD, NOT JUST PRESSED — the same shape as the sketch Cut tool: hold the button and
+				// drag through what you want gone, rather than one click per note. A click still works,
+				// it is just a drag that happens to end where it started.
+				if ( Gizmo.IsLeftMouseDown && NoteSession.Erase( origin, direction ) )
 					NoteChanged?.Invoke();
 			}
 			else

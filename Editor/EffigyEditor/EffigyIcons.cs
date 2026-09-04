@@ -64,6 +64,7 @@ internal enum EffigyIcon
 
 	// --- solid tools that act on picked faces ---------------------------------------------------
 	Draft,
+	MoveFace,
 	Hole,
 
 	// --- the six sketch tools whose kernel half was finished first ------------------------------
@@ -199,6 +200,7 @@ internal static class EffigyIcons
 			case EffigyIcon.SculptBake: PaintSculptBake( center, color ); return;
 
 			case EffigyIcon.Draft: PaintDraft( center, color ); return;
+			case EffigyIcon.MoveFace: PaintMoveFace( center, color ); return;
 			case EffigyIcon.Hole: PaintHole( center, color ); return;
 
 			case EffigyIcon.NoteTool: PaintNoteTool( center, color ); return;
@@ -1441,6 +1443,37 @@ internal static class EffigyIcons
 	/// The angle IS the operation, so the glyph is the angle. Drawing a moulded part instead would
 	/// say "moulding" and leave you guessing which of the six tools on the strip does the leaning.
 	/// </summary>
+	/// <summary>
+	/// A face lifting off the solid it belongs to: the body drawn faintly where it was, the face
+	/// itself solid at its new height, and an arrow between them.
+	///
+	/// THE GHOST IS THE WHOLE GLYPH. Without it this is an arrow over a rectangle, which is what
+	/// Transform looks like; with it, the picture is of one face of a part having moved and the rest
+	/// having stayed — which is exactly what the tool does and what tells it apart from Draft
+	/// standing next to it.
+	/// </summary>
+	private static void PaintMoveFace( Vector2 c, Color color )
+	{
+		// Where the face was, and the walls that stretched to follow it.
+		Stroked( color.WithAlpha( 0.35f ), 1.1f );
+		Outline( At( c, -7f, 1f ), At( c, 7f, 1f ), At( c, 7f, 8f ), At( c, -7f, 8f ) );
+
+		// The face, at its new height.
+		Stroked( color, 1.7f );
+		Editor.Paint.DrawLine( At( c, -7f, -5f ), At( c, 7f, -5f ) );
+
+		// The sides it dragged up with it.
+		Stroked( color.WithAlpha( 0.75f ), 1.2f );
+		Editor.Paint.DrawLine( At( c, -7f, -5f ), At( c, -7f, 1f ) );
+		Editor.Paint.DrawLine( At( c, 7f, -5f ), At( c, 7f, 1f ) );
+
+		// Which way it went.
+		Stroked( color, 1.6f );
+		Editor.Paint.DrawLine( At( c, 0f, -1f ), At( c, 0f, -8f ) );
+		Editor.Paint.DrawLine( At( c, -3f, -5f ), At( c, 0f, -8f ) );
+		Editor.Paint.DrawLine( At( c, 3f, -5f ), At( c, 0f, -8f ) );
+	}
+
 	private static void PaintDraft( Vector2 c, Color color )
 	{
 		// The parting line the taper is measured from.

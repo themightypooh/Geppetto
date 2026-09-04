@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace Effigy;
@@ -85,6 +85,65 @@ public static class PlaneOffset
 	}
 
 	/// <summary>
+	/// The same solve with a DISTANCE PER PLANE rather than one distance for all of them:
+	///
+	///     for each plane i:   dot( n_i, d ) = t_i,     minimising |d|
+	///
+	/// This is what direct face editing needs and shell does not. Moving one face of a solid asks a
+	/// rim vertex to end up at the moved face's NEW offset while staying exactly where it is
+	/// relative to the neighbours that are not moving - different numbers on planes meeting at the
+	/// same point, which the single-distance form cannot express. That form is now this one called
+	/// with a constant vector.
+	///
+	/// THE TWO-PLANE CLOSED FORM IS DERIVED AFRESH, NOT REUSED. The symmetric answer above is the
+	/// EQUAL-t one and is silently wrong the moment the two distances differ. Writing d = a*n0 + b*n1
+	/// and asking for both constraints gives, with c = dot(n0,n1):
+	///
+	///     a + b*c = t0        a = (t0 - c*t1) / (1 - c*c)
+	///     a*c + b = t1        b = (t1 - c*t0) / (1 - c*c)
+	///
+	/// which collapses back to a = b = t/(1+c) when t0 = t1 = t. The normal-equations path
+	/// generalises unchanged - only the right-hand side is weighted per plane.
+	///
+	/// PARALLEL PLANES ARE THE NEW FAILURE. Two planes with the same normal and different distances
+	/// are a contradiction rather than an underdetermined system: no point is both. That is a face
+	/// being moved while a coplanar neighbour stays put, and the caller has to be told rather than
+	/// handed a plausible-looking least-squares fudge.
+	/// </summary>
+	public static bool TrySolve( IReadOnlyList<Vec3> planeNormals, IReadOnlyList<float> distances,
+		out Vec3 displacement )
+	{
+		if ( planeNormals.Count != distances.Count )
+			throw new ArgumentException( "one distance per plane, or use the single-distance overload" );
+
+		switch ( planeNormals.Count )
+		{
+			case 0:
+				displacement = Vec3.Zero;
+				return false;
+
+			case 1:
+				displacement = planeNormals[0] * distances[0];
+				return true;
+
+			case 2:
+				return TrySolvePair( planeNormals[0], planeNormals[1], distances[0], distances[1],
+					out displacement );
+
+			default:
+			{
+				if ( TrySolveNormalEquations( planeNormals, distances, out displacement ) )
+					return Satisfies( planeNormals, distances, displacement );
+
+				var (a, b) = MostIndependentPair( planeNormals );
+				TrySolvePair( planeNormals[a], planeNormals[b], distances[a], distances[b],
+					out displacement );
+				return false;
+			}
+		}
+	}
+
+	/// <summary>
 	/// Whether a displacement actually meets every constraint.
 	///
 	/// The normal equations always return something — they are a least-squares FIT, not a solve —
@@ -110,6 +169,32 @@ public static class PlaneOffset
 		return true;
 	}
 
+	/// <summary>
+	/// The per-plane version of the residual check.
+	///
+	/// The tolerance is scaled by the LARGEST distance asked for rather than by each plane's own,
+	/// because a face that is staying put asks for zero and any tolerance relative to zero is zero -
+	/// which would report every answer inexact the moment one neighbour does not move, and that is
+	/// every face move there is.
+	/// </summary>
+	static bool Satisfies( IReadOnlyList<Vec3> planes, IReadOnlyList<float> distances, Vec3 displacement )
+	{
+		var scale = 0f;
+
+		foreach ( var t in distances )
+			scale = MathF.Max( scale, MathF.Abs( t ) );
+
+		var tolerance = 1e-3f * scale;
+
+		for ( var i = 0; i < planes.Count; i++ )
+		{
+			if ( MathF.Abs( Vec3.Dot( planes[i], displacement ) - distances[i] ) > tolerance )
+				return false;
+		}
+
+		return true;
+	}
+
 	static bool TrySolvePair( Vec3 n0, Vec3 n1, float distance, out Vec3 displacement )
 	{
 		var c = Vec3.Dot( n0, n1 );
@@ -126,6 +211,28 @@ public static class PlaneOffset
 		return true;
 	}
 
+	/// <summary>The two-plane solve for unequal distances - see the overload's note for the
+	/// derivation, and for why the symmetric form above cannot be reused here.</summary>
+	static bool TrySolvePair( Vec3 n0, Vec3 n1, float t0, float t1, out Vec3 displacement )
+	{
+		var c = Vec3.Dot( n0, n1 );
+		var det = 1f - c * c;
+
+		// Parallel or anti-parallel. Parallel planes asking for the SAME distance are one constraint
+		// stated twice and have a perfectly good answer; asking for different distances is a
+		// contradiction, and anti-parallel is the zero-thickness sheet the equal-distance form
+		// already refuses.
+		if ( MathF.Abs( det ) < 1e-6f )
+		{
+			displacement = n0 * t0;
+
+			return c > 0f && MathF.Abs( t0 - t1 ) <= 1e-6f * MathF.Max( 1f, MathF.Abs( t0 ) );
+		}
+
+		displacement = n0 * ((t0 - c * t1) / det) + n1 * ((t1 - c * t0) / det);
+		return true;
+	}
+
 	/// <summary>
 	/// Least squares through the normal equations (A^T A) d = A^T b, by Cramer's rule.
 	///
@@ -135,14 +242,27 @@ public static class PlaneOffset
 	/// </summary>
 	static bool TrySolveNormalEquations( IReadOnlyList<Vec3> planes, float distance, out Vec3 displacement )
 	{
+		var same = new float[planes.Count];
+
+		for ( var i = 0; i < same.Length; i++ )
+			same[i] = distance;
+
+		return TrySolveNormalEquations( planes, same, out displacement );
+	}
+
+	static bool TrySolveNormalEquations( IReadOnlyList<Vec3> planes, IReadOnlyList<float> distances,
+		out Vec3 displacement )
+	{
 		displacement = Vec3.Zero;
 
 		var m = new double[3, 3];
 		var rhs = new double[3];
 
-		foreach ( var f in planes )
+		for ( var i = 0; i < planes.Count; i++ )
 		{
+			var f = planes[i];
 			double fx = f.x, fy = f.y, fz = f.z;
+			double distance = distances[i];
 
 			m[0, 0] += fx * fx; m[0, 1] += fx * fy; m[0, 2] += fx * fz;
 			m[1, 0] += fy * fx; m[1, 1] += fy * fy; m[1, 2] += fy * fz;

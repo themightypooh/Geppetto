@@ -126,6 +126,8 @@ public sealed class TransformFeature : Feature
 {
 	public override string TypeName => "Transform";
 
+	public override GeometryKind Accepts => GeometryKind.Body;
+
 	public readonly BodySelectionParam Bodies = new( "Bodies" );
 	public readonly Vec3Param Translate = new( "Translate", Vec3.Zero );
 	public readonly Vec3Param RotationAxis = new( "Rotation axis", new Vec3( 0, 0, 1 ) );
@@ -163,6 +165,8 @@ public sealed class TransformFeature : Feature
 public sealed class LinearPatternFeature : Feature
 {
 	public override string TypeName => "Linear pattern";
+
+	public override GeometryKind Accepts => GeometryKind.Body;
 
 	public readonly BodySelectionParam Bodies = new( "Bodies" );
 	public readonly Vec3Param Direction = new( "Direction", new Vec3( 1, 0, 0 ) );
@@ -212,6 +216,8 @@ public sealed class LinearPatternFeature : Feature
 public sealed class CircularPatternFeature : Feature
 {
 	public override string TypeName => "Circular pattern";
+
+	public override GeometryKind Accepts => GeometryKind.Body;
 
 	public readonly BodySelectionParam Bodies = new( "Bodies" );
 	public readonly Vec3Param AxisPoint = new( "Axis through", Vec3.Zero );
@@ -268,6 +274,8 @@ public sealed class MirrorFeature : Feature
 {
 	public override string TypeName => "Mirror";
 
+	public override GeometryKind Accepts => GeometryKind.Body;
+
 	public readonly BodySelectionParam Bodies = new( "Bodies" );
 	public readonly Vec3Param PlanePoint = new( "Plane through", Vec3.Zero );
 	public readonly Vec3Param PlaneNormal = new( "Plane normal", new Vec3( 1, 0, 0 ) );
@@ -322,6 +330,10 @@ public sealed class MirrorFeature : Feature
 public sealed class SubdivideFeature : Feature
 {
 	public override string TypeName => "Subdivide";
+
+	/// <summary>Faces as well as bodies: an empty Bodies list means the whole document to Execute,
+	/// so picking is how you say which part - see the refusal in the editor's AddFeature.</summary>
+	public override GeometryKind Accepts => GeometryKind.Face | GeometryKind.Body;
 
 	/// <summary>
 	/// Which faces to subdivide. EMPTY MEANS THE WHOLE BODY, which is both the old behaviour and

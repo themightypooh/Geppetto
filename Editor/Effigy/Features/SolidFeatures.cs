@@ -20,6 +20,9 @@ public sealed class ShellFeature : Feature
 {
 	public override string TypeName => "Shell";
 
+	/// <summary>A picked face becomes an opening; a picked part is what gets hollowed.</summary>
+	public override GeometryKind Accepts => GeometryKind.Face | GeometryKind.Body;
+
 	public readonly BodySelectionParam Bodies = new( "Bodies" );
 	public readonly FloatParam Thickness = new( "Wall thickness", 0.1f, 0.0001f, unit: "u" );
 
@@ -171,6 +174,10 @@ public sealed class ChamferFeature : Feature
 {
 	public override string TypeName => "Chamfer";
 
+	/// <summary>Edges are what it blends, and a picked FACE means its boundary - "select the top,
+	/// then Fillet" - so both count. See Feature.ApplyBlendEdges.</summary>
+	public override GeometryKind Accepts => GeometryKind.Edge | GeometryKind.Face | GeometryKind.Body;
+
 	public readonly BodySelectionParam Bodies = new( "Bodies" );
 	public readonly FloatParam Width = new( "Distance", 0.1f, 0.0001f, unit: "u" );
 	public readonly FloatParam AngleThreshold = new( "Angle threshold", 15f, 0f, 180f, unit: "deg" );
@@ -208,6 +215,10 @@ public sealed class FilletFeature : Feature
 {
 	public override string TypeName => "Fillet";
 
+	/// <summary>Edges are what it blends, and a picked FACE means its boundary - "select the top,
+	/// then Fillet" - so both count. See Feature.ApplyBlendEdges.</summary>
+	public override GeometryKind Accepts => GeometryKind.Edge | GeometryKind.Face | GeometryKind.Body;
+
 	public readonly BodySelectionParam Bodies = new( "Bodies" );
 	public readonly FloatParam Radius = new( "Radius", 0.1f, 0.0001f, unit: "u" );
 	public readonly IntParam Segments = new( "Segments", 4, 1, 16 );
@@ -240,6 +251,8 @@ public sealed class FilletFeature : Feature
 public sealed class UVProjectFeature : Feature
 {
 	public override string TypeName => "UV project";
+
+	public override GeometryKind Accepts => GeometryKind.Body;
 
 	public readonly BodySelectionParam Bodies = new( "Bodies" );
 	public readonly ChoiceParam Mode = new( "Mode", new[] { "Box", "Planar", "Unwrap" } );
@@ -335,6 +348,8 @@ public sealed class UVProjectFeature : Feature
 public sealed class HoleFeature : Feature
 {
 	public override string TypeName => "Hole";
+
+	public override GeometryKind Accepts => GeometryKind.Face;
 
 	/// <summary>Where the holes go. One per picked face, drilled along that face's own normal, so a
 	/// hole rides its face the way a sketch does.</summary>
@@ -491,6 +506,146 @@ public sealed class HoleFeature : Feature
 }
 
 /// <summary>
+/// Move picked faces of a solid that already exists — push and pull on a finished part.
+///
+/// THE FEATURE THAT CLOSES THE "edit it afterwards" GAP. Every other tool here builds forwards: a
+/// sketch becomes a prism, the prism gets a fillet, and changing the prism means going back to the
+/// sketch. This one takes a face of whatever is on screen and moves it, with the walls around it
+/// following, and it does not care whether that face came from a primitive, an extrude or a boolean.
+///
+/// TWO MODES, and the difference only shows on a pair of facing walls:
+///
+/// - **Offset** moves each face along its own normal, so a facing pair moves APART — the wall gets
+///   thicker or thinner.
+/// - **Translate** moves them all one way, so a facing pair SLIDES and keeps its thickness. That is
+///   the one you want when a wall is in the wrong place rather than the wrong size.
+///
+/// See FaceMove for the solve, for why the two modes are one code path, and for the list of things
+/// this refuses rather than approximating.
+///
+/// IT LIVES IN THE FEATURE TREE LIKE EVERYTHING ELSE, and that is the whole bet of direct editing
+/// here: the faces are held as FaceRefs, so an upstream edit that destroys one makes this feature
+/// say so out loud rather than reattaching itself to whatever is nearest. See FacePlane's header for
+/// why the reference is geometric rather than an index, and DraftFeature for the same contract.
+/// </summary>
+public sealed class MoveFaceFeature : Feature
+{
+	public override string TypeName => "Move face";
+
+	public override GeometryKind Accepts => GeometryKind.Face;
+
+	/// <summary>The faces to move. Not an IParam, for the reason FaceMaterialFeature gives: a list
+	/// of picked geometry has no generic control to render it.</summary>
+	public List<FaceRef> Faces = new();
+
+	/// <summary>
+	/// Offset first because it is the one that needs no second answer — a distance and nothing else,
+	/// which is what "push this face out a bit" means. Translate needs a direction as well.
+	/// </summary>
+	public readonly ChoiceParam Mode = new( "Mode", new[] { "Offset", "Translate" } );
+
+	public const int ModeOffset = 0;
+	public const int ModeTranslate = 1;
+
+	/// <summary>How far. NEGATIVE IS ALLOWED and is half the point: pushing a face into the solid is
+	/// the same operation as pulling it out, and making that a separate direction to type would be
+	/// two controls for one number.</summary>
+	public readonly FloatParam Distance = new( "Distance", 0.25f, unit: "u" );
+
+	/// <summary>Which way, in Translate mode. Ignored in Offset mode, where each face has a
+	/// direction of its own already.</summary>
+	public readonly Vec3Param Direction = new( "Direction", new Vec3( 0, 0, 1 ) );
+
+	public override IReadOnlyList<IParam> Parameters => Mode.Index == ModeTranslate
+		? new IParam[] { Mode, Distance, Direction }
+		: new IParam[] { Mode, Distance };
+
+	protected override void Execute( FeatureContext ctx )
+	{
+		if ( Faces.Count == 0 )
+		{
+			Fail(
+				"No faces picked - click the faces to move",
+				"This moves faces of a part that already exists, and none have been chosen yet.",
+				"Click a face of the part in the viewport, then press Move Face" );
+		}
+
+		if ( Mode.Index == ModeTranslate && Direction.Value.LengthSquared < 1e-12f )
+		{
+			FailOn( "Direction",
+				"The direction has no length",
+				"Translate moves the faces along one direction, and this one is (0, 0, 0).",
+				"Set a direction, or switch to Offset and let each face use its own normal" );
+		}
+
+		// Grouped by body so one call moves every face picked on it. Moving them one at a time would
+		// solve a shared corner once per face it belongs to, and the second solve would be against a
+		// mesh the first had already moved - the same reason DraftFeature groups.
+		var byBody = new Dictionary<Body, List<int>>();
+		var lost = 0;
+
+		foreach ( var reference in Faces )
+		{
+			if ( !FacePlane.TryResolveFace( ctx.Bodies, reference, out var body, out var faceIndex ) )
+			{
+				lost++;
+				continue;
+			}
+
+			if ( !byBody.TryGetValue( body, out var list ) )
+				byBody[body] = list = new List<int>();
+
+			if ( !list.Contains( faceIndex ) )
+				list.Add( faceIndex );
+		}
+
+		if ( byBody.Count == 0 )
+		{
+			Fail(
+				"None of the picked faces are on the model any more",
+				$"All {Faces.Count} of them named geometry that the features above this one no longer produce.",
+				"Pick the faces again on the current model",
+				"Move this feature back below the edit that changed them" );
+		}
+
+		var moved = new List<(Body Body, PolyMesh Mesh)>();
+
+		// Every body solved before anything is assigned, so a failure on the third of four leaves the
+		// model as it was rather than half moved - the same promise ShellFeature and Draft make.
+		foreach ( var (body, faces) in byBody )
+		{
+			try
+			{
+				moved.Add( (body, Solve( body.Mesh, faces )) );
+			}
+			catch ( InvalidOperationException e )
+			{
+				FailOn( Mode.Index == ModeTranslate ? "Direction" : "Distance",
+					"That move cannot be made exactly",
+					e.Message,
+					"Use a smaller distance",
+					"Select the whole flat surface rather than part of it" );
+			}
+		}
+
+		foreach ( var (body, mesh) in moved )
+			body.Mesh = mesh;
+
+		if ( lost > 0 )
+		{
+			Warn(
+				$"{lost} of {Faces.Count} picked faces are no longer on the model",
+				"They named geometry the features above this one no longer produce, so they were skipped.",
+				"Pick them again on the current model" );
+		}
+	}
+
+	PolyMesh Solve( PolyMesh mesh, List<int> faces ) => Mode.Index == ModeTranslate
+		? FaceMove.Translate( mesh, faces, Direction.Value.Normal * Distance.Value )
+		: FaceMove.Offset( mesh, faces, Distance.Value );
+}
+
+/// <summary>
 /// Taper picked faces of a solid that already exists, so the part can leave a mould.
 ///
 /// Extrude's Taper covers a face being MADE; this covers one that is already there, which by the
@@ -501,6 +656,8 @@ public sealed class HoleFeature : Feature
 public sealed class DraftFeature : Feature
 {
 	public override string TypeName => "Draft";
+
+	public override GeometryKind Accepts => GeometryKind.Face;
 
 	/// <summary>The faces to taper. Not an IParam, for the reason FaceMaterialFeature gives: a list
 	/// of picked geometry has no generic control to render it.</summary>
@@ -627,6 +784,8 @@ public sealed class DraftFeature : Feature
 public sealed class FaceMaterialFeature : Feature
 {
 	public override string TypeName => "Face material";
+
+	public override GeometryKind Accepts => GeometryKind.Face;
 
 	/// <summary>The faces to paint. Not an IParam: a list of picked geometry has no generic control
 	/// to render it, the way a float or a choice does, and the dialog builds it a selection box of

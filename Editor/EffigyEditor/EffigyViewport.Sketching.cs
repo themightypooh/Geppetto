@@ -245,11 +245,12 @@ internal sealed partial class EffigyViewport
 	{
 		_hoveredSketchId = null;
 		_hoveredSketchSeed = null;
+		_hoveredSketchDistance = float.MaxValue;
 
 		if ( !SketchPickMode || IsSketching || _pickableSketches.Count == 0 || !_canvasHasCursor )
 			return;
 
-		TryResolveSketchHover( out _hoveredSketchId, out _hoveredSketchSeed, out _ );
+		TryResolveSketchHover( out _hoveredSketchId, out _hoveredSketchSeed, out _hoveredSketchDistance );
 
 		DrawSelectedRegions();
 
@@ -1490,6 +1491,10 @@ internal sealed partial class EffigyViewport
 		_facePickHit = MeshRaycast.Raycast( _pickableBodies, origin, direction );
 	}
 
+	/// <summary>How far away the sketch under the cursor is, or MaxValue. Kept from SketchPickFrame,
+	/// which runs first, so the face pick can tell whether a sketch already has this click.</summary>
+	private float _hoveredSketchDistance = float.MaxValue;
+
 	private void FacePickFrame()
 	{
 		_hoveredFaceBodyId = null;
@@ -1507,6 +1512,17 @@ internal sealed partial class EffigyViewport
 		// Already resolved this frame by ResolveFacePick, before the planes had their chance.
 		if ( _facePickHit is not { } hit )
 			return;
+
+		// A SKETCH IN FRONT OF THE FACE GETS THE CLICK. Both pickers can be live at once now that
+		// Extrude takes either a profile or a face, and a sketch drawn ON a face sits at exactly the
+		// same depth as it — so without this, clicking the profile you meant would also pick the face
+		// underneath it and the box would end up holding both. Same tie-break the idle selection
+		// makes in SketchBeatsFace, and for the same reason.
+		if ( SketchPickMode && _hoveredSketchId is not null
+			&& _hoveredSketchDistance <= hit.Hit.Distance + 0.05f )
+		{
+			return;
+		}
 
 		_hoveredFaceBodyId = hit.Body.Id;
 

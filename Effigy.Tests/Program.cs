@@ -113,6 +113,12 @@ public static class Program
 
 		AllFeaturesTests.Run();
 
+		AcceptsTests.Run();
+
+		FaceMoveTests.Run();
+
+		FaceExtrudeTests.Run();
+
 		DiagnosticTests.Run();
 
 		FaceSurfaceTests.Run();

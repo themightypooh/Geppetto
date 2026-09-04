@@ -372,22 +372,27 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		edit.AddOption( "Undo", "undo", Undo, "editor.undo" );
 		edit.AddOption( "Redo", "redo", Redo, "editor.redo" );
 		edit.AddSeparator();
+
+		// The same four the feature tree's own right-click menu carries. They are mirrored here
+		// because the menu bar is where someone who has never right-clicked the tree goes looking,
+		// and because a feature can be selected while focus is somewhere the tree is not.
 		edit.AddOption( "Delete Feature", "delete", DeleteSelectedFeature );
 		edit.AddOption( "Move Feature Up", "arrow_upward", MoveFeatureUp );
 		edit.AddOption( "Move Feature Down", "arrow_downward", MoveFeatureDown );
-		edit.AddSeparator();
-		edit.AddOption( "Toggle Suppress", "visibility", ToggleSuppressFeature );
-		edit.AddSeparator();
-		edit.AddOption( "Normal Map: OpenGL / DirectX Green", "invert_colors", ToggleBakeGreen );
-		edit.AddOption( "Normal Map: Flip V", "swap_vert", ToggleBakeFlipV );
-		edit.AddOption( "Normal Map: Cycle Size", "photo_size_select_large", CycleBakeSize );
+		edit.AddOption( "Suppress / Unsuppress Feature", "block", ToggleSuppressFeature );
 
+		// EVERYTHING TO DO WITH THE SCULPT MASK, behind one line. Five flat entries for actions that
+		// only work while a Sculpt feature is open was five-fifteenths of this menu given over to a
+		// mode most sessions never enter; the submenu keeps them reachable without making them the
+		// first thing the menu shows.
 		edit.AddSeparator();
-		edit.AddOption( "Invert Sculpt Mask", "flip", InvertSculptMask );
-		edit.AddOption( "Clear Sculpt Mask", "layers_clear", ClearSculptMask );
-		edit.AddOption( "Mask All Sculpt Geometry", "select_all", ProtectAllSculpt );
-		edit.AddOption( "Sculpt Mask: Paint / Erase", "brush", ToggleSculptMaskErase );
-		edit.AddOption( "Hide / Show Masked Geometry", "visibility_off", ToggleHideMasked );
+		var mask = edit.AddMenu( "Sculpt Mask", "brush" );
+		mask.AddOption( "Invert", "flip", InvertSculptMask );
+		mask.AddOption( "Clear", "layers_clear", ClearSculptMask );
+		mask.AddOption( "Mask Everything", "select_all", ProtectAllSculpt );
+		mask.AddSeparator();
+		mask.AddOption( "Switch Between Painting and Erasing", "brush", ToggleSculptMaskErase );
+		mask.AddOption( "Hide / Show Held Geometry", "visibility_off", ToggleHideMasked );
 
 		edit.AddSeparator();
 		edit.AddOption( "Settings...", "settings", OpenSettings );
@@ -720,26 +725,21 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		if ( stages.FirstOrDefault( s => s.Name == StageSketch ) is not { } sketch )
 			return;
 
+		// One button rather than two. The pen and its colour used to be a checkable button sitting
+		// next to a second, un-checkable one that existed only to hold the palette; VariantsAreSettings
+		// is what lets the merged button keep both jobs — a plain click always arms or puts down the
+		// pen, and the chevron behind it opens the same palette the second button used to be. Built
+		// from the palette rather than written out again, for the same reason the Primitive menu is
+		// built from PrimitiveFeature.Shape: a menu naming a colour the kernel has never heard of
+		// would set an index meaning something else.
 		_noteTool = new EffigyStageTool
 		{
 			Icon = EffigyIcon.NoteTool,
 			Label = "Note",
 			Tip = "Grease pencil — scribble notes over the part. Never exported.",
 			Checkable = true,
-		};
-
-		_noteTool.Clicked = ToggleNotePen;
-
-		// Variants rather than a second checkable button, so the colour lives where you already are
-		// when you decide you want a different one. Built from the palette rather than written out
-		// again, for the same reason the Primitive menu is built from PrimitiveFeature.Shape: a
-		// menu naming a colour the kernel has never heard of would set an index meaning something
-		// else.
-		_noteColorTool = new EffigyStageTool
-		{
-			Icon = EffigyIcon.NoteTool,
-			Label = "Colour",
-			Tip = "The colour the next note is drawn in",
+			VariantsAreSettings = true,
+			IconColor = SwatchColor( 0 ),
 			Variants = Enumerable.Range( 0, NotePalette.Count ).Select( i => new EffigyStageVariant
 			{
 				Icon = EffigyIcon.NoteTool,
@@ -749,19 +749,28 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 			} ).ToArray(),
 		};
 
+		_noteTool.Clicked = ToggleNotePen;
+
 		_noteEraseTool = new EffigyStageTool
 		{
 			Icon = EffigyIcon.NoteEraseTool,
 			Label = "Erase",
-			Tip = "Eraser (E) — click a note to delete it",
+			Tip = "Eraser (E) — hold the left button and drag through the notes you want gone",
 			Checkable = true,
 		};
 
 		_noteEraseTool.Clicked = ToggleNoteEraser;
 
 		sketch.Add( _noteTool );
-		sketch.Add( _noteColorTool );
 		sketch.Add( _noteEraseTool );
+	}
+
+	/// <summary>A palette swatch as the Color the toolbar paints with.</summary>
+	private static Color SwatchColor( int index )
+	{
+		var swatch = NotePalette.At( index );
+
+		return new Color( swatch.R, swatch.G, swatch.B );
 	}
 
 	/// <summary>
@@ -1307,7 +1316,7 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 
 	// --- grease pencil -------------------------------------------------------------------------
 
-	private EffigyStageTool _noteTool, _noteColorTool, _noteEraseTool;
+	private EffigyStageTool _noteTool, _noteEraseTool;
 
 	/// <summary>
 	/// Arm or put down the pen.
@@ -1338,7 +1347,7 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 
 		var session = new NoteSession( _studio.Notes )
 		{
-			Color = _noteColorTool?.Current ?? 0,
+			Color = _noteTool?.Current ?? 0,
 			Pivot = _studio.Origin,
 		};
 
@@ -1404,8 +1413,11 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		if ( _noteEraseTool is not null )
 			_noteEraseTool.Checked = noting && _viewport.NoteErasing;
 
-		if ( _noteColorTool is not null && _viewport?.NoteSession is { } session )
-			_noteColorTool.Current = session.Color;
+		if ( _noteTool is not null && _viewport?.NoteSession is { } session )
+		{
+			_noteTool.Current = session.Color;
+			_noteTool.IconColor = SwatchColor( session.Color );
+		}
 
 		_stageBar?.Refresh();
 		_viewport?.Update();
@@ -1638,30 +1650,17 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 	/// the four combinations would make that sitting impossible to finish - you would find out the
 	/// map was wrong and have no way to write the right one.
 	///
+	/// They live in Edit > Settings now, under "Normal map bake", rather than as three verbs on the
+	/// Edit menu. A toggle whose whole state was a one-line prompt that had already scrolled away is
+	/// a control you cannot read; the settings window shows the switch position and the size at once,
+	/// and remembers them between sessions the way every other setting there does.
+	///
 	/// Defaults are OpenGL-style green and no vertical flip, which is what the sample in
 	/// Effigy.Tests/out was written with, so the two can be compared directly.
 	/// </summary>
 	private bool _bakeFlipGreen;
 	private bool _bakeFlipV;
 	private int _bakeSize = 1024;
-
-	private void ToggleBakeGreen()
-	{
-		_bakeFlipGreen = !_bakeFlipGreen;
-		SetPrompt( $"Normal map green channel: {(_bakeFlipGreen ? "DirectX (-Y)" : "OpenGL (+Y)")}." );
-	}
-
-	private void ToggleBakeFlipV()
-	{
-		_bakeFlipV = !_bakeFlipV;
-		SetPrompt( $"Normal map rows: v = 0 at the {(_bakeFlipV ? "bottom" : "top")} of the image." );
-	}
-
-	private void CycleBakeSize()
-	{
-		_bakeSize = _bakeSize >= 4096 ? 256 : _bakeSize * 2;
-		SetPrompt( $"Normal map size: {_bakeSize}x{_bakeSize}." );
-	}
 
 	private void BakeSculpt()
 	{
@@ -1748,9 +1747,12 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 	/// <summary>
 	/// The mask actions that are not a brush stroke: invert, clear, erase, and hide what is held.
 	///
-	/// IN THE EDIT MENU RATHER THAN ON THE STRIP, deliberately. The strip is hand-painted glyphs and
-	/// four more of them is real design work for actions nobody reaches for
-	/// mid-stroke. The menu takes named Material icons, which this window already uses everywhere.
+	/// IN AN EDIT &gt; SCULPT MASK SUBMENU RATHER THAN ON THE STRIP, deliberately. The strip is
+	/// hand-painted glyphs and five more of them is real design work for actions nobody reaches for
+	/// mid-stroke. The menu takes named Material icons, which this window already uses everywhere. A
+	/// submenu rather than five flat entries because the whole group only does anything while a
+	/// Sculpt feature is open, and a menu most sessions never need should not be the first thing Edit
+	/// shows.
 	///
 	/// They are added unconditionally and refuse when there is no sculpt open, rather than the menu
 	/// being rebuilt per state - a menu that changes shape depending on the mode is a menu whose
@@ -2132,6 +2134,7 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 	{
 		Sketch, Primitive, Extrude, Revolve, Sweep, Loft, Chamfer, Fillet, Shell, Subdivide,
 		Draft, Hole, Sculpt, Mirror, LinearPattern, CircularPattern, Transform, UVProject, FaceMaterial,
+		MoveFace,
 	}
 
 	/// <summary>Build one, and apply the variant chosen from its dropdown where it has one.</summary>
@@ -2156,6 +2159,7 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		ToolKind.Transform => new TransformFeature(),
 		ToolKind.UVProject => new UVProjectFeature(),
 		ToolKind.FaceMaterial => new FaceMaterialFeature(),
+		ToolKind.MoveFace => new MoveFaceFeature(),
 		_ => throw new ArgumentOutOfRangeException( nameof( kind ), kind, "no feature for this tool" )
 	};
 
@@ -2214,6 +2218,16 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		public ToolKind Kind;
 
 		/// <summary>
+		/// A material-symbol name for this tool where it appears in a Qt MENU rather than on the
+		/// strip — the right-click face menu, which cannot draw an EffigyIcon because those are
+		/// hand-painted glyphs and a Menu takes a name.
+		///
+		/// Beside the label rather than in a switch somewhere, so a tool that starts accepting a
+		/// face brings its icon with it. Null is fine: the menu falls back rather than breaking.
+		/// </summary>
+		public string MenuIcon;
+
+		/// <summary>
 		/// Which stage tab this tool sits behind.
 		///
 		/// THE COLUMN THAT REPLACED GapBefore AND Starter. A bool saying "put a wider gap before
@@ -2255,7 +2269,7 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 	private static CreateTool[] CreateTools => new CreateTool[]
 	{
 		// --- Sketch: the two tools that can start a part from nothing ---------------------------
-		new() { Icon = EffigyIcon.Sketch, Label = "Sketch", Stage = StageSketch,
+		new() { Icon = EffigyIcon.Sketch, Label = "Sketch", Stage = StageSketch, MenuIcon = "edit",
 			Tip = "Add a Sketch feature — draw lines/arcs on a plane",
 			Kind = ToolKind.Sketch },
 
@@ -2264,8 +2278,8 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 			Kind = ToolKind.Primitive, Choices = PrimitiveShapes },
 
 		// --- Solid: profiles become bodies ------------------------------------------------------
-		new() { Icon = EffigyIcon.Extrude, Label = "Extrude", Stage = StageSolid,
-			Tip = "Add an Extrude — pull a sketch profile into a solid",
+		new() { Icon = EffigyIcon.Extrude, Label = "Extrude", Stage = StageSolid, MenuIcon = "arrow_upward",
+			Tip = "Add an Extrude — pull a sketch profile, or a face of a part, into a solid",
 			Kind = ToolKind.Extrude },
 		new() { Icon = EffigyIcon.Revolve, Label = "Revolve", Stage = StageSolid,
 			Tip = "Add a Revolve — sweep a sketch profile around an axis",
@@ -2285,22 +2299,29 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		// --- Detail: refine a body that already exists ------------------------------------------
 		// Fillet before Chamfer, which is the order Onshape puts them in and the order people reach
 		// for them: rounding an edge is the common case and chamfering it is the deliberate one.
-		new() { Icon = EffigyIcon.Fillet, Label = "Fillet", Stage = StageDetail,
+		new() { Icon = EffigyIcon.Fillet, Label = "Fillet", Stage = StageDetail, MenuIcon = "rounded_corner",
 			Tip = "Add a Fillet — round sharp edges to a radius",
 			Kind = ToolKind.Fillet },
-		new() { Icon = EffigyIcon.Chamfer, Label = "Chamfer", Stage = StageDetail,
+		new() { Icon = EffigyIcon.Chamfer, Label = "Chamfer", Stage = StageDetail, MenuIcon = "details",
 			Tip = "Add a Chamfer — cut sharp edges back by a distance",
 			Kind = ToolKind.Chamfer },
-		new() { Icon = EffigyIcon.Shell, Label = "Shell", Stage = StageDetail,
+		new() { Icon = EffigyIcon.Shell, Label = "Shell", Stage = StageDetail, MenuIcon = "crop_free",
 			Tip = "Add a Shell — hollow to a wall thickness",
 			Kind = ToolKind.Shell },
 
+		// WITH THE DETAIL TOOLS because it acts on a solid that already exists, which is what that
+		// stage means. It is not next to Extrude even though the two overlap: Extrude BUILDS from a
+		// face and this MOVES one, and a wall that is in the wrong place is a thing you fix late.
+		new() { Icon = EffigyIcon.MoveFace, Label = "Move Face", Stage = StageDetail, MenuIcon = "open_with",
+			Tip = "Add a Move Face — push, pull or slide picked faces of a part",
+			Kind = ToolKind.MoveFace },
+
 		// Both act on picked faces of a solid that already exists, which is what puts them with
 		// Shell rather than with Extrude.
-		new() { Icon = EffigyIcon.Draft, Label = "Draft", Stage = StageDetail,
+		new() { Icon = EffigyIcon.Draft, Label = "Draft", Stage = StageDetail, MenuIcon = "signal_cellular_null",
 			Tip = "Add a Draft — taper picked faces so the part leaves a mould",
 			Kind = ToolKind.Draft },
-		new() { Icon = EffigyIcon.Hole, Label = "Hole", Stage = StageDetail,
+		new() { Icon = EffigyIcon.Hole, Label = "Hole", Stage = StageDetail, MenuIcon = "radio_button_unchecked",
 			Tip = "Add a Hole — drill, counterbore or countersink into a face",
 			Kind = ToolKind.Hole },
 
@@ -2321,7 +2342,7 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		// --- Finish: the cage and the skin it carries downstream --------------------------------
 		// This is the stage the README's pipeline names: CAD is done, and what is left is getting
 		// the mesh ready for a sculpt, a bake and a rig.
-		new() { Icon = EffigyIcon.Subdivide, Label = "Subdivide", Stage = StageFinish,
+		new() { Icon = EffigyIcon.Subdivide, Label = "Subdivide", Stage = StageFinish, MenuIcon = "grid_on",
 			Tip = "Add a Subdivide — Catmull-Clark subdivision",
 			Kind = ToolKind.Subdivide },
 
@@ -2334,10 +2355,47 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		new() { Icon = EffigyIcon.UVProject, Label = "UV Project", Stage = StageFinish,
 			Tip = "Add a UV Project — re-project UVs (box or planar)",
 			Kind = ToolKind.UVProject },
-		new() { Icon = EffigyIcon.FaceMaterial, Label = "Face Material", Stage = StageFinish,
+		new() { Icon = EffigyIcon.FaceMaterial, Label = "Face Material", Stage = StageFinish, MenuIcon = "palette",
 			Tip = "Add a Face Material — put picked faces on a material slot",
 			Kind = ToolKind.FaceMaterial },
 	};
+
+	// --- what a tool will take from the selection ----------------------------------------------
+
+	/// <summary>
+	/// What the tool behind a strip button will take from the geometry already picked.
+	///
+	/// ASKED OF THE FEATURE, never written down here. "Which tools consume a face" used to live in
+	/// three places that could not see each other — the switch in Feature.ApplyGeometrySelection,
+	/// the sentence under the viewport, and the pick-mode flags each dialog arms — so the hint could
+	/// name a tool that ignored the face, and a tool that wanted one could be missing from the list
+	/// with nothing to notice. Feature.Accepts is the one declaration now, and everything below
+	/// reads it rather than repeating it.
+	///
+	/// A FRESH FEATURE PER CALL, no cache. Accepts is a constant expression on every feature, and
+	/// the alternative — a static map from ToolKind — is exactly the shape of state that comes back
+	/// from a hotload pointing into a dead assembly (see ToolKind's own note). This is called when
+	/// the selection changes and when a menu opens, never from a paint pass.
+	/// </summary>
+	private static GeometryKind AcceptedBy( ToolKind kind ) => NewFeature( kind, -1 ).Accepts;
+
+	/// <summary>The strip's tools that will use a pick of this kind, in the order they sit on the
+	/// bar so the sentence reads left to right the way the buttons do.</summary>
+	private static List<CreateTool> ToolsAccepting( GeometryKind kind ) =>
+		CreateTools.Where( t => AcceptedBy( t.Kind ).HasFlag( kind ) ).ToList();
+
+	/// <summary>Those tools, named. Empty when nothing consumes this kind yet.</summary>
+	private static string ToolsNamed( GeometryKind kind )
+	{
+		var names = ToolsAccepting( kind ).Select( t => t.Label ).ToList();
+
+		return names.Count switch
+		{
+			0 => "",
+			1 => names[0],
+			_ => $"{string.Join( ", ", names.Take( names.Count - 1 ) )} and {names[^1]}",
+		};
+	}
 
 	/// <summary>
 	/// A sketch with something drawn in it exists, so the rest of the tools have something to bite
@@ -2446,6 +2504,25 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 			return;
 		}
 
+		// SUBDIVIDE ASKS WHICH PART FIRST. An empty Bodies list means "the whole studio" to the
+		// feature, so a click with nothing selected quietly quadrupled the triangle count of every
+		// part in the document - including the ones you were not looking at, and on a cage you were
+		// about to sculpt that is the difference between a usable model and a dense one.
+		//
+		// The whole-body form is not removed, because it is the one that actually smooths and is
+		// usually what you want: this only refuses to GUESS which body. Click a part in the Parts
+		// list and you get that part entire; pick faces in the viewport and you get those, since a
+		// face selection already names its own body.
+		if ( feature is SubdivideFeature
+			&& _viewport is not null
+			&& _viewport.IdleFaces.Count == 0
+			&& _viewport.IdleBodyIds.Count == 0 )
+		{
+			SetPrompt( "Subdivide needs to know which part - click one in the Parts list on the "
+				+ "left, or pick faces in the viewport, then press Subdivide again." );
+			return;
+		}
+
 		RecordUndo();
 
 		// A face or part already selected is the input, the way Onshape consumes the current
@@ -2470,18 +2547,7 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		// plane. The face outline then gets projected onto XY, which throws away Z, folds the
 		// face's four corners onto two, and draws one green line lying flat through the middle of
 		// the model. Every part of that is downstream of this comparison.
-		var at = Math.Min( _studio.RollbackIndex, _studio.Features.Count );
-
-		if ( at < _studio.Features.Count )
-			_studio.Insert( at, feature );
-		else
-			_studio.Add( feature );
-
-		// Only when the bar is a real position. int.MaxValue already means "evaluate everything"
-		// and must stay that way, or every add would pin it to a number that stops meaning "the
-		// end" the next time something is appended.
-		if ( _studio.RollbackIndex < _studio.Features.Count )
-			_studio.RollbackIndex = at + 1;
+		InsertAtRollback( feature );
 
 		RebuildStudio();
 
@@ -2598,7 +2664,7 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		_viewport.SketchConstraintApplied = OnSketchEdited;
 
 		_viewport.IdleSelectionChanged = OnIdleSelectionChanged;
-		_viewport.FaceContextMenuRequested = OpenFaceMaterialMenu;
+		_viewport.FaceContextMenuRequested = OpenFaceMenu;
 		_viewport.MaterialDropped = OnMaterialDropped;
 		_viewport.SketchConstraintMenuRequested = OpenSketchConstraintMenu;
 
@@ -2687,6 +2753,16 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		DescribeGeometrySelection();
 	}
 
+	/// <summary>
+	/// The sentence under the viewport that says what the thing you just clicked is good for.
+	///
+	/// GENERATED FROM Feature.Accepts, not typed. It used to read "Face of {name} selected — Sketch,
+	/// Draft, Hole, Face Material and Fillet will use it", which was true on the day it was written
+	/// and became a lie the moment anything else learned to take a face — Subdivide did, and the
+	/// line was edited by hand to keep up. A hint that has to be maintained alongside the tools it
+	/// describes is a hint that will eventually be wrong, quietly, in the one place a person looks
+	/// to find out what they can do next.
+	/// </summary>
 	private void DescribeGeometrySelection()
 	{
 		if ( _viewport is null )
@@ -2701,8 +2777,8 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 				.FirstOrDefault( f => f.Id == _viewport.IdleSketchFeatureId )?.Name ?? "Sketch";
 			var n = _viewport.IdleRegionSeeds.Count;
 			SetPrompt( n <= 1
-				? $"{name} selected — Extrude and Revolve will use it."
-				: $"{name}: {n} faces selected — Extrude and Revolve will use them." );
+				? $"{name} selected{Users( GeometryKind.SketchRegion, one: true )}"
+				: $"{name}: {n} faces selected{Users( GeometryKind.SketchRegion, one: false )}" );
 			return;
 		}
 
@@ -2712,13 +2788,13 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 
 		if ( edgeCount == 1 )
 		{
-			SetPrompt( "1 edge selected — Fillet and Chamfer will use it." );
+			SetPrompt( $"1 edge selected{Users( GeometryKind.Edge, one: true )}" );
 			return;
 		}
 
 		if ( edgeCount > 1 )
 		{
-			SetPrompt( $"{edgeCount} edges selected — Fillet and Chamfer will use them." );
+			SetPrompt( $"{edgeCount} edges selected{Users( GeometryKind.Edge, one: false )}" );
 			return;
 		}
 
@@ -2726,13 +2802,13 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		{
 			var id = _viewport.IdleFaces[0].BodyId;
 			var name = _studio.Bodies.FirstOrDefault( b => b.Id == id )?.Name ?? "part";
-			SetPrompt( $"Face of {name} selected — Sketch, Draft, Hole, Face Material and Fillet will use it." );
+			SetPrompt( $"Face of {name} selected{Users( GeometryKind.Face, one: true )}" );
 			return;
 		}
 
 		if ( faces > 1 )
 		{
-			SetPrompt( $"{faces} faces selected — Draft, Hole, Face Material and Fillet will use them." );
+			SetPrompt( $"{faces} faces selected{Users( GeometryKind.Face, one: false )}" );
 			return;
 		}
 
@@ -2750,6 +2826,41 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		}
 
 		SetPrompt( "" );
+	}
+
+	/// <summary>
+	/// The " — Draft, Hole and Fillet will use it." half of the hint, or nothing at all when no tool
+	/// takes this kind of pick yet.
+	///
+	/// SAYING NOTHING IS A REAL ANSWER. A selection nothing consumes should report itself and stop,
+	/// rather than promising a list that turns out to be empty.
+	/// </summary>
+	private static string Users( GeometryKind kind, bool one )
+	{
+		var names = ToolsNamed( kind );
+
+		return names.Length == 0 ? "" : $" — {names} will use {(one ? "it" : "them")}.";
+	}
+
+	/// <summary>
+	/// Put a new feature at the rollback bar. Split out of AddFeature so the pull gizmo places its
+	/// Move Face the same way the toolbar places everything else — see AddFeature for why the
+	/// comparison below is what it is.
+	/// </summary>
+	private void InsertAtRollback( Feature feature )
+	{
+		var at = Math.Min( _studio.RollbackIndex, _studio.Features.Count );
+
+		if ( at < _studio.Features.Count )
+			_studio.Insert( at, feature );
+		else
+			_studio.Add( feature );
+
+		// Only when the bar is a real position. int.MaxValue already means "evaluate everything"
+		// and must stay that way, or every add would pin it to a number that stops meaning "the
+		// end" the next time something is appended.
+		if ( _studio.RollbackIndex < _studio.Features.Count )
+			_studio.RollbackIndex = at + 1;
 	}
 
 	/// <summary>Copy the current viewport selection onto a feature the toolbar just made.</summary>
@@ -4864,6 +4975,12 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 	/// you turn on when you want to judge a material, not the light you sketch under.</summary>
 	private const string FullBrightCookie = "Effigy.FullBright";
 
+	/// <summary>The normal-map bake conventions and size. Defaults match the reference sample in
+	/// Effigy.Tests/out: OpenGL green, no vertical flip, 1024.</summary>
+	private const string BakeGreenCookie = "Effigy.BakeDirectXGreen";
+	private const string BakeFlipVCookie = "Effigy.BakeFlipV";
+	private const string BakeSizeCookie = "Effigy.BakeSize";
+
 	/// <summary>The open settings window, or null. Held so a second Edit > Settings raises the one
 	/// already open rather than stacking another on top of it.</summary>
 	private EffigySettingsWindow _settingsWindow;
@@ -4917,6 +5034,9 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		SizeReferenceHeight = _viewport?.SizeReferenceHeight ?? 0f,
 		FullBright = _viewport?.FullBright ?? true,
 		PlacedLightCount = _viewport?.PlacedLightCount ?? 0,
+		BakeDirectXGreen = _bakeFlipGreen,
+		BakeFlipV = _bakeFlipV,
+		BakeSize = _bakeSize,
 	};
 
 	/// <summary>Take everything the settings window is showing and make it true, then remember it.
@@ -4948,6 +5068,16 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		if ( values.PaletteIndex != _paletteIndex )
 			SetPalette( values.PaletteIndex );
 
+		// Not viewport state - the bake reads these fields directly when the Bake button is pressed,
+		// so applying them is just storing them.
+		_bakeFlipGreen = values.BakeDirectXGreen;
+		_bakeFlipV = values.BakeFlipV;
+		_bakeSize = values.BakeSize;
+
+		EditorCookie.Set( BakeGreenCookie, values.BakeDirectXGreen );
+		EditorCookie.Set( BakeFlipVCookie, values.BakeFlipV );
+		EditorCookie.Set( BakeSizeCookie, values.BakeSize );
+
 		EditorCookie.Set( PlaneGridCookie, values.ShowGrid );
 		EditorCookie.Set( GridSpacingCookie, values.GridSpacing );
 		EditorCookie.Set( SnapGridCookie, values.SnapToGrid );
@@ -4963,6 +5093,10 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 	private void RestoreSettings()
 	{
 		SetPalette( EditorCookie.Get( PaletteCookie, _paletteIndex ) );
+
+		_bakeFlipGreen = EditorCookie.Get( BakeGreenCookie, false );
+		_bakeFlipV = EditorCookie.Get( BakeFlipVCookie, false );
+		_bakeSize = EditorCookie.Get( BakeSizeCookie, 1024 );
 
 		if ( !_viewport.IsValid() )
 			return;
@@ -5195,7 +5329,21 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 	// --- right-click a face -------------------------------------------------------------------
 
 	/// <summary>
-	/// The material menu on a face of the model.
+	/// The right-click menu on a face of the model: what you can DO to this face, then what it is
+	/// made of.
+	///
+	/// THE TOOL LIST IS GENERATED FROM Feature.Accepts, which is the whole point of it. The complaint
+	/// that started this was pointing at a face, wanting to extrude it, and finding the tool nowhere
+	/// on offer — so a hand-kept list here would have been the same failure with an extra place to
+	/// forget. Every tool that says it takes a face appears, seeded with the face under the cursor,
+	/// and one that learns to take a face later appears without anybody editing this.
+	///
+	/// The face is SELECTED first and then the tool is added, rather than the feature being poked
+	/// directly: AddFeature already copies the idle selection onto whatever it makes, and going
+	/// through it means the right-click route and the click-then-press-the-button route are the same
+	/// path rather than two that can drift.
+	///
+	/// --- and the material half, which this menu was originally all of ---
 	///
 	/// The Face Material feature on the toolbar is how you paint a SET of faces in one go, and it is
 	/// the wrong shape for the common case: one face, one slot, now. Opening a dialog, arming a
@@ -5206,14 +5354,16 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 	/// the next rebuild and then quietly revert — bodies are rebuilt from scratch, which is the whole
 	/// reason FaceMaterialFeature exists (see FaceMaterialTests: "the reason this is a feature").
 	/// </summary>
-	private void OpenFaceMaterialMenu( EffigyFaceHit hit )
+	private void OpenFaceMenu( EffigyFaceHit hit )
 	{
 		if ( _studio is null || _viewport is null || hit.Body is null )
 			return;
 
 		var menu = new Menu( _viewport );
 
-		menu.AddHeading( $"Face — {_studio.NameForSlot( hit.Material )}" );
+		AddFaceToolOptions( menu, hit );
+
+		menu.AddHeading( $"Material — {_studio.NameForSlot( hit.Material )}" );
 
 		foreach ( var slot in MenuMaterialSlots() )
 		{
@@ -5253,6 +5403,39 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		shade.Checked = _viewport.ShadeMaterialSlots;
 
 		menu.OpenAtCursor();
+	}
+
+	/// <summary>Every tool that will take a face, above the material entries because acting on the
+	/// face is the bigger thing you can do to it.</summary>
+	private void AddFaceToolOptions( Menu menu, EffigyFaceHit hit )
+	{
+		var tools = ToolsAccepting( GeometryKind.Face );
+
+		if ( tools.Count == 0 )
+			return;
+
+		menu.AddHeading( $"Face of {hit.Body.Name ?? "part"}" );
+
+		foreach ( var tool in tools )
+		{
+			// The KIND, captured, never the table entry — same rule as the strip: an enum crosses a
+			// hotload and a reference into a table built by a dead assembly does not.
+			var kind = tool.Kind;
+
+			var option = menu.AddOption( tool.Label, tool.MenuIcon ?? "build",
+				() => UseFaceWith( hit, kind ) );
+
+			option.StatusTip = tool.Tip;
+		}
+
+		menu.AddSeparator();
+	}
+
+	/// <summary>Point a tool at the face that was right-clicked.</summary>
+	private void UseFaceWith( EffigyFaceHit hit, ToolKind kind )
+	{
+		_viewport?.SelectFace( hit );
+		AddFeature( NewFeature( kind, -1 ) );
 	}
 
 	/// <summary>

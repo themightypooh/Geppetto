@@ -34,6 +34,8 @@ public sealed class SculptFeature : Feature
 {
 	public override string TypeName => "Sculpt";
 
+	public override GeometryKind Accepts => GeometryKind.Body;
+
 	public readonly BodySelectionParam Bodies = new( "Body" );
 
 	/// <summary>

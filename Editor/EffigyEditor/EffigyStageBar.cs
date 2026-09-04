@@ -207,10 +207,21 @@ internal sealed class EffigyStageTool
 	/// as ordinary chrome.</summary>
 	public Color? IconColor;
 
-	/// <summary>What a plain click does. Ignored when there are variants: those carry their own.</summary>
+	/// <summary>What a plain click does. Ignored when there are variants, UNLESS
+	/// <see cref="VariantsAreSettings"/> says otherwise: those carry their own.</summary>
 	public Action Clicked;
 
 	public EffigyStageVariant[] Variants;
+
+	/// <summary>
+	/// The variants are OPTIONS, not alternate tools — the note colour behind the pen's chevron,
+	/// not the sketch shapes behind Primitive's. A click on the face still runs <see cref="Clicked"/>
+	/// every time (arm or put down the pen), and only the chevron reaches the variant list; without
+	/// this flag a click would re-run the CURRENT colour's Chosen instead, which turns "put the pen
+	/// down" into "redraw it in the colour it was already in" the moment a colour has ever been
+	/// picked.
+	/// </summary>
+	public bool VariantsAreSettings;
 
 	// --- live state, owned here so a stage switch cannot lose it ---------------------------
 
@@ -234,7 +245,7 @@ internal sealed class EffigyStageTool
 	/// action.</summary>
 	public void Run()
 	{
-		if ( Face is { } variant )
+		if ( !VariantsAreSettings && Face is { } variant )
 			variant.Chosen?.Invoke();
 		else
 			Clicked?.Invoke();

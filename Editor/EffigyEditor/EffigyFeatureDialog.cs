@@ -96,6 +96,55 @@ internal sealed class EffigyFeatureDialog : Widget
 	private bool _touched;
 
 	/// <summary>Raise Edited and remember that it happened. See <see cref="IsUntouched"/>.</summary>
+	/// <summary>
+	/// The pull handle was dragged. Write the displacement into the open feature and rebuild.
+	///
+	/// THIS IS TYPING, WITH THE MOUSE. Nothing is added to the history and nothing is created: the
+	/// drag sets a parameter of the feature whose dialog is already open, exactly as if the number
+	/// had been entered in the field beside it, and it goes through RaiseEdited like every other
+	/// parameter change so undo, dirty-marking and the rebuild all behave identically. That is what
+	/// keeps a parametric modeller parametric — a face moves because a feature says it does, not
+	/// because it was shoved.
+	///
+	/// WHICH PARAMETER depends on what the feature stores, and the two shapes differ honestly:
+	///
+	/// - An EXTRUDE keeps one distance along the profile's own normal, so the drag is measured
+	///   against the axis the handle was aligned to. Dragging back past the face gives a negative
+	///   distance, which is a push rather than a pull and is an ordinary value for that field.
+	/// - A MOVE FACE keeps a direction and a length, so it takes the displacement whole — which is
+	///   what lets a sideways drag slide a wall instead of doing nothing.
+	/// </summary>
+	private void OnFaceDragged( Vec3 displacement, Vec3 axis )
+	{
+		switch ( _feature )
+		{
+			case ExtrudeFeature extrude when extrude.Faces.Count > 0:
+				extrude.Distance.Value = Vec3.Dot( axis, displacement );
+				break;
+
+			case MoveFaceFeature move when move.Faces.Count > 0:
+			{
+				var length = displacement.Length;
+
+				if ( length < 1e-6f )
+					return;
+
+				move.Mode.Index = MoveFaceFeature.ModeTranslate;
+				move.Direction.Value = displacement / length;
+				move.Distance.Value = length;
+				break;
+			}
+
+			default:
+				return;
+		}
+
+		// Rebuilds the rows as well as the model, so the number in the field counts up under the
+		// cursor rather than being a stale copy of whatever it was before the drag.
+		RaiseEdited();
+		Rebuild();
+	}
+
 	private void RaiseEdited()
 	{
 		_touched = true;
@@ -682,8 +731,20 @@ internal sealed class EffigyFeatureDialog : Widget
 		// Sketch picking is live only while a consumer's dialog is open; the consumer branch
 		// below turns it back on. Without this default, switching to a Sketch feature would
 		// leave the previous dialog's pick handler wired into the viewport.
+		//
+		// The face picker is now in the same position, because a consumer that takes faces arms it
+		// at open rather than waiting to be armed by hand — so it needs the same default, or moving
+		// off an Extrude would leave the model's faces clickable into whatever came next.
 		_viewport.SketchPickMode = false;
 		_viewport.SketchPicked = null;
+		_viewport.FacePickMode = false;
+		_viewport.FacePicked = null;
+
+		// The pull handle belongs to whichever feature is open, so it goes off by default here and
+		// is turned back on below for the ones that can use it. A feature that does not consume
+		// faces must not leave arrows on the model.
+		_viewport.FaceDragEnabled = _feature is not null && _feature.Accepts.HasFlag( GeometryKind.Face );
+		_viewport.FaceDragMoved = _viewport.FaceDragEnabled ? OnFaceDragged : null;
 
 		if ( _feature is null )
 			return;
@@ -773,6 +834,18 @@ internal sealed class EffigyFeatureDialog : Widget
 
 			_viewport.SketchPickMode = true;
 			_viewport.SketchPicked = sketchSelector.Picked;
+
+			// AND THE FACES OF THE MODEL, live from the moment the dialog opens, for any feature that
+			// says it takes one. A face IS a profile; the box asks for a profile; so pressing Extrude
+			// and clicking the face you were already looking at has to work without arming anything or
+			// drawing a sketch first. The sketches stay live alongside them and win the click when
+			// they are in front — see FacePickFrame.
+			if ( consumer.Accepts.HasFlag( GeometryKind.Face ) )
+			{
+				_viewport.SetPickableBodies( _pickableBodiesLookup?.Invoke() );
+				_viewport.FacePickMode = true;
+				_viewport.FacePicked = sketchSelector.PickedFace;
+			}
 
 			// RESULT IS NOT HERE ANY MORE. It is the ADD/REMOVE strip floating under the tool
 			// strip — see EffigyResultStrip, which was already a full view of this very parameter
@@ -1819,6 +1892,18 @@ internal sealed class EffigySketchSelector : Widget, IArmableSelection
 	private readonly Func<string, string> _nameLookup;
 	private readonly Action _changed;
 
+	/// <summary>
+	/// The face list this box also fills, or null for a feature that cannot take one.
+	///
+	/// THE BOX ASKS FOR A PROFILE, AND A FACE IS ONE. It used to ask only for a sketch, and refused
+	/// to arm at all when the document had none — which is the normal state of a part built out of
+	/// primitives, so pressing Extrude on such a part put a red "No sketch yet" where the answer you
+	/// were pointing at should have been. Held as the list rather than as the feature for the reason
+	/// EffigyFaceSetSelector gives: the next feature that learns to eat a face gets this box as it
+	/// is, rather than a second one that drifts.
+	/// </summary>
+	private readonly List<FaceRef> _faces;
+
 	/// <summary>True while waiting for a viewport click. The box goes accent-coloured and the
 	/// committed sketches become pickable.</summary>
 	private bool _armed;
@@ -1831,6 +1916,7 @@ internal sealed class EffigySketchSelector : Widget, IArmableSelection
 		_consumer = consumer;
 		_nameLookup = nameLookup;
 		_changed = changed;
+		_faces = consumer is ExtrudeFeature extrude ? extrude.Faces : null;
 
 		Layout = Layout.Row();
 		Layout.Margin = new Sandbox.UI.Margin( 8, 3 );
@@ -1846,6 +1932,17 @@ internal sealed class EffigySketchSelector : Widget, IArmableSelection
 	/// viewport for as long as it is open on the consumer — sketches stay pickable the whole
 	/// time, armed or not, the way planes are while their box is armed.</summary>
 	public Action<string, Vec2?> Picked => OnPicked;
+
+	/// <summary>
+	/// How many faces of the model this feature was pointed at, or zero.
+	///
+	/// A FACE IS A PROFILE, so a feature holding one is not waiting for a sketch and must not be told
+	/// to go and draw one. The message this replaces — "No sketch yet — add a Sketch first" — was
+	/// painted whenever the studio had no sketches at all, which is the NORMAL state of a part built
+	/// entirely out of primitives: a dozen bodies on screen, a face lit up under the cursor, and the
+	/// panel sending you off to draw a rectangle in order to pull the rectangle you were pointing at.
+	/// </summary>
+	private int PickedFaces => _faces?.Count ?? 0;
 
 	/// <summary>The name of the chosen sketch, or null when nothing valid is chosen. An id the
 	/// tree no longer contains (the sketch was deleted) counts as nothing.</summary>
@@ -1873,6 +1970,14 @@ internal sealed class EffigySketchSelector : Widget, IArmableSelection
 		return n == 1 ? $"1 region of {name}" : $"{n} regions of {name}";
 	}
 
+	/// <summary>What the picked faces read as, or null when there are none.</summary>
+	private string FaceLabel() => PickedFaces switch
+	{
+		0 => null,
+		1 => "1 face of the part",
+		var n => $"{n} faces of the part",
+	};
+
 	private Rect ClearRect() => new( Width - 26f, 18f, 18f, 22f );
 
 	protected override void OnPaint()
@@ -1890,8 +1995,12 @@ internal sealed class EffigySketchSelector : Widget, IArmableSelection
 		Paint.SetBrush( _armed ? Theme.Blue.WithAlpha( 0.18f ) : Theme.ControlBackground );
 		Paint.DrawRect( box, 2f );
 
+		// Red means "this feature cannot build yet". Faces answer that as completely as a sketch does,
+		// so a box holding faces is not red.
+		var answered = chosen is not null || PickedFaces > 0;
+
 		Paint.ClearBrush();
-		Paint.SetPen( _armed ? Theme.Blue : (chosen is not null ? Theme.TextControl.WithAlpha( 0.35f ) : Theme.Red.WithAlpha( 0.6f )) );
+		Paint.SetPen( _armed ? Theme.Blue : (answered ? Theme.TextControl.WithAlpha( 0.35f ) : Theme.Red.WithAlpha( 0.6f )) );
 		Paint.DrawRect( box, 2f );
 
 		Paint.SetDefaultFont( 9 );
@@ -1900,9 +2009,11 @@ internal sealed class EffigySketchSelector : Widget, IArmableSelection
 		{
 			Paint.SetPen( Theme.Blue );
 			Paint.DrawText( box.Shrink( 6f, 0f, 30f, 0f ),
-				chosen is not null
-					? $"{chosen} — click to add or remove"
-					: "Pick closed regions on one plane",
+				(chosen ?? FaceLabel()) is { } held
+					? $"{held} — click to add or remove"
+					: _faces is not null
+						? "Click a face of the part, or a sketch region"
+						: "Pick closed regions on one plane",
 				TextFlag.LeftCenter );
 		}
 		else if ( chosen is not null )
@@ -1910,10 +2021,22 @@ internal sealed class EffigySketchSelector : Widget, IArmableSelection
 			Paint.SetPen( Theme.TextControl );
 			Paint.DrawText( box.Shrink( 6f, 0f, 30f, 0f ), chosen, TextFlag.LeftCenter );
 		}
+		else if ( FaceLabel() is { } faces )
+		{
+			Paint.SetPen( Theme.TextControl );
+			Paint.DrawText( box.Shrink( 6f, 0f, 30f, 0f ), faces, TextFlag.LeftCenter );
+		}
 		else if ( _viewport.PickableSketches.Count == 0 )
 		{
 			Paint.SetPen( Theme.Red.WithAlpha( 0.8f ) );
-			Paint.DrawText( box.Shrink( 6f, 0f, 0f, 0f ), "No sketch yet — add a Sketch first", TextFlag.LeftCenter );
+			// Only offer the face if this feature can actually take one. Revolve, Sweep and Loft share
+			// this box and genuinely do need a sketch, and pointing them at a face they cannot use
+			// would be the same wrong-answer-in-red this message is being fixed for.
+			Paint.DrawText( box.Shrink( 6f, 0f, 0f, 0f ),
+				_faces is not null
+					? "Click a face of the part, or draw a sketch"
+					: "No sketch yet — add a Sketch first",
+				TextFlag.LeftCenter );
 		}
 		else
 		{
@@ -1921,7 +2044,7 @@ internal sealed class EffigySketchSelector : Widget, IArmableSelection
 			Paint.DrawText( box.Shrink( 6f, 0f, 0f, 0f ), "Pick closed regions", TextFlag.LeftCenter );
 		}
 
-		if ( chosen is null )
+		if ( chosen is null && PickedFaces == 0 )
 			return;
 
 		Paint.SetPen( Theme.TextControl.WithAlpha( 0.55f ) );
@@ -1935,8 +2058,10 @@ internal sealed class EffigySketchSelector : Widget, IArmableSelection
 		if ( !e.LeftMouseButton )
 			return;
 
-		if ( ChosenName() is not null && ClearRect().IsInside( e.LocalPosition ) )
+		if ( (ChosenName() is not null || PickedFaces > 0) && ClearRect().IsInside( e.LocalPosition ) )
 		{
+			_faces?.Clear();
+
 			_consumer.SketchFeatureId = SketchConsumingFeature.AwaitingPick;
 			_consumer.RegionSeeds.Clear();
 			Push();
@@ -1951,8 +2076,9 @@ internal sealed class EffigySketchSelector : Widget, IArmableSelection
 			return;
 		}
 
-		// Nothing to pick — an empty red box has no waiting state to show.
-		if ( _viewport.PickableSketches.Count == 0 )
+		// Nothing to pick at all — no sketches AND no faces this feature could take. Only then does
+		// an empty red box have no waiting state to show.
+		if ( _viewport.PickableSketches.Count == 0 && _faces is null )
 			return;
 
 		Arm();
@@ -1964,9 +2090,18 @@ internal sealed class EffigySketchSelector : Widget, IArmableSelection
 			return;
 
 		_armed = true;
+
+		if ( _faces is not null )
+		{
+			_viewport.FacePickMode = true;
+			_viewport.FacePicked = PickedFace;
+		}
+
 		Push();
-		_viewport.SetPickPrompt( "Click closed regions on the same plane. Click again to remove. "
-			+ "An edge selects every region of that sketch. Escape when done." );
+		_viewport.SetPickPrompt( _faces is not null
+			? "Click a face of the part, or a closed sketch region. Click again to remove. Escape when done."
+			: "Click closed regions on the same plane. Click again to remove. "
+				+ "An edge selects every region of that sketch. Escape when done." );
 		Update();
 	}
 
@@ -1978,6 +2113,49 @@ internal sealed class EffigySketchSelector : Widget, IArmableSelection
 		_armed = false;
 		_viewport.SetPickPrompt( "" );
 		Update();
+	}
+
+	/// <summary>
+	/// A face of the model clicked while this box is the one asking.
+	///
+	/// Toggles, and matches by RESOLVED FACE rather than by comparing stored FaceRefs — two clicks
+	/// on the same face produce references with different hit points, so comparing them would let
+	/// one face be added twice and never removed. Same rule, and the same reason, as
+	/// EffigyFaceSetSelector.
+	/// </summary>
+	public void PickedFace( FaceRef face )
+	{
+		if ( _faces is null )
+			return;
+
+		var bodies = _viewport.PickableBodies;
+
+		if ( !FacePlane.TryResolveFace( bodies, face, out var body, out var index ) )
+			return;
+
+		for ( var i = 0; i < _faces.Count; i++ )
+		{
+			if ( !FacePlane.TryResolveFace( bodies, _faces[i], out var existing, out var existingIndex ) )
+				continue;
+
+			if ( existing.Id != body.Id || existingIndex != index )
+				continue;
+
+			_faces.RemoveAt( i );
+			Push();
+			Update();
+			_changed?.Invoke();
+			return;
+		}
+
+		// A face answers the question AwaitingPick was asking, the same way a sketch does.
+		if ( _consumer.IsAwaitingPick )
+			_consumer.SketchFeatureId = "";
+
+		_faces.Add( face );
+		Push();
+		Update();
+		_changed?.Invoke();
 	}
 
 	private void OnPicked( string featureId, Vec2? regionSeed )
@@ -2086,6 +2264,11 @@ internal sealed class EffigySketchSelector : Widget, IArmableSelection
 	{
 		_viewport.SelectedSketchFeatureId = ChosenName() is null ? null : _consumer.SketchFeatureId;
 		_viewport.SelectedRegionSeeds = ChosenName() is null ? null : _consumer.RegionSeeds.ToList();
+
+		// Picked faces stay lit whether or not the box is armed — a selection is state, not hover
+		// feedback, and standing the picker down must not hide what it is still holding.
+		if ( _faces is not null )
+			_viewport.SelectedFaces = _faces.Count > 0 ? _faces.ToList() : null;
 	}
 
 	public override void OnDestroyed()
@@ -2094,6 +2277,17 @@ internal sealed class EffigySketchSelector : Widget, IArmableSelection
 
 		_viewport.SelectedSketchFeatureId = null;
 		_viewport.SelectedRegionSeeds = null;
+
+		// ONLY IF THE PICKER IS STILL OURS. Editing a parameter rebuilds the dialog's rows, and the
+		// replacement selector arms the viewport BEFORE this old widget is destroyed — so clearing
+		// unconditionally here would tear down the picker its successor had just set up, and face
+		// picking would die the first time anybody typed a distance.
+		if ( _faces is not null && _viewport.FacePicked == PickedFace )
+		{
+			_viewport.SelectedFaces = null;
+			_viewport.FacePickMode = false;
+			_viewport.FacePicked = null;
+		}
 
 		// Leaving pick mode armed would make the sketches stay clickable after the dialog closed.
 		if ( _armed )

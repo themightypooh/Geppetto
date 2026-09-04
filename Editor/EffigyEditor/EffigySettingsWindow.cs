@@ -182,7 +182,16 @@ internal sealed class EffigySettingsWindow : Window
 		/// <summary>OUT ONLY — how many point lights are currently in the viewport, so the caption
 		/// under the switch can say so.</summary>
 		public int PlacedLightCount;
+
+		/// <summary>Normal-map bake: DirectX green (-Y) rather than OpenGL (+Y), the row order, and
+		/// the square size in texels. Read by the Bake button, not by the viewport.</summary>
+		public bool BakeDirectXGreen;
+		public bool BakeFlipV;
+		public int BakeSize;
 	}
+
+	/// <summary>The sizes the bake dropdown offers. A square map, so one number.</summary>
+	private static readonly int[] BakeSizes = { 256, 512, 1024, 2048, 4096 };
 
 	/// <summary>The spacings the dropdown offers, in sketch units. Zero is Automatic — the adaptive
 	/// 1/2/5 step that keeps the grid about a constant size on screen at any zoom.</summary>
@@ -394,6 +403,45 @@ internal sealed class EffigySettingsWindow : Window
 		}
 
 		paletteRow.Add( combo );
+
+		// --- normal map bake ----------------------------------------------------------------
+
+		Heading( canvas, "Normal map bake" );
+
+		AddSwitch( canvas, "DirectX green channel",
+			"Which way the green channel points. On is DirectX-style (-Y), off is OpenGL-style "
+			+ "(+Y). If a baked map looks inverted where a surface curves, this is the switch. Only "
+			+ "the Bake button in a Sculpt feature reads it.",
+			_values.BakeDirectXGreen,
+			value => { _values.BakeDirectXGreen = value; Changed(); } );
+
+		AddSwitch( canvas, "Flip vertically",
+			"Where row zero of the image sits. Off puts v = 0 at the top, on puts it at the bottom "
+			+ "- flip this if the bake comes out mirrored top to bottom.",
+			_values.BakeFlipV,
+			value => { _values.BakeFlipV = value; Changed(); } );
+
+		var bakeSizeRow = canvas.Layout.AddRow();
+
+		bakeSizeRow.Add( new Editor.Label( "Bake size" ) );
+		bakeSizeRow.AddStretchCell();
+
+		var bakeSize = new ComboBox( canvas )
+		{
+			MinimumWidth = 150,
+			ToolTip = "The side length of the baked normal map, in texels. The map is square.",
+		};
+
+		foreach ( var size in BakeSizes )
+		{
+			var value = size;
+
+			bakeSize.AddItem( $"{value} x {value}",
+				onSelected: () => { _values.BakeSize = value; Changed(); },
+				selected: value == _values.BakeSize );
+		}
+
+		bakeSizeRow.Add( bakeSize );
 
 		canvas.Layout.AddStretchCell();
 

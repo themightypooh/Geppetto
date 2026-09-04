@@ -61,7 +61,7 @@ internal sealed partial class EffigyViewport
 	private bool IdlePickingAllowed =>
 		!IsSketching && !IsSculpting && !IsNoting
 		&& !PlanePickMode && !SketchPickMode && !FacePickMode && !EdgePickMode && !BodyPickMode
-		&& !BoneToolActive && !_draggingOrigin && !_draggingLight;
+		&& !BoneToolActive && !_draggingOrigin && !_draggingLight && !_draggingFace;
 
 	/// <summary>
 	/// Replace the idle selection with whole bodies, clearing any face picks.
@@ -336,6 +336,16 @@ internal sealed partial class EffigyViewport
 				DrawBodyHighlight( body, BodySelectedColor );
 		}
 	}
+
+	/// <summary>
+	/// Select one face outright, from something other than a click — the right-click menu, which
+	/// has already resolved the face under the cursor and now wants a tool pointed at it.
+	///
+	/// Replaces the selection rather than adding to it: the face you just right-clicked is the face
+	/// you meant, and quietly bundling it with whatever was lit a moment ago would hand the tool
+	/// more than you asked for.
+	/// </summary>
+	public void SelectFace( EffigyFaceHit hit ) => SelectIdleFace( hit, add: false );
 
 	/// <summary>Click a face: replace the selection, or Shift-click to toggle it in.</summary>
 	private void SelectIdleFace( EffigyFaceHit hit, bool add )

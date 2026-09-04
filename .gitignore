@@ -46,6 +46,11 @@ Editor/HaloMount/
 Tools/HaloProbe/
 Assets/models/halo/
 Assets/materials/halo/
+
+# Whatever Effigy last exported while it was being tested — untitled.dmx and friends. Kept on disk
+# because the next export overwrites them anyway and having one to open is useful; kept out of the
+# repo because they are the output of a click, not a sample anybody reads.
+Assets/models/effigy/
 kit_sheets/
 
 # Imported map kits (rp_*) — hundreds of MB of third-party content, sourced not authored.
