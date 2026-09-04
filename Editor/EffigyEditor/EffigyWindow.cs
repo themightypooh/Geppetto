@@ -3888,6 +3888,66 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		_animClipsWindow.Show();
 	}
 
+	/// <summary>
+	/// The stem every exported file takes: the document's own name.
+	///
+	/// EVERYTHING USED TO BE CALLED "export". models/effigy/export.vmdl, export.obj, export.dmx,
+	/// export.smd - one set of names for every part studio in the project, so compiling the
+	/// spatula overwrote the grill, and whatever had already been placed in a scene changed shape
+	/// under you without a word. The document has a name, the user chose it, and it is the obvious
+	/// thing to name its model after.
+	///
+	/// AN UNSAVED DOCUMENT HAS NO NAME TO TAKE, so this asks for one through the same save dialog
+	/// Save As uses. Inventing "untitled" instead would only move the collision to a different
+	/// spelling and hide it again. Cancelling returns null and the caller exports nothing, which
+	/// is what cancelling a dialog should do.
+	/// </summary>
+	private string ExportBaseName()
+	{
+		if ( _documentPath is not null )
+			return SanitiseAssetName( Path.GetFileNameWithoutExtension( _documentPath ) );
+
+		var fd = new FileDialog( null )
+		{
+			Title = "Name the exported model",
+			DefaultSuffix = ".vmdl",
+			Directory = EffigyAssetFolder.ResolveAssetFolder( "models/effigy" ),
+		};
+
+		fd.SelectFile( "untitled.vmdl" );
+		fd.SetFindFile();
+		fd.SetModeSave();
+		fd.SetNameFilter( "Model (*.vmdl)" );
+
+		if ( !fd.Execute() )
+			return null;
+
+		return SanitiseAssetName( Path.GetFileNameWithoutExtension( fd.SelectedFile ) );
+	}
+
+	/// <summary>
+	/// Fold a document name into something safe to sit in an asset path: lowercase, and nothing
+	/// outside a-z, 0-9, underscore and hyphen. A studio saved as "Flat Top v2" therefore compiles
+	/// to flat_top_v2.vmdl rather than to a path the asset system has to guess at.
+	/// </summary>
+	private static string SanitiseAssetName( string raw )
+	{
+		if ( string.IsNullOrWhiteSpace( raw ) )
+			return "export";
+
+		var sb = new System.Text.StringBuilder( raw.Length );
+
+		foreach ( var c in raw.ToLowerInvariant() )
+			sb.Append( (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-'
+				? c : '_' );
+
+		var name = sb.ToString().Trim( '_' );
+
+		// Everything stripped - a name made entirely of punctuation. "export" is a poor name but a
+		// working one, and better than an empty filename.
+		return name.Length == 0 ? "export" : name;
+	}
+
 	private void ExportObj()
 	{
 		var report = RebuildForExport( "OBJ export" );
@@ -3897,17 +3957,21 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 			return;
 		}
 
+		var name = ExportBaseName();
+		if ( name is null )
+			return;
+
 		var folder = EffigyAssetFolder.ResolveAssetFolder( "models/effigy" );
 		Directory.CreateDirectory( folder );
 
-		var objPath = Path.Combine( folder, "export.obj" );
+		var objPath = Path.Combine( folder, $"{name}.obj" );
 
 		// Slot names go through so the file names its materials the way the user did, rather than
 		// material_0..63. NameForSlot falls back to the numbers for anything unnamed.
 		var mesh = _studio.ToMesh();
 		ApplyPivot( mesh );
 
-		ObjWriter.WriteFile( mesh, objPath, "effigy_export",
+		ObjWriter.WriteFile( mesh, objPath, name,
 			materialName: _studio.NameForSlot );
 		Log.Info( $"[Effigy] exported {objPath}" );
 	}
@@ -3920,6 +3984,10 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 			Log.Warning( "[Effigy] cannot compile — studio has errors or no bodies" );
 			return;
 		}
+
+		var name = ExportBaseName();
+		if ( name is null )
+			return;
 
 		var folder = EffigyAssetFolder.ResolveAssetFolder( "models/effigy" );
 		Directory.CreateDirectory( folder );
@@ -3949,12 +4017,12 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 			// DmxWriter for the exact string it prints), so DMX is the only supported format that
 			// carries a skeleton and per-vertex weights. The .smd is still written alongside it
 			// because every DCC reads one and it costs nothing to keep.
-			var smdPath = Path.Combine( folder, "export.smd" );
+			var smdPath = Path.Combine( folder, $"{name}.smd" );
 			SmdWriter.WriteFile( mesh, smdPath, skeleton, materialName: _studio.NameForSlot );
 
-			var dmxPath = Path.Combine( folder, "export.dmx" );
+			var dmxPath = Path.Combine( folder, $"{name}.dmx" );
 			DmxWriter.WriteFile( mesh, dmxPath, skeleton, materialName: _studio.NameForSlot,
-				modelName: "effigy_export" );
+				modelName: name );
 
 			Log.Info( $"[Effigy] wrote {dmxPath} - {skeleton.Count} bones, {mesh.VertexCount} vertices" );
 
@@ -3967,19 +4035,19 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 			// appears once the clip plays.
 			var clips = EffigyAnimExport.WriteClips( _animClips, folder, "models/effigy", skeleton );
 
-			var vmdlPath = Path.Combine( folder, "export.vmdl" );
-			File.WriteAllText( vmdlPath, BuildSkinnedVmdl( "models/effigy/export.dmx", skeleton,
+			var vmdlPath = Path.Combine( folder, $"{name}.vmdl" );
+			File.WriteAllText( vmdlPath, BuildSkinnedVmdl( $"models/effigy/{name}.dmx", skeleton,
 				BuildPhysics( rigged: true ), VmdlMaterials.GroupList( _studio, mesh ),
 				VmdlAnimation.AnimationList( clips.ToArray() ) ) );
 
 			var result = EffigyAssetFolder.Register( folder );
 			Log.Info( $"[Effigy] wrote {vmdlPath} - {result.Registered} registered" );
 
-			var asset = AssetSystem.FindByPath( "models/effigy/export.vmdl" );
+			var asset = AssetSystem.FindByPath( $"models/effigy/{name}.vmdl" );
 
 			if ( asset is null )
 			{
-				Log.Warning( "[Effigy] export.vmdl was written but the asset system couldn't find it" );
+				Log.Warning( $"[Effigy] {name}.vmdl was written but the asset system couldn't find it" );
 				return;
 			}
 
@@ -3987,46 +4055,46 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 
 			if ( asset.IsCompileFailed )
 			{
-				Log.Warning( "[Effigy] export.vmdl compile FAILED - the compiler's own output above "
+				Log.Warning( $"[Effigy] {name}.vmdl compile FAILED - the compiler's own output above "
 					+ "says why. The .dmx and .smd are both on disk either way." );
 				return;
 			}
 
-			Log.Info( $"[Effigy] export.vmdl compiled - {skeleton.Count} bone(s), loading into viewport" );
-			_viewport?.SetModel( Model.Load( "models/effigy/export.vmdl" ) );
+			Log.Info( $"[Effigy] {name}.vmdl compiled - {skeleton.Count} bone(s), loading into viewport" );
+			_viewport?.SetModel( Model.Load( $"models/effigy/{name}.vmdl" ) );
 			return;
 		}
 
 		// STATIC PATH: no bones — export a weightless OBJ.
-		var staticObjPath = Path.Combine( folder, "export.obj" );
+		var staticObjPath = Path.Combine( folder, $"{name}.obj" );
 		var staticMesh = _studio.ToMesh();
 		ApplyPivot( staticMesh );
 
-		ObjWriter.WriteFile( staticMesh, staticObjPath, "effigy_export",
+		ObjWriter.WriteFile( staticMesh, staticObjPath, name,
 			materialName: _studio.NameForSlot );
 
-		var staticVmdlPath = Path.Combine( folder, "export.vmdl" );
-		File.WriteAllText( staticVmdlPath, BuildVmdl( "models/effigy/export.obj",
+		var staticVmdlPath = Path.Combine( folder, $"{name}.vmdl" );
+		File.WriteAllText( staticVmdlPath, BuildVmdl( $"models/effigy/{name}.obj",
 			BuildPhysics( rigged: false ), VmdlMaterials.GroupList( _studio, staticMesh ) ) );
 
 		var staticResult = EffigyAssetFolder.Register( folder );
 		Log.Info( $"[Effigy] wrote {staticObjPath} and {staticVmdlPath} — {staticResult.Registered} registered" );
 
-		var staticAsset = AssetSystem.FindByPath( "models/effigy/export.vmdl" );
+		var staticAsset = AssetSystem.FindByPath( $"models/effigy/{name}.vmdl" );
 		if ( staticAsset is null )
 		{
-			Log.Warning( "[Effigy] export.vmdl was written but asset system couldn't find it" );
+			Log.Warning( $"[Effigy] {name}.vmdl was written but asset system couldn't find it" );
 			return;
 		}
 
 		staticAsset.Compile( true );
 		Log.Info( staticAsset.IsCompileFailed
-			? "[Effigy] export.vmdl compile FAILED"
-			: "[Effigy] export.vmdl compiled — loading into viewport" );
+			? $"[Effigy] {name}.vmdl compile FAILED"
+			: $"[Effigy] {name}.vmdl compiled — loading into viewport" );
 
 		if ( !staticAsset.IsCompileFailed )
 		{
-			var model = Model.Load( "models/effigy/export.vmdl" );
+			var model = Model.Load( $"models/effigy/{name}.vmdl" );
 			_viewport?.SetModel( model );
 		}
 	}

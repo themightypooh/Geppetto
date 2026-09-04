@@ -30,6 +30,12 @@ forgotten.
 ## Unreleased
 
 ### Fixed
+- Exporting no longer overwrites the last thing you exported. Every part studio
+  compiled to `models/effigy/export.vmdl` — one name for the whole project — so
+  compiling the spatula replaced the grill, and anything already placed in a
+  scene changed shape without a word. The exported `.vmdl`, `.obj`, `.dmx` and
+  `.smd` now take the document's own name, and an unsaved studio is asked for
+  one instead of being given a name that collides with the next.
 - A `.effigy` part studio no longer fills your console with "Tried to load
   ... but couldn't load from data" whenever the asset browser looks at it.
   Nothing was ever broken behind it — claiming the extension tells the engine
