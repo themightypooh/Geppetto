@@ -19,14 +19,40 @@ BOXES = ["Added", "Improved", "Fixed", "Removed", "Known Issues"]
 
 text = open(sys.argv[1], encoding="utf-8").read()
 
-# Everything between "## Unreleased" and the next release heading.
-match = re.search(r"^## Unreleased\s*\n(.*?)(?=^## )", text, re.S | re.M)
+# HTML comments are notes to whoever maintains the file. Left in, the block at the end of the last
+# section gets swept up as part of its final bullet and pasted onto the store page.
+text = re.sub(r"<!--.*?-->", "", text, flags=re.S)
 
-if not match:
-    print("no Unreleased section in CHANGELOG.md")
+# Which "## " section to print. No argument means Unreleased, which is the common case. A version
+# is for going back and filling in a changelist for a revision already published, which the site
+# allows from its "Assign to a revision" list.
+wanted = sys.argv[2] if len(sys.argv) > 2 else "Unreleased"
+
+headings = re.findall(r"^## (.+?)\s*$", text, re.M)
+
+# Match on the leading token, so "367356" finds "v367356 — 2026-09-04" without retyping the date.
+matches = [h for h in headings
+           if h == wanted or h.split()[0].lstrip("v") == wanted.lstrip("v")]
+
+if not matches:
+    print("no section '{}' in CHANGELOG.md. It has:".format(wanted))
+
+    for h in headings:
+        print("    " + h)
+
     raise SystemExit(1)
 
-unreleased = match.group(1)
+heading = matches[0]
+
+# To the next "## ", or the end of the file for the last section.
+unreleased = re.search(
+    r"^## " + re.escape(heading) + r"\s*\n(.*?)(?=^## |\Z)", text, re.S | re.M).group(1)
+
+# Say which section this is whenever it is not the one asked for verbatim, so a paste into the
+# wrong revision's boxes is caught before it is pasted.
+if heading != wanted:
+    print("# {}".format(heading))
+    print()
 
 buckets = {name: [] for name in BOXES}
 unknown = {}
@@ -62,6 +88,11 @@ def entries(body):
         # A trailing (`Foo.cs`, `Bar`) is a note to whoever works on the repo. Nobody reading
         # release notes on a store page wants it.
         line = re.sub(r"\s*\((?:`[^`]+`(?:,\s*)?)+\)\s*$", "", line)
+
+        # The form's boxes are plain text, so markdown emphasis arrives as literal asterisks and
+        # backticks. Keep the words, drop the markup - it reads correctly in the file either way.
+        line = re.sub(r"\*\*(.+?)\*\*", r"\1", line)
+        line = line.replace("`", "")
 
         if line:
             out.append(line)

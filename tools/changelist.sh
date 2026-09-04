@@ -17,13 +17,15 @@
 # A bullet under any other heading is reported as unpublishable rather than dropped, because the
 # failure this whole thing exists to prevent is a note that never reached anybody.
 #
-#   tools/changelist.sh
+#   tools/changelist.sh              the Unreleased section
+#   tools/changelist.sh 367356    a revision already published, for the site's
+#                                 "Assign to a revision" list
 #
 set -eu
 
 root=$( cd "$( dirname "$0" )/.." && pwd )
 cd "$root"
 
-python "$root/tools/changelist.py" "$root/CHANGELOG.md"
+python "$root/tools/changelist.py" "$root/CHANGELOG.md" "$@"
 
 echo "Paste these into https://sbox.game/pooh/geppetto - Edit changelist."
