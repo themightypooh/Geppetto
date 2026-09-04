@@ -52,9 +52,29 @@ internal static class EffigyAnimExport
 	// --- sampling -----------------------------------------------------------------------------
 
 	/// <summary>
-	/// An engine Transform as a kernel Xform, in the basis convention the rest of the rig uses:
-	/// X is right, Y is bone forward, Z is up. Same decomposition as
-	/// `EffigyViewport.ApplyBoneTransform`, which is where that convention is stated.
+	/// An engine Transform as a kernel Xform.
+	///
+	/// AN XFORM'S COLUMNS ARE WHERE THE UNIT AXES LAND — that is Xform's own definition of itself,
+	/// and `DmxText.Quaternion` reads them back as exactly that when it turns a basis into the
+	/// quaternion a DmeChannel carries. So this has to be the true decomposition of the rotation,
+	/// not a naming convention:
+	///
+	///     X ← the image of (1,0,0), which s&amp;box calls Forward
+	///     Y ← the image of (0,1,0), which is Left, i.e. -Right
+	///     Z ← the image of (0,0,1), which is Up
+	///
+	/// THIS USED TO BE (Right, Forward, Up), COPIED FROM `EffigyViewport.ApplyBoneTransform`, and
+	/// it is the reason exported clips crumpled the model on playback. That triple is not the
+	/// rotation's basis — it is the basis with X and Y swapped and one of them negated, which is a
+	/// perfectly valid rotation matrix and therefore compiles without a murmur. What it writes is
+	/// `R · Rz(-90°)`: every bone turned a quarter turn about its own Z.
+	///
+	/// It does not cancel out, which is why it was worth this much comment. Each bone's POSITION is
+	/// written correctly in its parent's true frame, so the extra quarter turn on the parent throws
+	/// the child sideways rather than merely spinning it in place, and the error compounds down
+	/// every chain — a shoulder off by 90° puts the hand somewhere else entirely. Both the bind
+	/// pose and the frames come through here, so nothing downstream had a correct value to
+	/// disagree with.
 	///
 	/// SCALE IS DROPPED, deliberately. A DmeChannel writes position and orientation and nothing
 	/// else, so a scaled keyframe has nowhere to go in the format; carrying it into the basis
@@ -63,14 +83,14 @@ internal static class EffigyAnimExport
 	public static Xform ToXform( Transform t )
 	{
 		var rot = t.Rotation;
-		var right = rot.Right;
-		var forward = rot.Forward;
-		var up = rot.Up;
+		var x = rot.Forward;
+		var y = -rot.Right;
+		var z = rot.Up;
 
 		return new Xform(
-			new Vec3( right.x, right.y, right.z ),
-			new Vec3( forward.x, forward.y, forward.z ),
-			new Vec3( up.x, up.y, up.z ),
+			new Vec3( x.x, x.y, x.z ),
+			new Vec3( y.x, y.y, y.z ),
+			new Vec3( z.x, z.y, z.z ),
 			new Vec3( t.Position.x, t.Position.y, t.Position.z ) );
 	}
 
