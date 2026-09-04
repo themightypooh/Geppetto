@@ -9,10 +9,13 @@
 # driving the editor. The form is the only door there is. What was avoidable is retyping the notes
 # into it, and that is what this removes.
 #
-# CATEGORIES COME FROM THE WORDING. A bullet lands in Added / Improved / Fixed / Removed / Known
-# Issues depending on how it starts, and anything unclassified goes to Improved because that is
-# the box a reader forgives being wrong. Move a line by hand if you disagree - this reads the
-# file, it does not know better than you.
+# CATEGORIES COME FROM THE FILE. CHANGELOG.md groups Unreleased under the same five headings the
+# form asks for, so this reads them rather than inferring anything. It used to guess from how a
+# line started and put a new feature under Fixed because the sentence contained "no longer" - the
+# file knows which box a change belongs in, and nothing here is better placed to decide.
+#
+# A bullet under any other heading is reported as unpublishable rather than dropped, because the
+# failure this whole thing exists to prevent is a note that never reached anybody.
 #
 #   tools/changelist.sh
 #

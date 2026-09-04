@@ -2,29 +2,27 @@
 
 What shipped in each Geppetto package revision on sbox.game.
 
-Add lines to **Unreleased** as you go. When you publish a revision, rename that
-heading to the version and paste the same text into the "Change Detail" box in
-the upload dialog. The box is the last step before publish and is easy to blow
-past, so this file is the record that survives either way.
+Add lines to **Unreleased** as you go, under one of the five headings below.
+They are not arbitrary: they are the boxes the changelist form on sbox.game
+asks for, so `tools/changelist.sh` can hand you the text for each box instead
+of guessing which one a line belongs in. Use the same five in every release.
+
+- **Added** — something you can now do that you could not before.
+- **Improved** — something that already worked and now works better.
+- **Fixed** — something that was broken.
+- **Removed** — something that is gone.
+- **Known Issues** — something broken that is not fixed yet.
+
+Write for whoever installed the package, not for whoever works on it. Trailing
+file references in backticks are fine — `changelist.sh` strips them on the way
+out, so they stay useful here and never reach the store page.
+
+When you publish a revision, rename **Unreleased** to the version, run
+`tools/changelist.sh`, and paste each block into its box on the site.
 
 ## Unreleased
 
-### Tooling
-- The editor assembly no longer compiles its own copy of the four kernel files
-  the game assembly already provides, so `Vec2` and friends are one type again
-  instead of two that look identical. That was 1857 compiler warnings hiding
-  every warning worth reading.
-- `tools/changelist.sh` prints the notes below as lines ready to paste into
-  the changelist form on sbox.game. The site is the only place a changelist can
-  be made — the editor's API can read them and not write them — so this cuts the
-  retyping rather than the step.
-- `tools/ship.sh` now updates the s&box package too, so one command covers the
-  repo and the library instead of leaving the package as a thing to remember
-  afterwards. It needs the editor open on Geppetto — if it isn't, the push
-  still happens and it tells you to run `tools/publish.sh --commit` later.
-  `--no-publish` skips it.
-
-### Effigy
+### Added
 - Select first, then pick the tool. Click a face or a part in the viewport and
   the next feature you add starts already pointed at it, instead of making you
   choose again in the dialog. A face selection also tells the tool which part
@@ -47,6 +45,26 @@ past, so this file is the record that survives either way.
   Deliberately kept out of the feature list so no exporter can reach them —
   notes cannot appear in OBJ, DMX or the compiled vmdl. Covered by `NoteTests`.
   (`Effigy/Note.cs`, `Effigy/NoteSession.cs`, `PartStudio`, `StudioDocument`)
+
+### Improved
+- Publishing this package is one command. `tools/ship.sh` syncs, commits, tests,
+  pushes and then updates the s&box package, instead of leaving the package as a
+  thing to remember afterwards. It needs the editor open on Geppetto — if it
+  isn't, the push still happens and it says to run `tools/publish.sh --commit`
+  later. `--no-publish` skips it.
+- `tools/changelist.sh` prints these notes as the boxes the changelist form
+  asks for. The site is the only place a changelist can be made — the editor's
+  API can read them and not write them — so this cuts the retyping, not the
+  step.
+
+### Fixed
+- The editor assembly no longer compiles its own copy of the four kernel files
+  the game assembly already provides, so `Vec2` and friends are one type again
+  instead of two that look identical to read and refuse to substitute for each
+  other. That was 1857 compiler warnings hiding every warning worth reading.
+- The test suite writes its samples beside itself rather than into whatever
+  directory it was launched from, which had quietly put 46 sample meshes into
+  the published package.
 
 ## v1 — 2026-09-02 (version 367036)
 

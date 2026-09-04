@@ -11,6 +11,12 @@ import sys
 # rather than mangles. Say UTF-8 out loud.
 sys.stdout.reconfigure(encoding="utf-8")
 
+# The five boxes the form asks for, in the order it asks for them. CHANGELOG.md uses the same five
+# as its ### headings, which is the whole point: the file says which box a line belongs in, so
+# nothing here has to infer it from wording. An earlier version guessed from how a line started and
+# filed a new feature under Fixed because the sentence happened to contain "no longer".
+BOXES = ["Added", "Improved", "Fixed", "Removed", "Known Issues"]
+
 text = open(sys.argv[1], encoding="utf-8").read()
 
 # Everything between "## Unreleased" and the next release heading.
@@ -20,46 +26,52 @@ if not match:
     print("no Unreleased section in CHANGELOG.md")
     raise SystemExit(1)
 
-bullets = []
+unreleased = match.group(1)
 
-for chunk in match.group(1).split("\n- ")[1:]:
-    # Section headings (### Effigy, ### Tooling) group the file for a reader; to the form they are
-    # not entries. Cut each bullet where the next heading starts rather than letting one trail on.
-    chunk = re.split(r"\n\s*#", chunk)[0]
+buckets = {name: [] for name in BOXES}
+unknown = {}
 
-    # One line per bullet: the form reads a newline as a new entry, so a wrapped sentence would
-    # arrive as three entries that each say a third of a thing.
-    line = re.sub(r"\s+", " ", chunk.strip()).strip()
+# Split on the ### headings, keeping which heading each run of bullets sat under.
+sections = re.split(r"^###\s+(.+?)\s*$", unreleased, flags=re.M)
 
-    # Sub-bullets are detail on the line above, not entries of their own.
-    line = re.sub(r"\s+- ", " - ", line)
+# sections[0] is anything before the first heading - bullets written without one.
+if sections[0].strip().startswith("-"):
+    unknown["(no heading)"] = sections[0]
 
-    # A trailing (`Foo.cs`, `Bar`) is a note to whoever works on the repo. Nobody reading release
-    # notes on a store page wants it.
-    line = re.sub(r"\s*\((?:`[^`]+`(?:,\s*)?)+\)\s*$", "", line)
-
-    if line:
-        bullets.append(line)
-
-buckets = {"Added": [], "Improved": [], "Fixed": [], "Removed": [], "Known Issues": []}
-
-for line in bullets:
-    low = line.lower()
-
-    # How a line STARTS, not what it mentions: half these entries say "no longer" somewhere in the
-    # middle while describing a new feature, and matching that anywhere filed them all as fixes.
-    if low.startswith(("fix", "stop ", "no longer")):
-        buckets["Fixed"].append(line)
-    elif low.startswith(("remove", "drop", "delete")):
-        buckets["Removed"].append(line)
-    elif low.startswith(("known ", "still ")) or "not yet" in low:
-        buckets["Known Issues"].append(line)
-    elif low.startswith(("add", "new ", "select first", "double-click")):
-        buckets["Added"].append(line)
+for name, body in zip(sections[1::2], sections[2::2]):
+    if name in buckets:
+        buckets[name].append(body)
     else:
-        buckets["Improved"].append(line)
+        unknown.setdefault(name, "")
+        unknown[name] += body
 
-for name, lines in buckets.items():
+
+def entries(body):
+    """The bullets in one section, each flattened to the single line the form wants."""
+
+    out = []
+
+    for chunk in body.split("\n- ")[1:]:
+        # One line per bullet: the form reads a newline as a new entry, so a wrapped sentence
+        # would arrive as three entries that each say a third of a thing.
+        line = re.sub(r"\s+", " ", chunk.strip()).strip()
+
+        # Sub-bullets are detail on the line above, not entries of their own.
+        line = re.sub(r"\s+- ", " - ", line)
+
+        # A trailing (`Foo.cs`, `Bar`) is a note to whoever works on the repo. Nobody reading
+        # release notes on a store page wants it.
+        line = re.sub(r"\s*\((?:`[^`]+`(?:,\s*)?)+\)\s*$", "", line)
+
+        if line:
+            out.append(line)
+
+    return out
+
+
+for name in BOXES:
+    lines = [line for body in buckets[name] for line in entries(body)]
+
     if not lines:
         continue
 
@@ -68,4 +80,21 @@ for name, lines in buckets.items():
     for line in lines:
         print(line)
 
+    print()
+
+# A heading that is not one of the five is a line that will not reach the form, so say so rather
+# than dropping it silently - the failure mode this replaces is notes that never got published.
+for name, body in unknown.items():
+    lines = entries(body)
+
+    if not lines:
+        continue
+
+    print("!!! {} is not one of the five boxes - these will not be published:".format(name))
+
+    for line in lines:
+        print("    " + line)
+
+    print()
+    print("    Move them under {} in CHANGELOG.md.".format(", ".join(BOXES)))
     print()
