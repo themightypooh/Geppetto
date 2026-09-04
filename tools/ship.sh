@@ -106,9 +106,15 @@ fi
 
 echo ""
 
-# tee, not a plain capture: the publish takes a while and watching it upload is most of the
-# reassurance that anything is happening.
-out=$( tools/publish.sh --commit | tee /dev/tty )
+# Streamed AND captured: the publish takes a while and watching it upload is most of the
+# reassurance that anything is happening, but the revision it reports has to be read back. tee to
+# a file rather than /dev/tty, which does not exist everywhere this runs.
+log=$( mktemp )
+trap 'rm -f "$log"' EXIT
+
+tools/publish.sh --commit | tee "$log"
+
+out=$( cat "$log" )
 
 # publish.sh's last line is "revision <id> <moved>", meant for exactly this.
 set -- $( printf '%s' "$out" | sed -n 's/^revision //p' | tail -1 )
