@@ -266,8 +266,10 @@ internal sealed class EffigyFeatureDialog : Widget
 		// previous dialog's list is how a brand new Extrude saw zero sketches.
 		OpenedForFeature?.Invoke( feature );
 
-		// An existing sketch already has its plane; a brand new one is waiting for you to pick.
-		_planeChosen = !isNew;
+		// An existing sketch already has its plane; a brand new one is waiting for you to pick —
+		// unless a face was already selected when the tool was pressed, in which case that face
+		// IS the plane and opening the dialog is entering the sketch.
+		_planeChosen = !isNew || (_feature is SketchFeature alreadyOnFace && alreadyOnFace.Face is not null);
 
 		TakeSnapshot();
 
@@ -313,9 +315,9 @@ internal sealed class EffigyFeatureDialog : Widget
 	/// </summary>
 	private void ArmPendingSelection( bool isNew )
 	{
-		if ( _feature is SketchFeature )
+		if ( _feature is SketchFeature sketch )
 		{
-			if ( isNew )
+			if ( isNew && sketch.Face is null )
 				_activeArmable?.Arm();
 
 			return;
@@ -331,6 +333,16 @@ internal sealed class EffigyFeatureDialog : Widget
 			// of the time. Arming would make a plain "subdivide this" feel like it needed a click
 			// before it would do anything.
 			if ( picking.Count == 0 && _feature is not SubdivideFeature )
+				_activeArmable?.Arm();
+
+			return;
+		}
+
+		if ( PickedEdges( _feature ) is { } edges )
+		{
+			// A part already selected with no edges means "every sharp edge of that part".
+			// Arming would steal that and wait for a click that already happened.
+			if ( edges.Count == 0 && !HasBodySelection( _feature ) )
 				_activeArmable?.Arm();
 
 			return;
@@ -399,12 +411,15 @@ internal sealed class EffigyFeatureDialog : Widget
 		_viewport.PlanePickMode = false;
 		_viewport.FacePickMode = false;
 		_viewport.FacePicked = null;
+		_viewport.EdgePickMode = false;
+		_viewport.EdgePicked = null;
 		_viewport.SketchPickMode = false;
 		_viewport.SketchPicked = null;
 		_viewport.BodyPickMode = false;
 		_viewport.BodyPicked = null;
 		_viewport.SelectedBodyIds = null;
 		_viewport.SelectedFaces = null;
+		_viewport.SelectedEdges = null;
 		_viewport.SetPickPrompt( "" );
 	}
 
@@ -733,6 +748,18 @@ internal sealed class EffigyFeatureDialog : Widget
 			return;
 		}
 
+		if ( PickedEdges( _feature ) is { } edges )
+		{
+			_viewport.SetPickableBodies( _pickableBodiesLookup?.Invoke() );
+
+			var edgeSelector = new EffigyEdgeSetSelector( _body, _viewport, edges, OnFaceSetChanged,
+				_feature is ChamferFeature ? "Edges to chamfer" : "Edges to fillet" );
+			_activeArmable = edgeSelector;
+			AddRow( edgeSelector );
+			AddParamRows( _feature.Parameters );
+			return;
+		}
+
 		// Extrude/Revolve consume a sketch, and the profile is picked in the viewport the same
 		// way a sketch's plane is. The Sketch ChoiceParam is storage plumbing the kernel never
 		// reads a choice from, so it is swapped for a selection box instead of a dead dropdown.
@@ -944,6 +971,24 @@ internal sealed class EffigyFeatureDialog : Widget
 		SubdivideFeature subdivide => subdivide.Faces,
 		_ => null,
 	};
+
+	private static List<EdgeRef> PickedEdges( Feature feature ) => feature switch
+	{
+		FilletFeature fillet => fillet.Edges,
+		ChamferFeature chamfer => chamfer.Edges,
+		_ => null,
+	};
+
+	private static bool HasBodySelection( Feature feature )
+	{
+		foreach ( var param in feature.Parameters )
+		{
+			if ( param is BodySelectionParam bodies && bodies.BodyIds.Count > 0 )
+				return true;
+		}
+
+		return false;
+	}
 
 	private Widget BuildMaterialRow( FaceMaterialFeature material )
 	{
@@ -2229,7 +2274,7 @@ internal sealed class EffigyBodySelector : Widget, IArmableSelection
 	/// always what is stored.</summary>
 	private void Push()
 	{
-		_viewport.SelectedBodyIds = _armed ? _param.BodyIds.ToList() : null;
+		_viewport.SelectedBodyIds = _param.BodyIds.Count > 0 ? _param.BodyIds.ToList() : null;
 	}
 
 	public override void OnDestroyed()
@@ -2364,7 +2409,7 @@ internal sealed class EffigyFaceSetSelector : Widget, IArmableSelection
 		_viewport.FacePickMode = true;
 		_viewport.FacePicked = OnFacePicked;
 		Push();
-		_viewport.SetPickPrompt( "Click the faces to put on this material slot. Escape when done." );
+		_viewport.SetPickPrompt( $"Click the {_label.ToLowerInvariant()}. Escape when done." );
 		Update();
 	}
 
@@ -2419,7 +2464,167 @@ internal sealed class EffigyFaceSetSelector : Widget, IArmableSelection
 
 	private void Push()
 	{
-		_viewport.SelectedFaces = _armed ? _faces.ToList() : null;
+		_viewport.SelectedFaces = _faces.Count > 0 ? _faces.ToList() : null;
+	}
+
+	public override void OnDestroyed()
+	{
+		base.OnDestroyed();
+
+		if ( _armed )
+			Disarm();
+	}
+}
+
+/// <summary>
+/// The edges a fillet or chamfer cuts, picked in the viewport. Same box as the face set: a click
+/// toggles, Escape ends it, the count is the readout because an edge has no name.
+/// </summary>
+internal sealed class EffigyEdgeSetSelector : Widget, IArmableSelection
+{
+	private readonly EffigyViewport _viewport;
+	private readonly List<EdgeRef> _edges;
+	private readonly string _label;
+	private readonly Action _changed;
+	private bool _armed;
+
+	public EffigyEdgeSetSelector( Widget parent, EffigyViewport viewport, List<EdgeRef> edges,
+		Action changed, string label = "Edges" ) : base( parent )
+	{
+		_viewport = viewport;
+		_edges = edges;
+		_label = label;
+		_changed = changed;
+
+		Layout = Layout.Row();
+		Layout.Margin = new Sandbox.UI.Margin( 8, 3 );
+		FixedHeight = 46f;
+		Cursor = CursorShape.Finger;
+		Push();
+	}
+
+	private Rect ClearRect() => new( Width - 26f, 18f, 18f, 22f );
+
+	protected override void OnPaint()
+	{
+		var count = _edges.Count;
+
+		Paint.SetPen( Theme.TextControl.WithAlpha( 0.7f ) );
+		Paint.SetDefaultFont( 8 );
+		Paint.DrawText( new Rect( 0f, 0f, Width, 16f ).Shrink( 8f, 2f, 0f, 0f ), _label, TextFlag.LeftTop );
+
+		var box = new Rect( 8f, 18f, Width - 16f, 22f );
+
+		Paint.ClearPen();
+		Paint.SetBrush( _armed ? Theme.Blue.WithAlpha( 0.18f ) : Theme.ControlBackground );
+		Paint.DrawRect( box, 2f );
+
+		Paint.ClearBrush();
+		Paint.SetPen( _armed ? Theme.Blue : Theme.TextControl.WithAlpha( 0.35f ) );
+		Paint.DrawRect( box, 2f );
+
+		Paint.SetDefaultFont( 9 );
+
+		var label = count switch
+		{
+			0 when _armed => "Click the edges to blend",
+			0 => "Every sharp edge",
+			1 => "1 edge",
+			_ => $"{count} edges"
+		};
+
+		if ( _armed && count > 0 )
+			label += " — click to add or remove";
+
+		Paint.SetPen( _armed ? Theme.Blue : Theme.TextControl );
+		Paint.DrawText( box.Shrink( 6f, 0f, 30f, 0f ), label, TextFlag.LeftCenter );
+
+		if ( count == 0 )
+			return;
+
+		Paint.SetPen( Theme.TextControl.WithAlpha( 0.55f ) );
+		Paint.DrawIcon( ClearRect(), "close", 14, TextFlag.Center );
+	}
+
+	protected override void OnMousePress( MouseEvent e )
+	{
+		base.OnMousePress( e );
+
+		if ( !e.LeftMouseButton )
+			return;
+
+		if ( _edges.Count > 0 && ClearRect().IsInside( e.LocalPosition ) )
+		{
+			_edges.Clear();
+			Push();
+			Update();
+			_changed?.Invoke();
+			return;
+		}
+
+		if ( _armed )
+			Disarm();
+		else
+			Arm();
+	}
+
+	public void Arm()
+	{
+		if ( _armed )
+			return;
+
+		_armed = true;
+		_viewport.EdgePickMode = true;
+		_viewport.EdgePicked = OnEdgePicked;
+		Push();
+		_viewport.SetPickPrompt( "Click the edges to blend. Escape when done." );
+		Update();
+	}
+
+	public void Disarm()
+	{
+		if ( !_armed )
+			return;
+
+		_armed = false;
+		_viewport.EdgePickMode = false;
+		_viewport.EdgePicked = null;
+		_viewport.SelectedEdges = _edges.Count > 0 ? _edges.ToList() : null;
+		_viewport.SetPickPrompt( "" );
+		Update();
+	}
+
+	private void OnEdgePicked( EdgeRef edge )
+	{
+		var bodies = _viewport.PickableBodies;
+
+		if ( !FacePlane.TryResolveEdge( bodies, edge, out var body, out var key ) )
+			return;
+
+		for ( var i = 0; i < _edges.Count; i++ )
+		{
+			if ( !FacePlane.TryResolveEdge( bodies, _edges[i], out var existing, out var existingKey ) )
+				continue;
+
+			if ( existing.Id != body.Id || !existingKey.Equals( key ) )
+				continue;
+
+			_edges.RemoveAt( i );
+			Push();
+			Update();
+			_changed?.Invoke();
+			return;
+		}
+
+		_edges.Add( edge );
+		Push();
+		Update();
+		_changed?.Invoke();
+	}
+
+	private void Push()
+	{
+		_viewport.SelectedEdges = _edges.Count > 0 ? _edges.ToList() : null;
 	}
 
 	public override void OnDestroyed()

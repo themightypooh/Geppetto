@@ -55,6 +55,9 @@ public static class EdgeBlendTests
 
 		Section( "bevel stays local on a collinear corner" );
 		TestCollinearCornersStayLocal();
+
+		Section( "an explicit edge list cuts only those edges" );
+		TestExplicitEdgeList();
 	}
 
 	/// <summary>
@@ -301,6 +304,44 @@ public static class EdgeBlendTests
 
 		Check( "volume shrinks but stays positive", Volume( chamfered ) > 0f && Volume( chamfered ) < Volume( wedge ),
 			$"original {Volume( wedge )}, chamfered {Volume( chamfered )}" );
+	}
+
+	static void TestExplicitEdgeList()
+	{
+		var cube = Primitives.Box( 2, 2, 2 );
+		EdgeKey top = default;
+		var found = false;
+
+		foreach ( var (key, _) in cube.BuildEdgeFaces() )
+		{
+			var a = cube.Positions[key.A];
+			var b = cube.Positions[key.B];
+
+			if ( MathF.Abs( a.z - 1f ) > 1e-4f || MathF.Abs( b.z - 1f ) > 1e-4f )
+				continue;
+
+			top = key;
+			found = true;
+			break;
+		}
+
+		Check( "the cube has a top edge to pick", found );
+
+		var one = EdgeBlend.ChamferReport( cube, 0.2f, new[] { top } );
+		var all = EdgeBlend.Chamfer( cube, 0.2f, 15f );
+
+		Check( "an explicit list actually cuts", one.Failure is null, one.Failure?.Problem ?? "" );
+		Check( "and names exactly one edge", one.SelectedEdges == 1, $"{one.SelectedEdges}" );
+
+		var validation = MeshValidator.Validate( one.Mesh );
+		Check( "the one-edge cut stays closed and manifold", validation.IsValid && validation.IsClosed,
+			validation.ToString() );
+		Check( "it adds fewer faces than blending every sharp edge",
+			one.Mesh.FaceCount < all.FaceCount,
+			$"one {one.Mesh.FaceCount}, all {all.FaceCount}" );
+		Check( "volume shrinks, but less than a full chamfer",
+			Volume( one.Mesh ) < Volume( cube ) && Volume( one.Mesh ) > Volume( all ),
+			$"original {Volume( cube )}, one {Volume( one.Mesh )}, all {Volume( all )}" );
 	}
 
 	static void TestUnreachableThresholdIsANoOp()

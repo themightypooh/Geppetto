@@ -214,40 +214,35 @@ internal sealed partial class EffigyViewport : Widget
 	}
 
 	/// <summary>
-	/// Light the viewport the way a runtime scene is lit, so a material looks here like it looks
-	/// in game.
+	/// Build the studio lighting rig — one sun, a dim ambient, a cubemap, a pinned tonemapper —
+	/// then apply whichever mode the viewport is in.
 	///
-	/// The rig this replaced was a light box: a full-strength white sun, a 0.6 fill from behind,
-	/// and a flat 0.6 ambient on top. That is roughly 2.2x white light on a face pointing at the
-	/// sun, with no tonemapper after it to roll the top end off, so a 0.5 grey rendered at about
-	/// 0.88 and every pastel arrived at the screen as near-white. Materials could be told apart in
-	/// it but not judged, which is no use once the preview is wearing the real vmats.
+	/// STUDIO is how a material looks in game: the values are the ones s&amp;box's own default
+	/// scene ships with. FULL BRIGHT is how you model: even light from every side, so a face you
+	/// are about to sketch on does not disappear into the unlit side of the sun. Full bright is
+	/// the default; studio is the setting. See <see cref="ApplyLighting"/>.
 	///
-	/// The values are the ones s&amp;box's own default scene ships with — one sun slightly cool, a
-	/// dim neutral ambient, a cubemap for reflections — so "how it looks in Effigy" and "how it
-	/// looks in game" are answers to the same question.
+	/// The rig this first replaced was a light box (full-strength sun, a 0.6 fill, a 0.6 ambient)
+	/// with no tonemapper, which is why a 0.5 grey rendered at about 0.88 and every pastel arrived
+	/// as near-white. Studio keeps the tonemapper and drops the fill. Full bright drops the sun.
 	/// </summary>
 	private void BuildRuntimeLighting()
 	{
 		// Key light. Kept at the viewport's own 45/45 rather than the template's angle: this one is
 		// aimed to read a part sitting on the origin from the default camera, and the colour is
 		// what makes the difference to a material, not the direction.
-		var sun = new GameObject( true, "sun" ).GetOrAddComponent<DirectionalLight>( false );
-		sun.WorldRotation = Rotation.From( 45, 45, 0 );
-		sun.LightColor = new Color( 0.914f, 0.980f, 1f, 1f );
+		_sun = new GameObject( true, "sun" ).GetOrAddComponent<DirectionalLight>( false );
+		_sun.WorldRotation = Rotation.From( 45, 45, 0 );
+		_sun.LightColor = new Color( 0.914f, 0.980f, 1f, 1f );
 		// The legacy sky term, off. Ambient comes from the AmbientLight below — s&amp;box's own
 		// tooltip on this property says to do it that way, and doubling the two is how the old rig
 		// ended up over-lit.
-		sun.SkyColor = Color.Black;
-		sun.Enabled = true;
+		_sun.SkyColor = Color.Black;
+		_sun.Enabled = true;
 
-		// NO FILL LIGHT. A second sun with no shadow is what a photographer does to a subject, not
-		// what a game does to a prop, and it was the single biggest reason the unlit side of a part
-		// read a completely different colour here than in game.
-
-		var ambient = new GameObject( true, "ambient" ).GetOrAddComponent<AmbientLight>( false );
-		ambient.Color = new Color( 0.237f, 0.237f, 0.237f, 1f );
-		ambient.Enabled = true;
+		_ambient = new GameObject( true, "ambient" ).GetOrAddComponent<AmbientLight>( false );
+		_ambient.Color = new Color( 0.237f, 0.237f, 0.237f, 1f );
+		_ambient.Enabled = true;
 
 		// The sky, for REFLECTIONS ONLY — deliberately a probe and not a SkyBox2D. A 2D sky takes
 		// over the camera's background (its own docs say the background colour applies only when
@@ -272,6 +267,10 @@ internal sealed partial class EffigyViewport : Widget
 		tonemap.MaximumExposure = 1f;
 		tonemap.ExposureCompensation = 0f;
 		tonemap.Enabled = true;
+
+		// Honour the default (full bright) on the first frame, before Settings has a chance to
+		// restore a saved choice. RestoreSettings overwrites this a moment later if it has to.
+		ApplyLighting();
 	}
 
 	// --- layout helpers ---------------------------------------------------------------------
@@ -613,6 +612,7 @@ internal sealed partial class EffigyViewport : Widget
 			{
 				OriginSelected = true;
 				OriginSelectionChanged?.Invoke( true );
+				DeselectLight();
 			}
 		}
 	}
@@ -1274,6 +1274,7 @@ internal sealed partial class EffigyViewport : Widget
 		MaterialDropFrame();
 		SketchPickFrame();
 		FacePickFrame();
+		EdgePickFrame();
 		BodyPickFrame();
 		DrawRigSkeleton();
 		BoneToolFrame();
@@ -1293,23 +1294,35 @@ internal sealed partial class EffigyViewport : Widget
 		// `effigy_probe_sketch 1` has been run.
 		SketchProbe();
 
-		// Origin on top of the planes. Hidden while sketching or picking anything - it sits at the
-		// exact spot most first clicks land, and stealing them was the first thing that broke.
-		if ( !IsSketching && !PlanePickMode && !SketchPickMode && !BodyPickMode && !BoneToolActive )
+		// Origin and lamps on top of the planes. Hidden while sketching or picking anything - they
+		// sit where first clicks land, and stealing them was the first thing that broke.
+		if ( !IsSketching && !PlanePickMode && !SketchPickMode && !FacePickMode && !EdgePickMode && !BodyPickMode && !BoneToolActive )
 		{
+			DrawViewportLights();
 			DrawOrigin();
 
-			// Click empty space to deselect origin
-			if ( Gizmo.WasLeftMousePressed && !Gizmo.IsHovered && OriginSelected )
-				DeselectOrigin();
+			// HasHovered, not IsHovered: the move gizmo's arrows are Control hitboxes, and
+			// IsHovered only sees Hitbox.Sphere. Clicking an arrow used to count as empty space.
+			if ( Gizmo.WasLeftMousePressed && !Gizmo.HasHovered )
+			{
+				if ( OriginSelected )
+					DeselectOrigin();
+
+				if ( LightSelected )
+					DeselectLight();
+			}
 		}
+
+		// AFTER the origin, so a click on the origin handle is not also a click on the face sitting
+		// behind it. Idle hover/click only runs when no dialog owns the mouse.
+		IdleSelectionFrame();
 
 		// BoneToolActive and BodyPickMode: the same "you can click here" signal every other live
 		// pick mode already gets from Gizmo.HasHovered/_hoveredSketchId/_hoveredFaceBodyId. Without
 		// it, placing a bone or assigning a body was the only click-to-act mode in the whole tool
 		// that left the cursor a plain arrow the entire time.
 		Cursor = Gizmo.HasHovered || IsSketching || _hoveredSketchId is not null || _hoveredFaceBodyId is not null
-			|| BoneToolActive || BodyPickMode
+			|| BoneToolActive || BodyPickMode || FacePickMode || EdgePickMode
 			? CursorShape.Finger : CursorShape.Arrow;
 	}
 
@@ -1669,6 +1682,13 @@ internal sealed partial class EffigyViewport : Widget
 			}
 		}
 
+		if ( LightSelected && (e.Key == KeyCode.Delete || e.Key == KeyCode.Backspace) )
+		{
+			RemoveSelectedLight();
+			e.Accepted = true;
+			return;
+		}
+
 		if ( e.Key != KeyCode.Escape )
 		{
 			base.OnKeyPress( e );
@@ -1692,10 +1712,12 @@ internal sealed partial class EffigyViewport : Widget
 		// Escape stands down an armed selection box. The viewport owns the key press; the dialog
 		// owns the boxes' painted state, so it is told through PickModeCancelled. Sketch picking
 		// itself stays live while a consumer dialog is open — the dialog turns it off.
-		if ( PlanePickMode || SketchPickMode || BodyPickMode )
+		if ( PlanePickMode || SketchPickMode || BodyPickMode || FacePickMode || EdgePickMode )
 		{
 			PlanePickMode = false;
 			BodyPickMode = false;
+			FacePickMode = false;
+			EdgePickMode = false;
 			PickModeCancelled?.Invoke();
 			e.Accepted = true;
 			return;
@@ -1713,6 +1735,20 @@ internal sealed partial class EffigyViewport : Widget
 		if ( _selectedBoneIndex >= 0 )
 		{
 			DeselectBone();
+			e.Accepted = true;
+			return;
+		}
+
+		if ( HasIdleSelection )
+		{
+			ClearIdleSelection();
+			e.Accepted = true;
+			return;
+		}
+
+		if ( LightSelected )
+		{
+			DeselectLight();
 			e.Accepted = true;
 			return;
 		}

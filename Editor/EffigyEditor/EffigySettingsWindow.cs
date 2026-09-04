@@ -174,6 +174,14 @@ internal sealed class EffigySettingsWindow : Window
 		/// ignored; the applied values coming back carry the real number, and the caption under
 		/// the switch prints it.</summary>
 		public float SizeReferenceHeight;
+
+		/// <summary>Even light from every side. Off is the studio sun, plus any lamps you have
+		/// placed in the viewport.</summary>
+		public bool FullBright;
+
+		/// <summary>OUT ONLY — how many point lights are currently in the viewport, so the caption
+		/// under the switch can say so.</summary>
+		public int PlacedLightCount;
 	}
 
 	/// <summary>The spacings the dropdown offers, in sketch units. Zero is Automatic — the adaptive
@@ -200,10 +208,24 @@ internal sealed class EffigySettingsWindow : Window
 	/// switch has to go back to off with it rather than sit on over an empty floor.</summary>
 	private EffigyToggleSwitch _referenceToggle;
 
-	public EffigySettingsWindow( Widget owner, Values values, Func<Values, Values> changed )
+	/// <summary>Full-bright switch, kept so adding a light can flip it off from outside without
+	/// treating that as a new click.</summary>
+	private EffigyToggleSwitch _brightToggle;
+
+	/// <summary>The line under the lighting switch, kept so adding or clearing a light can rewrite
+	/// it.</summary>
+	private Editor.Label _lightsNote;
+
+	private readonly Action _addPointLight;
+	private readonly Action _clearLights;
+
+	public EffigySettingsWindow( Widget owner, Values values, Func<Values, Values> changed,
+		Action addPointLight = null, Action clearLights = null )
 	{
 		_values = values;
 		_changed = changed;
+		_addPointLight = addPointLight;
+		_clearLights = clearLights;
 
 		// PARENTED TO EFFIGY, NOT TO THE MAIN EDITOR WINDOW.
 		//
@@ -220,7 +242,7 @@ internal sealed class EffigySettingsWindow : Window
 			| WindowFlags.WindowSystemMenuHint | WindowFlags.WindowTitle;
 
 		WindowTitle = "Effigy Settings";
-		Size = new Vector2( 400, 420 );
+		Size = new Vector2( 400, 540 );
 
 		SetWindowIcon( "settings" );
 
@@ -315,6 +337,38 @@ internal sealed class EffigySettingsWindow : Window
 		// the way a hint does, not in the column of things you can change.
 		_referenceNote.SetStyles( "color: #808080; font-size: 11px;" );
 
+		// --- lighting ------------------------------------------------------------------------
+
+		Heading( canvas, "Lighting" );
+
+		_brightToggle = AddSwitch( canvas, "Full bright",
+			"Even light from every side, so a face is never in shadow while you model. Off is a "
+			+ "sun like a game scene, plus any lights you have placed.",
+			_values.FullBright,
+			value => { _values.FullBright = value; Changed(); } );
+
+		_lightsNote = canvas.Layout.Add( new Editor.Label( LightsNote( _values ) ) );
+		_lightsNote.SetStyles( "color: #808080; font-size: 11px;" );
+
+		var lightsRow = canvas.Layout.AddRow();
+		lightsRow.Spacing = 8;
+
+		var addLight = new Button( "Add point light", "wb_incandescent" )
+		{
+			ToolTip = "Drop a lamp in the viewport and drag it. Full bright turns off so you can "
+				+ "see what it does. Delete removes the selected one.",
+			Clicked = OnAddPointLight,
+		};
+
+		var clearLights = new Button( "Clear lights" )
+		{
+			ToolTip = "Remove every lamp you have placed. The studio sun stays if full bright is off.",
+			Clicked = OnClearLights,
+		};
+
+		lightsRow.Add( addLight );
+		lightsRow.Add( clearLights );
+
 		// --- the palette ---------------------------------------------------------------------
 
 		Heading( canvas, "Appearance" );
@@ -354,9 +408,40 @@ internal sealed class EffigySettingsWindow : Window
 		if ( _referenceNote.IsValid() )
 			_referenceNote.Text = ReferenceNote( _values );
 
+		if ( _lightsNote.IsValid() )
+			_lightsNote.Text = LightsNote( _values );
+
 		// notify false: this is the applied value coming home, not a new request. Notifying would
 		// hand it straight back to Changed and round the loop again.
 		_referenceToggle?.SetValue( _values.ShowSizeReference, notify: false );
+		_brightToggle?.SetValue( _values.FullBright, notify: false );
+	}
+
+	/// <summary>Rewrite the controls from values the viewport already applied — adding a light
+	/// from the View menu, or from the button below, both land here so the switch and the caption
+	/// match what is on screen.</summary>
+	public void Sync( Values values )
+	{
+		_values = values;
+
+		if ( _lightsNote.IsValid() )
+			_lightsNote.Text = LightsNote( _values );
+
+		if ( _referenceNote.IsValid() )
+			_referenceNote.Text = ReferenceNote( _values );
+
+		_brightToggle?.SetValue( _values.FullBright, notify: false );
+		_referenceToggle?.SetValue( _values.ShowSizeReference, notify: false );
+	}
+
+	private void OnAddPointLight()
+	{
+		_addPointLight?.Invoke();
+	}
+
+	private void OnClearLights()
+	{
+		_clearLights?.Invoke();
 	}
 
 	/// <summary>
@@ -375,6 +460,21 @@ internal sealed class EffigySettingsWindow : Window
 		return values.SizeReferenceHeight > 0f
 			? $"The citizen stands {values.SizeReferenceHeight:0.#} units tall."
 			: "The citizen could not be loaded - is the base citizen addon mounted?";
+	}
+
+	/// <summary>What the lighting switch is doing right now, in one line, including how many lamps
+	/// are in the scene so "Add point light" has somewhere to report back.</summary>
+	private static string LightsNote( Values values )
+	{
+		var lamps = values.PlacedLightCount == 0
+			? "No lamps placed."
+			: values.PlacedLightCount == 1
+				? "1 lamp in the viewport — drag the bulb to move it, Delete to remove it."
+				: $"{values.PlacedLightCount} lamps in the viewport — drag a bulb to move it, Delete to remove it.";
+
+		return values.FullBright
+			? $"Even light from every side. {lamps}"
+			: $"Studio sun, like a game scene. {lamps}";
 	}
 
 	private static void Heading( Widget canvas, string text )

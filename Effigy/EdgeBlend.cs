@@ -52,7 +52,12 @@ public static class EdgeBlend
 		=> ChamferReport( mesh, distance, angleThresholdDegrees ).Mesh;
 
 	public static BlendReport ChamferReport( PolyMesh mesh, float distance, float angleThresholdDegrees )
-		=> Apply( mesh, distance, angleThresholdDegrees, 1, rounded: false );
+		=> Apply( mesh, distance, angleThresholdDegrees, 1, rounded: false, explicitEdges: null );
+
+	/// <summary>Chamfer these edges, ignoring the angle threshold. Empty means nothing is cut.
+	/// </summary>
+	public static BlendReport ChamferReport( PolyMesh mesh, float distance, IEnumerable<EdgeKey> edges )
+		=> Apply( mesh, distance, 0f, 1, rounded: false, explicitEdges: ToSet( edges ) );
 
 	/// <summary>
 	/// Rounded cut. `radius` is the radius of the arc, not the setback — see the class comment for
@@ -67,7 +72,20 @@ public static class EdgeBlend
 		=> FilletReport( mesh, radius, angleThresholdDegrees, segments ).Mesh;
 
 	public static BlendReport FilletReport( PolyMesh mesh, float radius, float angleThresholdDegrees, int segments = 4 )
-		=> Apply( mesh, radius, angleThresholdDegrees, Math.Max( 1, segments ), rounded: true );
+		=> Apply( mesh, radius, angleThresholdDegrees, Math.Max( 1, segments ), rounded: true, explicitEdges: null );
+
+	/// <summary>Fillet these edges, ignoring the angle threshold. Empty means nothing is cut.
+	/// </summary>
+	public static BlendReport FilletReport( PolyMesh mesh, float radius, int segments, IEnumerable<EdgeKey> edges )
+		=> Apply( mesh, radius, 0f, Math.Max( 1, segments ), rounded: true, explicitEdges: ToSet( edges ) );
+
+	static HashSet<EdgeKey> ToSet( IEnumerable<EdgeKey> edges )
+	{
+		if ( edges is HashSet<EdgeKey> set )
+			return set;
+
+		return edges is null ? new HashSet<EdgeKey>() : new HashSet<EdgeKey>( edges );
+	}
 
 	/// <summary>
 	/// Cuts every edge whose two face normals diverge by at least `angleThresholdDegrees`.
@@ -81,7 +99,8 @@ public static class EdgeBlend
 	/// doesn't move far enough from its source to warrant one. An arc point between two corners cut
 	/// from the same vertex is that vertex's cut too, so it takes the same weights.
 	/// </summary>
-	static BlendReport Apply( PolyMesh mesh, float size, float angleThresholdDegrees, int segments, bool rounded )
+	static BlendReport Apply( PolyMesh mesh, float size, float angleThresholdDegrees, int segments, bool rounded,
+		HashSet<EdgeKey> explicitEdges )
 	{
 		var report = new BlendReport { OriginalVolume = mesh.SignedVolume() };
 		var noun = rounded ? "radius" : "distance";
@@ -99,21 +118,27 @@ public static class EdgeBlend
 			return report;
 		}
 
-		var work = Cut( mesh, size, angleThresholdDegrees, rounded );
+		var work = Cut( mesh, size, angleThresholdDegrees, rounded, explicitEdges );
 		report.SelectedEdges = work.Selected.Count;
 		report.SharpestDegrees = work.SharpestDegrees;
 
 		if ( work.Selected.Count == 0 )
 		{
 			report.Mesh = mesh.Clone();
-			report.Failure = new FeatureDiagnostic(
-				DiagnosticSeverity.Error,
-				$"No edge on this body is sharper than {angleThresholdDegrees:0.#}°",
-				$"The sharpest edge opens at {work.SharpestDegrees:0.#}°, so nothing was selected and the solid is unchanged.",
-				"Angle threshold",
-				work.SharpestDegrees > 0f ? MathF.Max( 0f, work.SharpestDegrees - 1f ) : (float?)null,
-				$"Lower the angle threshold below {work.SharpestDegrees:0.#}°",
-				"Pick a body with sharper edges" );
+			report.Failure = explicitEdges is not null
+				? new FeatureDiagnostic(
+					DiagnosticSeverity.Error,
+					"None of the picked edges can be blended",
+					"Each blended edge needs two faces meeting at it. A boundary edge, or one that no longer exists on this body, is skipped, and nothing was left.",
+					remedies: new[] { "Pick interior edges of the solid", "Clear the edge selection to blend every sharp edge" } )
+				: new FeatureDiagnostic(
+					DiagnosticSeverity.Error,
+					$"No edge on this body is sharper than {angleThresholdDegrees:0.#}°",
+					$"The sharpest edge opens at {work.SharpestDegrees:0.#}°, so nothing was selected and the solid is unchanged.",
+					"Angle threshold",
+					work.SharpestDegrees > 0f ? MathF.Max( 0f, work.SharpestDegrees - 1f ) : (float?)null,
+					$"Lower the angle threshold below {work.SharpestDegrees:0.#}°",
+					"Pick a body with sharper edges" );
 			return report;
 		}
 
@@ -122,7 +147,7 @@ public static class EdgeBlend
 
 		if ( collapsed > 0 )
 		{
-			var fit = Bisect( size, s => FitsAll( mesh, s, angleThresholdDegrees, segments, rounded ) );
+			var fit = Bisect( size, s => FitsAll( mesh, s, angleThresholdDegrees, segments, rounded, explicitEdges ) );
 			report.SuggestedSize = fit;
 			report.Mesh = mesh.Clone();
 			report.Failure = new FeatureDiagnostic(
@@ -140,7 +165,7 @@ public static class EdgeBlend
 
 		if ( report.ResultVolume <= 0f )
 		{
-			var fit = Bisect( size, s => FitsAll( mesh, s, angleThresholdDegrees, segments, rounded ) );
+			var fit = Bisect( size, s => FitsAll( mesh, s, angleThresholdDegrees, segments, rounded, explicitEdges ) );
 
 			report.SuggestedSize = fit;
 			report.Mesh = mesh.Clone();
@@ -206,12 +231,13 @@ public static class EdgeBlend
 		return report;
 	}
 
-	static PolyMesh ApplyUnchecked( PolyMesh mesh, float size, float angleThresholdDegrees, int segments, bool rounded )
+	static PolyMesh ApplyUnchecked( PolyMesh mesh, float size, float angleThresholdDegrees, int segments, bool rounded,
+		HashSet<EdgeKey> explicitEdges )
 	{
 		if ( size <= 0f )
 			return mesh.Clone();
 
-		var work = Cut( mesh, size, angleThresholdDegrees, rounded );
+		var work = Cut( mesh, size, angleThresholdDegrees, rounded, explicitEdges );
 
 		if ( work.Selected.Count == 0 )
 			return mesh.Clone();
@@ -220,9 +246,10 @@ public static class EdgeBlend
 		return Finish( work, shrunk, segments, rounded, out _, out _ );
 	}
 
-	static bool ShrinkFits( PolyMesh mesh, float size, float angleThresholdDegrees, bool rounded )
+	static bool ShrinkFits( PolyMesh mesh, float size, float angleThresholdDegrees, bool rounded,
+		HashSet<EdgeKey> explicitEdges )
 	{
-		var work = Cut( mesh, size, angleThresholdDegrees, rounded );
+		var work = Cut( mesh, size, angleThresholdDegrees, rounded, explicitEdges );
 
 		if ( work.Selected.Count == 0 )
 			return true;
@@ -231,12 +258,13 @@ public static class EdgeBlend
 		return CountCollapsed( mesh, shrunk, work.FaceNormals ) == 0;
 	}
 
-	static bool FitsAll( PolyMesh mesh, float size, float angleThresholdDegrees, int segments, bool rounded )
+	static bool FitsAll( PolyMesh mesh, float size, float angleThresholdDegrees, int segments, bool rounded,
+		HashSet<EdgeKey> explicitEdges )
 	{
-		if ( !ShrinkFits( mesh, size, angleThresholdDegrees, rounded ) )
+		if ( !ShrinkFits( mesh, size, angleThresholdDegrees, rounded, explicitEdges ) )
 			return false;
 
-		return ApplyUnchecked( mesh, size, angleThresholdDegrees, segments, rounded ).SignedVolume() > 0f;
+		return ApplyUnchecked( mesh, size, angleThresholdDegrees, segments, rounded, explicitEdges ).SignedVolume() > 0f;
 	}
 
 	static float Bisect( float size, Func<float, bool> fits )
@@ -279,12 +307,15 @@ public static class EdgeBlend
 		public float BlendSize;
 	}
 
-	static CutWork Cut( PolyMesh mesh, float size, float angleThresholdDegrees, bool rounded )
+	static CutWork Cut( PolyMesh mesh, float size, float angleThresholdDegrees, bool rounded,
+		HashSet<EdgeKey> explicitEdges )
 	{
 		var edgeFaces = mesh.BuildEdgeFaces();
 		var vertexFaces = mesh.BuildVertexFaces();
 		var faceNormals = mesh.Faces.Select( mesh.FaceNormal ).ToArray();
-		var selected = SelectEdges( mesh, edgeFaces, faceNormals, angleThresholdDegrees );
+		var selected = explicitEdges is null
+			? SelectEdges( mesh, edgeFaces, faceNormals, angleThresholdDegrees )
+			: SelectExplicit( edgeFaces, explicitEdges );
 		var setback = Setbacks( selected, edgeFaces, faceNormals, size, rounded, out var clamped );
 
 		var work = new CutWork
@@ -838,6 +869,19 @@ public static class EdgeBlend
 			var dot = Vec3.Dot( faceNormals[faces[0]], faceNormals[faces[1]] );
 
 			if ( dot < cosThreshold )
+				selected.Add( key );
+		}
+
+		return selected;
+	}
+
+	static HashSet<EdgeKey> SelectExplicit( Dictionary<EdgeKey, List<int>> edgeFaces, HashSet<EdgeKey> wanted )
+	{
+		var selected = new HashSet<EdgeKey>();
+
+		foreach ( var key in wanted )
+		{
+			if ( edgeFaces.TryGetValue( key, out var faces ) && faces.Count == 2 )
 				selected.Add( key );
 		}
 

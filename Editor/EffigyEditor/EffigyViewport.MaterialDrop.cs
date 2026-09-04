@@ -160,7 +160,7 @@ internal sealed partial class EffigyViewport
 	/// touch. Sculpting is in the list too — a drop there would land on the cage.
 	/// </summary>
 	private bool DropsAllowed =>
-		!IsSketching && !PlanePickMode && !SketchPickMode && !FacePickMode && !BodyPickMode && !BoneToolActive;
+		!IsSketching && !PlanePickMode && !SketchPickMode && !FacePickMode && !EdgePickMode && !BodyPickMode && !BoneToolActive;
 
 	/// <summary>
 	/// The face under a point in THIS widget, for a drag that has no cursor ray to borrow.

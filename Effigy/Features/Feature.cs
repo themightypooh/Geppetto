@@ -300,6 +300,145 @@ public abstract class Feature
 	/// </summary>
 	public virtual bool IsStale => false;
 
+	/// <summary>
+	/// Seed this feature from geometry that was already picked, the way Onshape's tools consume
+	/// the current selection instead of making you pick again after the button.
+	///
+	/// Faces go to anything that stores FaceRefs — a sketch's plane, draft, hole, face material,
+	/// subdivide. Body ids go onto every BodySelectionParam. A face selection with no explicit
+	/// body list still names those faces' bodies, so clicking a face and then Fillet fillets that
+	/// part rather than every part.
+	///
+	/// <paramref name="bodies"/> is only needed for Shell, whose openings are still stored as
+	/// indices rather than FaceRefs and have to be resolved against the live mesh.
+	/// </summary>
+	public void ApplyGeometrySelection( IReadOnlyList<FaceRef> faces, IReadOnlyList<string> bodyIds,
+		IEnumerable<Body> bodies = null, IReadOnlyList<EdgeRef> edges = null,
+		string sketchFeatureId = null, IReadOnlyList<Vec2> regionSeeds = null )
+	{
+		faces ??= Array.Empty<FaceRef>();
+		bodyIds ??= Array.Empty<string>();
+		edges ??= Array.Empty<EdgeRef>();
+
+		if ( this is SketchFeature sketch && faces.Count > 0 )
+			sketch.Face = faces[0];
+
+		if ( this is SketchConsumingFeature consumer
+			&& !string.IsNullOrEmpty( sketchFeatureId )
+			&& sketchFeatureId != SketchConsumingFeature.AwaitingPick )
+		{
+			consumer.SketchFeatureId = sketchFeatureId;
+			consumer.RegionSeeds.Clear();
+
+			if ( regionSeeds is { Count: > 0 } )
+				consumer.RegionSeeds.AddRange( regionSeeds );
+		}
+
+		var pickedFaces = this switch
+		{
+			FaceMaterialFeature material => material.Faces,
+			DraftFeature draft => draft.Faces,
+			HoleFeature hole => hole.Faces,
+			SubdivideFeature subdivide => subdivide.Faces,
+			_ => null,
+		};
+
+		if ( pickedFaces is not null && faces.Count > 0 )
+		{
+			pickedFaces.Clear();
+			pickedFaces.AddRange( faces );
+		}
+
+		ApplyBlendEdges( faces, edges, bodies );
+
+		var ids = bodyIds.Count > 0
+			? bodyIds
+			: (IReadOnlyList<string>)faces.Select( f => f.BodyId )
+				.Concat( edges.Select( e => e.BodyId ) )
+				.Distinct()
+				.ToList();
+
+		if ( ids.Count > 0 )
+		{
+			foreach ( var param in Parameters )
+			{
+				if ( param is not BodySelectionParam selection )
+					continue;
+
+				selection.BodyIds.Clear();
+				selection.BodyIds.AddRange( ids );
+			}
+		}
+
+		if ( this is not ShellFeature shell || faces.Count == 0 || bodies is null )
+			return;
+
+		// OpenFaces is applied to every selected body, so it only means something when the
+		// openings all live on one part. Two parts and a mixed index list would punch the
+		// wrong faces — or fail — on the second body.
+		if ( ids.Count != 1 )
+			return;
+
+		shell.OpenFaces.Clear();
+
+		foreach ( var face in faces )
+		{
+			if ( !FacePlane.TryResolveFace( bodies, face, out _, out var index ) )
+				continue;
+
+			if ( !shell.OpenFaces.Contains( index ) )
+				shell.OpenFaces.Add( index );
+		}
+	}
+
+	/// <summary>
+	/// Fillet and Chamfer store edges, not faces. A picked edge list is copied across; a picked
+	/// FACE becomes that face's boundary, which is what "select the top, then Fillet" means in
+	/// Onshape.
+	/// </summary>
+	void ApplyBlendEdges( IReadOnlyList<FaceRef> faces, IReadOnlyList<EdgeRef> edges, IEnumerable<Body> bodies )
+	{
+		var dest = this switch
+		{
+			FilletFeature fillet => fillet.Edges,
+			ChamferFeature chamfer => chamfer.Edges,
+			_ => null,
+		};
+
+		if ( dest is null )
+			return;
+
+		dest.Clear();
+
+		if ( edges.Count > 0 )
+		{
+			dest.AddRange( edges );
+			return;
+		}
+
+		if ( faces.Count == 0 || bodies is null )
+			return;
+
+		var seen = new HashSet<(string BodyId, EdgeKey Key)>();
+
+		foreach ( var face in faces )
+		{
+			if ( !FacePlane.TryResolveFace( bodies, face, out var body, out var index ) )
+				continue;
+
+			foreach ( var edge in FacePlane.CaptureBoundary( body, index ) )
+			{
+				if ( !FacePlane.TryResolveEdge( bodies, edge, out _, out var key ) )
+					continue;
+
+				if ( !seen.Add( (body.Id, key) ) )
+					continue;
+
+				dest.Add( edge );
+			}
+		}
+	}
+
 	protected abstract void Execute( FeatureContext ctx );
 
 	internal void Run( FeatureContext ctx )
@@ -473,6 +612,61 @@ public abstract class Feature
 			"Pick a body that is still in the studio" );
 
 		return bodies;
+	}
+
+	/// <summary>
+	/// Run a blend on each selected body, using picked edges when any were given.
+	///
+	/// <paramref name="edges"/> empty means the blend's own angle threshold, which is how Fillet
+	/// and Chamfer behaved before edges could be picked. Non-empty means only those edges, and a
+	/// body that none of them land on is left alone rather than blended by the threshold — mixing
+	/// the two would fillet a part you never pointed at.
+	/// </summary>
+	protected List<(Body Body, BlendReport Report)> BlendBodies( FeatureContext ctx, List<EdgeRef> edges,
+		Func<PolyMesh, HashSet<EdgeKey>, BlendReport> blend )
+	{
+		var reports = new List<(Body Body, BlendReport Report)>();
+		var picked = edges is { Count: > 0 };
+
+		foreach ( var body in RequireBodies( ctx, BodiesOf() ) )
+		{
+			if ( !picked )
+			{
+				reports.Add( (body, blend( body.Mesh, null )) );
+				continue;
+			}
+
+			var keys = FacePlane.ResolveEdges( body, edges );
+
+			if ( keys.Count == 0 )
+				continue;
+
+			reports.Add( (body, blend( body.Mesh, keys )) );
+		}
+
+		if ( picked && reports.Count == 0 )
+		{
+			Fail(
+				"None of the picked edges are on the selected bodies",
+				"The edges were stored as geometry so they could survive a rebuild, and none of them could be re-found.",
+				"Pick the edges again",
+				"Clear the edge selection to blend every sharp edge" );
+		}
+
+		return reports;
+	}
+
+	/// <summary>The BodySelectionParam on this feature, or a fresh empty one (meaning every body)
+	/// if the feature does not have one. Fillet and Chamfer both do.</summary>
+	BodySelectionParam BodiesOf()
+	{
+		foreach ( var param in Parameters )
+		{
+			if ( param is BodySelectionParam selection )
+				return selection;
+		}
+
+		return new BodySelectionParam( "Bodies" );
 	}
 
 	/// <summary>Assign blended meshes, or refuse, only after every body has been tried — so a

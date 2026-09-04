@@ -249,16 +249,50 @@ internal sealed partial class EffigyViewport
 		if ( !SketchPickMode || IsSketching || _pickableSketches.Count == 0 || !_canvasHasCursor )
 			return;
 
+		TryResolveSketchHover( out _hoveredSketchId, out _hoveredSketchSeed, out _ );
+
+		DrawSelectedRegions();
+
+		if ( _hoveredSketchId is null )
+			return;
+
+		DrawSketchPickHighlight( _hoveredSketchId, _hoveredSketchSeed );
+
+		if ( Gizmo.WasLeftMousePressed )
+			SketchPicked?.Invoke( _hoveredSketchId, _hoveredSketchSeed );
+	}
+
+	/// <summary>
+	/// Which committed sketch the cursor is pointing at, if any.
+	///
+	/// Hidden sketches are skipped — a consumed profile the tree eye has put away is not something
+	/// you can click, even though its plane is still in the pick list. A curve under the cursor
+	/// beats a filled region, because the edge is the more specific thing to be pointing at.
+	/// </summary>
+	private bool TryResolveSketchHover( out string featureId, out Vec2? seed, out float distance )
+	{
+		featureId = null;
+		seed = null;
+		distance = float.MaxValue;
+
+		if ( _pickableSketches.Count == 0 || !_canvasHasCursor )
+			return false;
+
 		var ray = Gizmo.CurrentRay;
 		var best = SketchPickRadius;
-
 		string regionHit = null;
 		Vec2? regionSeed = null;
 		var regionArea = float.MaxValue;
+		var regionDistance = float.MaxValue;
+		var curveDistance = float.MaxValue;
+		string curveHit = null;
 
 		foreach ( var pickable in _pickableSketches )
 		{
-			if ( !RayToPlane( pickable.Sketch.Plane, ray.Position, ray.Forward, out var uv ) )
+			if ( _hiddenSketches.Contains( pickable.Sketch ) )
+				continue;
+
+			if ( !RayToPlane( pickable.Sketch.Plane, ray.Position, ray.Forward, out var uv, out var t ) )
 				continue;
 
 			foreach ( var curve in pickable.Sketch.Curves )
@@ -273,17 +307,12 @@ internal sealed partial class EffigyViewport
 					if ( dist < best )
 					{
 						best = dist;
-						_hoveredSketchId = pickable.FeatureId;
+						curveHit = pickable.FeatureId;
+						curveDistance = t;
 					}
 				}
 			}
 
-			// Profile.Contains is the kernel's own point-in-region test, holes and all, and it is the
-			// same one that turns a click into a face everywhere else - so the face you can click is
-			// exactly the face that gets built. Neighbours go in so the lens between two Sketch
-			// features on this plane is a face, not a hole in the pick. Re-found every frame rather
-			// than cached: this only runs while a pick is armed, over the handful of sketches above
-			// the feature being edited, and the highlight below already walks the same finder.
 			foreach ( var profile in ProfileFinder.Find( pickable.Sketch, NeighborsOf( pickable ) ).Profiles )
 			{
 				if ( profile.Area >= regionArea || !profile.Contains( uv ) )
@@ -292,34 +321,35 @@ internal sealed partial class EffigyViewport
 				regionArea = profile.Area;
 				regionHit = pickable.FeatureId;
 				regionSeed = uv;
+				regionDistance = t;
 			}
 		}
 
-		// A curve under the cursor beats a face under it: the edge is the more specific thing to be
-		// pointing at, and it is what someone aiming at an edge meant. Only a face carries a seed -
-		// an edge is shared by the regions on both sides of it and names neither.
-		if ( _hoveredSketchId is null )
+		if ( curveHit is not null )
 		{
-			_hoveredSketchId = regionHit;
-			_hoveredSketchSeed = regionSeed;
+			featureId = curveHit;
+			distance = curveDistance;
+			return true;
 		}
 
-		DrawSelectedRegions();
+		if ( regionHit is null )
+			return false;
 
-		if ( _hoveredSketchId is null )
-			return;
-
-		DrawSketchPickHighlight( _hoveredSketchId, _hoveredSketchSeed );
-
-		if ( Gizmo.WasLeftMousePressed )
-			SketchPicked?.Invoke( _hoveredSketchId, _hoveredSketchSeed );
+		featureId = regionHit;
+		seed = regionSeed;
+		distance = regionDistance;
+		return true;
 	}
 
 	/// <summary>Intersect a ray with any sketch plane. The active-sketch version above this is
 	/// the same math against ActiveSketch.Plane.</summary>
-	private bool RayToPlane( SketchPlane p, Vector3 rayPosition, Vector3 rayForward, out Vec2 uv )
+	private bool RayToPlane( SketchPlane p, Vector3 rayPosition, Vector3 rayForward, out Vec2 uv ) =>
+		RayToPlane( p, rayPosition, rayForward, out uv, out _ );
+
+	private bool RayToPlane( SketchPlane p, Vector3 rayPosition, Vector3 rayForward, out Vec2 uv, out float t )
 	{
 		uv = Vec2.Zero;
+		t = 0f;
 
 		var origin = OriginPosition + ToWorldDir( p.Origin );
 		var normal = ToWorldDir( p.Normal );
@@ -328,7 +358,7 @@ internal sealed partial class EffigyViewport
 		if ( MathF.Abs( denom ) < 1e-5f )
 			return false;
 
-		var t = Vector3.Dot( origin - rayPosition, normal ) / denom;
+		t = Vector3.Dot( origin - rayPosition, normal ) / denom;
 
 		if ( t <= 0f )
 			return false;
@@ -1342,6 +1372,17 @@ internal sealed partial class EffigyViewport
 	/// selector on every change, the same way SelectedBodyIds is.</summary>
 	public IReadOnlyList<FaceRef> SelectedFaces { get; set; }
 
+	/// <summary>While true, a click reports an edge rather than a face. Fillet and Chamfer arm
+	/// this so the same ray that would have painted a face names the rim it landed next to.
+	/// </summary>
+	public bool EdgePickMode { get; set; }
+
+	/// <summary>Fires with an EdgeRef captured at the click — body, midpoint, direction.</summary>
+	public Action<EdgeRef> EdgePicked { get; set; }
+
+	/// <summary>Edges already chosen, drawn lit the way SelectedFaces are.</summary>
+	public IReadOnlyList<EdgeRef> SelectedEdges { get; set; }
+
 	/// <summary>Chosen faces are amber against the blue of the one under the cursor, so "already
 	/// picked" and "about to pick" never look like the same thing.</summary>
 	private static readonly Color FaceSelectedColor = new( 1f, 0.66f, 0.2f, 1f );
@@ -1379,7 +1420,7 @@ internal sealed partial class EffigyViewport
 	{
 		_facePickHit = null;
 
-		if ( !FacePickMode || _pickableBodies.Count == 0 || !_canvasHasCursor )
+		if ( ( !FacePickMode && !EdgePickMode ) || _pickableBodies.Count == 0 || !_canvasHasCursor )
 			return;
 
 		var ray = Gizmo.CurrentRay;
@@ -1397,20 +1438,12 @@ internal sealed partial class EffigyViewport
 	{
 		_hoveredFaceBodyId = null;
 
+		// Chosen faces stay lit whether or not the picker is armed - a selection is state, not
+		// hover feedback, and disarming the box must not hide the faces it is still holding.
+		DrawChosenFaces();
+
 		if ( !FacePickMode || _pickableBodies.Count == 0 )
 			return;
-
-		// Chosen faces stay lit whether or not the cursor is over the canvas - a selection is state,
-		// not hover feedback. Resolved through the same function the assignment itself uses, so what
-		// lights up is exactly what will be painted.
-		if ( SelectedFaces is { Count: > 0 } chosen )
-		{
-			foreach ( var reference in chosen )
-			{
-				if ( FacePlane.TryResolveFace( _pickableBodies, reference, out var body, out var index ) )
-					DrawFace( body, index, FaceSelectedColor );
-			}
-		}
 
 		if ( !_canvasHasCursor )
 			return;
@@ -1429,6 +1462,22 @@ internal sealed partial class EffigyViewport
 		// Capture rather than the raw constructor: it records WHERE ON THE FACE the click landed,
 		// which is what lets the sketch ride the face when it later moves or resizes.
 		FacePicked?.Invoke( FacePlane.Capture( hit.Body, hit.Hit.FaceIndex, hit.Hit.Point ) );
+	}
+
+	/// <summary>The faces a dialog is holding, drawn even after the picker stands down so the
+	/// box and the viewport still agree about what is chosen.</summary>
+	private void DrawChosenFaces()
+	{
+		if ( SelectedFaces is not { Count: > 0 } chosen )
+			return;
+
+		var bodies = _pickableBodies.Count > 0 ? _pickableBodies : _displayBodies;
+
+		foreach ( var reference in chosen )
+		{
+			if ( FacePlane.TryResolveFace( bodies, reference, out var body, out var index ) )
+				DrawFace( body, index, FaceSelectedColor );
+		}
 	}
 
 	/// <summary>Shading and outline for the ONE face under the cursor while a sketch is choosing
@@ -1455,6 +1504,60 @@ internal sealed partial class EffigyViewport
 	/// the face it belongs to never fights it.
 	/// </summary>
 	private void DrawHoveredFace( Body body, int faceIndex ) => DrawFace( body, faceIndex, FaceHighlightColor );
+
+	private void EdgePickFrame()
+	{
+		DrawChosenEdges();
+
+		if ( !EdgePickMode || _pickableBodies.Count == 0 )
+			return;
+
+		if ( !_canvasHasCursor || _facePickHit is not { } hit )
+			return;
+
+		if ( !MeshRaycast.ClosestEdge( hit.Body.Mesh, hit.Hit.FaceIndex, hit.Hit.Point, out var key, out _, out _ ) )
+			return;
+
+		_hoveredFaceBodyId = hit.Body.Id;
+		DrawEdge( hit.Body, key, FaceHighlightColor );
+
+		if ( !Gizmo.WasLeftMousePressed )
+			return;
+
+		EdgePicked?.Invoke( FacePlane.Capture( hit.Body, key ) );
+	}
+
+	private void DrawChosenEdges()
+	{
+		if ( SelectedEdges is not { Count: > 0 } chosen )
+			return;
+
+		var bodies = _pickableBodies.Count > 0 ? _pickableBodies : _displayBodies;
+
+		foreach ( var reference in chosen )
+		{
+			if ( FacePlane.TryResolveEdge( bodies, reference, out var body, out var key ) )
+				DrawEdge( body, key, FaceSelectedColor );
+		}
+	}
+
+	private void DrawEdge( Body body, EdgeKey key, Color color )
+	{
+		if ( body?.Mesh is not { } mesh
+			|| key.A < 0 || key.A >= mesh.Positions.Count
+			|| key.B < 0 || key.B >= mesh.Positions.Count )
+			return;
+
+		var eye = _camera.WorldPosition;
+		var a = Lift( mesh.Positions[key.A], eye );
+		var b = Lift( mesh.Positions[key.B], eye );
+
+		Gizmo.Draw.IgnoreDepth = false;
+		Gizmo.Draw.Color = color;
+		Gizmo.Draw.LineThickness = 4f;
+		Gizmo.Draw.Line( a, b );
+		Gizmo.Draw.LineThickness = 1f;
+	}
 
 	/// <summary>As DrawHoveredFace, in a given colour - the hover blue, or the amber of a face
 	/// already chosen.</summary>
@@ -1513,7 +1616,9 @@ internal sealed partial class EffigyViewport
 	/// </summary>
 	private void DrawFaceFootprints( Body body, PolyMesh mesh, Face face, List<Vec3> flat, Vector3 eye )
 	{
-		if ( _pickableBodies.Count < 2 )
+		var others = _displayBodies.Count > 0 ? _displayBodies : _pickableBodies;
+
+		if ( others.Count < 2 )
 			return;
 
 		var normal = mesh.FaceNormal( face );
@@ -1527,7 +1632,7 @@ internal sealed partial class EffigyViewport
 
 		Gizmo.Draw.LineThickness = 2f;
 
-		foreach ( var other in _pickableBodies )
+		foreach ( var other in others )
 		{
 			if ( other?.Mesh is null || ReferenceEquals( other, body ) )
 				continue;
@@ -1629,6 +1734,7 @@ internal sealed partial class EffigyViewport
 	public void SetDisplayBodies( IEnumerable<Body> bodies )
 	{
 		_displayBodies = bodies?.ToList() ?? new List<Body>();
+		PruneIdleSelection();
 	}
 
 	/// <summary>
@@ -1760,19 +1866,11 @@ internal sealed partial class EffigyViewport
 	/// </summary>
 	private void BodyPickFrame()
 	{
+		// Selected bodies stay lit whether or not the picker is armed — same reason as faces.
+		DrawChosenBodies();
+
 		if ( !BodyPickMode || _pickableBodies.Count == 0 )
 			return;
-
-		// Selected bodies stay lit whether or not the cursor is anywhere near the canvas — the
-		// selection is state, not hover feedback.
-		if ( SelectedBodyIds is { Count: > 0 } selected )
-		{
-			foreach ( var body in _pickableBodies )
-			{
-				if ( body?.Id is { } id && selected.Contains( id ) )
-					DrawBodyHighlight( body, BodySelectedColor );
-			}
-		}
 
 		if ( !_canvasHasCursor )
 			return;
@@ -1788,6 +1886,20 @@ internal sealed partial class EffigyViewport
 
 		if ( Gizmo.WasLeftMousePressed )
 			BodyPicked?.Invoke( hit.Body.Id );
+	}
+
+	private void DrawChosenBodies()
+	{
+		if ( SelectedBodyIds is not { Count: > 0 } selected )
+			return;
+
+		var list = _pickableBodies.Count > 0 ? _pickableBodies : _displayBodies;
+
+		foreach ( var body in list )
+		{
+			if ( body?.Id is { } id && selected.Contains( id ) )
+				DrawBodyHighlight( body, BodySelectedColor );
+		}
 	}
 
 	/// <summary>Shade and outline every face of a body, with the same depth-tested lift the face

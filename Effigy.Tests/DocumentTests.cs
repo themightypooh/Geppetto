@@ -421,6 +421,7 @@ public static class DocumentTests
 			case List<string> texts: texts.Add( "sk0001" ); texts.Add( "sk0002" ); break;
 			case List<Vec2> vecs: vecs.Add( new Vec2( 0.75f, -0.25f ) ); vecs.Add( new Vec2( 1.25f, 2f ) ); break;
 			case List<FaceRef> list: list.Add( new FaceRef( "someb0", new Vec3( 1, 2, 3 ), new Vec3( 0, 0, 1 ) ) ); break;
+			case List<EdgeRef> edges: edges.Add( new EdgeRef( "someb0", new Vec3( 1, 0, 1 ), new Vec3( 0, 1, 0 ) ) ); break;
 
 			case Sketch sketch:
 				sketch.AddRectangle( new Vec2( 0, 0 ), new Vec2( 1.5f, 2.5f ) );
@@ -460,6 +461,7 @@ public static class DocumentTests
 			(List<Vec2> p, List<Vec2> q) => p.Count == q.Count
 				&& p.Zip( q ).All( pair => pair.First.x == pair.Second.x && pair.First.y == pair.Second.y ),
 			(List<FaceRef> p, List<FaceRef> q) => p.Count == q.Count && p.Zip( q ).All( pair => SameFace( pair.First, pair.Second ) ),
+			(List<EdgeRef> p, List<EdgeRef> q) => p.Count == q.Count && p.Zip( q ).All( pair => SameEdge( pair.First, pair.Second ) ),
 			(Sketch p, Sketch q) => SameSketch( p, q ),
 			(FaceRef p, FaceRef q) => SameFace( p, q ),
 			(Vec2 p, Vec2 q) => p.x == q.x && p.y == q.y,
@@ -474,6 +476,11 @@ public static class DocumentTests
 		&& a.AnchorFromMaxX == b.AnchorFromMaxX && a.AnchorFromMaxY == b.AnchorFromMaxY
 		&& a.Point.x == b.Point.x && a.Point.y == b.Point.y && a.Point.z == b.Point.z
 		&& a.Anchor.x == b.Anchor.x && a.Anchor.y == b.Anchor.y;
+
+	static bool SameEdge( EdgeRef a, EdgeRef b ) =>
+		a.BodyId == b.BodyId
+		&& a.Point.x == b.Point.x && a.Point.y == b.Point.y && a.Point.z == b.Point.z
+		&& a.Direction.x == b.Direction.x && a.Direction.y == b.Direction.y && a.Direction.z == b.Direction.z;
 
 	static bool SameSketch( Sketch a, Sketch b ) =>
 		a.Points.Count == b.Points.Count

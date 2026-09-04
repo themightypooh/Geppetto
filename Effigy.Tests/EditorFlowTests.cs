@@ -51,6 +51,16 @@ public static class EditorFlowTests
 		TestANewExtrudeBuildsNothingUntilItIsPicked();
 		TestPickingTheSketchBuildsTheSolid();
 		TestAnUnsetReferenceStillMeansTheMostRecentSketch();
+
+		Report.Section( "editor flow: a picked face or part seeds the next tool" );
+		TestAPickedFaceSeedsASketchAndADraft();
+		TestAPickedPartSeedsAFillet();
+		TestAPickedFaceOpensAShell();
+		TestAPickedFaceSeedsAFilletWithItsEdges();
+		TestAPickedEdgeSeedsAFillet();
+		TestAnEdgeRefSurvivesATallerBox();
+		TestAPickedSketchSeedsAnExtrude();
+		TestAPickedSketchRegionSeedsAnExtrude();
 	}
 
 	/// <summary>A sketch with a square in it and an extrude below it, in whatever state of
@@ -625,6 +635,203 @@ public static class EditorFlowTests
 
 		Check( "deleting an upstream sketch makes its consumer report an error",
 			afterDelete.HasErrors, afterDelete.ToString() );
+	}
+
+	/// <summary>What the toolbar does after a face is already selected: the new feature arrives
+	/// already pointed at that face, so Draft/Hole/Sketch do not open asking you to pick it again.
+	/// </summary>
+	static void TestAPickedFaceSeedsASketchAndADraft()
+	{
+		var (studio, face, _) = BoxAndTopFace();
+
+		var sketch = new SketchFeature();
+		sketch.ApplyGeometrySelection( new[] { face }, Array.Empty<string>(), studio.Bodies );
+
+		Check( "a sketch takes the picked face as its plane",
+			sketch.Face is { } attached && attached.BodyId == face.BodyId,
+			sketch.Face?.BodyId ?? "none" );
+
+		var draft = new DraftFeature();
+		draft.ApplyGeometrySelection( new[] { face }, Array.Empty<string>(), studio.Bodies );
+
+		Check( "a draft takes the picked face", draft.Faces.Count == 1, $"{draft.Faces.Count} faces" );
+
+		var hole = new HoleFeature();
+		hole.ApplyGeometrySelection( new[] { face }, Array.Empty<string>(), studio.Bodies );
+
+		Check( "a hole takes the picked face", hole.Faces.Count == 1, $"{hole.Faces.Count} faces" );
+	}
+
+	/// <summary>Selecting a part in the Parts list, then Fillet, should fillet that part rather
+	/// than every body in the studio.</summary>
+	static void TestAPickedPartSeedsAFillet()
+	{
+		var studio = new PartStudio();
+		studio.Add( new PrimitiveFeature() );
+		var second = studio.Add( new PrimitiveFeature() );
+		second.Position.Value = new Vec3( 3f, 0f, 0f );
+		studio.Rebuild();
+
+		Check( "two parts to choose between", studio.Bodies.Count == 2, $"{studio.Bodies.Count}" );
+
+		var fillet = new FilletFeature();
+		fillet.ApplyGeometrySelection( Array.Empty<FaceRef>(), new[] { studio.Bodies[1].Id },
+			studio.Bodies );
+
+		Check( "the fillet is pointed at the picked part",
+			fillet.Bodies.BodyIds.Count == 1 && fillet.Bodies.BodyIds[0] == studio.Bodies[1].Id,
+			string.Join( ",", fillet.Bodies.BodyIds ) );
+	}
+
+	/// <summary>A face pick on a shell is an opening, not just a body filter.</summary>
+	static void TestAPickedFaceOpensAShell()
+	{
+		var (studio, face, index) = BoxAndTopFace();
+
+		var shell = new ShellFeature();
+		shell.ApplyGeometrySelection( new[] { face }, Array.Empty<string>(), studio.Bodies );
+
+		Check( "the shell acts on the face's body",
+			shell.Bodies.BodyIds.Count == 1 && shell.Bodies.BodyIds[0] == studio.Bodies[0].Id,
+			string.Join( ",", shell.Bodies.BodyIds ) );
+		Check( "and opens the picked face",
+			shell.OpenFaces.Count == 1 && shell.OpenFaces[0] == index,
+			string.Join( ",", shell.OpenFaces ) );
+	}
+
+	/// <summary>Selecting a face and then Fillet means the edges of that face, not every sharp
+	/// edge on the part.</summary>
+	static void TestAPickedFaceSeedsAFilletWithItsEdges()
+	{
+		var (studio, face, _) = BoxAndTopFace();
+		var before = studio.Bodies[0].Mesh.FaceCount;
+
+		var fillet = studio.Add( new FilletFeature() );
+		fillet.ApplyGeometrySelection( new[] { face }, Array.Empty<string>(), studio.Bodies );
+		studio.MarkDirty( fillet );
+		studio.Rebuild();
+
+		Check( "the fillet stored the face's four edges", fillet.Edges.Count == 4, $"{fillet.Edges.Count}" );
+		Check( "and it built", fillet.Error is null, fillet.Error ?? "" );
+		Check( "the solid gained faces, but not a full-cube worth",
+			studio.Bodies[0].Mesh.FaceCount > before && studio.Bodies[0].Mesh.FaceCount < before + 20,
+			$"{before} → {studio.Bodies[0].Mesh.FaceCount}" );
+	}
+
+	static void TestAPickedEdgeSeedsAFillet()
+	{
+		var (studio, _, index) = BoxAndTopFace();
+		var body = studio.Bodies[0];
+		var edges = FacePlane.CaptureBoundary( body, index );
+
+		Check( "the top face has edges to pick", edges.Count > 0 );
+
+		var fillet = new FilletFeature();
+		fillet.ApplyGeometrySelection( Array.Empty<FaceRef>(), Array.Empty<string>(), studio.Bodies,
+			new[] { edges[0] } );
+
+		Check( "the fillet took that one edge", fillet.Edges.Count == 1, $"{fillet.Edges.Count}" );
+		Check( "and the body that owns it",
+			fillet.Bodies.BodyIds.Count == 1 && fillet.Bodies.BodyIds[0] == body.Id,
+			string.Join( ",", fillet.Bodies.BodyIds ) );
+	}
+
+	/// <summary>An EdgeRef is geometry, so making the box taller must not attach the fillet to a
+	/// bottom edge that happens to keep the old indices.</summary>
+	static void TestAnEdgeRefSurvivesATallerBox()
+	{
+		var (studio, _, index) = BoxAndTopFace();
+		var body = studio.Bodies[0];
+		var edge = FacePlane.CaptureBoundary( body, index )[0];
+		var zBefore = edge.Point.z;
+
+		var box = studio.Features.OfType<PrimitiveFeature>().Single();
+		box.SizeZ.Value = 4f;
+		EditAndRebuild( studio, box );
+
+		Check( "the edge still resolves after the box grew",
+			FacePlane.TryResolveEdge( studio.Bodies, edge, out _, out var key ) );
+
+		var a = studio.Bodies[0].Mesh.Positions[key.A];
+		var b = studio.Bodies[0].Mesh.Positions[key.B];
+		var midZ = (a.z + b.z) * 0.5f;
+
+		Check( "and it is still on the top, not the bottom",
+			midZ > 0f && midZ > zBefore - 0.1f, $"was {zBefore}, now {midZ}" );
+	}
+
+	/// <summary>Click the shaded sketch, then Extrude — the toolbar's AwaitingPick is overwritten
+	/// by the sketch that was already selected, so a solid appears without a second pick.
+	/// </summary>
+	static void TestAPickedSketchSeedsAnExtrude()
+	{
+		var studio = new PartStudio();
+		var sketch = studio.Add( new SketchFeature() );
+		sketch.Sketch.AddRectangle( new Vec2( 0f, 0f ), new Vec2( 2f, 2f ) );
+		studio.Rebuild();
+
+		var extrude = new ExtrudeFeature();
+		extrude.SketchFeatureId = SketchConsumingFeature.AwaitingPick;
+		extrude.ApplyGeometrySelection( Array.Empty<FaceRef>(), Array.Empty<string>(), studio.Bodies,
+			Array.Empty<EdgeRef>(), sketch.Id );
+		studio.Add( extrude );
+		studio.Rebuild();
+
+		Check( "awaiting-pick is replaced by the selected sketch",
+			extrude.SketchFeatureId == sketch.Id, extrude.SketchFeatureId );
+		Check( "and the extrude builds", extrude.Error is null && studio.Bodies.Count == 1,
+			$"{extrude.Error ?? "ok"}, {studio.Bodies.Count} bodies" );
+	}
+
+	/// <summary>Clicking one face of a two-face sketch, then Extrude, builds only that face.
+	/// </summary>
+	static void TestAPickedSketchRegionSeedsAnExtrude()
+	{
+		var studio = new PartStudio();
+		var sketch = studio.Add( new SketchFeature() );
+		sketch.Sketch.AddRectangle( new Vec2( 0f, 0f ), new Vec2( 2f, 2f ) );
+		sketch.Sketch.AddRectangle( new Vec2( 4f, 0f ), new Vec2( 6f, 2f ) );
+		studio.Rebuild();
+
+		var both = new ExtrudeFeature();
+		both.SketchFeatureId = sketch.Id;
+		studio.Add( both );
+		studio.Rebuild();
+		var bothVolume = studio.Bodies.Sum( b => b.Mesh.SignedVolume() );
+
+		studio.Remove( both );
+		studio.Rebuild();
+
+		var extrude = new ExtrudeFeature();
+		extrude.SketchFeatureId = SketchConsumingFeature.AwaitingPick;
+		extrude.ApplyGeometrySelection( Array.Empty<FaceRef>(), Array.Empty<string>(), studio.Bodies,
+			Array.Empty<EdgeRef>(), sketch.Id, new[] { new Vec2( 1f, 1f ) } );
+		studio.Add( extrude );
+		studio.Rebuild();
+
+		var oneVolume = studio.Bodies.Sum( b => b.Mesh.SignedVolume() );
+
+		Check( "the picked face is stored", extrude.RegionSeeds.Count == 1, $"{extrude.RegionSeeds.Count}" );
+		Check( "and only that face is built",
+			extrude.Error is null && oneVolume < bothVolume * 0.75f,
+			$"one {oneVolume} vs both {bothVolume}, {extrude.Error ?? "ok"}" );
+	}
+
+	static (PartStudio Studio, FaceRef Face, int Index) BoxAndTopFace()
+	{
+		var studio = new PartStudio();
+		studio.Add( new PrimitiveFeature() );
+		studio.Rebuild();
+
+		var body = studio.Bodies[0];
+		var mesh = body.Mesh;
+		var top = mesh.Faces
+			.Select( ( f, i ) => (Index: i, Normal: mesh.FaceNormal( f ), Centroid: mesh.FaceCentroid( f )) )
+			.Where( t => t.Normal.z > 0.99f )
+			.OrderByDescending( t => t.Centroid.z )
+			.First();
+
+		return (studio, FacePlane.Capture( body, top.Index, top.Centroid ), top.Index);
 	}
 
 	static void Check( string what, bool ok, string detail = null ) => Report.Check( what, ok, detail );

@@ -91,13 +91,45 @@ internal sealed class EffigyPalette
 //    Right:  parameter panel for the selected feature
 //    Bottom: Part-studio-style tabs
 //
-//  Registered under Marionette in the Tools menu. Opens from Tools or by
-//  double-clicking any Effigy-related asset (if/when one exists).
+//  Registered under Marionette in the Tools menu. Opens from Tools, or by
+//  double-clicking a .effigy part studio in the asset browser.
 // ============================================================================
 
+[EditorForAssetType( "effigy" )]
 [EditorApp( "Effigy", "editor/effigy_icon.png", "Parametric modelling, subdivision, and rig-ready mesh export" )]
-public sealed class EffigyWindow : DockWindow
+public sealed class EffigyWindow : DockWindow, IAssetEditor
 {
+	// --- opening a .effigy from the asset browser -------------------------------------------
+	//
+	// A part studio is a plain text document rather than a GameResource, so there is no asset
+	// type class to hang this off - the attribute above is the whole registration, which is the
+	// same way ShaderGraph claims .shdrgrph. Everything below just routes the double-click into
+	// the load path the File menu already uses.
+
+	/// <summary>One document per window. Opening a second .effigy reuses this window, which is
+	/// what makes the unsaved-work prompt in AssetOpen meaningful.</summary>
+	public bool CanOpenMultipleAssets => false;
+
+	public void AssetOpen( Asset asset )
+	{
+		var path = asset?.AbsolutePath;
+
+		if ( string.IsNullOrEmpty( path ) )
+			return;
+
+		Raise();
+
+		// Asked before the open, not after - the work about to be thrown away belongs to the
+		// document being replaced, exactly as it does on File > Open.
+		ConfirmDiscard( () => LoadDocument( path ) );
+	}
+
+	/// <summary>Nothing in a part studio is addressable by member name, so there is nothing to
+	/// jump to. Present because IAssetEditor requires it.</summary>
+	public void SelectMember( string memberName )
+	{
+	}
+
 	// --- core state -------------------------------------------------------------------------
 
 	private PartStudio _studio;
@@ -371,6 +403,7 @@ public sealed class EffigyWindow : DockWindow
 		view.AddOption( "Normal to Sketch Plane\tN", "straighten", () => _viewport?.ViewNormalToSketchPlane() );
 		view.AddOption( "Shade Material Slots", "palette", ToggleMaterialShading );
 		view.AddOption( "Show Sketch Constraints", "rule", ToggleConstraintMarks );
+		view.AddOption( "Add Point Light", "wb_incandescent", AddViewportLight );
 
 		// "restart_alt" is a Material SYMBOLS name and s&box ships classic Material Icons, so it
 		// was drawing nothing at all - see EffigyIcons for why that whole class of name is unsafe.
@@ -2343,6 +2376,10 @@ public sealed class EffigyWindow : DockWindow
 
 		RecordUndo();
 
+		// A face or part already selected is the input, the way Onshape consumes the current
+		// selection instead of making you pick it again inside the dialog that just opened.
+		ApplyIdleGeometrySelection( feature );
+
 		// A new feature goes AT THE ROLLBACK BAR, not at the end of the tree - same as Onshape.
 		// Appending would drop it below the bar, where it does not get evaluated: you would add an
 		// Extrude while rolled back, watch nothing happen, and have no way to tell why. The bar
@@ -2407,6 +2444,7 @@ public sealed class EffigyWindow : DockWindow
 			VisibilityToggled = OnPartVisibilityToggled,
 			CommandRequested = OnPartCommand,
 			RenameCommitted = OnPartRenamed,
+			SelectionChanged = OnPartTreeSelectionChanged,
 		};
 
 		// The Materials dock is the material BROWSER - a grid of the project's materials you drag
@@ -2456,6 +2494,7 @@ public sealed class EffigyWindow : DockWindow
 		// The origin is the model's pivot, so moving it changes the exported result and has to be
 		// recorded. Dead until now for want of anything downstream that cared.
 		_viewport.OriginMoved = OnOriginMoved;
+		_viewport.LightingChanged = OnLightingChanged;
 
 		// APPLYING OR DELETING A CONSTRAINT MOVES THE SKETCH, so it is a sketch edit and has to
 		// reach the same place every other one does. This event had no subscriber at all: the solver
@@ -2464,6 +2503,7 @@ public sealed class EffigyWindow : DockWindow
 		// the point drag had, one event over.
 		_viewport.SketchConstraintApplied = OnSketchEdited;
 
+		_viewport.IdleSelectionChanged = OnIdleSelectionChanged;
 		_viewport.FaceContextMenuRequested = OpenFaceMaterialMenu;
 		_viewport.MaterialDropped = OnMaterialDropped;
 		_viewport.SketchConstraintMenuRequested = OpenSketchConstraintMenu;
@@ -2513,6 +2553,112 @@ public sealed class EffigyWindow : DockWindow
 		// docks are open lives in the saved layout, so without a new cookie everyone who has
 		// already opened Effigy keeps starting with the Rig and Materials columns forever.
 		StateCookie = "Effigy7";
+	}
+
+	/// <summary>The Parts list clicked a row. That is a whole-part selection — faces drop, the
+	/// viewport lights the solid, and the next tool that acts on bodies uses this part.</summary>
+	private bool _syncingSelection;
+
+	private void OnPartTreeSelectionChanged( IReadOnlyList<string> bodyIds )
+	{
+		if ( _syncingSelection || _viewport is null )
+			return;
+
+		_syncingSelection = true;
+		_viewport.SelectBodies( bodyIds );
+		_syncingSelection = false;
+		DescribeGeometrySelection();
+	}
+
+	/// <summary>A face (or empty space) was clicked in the viewport. Keep the Parts list on the
+	/// same bodies so the row highlight and the 3D highlight cannot disagree.</summary>
+	private void OnIdleSelectionChanged()
+	{
+		if ( _syncingSelection || _partsPanel is null )
+			return;
+
+		_syncingSelection = true;
+		_partsPanel.Select( _viewport.IdleBodyIds );
+		_syncingSelection = false;
+		DescribeGeometrySelection();
+	}
+
+	private void DescribeGeometrySelection()
+	{
+		if ( _viewport is null )
+			return;
+
+		if ( _viewport.FacePickMode || _viewport.BodyPickMode || _viewport.PlanePickMode || _viewport.SketchPickMode )
+			return;
+
+		if ( _viewport.IdleSketchFeatureId is not null )
+		{
+			var name = _studio.Features.OfType<SketchFeature>()
+				.FirstOrDefault( f => f.Id == _viewport.IdleSketchFeatureId )?.Name ?? "Sketch";
+			var n = _viewport.IdleRegionSeeds.Count;
+			SetPrompt( n <= 1
+				? $"{name} selected — Extrude and Revolve will use it."
+				: $"{name}: {n} faces selected — Extrude and Revolve will use them." );
+			return;
+		}
+
+		var faces = _viewport.IdleFaces.Count;
+		var edgeCount = _viewport.IdleEdges.Count;
+		var bodies = _viewport.IdleBodyIds.Count;
+
+		if ( edgeCount == 1 )
+		{
+			SetPrompt( "1 edge selected — Fillet and Chamfer will use it." );
+			return;
+		}
+
+		if ( edgeCount > 1 )
+		{
+			SetPrompt( $"{edgeCount} edges selected — Fillet and Chamfer will use them." );
+			return;
+		}
+
+		if ( faces == 1 )
+		{
+			var id = _viewport.IdleFaces[0].BodyId;
+			var name = _studio.Bodies.FirstOrDefault( b => b.Id == id )?.Name ?? "part";
+			SetPrompt( $"Face of {name} selected — Sketch, Draft, Hole, Face Material and Fillet will use it." );
+			return;
+		}
+
+		if ( faces > 1 )
+		{
+			SetPrompt( $"{faces} faces selected — Draft, Hole, Face Material and Fillet will use them." );
+			return;
+		}
+
+		if ( bodies == 1 )
+		{
+			var name = _studio.Bodies.FirstOrDefault( b => b.Id == _viewport.IdleBodyIds[0] )?.Name ?? "part";
+			SetPrompt( $"{name} selected" );
+			return;
+		}
+
+		if ( bodies > 1 )
+		{
+			SetPrompt( $"{bodies} parts selected" );
+			return;
+		}
+
+		SetPrompt( "" );
+	}
+
+	/// <summary>Copy the current viewport selection onto a feature the toolbar just made.</summary>
+	private void ApplyIdleGeometrySelection( Feature feature )
+	{
+		if ( _viewport is null || feature is null )
+			return;
+
+		if ( !_viewport.HasIdleSelection )
+			return;
+
+		feature.ApplyGeometrySelection( _viewport.IdleFaces, _viewport.IdleBodyIds, _studio.Bodies,
+			_viewport.IdleEdges, _viewport.IdleSketchFeatureId, _viewport.IdleRegionSeeds );
 	}
 
 	/// <summary>Hide or show one body, from the Parts list's eye or its Hide menu item.
@@ -2697,7 +2843,41 @@ public sealed class EffigyWindow : DockWindow
 		if ( _dialog is null || (_dialog.IsOpen && _dialog.Feature == feature) )
 			return;
 
+		HighlightFeatureInViewport( feature );
 		_dialog.Open( feature, isNew: false );
+	}
+
+	/// <summary>Clicking a feature in the tree lights what it made: a sketch's shaded face, or
+	/// the parts a Primitive/Extrude/Fillet produced. Same idea as clicking a row in Parts.
+	/// </summary>
+	private void HighlightFeatureInViewport( Feature feature )
+	{
+		if ( _viewport is null || feature is null )
+			return;
+
+		_syncingSelection = true;
+
+		if ( feature is SketchFeature )
+		{
+			_viewport.SelectIdleSketch( feature.Id, null );
+		}
+		else
+		{
+			var ids = new List<string>();
+
+			foreach ( var body in _studio.Bodies )
+			{
+				if ( body.FeatureId == feature.Id )
+					ids.Add( body.Id );
+			}
+
+			if ( ids.Count > 0 )
+				_viewport.SelectBodies( ids );
+		}
+
+		_syncingSelection = false;
+		_partsPanel?.Select( _viewport.IdleBodyIds );
+		DescribeGeometrySelection();
 	}
 
 	private void OnDialogAccepted( Feature feature )
@@ -4508,6 +4688,10 @@ public sealed class EffigyWindow : DockWindow
 	/// to turn off before you can see what you are making.</summary>
 	private const string SizeReferenceCookie = "Effigy.ShowSizeReference";
 
+	/// <summary>Defaults to on. Modelling wants every face readable; the studio sun is the setting
+	/// you turn on when you want to judge a material, not the light you sketch under.</summary>
+	private const string FullBrightCookie = "Effigy.FullBright";
+
 	/// <summary>The open settings window, or null. Held so a second Edit > Settings raises the one
 	/// already open rather than stacking another on top of it.</summary>
 	private EffigySettingsWindow _settingsWindow;
@@ -4520,7 +4704,9 @@ public sealed class EffigyWindow : DockWindow
 			return;
 		}
 
-		_settingsWindow = new EffigySettingsWindow( this, CurrentSettings(), ApplySettings );
+		_settingsWindow = new EffigySettingsWindow( this, CurrentSettings(), ApplySettings,
+			addPointLight: AddViewportLight,
+			clearLights: ClearViewportLights );
 		_settingsWindow.Show();
 	}
 
@@ -4534,6 +4720,8 @@ public sealed class EffigyWindow : DockWindow
 		PaletteIndex = _paletteIndex,
 		ShowSizeReference = _viewport?.ShowSizeReference ?? false,
 		SizeReferenceHeight = _viewport?.SizeReferenceHeight ?? 0f,
+		FullBright = _viewport?.FullBright ?? true,
+		PlacedLightCount = _viewport?.PlacedLightCount ?? 0,
 	};
 
 	/// <summary>Take everything the settings window is showing and make it true, then remember it.
@@ -4549,13 +4737,17 @@ public sealed class EffigyWindow : DockWindow
 			_viewport.SnapToPoints = values.SnapToPoints;
 			_viewport.SnapToFaceEdges = values.SnapToFaceEdges;
 			_viewport.ShowSizeReference = values.ShowSizeReference;
+			_viewport.FullBright = values.FullBright;
 
 			// READ BACK, not echoed. The viewport turns the switch off again if the citizen will
 			// not load, and it is the only thing that knows how tall the one that did load is - so
 			// what goes back to the settings window is what actually happened, not what was asked
-			// for.
+			// for. Full bright is the same shape: adding a light turns it off so the lamp is
+			// visible, and the switch has to follow.
 			values.ShowSizeReference = _viewport.ShowSizeReference;
 			values.SizeReferenceHeight = _viewport.SizeReferenceHeight;
+			values.FullBright = _viewport.FullBright;
+			values.PlacedLightCount = _viewport.PlacedLightCount;
 		}
 
 		if ( values.PaletteIndex != _paletteIndex )
@@ -4567,6 +4759,7 @@ public sealed class EffigyWindow : DockWindow
 		EditorCookie.Set( SnapPointsCookie, values.SnapToPoints );
 		EditorCookie.Set( SnapFaceEdgesCookie, values.SnapToFaceEdges );
 		EditorCookie.Set( SizeReferenceCookie, values.ShowSizeReference );
+		EditorCookie.Set( FullBrightCookie, values.FullBright );
 
 		return values;
 	}
@@ -4585,6 +4778,42 @@ public sealed class EffigyWindow : DockWindow
 		_viewport.SnapToPoints = EditorCookie.Get( SnapPointsCookie, true );
 		_viewport.SnapToFaceEdges = EditorCookie.Get( SnapFaceEdgesCookie, true );
 		_viewport.ShowSizeReference = EditorCookie.Get( SizeReferenceCookie, false );
+		_viewport.FullBright = EditorCookie.Get( FullBrightCookie, true );
+	}
+
+	/// <summary>Drop a point light into the viewport. Full bright turns off so the lamp is
+	/// visible — a light you cannot see is how this would look like it did nothing.</summary>
+	private void AddViewportLight()
+	{
+		if ( !_viewport.IsValid() )
+			return;
+
+		_viewport.AddPointLight();
+		SetPrompt( "Drag the bulb to move it. Delete removes it. Full bright is in Settings if you want even light back." );
+	}
+
+	private void ClearViewportLights()
+	{
+		if ( !_viewport.IsValid() )
+			return;
+
+		_viewport.ClearLights();
+		SetPrompt( _viewport.FullBright
+			? "Lamps cleared."
+			: "Lamps cleared. The studio sun is still on." );
+	}
+
+	/// <summary>A light was added, removed, or full bright flipped — persist the mode and keep
+	/// the settings window's switch in agreement if it is open.</summary>
+	private void OnLightingChanged()
+	{
+		if ( !_viewport.IsValid() )
+			return;
+
+		EditorCookie.Set( FullBrightCookie, _viewport.FullBright );
+
+		if ( _settingsWindow.IsValid() )
+			_settingsWindow.Sync( CurrentSettings() );
 	}
 
 	/// <summary>
@@ -5704,6 +5933,13 @@ internal sealed class EffigyPartsPanel : Widget
 	/// snapshot for undo BEFORE applying it.</summary>
 	public Action<string, string> RenameCommitted { get; set; }
 
+	/// <summary>The row highlight changed. Body ids of the selected parts, empty for none.</summary>
+	public Action<IReadOnlyList<string>> SelectionChanged { get; set; }
+
+	private readonly List<string> _selectedBodyIds = new();
+	private readonly Dictionary<string, PartNode> _nodes = new();
+	private bool _restoringSelection;
+
 	public EffigyPartsPanel( Widget parent, PartStudio studio ) : base( parent )
 	{
 		Name = "Parts";
@@ -5720,6 +5956,24 @@ internal sealed class EffigyPartsPanel : Widget
 		Layout.Add( header );
 
 		_tree = new PartsTreeView( this );
+		_tree.OnSelectionChanged = objs =>
+		{
+			if ( _restoringSelection )
+				return;
+
+			_selectedBodyIds.Clear();
+
+			if ( objs is not null )
+			{
+				foreach ( var obj in objs )
+				{
+					if ( obj is PartNode node )
+						_selectedBodyIds.Add( node.Value.Id );
+				}
+			}
+
+			SelectionChanged?.Invoke( _selectedBodyIds );
+		};
 		Layout.Add( _tree, 1 );
 
 		// Tall enough for a few parts without taking the feature tree's room - the tree above it
@@ -5738,15 +5992,49 @@ internal sealed class EffigyPartsPanel : Widget
 	public void Refresh()
 	{
 		_tree.Clear();
+		_nodes.Clear();
 
 		if ( _studio is null || _studio.Bodies.Count == 0 )
 		{
+			_selectedBodyIds.Clear();
 			_tree.AddItem( new EmptyPartsNode() );
 			return;
 		}
 
+		_selectedBodyIds.RemoveAll( id => _studio.Bodies.All( b => b.Id != id ) );
+
 		foreach ( var body in _studio.Bodies )
-			_tree.AddItem( new PartNode( this, body ) );
+		{
+			var node = new PartNode( this, body );
+			_nodes[body.Id] = node;
+			_tree.AddItem( node );
+		}
+
+		RestoreTreeSelection();
+	}
+
+	/// <summary>Select these parts in the list. Used when the viewport picked a face so the row
+	/// and the solid stay the same selection. Does not re-raise SelectionChanged.</summary>
+	public void Select( IReadOnlyList<string> bodyIds )
+	{
+		_selectedBodyIds.Clear();
+
+		if ( bodyIds is not null )
+			_selectedBodyIds.AddRange( bodyIds.Where( id => !string.IsNullOrEmpty( id ) ) );
+
+		RestoreTreeSelection();
+	}
+
+	private void RestoreTreeSelection()
+	{
+		_restoringSelection = true;
+
+		if ( _selectedBodyIds.Count == 0 || !_nodes.TryGetValue( _selectedBodyIds[0], out var node ) )
+			_tree.ClearPartSelection();
+		else
+			_tree.SelectItem( node );
+
+		_restoringSelection = false;
 	}
 
 	/// <summary>Rename in place: a one-field popup at the cursor, same as the feature tree.</summary>
@@ -5823,6 +6111,12 @@ internal sealed class EffigyPartsPanel : Widget
 	private sealed class PartsTreeView : TreeView
 	{
 		public PartsTreeView( Widget parent ) : base( parent ) { }
+
+		public void ClearPartSelection()
+		{
+			foreach ( var item in SelectedItems.ToList() )
+				SetSelected( item, false, skipEvents: true );
+		}
 
 		protected override bool OnItemPressed( VirtualWidget item, MouseEvent e )
 		{

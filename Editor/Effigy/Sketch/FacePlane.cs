@@ -91,6 +91,29 @@ public readonly struct FaceRef
 }
 
 /// <summary>
+/// A reference to an edge of some body, stored as geometry rather than as a vertex-index pair.
+///
+/// THE SAME PROBLEM FaceRef SOLVES, FOR EDGES. An EdgeKey is two indices into a mesh that is
+/// thrown away every rebuild. Fillet the top of a box, then make the box taller, and those
+/// indices name a different edge — or none. A midpoint plus an undirected direction can be
+/// re-found: among edges pointing the same way, the nearest midpoint wins, so the edge can
+/// move with its face and still be the one that was picked.
+/// </summary>
+public readonly struct EdgeRef
+{
+	public readonly string BodyId;
+	public readonly Vec3 Point;
+	public readonly Vec3 Direction;
+
+	public EdgeRef( string bodyId, Vec3 point, Vec3 direction )
+	{
+		BodyId = bodyId;
+		Point = point;
+		Direction = FacePlane.CanonicalDirection( direction );
+	}
+}
+
+/// <summary>
 /// Turning a face of an existing body into a plane you can sketch on.
 ///
 /// Neither Solvespace nor FreeCAD treats "sketch on a face" as a sketching mode: it is a DERIVED
@@ -280,5 +303,130 @@ public static class FacePlane
 
 		plane = FromPointAndNormal( origin, bestNormal );
 		return true;
+	}
+
+	/// <summary>A direction with a stable sign, so an edge walked A→B and B→A is the same
+	/// reference. The largest-magnitude component is made non-negative; ties fall back along Y
+	/// then X.</summary>
+	public static Vec3 CanonicalDirection( Vec3 direction )
+	{
+		var d = direction.Normal;
+
+		if ( d.z < -1e-6f
+			|| (MathF.Abs( d.z ) <= 1e-6f && d.y < -1e-6f)
+			|| (MathF.Abs( d.z ) <= 1e-6f && MathF.Abs( d.y ) <= 1e-6f && d.x < 0f) )
+			d = new Vec3( -d.x, -d.y, -d.z );
+
+		return d;
+	}
+
+	/// <summary>Capture the edge that was just clicked. Midpoint plus direction, so a later
+	/// rebuild can re-find it the way Capture does for a face.</summary>
+	public static EdgeRef Capture( Body body, EdgeKey key )
+	{
+		if ( body?.Mesh is not { } mesh
+			|| key.A < 0 || key.A >= mesh.Positions.Count
+			|| key.B < 0 || key.B >= mesh.Positions.Count )
+			return new EdgeRef( body?.Id, Vec3.Zero, new Vec3( 1, 0, 0 ) );
+
+		var a = mesh.Positions[key.A];
+		var b = mesh.Positions[key.B];
+
+		return new EdgeRef( body.Id, (a + b) * 0.5f, b - a );
+	}
+
+	/// <summary>Every unique edge of a face, captured as EdgeRefs. Selecting a face and then
+	/// Fillet means "these edges" in Onshape, and this is that translation.</summary>
+	public static List<EdgeRef> CaptureBoundary( Body body, int faceIndex )
+	{
+		var list = new List<EdgeRef>();
+
+		if ( body?.Mesh is not { } mesh || faceIndex < 0 || faceIndex >= mesh.Faces.Count )
+			return list;
+
+		var face = mesh.Faces[faceIndex];
+		var seen = new HashSet<EdgeKey>();
+
+		for ( var i = 0; i < face.Count; i++ )
+		{
+			var key = new EdgeKey( face.Indices[i], face.Indices[(i + 1) % face.Count] );
+
+			if ( !seen.Add( key ) )
+				continue;
+
+			list.Add( Capture( body, key ) );
+		}
+
+		return list;
+	}
+
+	/// <summary>Re-find the edge a reference points at, on the body it was taken from.</summary>
+	public static bool TryResolveEdge( IEnumerable<Body> bodies, EdgeRef reference, out Body body,
+		out EdgeKey key, float directionTolerance = 0.02f )
+	{
+		body = null;
+		key = default;
+
+		if ( bodies is null )
+			return false;
+
+		foreach ( var candidate in bodies )
+		{
+			if ( candidate?.Mesh is not null && candidate.Id == reference.BodyId )
+			{
+				body = candidate;
+				break;
+			}
+		}
+
+		if ( body is null )
+			return false;
+
+		var want = CanonicalDirection( reference.Direction );
+		var bestDistance = float.MaxValue;
+		var found = false;
+
+		foreach ( var (edge, _) in body.Mesh.BuildEdgeFaces() )
+		{
+			var a = body.Mesh.Positions[edge.A];
+			var b = body.Mesh.Positions[edge.B];
+			var dir = CanonicalDirection( b - a );
+
+			if ( Vec3.Dot( dir, want ) < 1f - directionTolerance )
+				continue;
+
+			var mid = (a + b) * 0.5f;
+			var distance = (mid - reference.Point).Length;
+
+			if ( distance >= bestDistance )
+				continue;
+
+			bestDistance = distance;
+			key = edge;
+			found = true;
+		}
+
+		return found;
+	}
+
+	/// <summary>The subset of <paramref name="references"/> that still exist on this one body.
+	/// Fillet walks bodies one at a time; an edge on a different part is not this body's
+	/// problem.</summary>
+	public static HashSet<EdgeKey> ResolveEdges( Body body, IEnumerable<EdgeRef> references )
+	{
+		var keys = new HashSet<EdgeKey>();
+
+		if ( body is null || references is null )
+			return keys;
+
+		var list = new[] { body };
+
+		foreach ( var reference in references )
+		{
+			if ( TryResolveEdge( list, reference, out _, out var key ) )
+				keys.Add( key );
+		}
+
+		return keys;
 	}
 }

@@ -10,13 +10,28 @@ past, so this file is the record that survives either way.
 ## Unreleased
 
 ### Effigy
+- Select first, then pick the tool. Click a face or a part in the viewport and
+  the next feature you add starts already pointed at it, instead of making you
+  choose again in the dialog. A face selection also tells the tool which part
+  you meant, so filleting the thing you just clicked no longer rounds every
+  part in the studio.
+- Fillet and chamfer can round the edges you pick, not just every sharp edge on
+  the part. Click near an edge in the viewport to add it, click again to drop
+  it; leave the list empty and it behaves exactly as it did before. Picked
+  edges are stored on the part, so they survive a save and a rebuild.
+- Double-clicking a `.effigy` file in the asset browser opens it in Effigy.
+  Part studios now show up there like any other asset.
+- Viewport lighting: full bright is the default so faces stay readable while
+  you model (Edit → Settings → Full bright). Turn it off for the studio sun
+  that matches a game scene. View → Add Point Light (or the same button in
+  Settings) drops a lamp you can drag; Delete removes the selected one. Lamps
+  are viewport-only — they never export. (`EffigyViewport.Lights.cs`,
+  `EffigySettingsWindow`)
 - Grease-pencil notes: annotations the modeller draws over a part, stored on the
   document alongside materials and hidden bodies so they survive a reopen.
   Deliberately kept out of the feature list so no exporter can reach them —
   notes cannot appear in OBJ, DMX or the compiled vmdl. Covered by `NoteTests`.
   (`Effigy/Note.cs`, `Effigy/NoteSession.cs`, `PartStudio`, `StudioDocument`)
-  - Kernel and tests only so far. No editor UI yet, and not yet mirrored into
-    `Editor/Effigy/` — run `tools/sync-kernel.sh` before publishing.
 
 ## v1 — 2026-09-02 (version 367036)
 

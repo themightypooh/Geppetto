@@ -111,6 +111,64 @@ public static class MeshRaycast
 	}
 
 	/// <summary>
+	/// The edge of this face nearest <paramref name="point"/>, and how far the point sits from
+	/// that segment.
+	///
+	/// A click on a solid is a face hit first. Whether it was meant as an EDGE is a question of
+	/// how close the hit landed to a boundary — the viewport compares this distance to a
+	/// screen-pixel threshold, so a click in the middle of a face stays a face and a click near
+	/// a corner becomes the edge.
+	/// </summary>
+	public static bool ClosestEdge( PolyMesh mesh, int faceIndex, Vec3 point, out EdgeKey key,
+		out Vec3 closest, out float distance )
+	{
+		key = default;
+		closest = default;
+		distance = float.MaxValue;
+
+		if ( mesh is null || faceIndex < 0 || faceIndex >= mesh.Faces.Count )
+			return false;
+
+		var face = mesh.Faces[faceIndex];
+
+		if ( face.Count < 2 )
+			return false;
+
+		var found = false;
+
+		for ( var i = 0; i < face.Count; i++ )
+		{
+			var a = mesh.Positions[face.Indices[i]];
+			var b = mesh.Positions[face.Indices[(i + 1) % face.Count]];
+			var ab = b - a;
+			var lengthSq = ab.LengthSquared;
+
+			if ( lengthSq < 1e-20f )
+				continue;
+
+			var t = Vec3.Dot( point - a, ab ) / lengthSq;
+
+			if ( t < 0f )
+				t = 0f;
+			else if ( t > 1f )
+				t = 1f;
+
+			var on = a + ab * t;
+			var d = (on - point).Length;
+
+			if ( d >= distance )
+				continue;
+
+			distance = d;
+			closest = on;
+			key = new EdgeKey( face.Indices[i], face.Indices[(i + 1) % face.Count] );
+			found = true;
+		}
+
+		return found;
+	}
+
+	/// <summary>
 	/// Nearest hit across several bodies at once, with the winning body reported alongside it —
 	/// what a click in a multi-body studio actually needs.
 	/// </summary>

@@ -175,16 +175,19 @@ public sealed class ChamferFeature : Feature
 	public readonly FloatParam Width = new( "Distance", 0.1f, 0.0001f, unit: "u" );
 	public readonly FloatParam AngleThreshold = new( "Angle threshold", 15f, 0f, 180f, unit: "deg" );
 
+	/// <summary>Edges to cut. Empty means every edge sharper than the angle threshold, which is
+	/// how this feature behaved before edges could be picked and how a Fillet with no selection
+	/// still should.</summary>
+	public List<EdgeRef> Edges = new();
+
 	public override IReadOnlyList<IParam> Parameters => new IParam[] { Bodies, Width, AngleThreshold };
 
 	protected override void Execute( FeatureContext ctx )
 	{
-		var reports = new List<(Body Body, BlendReport Report)>();
-
-		foreach ( var body in RequireBodies( ctx, Bodies ) )
-			reports.Add( (body, EdgeBlend.ChamferReport( body.Mesh, Width.Clamped, AngleThreshold.Clamped )) );
-
-		CommitBlend( reports, "Distance" );
+		CommitBlend( BlendBodies( ctx, Edges, ( mesh, keys ) =>
+			keys is null
+				? EdgeBlend.ChamferReport( mesh, Width.Clamped, AngleThreshold.Clamped )
+				: EdgeBlend.ChamferReport( mesh, Width.Clamped, keys ) ), "Distance" );
 	}
 }
 
@@ -210,17 +213,19 @@ public sealed class FilletFeature : Feature
 	public readonly IntParam Segments = new( "Segments", 4, 1, 16 );
 	public readonly FloatParam AngleThreshold = new( "Angle threshold", 15f, 0f, 180f, unit: "deg" );
 
+	/// <summary>Edges to round. Empty means every edge sharper than the angle threshold — see
+	/// ChamferFeature.Edges.</summary>
+	public List<EdgeRef> Edges = new();
+
 	public override IReadOnlyList<IParam> Parameters =>
 		new IParam[] { Bodies, Radius, Segments, AngleThreshold };
 
 	protected override void Execute( FeatureContext ctx )
 	{
-		var reports = new List<(Body Body, BlendReport Report)>();
-
-		foreach ( var body in RequireBodies( ctx, Bodies ) )
-			reports.Add( (body, EdgeBlend.FilletReport( body.Mesh, Radius.Clamped, AngleThreshold.Clamped, Segments.Clamped )) );
-
-		CommitBlend( reports, "Radius" );
+		CommitBlend( BlendBodies( ctx, Edges, ( mesh, keys ) =>
+			keys is null
+				? EdgeBlend.FilletReport( mesh, Radius.Clamped, AngleThreshold.Clamped, Segments.Clamped )
+				: EdgeBlend.FilletReport( mesh, Radius.Clamped, Segments.Clamped, keys ) ), "Radius" );
 	}
 }
 

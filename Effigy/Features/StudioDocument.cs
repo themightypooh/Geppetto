@@ -236,6 +236,12 @@ public static class StudioDocument
 
 				return;
 
+			case List<EdgeRef> edges:
+				foreach ( var e in edges )
+					sb.Append( "\tedgelist " ).Append( field.Name ).Append( ' ' ).Append( Edge( e ) ).Append( '\n' );
+
+				return;
+
 			case Vec2 v:
 				sb.Append( "\tvec2 " ).Append( field.Name ).Append( ' ' )
 					.Append( Num( v.x ) ).Append( ' ' ).Append( Num( v.y ) ).Append( '\n' );
@@ -666,6 +672,18 @@ public static class StudioDocument
 				return;
 			}
 
+			case "edgelist":
+			{
+				if ( field.GetValue( feature ) is not List<EdgeRef> list )
+					return;
+
+				if ( clearedLists.Add( field.Name ) )
+					list.Clear();
+
+				list.Add( ParseEdge( value ) );
+				return;
+			}
+
 			case "sketch":
 				field.SetValue( feature, ReadSketch( lines, ref i ) );
 				return;
@@ -838,6 +856,17 @@ public static class StudioDocument
 	static string Face( FaceRef f ) =>
 		$"{f.BodyId} {Vec( f.Point )} {Vec( f.Normal )} {Num( f.Anchor.x )} {Num( f.Anchor.y )} "
 		+ $"{(f.AnchorFromMaxX ? 1 : 0)} {(f.AnchorFromMaxY ? 1 : 0)} {(f.Anchored ? 1 : 0)}";
+
+	static string Edge( EdgeRef e ) => $"{e.BodyId} {Vec( e.Point )} {Vec( e.Direction )}";
+
+	static EdgeRef ParseEdge( string value )
+	{
+		var p = value.Split( ' ', StringSplitOptions.RemoveEmptyEntries );
+
+		return new EdgeRef( p[0],
+			new Vec3( ParseFloat( p[1] ), ParseFloat( p[2] ), ParseFloat( p[3] ) ),
+			new Vec3( ParseFloat( p[4] ), ParseFloat( p[5] ), ParseFloat( p[6] ) ) );
+	}
 
 	static FaceRef ParseFace( string value )
 	{

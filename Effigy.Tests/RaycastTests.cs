@@ -26,6 +26,9 @@ public static class RaycastTests
 
 		Report.Section( "raycast: across several bodies, the nearest one wins" );
 		TestMultiBody();
+
+		Report.Section( "raycast: a point on a face names its nearest edge" );
+		TestClosestEdge();
 	}
 
 	static void TestBoxFaces()
@@ -109,5 +112,32 @@ public static class RaycastTests
 
 		Report.Check( "with only the far body present, that one is hit instead",
 			onlyFar is { Body.Id: "far" }, onlyFar?.Body.Id ?? "no hit" );
+	}
+
+	static void TestClosestEdge()
+	{
+		var box = Primitives.Box( 2, 2, 2 );
+		var top = MeshRaycast.Raycast( box, new Vec3( 0, 0, 5 ), new Vec3( 0, 0, -1 ) );
+
+		Report.Check( "the top face is there to ask about", top is not null );
+
+		if ( top is not { } hit )
+			return;
+
+		var nearEdge = new Vec3( 0.95f, 0f, 1f );
+		var found = MeshRaycast.ClosestEdge( box, hit.FaceIndex, nearEdge, out var key, out var closest, out var distance );
+
+		Report.Check( "a point near a rim names an edge", found );
+		Report.Check( "that edge is the +x rim of the top face",
+			MathF.Abs( box.Positions[key.A].x - 1f ) < 1e-3f && MathF.Abs( box.Positions[key.B].x - 1f ) < 1e-3f,
+			$"{box.Positions[key.A]} — {box.Positions[key.B]}" );
+		Report.Check( "the closest point sits on that rim", MathF.Abs( closest.x - 1f ) < 1e-3f, closest.ToString() );
+		Report.Check( "and the distance is the leftover to the rim", distance < 0.1f, $"{distance}" );
+
+		var centre = MeshRaycast.ClosestEdge( box, hit.FaceIndex, new Vec3( 0, 0, 1 ), out _, out _, out var midDistance );
+
+		Report.Check( "the face centre still has a nearest edge", centre );
+		Report.Check( "but it is much further away than a rim click", midDistance > distance + 0.5f,
+			$"centre {midDistance}, rim {distance}" );
 	}
 }
