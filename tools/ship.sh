@@ -1,6 +1,8 @@
 #!/usr/bin/env sh
 #
-# Ship a change: kernel sync, commit, tests, push, publish - in that order.
+# Ship a change. THIS IS THE ONLY COMMAND. Kernel sync, commit, tests, push, publish the
+# s&box package, stamp the CHANGELOG with the revision that created, and print the
+# changelist text to paste - in that order.
 #
 # WHY THIS EXISTS. Getting one fix in front of people took five commands in a fixed order, and the
 # order was load-bearing in ways nothing said out loud - sync the kernel BEFORE committing, or the
@@ -24,6 +26,12 @@
 #   tools/ship.sh                 ship what is already committed
 #   tools/ship.sh --no-test       skip the suite (use when you have just run it)
 #   tools/ship.sh --no-publish    git only, leave the package alone
+#
+# ONE STEP IS STILL YOURS, and it is not an oversight in this script. The engine's package API can
+# READ changelists and has no method that writes one, so nothing running outside a browser can post
+# one. So this ends by printing the finished text, box by box, for you to paste into
+# sbox.game > the package > Edit changelist, assigned to the revision it names. Everything up to
+# that point is done.
 #
 set -eu
 
@@ -92,7 +100,50 @@ echo "  https://github.com/themightypooh/Geppetto"
 # LAST, because it is the only step that cannot be taken back. Everything before this is a commit
 # you can amend or a push you can force over; a published version is out. Putting it at the end
 # means a run that fails anywhere earlier has published nothing.
-if [ "$publish" -eq 1 ]; then
-	echo ""
-	tools/publish.sh --commit
+if [ "$publish" -ne 1 ]; then
+	exit 0
 fi
+
+echo ""
+
+# tee, not a plain capture: the publish takes a while and watching it upload is most of the
+# reassurance that anything is happening.
+out=$( tools/publish.sh --commit | tee /dev/tty )
+
+# publish.sh's last line is "revision <id> <moved>", meant for exactly this.
+set -- $( printf '%s' "$out" | sed -n 's/^revision //p' | tail -1 )
+revision=${1:-}
+moved=${2:-0}
+
+if [ -z "$revision" ]; then
+	echo ""
+	echo "no revision reported - the CHANGELOG was not stamped. Do it by hand once you know" >&2
+	echo "which revision this was." >&2
+	exit 0
+fi
+
+# STAMP THE CHANGELOG ONLY WHEN A NEW REVISION EXISTS. Publishing content the backend already has
+# is a no-op that keeps the live revision, and stamping Unreleased onto it would retire a batch of
+# notes against a revision that predates them.
+if [ "$moved" -eq 1 ]; then
+	if python "$root/tools/changelog-release.py" "$root/CHANGELOG.md" "$revision"; then
+		git add CHANGELOG.md
+		git commit -q -m "CHANGELOG: v$revision"
+		git push -q origin main
+		echo ""
+		echo "stamped Unreleased as v$revision and pushed"
+	fi
+fi
+
+# THE CHANGELIST IS THE ONE STEP THAT CANNOT BE AUTOMATED - the engine's package API can read
+# changelists and has no method that writes one, so no script outside a browser can post it. What
+# a script CAN do is leave nothing to write: the text below is the finished thing to paste.
+echo ""
+echo "============================================================"
+echo " LAST STEP, BY HAND. sbox.game > your package > Edit changelist"
+echo " Assign it to revision $revision, then paste each block below"
+echo " into the box named above it."
+echo "============================================================"
+echo ""
+
+tools/changelist.sh "$revision" 2>/dev/null || tools/changelist.sh

@@ -112,6 +112,25 @@ case "$log" in
 	*"failed:"*)
 		echo "the publish did not go through - see above." >&2
 		exit 1 ;;
-	*"] published "*)
-		echo "https://sbox.game/pooh/geppetto" ;;
 esac
+
+# THE LAST LINE IS FOR A SCRIPT, not for a reader: ship.sh needs the revision this created so it
+# can stamp the CHANGELOG with it. Machine-readable and last, so parsing it does not mean parsing
+# the whole log.
+#
+# "version did not move" is a real answer rather than a failure - it is what publishing content the
+# backend already has looks like - so it reports the revision that is still live rather than
+# nothing, and the caller decides whether that is worth stamping.
+revision=$( printf '%s' "$log" | sed -n 's/.*-> v\([0-9][0-9]*\).*/\1/p' | tail -1 )
+moved=1
+
+if [ -z "$revision" ]; then
+	revision=$( printf '%s' "$log" | sed -n 's/.*still \([0-9][0-9]*\).*/\1/p' | tail -1 )
+	moved=0
+fi
+
+case "$log" in
+	*"] published "*) echo "https://sbox.game/pooh/geppetto" ;;
+esac
+
+[ -n "$revision" ] && echo "revision $revision $moved"

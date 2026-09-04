@@ -29,7 +29,12 @@ forgotten.
 
 ## Unreleased
 
-Nothing yet.
+### Improved
+- Shipping is one command. `tools/ship.sh -m "what changed"` syncs, commits,
+  tests, pushes, publishes the package, stamps this file with the revision that
+  created, and prints the changelist text ready to paste. The paste is the only
+  step left by hand, because the engine's package API can read changelists and
+  has no method that writes one.
 
 ## v367360 — 2026-09-04
 
