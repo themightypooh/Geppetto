@@ -5,21 +5,21 @@ using System;
 namespace Marionette.EditorTools;
 
 /// <summary>
-/// The lamp tutorial as a dockable panel.
+/// The house tutorial as a dockable panel.
 ///
 /// Effigy's status bar already does the job a status bar is good at - saying what is under the
 /// cursor - and a tutorial is not that. Something you are meant to actively follow needs to be
 /// looked AT: big enough to read at a glance, with its progress around it so you know where you
 /// are. Same conclusion RigTutorialPanel reached, and the same division of labour.
 ///
-/// One step at a time, deliberately. Listing all nine puts eight things you are not doing in
+/// One step at a time, deliberately. Listing all five puts four things you are not doing in
 /// front of the one you are; the header counter and the dots carry progress instead.
 /// </summary>
 internal sealed class EffigyTutorialPanel : Widget
 {
 	/// <summary>The tutorial's name, in one place. Rig Control's was written out at three call
 	/// sites and two of them went stale - which is exactly what a duplicated string does.</summary>
-	private const string Title = "Build a Desk Lamp";
+	private const string Title = "Build a House";
 
 	private readonly Widget _list;
 	private readonly Editor.Label _heading;
@@ -133,25 +133,25 @@ internal sealed class EffigyTutorialPanel : Widget
 		// Separate labels rather than one string with line breaks in it. Escaped newlines have
 		// been written into files in this repo as real ones twice, leaving string literals
 		// unterminated; separate labels cannot do that.
-		AddLine( "You will build a desk lamp, rig it, and export something Marionette can pose. "
-			+ "It is a small model chosen because it needs every stage of the tool honestly.", 15f, 0.95f );
+		AddLine( "You will build a small house: a box for the walls, a wedge for a sloped roof, "
+			+ "and holes cut through the walls for windows and a door. It is the smallest model that "
+			+ "still needs everything a first session teaches.", 15f, 0.95f );
 
 		_list.Layout.AddSpacingCell( 6f );
 
-		AddLine( "It runs in three phases:", 14f, 0.8f );
+		AddLine( "It runs in two phases:", 14f, 0.8f );
 
 		_list.Layout.AddSpacingCell( 4f );
 
-		AddPhase( "A SOLID", "sketch, extrude, fillet, revolve, shell" );
-		AddPhase( "A SURFACE", "subdivide, roll back to the cage, unwrap, sculpt, bake" );
-		AddPhase( "A RIG", "bones, bodies, and a compiled model" );
+		AddPhase( "THE SHAPE", "two primitives - a box, then a wedge" );
+		AddPhase( "THE CUTS", "holes for the windows and the door" );
 
 		_list.Layout.AddSpacingCell( 6f );
 
-		AddLine( "The middle phase is the one worth staying for. Anything can extrude a rectangle; "
-			+ "getting back underneath a subdivision to edit the cage that carries your UVs and your "
-			+ "skinning is the reason this tool starts parametric instead of starting with a sculpt.",
-			14f, 0.8f );
+		AddLine( "The holes are the part worth noticing. You are not deleting wall to make a window - "
+			+ "you are telling the tool to subtract a cylinder, and it re-does that subtraction "
+			+ "whenever you resize the house. That is what parametric means, and it is the idea every "
+			+ "later tutorial builds on.", 14f, 0.8f );
 
 		_list.Layout.AddSpacingCell( 6f );
 
@@ -397,11 +397,10 @@ internal sealed class EffigyTutorialPanel : Widget
 	private void BuildFinishScreen()
 	{
 		var done = new Editor.Label(
-			"That is a lamp with a clean cage under it, sculpted detail baked onto that cage, and a "
-			+ "skeleton that moves it. Every part of that survives being edited: roll back above the "
-			+ "subdivision and change the base again, and the UVs, the bake and the rig are all still "
-			+ "waiting underneath. That is the whole argument for modelling this way, and it is easier "
-			+ "to believe once you have watched it happen to something you made." )
+			"That is a house, and it is still a recipe. Change the box and the roof follows; widen "
+			+ "the door and the wall re-cuts itself around it. Nothing you did was a one-way edit, "
+			+ "which is the whole point of modelling this way - and the next tutorial starts where "
+			+ "this one leaves off: drawing the shapes a primitive cannot make." )
 		{ WordWrap = true, Color = Theme.Green };
 
 		done.SetStyles( "font-size: 15px; line-height: 1.45;" );
@@ -453,17 +452,6 @@ internal sealed class EffigyStepGlyph : Widget
 
 		switch ( _art )
 		{
-			// A closed profile with its points - a sketch, as the viewport draws one.
-			case EffigyTutorial.StepArt.Sketch:
-				Paint.DrawLine( center + new Vector2( -9, 6 ), center + new Vector2( -9, -6 ) );
-				Paint.DrawLine( center + new Vector2( -9, -6 ), center + new Vector2( 9, -6 ) );
-				Paint.DrawLine( center + new Vector2( 9, -6 ), center + new Vector2( 9, 6 ) );
-				Paint.DrawLine( center + new Vector2( 9, 6 ), center + new Vector2( -9, 6 ) );
-				Paint.SetBrush( color );
-				Paint.DrawCircle( center + new Vector2( -9, -6 ), 3f );
-				Paint.DrawCircle( center + new Vector2( 9, 6 ), 3f );
-				break;
-
 			// A box drawn as a box: a face, and the two edges that give it depth.
 			case EffigyTutorial.StepArt.Solid:
 				Paint.DrawLine( center + new Vector2( -10, 3 ), center + new Vector2( -10, -5 ) );
@@ -477,81 +465,13 @@ internal sealed class EffigyStepGlyph : Widget
 				Paint.DrawLine( center + new Vector2( 10, -2 ), center + new Vector2( 4, 3 ) );
 				break;
 
-			// A square corner with the corner rounded off - a fillet, which is what the step is.
-			// Stepped out of short segments rather than an arc overload guessed at: at this size
-			// it is indistinguishable and it cannot be wrong about an API.
-			case EffigyTutorial.StepArt.Blend:
-			{
-				Paint.DrawLine( center + new Vector2( -10, 10 ), center + new Vector2( -10, -2 ) );
-
-				const int segments = 8;
-				var previous = center + new Vector2( -10, -2 );
-
-				for ( var i = 1; i <= segments; i++ )
-				{
-					var t = i / (float)segments;
-					var angle = MathF.PI * (1f - t * 0.5f);
-
-					var point = center + new Vector2( -2f + MathF.Cos( angle ) * 8f, -2f - MathF.Sin( angle ) * 8f );
-
-					Paint.DrawLine( previous, point );
-					previous = point;
-				}
-
-				Paint.DrawLine( previous, center + new Vector2( 10, -10 ) );
-				break;
-			}
-
-			// A stack of features with a bar across it - the rollback bar in the tree.
-			case EffigyTutorial.StepArt.Rollback:
-				Paint.DrawLine( center + new Vector2( -10, -9 ), center + new Vector2( 4, -9 ) );
-				Paint.DrawLine( center + new Vector2( -10, -4 ), center + new Vector2( 4, -4 ) );
-				Paint.SetPen( color, 2.5f );
-				Paint.DrawLine( center + new Vector2( -12, 1 ), center + new Vector2( 12, 1 ) );
-				Paint.SetPen( color.WithAlpha( 0.4f ), _current ? 2f : 1.5f );
-				Paint.DrawLine( center + new Vector2( -10, 6 ), center + new Vector2( 4, 6 ) );
-				Paint.DrawLine( center + new Vector2( -10, 11 ), center + new Vector2( 4, 11 ) );
-				break;
-
-			// Two charts side by side inside a square - an atlas, which is what unwrapping makes.
-			case EffigyTutorial.StepArt.Unwrap:
-				Paint.DrawRect( new Rect( center.x - 11, center.y - 11, 22, 22 ), 2f );
-				Paint.SetBrush( color.WithAlpha( 0.35f ) );
+			// A hole through a wall: the opening's ring, and its drilled centre.
+			case EffigyTutorial.StepArt.Hole:
+				Paint.SetPen( color, _current ? 2f : 1.5f );
+				Paint.DrawCircle( center, 8f );
 				Paint.ClearPen();
-				Paint.DrawPolygon(
-					center + new Vector2( -8, -8 ),
-					center + new Vector2( -1, -8 ),
-					center + new Vector2( -1, 0 ),
-					center + new Vector2( -8, 0 ) );
-				Paint.DrawPolygon(
-					center + new Vector2( 2, -3 ),
-					center + new Vector2( 8, -3 ),
-					center + new Vector2( 5, 8 ) );
-				break;
-
-			// A brush over a surface - the sculpt stage.
-			case EffigyTutorial.StepArt.Sculpt:
-				Paint.DrawLine( center + new Vector2( -11, 8 ), center + new Vector2( -4, 8 ) );
-				Paint.DrawLine( center + new Vector2( -4, 8 ), center + new Vector2( 1, 3 ) );
-				Paint.DrawLine( center + new Vector2( 1, 3 ), center + new Vector2( 7, 8 ) );
-				Paint.DrawLine( center + new Vector2( 7, 8 ), center + new Vector2( 11, 8 ) );
 				Paint.SetBrush( color );
-				Paint.DrawPolygon(
-					center + new Vector2( 1, -2 ),
-					center + new Vector2( 5, -10 ),
-					center + new Vector2( -3, -10 ) );
-				break;
-
-			// A joint with its chain - the same mark the rig tutorial uses, on purpose: it is the
-			// same idea arriving in a second tool.
-			case EffigyTutorial.StepArt.Bone:
-				Paint.DrawLine( center + new Vector2( -8, 7 ), center );
-				Paint.DrawLine( center, center + new Vector2( 8, -7 ) );
-				Paint.SetBrush( color );
-				Paint.DrawCircle( center, 5f );
-				Paint.ClearBrush();
-				Paint.DrawCircle( center + new Vector2( -8, 7 ), 3f );
-				Paint.DrawCircle( center + new Vector2( 8, -7 ), 3f );
+				Paint.DrawCircle( center, 2.5f );
 				break;
 
 			// An arrow leaving a tray - export.

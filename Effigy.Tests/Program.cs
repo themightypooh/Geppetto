@@ -41,10 +41,13 @@ public static class Program
 		// `dotnet run --nologo` hands the flag straight through to us. The first positional
 		// argument is the output directory, so an unrecognised flag taken as one wrote the whole
 		// sample set into a folder literally named `--nologo`. Drop flags we do not own.
-		var args = rawArgs.Where( a => !a.StartsWith( "--" ) || a == "--tree" ).ToArray();
+		var args = rawArgs.Where( a => !a.StartsWith( "--" ) || a == "--tree" || a == "--tentacle" ).ToArray();
 
 		if ( args.Length > 0 && args[0] == "--tree" )
 			return TreeGen.Run( args.Length > 1 ? args[1] : DefaultOutDir() );
+
+		if ( args.Length > 0 && args[0] == "--tentacle" )
+			return TentacleGen.Run( args.Length > 1 ? args[1] : DefaultOutDir() );
 
 		var outDir = args.Length > 0 ? args[0] : DefaultOutDir();
 
@@ -105,11 +108,14 @@ public static class Program
 
 		UVTests.Run();
 
+		PaintCanvasTests.Run();
+
 		ExpressionTests.Run();
 
 		SnapTests.Run();
 
 		RaycastTests.Run();
+		BvhFaceTests.Run();
 
 		AllFeaturesTests.Run();
 
@@ -142,6 +148,7 @@ public static class Program
 		DmxAnimTests.Run();
 
 		MergeTests.Run();
+		AtlasIdTests.Run();
 
 		FaceMaterialTests.Run();
 		FaceMenuTests.Run();
@@ -152,6 +159,8 @@ public static class Program
 		ConstraintToolTests.Run();
 
 		DocumentTests.Run();
+
+		PaintDocumentTests.Run();
 
 		HoleTests.Run();
 

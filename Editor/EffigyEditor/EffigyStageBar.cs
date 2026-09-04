@@ -1,4 +1,4 @@
-using Editor;
+﻿using Editor;
 using Sandbox;
 using System;
 using System.Collections.Generic;
@@ -167,6 +167,38 @@ internal static class EffigyToolChrome
 		Paint.SetPen( Theme.Yellow.WithAlpha( 0.9f ), 2f );
 		Paint.DrawRect( rect.Shrink( 1f ), 4f );
 	}
+
+	/// <summary>
+	/// "This tool will use what you have selected." A short bar down the button's left edge, in the
+	/// reference green.
+	///
+	/// THE POSITIVE FORM, AND THAT IS THE WHOLE DESIGN DECISION. The obvious version of this
+	/// affordance is to DIM what does not apply, and it is wrong: a tool that ignores your selection
+	/// is not unavailable — pressing Primitive with a face selected is perfectly fine — so dimming
+	/// most of the bar most of the time would teach a rule that is not true, and would train people
+	/// to ignore dimming everywhere else in the editor. Marking what WILL use the selection says the
+	/// same thing without lying about the rest.
+	///
+	/// QUIET ON PURPOSE, BECAUSE IT IS THE COMMON CASE. Select one face and five or six tools light
+	/// at once — Fillet, Chamfer, Draft, Hole, Face Material, Extrude, Move Face — so anything with
+	/// a wash or a ring behind it turns a row of names into a row of boxes. It is a THIRD SHAPE
+	/// rather than a third colour of the same shape: hover is a halo at the edge, armed is a ring
+	/// around the edge, and this is a mark ON one edge. All three can be true at once and still be
+	/// read apart.
+	///
+	/// THE COLOUR IS ALREADY SPOKEN FOR AND THAT IS WHY IT WAS CHOSEN. ReferenceColor means "this is
+	/// about the part underneath" and matches SketchReferenceColor in the viewport. A selection IS
+	/// the part underneath, so this is the same statement the viewport is already making, in the
+	/// place the answer gets pressed.
+	/// </summary>
+	public static void PaintTakesMark( Rect rect )
+	{
+		Paint.ClearPen();
+		Paint.SetBrush( ReferenceColor.WithAlpha( 0.85f ) );
+		Paint.DrawRect(
+			new Rect( rect.Position.x + 1f, rect.Position.y + rect.Size.y * 0.25f,
+				2f, rect.Size.y * 0.5f ), 1f );
+	}
 }
 
 /// <summary>One entry behind a tool's chevron: the same idea, done a different way. A corner
@@ -227,6 +259,16 @@ internal sealed class EffigyStageTool
 
 	public bool Checked;
 	public bool Attention;
+
+	/// <summary>
+	/// This tool's <c>Accepts</c> intersects what is currently selected, so pressing it now would
+	/// consume that selection rather than starting from nothing.
+	///
+	/// SET FROM THE OUTSIDE, never worked out here. The window recomputes it when the selection
+	/// changes, by asking a fresh feature per tool — see EffigyWindow.AcceptedBy for why that is
+	/// on demand and not a cached map. A paint pass must never be the thing that asks.
+	/// </summary>
+	public bool Takes;
 
 	/// <summary>Which variant is on the face of the button. Onshape keeps the last one you picked
 	/// there, so the second use of a centre rectangle is a single click.</summary>
@@ -813,8 +855,13 @@ internal sealed class EffigyStageToolRow : Widget
 
 	private void PaintTool( EffigyStageTool tool, Rect rect, int index )
 	{
-		// Order matters: attention under the armed ring under the hover glow, so hovering a
-		// highlighted armed button still reads as hovering it rather than as a fourth state.
+		// Order matters: the selection mark under attention under the armed ring under the hover
+		// glow, so hovering a highlighted armed button still reads as hovering it rather than as a
+		// fourth state. The selection mark is first because it is the quietest and the most often
+		// true — it should never be what you notice about a button you are already pointing at.
+		if ( tool.Takes )
+			EffigyToolChrome.PaintTakesMark( rect );
+
 		if ( tool.Attention )
 			EffigyToolChrome.PaintAttentionRing( rect );
 

@@ -1,4 +1,4 @@
-using Editor;
+﻿using Editor;
 using Effigy;
 using Sandbox;
 using System;
@@ -15,17 +15,33 @@ namespace Marionette.EditorTools;
 /// typing 0.4 to find out whether 0.4 was right is not how anybody shapes a part. Select a face,
 /// drag it, watch the solid grow.
 ///
-/// THE ARROW IS ALIGNED TO THE FACE, NOT TO THE WORLD, and the fourth argument to
-/// Gizmo.Control.Position is what does it — omitting that argument is the documented mistake that
-/// made every axis drag along Z. The blue axis is the face's own normal, so pulling "out" is out
-/// whichever way the face happens to point.
+/// ONE ARROW, ALONG THE FACE'S OWN NORMAL. Not three. Gizmo.Control.Arrow takes the axis directly
+/// and hands back a scalar distance along it, which is exactly the shape of a push-pull: one degree
+/// of freedom, and the handle says so.
 ///
-/// ALL THREE ARROWS ARE HONEST, which is worth saying because two of them look inert on a single
-/// face. The drag is handed to FaceMove in TRANSLATE mode, where each face travels by
-/// dot(normal, displacement) — so dragging one planar face sideways moves nothing, because sliding a
-/// plane within itself genuinely does not change the solid. Select both faces of a wall and those
-/// same two arrows slide the wall. The geometry decides what an arrow does, and it is right in both
-/// cases rather than special-cased in either.
+/// THIS REPLACED A THREE-AXIS Gizmo.Control.Position, AND THE ARGUMENT FOR THAT IS WORTH KEEPING
+/// because it was a good argument and it was still wrong. All three arrows WERE honest: the drag
+/// goes to FaceMove in TRANSLATE mode, where each face travels by dot(normal, displacement), so
+/// dragging one planar face sideways correctly moved nothing — sliding a plane within itself does
+/// not change the solid — and on the facing pair of a wall those same two arrows slid the wall.
+/// Nothing was special-cased and both cases were right.
+///
+/// It was still the wrong interaction, for the reason honesty does not settle: on the single-face
+/// pick, which is overwhelmingly the common one, two of the three arrows did nothing when dragged.
+/// An inert arrow is not read as "the geometry says this is a no-op". It is read as broken, and it
+/// invites the drag that teaches you it was pointless. po, 4 September 2026, having used it:
+/// "i only want the gizmo to be able to pull in the direction the face is actually facing, not up
+/// and down or left and right."
+///
+/// SLIDING A WALL IS NOW MOVE FACE'S TRANSLATE MODE, typed, rather than a handle that appears only
+/// for a selection shape the user cannot see they have made. That is the trade, and it is the right
+/// way round: the common case gets an honest handle and the rare one keeps a dialog it already had.
+///
+/// THE 10-DEGREE CULL IS THE ENGINE'S AND IT IS PROTECTIVE. Arrow hides itself when its axis comes
+/// within cullAngle of the view direction, because screen movement stops mapping to axis movement
+/// there. With three arrows something else was always grabbable; with one, looking straight down a
+/// face's normal leaves no handle. That is correct — the drag would be meaningless at that angle —
+/// but it means the handle can vanish, so orbit a few degrees rather than assuming it broke.
 ///
 /// ONLY WHILE A TOOL THAT CONSUMES A FACE IS OPEN, and this is the part that keeps it parametric.
 /// An earlier cut of this put the arrows on any face you clicked, so dragging one appended a Move
@@ -122,11 +138,20 @@ internal sealed partial class EffigyViewport
 	}
 
 	/// <summary>
-	/// The arrows, and the drag they report.
+	/// The arrow, and the drag it reports.
 	///
 	/// ANCHORED WHERE THE DRAG STARTED plus what has been dragged so far — never at the face's live
 	/// centroid. The face moves as you drag it, so re-reading the centroid every frame would add that
 	/// movement to the handle a second time and the arrow would run away from the cursor.
+	///
+	/// THE SCOPE CARRIES NO ROTATION, so the axis handed to Arrow is the world-space normal as it
+	/// stands. That is why this no longer needs the Rotation.LookAt dance the three-axis version did:
+	/// there is no basis to build when there is only one axis to point.
+	///
+	/// ONE ARROW STILL PUSHES BOTH WAYS. Dragging back past the tail gives a negative distance and
+	/// the face goes in, which is what Onshape's push-pull does with the same single arrow. A second
+	/// arrow along -normal would say so more loudly and would also double the hitboxes at the exact
+	/// spot the user is aiming; not worth it.
 	/// </summary>
 	private void DrawFaceHandle( Vector3 origin, Vector3 normal )
 	{
@@ -134,12 +159,7 @@ internal sealed partial class EffigyViewport
 
 		Gizmo.Hitbox.DepthBias = 0.01f;
 
-		// The fourth argument is the whole point: it turns the arrows to the face. A tangent for
-		// Forward and the normal for Up puts the blue axis along the normal, which is the one anybody
-		// reaches for on a face.
-		var rotation = Rotation.LookAt( Tangent( normal ), normal );
-
-		if ( Gizmo.Control.Position( "face-pull", Vector3.Zero, out var displacement, rotation ) )
+		if ( Gizmo.Control.Arrow( "face-pull", normal, out var distance ) )
 		{
 			if ( !_draggingFace )
 			{
@@ -150,7 +170,12 @@ internal sealed partial class EffigyViewport
 				FaceDragBegan?.Invoke();
 			}
 
-			_faceDragDelta += displacement;
+			// Accumulated rather than assigned, for the same reason Position's displacement was:
+			// these controls report the change since the last frame and return false on any frame
+			// the value did not move (RigViewport.cs:1621). The axis is the one the drag STARTED
+			// with, not the live normal, so the total stays a straight line even though the face
+			// it was taken from is travelling.
+			_faceDragDelta += _faceDragNormal * distance;
 
 			FaceDragMoved.Invoke(
 				new Vec3( _faceDragDelta.x, _faceDragDelta.y, _faceDragDelta.z ),
@@ -219,15 +244,5 @@ internal sealed partial class EffigyViewport
 		normal = new Vector3( axis.x, axis.y, axis.z );
 
 		return true;
-	}
-
-	/// <summary>Any unit vector across the normal. Crossed with whichever world axis the normal is
-	/// least aligned to, so it never collapses to zero — the same trick FacePlane.FromPointAndNormal
-	/// uses to build a plane's basis.</summary>
-	private static Vector3 Tangent( Vector3 normal )
-	{
-		var seed = MathF.Abs( normal.z ) < 0.9f ? Vector3.Up : Vector3.Forward;
-
-		return Vector3.Cross( seed, normal ).Normal;
 	}
 }

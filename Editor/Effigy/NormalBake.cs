@@ -319,8 +319,12 @@ public static class NormalBake
 	/// <summary>
 	/// Walk the texels a UV triangle covers, sampling at texel centres. Shared by the bake and by
 	/// <see cref="Measure"/>, so the two can never disagree about which texels a face owns.
+	///
+	/// Now also the paint dab, which is why it is internal rather than private: a dab rasterises a
+	/// face's UV triangle with the same walk the bake uses, and two walks that disagreed would put
+	/// paint and normals on different texels.
 	/// </summary>
-	static void Rasterise( Vec2 a, Vec2 b, Vec2 c, int width, int height, Action<int, int, float, float, float> texel )
+	internal static void Rasterise( Vec2 a, Vec2 b, Vec2 c, int width, int height, Action<int, int, float, float, float> texel )
 	{
 		var minX = (int)MathF.Floor( MathF.Min( a.x, MathF.Min( b.x, c.x ) ) * width - 1f );
 		var maxX = (int)MathF.Ceiling( MathF.Max( a.x, MathF.Max( b.x, c.x ) ) * width + 1f );
@@ -381,8 +385,12 @@ public static class NormalBake
 	/// A point exactly on an edge is awarded to the triangle for which that edge is a left or a top
 	/// edge; the neighbour, walking the same edge the other way, declines it. Standard, and the only
 	/// answer that is exact rather than nearly exact.
+	///
+	/// Now also the paint dab's fill rule, which is why it is internal rather than private: the dab
+	/// and the bake must agree about which face owns a texel on a shared edge, or the dab paints a
+	/// seam the bake never touched.
 	/// </summary>
-	static bool Covers( float e, Vec2 u, Vec2 v )
+	internal static bool Covers( float e, Vec2 u, Vec2 v )
 	{
 		if ( e > 0f )
 			return true;
@@ -413,8 +421,11 @@ public static class NormalBake
 	/// Bleed filled texels outward, so a shader filtering across an island's edge finds something
 	/// sensible there. Each pass takes the average of the filled neighbours; without it seams glow
 	/// once mipmaps start mixing in whatever sat outside the island.
+	///
+	/// Now also the paint canvas, which is why it is internal rather than private: a painted dab
+	/// bleeds outward at its edge for exactly the same reason a bake does.
 	/// </summary>
-	static void Dilate( BakedMap map, int passes )
+	internal static void Dilate( BakedMap map, int passes )
 	{
 		if ( passes <= 0 )
 			return;

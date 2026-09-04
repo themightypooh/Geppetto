@@ -242,6 +242,17 @@ public static class StudioDocument
 
 				return;
 
+			case List<PaintStroke> strokes:
+				// Paint's stroke log. One line per stroke — colour, brush and spacing once, then the
+				// path as position/normal pairs — so a painted document still diffs one stroke at a
+				// time rather than becoming one unbounded line. Written in list order on purpose:
+				// strokes are a log and colour blending does not commute, so the order the writer
+				// emits is the order replay must reproduce.
+				foreach ( var s in strokes )
+					sb.Append( "\tstroke " ).Append( field.Name ).Append( ' ' ).Append( Stroke( s ) ).Append( '\n' );
+
+				return;
+
 			case Vec2 v:
 				sb.Append( "\tvec2 " ).Append( field.Name ).Append( ' ' )
 					.Append( Num( v.x ) ).Append( ' ' ).Append( Num( v.y ) ).Append( '\n' );
@@ -684,6 +695,27 @@ public static class StudioDocument
 				return;
 			}
 
+			case "stroke":
+			{
+				// Strokes is null until the first one lands, so a document that paints has to create
+				// the list rather than assume it — unlike the facelist/edgelist fields, which are
+				// never null and can rely on their initialiser.
+				if ( field.GetValue( feature ) is List<PaintStroke> strokes )
+				{
+					if ( clearedLists.Add( field.Name ) )
+						strokes.Clear();
+				}
+				else
+				{
+					strokes = new List<PaintStroke>();
+					field.SetValue( feature, strokes );
+					clearedLists.Add( field.Name );
+				}
+
+				strokes.Add( ParseStroke( value ) );
+				return;
+			}
+
 			case "sketch":
 				field.SetValue( feature, ReadSketch( lines, ref i ) );
 				return;
@@ -859,6 +891,24 @@ public static class StudioDocument
 
 	static string Edge( EdgeRef e ) => $"{e.BodyId} {Vec( e.Point )} {Vec( e.Direction )}";
 
+	/// <summary>One stroke as a single line: colour, radius, strength, falloff and spacing, then the
+	/// path as position/normal pairs. The point count is implied by what is left after the header.</summary>
+	static string Stroke( PaintStroke s )
+	{
+		var sb = new StringBuilder();
+
+		sb.Append( Num( s.R ) ).Append( ' ' ).Append( Num( s.G ) ).Append( ' ' ).Append( Num( s.B ) ).Append( ' ' ).Append( Num( s.A ) );
+		sb.Append( ' ' ).Append( Num( s.Radius ) );
+		sb.Append( ' ' ).Append( Num( s.Strength ) );
+		sb.Append( ' ' ).Append( (int)s.Falloff );
+		sb.Append( ' ' ).Append( Num( s.Spacing ) );
+
+		foreach ( var p in s.Path )
+			sb.Append( ' ' ).Append( Vec( p.Position ) ).Append( ' ' ).Append( Vec( p.Normal ) );
+
+		return sb.ToString();
+	}
+
 	static EdgeRef ParseEdge( string value )
 	{
 		var p = value.Split( ' ', StringSplitOptions.RemoveEmptyEntries );
@@ -883,6 +933,34 @@ public static class StudioDocument
 
 		return new FaceRef( p[0], point, normal,
 			new Vec2( ParseFloat( p[7] ), ParseFloat( p[8] ) ), p[9] == "1", p[10] == "1" );
+	}
+
+	static PaintStroke ParseStroke( string value )
+	{
+		var p = value.Split( ' ', StringSplitOptions.RemoveEmptyEntries );
+
+		var stroke = new PaintStroke
+		{
+			R = ParseFloat( p[0] ),
+			G = ParseFloat( p[1] ),
+			B = ParseFloat( p[2] ),
+			A = ParseFloat( p[3] ),
+			Radius = ParseFloat( p[4] ),
+			Strength = ParseFloat( p[5] ),
+			Falloff = (BrushFalloff)ParseInt( p[6], 0 ),
+			Spacing = ParseFloat( p[7] ),
+		};
+
+		// The path follows the fixed header: six floats per point, position then normal. An empty
+		// path is a header with nothing after it, which the loop simply never visits.
+		for ( var n = 8; n + 5 < p.Length; n += 6 )
+		{
+			stroke.Path.Add( new PaintStrokePoint(
+				new Vec3( ParseFloat( p[n] ), ParseFloat( p[n + 1] ), ParseFloat( p[n + 2] ) ),
+				new Vec3( ParseFloat( p[n + 3] ), ParseFloat( p[n + 4] ), ParseFloat( p[n + 5] ) ) ) );
+		}
+
+		return stroke;
 	}
 
 	static Vec3 ParseVec3( string value )

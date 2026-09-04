@@ -22,6 +22,8 @@ public static class DiagnosticTests
 
 		Section( "diagnostics: an oversized fillet is an error, not a silent invert" );
 		TestOversizedFillet();
+		TestFilletsPastTheHalfWidthAllRefuse();
+		TestFilletJustUnderTheHalfWidthStillBuilds();
 		TestSmallFilletStillBuilds();
 		TestGenerousFilletWarnsItTookHalf();
 
@@ -116,6 +118,91 @@ public static class DiagnosticTests
 		Check( "a suggested radius is offered",
 			fillet.Diagnostic?.SuggestedValue is > 0f and < 1.3f,
 			$"{fillet.Diagnostic?.SuggestedValue}" );
+	}
+
+	// THE BAND THE VOLUME GUARD COULD NOT SEE, and the reason this test exists as a sweep rather
+	// than as one more radius: the failure was not at a point, it was over an interval, and any
+	// single radius picked out of it would have been a magic number nobody could re-derive.
+	//
+	// On a 2-unit cube the opposite fillets meet exactly at radius 1.0 — each eats r off both ends
+	// of a 2-long edge — so every radius above that has consumed more of every face than the face
+	// had. ResultVolume <= 0 caught it only from about 1.25 up, because between 1.0 and 1.25 the
+	// part is inside out and STILL ENCLOSES A POSITIVE VOLUME. Forty-eight faces pointed into their
+	// own body and the mesh was closed, manifold, Euler-correct and valid the whole way: rule 1 of
+	// the work order, in the wild, and the reason the fix is a per-edge test in CountCollapsed
+	// rather than a tighter number on the volume.
+	static void TestFilletsPastTheHalfWidthAllRefuse()
+	{
+		// Deliberately walks THROUGH the old guard's blind spot and out the far side.
+		foreach ( var radius in new[] { 1.05f, 1.1f, 1.15f, 1.2f, 1.24f, 1.3f } )
+		{
+			var studio = StudioWithBox();
+			var fillet = studio.Add( new FilletFeature() );
+			fillet.Radius.Value = radius;
+			fillet.AngleThreshold.Value = 15f;
+			fillet.Segments.Value = 4;
+			studio.Rebuild();
+
+			Check( $"Fillet(cube, {radius:0.##}) is refused — it is past the half-width",
+				fillet.Error is not null, "built anyway" );
+
+			// The point of refusing. A part that goes downstream with faces pointing into itself
+			// is the failure this whole guard exists to prevent, and it is invisible to every
+			// validator the kernel owns.
+			Check( $"and nothing inside out reaches the body list at {radius:0.##}",
+				studio.Bodies.Count == 1 && !PointsInward( studio.Bodies[0].Mesh ),
+				"a face points into its own body" );
+
+			Check( $"and the remedy at {radius:0.##} is a radius that actually fits",
+				fillet.Diagnostic?.SuggestedValue is { } fit && fit > 0f && fit < 1f,
+				$"{fillet.Diagnostic?.SuggestedValue}" );
+		}
+	}
+
+	// Just below the meeting point is a very rounded cube and a perfectly good solid, so the guard
+	// must not have simply become stricter everywhere — a test that only asserts refusals would
+	// pass just as well if the feature had stopped working altogether.
+	static void TestFilletJustUnderTheHalfWidthStillBuilds()
+	{
+		var studio = StudioWithBox();
+		var fillet = studio.Add( new FilletFeature() );
+		fillet.Radius.Value = 0.95f;
+		fillet.AngleThreshold.Value = 15f;
+		fillet.Segments.Value = 4;
+		studio.Rebuild();
+
+		Check( "Fillet(cube, 0.95) still builds", fillet.Error is null, fillet.Error );
+		Check( "and it encloses what a 0.95-rounded 2-cube should",
+			studio.Bodies[0].Mesh.SignedVolume() > 3f && studio.Bodies[0].Mesh.SignedVolume() < 3.2f,
+			$"{studio.Bodies[0].Mesh.SignedVolume()}" );
+		Check( "and no face points into its own body",
+			!PointsInward( studio.Bodies[0].Mesh ), "a face points inward" );
+	}
+
+	/// <summary>
+	/// Does any face point back into the solid?
+	///
+	/// Compares each face normal against the direction from the mesh's own centroid out to that
+	/// face. That is only sound for a roughly convex body, which a blended box is, and it is the
+	/// measurement that made the bug visible in the first place — every other check the kernel owns
+	/// said the mesh was fine.
+	/// </summary>
+	static bool PointsInward( PolyMesh mesh )
+	{
+		var centre = Vec3.Zero;
+
+		for ( var i = 0; i < mesh.Positions.Count; i++ )
+			centre += mesh.Positions[i];
+
+		centre /= System.Math.Max( 1, mesh.Positions.Count );
+
+		foreach ( var face in mesh.Faces )
+		{
+			if ( Vec3.Dot( mesh.FaceNormal( face ), mesh.FaceCentroid( face ) - centre ) < 0f )
+				return true;
+		}
+
+		return false;
 	}
 
 	static void TestSmallFilletStillBuilds()

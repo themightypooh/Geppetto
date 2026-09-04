@@ -35,7 +35,31 @@ forgotten.
 
 ## Unreleased
 
-Nothing yet.
+### Added
+- The tool bar marks which tools will use what you have selected. Click a face and
+  Fillet, Chamfer, Draft, Hole, Face Material, Extrude and Move Face each pick up a
+  green mark down their left edge; click an edge and only the two blends do. It marks
+  what applies rather than dimming what does not, because a tool that ignores your
+  selection is not unavailable — you can still press Primitive with a face selected,
+  and always could. `EffigyStageBar.cs`
+
+### Improved
+- The pull handle is now a single arrow, pointing the way the face faces. It used to
+  be three, and on one face two of them did nothing when dragged — correctly, since
+  sliding a flat face within its own plane does not change the solid, but an arrow
+  that does nothing reads as broken. Sliding a wall is Move Face's Translate mode.
+  `EffigyViewport.FaceDrag.cs`
+
+### Fixed
+- An oversized fillet or chamfer is refused again, across the whole range where it
+  should be. On a 2-unit cube any radius above 1.0 has eaten more of every face than
+  the face had; between 1.0 and about 1.25 the part came back quietly self-intersecting
+  instead of saying so, because the old check measured the volume of the finished body
+  and a part folded exactly through its own middle still encloses a positive one. The
+  check is now per-face and per-edge — an edge that has been shrunk past its own length
+  and turned around — so it catches the fold where it happens rather than hoping it
+  shows up in the total. The suggested radius the error offers is fixed by the same
+  change, and no longer proposes a size inside the broken band. `EdgeBlend.cs`
 
 ## v367420 — 2026-09-04
 

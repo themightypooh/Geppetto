@@ -268,6 +268,136 @@ public sealed class MeshBVH
 		Collect( mesh, node.Right, point, radius, r2, results );
 	}
 
+	/// <summary>
+	/// Faces any part of which lies inside the sphere, named the way a raycast names them.
+	///
+	/// The box test is only the pruning step; the verdict is the closest point on the triangulated
+	/// face, using the same triangulation <see cref="MeshRaycast"/> does so a hit here and a hit
+	/// there agree. A face whose box overlaps the sphere but whose surface does not is not just a
+	/// loose result — the caller turns every returned face into rasterised texels, so a false
+	/// positive is visible paint where the brush never touched.
+	/// </summary>
+	public void FacesInRadius( PolyMesh mesh, Vec3 point, float radius, List<int> results )
+	{
+		if ( results is null )
+			throw new ArgumentNullException( nameof( results ) );
+
+		results.Clear();
+
+		if ( mesh is null || _nodes.Length == 0 || radius < 0f )
+			return;
+
+		if ( mesh.FaceCount != _faceCount )
+			throw new ArgumentException(
+				$"Query needs the same topology (built on {_faceCount} faces, mesh has {mesh.FaceCount})" );
+
+		var r2 = radius * radius;
+		CollectFaces( mesh, 0, point, radius, r2, results );
+	}
+
+	void CollectFaces( PolyMesh mesh, int index, Vec3 point, float radius, float r2, List<int> results )
+	{
+		var node = _nodes[index];
+
+		if ( !SphereHitsBounds( point, radius, node.Min, node.Max ) )
+			return;
+
+		if ( node.Left < 0 )
+		{
+			for ( var i = 0; i < node.FaceCount; i++ )
+			{
+				var fi = _faces[node.FaceStart + i];
+
+				if ( FaceTouchesSphere( mesh, mesh.Faces[fi], point, r2 ) )
+					results.Add( fi );
+			}
+
+			return;
+		}
+
+		CollectFaces( mesh, node.Left, point, radius, r2, results );
+		CollectFaces( mesh, node.Right, point, radius, r2, results );
+	}
+
+	static bool FaceTouchesSphere( PolyMesh mesh, Face face, Vec3 point, float r2 )
+	{
+		if ( face.Count < 3 )
+			return false;
+
+		var corners = new List<Vec3>( face.Count );
+
+		for ( var c = 0; c < face.Count; c++ )
+			corners.Add( mesh.Positions[face.Indices[c]] );
+
+		foreach ( var (ia, ib, ic) in Triangulate.Face( corners ) )
+		{
+			if ( SphereTouchesTriangle( point, r2, corners[ia], corners[ib], corners[ic] ) )
+				return true;
+		}
+
+		return false;
+	}
+
+	/// <summary>
+	/// Whether the sphere reaches a triangle, by clamping the closest point on the triangle to the
+	/// vertex, then edge, then face regions in turn. The box pass above is a loose gate; this is the
+	/// distance that actually decides, so a sphere grazing a box corner far from the triangle it
+	/// contains does not drag a face in.
+	/// </summary>
+	static bool SphereTouchesTriangle( Vec3 p, float r2, Vec3 a, Vec3 b, Vec3 c )
+	{
+		var ab = b - a;
+		var ac = c - a;
+		var ap = p - a;
+
+		var d1 = Vec3.Dot( ab, ap );
+		var d2 = Vec3.Dot( ac, ap );
+
+		if ( d1 <= 0f && d2 <= 0f )
+			return ap.LengthSquared <= r2;
+
+		var bp = p - b;
+		var d3 = Vec3.Dot( ab, bp );
+		var d4 = Vec3.Dot( ac, bp );
+
+		if ( d3 >= 0f && d4 <= d3 )
+			return bp.LengthSquared <= r2;
+
+		var vc = d1 * d4 - d3 * d2;
+
+		if ( vc <= 0f && d1 >= 0f && d3 <= 0f )
+		{
+			var v = d1 / (d1 - d3);
+			return (a + ab * v - p).LengthSquared <= r2;
+		}
+
+		var cp = p - c;
+		var d5 = Vec3.Dot( ab, cp );
+		var d6 = Vec3.Dot( ac, cp );
+
+		if ( d6 >= 0f && d5 <= d6 )
+			return cp.LengthSquared <= r2;
+
+		var vb = d5 * d2 - d1 * d6;
+
+		if ( vb <= 0f && d2 >= 0f && d6 <= 0f )
+		{
+			var w = d2 / (d2 - d6);
+			return (a + ac * w - p).LengthSquared <= r2;
+		}
+
+		var va = d3 * d6 - d5 * d4;
+
+		if ( va <= 0f && (d4 - d3) >= 0f && (d5 - d6) >= 0f )
+		{
+			var w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+			return (b + (c - b) * w - p).LengthSquared <= r2;
+		}
+
+		var denom = 1f / (va + vb + vc);
+		return (a + ab * (vb * denom) + ac * (vc * denom) - p).LengthSquared <= r2;
+	}
+
 	static void BoundsOfFaces( PolyMesh mesh, int[] faces, int start, int count, out Vec3 min, out Vec3 max )
 	{
 		min = new Vec3( float.MaxValue, float.MaxValue, float.MaxValue );

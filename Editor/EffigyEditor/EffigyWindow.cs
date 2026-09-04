@@ -223,17 +223,6 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 	private EffigyTutorialPanel _tutorialPanel;
 	private EffigyConsolePanel _consolePanel;
 
-	/// <summary>
-	/// Tutorial latches — things that happened and left no trace in the document to check.
-	///
-	/// Rolling back and rolling forward again leaves a studio byte-identical to one that was
-	/// never rolled back, and a bake writes a PNG and is over. Neither can be read off the
-	/// document afterwards, so the only honest check is to remember having seen it. Session-
-	/// scoped by intent: they are about what the reader has DONE, not about what the file is.
-	/// </summary>
-	private bool _sawRollback;
-	private bool _sawRollforward;
-	private bool _sawBake;
 	private DockWidget _centralDock;
 	private StatusBar _statusWidget;
 	private Editor.Label _statusInfoLabel;
@@ -402,7 +391,7 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		// ever see once is one nobody dares skip.
 		var help = MenuBar.FindOrCreateMenu( "Help" );
 		help.Clear();
-		help.AddOption( "Start Lamp Tutorial", "school", StartTutorial );
+		help.AddOption( "Start House Tutorial", "school", StartTutorial );
 
 		var view = MenuBar.FindOrCreateMenu( "View" );
 		view.Clear();
@@ -848,6 +837,12 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 			: _partStage;
 
 		_stageBar.SetStages( _partStages, land );
+
+		// Coming back from a sketch or a sculpt, the part tools are on screen again and their
+		// selection marks were last set for whatever was selected before we left. Nothing else
+		// will recompute them until the next selection change, which may never come if the user
+		// finishes a sketch and goes straight for a tool.
+		MarkToolsTakingSelection();
 	}
 
 	/// <summary>
@@ -1709,12 +1704,6 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 				+ convention + "." );
 
 			Log.Info( $"[Effigy] baked normal map to {fd.SelectedFile} ({convention})" );
-
-			// Latched only after the write succeeded. A bake that threw on the way to disk has
-			// not happened, however far through it got, and ticking the step off for it would
-			// send the reader to the rig with nothing baked.
-			_sawBake = true;
-			RefreshTutorial();
 		}
 		catch ( Exception e )
 		{
@@ -2676,11 +2665,6 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		// Same "before" moment, for the rig: a bone placed, deleted, renamed, or mirrored.
 		_rigPanel.RigChanging = RecordUndo;
 
-		// And the "after", which the tutorial needs: rig edits do not go through RebuildStudio,
-		// so without this the bone step would sit unticked until something unrelated forced a
-		// rebuild — the tutorial appearing not to notice four bones is worse than no check.
-		_rigPanel.RigChanged = RefreshTutorial;
-
 		_centralDock = DockManager.SetCentralWidget( _viewport );
 
 		DockManager.RegisterDock( new() { Title = "Features", Icon = "account_tree", Area = DockArea.Left, CreateAction = () => _leftPanel } );
@@ -2768,6 +2752,8 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		if ( _viewport is null )
 			return;
 
+		MarkToolsTakingSelection();
+
 		if ( _viewport.FacePickMode || _viewport.BodyPickMode || _viewport.PlanePickMode || _viewport.SketchPickMode )
 			return;
 
@@ -2840,6 +2826,90 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		var names = ToolsNamed( kind );
 
 		return names.Length == 0 ? "" : $" — {names} will use {(one ? "it" : "them")}.";
+	}
+
+	/// <summary>
+	/// What kind of geometry is selected right now, in the vocabulary Accepts speaks.
+	///
+	/// THE PRIORITY MIRRORS DescribeGeometrySelection'S, deliberately, because the sentence under
+	/// the viewport and the marks on the bar are two readings of one fact and they must not
+	/// disagree about which one it is. Sketch region beats edges beats faces beats bodies, and the
+	/// first branch that matches wins in both places.
+	///
+	/// A FACE SELECTION ALSO NAMES ITS BODY, so it reports Face | Body. This is not a convenience:
+	/// ApplyGeometrySelection really does hand a body-only tool the part a picked face belongs to,
+	/// and AcceptsTests asserts that asymmetry rather than working around it. Reporting Face alone
+	/// here would leave Shell and Subdivide unmarked on a click that they would in fact consume.
+	///
+	/// NOTHING WHILE A DIALOG IS PICKING. A tool with a pick mode armed owns the clicks, and the
+	/// marks would be describing a selection that is on its way into a box rather than one sitting
+	/// there waiting for a tool.
+	/// </summary>
+	private GeometryKind SelectedGeometry()
+	{
+		if ( _viewport is null )
+			return GeometryKind.None;
+
+		if ( _viewport.FacePickMode || _viewport.BodyPickMode || _viewport.PlanePickMode || _viewport.SketchPickMode )
+			return GeometryKind.None;
+
+		if ( _viewport.IdleSketchFeatureId is not null )
+			return GeometryKind.SketchRegion;
+
+		if ( _viewport.IdleEdges.Count > 0 )
+			return GeometryKind.Edge;
+
+		if ( _viewport.IdleFaces.Count > 0 )
+			return GeometryKind.Face | GeometryKind.Body;
+
+		if ( _viewport.IdleBodyIds.Count > 0 )
+			return GeometryKind.Body;
+
+		return GeometryKind.None;
+	}
+
+	/// <summary>
+	/// Light the bar's tools that will use what is selected.
+	///
+	/// The third consumer of Accepts, and the last one to be built: the type switch that DOES the
+	/// consuming, the sentence under the viewport that names the tools, and now the buttons
+	/// themselves. All three ask the same declaration, so the bar cannot mark a tool the sentence
+	/// leaves out.
+	///
+	/// ASKED ONCE PER SELECTION CHANGE, NEVER PER PAINT. AcceptedBy builds a fresh feature to read
+	/// a constant off it — cheap, but not free, and not something to do sixty times a second for
+	/// every button on screen. The answer is stored on the tool and the bar just draws it.
+	///
+	/// PART MODE ONLY. The sketch stages have their own vocabulary — points and curves, not faces
+	/// and bodies — and none of their tools declares Accepts, so marking there would mean marking
+	/// nothing, every time, forever.
+	/// </summary>
+	private void MarkToolsTakingSelection()
+	{
+		if ( _featureTools.Count == 0 )
+			return;
+
+		var selected = _barMode == EffigyBarMode.Part ? SelectedGeometry() : GeometryKind.None;
+		var changed = false;
+
+		foreach ( var (kind, tool) in _featureTools )
+		{
+			// Any overlap at all, not an exact match: a tool that takes faces OR bodies is worth
+			// marking when either is what you have.
+			var takes = selected != GeometryKind.None && (AcceptedBy( kind ) & selected) != GeometryKind.None;
+
+			if ( tool.Takes == takes )
+				continue;
+
+			tool.Takes = takes;
+			changed = true;
+		}
+
+		// Only when something actually moved. This runs on every selection change, and a selection
+		// change is also a viewport repaint — refreshing the bar unconditionally would put a widget
+		// update behind every click that lands on nothing.
+		if ( changed )
+			_stageBar?.Refresh();
 	}
 
 	/// <summary>
@@ -3268,25 +3338,7 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		if ( _tutorial is null )
 			return;
 
-		// The rollback latch, sampled here because RebuildStudio runs on every drag of the bar.
-		// Both halves are needed and in order: seeing a rolled-back studio is not the step, and
-		// neither is seeing a rolled-forward one — the step is having been under and come back.
-		if ( _studio is not null )
-		{
-			if ( _studio.RollbackIndex < _studio.Features.Count )
-				_sawRollback = true;
-			else if ( _sawRollback )
-				_sawRollforward = true;
-		}
-
-		var state = new EffigyTutorialState(
-			_studio,
-			_rigPanel?.Skeleton,
-			_rigPanel?.BodyBoneMap,
-			_sawRollback && _sawRollforward,
-			_sawBake );
-
-		_tutorial.Evaluate( state );
+		_tutorial.Evaluate( new EffigyTutorialState( _studio ) );
 
 		// Rebuild unconditionally rather than only when Evaluate moved. The panel also renders
 		// Active, the step's own pointer affordance and the highlight, and those change on a
@@ -3349,14 +3401,8 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 	/// </summary>
 	private static ToolKind? ToolKindFor( EffigyToolTarget target ) => target switch
 	{
-		EffigyToolTarget.Sketch => ToolKind.Sketch,
-		EffigyToolTarget.Extrude => ToolKind.Extrude,
-		EffigyToolTarget.Revolve => ToolKind.Revolve,
-		EffigyToolTarget.Fillet => ToolKind.Fillet,
-		EffigyToolTarget.Shell => ToolKind.Shell,
-		EffigyToolTarget.Subdivide => ToolKind.Subdivide,
-		EffigyToolTarget.UVProject => ToolKind.UVProject,
-		EffigyToolTarget.Sculpt => ToolKind.Sculpt,
+		EffigyToolTarget.Primitive => ToolKind.Primitive,
+		EffigyToolTarget.Hole => ToolKind.Hole,
 		_ => null,
 	};
 

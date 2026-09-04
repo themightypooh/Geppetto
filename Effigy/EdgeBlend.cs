@@ -403,6 +403,12 @@ public static class EdgeBlend
 		return result;
 	}
 
+	/// <summary>
+	/// How many faces the blend has eaten more of than they had.
+	///
+	/// TWO TESTS, AND THE SECOND ONE IS NOT OPTIONAL — see HasFoldedEdge for the geometry, and see
+	/// the note there for the eighteen months this took to notice.
+	/// </summary>
 	static int CountCollapsed( PolyMesh original, PolyMesh shrunk, Vec3[] originalNormals )
 	{
 		var n = 0;
@@ -416,11 +422,64 @@ public static class EdgeBlend
 
 			var signed = SignedArea( shrunk, shrunk.Faces[fi], originalNormals[fi] );
 
-			if ( signed <= origArea * 1e-4f )
+			if ( signed <= origArea * 1e-4f || HasFoldedEdge( original, shrunk, fi ) )
 				n++;
 		}
 
 		return n;
+	}
+
+	/// <summary>
+	/// Does any edge of this face now run BACKWARDS compared to the face it was cut from?
+	///
+	/// THE TEST SIGNED AREA CANNOT DO, and the reason is a piece of plane geometry worth stating
+	/// outright because it is genuinely counter-intuitive: **a point reflection in 2D is a rotation
+	/// by 180°, and rotations preserve orientation.** Shrink a square face past its own centre and
+	/// every corner crosses to the opposite side, the quad turns inside out in every sense a person
+	/// would mean — and its signed area comes back POSITIVE, because the winding was mirrored twice.
+	/// On a 2-unit cube at fillet radius 1.1 the shrunk face measures +0.04 against an original of
+	/// 4, sails through <c>signed &lt;= origArea * 1e-4f</c>, and builds a solid with forty-eight
+	/// faces pointing into their own body.
+	///
+	/// So this asks a question orientation cannot hide from. Corner i of the shrunk face is corner i
+	/// of the original moved inward by the setbacks of the two edges meeting there; if the setbacks
+	/// along one edge together exceed that edge's LENGTH, its two ends swap over and the edge
+	/// reverses. That is exactly "the blend consumed more of this face than the face has", stated
+	/// locally, per edge, with no reference to the mesh as a whole.
+	///
+	/// WHY THIS AND NOT THE ENCLOSED VOLUME. The guard downstream is <c>ResultVolume &lt;= 0</c>,
+	/// which is a global number answering a local question and only ever worked because the local
+	/// failure usually dragged it negative too. It catches radius 1.25 and up on that cube and lets
+	/// 1.0 to 1.25 through — a band where the part is quietly self-intersecting and every validator
+	/// says closed, manifold, Euler-correct, valid. Rule 1 of the work order, in the wild.
+	///
+	/// IT ALSO FIXES THE SUGGESTED SIZE FOR FREE, which is the real reason it belongs here rather
+	/// than beside the volume check: FitsAll bisects on CountCollapsed, so a remedy that used to
+	/// offer a radius inside the bad band now cannot.
+	/// </summary>
+	static bool HasFoldedEdge( PolyMesh original, PolyMesh shrunk, int fi )
+	{
+		var before = original.Faces[fi];
+		var after = shrunk.Faces[fi];
+
+		for ( var i = 0; i < before.Count; i++ )
+		{
+			var j = (i + 1) % before.Count;
+
+			var was = original.Positions[before.Indices[j]] - original.Positions[before.Indices[i]];
+
+			// A zero-length edge in the SOURCE has no direction to disagree with. Degenerate input
+			// is the area test's problem, not this one.
+			if ( was.LengthSquared < 1e-12f )
+				continue;
+
+			var now = shrunk.Positions[after.Indices[j]] - shrunk.Positions[after.Indices[i]];
+
+			if ( Vec3.Dot( was, now ) < 0f )
+				return true;
+		}
+
+		return false;
 	}
 
 	static float SignedArea( PolyMesh mesh, Face f, Vec3 referenceNormal )
