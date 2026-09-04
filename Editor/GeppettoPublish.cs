@@ -180,7 +180,10 @@ public static class GeppettoPublish
 	{
 		Package.IRevision after = null;
 
-		for ( var attempt = 0; attempt < 10; attempt++ )
+		// Thirty seconds, not ten. Ten was measured against a publish that settled quickly and then
+		// cried "did not move" about one that took twenty - which is the one report here that must
+		// never be wrong, since the obvious response to it is to publish again.
+		for ( var attempt = 0; attempt < 30; attempt++ )
 		{
 			after = await VersionOf( ident );
 
