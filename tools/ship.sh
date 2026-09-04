@@ -11,10 +11,10 @@
 # where the product and the kernel that built it sat in two separate checkouts, which meant every
 # change needed the same commit made twice; that is over.
 #
-# WHAT IT DOES NOT DO: publish the library package to s&box. That is an upload from the editor's
-# own Publish dialog with no command-line equivalent, so it stays manual and this script ends by
-# saying so. Both git repos are up to date either way; the package is the third channel and the
-# only one a script cannot reach.
+# WHAT IT DOES NOT DO: publish the library package to s&box. There IS a command for it now -
+# `geppetto_publish`, in the editor console - but it runs inside the editor, not the shell, so
+# this script cannot call it and ends by pointing at it instead. Deliberate as well as technical:
+# a published version cannot be taken back, so the send stays a thing a person types.
 #
 #   tools/ship.sh -m "message"    commit everything staged and unstaged, then ship
 #   tools/ship.sh                 ship what is already committed
