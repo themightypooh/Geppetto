@@ -25,24 +25,23 @@ namespace Effigy;
 /// understand the file: the double-click hands EffigyWindow an Asset, and the window reads the path
 /// with StudioDocument exactly as File > Open does. This class only claims the extension.
 ///
-/// AND IT IS ABSTRACT, WHICH IS THE WHOLE REASON THE CONSOLE IS QUIET. Claiming the extension with
-/// a GameResource also tells the engine the file IS one, and the asset browser believes it: every
-/// time it wants a thumbnail it calls Asset.LoadResource(), which reads the compiled file and tries
-/// to parse it as the JSON a GameResource is made of. A part studio is not JSON, so that parse
-/// failed and logged "Tried to load ... but couldn't load from data" - at no cost beyond the noise,
-/// since nothing was waiting on the result, but on repeat, because a failed thumbnail is never
-/// cached and so is attempted again every time the tile comes back into view.
+/// IT CANNOT BE ABSTRACT, AND THE CONSOLE WARNING IS THE PRICE. Claiming the extension also tells
+/// the engine the file IS a GameResource, so the asset browser calls Asset.LoadResource() on every
+/// thumbnail pass and tries to read a line-based part studio as the JSON a GameResource is made of.
+/// It fails and logs "Tried to load ... but couldn't load from data". Nothing is waiting on the
+/// result, so the message is the entire cost.
 ///
-/// Asset.TryLoadGameResource gives up BEFORE any of that on an abstract target type, and gives up
-/// silently - it is the one early exit in that method with no Log.Warning attached. Abstract is
-/// therefore not a description of this class so much as the switch that turns the message off, and
-/// it costs nothing real: the type was never instantiated, because there is nothing to instantiate.
+/// Asset.TryLoadGameResource does have an exit that skips all of that silently - an abstract target
+/// type - and it was tried here. It bricks the editor. AssetType.GenerateGlyphs builds this type's
+/// browser icon with Activator.CreateInstance, which throws on an abstract class, and it runs
+/// inside StartupLoadProject.OpenProject: the failure is not a warning but "Failed to bootstrap
+/// engine", on every attempt to open any project the library is installed in. Do not try it again.
 ///
-/// What it does mean is that the extension registration now rides on the type library listing
-/// abstract types, which is worth knowing if .effigy ever stops opening on a double-click after an
-/// engine update. That, and not the empty body, is the thing to look at first.
+/// EffigyStudioPreview is what actually helps, and it does not touch the load. A rendered thumbnail
+/// gets cached to PNG, and a cached thumbnail is never re-rendered, so the load runs once per save
+/// instead of every time the tile scrolls back into view.
 /// </summary>
 [AssetType( Name = "Effigy Part Studio", Extension = "effigy", Category = "Effigy" )]
-public abstract class EffigyPartStudioAsset : GameResource
+public sealed class EffigyPartStudioAsset : GameResource
 {
 }

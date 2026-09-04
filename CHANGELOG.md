@@ -36,12 +36,6 @@ forgotten.
   scene changed shape without a word. The exported `.vmdl`, `.obj`, `.dmx` and
   `.smd` now take the document's own name, and an unsaved studio is asked for
   one instead of being given a name that collides with the next.
-- A `.effigy` part studio no longer fills your console with "Tried to load
-  ... but couldn't load from data" whenever the asset browser looks at it.
-  Nothing was ever broken behind it — claiming the extension tells the engine
-  the file is a serialised resource, so the browser kept trying to read a part
-  studio as one — but it repeated forever, because a failed thumbnail is never
-  cached and so is attempted again every time the tile scrolls back into view.
 
 ### Improved
 - A `.effigy` part studio shows the model it builds in the asset browser, and
