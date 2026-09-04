@@ -24,8 +24,25 @@ namespace Effigy;
 /// thing is what makes it diff properly in git, which a JSON blob would not. Nothing here needs to
 /// understand the file: the double-click hands EffigyWindow an Asset, and the window reads the path
 /// with StudioDocument exactly as File > Open does. This class only claims the extension.
+///
+/// AND IT IS ABSTRACT, WHICH IS THE WHOLE REASON THE CONSOLE IS QUIET. Claiming the extension with
+/// a GameResource also tells the engine the file IS one, and the asset browser believes it: every
+/// time it wants a thumbnail it calls Asset.LoadResource(), which reads the compiled file and tries
+/// to parse it as the JSON a GameResource is made of. A part studio is not JSON, so that parse
+/// failed and logged "Tried to load ... but couldn't load from data" - at no cost beyond the noise,
+/// since nothing was waiting on the result, but on repeat, because a failed thumbnail is never
+/// cached and so is attempted again every time the tile comes back into view.
+///
+/// Asset.TryLoadGameResource gives up BEFORE any of that on an abstract target type, and gives up
+/// silently - it is the one early exit in that method with no Log.Warning attached. Abstract is
+/// therefore not a description of this class so much as the switch that turns the message off, and
+/// it costs nothing real: the type was never instantiated, because there is nothing to instantiate.
+///
+/// What it does mean is that the extension registration now rides on the type library listing
+/// abstract types, which is worth knowing if .effigy ever stops opening on a double-click after an
+/// engine update. That, and not the empty body, is the thing to look at first.
 /// </summary>
 [AssetType( Name = "Effigy Part Studio", Extension = "effigy", Category = "Effigy" )]
-public sealed class EffigyPartStudioAsset : GameResource
+public abstract class EffigyPartStudioAsset : GameResource
 {
 }

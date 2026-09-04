@@ -20,12 +20,13 @@ namespace Marionette.EditorTools;
 /// class also fills the inspector's preview panel, which a thumbnail renderer would not, and the
 /// scene, camera, lighting and turntable come from AssetPreview instead of being written again.
 ///
-/// IT DOES NOT SILENCE THE LOAD WARNING, AND CANNOT. RenderAssetThumb calls Asset.LoadResource()
-/// unconditionally before it reaches any of this, and a part studio is line-based text rather
-/// than a serialised GameResource, so that load fails and logs "couldn't load from data". What
-/// this DOES change is how often: a null thumbnail is never written to the on-disk cache, so
-/// before this the browser retried — and re-warned — every time the tile came back into view.
-/// A real bitmap gets cached as a PNG, so the load is attempted once per save instead of forever.
+/// IT IS ALSO WHAT STOPS THE BROWSER RETRYING. RenderAssetThumb calls Asset.LoadResource() before
+/// it reaches any of this, and a part studio is line-based text rather than a serialised
+/// GameResource, so that load has nothing to return. The console message it used to leave is gone
+/// for a different reason — EffigyPartStudioAsset is abstract, and that is the one exit in
+/// Asset.TryLoadGameResource with no Log.Warning attached — but the RETRYING was this: a null
+/// thumbnail is never written to the on-disk cache, so the browser re-rendered every time the tile
+/// came back into view. A real bitmap gets cached as a PNG, and the whole path runs once per save.
 ///
 /// EVERYTHING IS BEST-EFFORT. This runs against whatever is on disk, including a document saved
 /// by a newer build, one whose sculpt blobs have been deleted, or one with a broken feature
