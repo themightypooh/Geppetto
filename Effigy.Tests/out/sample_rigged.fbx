@@ -1,0 +1,255 @@
+; FBX 7.4.0 project file
+; Written by Effigy. Text rather than binary on purpose: a file that can be read,
+; diffed and pasted into a bug report is worth more here than a smaller one.
+
+FBXHeaderExtension: {
+	FBXHeaderVersion: 1003
+	FBXVersion: 7400
+	CreationTimeStamp: {
+		Version: 1000
+		Year: 1970
+		Month: 1
+		Day: 1
+		Hour: 0
+		Minute: 0
+		Second: 0
+		Millisecond: 0
+	}
+	Creator: "Effigy"
+}
+
+GlobalSettings: {
+	Version: 1000
+	Properties70: {
+		P: "UpAxis", "int", "Integer", "",2
+		P: "UpAxisSign", "int", "Integer", "",1
+		P: "FrontAxis", "int", "Integer", "",1
+		P: "FrontAxisSign", "int", "Integer", "",-1
+		P: "CoordAxis", "int", "Integer", "",0
+		P: "CoordAxisSign", "int", "Integer", "",1
+		P: "OriginalUpAxis", "int", "Integer", "",2
+		P: "OriginalUpAxisSign", "int", "Integer", "",1
+		P: "UnitScaleFactor", "double", "Number", "",1
+		P: "OriginalUnitScaleFactor", "double", "Number", "",1
+	}
+}
+
+Documents: {
+	Count: 1
+	Document: 1000011, "", "Scene" {
+		Properties70: {
+			P: "SourceObject", "object", "", ""
+			P: "ActiveAnimStackName", "KString", "", "", ""
+		}
+		RootNode: 0
+	}
+}
+
+References: {
+}
+
+Definitions: {
+	Version: 100
+	Count: 12
+	ObjectType: "GlobalSettings", {
+		Count: 1
+	}
+	ObjectType: "Model", {
+		Count: 3
+	}
+	ObjectType: "NodeAttribute", {
+		Count: 2
+	}
+	ObjectType: "Geometry", {
+		Count: 1
+	}
+	ObjectType: "Material", {
+		Count: 1
+	}
+	ObjectType: "Deformer", {
+		Count: 3
+	}
+	ObjectType: "Pose", {
+		Count: 1
+	}
+}
+
+Objects: {
+	Geometry: 1000000, "Geometry::mesh", "Mesh" {
+		Vertices: *24 {
+			a: -1,-1,-1,1,-1,-1,1,1,-1,-1,1,-1,-1,-1,1,1,-1,1,1,1,1,-1,1,1
+		}
+		PolygonVertexIndex: *24 {
+			a: 0,3,2,-2,4,5,6,-8,0,1,5,-5,1,2,6,-6,2,3,7,-7,3,0,4,-8
+		}
+		GeometryVersion: 124
+		LayerElementNormal: 0 {
+			Version: 102
+			Name: ""
+			MappingInformationType: "ByPolygonVertex"
+			ReferenceInformationType: "Direct"
+			Normals: *72 {
+				a: 0,0,-1,0,0,-1,0,0,-1,0,0,-1,0,0,1,0,0,1,0,0,1,0,0,1,0,-1,0,0,-1,0,0,-1,0,0,-1,0,1,0,0,1,0,0,1,0,0,1,0,0,0,1,0,0,1,0,0,1,0,0,1,0,-1,0,0,-1,0,0,-1,0,0,-1,0,0
+			}
+		}
+		LayerElementUV: 0 {
+			Version: 101
+			Name: "UVMap"
+			MappingInformationType: "ByPolygonVertex"
+			ReferenceInformationType: "IndexToDirect"
+			UV: *48 {
+				a: 0,1,1,1,1,0,0,0,0,1,1,1,1,0,0,0,0,1,1,1,1,0,0,0,0,1,1,1,1,0,0,0,0,1,1,1,1,0,0,0,0,1,1,1,1,0,0,0
+			}
+			UVIndex: *24 {
+				a: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23
+			}
+		}
+		LayerElementMaterial: 0 {
+			Version: 101
+			Name: ""
+			MappingInformationType: "ByPolygon"
+			ReferenceInformationType: "IndexToDirect"
+			Materials: *6 {
+				a: 0,0,0,0,0,0
+			}
+		}
+		Layer: 0 {
+			Version: 100
+			LayerElement: {
+				Type: "LayerElementNormal"
+				TypedIndex: 0
+			}
+			LayerElement: {
+				Type: "LayerElementUV"
+				TypedIndex: 0
+			}
+			LayerElement: {
+				Type: "LayerElementMaterial"
+				TypedIndex: 0
+			}
+		}
+	}
+	Model: 1000001, "Model::sample_rigged", "Mesh" {
+		Version: 232
+		Properties70: {
+			P: "Lcl Translation", "Lcl Translation", "", "A",0,0,0
+			P: "Lcl Rotation", "Lcl Rotation", "", "A",0,0,0
+			P: "Lcl Scaling", "Lcl Scaling", "", "A",1,1,1
+		}
+		Shading: T
+		Culling: "CullingOff"
+	}
+	Material: 1000002, "Material::material_0", "" {
+		Version: 102
+		ShadingModel: "lambert"
+		MultiLayer: 0
+		Properties70: {
+			P: "DiffuseColor", "Color", "", "A",0.8,0.8,0.8
+		}
+	}
+	NodeAttribute: 1000004, "NodeAttribute::root", "LimbNode" {
+		TypeFlags: "Skeleton"
+		Properties70: {
+			P: "Size", "double", "Number", "",1
+		}
+	}
+	Model: 1000003, "Model::root", "LimbNode" {
+		Version: 232
+		Properties70: {
+			P: "Lcl Translation", "Lcl Translation", "", "A",0,0,0
+			P: "Lcl Rotation", "Lcl Rotation", "", "A",0,-0,0
+			P: "Lcl Scaling", "Lcl Scaling", "", "A",1,1,1
+		}
+		Shading: T
+		Culling: "CullingOff"
+	}
+	NodeAttribute: 1000006, "NodeAttribute::child", "LimbNode" {
+		TypeFlags: "Skeleton"
+		Properties70: {
+			P: "Size", "double", "Number", "",1
+		}
+	}
+	Model: 1000005, "Model::child", "LimbNode" {
+		Version: 232
+		Properties70: {
+			P: "Lcl Translation", "Lcl Translation", "", "A",0,1,0
+			P: "Lcl Rotation", "Lcl Rotation", "", "A",0,-0,0
+			P: "Lcl Scaling", "Lcl Scaling", "", "A",1,1,1
+		}
+		Shading: T
+		Culling: "CullingOff"
+	}
+	Deformer: 1000007, "Deformer::Skin sample_rigged", "Skin" {
+		Version: 101
+		Link_DeformAcuracy: 50
+	}
+	Deformer: 1000008, "SubDeformer::Cluster root", "Cluster" {
+		Version: 100
+		UserData: "", ""
+		Indexes: *8 {
+			a: 0,1,2,3,4,5,6,7
+		}
+		Weights: *8 {
+			a: 1,1,1,1,1,1,1,1
+		}
+		Transform: *16 {
+			a: 1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1
+		}
+		TransformLink: *16 {
+			a: 1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1
+		}
+	}
+	Deformer: 1000009, "SubDeformer::Cluster child", "Cluster" {
+		Version: 100
+		UserData: "", ""
+		Indexes: *0 {
+			a: 
+		}
+		Weights: *0 {
+			a: 
+		}
+		Transform: *16 {
+			a: 1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1
+		}
+		TransformLink: *16 {
+			a: 1,0,0,0,0,1,0,0,0,0,1,0,0,1,0,1
+		}
+	}
+	Pose: 1000010, "Pose::BIND_POSES", "BindPose" {
+		Type: "BindPose"
+		Version: 100
+		NbPoseNodes: 3
+		PoseNode: {
+			Node: 1000001
+			Matrix: *16 {
+				a: 1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1
+			}
+		}
+		PoseNode: {
+			Node: 1000003
+			Matrix: *16 {
+				a: 1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1
+			}
+		}
+		PoseNode: {
+			Node: 1000005
+			Matrix: *16 {
+				a: 1,0,0,0,0,1,0,0,0,0,1,0,0,1,0,1
+			}
+		}
+	}
+}
+Connections: {
+	C: "OO",1000001,0 ; Model::2 bone rig -> scene root
+	C: "OO",1000000,1000001 ; Geometry -> Model
+	C: "OO",1000002,1000001 ; Material -> Model
+	C: "OO",1000004,1000003 ; NodeAttribute -> Model
+	C: "OO",1000003,0 ; Model -> parent
+	C: "OO",1000006,1000005 ; NodeAttribute -> Model
+	C: "OO",1000005,1000003 ; Model -> parent
+	C: "OO",1000007,1000000 ; Deformer -> Geometry
+	C: "OO",1000008,1000007 ; SubDeformer -> Deformer
+	C: "OO",1000003,1000008 ; Model -> SubDeformer
+	C: "OO",1000009,1000007 ; SubDeformer -> Deformer
+	C: "OO",1000005,1000009 ; Model -> SubDeformer
+}

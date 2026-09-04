@@ -1,0 +1,394 @@
+<!-- dmx encoding keyvalues2 1 format model 22 -->
+
+"DmElement"
+{
+	"id" "elementid" "00000001-0000-0000-0000-000000000000"
+	"name" "string" "root"
+	"skeleton" "DmeModel"
+	{
+		"id" "elementid" "00000002-0000-0000-0000-000000000000"
+		"name" "string" "sample_rigged"
+		"transform" "DmeTransform"
+		{
+			"id" "elementid" "00000003-0000-0000-0000-000000000000"
+			"name" "string" "sample_rigged"
+			"position" "vector3" "0 0 0"
+			"orientation" "quaternion" "0 0 0 1"
+		}
+		"shape" "element" ""
+		"visible" "bool" "1"
+		"children" "element_array"
+		[
+			"DmeJoint"
+			{
+				"id" "elementid" "00000004-0000-0000-0000-000000000000"
+				"name" "string" "root"
+				"transform" "DmeTransform"
+				{
+					"id" "elementid" "00000005-0000-0000-0000-000000000000"
+					"name" "string" "root"
+					"position" "vector3" "0 0 0"
+					"orientation" "quaternion" "0 0 0 1"
+				}
+				"shape" "element" ""
+				"visible" "bool" "1"
+				"children" "element_array"
+				[
+					"DmeJoint"
+					{
+						"id" "elementid" "00000007-0000-0000-0000-000000000000"
+						"name" "string" "child"
+						"transform" "DmeTransform"
+						{
+							"id" "elementid" "00000008-0000-0000-0000-000000000000"
+							"name" "string" "child"
+							"position" "vector3" "0 1 0"
+							"orientation" "quaternion" "0 0 0 1"
+						}
+						"shape" "element" ""
+						"visible" "bool" "1"
+						"children" "element_array"
+						[
+						]
+					}
+				]
+			}
+		]
+		"jointList" "element_array"
+		[
+			"element" "00000004-0000-0000-0000-000000000000",
+			"element" "00000007-0000-0000-0000-000000000000"
+		]
+		"baseStates" "element_array"
+		[
+			"DmeTransformList"
+			{
+				"id" "elementid" "0000000d-0000-0000-0000-000000000000"
+				"name" "string" "bind pose"
+				"transforms" "element_array"
+				[
+					"DmeTransform"
+					{
+						"id" "elementid" "00000006-0000-0000-0000-000000000000"
+						"name" "string" "root"
+						"position" "vector3" "0 0 0"
+						"orientation" "quaternion" "0 0 0 1"
+					},
+					"DmeTransform"
+					{
+						"id" "elementid" "00000009-0000-0000-0000-000000000000"
+						"name" "string" "child"
+						"position" "vector3" "0 1 0"
+						"orientation" "quaternion" "0 0 0 1"
+					}
+				]
+			}
+		]
+		"axisSystem" "DmeAxisSystem"
+		{
+			"id" "elementid" "0000000e-0000-0000-0000-000000000000"
+			"name" "string" "axisSystem"
+			"upAxis" "int" "3"
+			"forwardParity" "int" "1"
+			"coordSys" "int" "0"
+		}
+	}
+	"model" "element" "00000002-0000-0000-0000-000000000000"
+	"animationList" "DmeAnimationList"
+	{
+		"id" "elementid" "0000000a-0000-0000-0000-000000000000"
+		"name" "string" "anim"
+		"animations" "element_array"
+		[
+			"DmeChannelsClip"
+			{
+				"id" "elementid" "0000000b-0000-0000-0000-000000000000"
+				"name" "string" "wave"
+				"timeFrame" "DmeTimeFrame"
+				{
+					"id" "elementid" "0000000c-0000-0000-0000-000000000000"
+					"name" "string" "timeFrame"
+					"start" "time" "0.0000"
+					"duration" "time" "0.5000"
+					"offset" "time" "0.0000"
+					"scale" "float" "1"
+				}
+				"channels" "element_array"
+				[
+					"DmeChannel"
+					{
+						"id" "elementid" "0000000f-0000-0000-0000-000000000000"
+						"name" "string" "root_p"
+						"fromElement" "element" ""
+						"fromAttribute" "string" ""
+						"fromIndex" "int" "0"
+						"toElement" "element" "00000005-0000-0000-0000-000000000000"
+						"toAttribute" "string" "position"
+						"toIndex" "int" "0"
+						"mode" "int" "3"
+						"log" "DmeVector3Log"
+						{
+							"id" "elementid" "00000010-0000-0000-0000-000000000000"
+							"name" "string" "vector3 log"
+							"layers" "element_array"
+							[
+								"DmeVector3LogLayer"
+								{
+									"id" "elementid" "00000011-0000-0000-0000-000000000000"
+									"name" "string" "vector3 log"
+									"times" "time_array"
+									[
+										"0.0000",
+										"0.0333",
+										"0.0667",
+										"0.1000",
+										"0.1333",
+										"0.1667",
+										"0.2000",
+										"0.2333",
+										"0.2667",
+										"0.3000",
+										"0.3333",
+										"0.3667",
+										"0.4000",
+										"0.4333",
+										"0.4667",
+										"0.5000"
+									]
+									"curvetypes" "int_array"
+									[
+									]
+									"values" "vector3_array"
+									[
+										"0 0 0",
+										"0 0 0",
+										"0 0 0",
+										"0 0 0",
+										"0 0 0",
+										"0 0 0",
+										"0 0 0",
+										"0 0 0",
+										"0 0 0",
+										"0 0 0",
+										"0 0 0",
+										"0 0 0",
+										"0 0 0",
+										"0 0 0",
+										"0 0 0",
+										"0 0 0"
+									]
+								}
+							]
+							"usedefaultvalue" "bool" "0"
+							"defaultvalue" "vector3" "0 0 0"
+						}
+					},
+					"DmeChannel"
+					{
+						"id" "elementid" "00000012-0000-0000-0000-000000000000"
+						"name" "string" "root_o"
+						"fromElement" "element" ""
+						"fromAttribute" "string" ""
+						"fromIndex" "int" "0"
+						"toElement" "element" "00000005-0000-0000-0000-000000000000"
+						"toAttribute" "string" "orientation"
+						"toIndex" "int" "0"
+						"mode" "int" "3"
+						"log" "DmeQuaternionLog"
+						{
+							"id" "elementid" "00000013-0000-0000-0000-000000000000"
+							"name" "string" "quaternion log"
+							"layers" "element_array"
+							[
+								"DmeQuaternionLogLayer"
+								{
+									"id" "elementid" "00000014-0000-0000-0000-000000000000"
+									"name" "string" "quaternion log"
+									"times" "time_array"
+									[
+										"0.0000",
+										"0.0333",
+										"0.0667",
+										"0.1000",
+										"0.1333",
+										"0.1667",
+										"0.2000",
+										"0.2333",
+										"0.2667",
+										"0.3000",
+										"0.3333",
+										"0.3667",
+										"0.4000",
+										"0.4333",
+										"0.4667",
+										"0.5000"
+									]
+									"curvetypes" "int_array"
+									[
+									]
+									"values" "quaternion_array"
+									[
+										"0 0 0 1",
+										"0 0 0 1",
+										"0 0 0 1",
+										"0 0 0 1",
+										"0 0 0 1",
+										"0 0 0 1",
+										"0 0 0 1",
+										"0 0 0 1",
+										"0 0 0 1",
+										"0 0 0 1",
+										"0 0 0 1",
+										"0 0 0 1",
+										"0 0 0 1",
+										"0 0 0 1",
+										"0 0 0 1",
+										"0 0 0 1"
+									]
+								}
+							]
+							"usedefaultvalue" "bool" "0"
+							"defaultvalue" "quaternion" "0 0 0 1"
+						}
+					},
+					"DmeChannel"
+					{
+						"id" "elementid" "00000015-0000-0000-0000-000000000000"
+						"name" "string" "child_p"
+						"fromElement" "element" ""
+						"fromAttribute" "string" ""
+						"fromIndex" "int" "0"
+						"toElement" "element" "00000008-0000-0000-0000-000000000000"
+						"toAttribute" "string" "position"
+						"toIndex" "int" "0"
+						"mode" "int" "3"
+						"log" "DmeVector3Log"
+						{
+							"id" "elementid" "00000016-0000-0000-0000-000000000000"
+							"name" "string" "vector3 log"
+							"layers" "element_array"
+							[
+								"DmeVector3LogLayer"
+								{
+									"id" "elementid" "00000017-0000-0000-0000-000000000000"
+									"name" "string" "vector3 log"
+									"times" "time_array"
+									[
+										"0.0000",
+										"0.0333",
+										"0.0667",
+										"0.1000",
+										"0.1333",
+										"0.1667",
+										"0.2000",
+										"0.2333",
+										"0.2667",
+										"0.3000",
+										"0.3333",
+										"0.3667",
+										"0.4000",
+										"0.4333",
+										"0.4667",
+										"0.5000"
+									]
+									"curvetypes" "int_array"
+									[
+									]
+									"values" "vector3_array"
+									[
+										"0 1 0",
+										"0 0.979392 0.201969",
+										"0 0.931758 0.363081",
+										"0 0.889051 0.457808",
+										"0 0.878892 0.47702",
+										"0 0.907706 0.419607",
+										"0 0.957124 0.28968",
+										"0 0.994602 0.103769",
+										"0 0.994601 -0.103769",
+										"0 0.957124 -0.28968",
+										"0 0.907706 -0.419607",
+										"0 0.878892 -0.47702",
+										"0 0.889051 -0.457808",
+										"0 0.931758 -0.363081",
+										"0 0.979392 -0.201969",
+										"0 1 0"
+									]
+								}
+							]
+							"usedefaultvalue" "bool" "0"
+							"defaultvalue" "vector3" "0 0 0"
+						}
+					},
+					"DmeChannel"
+					{
+						"id" "elementid" "00000018-0000-0000-0000-000000000000"
+						"name" "string" "child_o"
+						"fromElement" "element" ""
+						"fromAttribute" "string" ""
+						"fromIndex" "int" "0"
+						"toElement" "element" "00000008-0000-0000-0000-000000000000"
+						"toAttribute" "string" "orientation"
+						"toIndex" "int" "0"
+						"mode" "int" "3"
+						"log" "DmeQuaternionLog"
+						{
+							"id" "elementid" "00000019-0000-0000-0000-000000000000"
+							"name" "string" "quaternion log"
+							"layers" "element_array"
+							[
+								"DmeQuaternionLogLayer"
+								{
+									"id" "elementid" "0000001a-0000-0000-0000-000000000000"
+									"name" "string" "quaternion log"
+									"times" "time_array"
+									[
+										"0.0000",
+										"0.0333",
+										"0.0667",
+										"0.1000",
+										"0.1333",
+										"0.1667",
+										"0.2000",
+										"0.2333",
+										"0.2667",
+										"0.3000",
+										"0.3333",
+										"0.3667",
+										"0.4000",
+										"0.4333",
+										"0.4667",
+										"0.5000"
+									]
+									"curvetypes" "int_array"
+									[
+									]
+									"values" "quaternion_array"
+									[
+										"0 0 0 1",
+										"0.101509 0 0 0.994835",
+										"0.184719 0 0 0.982791",
+										"0.23553 0 0 0.971867",
+										"0.246077 0 0 0.96925",
+										"0.214819 0 0 0.976654",
+										"0.146418 0 0 0.989223",
+										"0.051955 0 0 0.99865",
+										"-0.051955 0 0 0.99865",
+										"-0.146418 0 0 0.989223",
+										"-0.214819 0 0 0.976654",
+										"-0.246077 0 0 0.96925",
+										"-0.23553 0 0 0.971867",
+										"-0.184719 0 0 0.982791",
+										"-0.101509 0 0 0.994835",
+										"0 0 0 1"
+									]
+								}
+							]
+							"usedefaultvalue" "bool" "0"
+							"defaultvalue" "quaternion" "0 0 0 1"
+						}
+					}
+				]
+			}
+		]
+	}
+}

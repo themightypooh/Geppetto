@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 460 460" width="460" height="460">
+<rect width="100%" height="100%" fill="#14161a"/>
+<polygon points="377.02,302.87 339.93,324.42 392.9,339.51 430,317.96" fill="rgb(51,66,83)" stroke="rgb(51,66,83)" stroke-width="0.35"/>
+<polygon points="339.93,324.42 377.02,302.87 377.02,243.79 339.93,265.34" fill="rgb(66,87,109)" stroke="rgb(66,87,109)" stroke-width="0.35"/>
+<polygon points="377.02,302.87 430,317.96 430,258.88 377.02,243.79" fill="rgb(103,140,174)" stroke="rgb(103,140,174)" stroke-width="0.35"/>
+<polygon points="104.19,238.66 30,281.75 135.96,311.93 210.15,268.83" fill="rgb(51,66,83)" stroke="rgb(51,66,83)" stroke-width="0.35"/>
+<polygon points="30,281.75 104.19,238.66 104.19,120.49 30,163.59" fill="rgb(66,87,109)" stroke="rgb(66,87,109)" stroke-width="0.35"/>
+<polygon points="104.19,238.66 210.15,268.83 210.15,150.67 104.19,120.49" fill="rgb(103,140,174)" stroke="rgb(103,140,174)" stroke-width="0.35"/>
+<text x="16" y="430" fill="#8b98a8" font-family="ui-monospace,monospace" font-size="13">sample_physics</text>
+<text x="16" y="447" fill="#5d6874" font-family="ui-monospace,monospace" font-size="11">16 verts · 12 faces · 6 drawn</text>
+</svg>

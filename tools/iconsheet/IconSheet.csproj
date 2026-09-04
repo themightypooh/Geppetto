@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Renders every hand-drawn EffigyIcon to an SVG contact sheet, with no s&box anywhere.
+
+    WHY THIS EXISTS: all 47 glyphs in EffigyIcons.cs were authored blind against a nominal 18x18
+    box and, until this ran, none had ever been rendered. "It compiles" says nothing about whether
+    a drawing reads as the operation it is supposed to name, and the only way to find out used to
+    be opening the editor. The Paint surface those glyphs use is eight calls wide, so a shim that
+    records them and writes SVG is cheaper than the round trip and can be looked at anywhere.
+
+    The glyph source is LINKED, never copied - this sheet is worthless the moment it renders a
+    different file from the one the editor compiles.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>IconSheet</AssemblyName>
+    <RootNamespace>Marionette.IconSheet</RootNamespace>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Shim.cs" />
+    <Compile Include="Svg.cs" />
+    <Compile Include="Program.cs" />
+    <Compile Include="../../Editor/EffigyEditor/EffigyIcons.cs" Link="EffigyIcons.cs" />
+  </ItemGroup>
+
+</Project>

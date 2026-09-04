@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 460 460" width="460" height="460">
+<rect width="100%" height="100%" fill="#14161a"/>
+<polygon points="429.14,294.74 430,302.79 430,233.44 429.14,225.38" fill="rgb(53,69,86)" stroke="rgb(53,69,86)" stroke-width="0.35"/>
+<polygon points="423.18,287.05 429.14,294.74 429.14,225.38 423.18,217.7" fill="rgb(63,83,103)" stroke="rgb(63,83,103)" stroke-width="0.35"/>
+<polygon points="412.53,280.25 423.18,287.05 423.18,217.7 412.53,210.9" fill="rgb(78,105,130)" stroke="rgb(78,105,130)" stroke-width="0.35"/>
+<polygon points="397.92,274.8 412.53,280.25 412.53,210.9 397.92,205.45" fill="rgb(95,129,161)" stroke="rgb(95,129,161)" stroke-width="0.35"/>
+<polygon points="131.59,200.24 112.24,198.49 92.44,198.85 73.54,201.27 56.83,205.6 43.44,211.54 34.29,218.69 30,226.56 30.86,234.62 36.82,242.3 47.47,249.1 62.08,254.55 310.83,325.39 328.41,329.11 347.76,330.86 367.56,330.51 386.46,328.08 403.17,323.75 416.56,317.81 425.71,310.66 430,302.79 429.14,294.74 423.18,287.05 412.53,280.25 397.92,274.8 149.17,203.96" fill="rgb(51,66,83)" stroke="rgb(51,66,83)" stroke-width="0.35"/>
+<polygon points="149.17,203.96 397.92,274.8 397.92,205.45 149.17,134.61" fill="rgb(103,140,174)" stroke="rgb(103,140,174)" stroke-width="0.35"/>
+<polygon points="30,226.56 34.29,218.69 34.29,149.34 30,157.21" fill="rgb(52,67,84)" stroke="rgb(52,67,84)" stroke-width="0.35"/>
+<polygon points="34.29,218.69 43.44,211.54 43.44,142.19 34.29,149.34" fill="rgb(60,78,98)" stroke="rgb(60,78,98)" stroke-width="0.35"/>
+<polygon points="43.44,211.54 56.83,205.6 56.83,136.25 43.44,142.19" fill="rgb(74,98,123)" stroke="rgb(74,98,123)" stroke-width="0.35"/>
+<polygon points="56.83,205.6 73.54,201.27 73.54,131.92 56.83,136.25" fill="rgb(91,123,153)" stroke="rgb(91,123,153)" stroke-width="0.35"/>
+<polygon points="131.59,200.24 149.17,203.96 149.17,134.61 131.59,130.89" fill="rgb(110,149,186)" stroke="rgb(110,149,186)" stroke-width="0.35"/>
+<polygon points="73.54,201.27 92.44,198.85 92.44,129.49 73.54,131.92" fill="rgb(106,145,180)" stroke="rgb(106,145,180)" stroke-width="0.35"/>
+<polygon points="112.24,198.49 131.59,200.24 131.59,130.89 112.24,129.14" fill="rgb(117,160,199)" stroke="rgb(117,160,199)" stroke-width="0.35"/>
+<polygon points="92.44,198.85 112.24,198.49 112.24,129.14 92.44,129.49" fill="rgb(116,158,197)" stroke="rgb(116,158,197)" stroke-width="0.35"/>
+<text x="16" y="430" fill="#8b98a8" font-family="ui-monospace,monospace" font-size="13">sketch_slot</text>
+<text x="16" y="447" fill="#5d6874" font-family="ui-monospace,monospace" font-size="11">52 verts · 28 faces · 14 drawn</text>
+</svg>
