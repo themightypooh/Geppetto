@@ -185,6 +185,9 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		file.AddSeparator();
 		_saveOption = file.AddOption( "Save", "common/save.png", Save, "editor.save" );
 		file.AddSeparator();
+		file.AddOption( "Export Animation...", "file_download", OpenExport )
+			.StatusTip = "Compile this clip into a .vmdl you can drop on a SkinnedModelRenderer and play by name";
+		file.AddSeparator();
 		file.AddOption( "Close", "close", Close );
 	}
 
@@ -196,6 +199,15 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		_redoOption = edit.AddOption( "Redo", "redo", Redo, "editor.redo" );
 		UpdateUndoOptions();
 
+		edit.AddSeparator();
+		edit.AddOption( "Copy Keyframes", "content_copy", CopyKeyframes, "rig.copykeys" )
+			.StatusTip = "Copy selected keys, or the pose at the playhead if nothing is selected. Survives switching clips.";
+		edit.AddOption( "Cut Keyframes", "content_cut", CutKeyframes, "rig.cutkeys" )
+			.StatusTip = "Copy the selected keys and remove them";
+		edit.AddOption( "Paste Keyframes", "content_paste", PasteKeyframes, "rig.pastekeys" )
+			.StatusTip = "Paste copied keys at the playhead, creating tracks as needed. Works in a different animation.";
+		edit.AddOption( "Copy Pose at Playhead", "accessibility_new", CopyPoseAtPlayhead, "rig.copypose" )
+			.StatusTip = "Snapshot every keyed bone at the playhead. Idle into fire: copy, open the other clip, paste.";
 		edit.AddSeparator();
 		edit.AddOption( "Delete Selected Keyframe", "delete", () => _timeline.DeleteSelectedKeyframe() )
 			.StatusTip = "Same as pressing Delete with a keyframe selected on the Timeline";
@@ -314,6 +326,10 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		bar.AddOption( new Option( "New", "common/new.png", New ) { ToolTip = "New" } );
 		bar.AddOption( new Option( "Open", "common/open.png", OpenPicker ) { ToolTip = "Open" } );
 		bar.AddOption( new Option( "Save", "common/save.png", Save ) { ToolTip = "Save", ShortcutName = "editor.save" } );
+		bar.AddOption( new Option( "Export", "file_download", OpenExport )
+		{
+			ToolTip = "Export this clip for use in game — compiles a .vmdl you can drop on a model and play by name"
+		} );
 		bar.AddSeparator();
 
 		_linkOption = bar.AddOption( new Option( "Link", "link", ToggleAutoKey )
@@ -383,6 +399,78 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		MarkDirty( $"Key {bone}" );
 
 		RigStatusBar.Show( $"Keyed {bone} at frame {frame}" );
+	}
+
+	[Shortcut( "rig.copykeys", "CTRL+C", ShortcutType.Window )]
+	private void CopyKeyframes()
+	{
+		if ( _timeline is null )
+			return;
+
+		var n = _timeline.CopyKeyframes();
+
+		if ( n == 0 )
+		{
+			RigStatusBar.Show( "Nothing to copy — key some bones, or select keyframes on the timeline" );
+			return;
+		}
+
+		RigStatusBar.Show( n == 1
+			? "Copied 1 keyframe — open another clip and Ctrl+V to paste"
+			: $"Copied {n} keyframes — open another clip and Ctrl+V to paste" );
+	}
+
+	[Shortcut( "rig.cutkeys", "CTRL+X", ShortcutType.Window )]
+	private void CutKeyframes()
+	{
+		if ( _timeline is null )
+			return;
+
+		if ( !_timeline.HasSelectedKeyframe )
+		{
+			RigStatusBar.Show( "Select keyframes on the timeline to cut" );
+			return;
+		}
+
+		_timeline.CutKeyframes();
+		RigStatusBar.Show( "Cut selected keyframes" );
+	}
+
+	[Shortcut( "rig.pastekeys", "CTRL+V", ShortcutType.Window )]
+	private void PasteKeyframes()
+	{
+		if ( _timeline is null )
+			return;
+
+		var n = _timeline.PasteKeyframes();
+
+		if ( n == 0 )
+		{
+			RigStatusBar.Show( "Clipboard is empty — copy keyframes from this clip or another first" );
+			return;
+		}
+
+		var frame = (int)MathF.Round( _timeline.Playhead );
+		RigStatusBar.Show( n == 1
+			? $"Pasted 1 keyframe at frame {frame}"
+			: $"Pasted {n} keyframes at frame {frame}" );
+	}
+
+	[Shortcut( "rig.copypose", "CTRL+SHIFT+C", ShortcutType.Window )]
+	private void CopyPoseAtPlayhead()
+	{
+		if ( _timeline is null )
+			return;
+
+		var n = _timeline.CopyPoseAtPlayhead();
+
+		if ( n == 0 )
+		{
+			RigStatusBar.Show( "No keyed bones to copy a pose from" );
+			return;
+		}
+
+		RigStatusBar.Show( $"Copied pose ({n} bones) — open another clip and Ctrl+V to paste" );
 	}
 
 	private void ToggleDragMode()
@@ -847,6 +935,37 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 	}
 
 	private void UpdateTitle() => Title = $"Marionette - {_asset?.Path ?? "nothing open"}{(_dirty ? "*" : "")}";
+
+	/// <summary>
+	/// The missing button. There was a way to get a clip into a compiled model — add it to
+	/// Effigy's clip list and compile THAT model — but nothing in this window said so, and the
+	/// common case (posing the first-person arms) is not an Effigy model at all.
+	/// </summary>
+	private void OpenExport()
+	{
+		if ( _anim is null )
+			return;
+
+		if ( _anim.SourceModel is null )
+		{
+			RigStatusBar.Show( "Set a Model in BonesObject first — export has to know which skeleton this clip is for" );
+			return;
+		}
+
+		if ( _anim.BoneTracks is null || !_anim.BoneTracks.Any( t => t.Keyframes.Count > 0 ) )
+		{
+			RigStatusBar.Show( "Nothing to export — key some bones first" );
+			return;
+		}
+
+		if ( _asset is null && !PickSaveLocation() )
+			return;
+
+		if ( _dirty )
+			Save();
+
+		new RigAnimExportDialog( this, _anim, _asset, _timeline?.Looping ?? true ).Show();
+	}
 
 	[Shortcut( "editor.save", "CTRL+S", ShortcutType.Window )]
 	private void Save()

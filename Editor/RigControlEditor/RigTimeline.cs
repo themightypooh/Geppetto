@@ -140,7 +140,13 @@ internal sealed class RigTimeline : Widget
 		_lanes = new RigTimelineLanes( this )
 		{
 			Scrubbed = frame => ScrubTo( frame ),
-			Edited = () => Edited?.Invoke(),
+			Edited = () =>
+			{
+				// Paste can create tracks, delete can remove them - the name column and the
+				// canvas height have to follow, and this is the one place every lanes edit lands.
+				Refresh();
+				Edited?.Invoke();
+			},
 		};
 
 		_ruler = new RigTimelineRuler( this, _lanes ) { Scrubbed = ScrubTo, ShowTimecode = true };
@@ -409,7 +415,21 @@ internal sealed class RigTimeline : Widget
 	public bool Looping => _looping;
 	public bool HasSelectedKeyframe => _lanes.HasSelectedKeyframe;
 
+	public bool HasKeyframeClipboard => _lanes.HasClipboard;
+
 	public void DeleteSelectedKeyframe() => _lanes.DeleteSelectedKeyframe();
+
+	/// <summary>Selected keys if any, otherwise the pose at the playhead. Static clipboard, so it
+	/// survives opening a different clip - that's the whole point of copy.</summary>
+	public int CopyKeyframes() => _lanes.CopyKeyframes();
+
+	/// <summary>Every keyed bone at the playhead, as a single-frame snapshot. The idle-to-fire
+	/// case: copy the rest pose, open the other clip, paste, and start from the same stance.</summary>
+	public int CopyPoseAtPlayhead() => _lanes.CopyPoseAtPlayhead();
+
+	public int PasteKeyframes() => _lanes.PasteClipboard();
+
+	public void CutKeyframes() => _lanes.CutSelected();
 
 	public void SetPlaying( bool playing )
 	{
@@ -641,11 +661,37 @@ internal sealed class RigTimelineLanes : Widget
 
 	private bool _grabbed;
 	private bool _dragged;
-	private BoneTrack _grabTrack;
 	private BoneKeyframe _grabKey;
 	private float _grabOffset;
+	private int _grabAnchorFrame;
+	private int _appliedDelta;
 	private (BoneTrack Track, BoneKeyframe Key)? _hover;
-	private (BoneTrack Track, BoneKeyframe Key)? _selected;
+
+	/// <summary>
+	/// Every selected keyframe, newest last - and the last one is the PRIMARY: the one whose
+	/// numbers the context menu shows and the one shift-click measures a range from.
+	///
+	/// A list rather than a set because that order is information. Selections are a handful of
+	/// keys, so a linear scan for Contains costs less than the hashing would.
+	/// </summary>
+	private readonly List<(BoneTrack Track, BoneKeyframe Key)> _selection = new();
+
+	/// <summary>
+	/// The keys a drag is moving and the frame each one started on.
+	///
+	/// A group moves by ONE delta, measured from the key actually under the cursor, rather than
+	/// each key being snapped to the pointer independently - which is the whole point of picking
+	/// several: their spacing is the timing you already worked out, and a drag must not change it.
+	/// </summary>
+	private readonly List<(BoneTrack Track, BoneKeyframe Key, int StartFrame)> _dragKeys = new();
+
+	/// <summary>The rubber band, in canvas space. Null unless one is being dragged out.</summary>
+	private Vector2? _marqueeStart;
+	private Vector2 _marqueeEnd;
+
+	/// <summary>What was already selected when the band started, so Ctrl+drag adds to a selection
+	/// rather than replacing it.</summary>
+	private readonly List<(BoneTrack Track, BoneKeyframe Key)> _marqueeBase = new();
 
 	public RigTimelineLanes( Widget parent ) : base( parent )
 	{
@@ -695,6 +741,174 @@ internal sealed class RigTimelineLanes : Widget
 	}
 
 	public ViewRange View { get; set; } = new();
+
+	/// <summary>The last key picked - what the context menu's heading, its value fields and
+	/// shift-click's range all measure from. Null when nothing is selected.</summary>
+	private (BoneTrack Track, BoneKeyframe Key)? Primary => _selection.Count > 0 ? _selection[^1] : null;
+
+	private bool IsSelected( BoneTrack track, BoneKeyframe key )
+	{
+		foreach ( var entry in _selection )
+		{
+			if ( entry.Track == track && entry.Key == key )
+				return true;
+		}
+
+		return false;
+	}
+
+	private void ClearSelection() => _selection.Clear();
+
+	private void SelectOnly( (BoneTrack Track, BoneKeyframe Key) hit )
+	{
+		_selection.Clear();
+		_selection.Add( hit );
+	}
+
+	/// <summary>Ctrl+click. Re-adding an already-selected key moves it to the end rather than
+	/// doing nothing, so the primary follows the key you last touched.</summary>
+	private void ToggleSelected( (BoneTrack Track, BoneKeyframe Key) hit )
+	{
+		for ( var i = 0; i < _selection.Count; i++ )
+		{
+			if ( _selection[i].Track != hit.Track || _selection[i].Key != hit.Key )
+				continue;
+
+			_selection.RemoveAt( i );
+			return;
+		}
+
+		_selection.Add( hit );
+	}
+
+	/// <summary>
+	/// Shift+click: every key on the primary's track between it and the one clicked.
+	///
+	/// Deliberately one track's worth. A range across rows would have to guess whether you meant
+	/// the rectangle between the two keys or every key on every row in between - the marquee
+	/// already answers the first question unambiguously, so this answers the other one.
+	/// </summary>
+	private void SelectRangeTo( (BoneTrack Track, BoneKeyframe Key) hit )
+	{
+		if ( Primary is not { } anchor || anchor.Track != hit.Track )
+		{
+			ToggleSelected( hit );
+			return;
+		}
+
+		var from = MathF.Min( anchor.Key.Frame, hit.Key.Frame );
+		var to = MathF.Max( anchor.Key.Frame, hit.Key.Frame );
+
+		foreach ( var key in hit.Track.Keyframes )
+		{
+			if ( key.Frame < from || key.Frame > to || IsSelected( hit.Track, key ) )
+				continue;
+
+			_selection.Add( (hit.Track, key) );
+		}
+
+		// The clicked key ends up primary so a second shift-click extends from where you just
+		// were, not from wherever the range happened to finish.
+		ToggleSelected( hit );
+		ToggleSelected( hit );
+	}
+
+	/// <summary>Every key in the clip. Ctrl+A, and the Edit menu's own item.</summary>
+	public void SelectAll()
+	{
+		_selection.Clear();
+
+		if ( Anim?.BoneTracks is not { } tracks )
+			return;
+
+		foreach ( var track in tracks )
+		{
+			foreach ( var key in track.Keyframes )
+				_selection.Add( (track, key) );
+		}
+
+		Update();
+	}
+
+	private void BeginKeyframeDrag( RigTimelineLayout layout, Vector2 position, (BoneTrack Track, BoneKeyframe Key) key )
+	{
+		_grabbed = true;
+		_dragged = false;
+		_grabKey = key.Key;
+		_grabOffset = layout.XToFrame( position.x ) - key.Key.Frame;
+		_grabAnchorFrame = key.Key.Frame;
+		_appliedDelta = 0;
+		_dragKeys.Clear();
+
+		foreach ( var entry in _selection )
+			_dragKeys.Add( (entry.Track, entry.Key, entry.Key.Frame) );
+
+		if ( _dragKeys.Count == 0 )
+			_dragKeys.Add( (key.Track, key.Key, key.Key.Frame) );
+	}
+
+	/// <summary>Moves the whole grabbed group by one delta, measured from the key under the
+	/// cursor, so their spacing is preserved. Clamped so no key in the group leaves the canvas.</summary>
+	private void ApplyDragDelta( RigTimelineLayout layout, int delta )
+	{
+		var minStart = int.MaxValue;
+		var maxStart = int.MinValue;
+
+		foreach ( var entry in _dragKeys )
+		{
+			if ( entry.StartFrame < minStart ) minStart = entry.StartFrame;
+			if ( entry.StartFrame > maxStart ) maxStart = entry.StartFrame;
+		}
+
+		delta = delta.Clamp( -minStart, (int)layout.LastFrame - maxStart );
+
+		if ( delta == _appliedDelta )
+			return;
+
+		_appliedDelta = delta;
+		_dragged = true;
+
+		foreach ( var entry in _dragKeys )
+			entry.Key.Frame = entry.StartFrame + delta;
+
+		Scrubbed?.Invoke( _grabKey.Frame );
+		Update();
+	}
+
+	private void ApplyMarqueeSelection()
+	{
+		if ( MarqueeRect is not { } band || Anim?.BoneTracks is not { } tracks )
+			return;
+
+		_selection.Clear();
+		_selection.AddRange( _marqueeBase );
+
+		var layout = Geometry;
+
+		for ( var i = 0; i < tracks.Count; i++ )
+		{
+			var track = tracks[i];
+
+			foreach ( var key in track.Keyframes )
+			{
+				var rect = layout.DiamondRect( i, key.Frame );
+
+				if ( rect.Center.x < DividerCanvasX || !RectsOverlap( band, rect ) )
+					continue;
+
+				if ( IsSelected( track, key ) )
+					continue;
+
+				_selection.Add( (track, key) );
+			}
+		}
+	}
+
+	private static bool RectsOverlap( Rect a, Rect b ) =>
+		a.Position.x < b.Position.x + b.Size.x
+		&& a.Position.x + a.Size.x > b.Position.x
+		&& a.Position.y < b.Position.y + b.Size.y
+		&& a.Position.y + a.Size.y > b.Position.y;
 
 	/// <summary>Canvas space: this widget IS the ScrollArea's canvas, so it is already translated
 	/// and must not subtract the offset again. Its own width is the full canvas width.</summary>
@@ -827,6 +1041,34 @@ internal sealed class RigTimelineLanes : Widget
 			PaintKeyframes( layout, i, tracks[i] );
 
 		PaintPlayhead( layout );
+		PaintMarquee();
+	}
+
+	/// <summary>The rubber band, drawn last so it sits over the keys it is picking up.</summary>
+	private void PaintMarquee()
+	{
+		if ( MarqueeRect is not { } rect )
+			return;
+
+		Paint.SetBrush( Theme.Primary.WithAlpha( 0.15f ) );
+		Paint.SetPen( Theme.Primary.WithAlpha( 0.8f ), 1f );
+		Paint.DrawRect( rect );
+	}
+
+	/// <summary>The band as a rect, however it was dragged out - up-left is as valid as
+	/// down-right, so both corners are sorted rather than assumed.</summary>
+	private Rect? MarqueeRect
+	{
+		get
+		{
+			if ( _marqueeStart is not { } start )
+				return null;
+
+			var x = MathF.Min( start.x, _marqueeEnd.x );
+			var y = MathF.Min( start.y, _marqueeEnd.y );
+
+			return new Rect( x, y, MathF.Abs( _marqueeEnd.x - start.x ), MathF.Abs( _marqueeEnd.y - start.y ) );
+		}
 	}
 
 	private void PaintRow( RigTimelineLayout layout, int index, BoneTrack track )
@@ -880,6 +1122,12 @@ internal sealed class RigTimelineLanes : Widget
 
 		menu.AddOption( "Select This Bone", "my_location", () => BoneRowSelected?.Invoke( track.BoneName ) )
 			.StatusTip = "Select it in the viewport so it can be posed";
+
+		menu.AddSeparator();
+
+		var pasteOnRow = menu.AddOption( "Paste at Playhead", "content_paste", () => PasteClipboard() );
+		pasteOnRow.Enabled = _clipboard.Count > 0;
+		pasteOnRow.StatusTip = "Paste copied keys at the playhead, matching bones by name - including into a different clip";
 
 		menu.AddSeparator();
 
@@ -1038,7 +1286,7 @@ internal sealed class RigTimelineLanes : Widget
 			if ( center.x < DividerCanvasX )
 				continue;
 
-			var isSelected = _selected is { } sel && sel.Track == track && sel.Key == key;
+			var isSelected = IsSelected( track, key );
 			var isHovered = _hover is { } hov && hov.Track == track && hov.Key == key;
 
 			var radius = RigTimelineLayout.DiamondSize * 0.5f;
@@ -1162,20 +1410,39 @@ internal sealed class RigTimelineLanes : Widget
 		var row = layout.HitRow( e.LocalPosition );
 		var hit = HitKeyframe( layout, row, e.LocalPosition );
 
-		_selected = hit;
 		_grabbed = false;
-
-		if ( hit is not { } key )
-			return;
-
-		_grabbed = true;
 		_dragged = false;
-		_grabTrack = key.Track;
-		_grabKey = key.Key;
-		_grabOffset = layout.XToFrame( e.LocalPosition.x ) - key.Key.Frame;
+		_dragKeys.Clear();
+		_marqueeStart = null;
 
-		Scrubbed?.Invoke( key.Key.Frame );
+		if ( hit is { } key )
+		{
+			if ( e.HasShift )
+				SelectRangeTo( key );
+			else if ( e.HasCtrl )
+				ToggleSelected( key );
+			else if ( !IsSelected( key.Track, key.Key ) )
+				SelectOnly( key );
 
+			// Ctrl+click that toggled the key OFF shouldn't start a drag of whatever is left.
+			if ( IsSelected( key.Track, key.Key ) )
+				BeginKeyframeDrag( layout, e.LocalPosition, key );
+
+			Scrubbed?.Invoke( key.Key.Frame );
+			Update();
+			e.Accepted = true;
+			return;
+		}
+
+		if ( !e.HasCtrl )
+			ClearSelection();
+
+		_marqueeStart = e.LocalPosition;
+		_marqueeEnd = e.LocalPosition;
+		_marqueeBase.Clear();
+		_marqueeBase.AddRange( _selection );
+
+		Update();
 		e.Accepted = true;
 	}
 
@@ -1187,6 +1454,15 @@ internal sealed class RigTimelineLanes : Widget
 
 		var layout = Geometry;
 
+		if ( _marqueeStart is not null && e.ButtonState.HasFlag( MouseButtons.Left ) )
+		{
+			_marqueeEnd = e.LocalPosition;
+			ApplyMarqueeSelection();
+			Update();
+			e.Accepted = true;
+			return;
+		}
+
 		if ( !_grabbed || !e.ButtonState.HasFlag( MouseButtons.Left ) )
 		{
 			UpdateHover( layout, e.LocalPosition );
@@ -1194,15 +1470,7 @@ internal sealed class RigTimelineLanes : Widget
 		}
 
 		var frame = (int)MathF.Round( layout.XToFrame( e.LocalPosition.x ) - _grabOffset );
-		frame = frame.Clamp( 0, (int)layout.LastFrame );
-
-		if ( frame != _grabKey.Frame )
-		{
-			_grabKey.Frame = frame;
-			_dragged = true;
-			Scrubbed?.Invoke( frame );
-			Update();
-		}
+		ApplyDragDelta( layout, frame - _grabAnchorFrame );
 
 		e.Accepted = true;
 	}
@@ -1233,6 +1501,15 @@ internal sealed class RigTimelineLanes : Widget
 	protected override void OnMouseReleased( MouseEvent e )
 	{
 		_grabbed = false;
+		_dragKeys.Clear();
+
+		if ( _marqueeStart is not null )
+		{
+			_marqueeStart = null;
+			Update();
+			e.Accepted = true;
+			return;
+		}
 
 		if ( !_dragged )
 			return;
@@ -1241,10 +1518,27 @@ internal sealed class RigTimelineLanes : Widget
 		Edited?.Invoke();
 	}
 
-	// Static so a pose can be carried between clips, not just within one. A keyframe is a small
-	// value object, so this holds a copy rather than a reference - copying then editing the
-	// original shouldn't silently change what's on the clipboard.
-	private static BoneKeyframe _clipboard;
+	/// <summary>
+	/// Copied keys, by bone name rather than by track object.
+	///
+	/// STATIC so it survives switching clips. The idle-to-fire workflow is: copy the rest pose
+	/// here, open the other .riganim, paste. A per-widget clipboard would empty the moment the
+	/// document changed, which is exactly when you need it.
+	///
+	/// Values, not references - BoneKeyframe is a class, and editing the original after copy
+	/// must not rewrite what you're about to paste.
+	/// </summary>
+	private static readonly List<CopiedKeyframe> _clipboard = new();
+
+	private sealed class CopiedKeyframe
+	{
+		public string BoneName;
+		public int FrameOffset;
+		public Transform Local;
+		public KeyInterpolation Interpolation;
+	}
+
+	public bool HasClipboard => _clipboard.Count > 0;
 
 	protected override void OnContextMenu( ContextMenuEvent e )
 	{
@@ -1263,9 +1557,10 @@ internal sealed class RigTimelineLanes : Widget
 		var row = layout.HitRow( e.LocalPosition );
 
 		// Right-clicking a keyframe selects it first, so the menu always acts on what's under the
-		// cursor rather than on whatever happened to be selected before.
-		if ( HitKeyframe( layout, row, e.LocalPosition ) is { } hit )
-			_selected = hit;
+		// cursor rather than on whatever happened to be selected before. An already-selected key
+		// is left as part of the group, so a multi-select menu still has the group to act on.
+		if ( HitKeyframe( layout, row, e.LocalPosition ) is { } hit && !IsSelected( hit.Track, hit.Key ) )
+			SelectOnly( hit );
 
 		var menu = new Menu( this );
 		BuildKeyframeMenu( menu );
@@ -1276,55 +1571,71 @@ internal sealed class RigTimelineLanes : Widget
 
 	private void BuildKeyframeMenu( Menu menu )
 	{
-		if ( _selected is not { } sel )
+		if ( Primary is { } sel )
 		{
-			var pasteHere = menu.AddOption( "Paste", "content_paste", PasteClipboard );
-			pasteHere.Enabled = false;
-			pasteHere.StatusTip = "Select a keyframe's row first - paste needs to know which bone to paste onto";
-			return;
-		}
+			// Bone name and frame as the heading itself rather than a disabled row - three greyed-out
+			// lines of readout read as broken menu items, and cost more vertical space than the
+			// actions underneath them.
+			menu.AddHeading( _selection.Count > 1
+				? $"{Shorten( sel.Track.BoneName )} — frame {sel.Key.Frame}  (+{_selection.Count - 1} more)"
+				: $"{Shorten( sel.Track.BoneName )} — frame {sel.Key.Frame}" );
 
-		// Bone name and frame as the heading itself rather than a disabled row - three greyed-out
-		// lines of readout read as broken menu items, and cost more vertical space than the
-		// actions underneath them.
-		menu.AddHeading( $"{Shorten( sel.Track.BoneName )} — frame {sel.Key.Frame}" );
+			// Editable, not a readout. Typing an exact number is the whole reason to open this menu on
+			// a keyframe you've already dragged into roughly the right place - and it's the one thing
+			// dragging in the viewport genuinely can't do.
+			menu.AddWidget( BuildValueRow( "rotation", sel, true ) );
+			menu.AddWidget( BuildValueRow( "position", sel, false ) );
 
-		// Editable, not a readout. Typing an exact number is the whole reason to open this menu on
-		// a keyframe you've already dragged into roughly the right place - and it's the one thing
-		// dragging in the viewport genuinely can't do.
-		menu.AddWidget( BuildValueRow( "rotation", sel, true ) );
-		menu.AddWidget( BuildValueRow( "position", sel, false ) );
+			menu.AddSeparator();
 
-		menu.AddSeparator();
+			var interpolation = menu.AddMenu( "Interpolation Mode", "show_chart" );
 
-		var interpolation = menu.AddMenu( "Interpolation Mode", "show_chart" );
-
-		foreach ( var mode in Enum.GetValues<KeyInterpolation>() )
-		{
-			var option = interpolation.AddOption( Label( mode ), null, () => SetInterpolation( mode ) );
-			option.Checkable = true;
-			option.Checked = sel.Key.Interpolation == mode;
-			option.StatusTip = mode switch
+			foreach ( var mode in Enum.GetValues<KeyInterpolation>() )
 			{
-				KeyInterpolation.Smooth => "Ease out of this key and into the next - the default for body motion",
-				KeyInterpolation.Linear => "Constant speed, no easing - for mechanical motion",
-				KeyInterpolation.EaseIn => "Start slow, arrive at full speed - the wind-up half of an action",
-				KeyInterpolation.EaseOut => "Leave fast, settle slowly - what makes a movement land with weight",
-				_ => "Hold this pose until the next key, then snap"
-			};
+				var option = interpolation.AddOption( Label( mode ), null, () => SetInterpolation( mode ) );
+				option.Checkable = true;
+				option.Checked = sel.Key.Interpolation == mode;
+				option.StatusTip = mode switch
+				{
+					KeyInterpolation.Smooth => "Ease out of this key and into the next - the default for body motion",
+					KeyInterpolation.Linear => "Constant speed, no easing - for mechanical motion",
+					KeyInterpolation.EaseIn => "Start slow, arrive at full speed - the wind-up half of an action",
+					KeyInterpolation.EaseOut => "Leave fast, settle slowly - what makes a movement land with weight",
+					_ => "Hold this pose until the next key, then snap"
+				};
+			}
+
+			menu.AddSeparator();
 		}
 
-		menu.AddSeparator();
 		menu.AddHeading( "Clipboard" );
 
-		menu.AddOption( "Copy", "content_copy", CopySelected );
-		menu.AddOption( "Cut", "content_cut", () => { CopySelected(); DeleteSelectedKeyframe(); } );
+		var copy = menu.AddOption( "Copy", "content_copy", () => CopyKeyframes() );
+		copy.StatusTip = _selection.Count > 0
+			? "Copy the selected keys. They can be pasted into this clip or a different one."
+			: "Nothing selected - copies the pose at the playhead from every keyed bone instead";
 
-		var paste = menu.AddOption( "Paste", "content_paste", PasteClipboard );
-		paste.Enabled = _clipboard is not null;
-		paste.StatusTip = "Paste the copied pose onto this bone at the playhead";
+		if ( Primary is not null )
+			menu.AddOption( "Cut", "content_cut", CutSelected );
 
-		menu.AddOption( "Delete", "delete", DeleteSelectedKeyframe );
+		var copyPose = menu.AddOption( "Copy Pose at Playhead", "accessibility_new", () => CopyPoseAtPlayhead() );
+		copyPose.Enabled = Anim?.BoneTracks?.Any( t => t.Keyframes.Count > 0 ) == true;
+		copyPose.StatusTip = "Snapshot every keyed bone at the playhead. Copy idle's rest pose, open fire, paste - no re-posing from scratch.";
+
+		var paste = menu.AddOption( "Paste at Playhead", "content_paste", () => PasteClipboard() );
+		paste.Enabled = _clipboard.Count > 0;
+		paste.StatusTip = _clipboard.Count > 0
+			? $"Paste {_clipboard.Count} copied key{(_clipboard.Count == 1 ? "" : "s")} at the playhead, creating tracks as needed"
+			: "Copy keyframes first - they survive switching to another animation";
+
+		if ( Primary is not null )
+			menu.AddOption( "Delete", "delete", DeleteSelectedKeyframe );
+		else
+		{
+			menu.AddSeparator();
+			menu.AddOption( "Select All", "select_all", SelectAll )
+				.StatusTip = "Select every keyframe in the clip";
+		}
 	}
 
 	/// <summary>Long rig bones ("arm_lower_R_twistctrl1") push the menu absurdly wide and bury the
@@ -1421,55 +1732,140 @@ internal sealed class RigTimelineLanes : Widget
 
 	private void SetInterpolation( KeyInterpolation mode )
 	{
-		if ( _selected is not { } sel )
+		if ( _selection.Count == 0 )
 			return;
 
-		sel.Key.Interpolation = mode;
+		foreach ( var entry in _selection )
+			entry.Key.Interpolation = mode;
 
 		Update();
 		Edited?.Invoke();
 	}
 
-	private void CopySelected()
-	{
-		if ( _selected is not { } sel )
-			return;
+	/// <summary>Selected keys if any, otherwise a pose snapshot at the playhead. Returns how
+	/// many keys went on the clipboard.</summary>
+	public int CopyKeyframes() =>
+		_selection.Count > 0 ? CopySelection() : CopyPoseAtPlayhead();
 
-		_clipboard = new BoneKeyframe
+	private int CopySelection()
+	{
+		_clipboard.Clear();
+
+		if ( _selection.Count == 0 )
+			return 0;
+
+		var origin = int.MaxValue;
+
+		foreach ( var entry in _selection )
+			origin = Math.Min( origin, entry.Key.Frame );
+
+		foreach ( var entry in _selection )
 		{
-			Frame = sel.Key.Frame,
-			Local = sel.Key.Local,
-			Interpolation = sel.Key.Interpolation
-		};
+			_clipboard.Add( new CopiedKeyframe
+			{
+				BoneName = entry.Track.BoneName,
+				FrameOffset = entry.Key.Frame - origin,
+				Local = entry.Key.Local,
+				Interpolation = entry.Key.Interpolation
+			} );
+		}
+
+		return _clipboard.Count;
 	}
 
-	/// <summary>Pastes onto the selected bone's track at the playhead - not at the frame the pose
-	/// was copied from, which would make copying a key to a different time impossible.</summary>
-	private void PasteClipboard()
+	/// <summary>
+	/// Every keyed bone's pose at the playhead, as keys at offset zero.
+	///
+	/// THIS IS THE CROSS-CLIP STARTING POSE. An idle and a fire clip should begin from the same
+	/// stance; copying the diamonds one bone at a time (and requiring a selected key on the
+	/// destination) made that slower than just posing again. Snapshot the pose, open the other
+	/// clip, paste.
+	/// </summary>
+	public int CopyPoseAtPlayhead()
 	{
-		if ( _clipboard is null || _selected is not { } sel )
-			return;
+		_clipboard.Clear();
+
+		if ( Anim?.BoneTracks is not { } tracks )
+			return 0;
 
 		var frame = (int)MathF.Round( Playhead );
 
-		sel.Track.SetKeyframe( frame, _clipboard.Local );
+		foreach ( var track in tracks )
+		{
+			if ( track.Keyframes is null || track.Keyframes.Count == 0 )
+				continue;
 
-		if ( sel.Track.Keyframes.FirstOrDefault( k => k.Frame == frame ) is { } pasted )
-			pasted.Interpolation = _clipboard.Interpolation;
+			var exact = track.Keyframes.FirstOrDefault( k => k.Frame == frame );
 
-		Update();
-		Edited?.Invoke();
+			_clipboard.Add( new CopiedKeyframe
+			{
+				BoneName = track.BoneName,
+				FrameOffset = 0,
+				Local = exact?.Local ?? track.Evaluate( frame ),
+				Interpolation = exact?.Interpolation ?? KeyInterpolation.Smooth
+			} );
+		}
+
+		return _clipboard.Count;
 	}
 
-	public bool HasSelectedKeyframe => _selected is not null;
+	public void CutSelected()
+	{
+		if ( _selection.Count == 0 )
+			return;
+
+		CopySelection();
+		DeleteSelectedKeyframe();
+	}
+
+	/// <summary>
+	/// Drops the clipboard at the playhead, creating tracks that don't exist yet.
+	///
+	/// Relative timing is preserved: a copied range stays a range. A pose snapshot (every offset
+	/// zero) lands as one frame. Matching is by bone name, not by the track object - those die
+	/// with the clip you copied from.
+	/// </summary>
+	public int PasteClipboard()
+	{
+		if ( _clipboard.Count == 0 || Anim is null )
+			return 0;
+
+		var origin = (int)MathF.Round( Playhead );
+
+		_selection.Clear();
+
+		foreach ( var item in _clipboard )
+		{
+			var frame = Math.Max( origin + item.FrameOffset, 0 );
+			var track = Anim.GetOrAddTrack( item.BoneName );
+
+			track.SetKeyframe( frame, item.Local );
+
+			if ( track.Keyframes.FirstOrDefault( k => k.Frame == frame ) is not { } pasted )
+				continue;
+
+			pasted.Interpolation = item.Interpolation;
+			_selection.Add( (track, pasted) );
+		}
+
+		Update();
+		Scrubbed?.Invoke( Playhead );
+		Edited?.Invoke();
+
+		return _clipboard.Count;
+	}
+
+	public bool HasSelectedKeyframe => _selection.Count > 0;
 
 	public void DeleteSelectedKeyframe()
 	{
-		if ( _selected is not { } sel )
+		if ( _selection.Count == 0 )
 			return;
 
-		sel.Track.Keyframes.Remove( sel.Key );
-		_selected = null;
+		foreach ( var entry in _selection )
+			entry.Track.Keyframes.Remove( entry.Key );
+
+		_selection.Clear();
 
 		Update();
 		Edited?.Invoke();

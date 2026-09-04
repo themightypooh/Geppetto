@@ -5,36 +5,73 @@ using System.Collections.Generic;
 namespace Marionette;
 
 /// <summary>
-/// Plays a RigAnimDocument back on a live in-game SkinnedModelRenderer - the runtime half of the
-/// RigControlEditor recorder. The editor tool only ever plays a clip back inside its own preview
-/// scene; this is what makes a recorded clip actually visible in the real game.
+/// Plays a RigAnimDocument on a live SkinnedModelRenderer — the in-game half of Marionette.
 ///
-/// Posing works the same way the editor viewport's own EvaluatePose does - direct
-/// LocalPosition/LocalRotation writes on the per-bone GameObjects SkinnedModelRenderer.
-/// CreateBoneObjects spawns - except BreakProceduralBone() isn't called, because that extension
-/// method lives in the editor-only tools addon and can't be referenced from game code. UseAnimGraph
-/// = false is what actually stops anything else from fighting these writes at runtime; nothing
-/// else in this project drives the ProceduralBone flag once that's off, so there's nothing to
-/// break free from the way there is in the scene editor.
+/// THIS IS THE HOOKUP FOR INTERACTION CLIPS. Exporting a .vmdl is for AnimGraph / sequence
+/// playback. Opening a fridge, pulling a lever, reloading: keep the character's existing model,
+/// drop this next to the SkinnedModelRenderer, assign the .riganim, uncheck Play On Start and
+/// Loop, and call Play() from your interact code. NormalizedTime is 0..1 on the same clock as
+/// the clip, which is what you tween the fridge door against.
 ///
-/// Also forwards the current frame to a sibling RigEventPlayerComponent if one is on the same
-/// GameObject, so a single Anim assignment drives both bone poses and AnimEvents together.
+/// Posing writes LocalPosition/LocalRotation on the procedural bone objects. UseAnimGraph = false
+/// stops the graph fighting those writes. A sibling RigEventPlayerComponent, if present, gets
+/// the same frame so attached props stay in sync.
 /// </summary>
 public sealed class RigAnimPlayerComponent : Component
 {
 	[Property] public RigAnimDocument Anim { get; set; }
 	[Property] public SkinnedModelRenderer Target { get; set; }
+
+	/// <summary>Idle loops. A fridge-open does not — leave this off and call Play() on use.</summary>
 	[Property] public bool Loop { get; set; } = true;
+
+	/// <summary>Off for interaction clips. On would play the grab the moment the pawn spawns.</summary>
 	[Property] public bool PlayOnStart { get; set; } = true;
 
 	public bool IsPlaying { get; private set; }
 	public float Frame { get; private set; }
 
+	/// <summary>Fires once when a non-looping clip hits its last keyed frame.</summary>
+	public Action Finished { get; set; }
+
 	private RigEventPlayerComponent _events;
 	private bool _rigReady;
+	private bool _notifiedFinish;
 
-	private float LastFrame => Anim is null ? 0f : MathF.Max( Anim.FrameCount - 1, 1f );
-	private float FrameRate => Anim is { AnimationSpeed: > 0 } ? Anim.AnimationSpeed : 30f;
+	/// <summary>
+	/// Last keyed frame, not FrameCount.
+	///
+	/// FrameCount defaults to 900 (the timeline canvas). Playing to that would hold a two-second
+	/// grab for twenty-eight seconds of nothing, and any tween using Duration would last thirty
+	/// seconds. Same rule as the editor transport: you watch what you authored.
+	/// </summary>
+	public float LastFrame
+	{
+		get
+		{
+			if ( Anim?.BoneTracks is null )
+				return 0f;
+
+			var last = 0f;
+
+			foreach ( var track in Anim.BoneTracks )
+			{
+				foreach ( var key in track.Keyframes )
+					last = MathF.Max( last, key.Frame );
+			}
+
+			return last > 0f ? last : MathF.Max( (Anim.FrameCount) - 1, 1f );
+		}
+	}
+
+	public float FrameRate => Anim is { AnimationSpeed: > 0 } ? Anim.AnimationSpeed : 30f;
+
+	/// <summary>Length in seconds of the authored clip — start the fridge tween with this duration.</summary>
+	public float Duration => LastFrame / MathF.Max( FrameRate, 0.0001f );
+
+	/// <summary>0 at the first frame, 1 at the last. Drive a door/drawer/lever with this, not a
+	/// second timer, so pausing or scrubbing the clip cannot desync the prop.</summary>
+	public float NormalizedTime => LastFrame <= 0f ? 1f : (Frame / LastFrame).Clamp( 0f, 1f );
 
 	protected override void OnEnabled()
 	{
@@ -59,11 +96,19 @@ public sealed class RigAnimPlayerComponent : Component
 			if ( Frame > LastFrame )
 			{
 				if ( Loop )
+				{
 					Frame %= MathF.Max( LastFrame, 0.0001f );
+				}
 				else
 				{
 					Frame = LastFrame;
 					IsPlaying = false;
+
+					if ( !_notifiedFinish )
+					{
+						_notifiedFinish = true;
+						Finished?.Invoke();
+					}
 				}
 			}
 		}
@@ -71,18 +116,30 @@ public sealed class RigAnimPlayerComponent : Component
 		ApplyFrame( Frame );
 	}
 
-	public void Play() => IsPlaying = true;
+	/// <summary>Starts the clip. A finished one-shot restarts from frame 0 — that's what "open
+	/// the fridge again" has to mean. Pause() then Play() resumes if you have not hit the end.</summary>
+	public void Play()
+	{
+		if ( Frame >= LastFrame )
+			Frame = 0f;
+
+		_notifiedFinish = false;
+		IsPlaying = true;
+	}
+
 	public void Pause() => IsPlaying = false;
 
 	public void Stop()
 	{
 		IsPlaying = false;
 		Frame = 0f;
+		_notifiedFinish = false;
 	}
 
 	public void Seek( float frame )
 	{
 		Frame = frame.Clamp( 0f, LastFrame );
+		_notifiedFinish = false;
 		ApplyFrame( Frame );
 	}
 

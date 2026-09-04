@@ -69,6 +69,13 @@ internal sealed class RigBonesPanel : Widget
 					"Every bone in Model, arranged the way it's actually rigged. Click a bone here " +
 					"to select it, same as clicking its dot in the viewport - either way brings up " +
 					"its rotate ring so you can pose it." ),
+
+				RigHelpBox.S( "Playing in game",
+					"For an interaction (open a fridge, pull a lever): save the .riganim, add " +
+					"RigAnimPlayerComponent next to the SkinnedModelRenderer, assign the clip, " +
+					"uncheck Loop and Play On Start, call Play() from your use code. Tween the " +
+					"prop with player.NormalizedTime so it shares the clip's clock. File → Export " +
+					"Animation is only if you need a named sequence on a compiled .vmdl." ),
 			} ) );
 
 		// Its own row, outside the ControlSheet entirely - AddLayout( Layout.Row() ) rendered as
