@@ -91,3 +91,7 @@ Libraries/*/.bin/
 Libraries/*/.sbox/
 Libraries/*/.vscode/
 Libraries/*/.version
+
+# Private dev notes and scratch scripts: this repo is public.
+docs/
+tools/diner_tile_gen.py
