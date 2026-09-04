@@ -30,6 +30,12 @@ forgotten.
 ## Unreleased
 
 ### Improved
+- A `.effigy` part studio shows the model it builds in the asset browser, and
+  in the inspector's preview panel, instead of the generic document icon every
+  unrecognised file gets. It is the real thing, turning on the spot, wearing
+  the materials you dropped on it. A studio the current build cannot read keeps
+  the plain icon rather than putting an error in your console while you scroll
+  a folder.
 - Shipping is one command. `tools/ship.sh -m "what changed"` syncs, commits,
   tests, pushes, publishes the package, stamps this file with the revision that
   created, and prints the changelist text ready to paste. The paste is the only
