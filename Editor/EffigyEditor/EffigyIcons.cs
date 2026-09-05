@@ -24,6 +24,7 @@ internal enum EffigyIcon
 	Transform,
 	UVProject,
 	FaceMaterial,
+	Boolean,
 
 	// --- sketch tools -------------------------------------------------------------------------
 	// These were Material Icon NAMES until now, and generic ones: show_chart (a zigzag line chart)
@@ -181,6 +182,7 @@ internal static class EffigyIcons
 			case EffigyIcon.Transform: PaintTransform( center, color ); return;
 			case EffigyIcon.UVProject: PaintUVProject( center, color ); return;
 			case EffigyIcon.FaceMaterial: PaintFaceMaterial( center, color ); return;
+			case EffigyIcon.Boolean: PaintBoolean( center, color ); return;
 
 			case EffigyIcon.SelectTool: PaintSelectTool( center, color ); return;
 			case EffigyIcon.LineTool: PaintLineTool( center, color ); return;
@@ -667,6 +669,30 @@ internal static class EffigyIcons
 	/// "hollowed to a wall thickness". THE WALL IS THE OBJECT, so the wall is what gets filled and
 	/// the void is what gets left out, which is how a section drawing says it.
 	/// </summary>
+	/// <summary>
+	/// Two overlapping squares with the shared region solid — a boolean, drawn as what it operates
+	/// on rather than as which of the three it is.
+	///
+	/// ONE GLYPH FOR ALL THREE OPERATIONS, because the button carries a dropdown and the variant
+	/// chosen is named on it. A Venn lens is the universal mark for this and reads at twenty-four
+	/// pixels; three near-identical lenses differing only in which part is filled do not, and the
+	/// one thing worse than an icon you have to think about is three you have to tell apart.
+	///
+	/// SQUARES RATHER THAN CIRCLES so the overlap is exact: the intersection of two axis-aligned
+	/// rectangles is a rectangle, which DrawRect can fill honestly. Two circles would need the lens
+	/// approximated by a polygon, and at this size the approximation is what you would see.
+	/// </summary>
+	private static void PaintBoolean( Vector2 c, Color color )
+	{
+		// The shared volume first, so the outlines drawn over it keep their edges crisp.
+		Filled( color.WithAlpha( 0.9f ) );
+		Editor.Paint.DrawRect( Box( c, -2f, -3f, 4f, 6f ), 0.8f * _scale );
+
+		Stroked( color.WithAlpha( 0.85f ), 1.2f );
+		Editor.Paint.DrawRect( Box( c, -7f, -6f, 9f, 9f ), 1.4f * _scale );
+		Editor.Paint.DrawRect( Box( c, -2f, -3f, 9f, 9f ), 1.4f * _scale );
+	}
+
 	private static void PaintShell( Vector2 c, Color color )
 	{
 		Filled( color.WithAlpha( 0.9f ) );

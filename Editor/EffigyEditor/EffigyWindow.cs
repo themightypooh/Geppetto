@@ -2452,7 +2452,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	{
 		Sketch, Primitive, Extrude, Revolve, Sweep, Loft, Chamfer, Fillet, Shell, Subdivide,
 		Draft, Hole, Sculpt, Mirror, LinearPattern, CircularPattern, Transform, UVProject, FaceMaterial,
-		MoveFace, Paint,
+		MoveFace, Paint, Boolean,
 	}
 
 	/// <summary>Build one, and apply the variant chosen from its dropdown where it has one.</summary>
@@ -2479,6 +2479,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		ToolKind.FaceMaterial => new FaceMaterialFeature(),
 		ToolKind.MoveFace => new MoveFaceFeature(),
 		ToolKind.Paint => new PaintFeature(),
+		ToolKind.Boolean => NewBoolean( choice ),
 		_ => throw new ArgumentOutOfRangeException( nameof( kind ), kind, "no feature for this tool" )
 	};
 
@@ -2514,6 +2515,19 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	{
 		var feature = new RevolveFeature();
 		feature.AxisMode.Index = RevolveFeature.AxisProfileLeftEdge;
+
+		return feature;
+	}
+
+	/// <summary>Build a Boolean already set to the operation picked from the button's dropdown.
+	/// Same shape as NewPrimitive: the variant is a starting value on the feature, not a separate
+	/// kind of feature, so it stays editable in the dialog afterwards.</summary>
+	private static BooleanFeature NewBoolean( int operation )
+	{
+		var feature = new BooleanFeature();
+
+		if ( operation >= 0 )
+			feature.Operation.Index = operation;
 
 		return feature;
 	}
@@ -2577,6 +2591,11 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	/// </summary>
 	private static string[] PrimitiveShapes => new PrimitiveFeature().Shape.Options;
 
+	/// <summary>Read off the feature rather than typed again here, for the reason the Primitive
+	/// menu is: a dropdown naming an operation the kernel has never heard of is a bug nothing
+	/// catches until someone picks it.</summary>
+	private static string[] BooleanOps => new BooleanFeature().Operation.Options;
+
 	/// <summary>
 	/// The strip's tools, BUILT FRESH ON EVERY READ rather than held in a static field.
 	///
@@ -2614,6 +2633,13 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		new() { Icon = EffigyIcon.Loft, Label = "Loft", Stage = StageSolid,
 			Tip = "Add a Loft — skin a surface between two or more sketches",
 			Kind = ToolKind.Loft },
+
+		// LAST ON SOLID, because it is the tool that turns several solids back into one and there
+		// have to be several first. Not on Repeat with Mirror and the patterns: those COPY bodies
+		// and this CONSUMES them, which is the opposite direction and a bad neighbour.
+		new() { Icon = EffigyIcon.Boolean, Label = "Boolean", Stage = StageSolid, MenuIcon = "join_full",
+			Tip = "Add a Boolean — union, subtract or intersect bodies",
+			Kind = ToolKind.Boolean, Choices = BooleanOps },
 
 		// --- Detail: refine a body that already exists ------------------------------------------
 		// Fillet before Chamfer, which is the order Onshape puts them in and the order people reach

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
@@ -133,10 +133,43 @@ public static class PngPreview
 			var lambert = MathF.Max( 0f, Vec3.Dot( mesh.FaceNormal( face ), light ) );
 			var shade = 0.22f + 0.78f * lambert * lambert;
 
-			var colour = Rgb(
-				(int)(shade * 118 + 26),
-				(int)(shade * 168 + 30),
-				(int)(shade * 208 + 38) );
+			// The unpainted surface, and the thing paint composes OVER. Kept as the base rather
+			// than as an else-branch so a half-opaque dab reads as a tint of this rather than as a
+			// colour that arrived from nowhere - which is what the engine's standard material does
+			// with vertex colours, and therefore what this preview has to do to be worth trusting.
+			float br = shade * 118 + 26;
+			float bg = shade * 168 + 30;
+			float bb = shade * 208 + 38;
+
+			// VERTEX COLOURS, AVERAGED ACROSS THE FACE. A PolyMesh face is flat-shaded here, so
+			// there is no per-pixel interpolation to carry a gradient; the average is the honest
+			// summary of what the four corners say. It means a dab smaller than one face shows up
+			// as a weak tint of the whole face rather than as a spot, which is the truth about
+			// vertex paint on a coarse mesh and exactly the thing the Known Issue warns about.
+			if ( mesh.HasVertexColors )
+			{
+				float pr = 0, pg = 0, pb = 0, pa = 0;
+
+				foreach ( var i in face.Indices )
+				{
+					var c = mesh.VertexColors[i];
+					pr += c.x; pg += c.y; pb += c.z; pa += c.w;
+				}
+
+				var n = face.Indices.Length;
+				pa /= n;
+
+				if ( pa > 0.001f )
+				{
+					// Source-over, with the paint lit by the same lambert the base gets. Painting
+					// a face does not make it stop facing away from the light.
+					br += (pr / n * 255f * shade - br) * pa;
+					bg += (pg / n * 255f * shade - bg) * pa;
+					bb += (pb / n * 255f * shade - bb) * pa;
+				}
+			}
+
+			var colour = Rgb( (int)br, (int)bg, (int)bb );
 
 			var poly = face.Indices.Select( i => Screen( projected[i] ) ).ToArray();
 

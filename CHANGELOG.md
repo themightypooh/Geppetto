@@ -77,14 +77,43 @@ forgotten.
   what applies rather than dimming what does not, because a tool that ignores your
   selection is not unavailable — you can still press Primitive with a face selected,
   and always could. `EffigyStageBar.cs`
+- **Boolean**, on the Solid stage: union, subtract or intersect two bodies. The engine's boolean
+  has been installed and working for a while -- Extrude's Remove and Hole both cut with it -- but
+  it could only ever be reached by drawing a profile or drilling a hole. There was no way to point
+  at two solids you already had and make them one, which is the first thing anybody tries in a
+  modeller. Pick the tool body, pick the operation from the button's dropdown, and the tool is
+  consumed by the cut the way a cutting tool should be; **Keep tool bodies** leaves it if you want
+  to reuse it. `BooleanFeature.cs`
+- A Boolean refuses rather than guesses. A body cannot be its own tool, an unpicked tool is an
+  error instead of quietly meaning "every body", and a subtract that removes everything or a union
+  of solids that never touch each say so rather than leaving you with a part that vanished.
 - Painting. Press **Paint** and brush colour straight onto the model. The paint
   composes over whatever material the part already wears, so a part with a dropped
   material keeps that material everywhere you did not brush. Strokes are saved in the
   .effigy file and replayed whenever the model rebuilds, so paint follows the part
   through later edits instead of smearing when something upstream changes.
   `PaintFeature.cs`, `PaintSession.cs`, `PaintReplay.cs`
+- Bones can be scaled in Marionette. The viewport's drag mode cycles Rotate, Move and
+  Scale, and **E** still flips between the first two. The scale is one number rather
+  than three, because that is all a Source 2 bone carries -- it shows in the Inspector
+  and in the readout, is keyed like any other channel, and `RigAnimPlayerComponent`
+  applies it at runtime. `RigViewport.cs`, `RigInspectorPanel.cs`
+- Shift-click builds a selection of bones instead of replacing it. A group gets one
+  gizmo at its centre, and dragging it moves every top-most bone in the group together
+  while their children follow through the hierarchy the way they always do.
+- A **Handle Size** slider on the rig bar. The bone dots and the areas you click to
+  grab them both scale with it, so a dense hand rig can be shrunk until its fingers
+  stop overlapping and a whole-body rig can be grown until it is easy to hit. The size
+  is remembered between sessions.
 
 ### Improved
+- The built-in Effigy tutorial builds a house rather than a lamp, and takes five steps
+  to do it: box walls, a wedge roof, holes drilled for the windows and the door, then
+  the export. The lamp asked you to sketch, revolve, shell, subdivide, unwrap and
+  sculpt before you had made anything you could look at -- which is the whole tool,
+  taught in the order the tool is written rather than the order somebody learning it
+  can follow. Every step of the house is a shape you can see arrive.
+  `EffigyTutorial.cs`, `EffigyTutorialPanel.cs`
 - Only one thing can own a click in the viewport now. Sketching, sculpting, painting and
   the bone tool each used to shut down its own hand-kept list of the others on the way in,
   the lists disagreed, and nothing at all closed a paint before letting you place a bone —
@@ -141,9 +170,12 @@ forgotten.
 - Paint is as fine as the mesh it lands on. Vertex colours live one per vertex, so a
   bare box paints as a few colour blobs; add a Subdivide (or Sculpt) above the Paint
   feature and the same brush is as fine as the mesh.
-- A painted, rigged model writes its colours into the DMX (the field names were read
-  out of the compiler's own binary), but the compiled result has not been looked at
-  in-engine yet — check a rigged painted model renders its paint before relying on it.
+- A painted model writes its colours into the DMX (the field names were read out of the
+  compiler's own binary), and the whole chain up to that file is now checked on every test
+  run — the strokes replay, they survive an edit to the feature underneath them, and they come
+  back identical after a save and reopen. What is still unchecked is the far side of the
+  compile: nobody has looked at how the engine's shader composites those colours. Check a
+  painted model renders its paint before relying on it.
 - Paint tints the material rather than covering it, which is what the engine's standard
   material does for free; paint that fully replaces the colour under it needs a shader.
 

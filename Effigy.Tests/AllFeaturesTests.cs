@@ -126,6 +126,24 @@ public static class AllFeaturesTests
 			return;
 		}
 
+		// BOOLEAN IS THE ONE FEATURE THAT NEEDS A SECOND BODY, for the same reason sweep and loft
+		// need a second sketch: the fixture deliberately holds one of each, and putting a second
+		// box in it for everyone would change what Shell, Draft and every body-selecting feature
+		// build. It also has to be POINTED at that body — an unpicked tool is a refusal by design,
+		// because "empty means every body" would ask the tool to cut itself.
+		if ( feature is BooleanFeature boolean )
+		{
+			var tool = studio.Add( new PrimitiveFeature() );
+			tool.SizeX.Value = 1f;
+			tool.SizeY.Value = 1f;
+			tool.SizeZ.Value = 1f;
+			tool.Position.Value = new Vec3( 1f, 0f, 0f );
+
+			studio.Rebuild();
+			boolean.Tools.BodyIds.Add( tool.Id + "b0" );
+			return;
+		}
+
 		if ( studio.Bodies.Count == 0 )
 			return;
 
@@ -244,13 +262,14 @@ public static class AllFeaturesTests
 
 			RebuildReport report;
 
-			// HOLE IS THE ONE FEATURE HERE THAT CANNOT BUILD WITHOUT A BOOLEAN, because taking
-			// material away means recomputing the surface. Installed only around this rebuild and
-			// only for that feature: a provider left in place for the whole sweep would change what
-			// every other feature does with a Remove it never asked for.
+			// HOLE AND BOOLEAN ARE THE TWO FEATURES HERE THAT CANNOT BUILD WITHOUT A PROVIDER —
+			// one takes material away, the other combines two solids, and both need the surface
+			// recomputed. Installed only around this rebuild and only for those two: a provider
+			// left in place for the whole sweep would change what every other feature does with a
+			// Remove it never asked for.
 			var previousProvider = MeshBoolean.Provider;
 
-			if ( feature is HoleFeature )
+			if ( feature is HoleFeature or BooleanFeature )
 				MeshBoolean.Provider = new SweepBoolean();
 
 			try
