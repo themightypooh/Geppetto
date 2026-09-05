@@ -89,6 +89,42 @@ internal static class EffigyPreview
 	}
 
 	/// <summary>
+	/// Build a Model from the mesh wearing ONE material on every face, slot resolution ignored.
+	///
+	/// THIS IS THE PAINT-PREVIEW PATH. While painting, the whole part wears the painted atlas — a
+	/// <see cref="Material.CreateCopy"/> with the live canvas texture bound — so the slot bucketing
+	/// above is the wrong answer there. One material, one submesh, the same smoothing as the ordinary
+	/// preview, and the caller owns the material's lifetime across rebuilds.
+	/// </summary>
+	public static Model Build( PolyMesh mesh, Material material,
+		float smoothingAngleDegrees = MeshNormals.DefaultSmoothingAngleDegrees )
+	{
+		if ( mesh is null || mesh.FaceCount == 0 || mesh.VertexCount == 0 || material is null )
+			return null;
+
+		var (cornerNormals, normals) = MeshNormals.ComputeCornerNormals( mesh, smoothingAngleDegrees );
+		var bounds = BoundsOf( mesh );
+
+		var faces = new List<int>( mesh.FaceCount );
+
+		for ( var fi = 0; fi < mesh.FaceCount; fi++ )
+		{
+			if ( mesh.Faces[fi].Count >= 3 )
+				faces.Add( fi );
+		}
+
+		var sub = BuildSubmesh( mesh, faces, cornerNormals, normals, material, bounds );
+
+		if ( sub is null )
+			return null;
+
+		var builder = Model.Builder;
+		builder.AddMesh( sub );
+
+		return builder.Create();
+	}
+
+	/// <summary>
 	/// The material a slot renders with: the vmat bound to it, or the flat placeholder.
 	///
 	/// Slot 0 is the slot every face starts on and never carries a material, so it is the
@@ -121,6 +157,17 @@ internal static class EffigyPreview
 	private static Mesh BuildSubmesh( PolyMesh mesh, List<int> faceIndices, int[][] cornerNormals,
 		List<Vec3> normals, Material material, BBox bounds )
 	{
+		// Vertex colour needs a richer vertex than SimpleVertex — the engine multiplies a material by
+		// its vertex colour, which is how paint composes over whatever the face is wearing. A mesh
+		// nobody has painted keeps the lighter SimpleVertex path byte-for-byte.
+		return mesh.HasVertexColors
+			? BuildColoredSubmesh( mesh, faceIndices, cornerNormals, normals, material, bounds )
+			: BuildPlainSubmesh( mesh, faceIndices, cornerNormals, normals, material, bounds );
+	}
+
+	private static Mesh BuildPlainSubmesh( PolyMesh mesh, List<int> faceIndices, int[][] cornerNormals,
+		List<Vec3> normals, Material material, BBox bounds )
+	{
 		// One vertex per face corner rather than per position. Corner normals are the whole point
 		// of MeshNormals - sharing a vertex between two faces that disagree about the normal is
 		// exactly what rounds off a box's edges.
@@ -146,21 +193,7 @@ internal static class EffigyPreview
 				vertices.Add( new SimpleVertex( position, normal, TangentFor( normal ), new Vector2( uv.x, uv.y ) ) );
 			}
 
-			// EAR CLIPPING, NOT A FAN. This used to fan from corner 0 on the grounds that every
-			// face the kernel produces is convex. Extrude caps are not: they are whatever closed
-			// region was drawn, and fanning a concave one fills its notches in - draw a dart and
-			// the solid came back as a quadrilateral with the concave corner swallowed.
-			var polygon = new List<Vec3>( face.Count );
-
-			for ( var k = 0; k < face.Count; k++ )
-				polygon.Add( mesh.Positions[face.Indices[k]] );
-
-			foreach ( var (a, b, cc) in Triangulate.Face( polygon ) )
-			{
-				indices.Add( first + a );
-				indices.Add( first + b );
-				indices.Add( first + cc );
-			}
+			AppendTriangles( mesh, face, first, indices );
 		}
 
 		if ( indices.Count == 0 )
@@ -172,6 +205,83 @@ internal static class EffigyPreview
 		sbMesh.Bounds = bounds;
 
 		return sbMesh;
+	}
+
+	private static Mesh BuildColoredSubmesh( PolyMesh mesh, List<int> faceIndices, int[][] cornerNormals,
+		List<Vec3> normals, Material material, BBox bounds )
+	{
+		var colors = mesh.VertexColors;
+		var vertices = new List<Vertex>( faceIndices.Count * 4 );
+		var indices = new List<int>( faceIndices.Count * 6 );
+
+		foreach ( var fi in faceIndices )
+		{
+			var face = mesh.Faces[fi];
+			var corners = cornerNormals[fi];
+
+			var first = vertices.Count;
+
+			for ( var c = 0; c < face.Count; c++ )
+			{
+				var p = mesh.Positions[face.Indices[c]];
+				var n = normals[corners[c]];
+				var uv = face.UVs is not null && c < face.UVs.Length ? face.UVs[c] : default;
+
+				var position = new Vector3( p.x, p.y, p.z );
+				var normal = new Vector3( n.x, n.y, n.z );
+
+				// The engine's standard material multiplies by vertex colour, so "no paint" must be
+				// WHITE — anything else would darken the material everywhere the brush never went.
+				// Tint() is that: coverage fades the vertex from white toward the paint colour.
+				var tint = colors[face.Indices[c]].Tint();
+
+				vertices.Add( new Vertex
+				{
+					Position = position,
+					Normal = normal,
+					Tangent = new Vector4( TangentFor( normal ), 1f ),
+					TexCoord0 = new Vector2( uv.x, uv.y ),
+					Color = new Color32(
+						(byte)MathF.Round( tint.x * 255f ),
+						(byte)MathF.Round( tint.y * 255f ),
+						(byte)MathF.Round( tint.z * 255f ),
+						255 ),
+				} );
+			}
+
+			AppendTriangles( mesh, face, first, indices );
+		}
+
+		if ( indices.Count == 0 )
+			return null;
+
+		var sbMesh = new Mesh( material );
+		sbMesh.CreateVertexBuffer<Vertex>( vertices.Count, vertices );
+		sbMesh.CreateIndexBuffer( indices.Count, indices );
+		sbMesh.Bounds = bounds;
+
+		return sbMesh;
+	}
+
+	/// <summary>
+	/// Ear-clipping, not a fan. This used to fan from corner 0 on the grounds that every face the
+	/// kernel produces is convex. Extrude caps are not: they are whatever closed region was drawn,
+	/// and fanning a concave one fills its notches in — draw a dart and the solid came back as a
+	/// quadrilateral with the concave corner swallowed.
+	/// </summary>
+	static void AppendTriangles( PolyMesh mesh, Face face, int first, List<int> indices )
+	{
+		var polygon = new List<Vec3>( face.Count );
+
+		for ( var k = 0; k < face.Count; k++ )
+			polygon.Add( mesh.Positions[face.Indices[k]] );
+
+		foreach ( var (a, b, cc) in Triangulate.Face( polygon ) )
+		{
+			indices.Add( first + a );
+			indices.Add( first + b );
+			indices.Add( first + cc );
+		}
 	}
 
 	/// <summary>

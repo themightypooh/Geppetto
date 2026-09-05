@@ -37,9 +37,24 @@ namespace Effigy;
 /// </summary>
 public static class StudioDocument
 {
-	/// <summary>Bumped when the format changes in a way a reader has to know about. Written on the
-	/// first line so a file from the future can be refused by name rather than by crash.</summary>
-	public const int Version = 1;
+	/// <summary>The newest format this build can WRITE and the newest it can read. A file claiming
+	/// more than this is refused by name rather than by crash.</summary>
+	public const int Version = 2;
+
+	/// <summary>
+	/// The oldest format that can express any document - everything before the rig block existed.
+	///
+	/// A DOCUMENT IS STAMPED WITH WHAT IT ACTUALLY NEEDS, not with whatever this build happens to
+	/// be. That is what keeps the version honest in both directions: a part with no rig in it is
+	/// still perfectly readable by the build that shipped before rigs were saved, so telling that
+	/// build to refuse it would be a lie - and stamping every existing document with a 2 the moment
+	/// it is re-saved would rewrite the first line of every file in the repository for a feature
+	/// none of them use. Same rule the origin and the material scales follow one level down.
+	/// </summary>
+	const int VersionBase = 1;
+
+	/// <summary>The format that first carried a rig block.</summary>
+	const int VersionRig = 2;
 
 	public const string Extension = ".effigy";
 
@@ -55,7 +70,11 @@ public static class StudioDocument
 
 		var sb = new StringBuilder();
 
-		sb.Append( "effigy " ).Append( Version ).Append( '\n' );
+		// See VersionBase: the stamp says what a reader NEEDS, so a part nobody has rigged still
+		// claims 1 and still opens in the build that shipped before this block existed.
+		var version = studio.Rig is { Count: > 0 } ? VersionRig : VersionBase;
+
+		sb.Append( "effigy " ).Append( version ).Append( '\n' );
 		sb.Append( "rollback " ).Append( studio.RollbackIndex ).Append( '\n' );
 
 		// Only when it has been moved. A pivot at zero is what a reader that has never heard of
@@ -99,6 +118,11 @@ public static class StudioDocument
 		foreach ( var note in studio.Notes )
 			WriteNote( sb, note );
 
+		// WITH THE NOTES, BEFORE THE TREE, and for the same reason they are: a rig is document
+		// state, not a modelling operation. Writing it after the features would read as if it were
+		// one of them, which is the single thing this format should not imply about a rig.
+		WriteRig( sb, studio );
+
 		foreach ( var feature in studio.Features )
 			WriteFeature( sb, feature );
 
@@ -128,6 +152,70 @@ public static class StudioDocument
 			sb.Append( "\tp " ).Append( Vec( p ) ).Append( '\n' );
 
 		sb.Append( "endnote\n" );
+	}
+
+	/// <summary>
+	/// The skeleton, its softness and its body bindings.
+	///
+	/// NOTHING AT ALL WHEN THERE ARE NO BONES, which is most documents. The same rule the origin
+	/// and the material scales follow: a document that has never been rigged should have exactly
+	/// the bytes it had before this block existed, so adding the feature does not rewrite every
+	/// file in the repository the first time each is opened and saved.
+	///
+	/// ONE BONE PER BLOCK, its numbers one per line. A bone carries a name, a parent, twelve floats
+	/// of basis and origin, a length, and possibly four more for softness - as one line that is an
+	/// unreadable run of nineteen numbers, and the format already made this call once for notes
+	/// (see WriteNote, "the first unbounded line ... turns a readable diff into a wall"). Per line,
+	/// nudging one bone shows up as the one line that moved.
+	///
+	/// THE PARENT IS AN INDEX, not a name, even though the bindings below key on names. Skeleton
+	/// stores bones in topological order and the reader rebuilds them in file order through
+	/// AddBone, which refuses a parent that does not exist yet - so an index is checked by
+	/// construction on the way back in, where a name would have to be resolved against a
+	/// half-built skeleton and could name a bone that had not arrived.
+	/// </summary>
+	static void WriteRig( StringBuilder sb, PartStudio studio )
+	{
+		var rig = studio.Rig;
+
+		if ( rig is null || rig.Count == 0 )
+			return;
+
+		sb.Append( "rig\n" );
+
+		foreach ( var bone in rig.Bones )
+		{
+			sb.Append( "\tbone " ).Append( OneLine( bone.Name ) ).Append( '\n' );
+			sb.Append( "\t\tparent " ).Append( bone.Parent ).Append( '\n' );
+			sb.Append( "\t\tx " ).Append( Vec( bone.Local.X ) ).Append( '\n' );
+			sb.Append( "\t\ty " ).Append( Vec( bone.Local.Y ) ).Append( '\n' );
+			sb.Append( "\t\tz " ).Append( Vec( bone.Local.Z ) ).Append( '\n' );
+			sb.Append( "\t\torigin " ).Append( Vec( bone.Local.Origin ) ).Append( '\n' );
+			sb.Append( "\t\tlength " ).Append( Num( bone.Length ) ).Append( '\n' );
+
+			// Absent means rigid, which is what Bone.Soft being null means and what nearly every
+			// bone is. Four zeros would be a different thing entirely - a bone with no spring that
+			// still gets simulated - so this is not a case where a default can stand in.
+			if ( bone.Soft is { } soft )
+			{
+				sb.Append( "\t\tsoft " ).Append( Num( soft.Stiffness ) ).Append( ' ' )
+					.Append( Num( soft.Damping ) ).Append( ' ' )
+					.Append( Num( soft.Weight ) ).Append( ' ' )
+					.Append( Num( soft.MaxAngle ) ).Append( '\n' );
+			}
+
+			sb.Append( "\tendbone\n" );
+		}
+
+		// Sorted by body id, for the reason the material names are: two saves of one document
+		// should be the same bytes, and a dictionary promises no order.
+		foreach ( var (body, bone) in studio.BodyBoneMap.OrderBy( kv => kv.Key, StringComparer.Ordinal ) )
+		{
+			if ( !string.IsNullOrWhiteSpace( body ) && !string.IsNullOrWhiteSpace( bone ) )
+				sb.Append( "\tbind " ).Append( body ).Append( ' ' ).Append( OneLine( bone ) ).Append( '\n' );
+		}
+
+		sb.Append( "endrig\n" );
 	}
 
 	static void WriteFeature( StringBuilder sb, Feature feature )
@@ -459,6 +547,14 @@ public static class StudioDocument
 				continue;
 			}
 
+			// Exact rather than StartsWith: the block header is the bare word, and a prefix test
+			// would also swallow any later key beginning "rig".
+			if ( line == "rig" )
+			{
+				ReadRig( studio, lines, ref i );
+				continue;
+			}
+
 			if ( !line.StartsWith( "feature " ) )
 				throw new InvalidDataException( $"Line {i + 1}: expected a feature, found '{line}'" );
 
@@ -483,6 +579,116 @@ public static class StudioDocument
 	/// honest answer. A note is a scribble: losing a property a later build added costs the user a
 	/// colour, and taking the whole document down over it would cost them the part.
 	/// </summary>
+	/// <summary>
+	/// Read the rig block back.
+	///
+	/// SKIPS WHAT IT DOES NOT RECOGNISE, following ReadNote rather than ReadFeature. The reasoning
+	/// is the same and it is worth repeating because the two rules look inconsistent side by side:
+	/// a feature carrying an unknown key rebuilds into the WRONG SHAPE, so refusing to open is the
+	/// honest answer, while a bone carrying one loses a property a later build added - a wobble
+	/// setting, say - and taking the whole part down over a wobble setting is a bad trade.
+	///
+	/// A BONE WITH NO NAME OR A BAD PARENT IS DROPPED, not thrown on, and its children go with it
+	/// because AddBone will refuse a parent index that never arrived. That is a hand-edited file or
+	/// a truncated one; the rest of the rig is still worth having.
+	/// </summary>
+	static void ReadRig( PartStudio studio, string[] lines, ref int i )
+	{
+		for ( i++; i < lines.Length; i++ )
+		{
+			var line = lines[i].Trim();
+
+			if ( line.Length == 0 )
+				continue;
+
+			if ( line == "endrig" )
+				return;
+
+			if ( line.StartsWith( "bind " ) )
+			{
+				var parts = line[5..].Split( ' ', 2, StringSplitOptions.RemoveEmptyEntries );
+
+				if ( parts.Length == 2 && !string.IsNullOrWhiteSpace( parts[0] ) )
+					studio.BodyBoneMap[parts[0]] = parts[1].Trim();
+
+				continue;
+			}
+
+			if ( line.StartsWith( "bone " ) )
+			{
+				ReadBone( studio.Rig, lines, ref i );
+				continue;
+			}
+		}
+	}
+
+	/// <summary>One bone block. Everything is read before anything is added, because AddBone takes
+	/// the whole bone at once and can refuse it.</summary>
+	static void ReadBone( Skeleton rig, string[] lines, ref int i )
+	{
+		var name = lines[i].Trim()[5..].Trim();
+
+		var parent = -1;
+		var length = 1f;
+		Vec3 x = new( 1, 0, 0 ), y = new( 0, 1, 0 ), z = new( 0, 0, 1 ), origin = default;
+		SoftBone soft = null;
+
+		for ( i++; i < lines.Length; i++ )
+		{
+			var line = lines[i].Trim();
+
+			if ( line.Length == 0 )
+				continue;
+
+			if ( line == "endbone" )
+				break;
+
+			if ( line.StartsWith( "parent " ) ) { parent = ParseInt( line[7..], -1 ); continue; }
+			if ( line.StartsWith( "x " ) ) { x = ParseVec3( line[2..] ); continue; }
+			if ( line.StartsWith( "y " ) ) { y = ParseVec3( line[2..] ); continue; }
+			if ( line.StartsWith( "z " ) ) { z = ParseVec3( line[2..] ); continue; }
+			if ( line.StartsWith( "origin " ) ) { origin = ParseVec3( line[7..] ); continue; }
+			if ( line.StartsWith( "length " ) ) { length = ParseFloat( line[7..] ); continue; }
+
+			if ( line.StartsWith( "soft " ) )
+			{
+				var parts = line[5..].Split( ' ', StringSplitOptions.RemoveEmptyEntries );
+
+				// A short soft line keeps SoftBone's own defaults for whatever is missing, rather
+				// than zeroing them. Zero stiffness and a zero cone are both meaningful values - a
+				// dead limb and a bone pinned to its pose - so filling a gap with one would invent
+				// a deliberate-looking setting nobody chose.
+				soft = new SoftBone();
+
+				if ( parts.Length > 0 ) soft.Stiffness = ParseFloat( parts[0] );
+				if ( parts.Length > 1 ) soft.Damping = ParseFloat( parts[1] );
+				if ( parts.Length > 2 ) soft.Weight = ParseFloat( parts[2] );
+				if ( parts.Length > 3 ) soft.MaxAngle = ParseFloat( parts[3] );
+
+				continue;
+			}
+		}
+
+		if ( string.IsNullOrWhiteSpace( name ) )
+			return;
+
+		try
+		{
+			var index = rig.AddBone( name, parent, new Xform( x, y, z, origin ), length );
+			rig.Bones[index].Soft = soft;
+		}
+		catch ( ArgumentException )
+		{
+			// A duplicate name, a blank one, or a parent that is not there yet - a hand-edited or
+			// truncated file. AddBone is the only thing that knows the rules, so it is left to
+			// enforce them rather than having them restated here and allowed to drift.
+			//
+			// ONE CATCH COVERS BOTH throws: AddBone raises ArgumentOutOfRangeException for a bad
+			// parent, and that derives from ArgumentException, so a second clause for it would be
+			// unreachable rather than thorough.
+		}
+	}
+
 	static Note ReadNote( string[] lines, ref int i )
 	{
 		var header = lines[i].Trim()[5..].Split( ' ', StringSplitOptions.RemoveEmptyEntries );

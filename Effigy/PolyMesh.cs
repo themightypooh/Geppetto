@@ -87,6 +87,21 @@ public sealed class PolyMesh
 
 	public bool IsRigged => Skin is not null && Skin.Count == Positions.Count;
 
+	/// <summary>
+	/// Per-vertex colour, parallel to <see cref="Positions"/>, in straight (non-premultiplied) RGBA
+	/// 0..1. Null until paint is applied, the same way <see cref="Skin"/> is null until something rigs
+	/// the mesh.
+	///
+	/// Vertex colours rather than a texture atlas is the paint output s&amp;box composites over a
+	/// material natively — the material multiplies its colour by the vertex colour, so a painted part
+	/// keeps its base material everywhere the paint has no alpha. The cost is resolution: colour is
+	/// per-vertex, so it is only as fine as the mesh, which is why painting is meant to happen after a
+	/// Subdivide or a Sculpt.
+	/// </summary>
+	public Vec4[] VertexColors;
+
+	public bool HasVertexColors => VertexColors is not null && VertexColors.Length == Positions.Count;
+
 	public PolyMesh() { }
 
 	public PolyMesh( IEnumerable<Vec3> positions, IEnumerable<Face> faces )
@@ -314,6 +329,9 @@ public sealed class PolyMesh
 	public PolyMesh Clone()
 	{
 		var m = new PolyMesh { Positions = new List<Vec3>( Positions ), Skin = Skin?.Clone() };
+
+		if ( VertexColors is not null )
+			m.VertexColors = (Vec4[])VertexColors.Clone();
 
 		foreach ( var f in Faces )
 			m.Faces.Add( new Face( (int[])f.Indices.Clone(), (Vec2[])f.UVs.Clone(), f.Material ) );

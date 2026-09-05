@@ -36,14 +36,60 @@ forgotten.
 ## Unreleased
 
 ### Added
+- Soft bones are reachable. Select a bone, tick **Soft** in the Rig panel, and set its
+  stiffness, damping, weight and cone. The solver behind them shipped a while ago and
+  has been tested since, but nothing in the editor could ever put softness on a bone --
+  the rig problems list would even warn about a soft bone with a zero cone that no
+  amount of clicking could create. Soft bones draw blue in the viewport so you can see
+  which ones are simulated. `EffigyRigPanel.cs`
+- **Preview** on the Rig bar runs the solver live. Gravity pulls the soft bones off
+  their pose so you can watch them sag and settle while you tune the numbers, and
+  dragging a bone with the pose gizmo makes everything soft below it swing behind the
+  drag. **Rest** puts them back when you want to judge a fresh value.
+  `EffigyViewport.SoftPreview.cs`
+- Rigs are saved in the .effigy file. Bones, their bind pose, their softness and which
+  body is pinned to which bone all survive a save and reopen. They did not before --
+  the skeleton lived on the rig panel, which no file format had ever heard of, so
+  placing bones and reopening the part lost every one of them silently. A part with no
+  rig is written exactly as it was before, byte for byte, and still opens in older
+  builds. `StudioDocument.cs`, `PartStudio.cs`
+- A workspace bar across the top: **CAD**, **Sculpt**, **Paint**, **Rig**. Effigy had
+  grown four toolsets that all took turns on one tool bar, and the only thing that ever
+  said which was showing was a word written small at the right-hand end. Now the part of
+  the pipeline you are in is a control rather than something you infer: clicking Sculpt
+  gets you sculpting, the way clicking Extrude gets you an extrude. Sketching still
+  counts as CAD — you opened it from there and you finish it back there.
+  `EffigyWorkspaceBar.cs`, `EffigyWindow.Workspaces.cs`
+- Rigging has its own tool bar, so it works like every other part of the tool. Add Bone,
+  Delete, Assign Body and Mirror sit on Bones and Bind stages instead of being buttons
+  in a side panel — they were the only toolset that lived somewhere else. The Rig panel
+  keeps its buttons; they run the same actions.
+- Each workspace opens the panels it needs and puts the rest away. Paint brings up the
+  material browser, Rig brings up the skeleton tree and gives it the whole right-hand
+  side. Whatever you rearrange while you are in a workspace is what you come back to, so
+  the layouts are a starting point rather than something that undoes your own arranging.
+- A tool that cannot run yet is dimmed and says why when you hover it, instead of looking
+  live and doing nothing. Assign Body, Mirror and Delete all need a bone selected.
+  `EffigyStageBar.cs`
 - The tool bar marks which tools will use what you have selected. Click a face and
   Fillet, Chamfer, Draft, Hole, Face Material, Extrude and Move Face each pick up a
   green mark down their left edge; click an edge and only the two blends do. It marks
   what applies rather than dimming what does not, because a tool that ignores your
   selection is not unavailable — you can still press Primitive with a face selected,
   and always could. `EffigyStageBar.cs`
+- Painting. Press **Paint** and brush colour straight onto the model. The paint
+  composes over whatever material the part already wears, so a part with a dropped
+  material keeps that material everywhere you did not brush. Strokes are saved in the
+  .effigy file and replayed whenever the model rebuilds, so paint follows the part
+  through later edits instead of smearing when something upstream changes.
+  `PaintFeature.cs`, `PaintSession.cs`, `PaintReplay.cs`
 
 ### Improved
+- Only one thing can own a click in the viewport now. Sketching, sculpting, painting and
+  the bone tool each used to shut down its own hand-kept list of the others on the way in,
+  the lists disagreed, and nothing at all closed a paint before letting you place a bone —
+  so both could be armed and one click tried to do two things. Every way in goes through
+  one place. `EffigyWindow.Workspaces.cs`
 - The pull handle is now a single arrow, pointing the way the face faces. It used to
   be three, and on one face two of them did nothing when dragged — correctly, since
   sliding a flat face within its own plane does not change the solid, but an arrow
@@ -51,6 +97,36 @@ forgotten.
   `EffigyViewport.FaceDrag.cs`
 
 ### Fixed
+- Bones can be clicked in the viewport. They never could: every bone registered its
+  click target into the same shared slot, so the hit test could tell you the cursor was
+  over *a* bone but not over *which* one, and the click went nowhere. Each bone now has
+  its own, the way the Marionette rig viewport has always done it. `EffigyViewport.cs`
+- A bone's hit target is the bone you can see. The drawing sized itself off the bone's
+  length while the target was a fixed radius, so the two agreed at exactly one bone
+  length and drifted apart in both directions from there -- on a long bone most of what
+  you could see did nothing, on a short one the target stuck out past the end. Both now
+  come from the same number.
+- The pose gizmo stops vanishing when you click the bone it belongs to. A selected bone
+  had no hit target at all, so a click anywhere off the gizmo's arrows counted as
+  clicking empty space and threw the selection away -- the gizmo was not failing to
+  appear, it was being dismissed by the click aimed at it.
+- Hovering a bone highlights the bone, rather than putting a blob at one end of it.
+- Picking a bone in the Rig tree shows up in the viewport straight away -- it turns
+  yellow and gets its pose gizmo. The selection had always worked; the viewport only
+  repaints when asked and nobody was asking, so nothing on screen said so until you
+  happened to move the mouse over the model.
+- In the Rig workspace the model's faces are no longer selectable or highlighted, so a
+  click meant for a bone cannot land on the wall of triangles behind it. The origin
+  handle, the lamps and the face-drag arrow step aside there too.
+- A rig edit marks the document unsaved. Placing bones, renaming one, or changing
+  softness left the title bar showing no changes, so closing the window closed it
+  cleanly without asking and the whole rig went with it. Harmless while a rig only
+  lived in the window and there was nothing to save it into; a way to lose work as
+  soon as rigs went into the file. `EffigyWindow.cs`
+- Undo works on soft bones. Making a bone soft and pressing Ctrl+Z left it soft, and
+  changing a stiffness twice in a row lost the first value -- the undo system compared
+  two rigs without looking at their softness, so every soft edit looked to it like
+  nothing had happened. `EffigyWindow.cs`
 - An oversized fillet or chamfer is refused again, across the whole range where it
   should be. On a 2-unit cube any radius above 1.0 has eaten more of every face than
   the face had; between 1.0 and about 1.25 the part came back quietly self-intersecting
@@ -60,6 +136,16 @@ forgotten.
   and turned around — so it catches the fold where it happens rather than hoping it
   shows up in the total. The suggested radius the error offers is fixed by the same
   change, and no longer proposes a size inside the broken band. `EdgeBlend.cs`
+
+### Known Issues
+- Paint is as fine as the mesh it lands on. Vertex colours live one per vertex, so a
+  bare box paints as a few colour blobs; add a Subdivide (or Sculpt) above the Paint
+  feature and the same brush is as fine as the mesh.
+- A painted, rigged model writes its colours into the DMX (the field names were read
+  out of the compiler's own binary), but the compiled result has not been looked at
+  in-engine yet — check a rigged painted model renders its paint before relying on it.
+- Paint tints the material rather than covering it, which is what the engine's standard
+  material does for free; paint that fully replaces the colour under it needs a shader.
 
 ## v367420 — 2026-09-04
 

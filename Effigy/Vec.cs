@@ -67,6 +67,51 @@ public readonly struct Vec3 : IEquatable<Vec3>
 		MathF.Abs( x - o.x ) <= eps && MathF.Abs( y - o.y ) <= eps && MathF.Abs( z - o.z ) <= eps;
 }
 
+/// <summary>
+/// A four-component vector — RGBA colour. Same portability rule as Vec3: the kernel has no engine
+/// type, so a vertex colour is this rather than Sandbox.Color or Godot.Color, and engine glue
+/// converts at the boundary the same way it does for positions and UVs.
+/// </summary>
+public readonly struct Vec4
+{
+	public readonly float x, y, z, w;
+
+	public Vec4( float x, float y, float z, float w )
+	{
+		this.x = x;
+		this.y = y;
+		this.z = z;
+		this.w = w;
+	}
+
+	public static readonly Vec4 Zero = new( 0, 0, 0, 0 );
+
+	public static Vec4 operator +( Vec4 a, Vec4 b ) => new( a.x + b.x, a.y + b.y, a.z + b.z, a.w + b.w );
+	public static Vec4 operator -( Vec4 a, Vec4 b ) => new( a.x - b.x, a.y - b.y, a.z - b.z, a.w - b.w );
+	public static Vec4 operator *( Vec4 a, float s ) => new( a.x * s, a.y * s, a.z * s, a.w * s );
+	public static Vec4 operator *( float s, Vec4 a ) => a * s;
+
+	public static Vec4 Lerp( Vec4 a, Vec4 b, float t ) => a + (b - a) * t;
+
+	/// <summary>
+	/// This colour as the TINT a vertex-colour consumer expects. "No paint" — <c>w == 0</c> — maps to
+	/// white, because a material multiplies by vertex colour and multiply-by-white leaves it
+	/// unchanged; coverage then fades the vertex from white toward the paint colour. This is the
+	/// multiply flavour of compositing, the one the engine's standard material does natively; an
+	/// alpha-blend (where the paint REPLACES the material under it) is a different read of the same
+	/// stored colour and needs a shader.
+	/// </summary>
+	public Vec3 Tint() => new(
+		1f - (1f - x) * w,
+		1f - (1f - y) * w,
+		1f - (1f - z) * w );
+
+	public bool Equals( Vec4 o ) => x == o.x && y == o.y && z == o.z && w == o.w;
+	public override bool Equals( object obj ) => obj is Vec4 v && Equals( v );
+	public override int GetHashCode() => HashCode.Combine( x, y, z, w );
+	public override string ToString() => $"({x:0.####}, {y:0.####}, {z:0.####}, {w:0.####})";
+}
+
 /// <summary>Texture coordinate. Same portability rule as Vec3.</summary>
 public readonly struct Vec2
 {

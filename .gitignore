@@ -107,3 +107,8 @@ tools/diner_tile_gen.py
 # package, the way 46 sample meshes once landed in 367356's.
 Assets/materials/
 Assets/test/
+
+# Whatever the editor last saved from a New Part / New Scene click. Same policy as the
+# scratch assets above: kept on disk because reopening one is useful, kept out of the
+# repo because git add -A in tools/ship.sh would push them into the package.
+Assets/untitled.*

@@ -173,6 +173,25 @@ internal sealed partial class EffigyViewport : Widget
 	public bool RightPlaneVisible { get; set; } = true;
 	public Effigy.Skeleton RigSkeleton { get; set; }
 
+	/// <summary>
+	/// The Rig workspace is open, so BONES ARE THE ONLY THING IN HERE THAT CAN BE CLICKED.
+	///
+	/// WHY THIS HAS TO EXIST. A bone's hit target is a handful of spheres strung along a shape a
+	/// few units thick. The part it sits on is a wall of triangles filling the screen behind it,
+	/// and idle selection picks a face from wherever the cursor is, so the face wins essentially
+	/// everywhere the bone is not. Worse, it wins INVISIBLY: the face lights up, the bone does not,
+	/// and the click lands on the face - so the rig looks unresponsive rather than obstructed. The
+	/// origin handle, the lamps and the face-drag arrow are the same problem in miniature.
+	///
+	/// Turning the competition off is the only fix that holds. Making the bone hitboxes bigger
+	/// helps and is done too (see DrawBoneHandle), but it is a race that cannot be won by degrees:
+	/// any bone inside the silhouette of the part still has a face behind every pixel of it.
+	///
+	/// NOT A NEW KIND OF STATE. It is the workspace, pushed down to the one place that has to act
+	/// on it - see EffigyWindow.Workspaces.cs, which sets it from BarMode and nowhere else.
+	/// </summary>
+	public bool RigMode { get; set; }
+
 	public EffigyViewport( Widget parent ) : base( parent )
 	{
 		MinimumSize = 200;
@@ -301,11 +320,16 @@ internal sealed partial class EffigyViewport : Widget
 	/// at that point orphans the canvas: it keeps whatever tiny geometry it had and renders the
 	/// whole 3D scene into a sliver, leaving the rest of the viewport black.
 	/// </summary>
-	public void CompleteLayout( Widget toolBar, Widget resultOverlay = null )
+	public void CompleteLayout( Widget workspaceBar, Widget toolBar, Widget resultOverlay = null )
 	{
-		// The bar first, the canvas taking everything left. One bar, so there is no longer any
-		// question of two pieces of tool chrome being visible at once — that used to be enforced
-		// by three Visible flags nobody could see the state of.
+		// Outermost first, then the bar, then the canvas taking everything left. Two rows of docked
+		// chrome, in the order the questions get asked: which part of the pipeline (workspace),
+		// then which handful of tools (stage), then the tools. One bar per question, so there is no
+		// longer any question of two pieces of tool chrome being visible at once — that used to be
+		// enforced by three Visible flags nobody could see the state of.
+		if ( workspaceBar is not null )
+			Layout.Add( workspaceBar );
+
 		if ( toolBar is not null )
 			Layout.Add( toolBar );
 
@@ -1336,7 +1360,8 @@ internal sealed partial class EffigyViewport : Widget
 			SketchGridBar.Visible = IsSketching;
 
 		var overAnyOverlay = (_resultOverlay?.IsUnderMouse ?? false)
-			|| (_sculptBarOverlay?.IsUnderMouse ?? false);
+			|| (_sculptBarOverlay?.IsUnderMouse ?? false)
+			|| (_paintBarOverlay?.IsUnderMouse ?? false);
 		var overCanvas = _canvas.IsUnderMouse && !overAnyOverlay;
 
 		_gizmoInstance.Input.IsHovered = IsActiveWindow && overCanvas;
@@ -1377,11 +1402,15 @@ internal sealed partial class EffigyViewport : Widget
 		FacePickFrame();
 		EdgePickFrame();
 		BodyPickFrame();
+		// Before the draw, so what is drawn is this frame's solve rather than last frame's.
+		SoftPreviewFrame();
+
 		DrawRigSkeleton();
 		BoneToolFrame();
 
 		SketchFrame();
 		SculptFrame();
+		PaintFrame();
 
 		// AFTER the pick passes and after sculpting, so a note is drawn over everything it is about
 		// and an erase click is resolved against a hover the other modes have already declined.
@@ -1397,7 +1426,10 @@ internal sealed partial class EffigyViewport : Widget
 
 		// Origin and lamps on top of the planes. Hidden while sketching or picking anything - they
 		// sit where first clicks land, and stealing them was the first thing that broke.
-		if ( !IsSketching && !PlanePickMode && !SketchPickMode && !FacePickMode && !EdgePickMode && !BodyPickMode && !BoneToolActive )
+		// RigMode joins the list for the same reason every other entry is on it: these sit where
+		// first clicks land, and in the rig workspace every first click is meant for a bone.
+		if ( !IsSketching && !PlanePickMode && !SketchPickMode && !FacePickMode && !EdgePickMode
+			&& !BodyPickMode && !BoneToolActive && !RigMode )
 		{
 			DrawViewportLights();
 			DrawOrigin();
@@ -1421,13 +1453,18 @@ internal sealed partial class EffigyViewport : Widget
 		// AFTER the selection, because the handle belongs to whatever that pass just settled on, and
 		// before nothing in particular - Gizmo.Control registers its own hitbox, which is what stops the
 		// click that grabs an arrow from also landing on the face behind it.
-		FaceDragFrame();
+		// Not in the rig workspace. The arrow hangs off the idle face selection, which RigMode has
+		// already stopped happening, so this is belt and braces - but the handle is a Gizmo.Control
+		// that would keep registering a hitbox over a selection made before the workspace changed,
+		// and a stray arrow over the model is exactly the kind of thing that eats a bone click.
+		if ( !RigMode )
+			FaceDragFrame();
 
 		// BoneToolActive and BodyPickMode: the same "you can click here" signal every other live
 		// pick mode already gets from Gizmo.HasHovered/_hoveredSketchId/_hoveredFaceBodyId. Without
 		// it, placing a bone or assigning a body was the only click-to-act mode in the whole tool
 		// that left the cursor a plain arrow the entire time.
-		Cursor = Gizmo.HasHovered || IsSketching || _hoveredSketchId is not null || _hoveredFaceBodyId is not null
+		Cursor = Gizmo.HasHovered || IsSketching || IsPainting || _hoveredSketchId is not null || _hoveredFaceBodyId is not null
 			|| BoneToolActive || BodyPickMode || FacePickMode || EdgePickMode
 			? CursorShape.Finger : CursorShape.Arrow;
 	}
@@ -1465,11 +1502,34 @@ internal sealed partial class EffigyViewport : Widget
 	/// <summary>Base radius of a bone's head sphere in world units.</summary>
 	private const float BoneHandleRadius = 0.8f;
 
+	/// <summary>
+	/// A dog bone's knob radius as a fraction of its length — the widest part of the drawn shape.
+	///
+	/// SHARED BY THE DRAWING AND THE HIT TEST, which is the point of it being a named constant
+	/// rather than the bare 0.16 it used to be inside DrawDogBone. The two used different numbers
+	/// for as long as both existed, so how much of a bone you could actually click depended on how
+	/// long the bone was.
+	/// </summary>
+	private const float DogBoneKnobScale = 0.16f;
+
+	/// <summary>
+	/// The smallest a bone's hit target may get, whatever its length.
+	///
+	/// A very short bone draws a very small dog bone, and a hit target faithful to it would be a
+	/// few pixels across. Fidelity is worth having right up to the point where the thing becomes
+	/// unclickable; below that a slightly generous target is the lesser problem, and a short bone
+	/// has little around it to steal from anyway.
+	/// </summary>
+	private const float MinBonePickRadius = 0.6f;
+
 	/// <summary>Draw one bone as a dog-bone: a knobby ball at the head, a knobby ball at the
 	/// tail, and a thin shaft between them.</summary>
 	private void DrawBoneHandle( int index )
 	{
-		var world = RigSkeleton.WorldBind( index );
+		// BoneWorld, not WorldBind: while the soft preview runs this is where the bone actually IS,
+		// which is where it has to be drawn and where its hit sphere has to sit. See
+		// EffigyViewport.SoftPreview.cs.
+		var world = BoneWorld( index );
 		var bone = RigSkeleton.Bones[index];
 
 		var head = new Vector3( world.Origin.x, world.Origin.y, world.Origin.z );
@@ -1480,36 +1540,106 @@ internal sealed partial class EffigyViewport : Widget
 		var xAxis = new Vector3( world.X.x, world.X.y, world.X.z );
 		var zAxis = new Vector3( world.Z.x, world.Z.y, world.Z.z );
 
+		// MEASURED, not bone.Length. The two agree for a well-formed bone, and where they do not
+		// the drawing follows this one — DrawDogBone derives everything from the head-to-tail
+		// vector — so the hit target has to follow it as well or the pair drift apart again.
+		var boneLen = (tail - head).Length;
+
 		var isSelected = index == _selectedBoneIndex;
 
+		// SOFT BONES ARE BLUE. Which bones in a chain are simulated and which are welded is not
+		// otherwise visible anywhere in the viewport - it is a tick in a panel on a bone you have to
+		// select one at a time - and it is the first thing you want to know when a rig wobbles
+		// wrongly. Selection still wins over it: yellow means "this is the one the gizmo will move",
+		// which is a fact about right now, where softness is a fact about the rig.
 		Gizmo.Draw.Color = isSelected
 			? new Color( 1f, 0.85f, 0.2f, 1f )
-			: new Color( 0.95f, 0.35f, 0.2f, 0.8f );
+			: bone.Soft is not null
+				? new Color( 0.35f, 0.7f, 1f, 0.85f )
+				: new Color( 0.95f, 0.35f, 0.2f, 0.8f );
 
 		DrawDogBone( head, tail, xAxis, zAxis );
-
-		// No hitbox on the selected bone — its own gizmo handles registration.
-		if ( isSelected )
-			return;
 
 		// While placing new bones, an existing bone's hitbox would steal the click instead of
 		// letting it land on the mesh underneath.
 		if ( BoneToolActive )
 			return;
 
-		Gizmo.Hitbox.DepthBias = 0.01f;
-		Gizmo.Hitbox.Sphere( new Sphere( head, BoneHandleRadius * 2.5f ) );
+		// A degenerate bone draws nothing (DrawDogBone bails at the same threshold), and a hit
+		// target for a shape that is not on screen is a click landing on nothing visible.
+		if ( boneLen < 0.01f )
+			return;
 
-		if ( Gizmo.IsHovered )
+		// EVERY BONE NEEDS ITS OWN NAMED SCOPE, and the lack of one is why clicking a bone in this
+		// viewport did nothing at all.
+		//
+		// Gizmo.IsHovered does not answer "is the cursor over the last shape I registered" - it
+		// answers "is the cursor over THIS GIZMO OBJECT", and the object is the scope. Registering
+		// every bone's hitbox at the root scope put all of them into one object, so the question
+		// each bone asked was really "is the cursor over any bone at all", and the answer could not
+		// pick one out. RigControlEditor's RigViewport has done this correctly since it was written
+		// - see the $"Bone{bone.Index}" scope in its DrawBones.
+		//
+		// THE SCOPE CARRIES THE BONE'S ROTATION, not just its position, which is what lets the
+		// hitbox below be a single box that lies along the bone instead of a string of spheres
+		// approximating one. ExtractRotation maps the kernel's basis the same way the pose gizmo
+		// does - the bone's own axis becomes the scope's FORWARD - so local +X runs head to tail.
+		var hovered = false;
+
+		using ( Gizmo.Scope( $"EffigyBone{index}", new Transform( head, ExtractRotation( world ) ) ) )
 		{
-			Gizmo.Draw.Color = new Color( 1f, 0.85f, 0.2f, 0.35f );
-			Gizmo.Draw.SolidSphere( head, BoneHandleRadius * 2.5f, 8, 8 );
+			// THE HITBOX IS SIZED FROM THE DRAWING, and that is the whole fix for a hit target that
+			// felt arbitrary.
+			//
+			// DrawDogBone sizes its knobs off the bone's LENGTH (knobR = boneLen * 0.16), while the
+			// hitbox was a fixed 0.8 units regardless. So the two agreed at exactly one bone length
+			// and diverged in both directions from there: on a long bone the drawn shape was far
+			// bigger than the target, so most of the bone you could see did nothing, and on a short
+			// one the target stuck out well past the bone. Same constant, same expression, one
+			// source of truth - the thing you can see is the thing you can hit.
+			var knobR = MathF.Max( boneLen * DogBoneKnobScale, MinBonePickRadius );
 
-			if ( Gizmo.WasLeftMousePressed )
+			// THE SELECTED BONE KEEPS A HITBOX, just one that loses to its own pose gizmo.
+			//
+			// It used to have none at all, on the reasoning that the gizmo registers its own - and
+			// that is the bug behind "the gizmo disappears". The deselect test at the end of
+			// DrawRigSkeleton treats a press with nothing hovered as a click on empty space, so
+			// clicking the selected bone anywhere off the gizmo's arrows read as empty space and
+			// threw the selection away. The gizmo did not fail to appear; it was being dismissed by
+			// the click aimed at it.
+			//
+			// The depth bias is the whole mechanism. Gizmo.Control's handles register at 0.01,
+			// biased toward the camera; leaving this bone at 0 means the arrows win everywhere they
+			// overlap it - which is RigViewport's finding in its own words, that a sphere "biased in
+			// front, no less" beat the control and stopped the drag ever starting. Off the arrows,
+			// this box is all there is, so the bone stays hovered and the selection survives.
+			Gizmo.Hitbox.DepthBias = isSelected ? 0f : 0.01f;
+
+			Gizmo.Hitbox.BBox( new BBox(
+				new Vector3( 0f, -knobR, -knobR ),
+				new Vector3( boneLen, knobR, knobR ) ) );
+
+			hovered = Gizmo.IsHovered;
+
+			// Selecting what is already selected would only re-fire the callbacks - and one of them
+			// rebuilds the tree selection, which is not free.
+			if ( hovered && !isSelected && Gizmo.WasLeftMousePressed )
 			{
 				_selectedBoneIndex = index;
 				BoneSelectionChanged?.Invoke( index );
 			}
+		}
+
+		// The highlight is the BONE, not a blob near it, and it is drawn out here in world space
+		// where DrawDogBone works. A sphere at the head was the old feedback and it was actively
+		// misleading: it said the head was the target when the target is the whole bone.
+		// Not on the selected bone: it is already drawn in the selection colour, and a hover
+		// highlight over it would say the click is about to do something when it is about to do
+		// nothing.
+		if ( hovered && !isSelected )
+		{
+			Gizmo.Draw.Color = new Color( 1f, 0.85f, 0.2f, 0.9f );
+			DrawDogBone( head, tail, xAxis, zAxis );
 		}
 	}
 
@@ -1521,7 +1651,7 @@ internal sealed partial class EffigyViewport : Widget
 	/// </summary>
 	private void DrawSelectedBoneGizmo()
 	{
-		var world = RigSkeleton.WorldBind( _selectedBoneIndex );
+		var world = BoneWorld( _selectedBoneIndex );
 		var bone = RigSkeleton.Bones[_selectedBoneIndex];
 		var head = new Vector3( world.Origin.x, world.Origin.y, world.Origin.z );
 		var headRot = ExtractRotation( world );
@@ -1630,7 +1760,7 @@ internal sealed partial class EffigyViewport : Widget
 		// The knobs are wider than the shaft — that contrast is what makes the shape read
 		// as a bone rather than a dumbbell bar. Inset the shaft so it disappears inside the
 		// knobs rather than poking out past them.
-		var knobR = boneLen * 0.16f;
+		var knobR = boneLen * DogBoneKnobScale;
 		var shaftR = knobR * 0.35f;
 		var inset = knobR * 0.6f;
 
@@ -1703,6 +1833,11 @@ internal sealed partial class EffigyViewport : Widget
 		}
 		else
 		{
+			// WorldBind here, NOT BoneWorld, and this is the one place the difference matters. This
+			// converts a world transform back into a parent-relative BIND transform to store on the
+			// bone. Measuring it against a parent that is currently swinging would bake the wobble
+			// into the bind pose itself - drag a bone while previewing and the rig would slowly
+			// drift into whatever shape the springs happened to be in.
 			var parentWorld = RigSkeleton.WorldBind( bone.Parent );
 			var inv = parentWorld.Inverse;
 			bone.Local = new Xform(
@@ -1734,13 +1869,26 @@ internal sealed partial class EffigyViewport : Widget
 		_selectedBoneIndex = -1;
 		_boneDragging = false;
 		BoneSelectionChanged?.Invoke( -1 );
+
+		// Same reason as SelectBone's: on demand, so a deselection nobody repaints stays on screen.
+		Update();
 	}
 
-	/// <summary>Select a bone by index — called from the rig panel's tree view. Does not
-	/// invoke the BoneSelectionChanged callback to avoid feedback loops.</summary>
+	/// <summary>
+	/// Select a bone by index — called from the rig panel's tree view. Does not invoke the
+	/// BoneSelectionChanged callback, to avoid feedback loops.
+	///
+	/// THE Update() IS THE POINT, not an afterthought. Without it this wrote a field and stopped:
+	/// the viewport is repainted on demand rather than continuously, so clicking a bone in the tree
+	/// changed nothing on screen - no yellow bone, no pose gizmo - until some unrelated thing
+	/// happened to ask for a frame, usually the next mouse move over the canvas. The selection had
+	/// in fact worked every time; there was simply nothing to look at that said so.
+	/// </summary>
 	public void SelectBone( int index )
 	{
 		_selectedBoneIndex = index >= 0 && index < RigSkeleton?.Count ? index : -1;
+
+		Update();
 	}
 
 	/// <summary>Escape backs out of the half-drawn entity, then out of the tool - the same two
@@ -1755,6 +1903,11 @@ internal sealed partial class EffigyViewport : Widget
 
 		// Sculpting owns X and M while it is running, and owns nothing at all when it is not.
 		if ( HandleSculptKey( e ) )
+			return;
+
+		// Painting owns X while it is running, and nothing when it is not. The same letter as sculpt —
+		// one brush tool should not need a different key for symmetry than the other.
+		if ( HandlePaintKey( e ) )
 			return;
 
 		// The pen owns E and H while it is armed, and nothing when it is not. Same shape as the

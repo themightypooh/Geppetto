@@ -47,6 +47,8 @@ internal enum EffigyBarMode
 	Part,
 	Sketch,
 	Sculpt,
+	Paint,
+	Rig,
 }
 
 /// <summary>
@@ -233,6 +235,23 @@ internal sealed class EffigyStageTool
 	/// <summary>A mode you turn on and leave on, rather than a command that happens once. Armed
 	/// tools wear the edge ring.</summary>
 	public bool Checkable;
+
+	/// <summary>
+	/// Whether the tool can be run right now.
+	///
+	/// THE SAME CONTRACT EffigyStage.Locked HAS, one level down: a dimmed button whose tooltip is
+	/// the REASON, rather than a button that vanishes or one that looks live and does nothing. The
+	/// stage-level lock already made that argument for the CAD tabs — the strip it replaced hid
+	/// seventeen buttons until a sketch existed, which is how a studio started with a Primitive
+	/// ended up with no fillet and no explanation. A per-tool version was needed as soon as the rig
+	/// stages arrived, where three of the four tools act on "the selected bone" and there is often
+	/// no selection.
+	/// </summary>
+	public bool Enabled = true;
+
+	/// <summary>Why it is disabled. Becomes the tooltip, because a dimmed button with no
+	/// explanation is the disappearing act with extra steps.</summary>
+	public string DisabledReason;
 
 	/// <summary>Overrides the glyph colour for a button that means something in particular — the
 	/// finish tick is green like every other confirm, Use is the reference green. Null leaves it
@@ -859,6 +878,28 @@ internal sealed class EffigyStageToolRow : Widget
 		// glow, so hovering a highlighted armed button still reads as hovering it rather than as a
 		// fourth state. The selection mark is first because it is the quietest and the most often
 		// true — it should never be what you notice about a button you are already pointing at.
+		// A disabled tool gets NONE of the decoration. Every mark below says something about what
+		// the button would do if pressed, and a button that will not be pressed has nothing to say
+		// — an armed ring on a dead tool is the worst of the four, since it claims the tool is on.
+		if ( !tool.Enabled )
+		{
+			var dim = (tool.IconColor ?? Theme.Text).WithAlpha( 0.30f );
+
+			Paint.SetPen( dim );
+			EffigyIcons.Draw( tool.FaceIcon,
+				new Vector2( rect.Position.x + Pad + IconWidth * 0.5f, rect.Position.y + rect.Size.y * 0.5f ),
+				dim, EffigyToolChrome.IconScale );
+
+			Paint.SetDefaultFont( EffigyToolChrome.LabelFontSize, 450 );
+			Paint.SetPen( Theme.TextControl.WithAlpha( 0.35f ) );
+			Paint.DrawText(
+				new Rect( rect.Position.x + Pad + IconWidth + IconGap, rect.Position.y,
+					rect.Size.x - Pad * 2f - IconWidth - IconGap, rect.Size.y ),
+				tool.FaceLabel ?? "", TextFlag.LeftCenter );
+
+			return;
+		}
+
 		if ( tool.Takes )
 			EffigyToolChrome.PaintTakesMark( rect );
 
@@ -947,7 +988,13 @@ internal sealed class EffigyStageToolRow : Widget
 		_hovered = index;
 
 		var tools = Tools;
-		ToolTip = index >= 0 && index < tools.Count ? tools[index].FaceTip ?? "" : "";
+
+		// The reason a tool is unavailable displaces its ordinary tip — same rule the stage tabs
+		// follow with LockedReason, and the reason is the more useful of the two exactly when it
+		// applies.
+		ToolTip = index >= 0 && index < tools.Count
+			? (tools[index].Enabled ? tools[index].FaceTip : tools[index].DisabledReason ?? tools[index].FaceTip) ?? ""
+			: "";
 
 		Update();
 	}
@@ -982,6 +1029,9 @@ internal sealed class EffigyStageToolRow : Widget
 
 		// Which half was pressed decides what the release does. Recorded on PRESS so a drag that
 		// starts on the chevron and ends over the glyph cannot arm a tool you did not ask for.
+		if ( !tools[index].Enabled )
+			return;
+
 		_pressedChevron = tools[index].HasVariants && ChevronRect( _rects[index] ).IsInside( e.LocalPosition );
 		_pressed = index;
 
@@ -1010,6 +1060,12 @@ internal sealed class EffigyStageToolRow : Widget
 			return;
 
 		var tool = tools[index];
+
+		// Checked again rather than trusted from the press: a tool's availability is recomputed
+		// from live state (UpdateRigChecks runs off the rig panel's own callbacks), so it can go
+		// dead between the two halves of one click.
+		if ( !tool.Enabled )
+			return;
 
 		if ( chevron )
 		{

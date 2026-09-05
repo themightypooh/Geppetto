@@ -39,6 +39,148 @@ public static class DocumentTests
 
 		Report.Section( "document: it goes to disk and comes back" );
 		TestFile();
+
+		Report.Section( "document: the rig survives the round trip" );
+		TestRigRoundTrip();
+
+		Report.Section( "document: soft bones survive the round trip" );
+		TestSoftRoundTrip();
+
+		Report.Section( "document: a part with no rig is unchanged by the rig block existing" );
+		TestUnriggedUntouched();
+	}
+
+	/// <summary>
+	/// The gap this closes was total, not partial: before the rig block, a skeleton lived on the
+	/// editor's rig panel and StudioDocument had never heard of one. Placing bones, saving and
+	/// reopening lost every bone with no error and no warning, because nothing in the format was
+	/// ever asked to carry them.
+	/// </summary>
+	static void TestRigRoundTrip()
+	{
+		var studio = new PartStudio();
+
+		var spine = studio.Rig.AddBone( "spine", -1,
+			new Xform( new Vec3( 1, 0, 0 ), new Vec3( 0, 1, 0 ), new Vec3( 0, 0, 1 ), new Vec3( 0, 0, 4 ) ), 6f );
+
+		var tail = studio.Rig.AddBone( "tail", spine,
+			new Xform( new Vec3( 1, 0, 0 ), new Vec3( 0, 1, 0 ), new Vec3( 0, 0, 1 ), new Vec3( 0, 6, 0 ) ), 3.5f );
+
+		studio.BodyBoneMap["body_1"] = "spine";
+		studio.BodyBoneMap["body_2"] = "tail";
+
+		var back = StudioDocument.Read( StudioDocument.Write( studio ) );
+
+		Report.Check( "both bones come back", back.Rig.Count == 2, $"got {back.Rig.Count}" );
+
+		Report.Check( "with their names, in order",
+			back.Rig.Count == 2 && back.Rig.Bones[0].Name == "spine" && back.Rig.Bones[1].Name == "tail",
+			back.Rig.Count == 2 ? $"{back.Rig.Bones[0].Name}, {back.Rig.Bones[1].Name}" : "not two bones" );
+
+		// The parenting is the part an index-based format can get subtly wrong, and a rig whose
+		// chain has come apart still LOOKS like a rig.
+		Report.Check( "and their parenting",
+			back.Rig.Count == 2 && back.Rig.Bones[0].Parent == -1 && back.Rig.Bones[1].Parent == 0,
+			back.Rig.Count == 2 ? $"parents {back.Rig.Bones[0].Parent}, {back.Rig.Bones[1].Parent}" : "not two bones" );
+
+		Report.Check( "lengths exactly",
+			back.Rig.Count == 2 && back.Rig.Bones[0].Length == 6f && back.Rig.Bones[1].Length == 3.5f,
+			"lengths differ" );
+
+		Report.Check( "the bind pose exactly",
+			back.Rig.Count == 2
+				&& back.Rig.Bones[0].Local.Origin.Equals( new Vec3( 0, 0, 4 ) )
+				&& back.Rig.Bones[1].Local.Origin.Equals( new Vec3( 0, 6, 0 ) ),
+			"origins differ" );
+
+		Report.Check( "and the body bindings",
+			back.BodyBoneMap.Count == 2
+				&& back.BodyBoneMap["body_1"] == "spine"
+				&& back.BodyBoneMap["body_2"] == "tail",
+			$"{back.BodyBoneMap.Count} bindings came back" );
+	}
+
+	/// <summary>
+	/// Softness specifically, because it is the reason the block was written and because its
+	/// absence has to mean something precise: a bone with no soft line is RIGID, which is not the
+	/// same as a bone whose four numbers happen to be zero. Zero stiffness with a zero cone is a
+	/// dead limb pinned to its pose - a real setting somebody might choose - so a reader that
+	/// filled the gap with defaults would silently simulate every rigid bone in the file.
+	/// </summary>
+	static void TestSoftRoundTrip()
+	{
+		var studio = new PartStudio();
+
+		studio.Rig.AddBone( "rigid", -1, Xform.Identity, 4f );
+		var soft = studio.Rig.AddBone( "swings", 0, Xform.Identity, 4f );
+
+		studio.Rig.Bones[soft].Soft = new SoftBone
+		{
+			Stiffness = 123.5f,
+			Damping = 0.075f,
+			Weight = 0.5f,
+			MaxAngle = 33f,
+		};
+
+		var back = StudioDocument.Read( StudioDocument.Write( studio ) );
+
+		Report.Check( "the rigid bone comes back rigid",
+			back.Rig.Count == 2 && back.Rig.Bones[0].Soft is null,
+			back.Rig.Count == 2 ? "it came back soft" : "wrong bone count" );
+
+		var carried = back.Rig.Count == 2 ? back.Rig.Bones[1].Soft : null;
+
+		Report.Check( "the soft bone comes back soft", carried is not null, "it came back rigid" );
+
+		Report.Check( "with all four numbers exactly",
+			carried is not null
+				&& carried.Stiffness == 123.5f
+				&& carried.Damping == 0.075f
+				&& carried.Weight == 0.5f
+				&& carried.MaxAngle == 33f,
+			carried is null
+				? "nothing came back"
+				: $"{carried.Stiffness} {carried.Damping} {carried.Weight} {carried.MaxAngle}" );
+
+		// Zero is a value, not an absence. This is the case a defaults-filling reader gets wrong.
+		var zeroed = new PartStudio();
+		zeroed.Rig.AddBone( "dead", -1, Xform.Identity, 4f );
+		zeroed.Rig.Bones[0].Soft = new SoftBone { Stiffness = 0f, Damping = 0f, Weight = 0f, MaxAngle = 0f };
+
+		var zeroBack = StudioDocument.Read( StudioDocument.Write( zeroed ) ).Rig.Bones[0].Soft;
+
+		Report.Check( "four zeros survive as four zeros rather than as defaults",
+			zeroBack is not null && zeroBack.Stiffness == 0f && zeroBack.Damping == 0f
+				&& zeroBack.Weight == 0f && zeroBack.MaxAngle == 0f,
+			zeroBack is null ? "the bone came back rigid" : $"{zeroBack.Stiffness} {zeroBack.Damping}" );
+	}
+
+	/// <summary>
+	/// The rule the origin and the material scales already follow, applied to the rig: a document
+	/// nobody has rigged must have exactly the bytes it had before this block existed, and must
+	/// still claim the format version that build wrote. Otherwise adding the feature rewrites the
+	/// first line of every file in the repository the first time each is opened and saved.
+	/// </summary>
+	static void TestUnriggedUntouched()
+	{
+		var studio = Worked();
+		var text = StudioDocument.Write( studio );
+
+		Report.Check( "no rig block is written for a part with no bones",
+			!text.Contains( "\nrig\n" ) && !text.Contains( "endrig" ),
+			"a rig block appeared anyway" );
+
+		Report.Check( "and it still claims format 1",
+			text.StartsWith( "effigy 1\n" ),
+			text.Split( '\n' )[0] );
+
+		// And the other half of the same rule: a document that DOES carry a rig says so, because an
+		// older build reading it would drop the whole thing on the floor.
+		studio.Rig.AddBone( "spine", -1, Xform.Identity, 4f );
+
+		Report.Check( "a rigged part claims format 2",
+			StudioDocument.Write( studio ).StartsWith( "effigy 2\n" ),
+			StudioDocument.Write( studio ).Split( '\n' )[0] );
 	}
 
 	static void TestRoundTrip()

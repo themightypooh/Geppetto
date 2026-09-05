@@ -1,4 +1,4 @@
-using Editor;
+﻿using Editor;
 using Effigy;
 using Sandbox;
 using System;
@@ -59,9 +59,10 @@ internal sealed partial class EffigyViewport
 	/// <summary>Whether a left click on a face is a selection rather than an answer to a dialog.
 	/// Anything else with a click of its own owns the mouse while it is armed.</summary>
 	private bool IdlePickingAllowed =>
-		!IsSketching && !IsSculpting && !IsNoting
+		!IsSketching && !IsSculpting && !IsPainting && !IsNoting
 		&& !PlanePickMode && !SketchPickMode && !FacePickMode && !EdgePickMode && !BodyPickMode
-		&& !BoneToolActive && !_draggingOrigin && !_draggingLight && !_draggingFace;
+		&& !BoneToolActive && !RigMode
+		&& !_draggingOrigin && !_draggingLight && !_draggingFace;
 
 	/// <summary>
 	/// Replace the idle selection with whole bodies, clearing any face picks.

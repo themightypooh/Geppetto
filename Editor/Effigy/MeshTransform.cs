@@ -79,6 +79,27 @@ public static class MeshTransform
 
 		target.Positions.AddRange( source.Positions );
 
+		// Vertex colours merge the way the skin does: pad whichever side lacks them with transparent,
+		// so an unpainted body merged into a painted one simply carries no paint of its own. Done
+		// after positions are appended but keyed off the pre-merge offset, which is what keeps the
+		// colours parallel to the positions they describe.
+		if ( target.VertexColors is not null || source.VertexColors is not null )
+		{
+			target.VertexColors ??= new Vec4[offset];
+
+			var merged = new Vec4[offset + source.Positions.Count];
+
+			for ( var i = 0; i < offset; i++ )
+				merged[i] = i < target.VertexColors.Length ? target.VertexColors[i] : Vec4.Zero;
+
+			for ( var i = 0; i < source.Positions.Count; i++ )
+				merged[offset + i] = source.VertexColors is not null && i < source.VertexColors.Length
+					? source.VertexColors[i]
+					: Vec4.Zero;
+
+			target.VertexColors = merged;
+		}
+
 		foreach ( var f in source.Faces )
 		{
 			var indices = new int[f.Count];

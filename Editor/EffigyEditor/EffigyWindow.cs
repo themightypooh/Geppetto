@@ -97,7 +97,7 @@ internal sealed class EffigyPalette
 
 [EditorForAssetType( "effigy" )]
 [EditorApp( "Effigy", "editor/effigy_icon.png", "Parametric modelling, subdivision, and rig-ready mesh export" )]
-public sealed class EffigyWindow : DockWindow, IAssetEditor
+public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 {
 	// --- opening a .effigy from the asset browser -------------------------------------------
 	//
@@ -192,10 +192,13 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 	private List<EffigyStage> _partStages;
 	private List<EffigyStage> _sketchStages;
 	private List<EffigyStage> _sculptStages;
+	private List<EffigyStage> _paintStages;
+	private List<EffigyStage> _sculptHomeStages;
+	private List<EffigyStage> _paintHomeStages;
 
-	/// <summary>Which mode's stages the bar is showing. The cheapest evidence in the editor about
-	/// whether entering a sketch actually happened — see DiagnosticStripState.</summary>
-	private EffigyBarMode _barMode = EffigyBarMode.Part;
+	// Which mode's stages the bar is showing lives in EffigyWindow.Workspaces.cs, as the BarMode
+	// PROPERTY rather than a plain field: assigning it is also what re-lights the workspace
+	// switcher and re-lays the docks, and six methods assign it. See the comment there.
 
 	/// <summary>The sketch tools by the kind they arm, so a tool armed from a shortcut can have its
 	/// tick put on the right button — which may be sitting on a stage nobody is looking at.</summary>
@@ -255,7 +258,7 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 	/// Kept in the shape the probe already speaks — two bools — because the modes are exclusive by
 	/// construction now and "both true" has become unrepresentable rather than merely unlikely.</summary>
 	internal (bool Feature, bool Sketch) DiagnosticStripState
-		=> (_barMode == EffigyBarMode.Part, _barMode == EffigyBarMode.Sketch);
+		=> (BarMode == EffigyBarMode.Part, BarMode == EffigyBarMode.Sketch);
 
 	/// <summary>The feature whose sketch is open, if any - so the probe can say whether the window
 	/// and the viewport agree about that.</summary>
@@ -511,11 +514,16 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		// takes its own band and gives the 3D view back its corner.
 		_stageBar = new EffigyStageBar( _viewport ) { StageChanged = OnStageChanged };
 
+		// ABOVE the stage bar, and the outermost ring of chrome in the window: which part of the
+		// pipeline you are in is the coarsest question the tool asks, so it is answered furthest
+		// out. See EffigyWorkspaceBar and EffigyWindow.Workspaces.cs.
+		_workspaceBar = new EffigyWorkspaceBar( _viewport ) { Switched = SetWorkspace };
+
 		// Still on the canvas, and still under the tools: the question it answers - "is this about
 		// to cut?" - is asked while looking at the MODEL, not at the parameter list.
 		_resultStrip = new EffigyResultStrip( _viewport.Canvas ) { Changed = OnResultStripChanged };
 
-		_viewport.CompleteLayout( _stageBar, _resultStrip );
+		_viewport.CompleteLayout( _workspaceBar, _stageBar, _resultStrip );
 
 		// The sculpt number bar keeps its floating spot - it belongs to the stroke you are making,
 		// not to the tool you picked, and it wants to be near the model rather than up in chrome.
@@ -535,6 +543,15 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		_viewport.SculptStrokeFinished = NoteSculptEdited;
 		_viewport.SculptSettingsChanged = OnSculptSettingsChanged;
 
+		// The paint bar, in the same floating spot the sculpt bar keeps — it is about the stroke
+		// you are making, not the tool you picked.
+		_paintBar = new EffigyPaintBar( _viewport.Canvas ) { Changed = OnPaintBarChanged };
+
+		_viewport.AddPaintOverlay( _paintBar );
+
+		_viewport.PaintStrokeFinished = OnPaintStrokeFinished;
+		_viewport.PaintSettingsChanged = OnPaintSettingsChanged;
+
 		_viewport.NoteChanged = OnNoteEdited;
 		_viewport.NoteTextRequested = PromptNoteText;
 
@@ -544,6 +561,16 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		_partStages = BuildPartStages();
 		_sketchStages = BuildSketchStages();
 		_sculptStages = BuildSculptStages();
+		_paintStages = BuildPaintStages();
+		_sculptHomeStages = BuildSculptHomeStages();
+		_paintHomeStages = BuildPaintHomeStages();
+		_rigStages = BuildRigStages();
+
+		// The rig tools read their armed state off the panel, and the panel changes it without
+		// being asked — Escape closes a chain, clicking another bone disarms an assign. Wired here
+		// rather than in BuildDocks because the tools these ticks live on have only just been made.
+		if ( _rigPanel is not null )
+			_rigPanel.ToolStateChanged = UpdateRigChecks;
 
 		ShowPartStages( force: true );
 	}
@@ -558,8 +585,10 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 	/// </summary>
 	private void OnStageChanged()
 	{
-		if ( _barMode == EffigyBarMode.Part )
+		if ( BarMode == EffigyBarMode.Part )
 			_partStage = _stageBar.SelectedIndex;
+		else if ( BarMode == EffigyBarMode.Rig )
+			_rigStage = _stageBar.SelectedIndex;
 
 		ApplyToolHighlight();
 	}
@@ -604,13 +633,29 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		_partStages = BuildPartStages();
 		_sketchStages = BuildSketchStages();
 		_sculptStages = BuildSculptStages();
+		_paintStages = BuildPaintStages();
+		_sculptHomeStages = BuildSculptHomeStages();
+		_paintHomeStages = BuildPaintHomeStages();
+		_rigStages = BuildRigStages();
+
+		// Same reason as StageChanged below: a lambda compiled into the dead assembly is a rig tool
+		// that still highlights and calls nothing.
+		if ( _rigPanel is not null )
+			_rigPanel.ToolStateChanged = UpdateRigChecks;
+
+		if ( _workspaceBar is not null )
+			_workspaceBar.Switched = SetWorkspace;
+
+		// A hotload taken inside the rig workspace: the mode field survived, a newly-added viewport
+		// flag did not. See SyncViewportMode.
+		SyncViewportMode();
 
 		// A method group rather than a lambda, so this one migrates on its own - but it costs
 		// nothing to be certain, and a bar with no StageChanged is a tutorial highlight that
 		// silently stops following the reader.
 		_stageBar.StageChanged = OnStageChanged;
 
-		switch ( _barMode )
+		switch ( BarMode )
 		{
 			case EffigyBarMode.Sketch:
 				_stageBar.SetFinish( "Finish", FinishSketch );
@@ -628,10 +673,41 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 				break;
 
 			case EffigyBarMode.Sculpt:
-				_stageBar.SetFinish( "Finish", FinishSculpt );
-				_stageBar.SetStages( _sculptStages, stage );
+				if ( _viewport is { IsSculpting: true } )
+				{
+					_stageBar.SetFinish( "Finish", FinishSculpt );
+					_stageBar.SetStages( _sculptStages, stage );
 
-				UpdateSculptChecks();
+					UpdateSculptChecks();
+				}
+				else
+				{
+					// The sculpt workspace's landing bar — Subdivide and Sculpt — when no feature
+					// is open. Brushes arrive with a sculpt, not with the workspace.
+					_stageBar.SetFinish( null, null );
+					_stageBar.SetStages( _sculptHomeStages, stage );
+				}
+				break;
+
+			case EffigyBarMode.Paint:
+				if ( _viewport is { IsPainting: true } )
+				{
+					_stageBar.SetFinish( "Finish", FinishPaint );
+					_stageBar.SetStages( _paintStages, stage );
+				}
+				else
+				{
+					_stageBar.SetFinish( null, null );
+					_stageBar.SetStages( _paintHomeStages, stage );
+				}
+				break;
+
+			case EffigyBarMode.Rig:
+				// No finish — a rig has no feature to commit to. See EnterRig.
+				_stageBar.SetFinish( null, null );
+				_stageBar.SetStages( _rigStages, stage );
+
+				UpdateRigChecks();
 				break;
 
 			default:
@@ -681,6 +757,8 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 			// face, so a Clicked sitting behind that would be unreachable rather than harmless.
 			if ( tool.Choices is { Length: > 0 } )
 				entry.Variants = ChoiceVariants( tool, kind );
+			else if ( kind == ToolKind.Paint )
+				entry.Clicked = AddPaint;
 			else
 				entry.Clicked = () => AddFeature( NewFeature( kind, -1 ) );
 
@@ -804,7 +882,7 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 			return;
 
 		var reason = StarterLockReason();
-		var changed = force || _barMode != EffigyBarMode.Part;
+		var changed = force || BarMode != EffigyBarMode.Part;
 
 		// Was everything past the starter stage locked a moment ago? Asked before the loop
 		// rewrites it, because the answer decides where to land.
@@ -824,7 +902,7 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		if ( !changed )
 			return;
 
-		_barMode = EffigyBarMode.Part;
+		BarMode = EffigyBarMode.Part;
 
 		_stageBar.Mode = null;
 		_stageBar.SetFinish( null, null );
@@ -1114,9 +1192,46 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 	/// <summary>The feature being sculpted, so finishing knows what to mark dirty.</summary>
 	private SculptFeature _sculptFeature;
 
+	// --- paint mode ---------------------------------------------------------------------------
+
+	private EffigyPaintBar _paintBar;
+
+	/// <summary>The feature being painted, so finishing knows what to mark dirty.</summary>
+	private PaintFeature _paintFeature;
+
 	private readonly List<(EffigyStageTool Tool, BrushKind Kind)> _brushTools = new();
 	private EffigyStageTool _maskTool;
 	private EffigyStageTool _symmetryTool;
+
+	/// <summary>
+	/// The Sculpt workspace's landing bar — the tools you reach for BEFORE a sculpt is open.
+	///
+	/// The workspace is about sculpting, and sculpting begins with a cage and a Sculpt feature, so
+	/// those are the two tools here. The brushes in <see cref="BuildSculptStages"/> only appear once
+	/// a sculpt feature is actually entered; this is the bar the workspace shows the rest of the time.
+	/// </summary>
+	private List<EffigyStage> BuildSculptHomeStages()
+	{
+		var stage = new EffigyStage { Name = "Sculpt" };
+
+		stage.Add( new EffigyStageTool
+		{
+			Icon = EffigyIcon.Subdivide,
+			Label = "Subdivide",
+			Tip = "Add a Subdivide — Catmull-Clark subdivision",
+			Clicked = () => AddFeature( NewFeature( ToolKind.Subdivide, -1 ) ),
+		} );
+
+		stage.Add( new EffigyStageTool
+		{
+			Icon = EffigyIcon.Sculpt,
+			Label = "Sculpt",
+			Tip = "Add a Sculpt — brush detail onto the cage in levels",
+			Clicked = () => AddFeature( NewFeature( ToolKind.Sculpt, -1 ) ),
+		} );
+
+		return new List<EffigyStage> { stage };
+	}
 
 	private List<EffigyStage> BuildSculptStages()
 	{
@@ -1214,13 +1329,15 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 			return;
 
 		// Already in this sculpt: a second Edit must not rebuild the session and drop a stroke.
-		if ( _barMode == EffigyBarMode.Sculpt
+		if ( BarMode == EffigyBarMode.Sculpt
 			&& ReferenceEquals( _sculptFeature, feature )
 			&& _viewport.IsSculpting )
 			return;
 
-		if ( _viewport.IsSketching )
-			FinishSketch();
+		// Everything else that owns a left-click, shut down in one call — this used to be a
+		// hand-kept list of the other modes here and a different partial list in EnterPaint. See
+		// LeaveCurrentWorkspace in EffigyWindow.Workspaces.cs.
+		LeaveCurrentWorkspace();
 
 		// The cage does not exist until the features above this have run, and rolling to just
 		// after this one is also what puts the thing being sculpted on screen. Skip the rebuild
@@ -1245,18 +1362,20 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 
 		_sculptFeature = feature;
 
+		// What the workspace switcher comes back to. Set only once the door refusals above are
+		// past, so a sculpt that would not open is not the one it remembers.
+		_lastSculptFeature = feature;
+
 		// The bar becomes the sculpt bar, and says so: brushes and levels behind the tabs, SCULPT
 		// and the way out at the right. The dialog closes too — a sculpt is not edited through a
 		// parameter list, so leaving one open would be two controls claiming the same feature.
-		_barMode = EffigyBarMode.Sculpt;
+		BarMode = EffigyBarMode.Sculpt;
 
 		_stageBar.Mode = "SCULPT";
 		_stageBar.SetFinish( "Finish", FinishSculpt );
 		_stageBar.SetStages( _sculptStages );
 
 		_dialog?.Close();
-
-		_rigPanel?.CancelBoneTool();
 
 		var session = new SculptSession( feature.Sculpt );
 		session.Radius = session.SuggestedRadius;
@@ -1278,12 +1397,12 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		_viewport.EndSculpt();
 		_sculptBar.Bind( null );
 
-		ShowPartStages( force: true );
-
 		var feature = _sculptFeature;
 		_sculptFeature = null;
 
-		SetPrompt( "" );
+		// Back to the Sculpt workspace's landing bar, not CAD — Subdivide and Sculpt are the tools
+		// you reach for next. Leaving the workspace entirely is the CAD pill's job.
+		ShowSculptHome();
 
 		// THE ONLY FULL REBUILD IN SCULPT MODE, and that is the point. Every stroke marks the model
 		// changed and refreshes the viewport straight from the session, because rebuilding the whole
@@ -1308,6 +1427,197 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		UpdateSculptChecks();
 		_sculptBar?.Refresh();
 	}
+
+	// --- paint mode ---------------------------------------------------------------------------
+
+	/// <summary>
+	/// The Paint workspace's landing bar — the tools you reach for BEFORE a paint is open.
+	///
+	/// UV Project unwraps the mesh so colour has somewhere to live, and Paint is the brush itself.
+	/// The brush in <see cref="BuildPaintStages"/> only appears once a paint feature is entered.
+	/// </summary>
+	private List<EffigyStage> BuildPaintHomeStages()
+	{
+		var stage = new EffigyStage { Name = "Paint" };
+
+		stage.Add( new EffigyStageTool
+		{
+			Icon = EffigyIcon.UVProject,
+			Label = "UV Project",
+			Tip = "Add a UV Project — re-project UVs (box or planar)",
+			Clicked = () => AddFeature( NewFeature( ToolKind.UVProject, -1 ) ),
+		} );
+
+		stage.Add( new EffigyStageTool
+		{
+			Icon = EffigyIcon.Paint,
+			Label = "Paint",
+			Tip = "Add a Paint — brush colour straight onto the model",
+			Clicked = AddPaint,
+		} );
+
+		return new List<EffigyStage> { stage };
+	}
+
+	/// <summary>
+	/// The paint stage set. One stage with one always-armed brush, for now: the colour, radius and
+	/// strength live on the floating paint bar, and an eraser or a fill is a later stroke tool, not
+	/// a first-slice button that would have nothing behind it.
+	/// </summary>
+	private List<EffigyStage> BuildPaintStages()
+	{
+		var brush = new EffigyStage { Name = "Brush" };
+
+		brush.Add( new EffigyStageTool
+		{
+			Icon = EffigyIcon.PaintBrush,
+			Label = "Brush",
+			Tip = "Paint — drag on the model to lay colour down",
+			Checkable = true,
+			Checked = true,
+		} );
+
+		return new List<EffigyStage> { brush };
+	}
+
+	/// <summary>
+	/// Add a Paint feature and step straight into painting it. Paint is not edited through a
+	/// parameter dialog — its one input is "which body", which the viewport selection already names
+	/// — so unlike every other tool there is no dialog to open on the way in.
+	/// </summary>
+	private void AddPaint()
+	{
+		if ( _viewport is null )
+			return;
+
+		LeaveCurrentWorkspace();
+
+		var feature = new PaintFeature();
+
+		RecordUndo();
+		ApplyIdleGeometrySelection( feature );
+		InsertAtRollback( feature );
+		RebuildStudio();
+
+		EnterPaint( feature );
+	}
+
+	/// <summary>
+	/// Open a Paint feature for brushing.
+	///
+	/// Rolls the model back to just after this feature, the same guarantee EnterSculpt makes, then
+	/// builds the session on the body the feature targets. A body whose UVs cannot carry paint is a
+	/// refusal at the door rather than an enter-and-discover-later: the paint would scramble, and the
+	/// fix (a UV Project in Unwrap mode above this feature) is a tree edit, not a brush setting.
+	/// </summary>
+	private void EnterPaint( PaintFeature feature )
+	{
+		if ( feature is null || _viewport is null )
+			return;
+
+		// Already painting this feature: a second Edit must not rebuild the session and drop a stroke.
+		if ( BarMode == EffigyBarMode.Paint
+			&& ReferenceEquals( _paintFeature, feature )
+			&& _viewport.IsPainting )
+			return;
+
+		LeaveCurrentWorkspace();
+
+		// The body does not exist until the features above this have run, and rolling to just after
+		// this one is also what puts the thing being painted on screen.
+		var index = _studio.Features.IndexOf( feature );
+
+		if ( index >= 0 && _studio.RollbackIndex != index + 1 )
+		{
+			_rollbackBeforeEdit ??= _studio.RollbackIndex;
+			_studio.RollbackIndex = index + 1;
+			RebuildStudio();
+		}
+
+		// Paint paints ONE body at a time — one stroke list, one set of vertex colours. Anything else
+		// is a door refusal. No unwrap gate: vertex colours need no UVs, which is half the point.
+		var targets = _studio.Bodies.Where( b => feature.Bodies.Matches( b ) ).ToList();
+
+		if ( targets.Count != 1 )
+		{
+			SetPrompt( targets.Count == 0
+				? "Paint needs a body to paint on — add a primitive or extrude a sketch first."
+				: "Paint paints one body at a time — pick one in the Parts list, then press Paint again." );
+			return;
+		}
+
+		_paintFeature = feature;
+		_lastPaintFeature = feature;
+
+		BarMode = EffigyBarMode.Paint;
+
+		_stageBar.Mode = "PAINT";
+		_stageBar.SetFinish( "Finish", FinishPaint );
+		_stageBar.SetStages( _paintStages );
+
+		_dialog?.Close();
+
+		// The session replays whatever strokes already exist, so re-entering a painted feature shows
+		// the paint as it was left, not a blank surface.
+		var session = new PaintSession( targets[0].Mesh, feature.Strokes );
+		session.Radius = session.SuggestedRadius;
+
+		_viewport.BeginPaint( session, slot => _studio.MaterialNames.TryGetValue( slot, out var name ) ? name : null );
+		_paintBar.Bind( session );
+		_viewport.RefreshPaintPreview();
+
+		SetPrompt( "Paint: drag on the model. Colour, size and strength are on the bar below." );
+	}
+
+	private void FinishPaint()
+	{
+		if ( _viewport is null || !_viewport.IsPainting )
+			return;
+
+		_viewport.EndPaint();
+		_paintBar.Bind( null );
+
+		var feature = _paintFeature;
+		_paintFeature = null;
+
+		// Back to the Paint workspace's landing bar, not CAD — UV Project and Paint are the tools
+		// you reach for next. Leaving the workspace entirely is the CAD pill's job.
+		ShowPaintHome();
+
+		// The one full rebuild in paint mode: strokes were appended per stroke, so this replays them
+		// onto the feature's cached canvas and catches the tree up.
+		if ( feature is not null )
+			_studio.MarkDirty( feature );
+
+		RestoreRollbackAfterEdit();
+		RebuildStudio();
+	}
+
+	/// <summary>A stroke landed. The document is now unsaved and the paint bar's readouts may have
+	/// moved, but the feature tree deliberately does NOT rebuild — see FinishPaint.</summary>
+	private void OnPaintStrokeFinished( PaintStroke stroke )
+	{
+		// An undo point per stroke, taken BEFORE the stroke joins the list: the snapshot captures the
+		// pre-stroke list, so Ctrl+Z pops back one stroke the way it pops one sketch line. The dab
+		// colours never enter the document — they are the session's own array — so the feature's list
+		// is the whole of what a paint undo has to restore.
+		RecordUndo();
+
+		if ( _paintFeature is not null )
+			_paintFeature.AddStroke( stroke );
+
+		if ( !_dirty )
+		{
+			_dirty = true;
+			UpdateTitle();
+		}
+
+		_paintBar?.Refresh();
+	}
+
+	private void OnPaintSettingsChanged() => _paintBar?.Refresh();
+
+	private void OnPaintBarChanged() => _viewport?.Update();
 
 	// --- grease pencil -------------------------------------------------------------------------
 
@@ -1840,6 +2150,25 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 
 	/// <summary>A stroke landed. The document is now unsaved and the bar's readouts have moved, but
 	/// the feature tree deliberately does NOT rebuild - see FinishSculpt.</summary>
+	/// <summary>
+	/// The rig changed, so the document is unsaved.
+	///
+	/// The same two lines every other unsaved edit uses - there is no shared helper, as the pivot's
+	/// own comment already notes. The viewport repaint is here too because a rig edit goes through
+	/// nothing else that would ask for one: RebuildStudio is deliberately not called (no geometry
+	/// moved) and that is the usual route to a redraw.
+	/// </summary>
+	private void NoteRigEdited()
+	{
+		if ( !_dirty )
+		{
+			_dirty = true;
+			UpdateTitle();
+		}
+
+		_viewport?.Update();
+	}
+
 	private void NoteSculptEdited()
 	{
 		if ( !_dirty )
@@ -1868,7 +2197,7 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 
 		// Already in this sketch: a second Edit (tree click, dialog Open, the Sketch tool) must
 		// not reset the tool or drop a half-drawn curve.
-		if ( _barMode == EffigyBarMode.Sketch
+		if ( BarMode == EffigyBarMode.Sketch
 			&& ReferenceEquals( _viewport.ActiveSketch, feature.Sketch ) )
 			return;
 
@@ -1882,7 +2211,7 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		// The feature's own name is the mode label rather than a bare "SKETCH": a document with
 		// four sketches in it makes "which one am I in" a real question, and the feature tree is
 		// the only other place that answers it.
-		_barMode = EffigyBarMode.Sketch;
+		BarMode = EffigyBarMode.Sketch;
 
 		_stageBar.Mode = feature?.Name?.ToUpperInvariant() ?? "SKETCH";
 		_stageBar.SetFinish( "Finish", FinishSketch );
@@ -2123,7 +2452,7 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 	{
 		Sketch, Primitive, Extrude, Revolve, Sweep, Loft, Chamfer, Fillet, Shell, Subdivide,
 		Draft, Hole, Sculpt, Mirror, LinearPattern, CircularPattern, Transform, UVProject, FaceMaterial,
-		MoveFace,
+		MoveFace, Paint,
 	}
 
 	/// <summary>Build one, and apply the variant chosen from its dropdown where it has one.</summary>
@@ -2149,6 +2478,7 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		ToolKind.UVProject => new UVProjectFeature(),
 		ToolKind.FaceMaterial => new FaceMaterialFeature(),
 		ToolKind.MoveFace => new MoveFaceFeature(),
+		ToolKind.Paint => new PaintFeature(),
 		_ => throw new ArgumentOutOfRangeException( nameof( kind ), kind, "no feature for this tool" )
 	};
 
@@ -2328,22 +2658,10 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 			Tip = "Add a Transform — move, rotate or scale bodies",
 			Kind = ToolKind.Transform },
 
-		// --- Finish: the cage and the skin it carries downstream --------------------------------
-		// This is the stage the README's pipeline names: CAD is done, and what is left is getting
-		// the mesh ready for a sculpt, a bake and a rig.
-		new() { Icon = EffigyIcon.Subdivide, Label = "Subdivide", Stage = StageFinish, MenuIcon = "grid_on",
-			Tip = "Add a Subdivide — Catmull-Clark subdivision",
-			Kind = ToolKind.Subdivide },
-
-		// Next to Subdivide because it REPLACES it on a part you mean to sculpt: the levels are the
-		// subdivision, and a Subdivide underneath would hand the sculpt a dense mesh as its cage.
-		new() { Icon = EffigyIcon.Sculpt, Label = "Sculpt", Stage = StageFinish,
-			Tip = "Add a Sculpt — brush detail onto the cage in levels",
-			Kind = ToolKind.Sculpt },
-
-		new() { Icon = EffigyIcon.UVProject, Label = "UV Project", Stage = StageFinish,
-			Tip = "Add a UV Project — re-project UVs (box or planar)",
-			Kind = ToolKind.UVProject },
+		// --- Finish: what is left on the CAD bar after the other workspaces took theirs ---------
+		// Subdivide and Sculpt live in the Sculpt workspace, and UV Project and Paint in the Paint
+		// workspace. Face Material is the one finish-line tool that stays here: it is a material-slot
+		// assignment, a thing CAD owns, not a sculpt or a paint.
 		new() { Icon = EffigyIcon.FaceMaterial, Label = "Face Material", Stage = StageFinish, MenuIcon = "palette",
 			Tip = "Add a Face Material — put picked faces on a material slot",
 			Kind = ToolKind.FaceMaterial },
@@ -2665,6 +2983,15 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		// Same "before" moment, for the rig: a bone placed, deleted, renamed, or mirrored.
 		_rigPanel.RigChanging = RecordUndo;
 
+		// AND THE "AFTER", which nothing had ever subscribed to. RigChanged has been declared and
+		// raised from five places since the panel was written, with no listener on the other end,
+		// so a rig edit never marked the document unsaved. That was invisible while the rig lived
+		// only in this window - there was nothing to save it INTO, so nothing to lose - and became
+		// a way to lose work the moment the rig went into the .effigy file: place bones, close the
+		// window, and it closes clean without asking, because as far as the title bar was concerned
+		// nothing had happened.
+		_rigPanel.RigChanged = NoteRigEdited;
+
 		_centralDock = DockManager.SetCentralWidget( _viewport );
 
 		DockManager.RegisterDock( new() { Title = "Features", Icon = "account_tree", Area = DockArea.Left, CreateAction = () => _leftPanel } );
@@ -2889,7 +3216,7 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		if ( _featureTools.Count == 0 )
 			return;
 
-		var selected = _barMode == EffigyBarMode.Part ? SelectedGeometry() : GeometryKind.None;
+		var selected = BarMode == EffigyBarMode.Part ? SelectedGeometry() : GeometryKind.None;
 		var changed = false;
 
 		foreach ( var (kind, tool) in _featureTools )
@@ -3118,6 +3445,21 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		if ( _viewport.IsSculpting && feature == _sculptFeature )
 			return;
 
+		// Paint is the same shape: no dialog, so "still this feature" is the live paint session.
+		if ( _viewport.IsPainting && feature != _paintFeature )
+			FinishPaint();
+
+		if ( _viewport.IsPainting && feature == _paintFeature )
+			return;
+
+		// Selecting a paint feature IS painting it — there is no parameter dialog to stop at.
+		if ( feature is PaintFeature paint )
+		{
+			HighlightFeatureInViewport( feature );
+			EnterPaint( paint );
+			return;
+		}
+
 		// Same reasoning as FinishSketch above, for the bone tool: opening a dialog that may set
 		// SketchPickMode (Extrude/Revolve) or arm a body/plane picker of its own would otherwise
 		// collide with it exactly the way an open sketch would. Cheap to cancel outright — all
@@ -3247,7 +3589,7 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		// Covers every other way the lock can change — undo back past the first sketch, deleting
 		// it, opening a saved studio. Cheap: it returns immediately unless a stage's lock is
 		// actually wrong.
-		if ( _barMode == EffigyBarMode.Part )
+		if ( BarMode == EffigyBarMode.Part )
 			ShowPartStages();
 
 		// Show whatever DID build, errors or not. A broken feature halfway down the tree should
@@ -3256,6 +3598,8 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		// Preview shows only what is visible; export below deliberately still takes everything.
 		// Each face's slot resolves to the material dropped on it, so the preview wears the real
 		// vmats rather than one flat placeholder. Unbound slots come back null and fall back.
+		// Vertex colours ride on the mesh and composite over the material, so a painted body needs
+		// no special material here — the ordinary build already carries them.
 		var preview = EffigyPreview.Build( _studio.ToVisibleMesh(),
 			slot => _studio.MaterialNames.TryGetValue( slot, out var name ) ? name : null );
 
@@ -3368,7 +3712,7 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 	/// </summary>
 	private void ApplyToolHighlight()
 	{
-		if ( _featureTools.Count == 0 || _barMode != EffigyBarMode.Part )
+		if ( _featureTools.Count == 0 || BarMode != EffigyBarMode.Part )
 			return;
 
 		var wanted = _highlightedTool is { } target ? ToolKindFor( target ) : null;
@@ -3669,6 +4013,13 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		if ( feature is SculptFeature sculpt )
 		{
 			EnterSculpt( sculpt );
+			return;
+		}
+
+		// Paint is the same shape as sculpt: editing it means painting it, not parking on a dialog.
+		if ( feature is PaintFeature paint )
+		{
+			EnterPaint( paint );
 			return;
 		}
 
@@ -4228,7 +4579,8 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		var objPath = Path.Combine( folder, $"{name}.obj" );
 
 		// Slot names go through so the file names its materials the way the user did, rather than
-		// material_0..63. NameForSlot falls back to the numbers for anything unnamed.
+		// material_0..63. NameForSlot falls back to the numbers for anything unnamed. Vertex colours
+		// ride on the mesh and are written by the exporter alongside the positions.
 		var mesh = _studio.ToMesh();
 		ApplyPivot( mesh );
 
@@ -4541,6 +4893,14 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		/// </summary>
 		public Dictionary<FaceMaterialFeature, List<FaceRef>> FaceSets;
 
+		/// <summary>
+		/// Every paint feature's stroke list, for the same reason Sketches and FaceSets are captured:
+		/// strokes are a public field, not a parameter, so the parameter sweep would miss them and
+		/// Ctrl+Z after a brush stroke would do nothing. The list is copied by reference — strokes are
+		/// immutable once painted — so the snapshot shares the stroke objects and only the list is new.
+		/// </summary>
+		public Dictionary<PaintFeature, List<PaintStroke>> PaintStrokes;
+
 		/// <summary>Slot names, renamed from the same menu.</summary>
 		public Dictionary<int, string> MaterialNames;
 
@@ -4591,12 +4951,18 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		foreach ( var feature in _studio.Features.OfType<FaceMaterialFeature>() )
 			faceSets[feature] = new List<FaceRef>( feature.Faces );
 
+		var paintStrokes = new Dictionary<PaintFeature, List<PaintStroke>>();
+
+		foreach ( var feature in _studio.Features.OfType<PaintFeature>() )
+			paintStrokes[feature] = feature.Strokes is null ? null : new List<PaintStroke>( feature.Strokes );
+
 		return new StudioSnapshot
 		{
 			Features = _studio.Features.ToList(),
 			Values = values,
 			Sketches = sketches,
 			FaceSets = faceSets,
+			PaintStrokes = paintStrokes,
 			MaterialNames = new Dictionary<int, string>( _studio.MaterialNames ),
 			BodyNames = new Dictionary<string, string>( _studio.BodyNames ),
 			HiddenBodyIds = new HashSet<string>( _studio.HiddenBodyIds ),
@@ -4656,6 +5022,9 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 			feature.Faces.AddRange( faces );
 		}
 
+		foreach ( var (feature, strokes) in snapshot.PaintStrokes )
+			feature.ReplaceStrokes( strokes );
+
 		_studio.MaterialNames.Clear();
 
 		foreach ( var (slot, name) in snapshot.MaterialNames )
@@ -4691,6 +5060,17 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		if ( _viewport?.IsSculpting == true
 			&& (_sculptFeature is null || !_studio.Features.Contains( _sculptFeature )) )
 			FinishSculpt();
+
+		// Paint's undo IS the document's — there is no session-internal stack. The restore rewrote the
+		// feature's stroke list, but the live session holds its own colour array, so it is either ended
+		// (the feature is gone) or rebuilt from the restored strokes (the feature is still there).
+		if ( _viewport?.IsPainting == true )
+		{
+			if ( _paintFeature is null || !_studio.Features.Contains( _paintFeature ) )
+				FinishPaint();
+			else
+				_viewport.PaintSession.Reload( _paintFeature.Strokes );
+		}
 
 		RebuildStudio();
 	}
@@ -4768,6 +5148,15 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 				return false;
 		}
 
+		if ( a.PaintStrokes.Count != b.PaintStrokes.Count )
+			return false;
+
+		foreach ( var (feature, strokes) in a.PaintStrokes )
+		{
+			if ( !b.PaintStrokes.TryGetValue( feature, out var others ) || !SameStrokes( strokes, others ) )
+				return false;
+		}
+
 		if ( a.MaterialNames.Count != b.MaterialNames.Count )
 			return false;
 
@@ -4819,6 +5208,26 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		return true;
 	}
 
+	/// <summary>
+	/// Whether two bones are equally soft.
+	///
+	/// NULL IS A VALUE HERE, not a missing one: a bone with no SoftBone is RIGID, and rigid versus
+	/// soft-with-default-numbers is the single biggest difference a bone can have. Comparing the
+	/// four floats without first comparing the nulls would call those two the same thing.
+	/// </summary>
+	private static bool SameSoft( SoftBone a, SoftBone b )
+	{
+		if ( a is null || b is null )
+			return a is null && b is null;
+
+		// Exact, for the reason SameSkeleton gives below: a stiffness nudged from 60 to 60.5 through
+		// the inspector was still a deliberate edit, and tuning a wobble is a run of exactly those.
+		return a.Stiffness.Equals( b.Stiffness )
+			&& a.Damping.Equals( b.Damping )
+			&& a.Weight.Equals( b.Weight )
+			&& a.MaxAngle.Equals( b.MaxAngle );
+	}
+
 	/// <summary>Exact comparison, same reasoning as SameSketch's point-by-point check: a bone
 	/// nudged by a millionth of a unit through the numeric inspector was still moved on purpose,
 	/// and a tolerance here would silently swallow a fine adjustment instead of recording it.</summary>
@@ -4833,6 +5242,14 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 			var bb = b.Bones[i];
 
 			if ( ba.Name != bb.Name || ba.Parent != bb.Parent || ba.Length != bb.Length )
+				return false;
+
+			// SOFTNESS COUNTS AS A DIFFERENCE, and leaving it out cost an undo step per edit.
+			// RecordUndo drops a snapshot that compares equal to the one already on top - the right
+			// call for a click that only advanced a tool - so a comparison blind to Soft made every
+			// softness change look like nothing happened. Ticking Soft and then Ctrl+Z left the bone
+			// soft, and re-tuning stiffness twice in a row lost the first value entirely.
+			if ( !SameSoft( ba.Soft, bb.Soft ) )
 				return false;
 
 			if ( !ba.Local.X.Equals( bb.Local.X ) || !ba.Local.Y.Equals( bb.Local.Y )
@@ -4859,6 +5276,30 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		for ( var i = 0; i < a.Curves.Count; i++ )
 		{
 			if ( a.Curves[i].Id != b.Curves[i].Id || a.Curves[i].Construction != b.Curves[i].Construction )
+				return false;
+		}
+
+		return true;
+	}
+
+	/// <summary>
+	/// Whether two paint-stroke lists describe the same paint, for the "did this change anything"
+	/// dedupe in <see cref="RecordUndo"/>. Compared by the stroke objects' IDENTITY, not their fields:
+	/// strokes are immutable once painted, so a capture shares the very objects the feature holds and
+	/// two captures agree iff they point at the same strokes. Null means "never painted" and is a value
+	/// here, not a missing one.
+	/// </summary>
+	private static bool SameStrokes( List<PaintStroke> a, List<PaintStroke> b )
+	{
+		if ( a is null || b is null )
+			return a is null && b is null;
+
+		if ( a.Count != b.Count )
+			return false;
+
+		for ( var i = 0; i < a.Count; i++ )
+		{
+			if ( !ReferenceEquals( a[i], b[i] ) )
 				return false;
 		}
 
@@ -5210,6 +5651,12 @@ public sealed class EffigyWindow : DockWindow, IAssetEditor
 		// sits above the view and is meant to be seen.
 		if ( _stageBar is not null )
 			_stageBar.ChromeColor = _palette.Chrome;
+
+		// Chrome2 rather than Chrome, so the two docked rows are distinguishable without a divider
+		// doing all the work. The workspace row is the outer one and takes the darker of the pair —
+		// chrome that contains other chrome should recede behind it, not sit in front.
+		if ( _workspaceBar is not null )
+			_workspaceBar.ChromeColor = _palette.Chrome2;
 
 		if ( _sculptBar is not null )
 			_sculptBar.GapColor = _palette.ViewportBg;

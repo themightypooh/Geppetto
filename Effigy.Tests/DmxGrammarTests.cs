@@ -41,6 +41,9 @@ public static class DmxGrammarTests
 
 		Report.Section( "DMX grammar: the parsed tree is the model that went in" );
 		TestContent();
+
+		Report.Section( "DMX grammar: vertex colour rides along when painted" );
+		TestVertexColor();
 	}
 
 	// --- the checks ---------------------------------------------------------------------------
@@ -219,6 +222,51 @@ public static class DmxGrammarTests
 
 		Report.Check( "the face sets cover every face",
 			terminators == mesh.FaceCount, $"{terminators} vs {mesh.FaceCount}" );
+	}
+
+	static void TestVertexColor()
+	{
+		var (mesh, skeleton) = Rigged();
+
+		// Paint vertex 0 red, leave the rest unpainted — a painted export and an unpainted one must
+		// be distinguishable, and the unpainted vertices must come back WHITE, which is what leaves
+		// the material untouched under a multiply.
+		mesh.VertexColors = new Vec4[mesh.VertexCount];
+		mesh.VertexColors[0] = new Vec4( 1f, 0f, 0f, 1f );
+
+		var root = Parse( DmxWriter.Write( mesh, skeleton, modelName: "grammar_color" ), out var error );
+
+		Report.Check( "a painted export parses", root is not null, error );
+
+		if ( root is null )
+			return;
+
+		var vertexData = FindFirst( root, "DmeVertexData" );
+
+		if ( vertexData is null )
+		{
+			Report.Check( "there is a vertex data block", false );
+			return;
+		}
+
+		var declared = vertexData.Array( "vertexFormat" ).Select( f => f.Value ).ToList();
+
+		Report.Check( "vertexFormat declares color$0 when the mesh is painted",
+			declared.Contains( "color$0" ), string.Join( ", ", declared ) );
+
+		var colors = vertexData.Array( "color$0" );
+
+		Report.Check( "one colour per position", colors.Count == mesh.VertexCount,
+			$"{colors.Count} vs {mesh.VertexCount}" );
+
+		Report.Check( "colour indices mirror the position indices",
+			vertexData.Array( "color$0Indices" ).Count == vertexData.Array( "position$0Indices" ).Count );
+
+		Report.Check( "a painted vertex writes its paint colour", colors[0].Value == "1 0 0 1",
+			colors[0].Value );
+
+		Report.Check( "an unpainted vertex is white", colors[1].Value == "1 1 1 1",
+			colors[1].Value );
 	}
 
 	static (PolyMesh, Skeleton) Rigged()

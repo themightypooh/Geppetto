@@ -51,6 +51,13 @@ internal sealed class EffigyRigPanel : Widget
 	private Editor.Label _inspectorName;
 	private EffigyNumericField _headX, _headY, _headZ;
 	private EffigyNumericField _tailX, _tailY, _tailZ;
+
+	// --- softness -----------------------------------------------------------------------------
+
+	private Checkbox _softToggle;
+	private Widget _softFields;
+	private EffigyNumericField _softStiffness, _softDamping, _softWeight, _softCone;
+
 	private Editor.Label _bodyListHeader;
 	private Widget _bodyList;
 
@@ -65,16 +72,34 @@ internal sealed class EffigyRigPanel : Widget
 	/// write a half-updated bone back into the skeleton.</summary>
 	private bool _editingInspector;
 
-	public Skeleton Skeleton { get; } = new();
+	/// <summary>
+	/// The rig being edited — which is the DOCUMENT'S, not this panel's.
+	///
+	/// IT USED TO BE THE PANEL'S, and that was the bug behind a whole missing feature. A skeleton
+	/// owned by a widget is a skeleton no file format has heard of: StudioDocument.Write takes a
+	/// PartStudio, this was not in one, and so placing bones, saving and reopening lost every one
+	/// of them without a word. It only surfaced when soft bones needed somewhere to be saved to.
+	///
+	/// A PROPERTY OVER THE STUDIO rather than a field re-pointed on load, so there is no moment
+	/// where the panel is showing one skeleton and the document holds another. The empty fallback
+	/// is for the brief window before a studio is handed over; nothing edits through it.
+	/// </summary>
+	public Skeleton Skeleton => _studio?.Rig ?? _detachedRig;
+
+	private readonly Skeleton _detachedRig = new();
 
 	public bool HasBones => Skeleton.Count > 0;
-
-	private readonly Dictionary<string, string> _bodyBoneMap = new();
 
 	/// <summary>Body id -> bone name. Keyed by name rather than index because SkinBinder.BindBodies
 	/// takes it that way, and because a bone's index is not stable across a delete — its name is
 	/// what a rename or a rebuild has to chase, not a slot in a list.</summary>
-	public IReadOnlyDictionary<string, string> BodyBoneMap => _bodyBoneMap;
+	public IReadOnlyDictionary<string, string> BodyBoneMap => Bindings;
+
+	/// <summary>The live map, for this panel's own edits. Same ownership argument as Skeleton
+	/// above.</summary>
+	private Dictionary<string, string> Bindings => _studio?.BodyBoneMap ?? _detachedBindings;
+
+	private readonly Dictionary<string, string> _detachedBindings = new();
 
 	// --- bone-placement chain state ------------------------------------------------------
 
@@ -181,10 +206,20 @@ internal sealed class EffigyRigPanel : Widget
 		SetBoneToolActive( false );
 		DisarmAssign();
 
-		Skeleton.Bones.Clear();
-		_bodyBoneMap.Clear();
+		// ADOPTS THE NEW DOCUMENT'S RIG rather than clearing one. This used to empty the skeleton
+		// on every load, which was the only sane thing to do while the rig belonged to this panel:
+		// the bones on screen described the part that had just been closed. Now the rig arrives
+		// with the document, so a loaded part comes back rigged.
+		_viewport.RigSkeleton = Skeleton;
+
 		_selectedBone = -1;
 		_viewport.DeselectBone();
+
+		// The preview is solving against the skeleton that has just been replaced, and its pose
+		// arrays are sized for it.
+		_viewport.StopSoftPreview();
+
+		RebuildTree();
 
 		// DeselectBone is a no-op when nothing was selected, so it cannot be trusted alone to
 		// reset this — a stale "Branch from 'X'" would otherwise survive into a model that no
@@ -228,10 +263,10 @@ internal sealed class EffigyRigPanel : Widget
 		Skeleton.Bones.Clear();
 		Skeleton.Bones.AddRange( snapshot.Bones.Select( b => b.Clone() ) );
 
-		_bodyBoneMap.Clear();
+		Bindings.Clear();
 
 		foreach ( var (body, bone) in bodyBoneMap )
-			_bodyBoneMap[body] = bone;
+			Bindings[body] = bone;
 
 		_viewport.DeselectBone();
 		_selectedBone = -1;
@@ -275,6 +310,68 @@ internal sealed class EffigyRigPanel : Widget
 	{
 		if ( _viewport.BoneToolActive )
 			SetBoneToolActive( false );
+	}
+
+	// --- the rig stage bar's handle on all this ------------------------------------------------
+	//
+	// The three buttons this panel grew up with are also the three tools on the Rig workspace's
+	// stage bar, and they are the SAME actions rather than a second copy — the panel still owns the
+	// arming, the chain state and the refusals, exactly as it did when it was the only way in.
+	// What the bar gets is a way to ask, a way to read back what happened, and a nudge when the
+	// panel changed its mind on its own (Escape closing a chain, a selection going away).
+	//
+	// The buttons stay. A bar tool and a panel button doing one thing is not two controls fighting
+	// — it is the same control reachable from where you happen to be looking, and the panel is
+	// where you are looking when you have just clicked a bone in the tree.
+
+	/// <summary>Whether the click-to-place tool is armed, for the bar to put a tick on.</summary>
+	public bool BoneToolActive => _viewport?.BoneToolActive ?? false;
+
+	/// <summary>Whether body assignment is armed, for the same reason.</summary>
+	public bool AssigningBody => _assigningBody;
+
+	/// <summary>Whether there is a bone to assign to or mirror. Both tools are dead without one,
+	/// and the bar dims them rather than letting a click do nothing.</summary>
+	public bool HasSelectedBone => _selectedBone >= 0 && _selectedBone < Skeleton.Count;
+
+	/// <summary>The name of the selected bone, for a prompt that can say which one.</summary>
+	public string SelectedBoneName => HasSelectedBone ? Skeleton.Bones[_selectedBone].Name : null;
+
+	/// <summary>
+	/// Any of the above changed. Fired whenever this panel arms, disarms or re-selects on its own,
+	/// so a tick on the stage bar cannot go stale — which it would, constantly, because the two
+	/// most common ways out of both tools (Escape, and clicking a different bone in the tree) never
+	/// pass through the bar at all.
+	/// </summary>
+	public Action ToolStateChanged { get; set; }
+
+	/// <summary>Arm or disarm the bone tool. Same entry the Add Bone button uses.</summary>
+	public void ToggleBoneTool() => SetBoneToolActive( !BoneToolActive );
+
+	/// <summary>Arm or disarm body assignment. Same entry the Assign Body button uses.</summary>
+	public void ToggleAssignBodyTool() => ToggleAssignBody();
+
+	/// <summary>Mirror the selected bone and its subtree. Same entry the Mirror button uses.</summary>
+	public void MirrorSelected() => MirrorSelectedBone();
+
+	/// <summary>Whether the selected bone is soft, for the bar to put a tick on.</summary>
+	public bool SelectedBoneIsSoft => HasSelectedBone && Skeleton.Bones[_selectedBone].Soft is not null;
+
+	/// <summary>Make the selected bone soft, or rigid again. Same entry the inspector's tick uses,
+	/// and it refreshes that tick on the way through.</summary>
+	public void ToggleSelectedSoft() => SetSelectedSoft( !SelectedBoneIsSoft );
+
+	/// <summary>How many bones carry softness. The bar puts it on the Soft stage's tab so the count
+	/// there means the same thing the other stages' counts do - how much is behind this tab -
+	/// rather than how many buttons it holds.</summary>
+	public int SoftBoneCount => SoftSolver.SoftBones( Skeleton ).Count();
+
+	/// <summary>Delete the selected bone. Same entry the tree's own context menu uses — children
+	/// re-parent, assignments fall back to the nearest-bone default.</summary>
+	public void DeleteSelected()
+	{
+		if ( HasSelectedBone )
+			DeleteBone( _selectedBone );
 	}
 
 	/// <summary>
@@ -360,6 +457,8 @@ internal sealed class EffigyRigPanel : Widget
 
 		_viewport.BoneToolActive = active;
 		_addBoneButton.Text = active ? "Placing… (Esc to stop)" : "Add Bone";
+
+		ToolStateChanged?.Invoke();
 
 		// Selecting a different bone in the tree while placing is harmless (see the comment in
 		// ToggleAssignBody), but arming Assign Body on top of it isn't — disabled rather than a
@@ -465,6 +564,8 @@ internal sealed class EffigyRigPanel : Widget
 			$"Click bodies to assign to '{Skeleton.Bones[_selectedBone].Name}' — click again to unassign one. "
 				+ "Escape when done." );
 		_assignBodyButton.Text = "Done Assigning";
+
+		ToolStateChanged?.Invoke();
 	}
 
 	private void DisarmAssign()
@@ -478,6 +579,8 @@ internal sealed class EffigyRigPanel : Widget
 		_viewport.SelectedBodyIds = null;
 		_viewport.SetPickPrompt( "" );
 		_assignBodyButton.Text = "Assign Body";
+
+		ToolStateChanged?.Invoke();
 	}
 
 	private void OnBodyPicked( string bodyId )
@@ -489,10 +592,10 @@ internal sealed class EffigyRigPanel : Widget
 
 		RigChanging?.Invoke();
 
-		if ( _bodyBoneMap.TryGetValue( bodyId, out var current ) && current == boneName )
-			_bodyBoneMap.Remove( bodyId );
+		if ( Bindings.TryGetValue( bodyId, out var current ) && current == boneName )
+			Bindings.Remove( bodyId );
 		else
-			_bodyBoneMap[bodyId] = boneName;
+			Bindings[bodyId] = boneName;
 
 		_viewport.SelectedBodyIds = BodiesOnBone( boneName );
 
@@ -507,7 +610,7 @@ internal sealed class EffigyRigPanel : Widget
 	}
 
 	private List<string> BodiesOnBone( string boneName ) =>
-		_bodyBoneMap.Where( kv => kv.Value == boneName ).Select( kv => kv.Key ).ToList();
+		Bindings.Where( kv => kv.Value == boneName ).Select( kv => kv.Key ).ToList();
 
 	// --- mirroring -----------------------------------------------------------------------
 
@@ -572,6 +675,8 @@ internal sealed class EffigyRigPanel : Widget
 		_tailZ = AddVectorField( tailRow, OnTailFieldEdited );
 		_inspector.Layout.Add( tailRow );
 
+		BuildSoftness();
+
 		// A count on the tree row is enough to notice a bone has bodies; fixing a WRONG one from
 		// there means re-arming Assign Body and hunting for it in the viewport. Naming each one
 		// here, with its own remove button, is the actual undo-a-mistake path.
@@ -581,6 +686,173 @@ internal sealed class EffigyRigPanel : Widget
 		_bodyList = new Widget( _inspector ) { Layout = Layout.Column() };
 		_bodyList.Layout.Spacing = 2;
 		_inspector.Layout.Add( _bodyList );
+	}
+
+	/// <summary>
+	/// The four numbers that make a bone soft, finally reachable.
+	///
+	/// THE KERNEL HAS HAD THESE ALL ALONG. SoftBone, SoftPose and SoftSolver were written, tested
+	/// and shipped to the game assembly; RigDiagnostics has been checking them since it was written
+	/// - it will tell you a soft bone has a zero cone - and there has never been anything in the
+	/// editor that could put a SoftBone on a bone for it to complain about. SoftSolver even carries
+	/// a SoftBones() helper whose summary says it is "for a panel or a diagnostic to list". This is
+	/// that panel.
+	///
+	/// A TICK AND FOUR FIELDS, in the inspector, under head and tail. Softness is a property OF THE
+	/// SELECTED BONE in exactly the way its head and tail are, so it belongs in the same place and
+	/// appears and disappears with the same selection. The tick is the whole of "is this bone
+	/// soft": Bone.Soft is null or it is not, and null is the overwhelming majority - see the note
+	/// on the field itself about why it hangs off the bone rather than living in it.
+	///
+	/// THE FIELDS ARE HIDDEN WHEN THE TICK IS OFF rather than dimmed. Four disabled boxes is the
+	/// tallest possible way to say "nothing here", and this panel is already carrying a tree, an
+	/// inspector and a problems list in one column.
+	/// </summary>
+	private void BuildSoftness()
+	{
+		_softToggle = new Checkbox( "Soft" )
+		{
+			ToolTip = "Let this bone lag and swing behind the pose instead of following it rigidly. "
+				+ "The tail is simulated; the head always stays where its parent put it.",
+		};
+
+		_softToggle.Toggled = () => SetSelectedSoft( _softToggle.Value );
+
+		_inspector.Layout.Add( _softToggle );
+
+		_softFields = new Widget( _inspector ) { Layout = Layout.Column(), Visible = false };
+		_softFields.Layout.Spacing = 4;
+		_softFields.Layout.Margin = new Sandbox.UI.Margin( 14, 2, 0, 2 );
+
+		// The defaults, the units and the "what does this number mean" text are all lifted from
+		// SoftBone's own summaries rather than reinvented here. That file is where the reasoning
+		// lives, and a second, drifting explanation on a tooltip would be worse than none.
+		_softStiffness = AddSoftField( "Stiffness", 0,
+			"How hard the bone snaps back to the pose, as an acceleration per unit of offset. Its "
+				+ "frequency is sqrt(stiffness) radians a second - 40 is about one swing a second, 400 "
+				+ "is a stiff twitch. Zero is a dead limb that only gravity moves." );
+
+		_softDamping = AddSoftField( "Damping", 1,
+			"How much of its speed the bone keeps after ONE SECOND, 0 to 1. At 1 a disturbed bone "
+				+ "rings forever; at 0 it has no momentum at all. Limbs live low - a few percent - "
+				+ "because a second is a long time for a swinging arm." );
+
+		_softWeight = AddSoftField( "Weight", 2,
+			"How hard gravity pulls this bone's tail, as a multiple of the solve's gravity. Per bone, "
+				+ "because a forearm and a coat tail hang differently." );
+
+		_softCone = AddSoftField( "Cone", 3,
+			"The furthest the bone may stray from its animated direction, in degrees. This is the "
+				+ "difference between soft and broken: without a limit a fast enough swing puts a "
+				+ "forearm through the shoulder it hangs off, and stiffness cannot prevent it - "
+				+ "stiffness is a rate, and a rate can be outrun. 180 means unlimited." );
+
+		_inspector.Layout.Add( _softFields );
+	}
+
+	/// <summary>One labelled row in the softness block. The index says which of the four it is, so
+	/// one edit handler can write the right number without four near-identical lambdas.</summary>
+	private EffigyNumericField AddSoftField( string label, int which, string tip )
+	{
+		var row = new Widget( _softFields ) { Layout = Layout.Row() };
+		row.Layout.Spacing = 4;
+		row.Layout.Add( new Editor.Label( label ) { FixedWidth = 62, ToolTip = tip } );
+
+		var field = new EffigyNumericField( row, 0f )
+		{
+			FixedWidth = 74,
+			ToolTip = tip,
+			ValueEdited = v => OnSoftFieldEdited( which, v ),
+		};
+
+		row.Layout.Add( field );
+		row.Layout.AddStretchCell();
+
+		_softFields.Layout.Add( row );
+
+		return field;
+	}
+
+	/// <summary>
+	/// Make the selected bone soft, or rigid again.
+	///
+	/// TURNING IT OFF THROWS THE NUMBERS AWAY, because Bone.Soft going null IS rigid - there is
+	/// nowhere to park them, and a shadow copy kept so a re-tick could restore them would be state
+	/// that exists only to go stale. Ticking it back on gives SoftBone's own defaults, which are a
+	/// reasonable limb rather than four zeros.
+	/// </summary>
+	private void SetSelectedSoft( bool soft )
+	{
+		if ( _editingInspector || !HasSelectedBone )
+			return;
+
+		var bone = Skeleton.Bones[_selectedBone];
+
+		if ( (bone.Soft is not null) == soft )
+			return;
+
+		RigChanging?.Invoke();
+
+		bone.Soft = soft ? new SoftBone() : null;
+
+		RefreshInspector();
+
+		// The viewport draws soft bones differently and the problems list has opinions about their
+		// numbers, so both are now out of date.
+		_viewport.Update();
+		RefreshProblems();
+
+		ToolStateChanged?.Invoke();
+		RigChanged?.Invoke();
+	}
+
+	/// <summary>
+	/// One of the four numbers was typed into.
+	///
+	/// NO RigChanging HERE, matching the head and tail fields directly above, which deliberately do
+	/// not record undo per keystroke either. Tuning a wobble is a dozen small adjustments in a row
+	/// and a snapshot per digit would bury everything else on the stack.
+	///
+	/// The values are written RAW rather than clamped. RigDiagnostics already reports negative
+	/// stiffness, damping outside 0 to 1, a zero cone and a cone over 180, and it reports them in
+	/// the problems list a few inches below this field with the bone named. Silently correcting a
+	/// number somebody typed is worse: it hides the typo and it fights the cursor.
+	/// </summary>
+	private void OnSoftFieldEdited( int which, float value )
+	{
+		if ( _editingInspector || !HasSelectedBone )
+			return;
+
+		if ( Skeleton.Bones[_selectedBone].Soft is not { } soft )
+			return;
+
+		switch ( which )
+		{
+			case 0: soft.Stiffness = value; break;
+			case 1: soft.Damping = value; break;
+			case 2: soft.Weight = value; break;
+			case 3: soft.MaxAngle = value; break;
+		}
+
+		RefreshProblems();
+		RigChanged?.Invoke();
+	}
+
+	/// <summary>Push the selected bone's softness into the tick and the four fields.</summary>
+	private void RefreshSoftness()
+	{
+		var soft = HasSelectedBone ? Skeleton.Bones[_selectedBone].Soft : null;
+
+		_softToggle.Value = soft is not null;
+		_softFields.Visible = soft is not null;
+
+		if ( soft is null )
+			return;
+
+		_softStiffness.SetValue( soft.Stiffness );
+		_softDamping.SetValue( soft.Damping );
+		_softWeight.SetValue( soft.Weight );
+		_softCone.SetValue( soft.MaxAngle );
 	}
 
 	/// <summary>
@@ -619,7 +891,7 @@ internal sealed class EffigyRigPanel : Widget
 			var mesh = _studio?.Bodies.Count > 0 ? _studio.ToMesh() : null;
 			var bodyIds = _studio?.Bodies.Select( b => b.Id ).ToList();
 
-			problems = RigDiagnostics.Check( Skeleton, mesh, _bodyBoneMap, bodyIds );
+			problems = RigDiagnostics.Check( Skeleton, mesh, Bindings, bodyIds );
 		}
 		catch ( Exception e )
 		{
@@ -745,6 +1017,11 @@ internal sealed class EffigyRigPanel : Widget
 		_tailY.SetValue( tail.y );
 		_tailZ.SetValue( tail.z );
 
+		// INSIDE the guard, because Checkbox.Toggled fires on an assignment to Value just as it
+		// does on a click - so without it, selecting a rigid bone would call SetSelectedSoft(false)
+		// on the bone that was selected a moment ago.
+		RefreshSoftness();
+
 		_editingInspector = false;
 
 		RefreshBodyList();
@@ -796,7 +1073,7 @@ internal sealed class EffigyRigPanel : Widget
 			return;
 
 		RigChanging?.Invoke();
-		_bodyBoneMap.Remove( bodyId );
+		Bindings.Remove( bodyId );
 
 		// Keep the viewport's highlight honest if Assign Body is still armed — otherwise the body
 		// just removed stays lit as if it were still assigned.
@@ -890,6 +1167,11 @@ internal sealed class EffigyRigPanel : Widget
 			_tree.SelectItem( node );
 
 		RefreshInspector();
+
+		// The rig bar's Assign, Mirror and Delete are all scoped to the selection, so they go live
+		// and dead with it. Clicking a bone in the tree is the commonest thing anyone does in this
+		// panel and it never passes through the bar.
+		ToolStateChanged?.Invoke();
 	}
 
 	// --- rename / delete ---------------------------------------------------------------------
@@ -923,7 +1205,7 @@ internal sealed class EffigyRigPanel : Widget
 						Skeleton.RenameBone( index, name );
 
 						foreach ( var body in BodiesOnBone( oldName ) )
-							_bodyBoneMap[body] = name;
+							Bindings[body] = name;
 
 						renamed = true;
 					}
@@ -967,7 +1249,7 @@ internal sealed class EffigyRigPanel : Widget
 		Skeleton.RemoveBone( index );
 
 		foreach ( var body in BodiesOnBone( name ) )
-			_bodyBoneMap.Remove( body );
+			Bindings.Remove( body );
 
 		_viewport.DeselectBone();
 		_selectedBone = -1;
@@ -1056,7 +1338,7 @@ internal sealed class EffigyRigPanel : Widget
 		{
 			PaintSelection( item );
 
-			var bodyCount = _panel._bodyBoneMap.Values.Count( v => v == Value );
+			var bodyCount = _panel.Bindings.Values.Count( v => v == Value );
 
 			// Icon size 14 and a 22px left margin for the label — Effigy's own Features and Parts
 			// trees both use this pairing (RigControlEditor's separate bone tree uses a smaller

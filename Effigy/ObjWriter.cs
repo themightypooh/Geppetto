@@ -54,8 +54,25 @@ public static class ObjWriter
 		sb.Append( $"# {mesh.VertexCount} vertices, {mesh.FaceCount} faces\n" );
 		sb.Append( $"o {objectName}\n" );
 
-		foreach ( var p in mesh.Positions )
-			sb.Append( string.Format( c, "v {0:0.######} {1:0.######} {2:0.######}\n", p.x, p.y, p.z ) );
+		for ( var i = 0; i < mesh.Positions.Count; i++ )
+		{
+			var p = mesh.Positions[i];
+
+			sb.Append( string.Format( c, "v {0:0.######} {1:0.######} {2:0.######}", p.x, p.y, p.z ) );
+
+			// Vertex colour, when there is one. OBJ vertex colour is RGB, and "no paint" is WHITE —
+			// the consumer multiplies the material by the colour, so white means "unchanged" and
+			// coverage fades the vertex from white toward the paint colour.
+			if ( mesh.VertexColors is not null && i < mesh.VertexColors.Length )
+			{
+				var tint = mesh.VertexColors[i].Tint();
+
+				sb.Append( string.Format( c, " {0:0.######} {1:0.######} {2:0.######}",
+					tint.x, tint.y, tint.z ) );
+			}
+
+			sb.Append( '\n' );
+		}
 
 		// UVs are per corner, so the same value recurs constantly. Deduping keeps the file to a
 		// sane size without changing what it means.

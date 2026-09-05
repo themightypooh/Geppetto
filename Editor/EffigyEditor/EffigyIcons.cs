@@ -62,6 +62,11 @@ internal enum EffigyIcon
 	SculptLevelUp,
 	SculptBake,
 
+	// --- paint tools ---------------------------------------------------------------------------
+	Paint,
+	PaintBrush,
+	PaintEraser,
+
 	// --- solid tools that act on picked faces ---------------------------------------------------
 	Draft,
 	MoveFace,
@@ -103,6 +108,13 @@ internal enum EffigyIcon
 	LightRigTop,
 	LightRigKey,
 	LightClear,
+
+	// --- rig ---
+	Bone,
+	BoneBind,
+	BoneSoft,
+	SoftPreview,
+	SoftRest,
 }
 
 /// <summary>
@@ -199,6 +211,10 @@ internal static class EffigyIcons
 			case EffigyIcon.SculptLevelUp: PaintSculptLevelUp( center, color ); return;
 			case EffigyIcon.SculptBake: PaintSculptBake( center, color ); return;
 
+			case EffigyIcon.Paint: PaintPaint( center, color ); return;
+			case EffigyIcon.PaintBrush: PaintPaintBrush( center, color ); return;
+			case EffigyIcon.PaintEraser: PaintPaintEraser( center, color ); return;
+
 			case EffigyIcon.Draft: PaintDraft( center, color ); return;
 			case EffigyIcon.MoveFace: PaintMoveFace( center, color ); return;
 			case EffigyIcon.Hole: PaintHole( center, color ); return;
@@ -227,6 +243,12 @@ internal static class EffigyIcons
 			case EffigyIcon.UseAllTool: PaintUseAllTool( center, color ); return;
 
 			case EffigyIcon.CutTool: PaintCutTool( center, color ); return;
+
+			case EffigyIcon.Bone: PaintBone( center, color ); return;
+			case EffigyIcon.BoneBind: PaintBoneBind( center, color ); return;
+			case EffigyIcon.BoneSoft: PaintBoneSoft( center, color ); return;
+			case EffigyIcon.SoftPreview: PaintSoftPreview( center, color ); return;
+			case EffigyIcon.SoftRest: PaintSoftRest( center, color ); return;
 		}
 	}
 
@@ -1417,6 +1439,65 @@ internal static class EffigyIcons
 		Editor.Paint.DrawRect( Box( c, -7, 4f, 14f, 5f ) );
 	}
 
+	/// <summary>A paint brush: a handle, a ferrule, and a bristle tip dragging a stroke of colour
+	/// behind it. The stroke is the point — this is a tool that leaves marks, not one that changes
+	/// the surface's shape.</summary>
+	private static void PaintPaint( Vector2 c, Color color )
+	{
+		// The stroke it leaves, drawn first so it sits behind the brush.
+		Stroked( color.WithAlpha( 0.7f ), 2.4f );
+		Editor.Paint.DrawLine( At( c, 4.5f, 5f ), At( c, -1f, -6f ) );
+
+		// The handle, tilted.
+		Stroked( color, 2f );
+		Editor.Paint.DrawLine( At( c, -3f, 8f ), At( c, -1.5f, 3.5f ) );
+
+		// The ferrule.
+		Editor.Paint.DrawLine( At( c, -2f, 3.5f ), At( c, 2.5f, 1.2f ) );
+
+		// The bristle tip.
+		Filled( color );
+		Outline( At( c, 1.6f, 1f ), At( c, 3.4f, -2f ), At( c, 4.5f, -3.6f ), At( c, 6.4f, -1.8f ) );
+	}
+
+	/// <summary>The same brush as PaintPaint, with the ferrule separated by a hair so the stroke
+	/// reads as a wide band rather than a line.</summary>
+	private static void PaintPaintBrush( Vector2 c, Color color )
+	{
+		Stroked( color.WithAlpha( 0.7f ), 3.2f );
+		Editor.Paint.DrawLine( At( c, 5f, 4f ), At( c, -1f, -7f ) );
+
+		Stroked( color, 2f );
+		Editor.Paint.DrawLine( At( c, -3f, 8f ), At( c, -1.5f, 3.5f ) );
+		Editor.Paint.DrawLine( At( c, -2f, 3.5f ), At( c, 2.5f, 1.2f ) );
+
+		Filled( color );
+		Outline( At( c, 1.6f, 1f ), At( c, 3.4f, -2f ), At( c, 4.5f, -3.6f ), At( c, 6.4f, -1.8f ) );
+	}
+
+	/// <summary>An eraser block, worn at one corner, with its band cut away. Drawn as stationery
+	/// rather than as a mark, for the same reason the notes are: it removes rather than adds.</summary>
+	private static void PaintPaintEraser( Vector2 c, Color color )
+	{
+		var half = 4.5f;
+		var length = 7f;
+
+		Stroked( color.WithAlpha( 0.7f ), 1.8f );
+		Editor.Paint.DrawLine( At( c, -6f, 3.5f ), At( c, 3f, -6f ) );
+
+		Stroked( color, 1.8f );
+		var topLeft = At( c, -half, -length );
+		var topRight = At( c, half, -length );
+		var bottomLeft = At( c, -half, length );
+
+		// Worn corner: the bottom-right corner is cut off.
+		Outline( topLeft, topRight, At( c, half, 2f ), At( c, 2f, length ), bottomLeft );
+
+		// The band.
+		Editor.Paint.DrawLine( At( c, -half, -3f ), At( c, half, -3f ) );
+	}
+
+
 	/// <summary>The shared baseline: a flat surface with one smooth bump in the middle of it. Every
 	/// brush glyph starts from this so the row reads as one family acting on one thing.</summary>
 	private static void SurfaceWithBump( Vector2 c, float height )
@@ -1932,5 +2013,147 @@ internal static class EffigyIcons
 
 		Stroked( color, 1.9f );
 		Editor.Paint.DrawLine( At( c, -7f, 7f ), At( c, 7f, -7f ) );
+	}
+
+	// --- rig ----------------------------------------------------------------------------------
+
+	/// <summary>
+	/// The dog bone the viewport already draws, flattened to two dimensions.
+	///
+	/// SAME SHAPE THE TOOL COMMITS, for the same reason EffigyViewport.Rig.cs previews with the
+	/// real DrawDogBone rather than a placeholder dot: the button and the thing it makes should be
+	/// recognisably one object. A knob at each end and a tapered shaft between them is the whole
+	/// silhouette - it is Blender's octahedral bone seen side-on, which is the form anyone arriving
+	/// from a rigging tool already reads as "bone" without being told.
+	/// </summary>
+	private static void PaintBone( Vector2 c, Color color )
+	{
+		// Head at the top, tail at the bottom - bones hang downward in every tree view this
+		// editor draws, so a vertical glyph matches the direction the rig panel lists them in.
+		var head = At( c, 0f, -7f );
+		var tail = At( c, 0f, 7f );
+
+		// The shaft, widest a third of the way down from the head. That is where DogBone puts its
+		// cross-section, and a diamond with its waist at the midpoint reads as a kite instead.
+		Filled( color.WithAlpha( 0.28f ) );
+		Editor.Paint.DrawPolygon( head, At( c, -3.4f, -2.4f ), tail, At( c, 3.4f, -2.4f ) );
+
+		Stroked( color );
+		Outline( head, At( c, -3.4f, -2.4f ), tail, At( c, 3.4f, -2.4f ) );
+
+		// The joints. Solid, because they are the part you click and drag.
+		Filled( color );
+		Editor.Paint.DrawCircle( head, 2.6f * _scale );
+		Editor.Paint.DrawCircle( tail, 2f * _scale );
+	}
+
+	/// <summary>
+	/// A bone with a body pinned to it - the bone at the left, a solid at the right, a tie between.
+	///
+	/// The bone half is deliberately the SAME silhouette as PaintBone rather than a fresh drawing,
+	/// only smaller and turned: Add Bone and Assign Body sit on adjacent stages of the rig bar, and
+	/// two unrelated glyphs would hide that they are about the same object.
+	/// </summary>
+	private static void PaintBoneBind( Vector2 c, Color color )
+	{
+		var head = At( c, -8f, 3f );
+		var tail = At( c, -1.5f, -3f );
+
+		Stroked( color );
+		Outline( head, At( c, -6.6f, -1.6f ), tail, At( c, -2.9f, 1.6f ) );
+
+		Filled( color );
+		Editor.Paint.DrawCircle( head, 2f * _scale );
+		Editor.Paint.DrawCircle( tail, 1.5f * _scale );
+
+		// The body it is being pinned to: outlined, the same way PaintMirror outlines the copy, so
+		// the bone stays the solid thing and the body stays the thing being attached to it.
+		Stroked( color, 1.4f );
+		Editor.Paint.DrawRect( Box( c, 2f, -1f, 7f, 7f ), 1f );
+
+		// The tie. Dashed, because the assignment is a named link rather than geometry.
+		Stroked( color.WithAlpha( 0.6f ), 1.2f );
+		for ( var x = -1.2f; x < 2f; x += 1.6f )
+			Editor.Paint.DrawLine( At( c, x, -1.6f ), At( c, x + 0.9f, -1.6f ) );
+	}
+
+	/// <summary>
+	/// A bone that has swung off its pose, with the pose it left behind still showing.
+	///
+	/// THE GHOST IS THE WHOLE ICON. A bone drawn bent means nothing on its own - bones are bent.
+	/// What says "soft" is the pair: where the animation put it, dashed, and where the spring
+	/// actually took it, solid, with the gap between them being exactly the lag the four numbers in
+	/// the inspector control. Same trick PaintMirror uses, where the outlined copy is only
+	/// meaningful next to the solid original.
+	/// </summary>
+	private static void PaintBoneSoft( Vector2 c, Color color )
+	{
+		var head = At( c, -2f, -7f );
+
+		// The pose: where the bone would be if it were rigid. Dashed and faint, because it is the
+		// thing that is NOT happening.
+		Stroked( color.WithAlpha( 0.4f ), 1.2f );
+		for ( var t = 0f; t < 1f; t += 0.28f )
+		{
+			var a = At( c, -2f, -7f + 14f * t );
+			var b = At( c, -2f, -7f + 14f * (t + 0.16f) );
+			Editor.Paint.DrawLine( a, b );
+		}
+
+		// The bone as the spring left it: swung out and trailing behind. Same knob-shaft-knob
+		// silhouette as PaintBone so the two read as the same object.
+		var tail = At( c, 6f, 5.5f );
+
+		Stroked( color );
+		Outline( head, At( c, -1f, -1f ), tail, At( c, 3.6f, -2.6f ) );
+
+		Filled( color );
+		Editor.Paint.DrawCircle( head, 2.4f * _scale );
+		Editor.Paint.DrawCircle( tail, 1.9f * _scale );
+	}
+
+	/// <summary>A play triangle with the swing drawn behind it — the ordinary "run this" shape,
+	/// made specific to what it runs so it is not mistaken for a generic play button on a bar that
+	/// has no other one.</summary>
+	private static void PaintSoftPreview( Vector2 c, Color color )
+	{
+		// Motion trails, fading backwards, the way the bone actually arrives at where it is going.
+		Stroked( color.WithAlpha( 0.30f ), 1.3f );
+		Arc( At( c, -9f, 0f ), 7.5f, -52f, 52f, 10 );
+
+		Stroked( color.WithAlpha( 0.55f ), 1.3f );
+		Arc( At( c, -9f, 0f ), 11f, -40f, 40f, 10 );
+
+		Filled( color );
+		Editor.Paint.DrawPolygon( At( c, 1.5f, -6.5f ), At( c, 8.5f, 0f ), At( c, 1.5f, 6.5f ) );
+	}
+
+	/// <summary>
+	/// A bone dropped back onto its line, with the swing it gave up drawn as a fading arc.
+	///
+	/// NOT A REFRESH ARROW, which is the obvious choice and the wrong one: a circular arrow means
+	/// "do it again" everywhere else in an editor, and this does the opposite - it stops the thing
+	/// that is happening and puts it back where it started.
+	/// </summary>
+	private static void PaintSoftRest( Vector2 c, Color color )
+	{
+		// What is being given up: the arc the tail was swinging through, fading out as it goes.
+		Stroked( color.WithAlpha( 0.28f ), 1.2f );
+		Arc( At( c, 0f, -7f ), 13f, 62f, 90f, 8 );
+
+		// The bone, back on its pose - straight down, the direction PaintBone draws it.
+		var head = At( c, 0f, -7f );
+		var tail = At( c, 0f, 6f );
+
+		Stroked( color );
+		Outline( head, At( c, -3f, -2.2f ), tail, At( c, 3f, -2.2f ) );
+
+		Filled( color );
+		Editor.Paint.DrawCircle( head, 2.4f * _scale );
+		Editor.Paint.DrawCircle( tail, 1.8f * _scale );
+
+		// The line it came to rest on, so "rest" is a place rather than only a state.
+		Stroked( color.WithAlpha( 0.5f ), 1.4f );
+		Editor.Paint.DrawLine( At( c, -6f, 8.6f ), At( c, 6f, 8.6f ) );
 	}
 }

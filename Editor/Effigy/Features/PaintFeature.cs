@@ -6,14 +6,16 @@ namespace Effigy;
 /// A paint layer in the feature tree.
 ///
 /// WHERE THE PAINT LIVES: strokes in object space, replayed onto whatever the mesh currently is.
-/// The texture is a derived artifact — the same bet the rest of the kernel already made by keeping
-/// the mesh a function of the feature history. Nothing else in the document holds paint, undo is the
-/// feature tree's undo, and a stroke is one entry in the list.
+/// The vertex colours are a derived artifact — the same bet the rest of the kernel already made by
+/// keeping the mesh a function of the feature history. Nothing else in the document holds paint, undo
+/// is the feature tree's undo, and a stroke is one entry in the list.
 ///
-/// EXECUTE DOES NOT REPLAY YET. The dab — faces in radius, rasterise, falloff-weighted blend — is a
-/// later piece. For now this feature only guards the door: it checks that the body's UVs can carry
-/// paint at all, and warns rather than fails when they cannot, because the model still built and the
-/// warning is the thing a user acts on.
+/// EXECUTE REPLAYS THE STROKES ONTO PER-VERTEX COLOURS. The dab — vertices in radius, reject the far
+/// side by its normal, falloff-weighted source-over blend — lives in PaintReplay, shared with the
+/// live session so a stroke painted by hand and the same stroke rebuilt later produce identical
+/// colours. Vertex colours rather than a texture atlas because that is what the engine composites
+/// over a material natively, and it needs no UVs — the whole unwrap gate the texture path required is
+/// gone.
 ///
 /// ITS STALENESS GUARD IS COPIED FROM SculptFeature FOR THE SAME REASON. A paint session appends
 /// strokes nowhere near the studio, so nothing calls MarkDirty and the rebuild would happily reuse
@@ -48,6 +50,14 @@ public sealed class PaintFeature : Feature
 	// the studio, so nothing calls MarkDirty and this is what catches it.
 	int _builtRevision = -1;
 
+	// The replay cache: the colours last produced, and the topology + revision they were produced
+	// from. Keyed on TOPOLOGY (vertex count and face indices, deliberately not positions) and
+	// revision, so a parametric edit that moves the geometry without changing its structure reuses
+	// the colours rather than re-replaying, and a new stroke invalidates them.
+	Vec4[] _cachedColors;
+	long _topologyId;
+	int _colorsRevision = -1;
+
 	public override bool IsStale => Revision != _builtRevision;
 
 	/// <summary>Append a stroke and mark the feature stale, so the next rebuild replays it. The list
@@ -58,26 +68,41 @@ public sealed class PaintFeature : Feature
 		Revision++;
 	}
 
+	/// <summary>
+	/// Replace the whole stroke list — undo/redo's route in.
+	///
+	/// The revision is bumped, not merely the list swapped, because the replay cache is keyed on it: a
+	/// plain assignment would leave <see cref="Revision"/> unchanged, the cache would see no reason to
+	/// re-render, and the model would keep serving colours the restored strokes do not describe. The
+	/// strokes themselves are copied by reference — they are immutable once painted, so sharing them
+	/// across undo snapshots is the correct and cheapest read.
+	/// </summary>
+	public void ReplaceStrokes( IReadOnlyList<PaintStroke> strokes )
+	{
+		Strokes = strokes is null ? null : new List<PaintStroke>( strokes );
+		Revision++;
+	}
+
 	protected override void Execute( FeatureContext ctx )
 	{
 		var targets = RequireBodies( ctx, Bodies );
 
-		// A WARNING, NOT A REFUSAL. The paint is fine; the UVs are the problem. A body whose UVs
-		// overlap or escape the square cannot carry the paint, and it will scramble rather than fail
-		// once the dab exists. Telling the user now is the difference between a model that says what
-		// is wrong and one that quietly paints both islands at once.
-		foreach ( var body in targets )
+		// Paint paints ONE body at a time — one stroke list, one set of vertex colours. A studio
+		// with several bodies needs a picked body, which is exactly what the editor's door gate asks
+		// for before a session starts.
+		if ( Strokes is { Count: > 0 } && targets.Count == 1 )
 		{
-			var coverage = NormalBake.Measure( body.Mesh );
+			var mesh = targets[0].Mesh;
+			var topology = MultiresSculpt.TopologyId( mesh );
 
-			if ( coverage.CanBake )
-				continue;
+			if ( _cachedColors is null || _topologyId != topology || _colorsRevision != Revision )
+			{
+				_cachedColors = PaintReplay.ReplayColors( mesh, Strokes );
+				_topologyId = topology;
+				_colorsRevision = Revision;
+			}
 
-			Warn(
-				"This body's UVs cannot carry paint",
-				coverage.Problem,
-				"Insert a UV project feature in Unwrap mode above this one",
-				"Repaint after the UVs are fixed" );
+			mesh.VertexColors = _cachedColors;
 		}
 
 		// Last, so a failure above leaves the feature stale and the next rebuild tries again.

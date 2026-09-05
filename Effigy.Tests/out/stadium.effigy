@@ -1,0 +1,288 @@
+effigy 1
+rollback 2147483647
+material 0 models/effigy/stadium_bowl.vmat
+material 1 models/effigy/stadium_roof.vmat
+material 2 models/effigy/stadium_field.vmat
+material 3 models/effigy/stadium_light.vmat
+feature PrimitiveFeature
+	id 35145fe7
+	name back stand
+	suppressed 0
+	visible 1
+	param Divisions 4
+	param InnerRadius 0.3
+	param Material 0
+	param Position 0 0 0
+	param Radius 0.5
+	param Scale 1 1 1
+	param Segments 16
+	param Shape 3
+	param SizeX 130
+	param SizeY 320
+	param SizeZ 170
+	param UniformScale 0
+end
+feature TransformFeature
+	id 736c3445
+	name back stand place
+	suppressed 0
+	visible 1
+	bodies Bodies 35145fe7b0
+	param RotationAngle 90
+	param RotationAxis 0 0 1
+	param Scale 1 1 1
+	param Translate 0 -265 85
+end
+feature PrimitiveFeature
+	id 0adc6889
+	name left stand
+	suppressed 0
+	visible 1
+	param Divisions 4
+	param InnerRadius 0.3
+	param Material 0
+	param Position 0 0 0
+	param Radius 0.5
+	param Scale 1 1 1
+	param Segments 16
+	param Shape 3
+	param SizeX 130
+	param SizeY 590
+	param SizeZ 170
+	param UniformScale 0
+end
+feature TransformFeature
+	id aa720941
+	name left stand place
+	suppressed 0
+	visible 1
+	bodies Bodies 0adc6889b0
+	param RotationAngle 0
+	param RotationAxis 0 0 1
+	param Scale 1 1 1
+	param Translate -225 -35 85
+end
+feature PrimitiveFeature
+	id a1f95b5e
+	name right stand
+	suppressed 0
+	visible 1
+	param Divisions 4
+	param InnerRadius 0.3
+	param Material 0
+	param Position 0 0 0
+	param Radius 0.5
+	param Scale 1 1 1
+	param Segments 16
+	param Shape 3
+	param SizeX 130
+	param SizeY 590
+	param SizeZ 170
+	param UniformScale 0
+end
+feature TransformFeature
+	id fe022bb7
+	name right stand place
+	suppressed 0
+	visible 1
+	bodies Bodies a1f95b5eb0
+	param RotationAngle 180
+	param RotationAxis 0 0 1
+	param Scale 1 1 1
+	param Translate 225 -35 85
+end
+feature PrimitiveFeature
+	id 03805de3
+	name back roof
+	suppressed 0
+	visible 1
+	param Divisions 4
+	param InnerRadius 0.3
+	param Material 1
+	param Position 0 0 0
+	param Radius 0.5
+	param Scale 1 1 1
+	param Segments 16
+	param Shape 0
+	param SizeX 320
+	param SizeY 175
+	param SizeZ 7
+	param UniformScale 0
+end
+feature TransformFeature
+	id b42c5e5f
+	name back roof place
+	suppressed 0
+	visible 1
+	bodies Bodies 03805de3b0
+	param RotationAngle 13.886539
+	param RotationAxis 1 0 0
+	param Scale 1 1 1
+	param Translate 0 -245.05737 205
+end
+feature PrimitiveFeature
+	id bdd8e877
+	name left roof
+	suppressed 0
+	visible 1
+	param Divisions 4
+	param InnerRadius 0.3
+	param Material 1
+	param Position 0 0 0
+	param Radius 0.5
+	param Scale 1 1 1
+	param Segments 16
+	param Shape 0
+	param SizeX 175
+	param SizeY 635
+	param SizeZ 7
+	param UniformScale 0
+end
+feature TransformFeature
+	id 08957019
+	name left roof place
+	suppressed 0
+	visible 1
+	bodies Bodies bdd8e877b0
+	param RotationAngle -13.886539
+	param RotationAxis 0 1 0
+	param Scale 1 1 1
+	param Translate -205.05737 -12.5 205
+end
+feature PrimitiveFeature
+	id a8d8ee5c
+	name right roof
+	suppressed 0
+	visible 1
+	param Divisions 4
+	param InnerRadius 0.3
+	param Material 1
+	param Position 0 0 0
+	param Radius 0.5
+	param Scale 1 1 1
+	param Segments 16
+	param Shape 0
+	param SizeX 175
+	param SizeY 635
+	param SizeZ 7
+	param UniformScale 0
+end
+feature TransformFeature
+	id 8114f0d1
+	name right roof place
+	suppressed 0
+	visible 1
+	bodies Bodies a8d8ee5cb0
+	param RotationAngle 13.886539
+	param RotationAxis 0 1 0
+	param Scale 1 1 1
+	param Translate 205.05737 -12.5 205
+end
+feature PrimitiveFeature
+	id c4866455
+	name back crown
+	suppressed 0
+	visible 1
+	param Divisions 4
+	param InnerRadius 0.3
+	param Material 3
+	param Position 0 -330 176
+	param Radius 0.5
+	param Scale 1 1 1
+	param Segments 16
+	param Shape 0
+	param SizeX 320
+	param SizeY 5
+	param SizeZ 8
+	param UniformScale 0
+end
+feature PrimitiveFeature
+	id c806cacd
+	name left crown
+	suppressed 0
+	visible 1
+	param Divisions 4
+	param InnerRadius 0.3
+	param Material 3
+	param Position -290 -35 176
+	param Radius 0.5
+	param Scale 1 1 1
+	param Segments 16
+	param Shape 0
+	param SizeX 5
+	param SizeY 590
+	param SizeZ 8
+	param UniformScale 0
+end
+feature PrimitiveFeature
+	id d0371240
+	name right crown
+	suppressed 0
+	visible 1
+	param Divisions 4
+	param InnerRadius 0.3
+	param Material 3
+	param Position 290 -35 176
+	param Radius 0.5
+	param Scale 1 1 1
+	param Segments 16
+	param Shape 0
+	param SizeX 5
+	param SizeY 590
+	param SizeZ 8
+	param UniformScale 0
+end
+feature PrimitiveFeature
+	id 7cd47539
+	name left pylon
+	suppressed 0
+	visible 1
+	param Divisions 4
+	param InnerRadius 0.3
+	param Material 3
+	param Position -160 268 119
+	param Radius 0.5
+	param Scale 1 1 1
+	param Segments 16
+	param Shape 0
+	param SizeX 10
+	param SizeY 10
+	param SizeZ 238
+	param UniformScale 0
+end
+feature PrimitiveFeature
+	id 6a289252
+	name right pylon
+	suppressed 0
+	visible 1
+	param Divisions 4
+	param InnerRadius 0.3
+	param Material 3
+	param Position 160 268 119
+	param Radius 0.5
+	param Scale 1 1 1
+	param Segments 16
+	param Shape 0
+	param SizeX 10
+	param SizeY 10
+	param SizeZ 238
+	param UniformScale 0
+end
+feature PrimitiveFeature
+	id c290dd7a
+	name field
+	suppressed 0
+	visible 1
+	param Divisions 4
+	param InnerRadius 0.3
+	param Material 2
+	param Position 0 30 1
+	param Radius 0.5
+	param Scale 1 1 1
+	param Segments 16
+	param Shape 0
+	param SizeX 320
+	param SizeY 460
+	param SizeZ 4
+	param UniformScale 0
+end

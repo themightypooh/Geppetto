@@ -73,6 +73,7 @@ public static class DmxWriter
 	private const string Position = "position$0";
 	private const string Normal = "normal$0";
 	private const string TexCoord = "texcoord$0";
+	private const string Color = "color$0";
 	private const string BlendWeights = "blendweights$0";
 	private const string BlendIndices = "blendindices$0";
 
@@ -396,6 +397,13 @@ public static class DmxWriter
 		w.ArrayValue( Position );
 		w.ArrayValue( TexCoord );
 		w.ArrayValue( Normal );
+
+		// Vertex colour is only declared when the mesh actually carries paint, so an unpainted
+		// model's file is byte-for-byte what it was before colour existed. When it is present it
+		// sits with the other per-corner fields, which is how fbx2dmx orders them.
+		if ( mesh.VertexColors is not null )
+			w.ArrayValue( Color );
+
 		w.ArrayValue( BlendWeights );
 		w.ArrayValue( BlendIndices );
 		w.CloseArray();
@@ -445,6 +453,24 @@ public static class DmxWriter
 		w.IntArray( Position + "Indices", positionIndices );
 		w.IntArray( Normal + "Indices", normalIndices );
 		w.IntArray( TexCoord + "Indices", uvIndices );
+
+		// Vertex colour, per POSITION (one entry per vertex, tinted white-where-unpainted the same
+		// way ObjWriter does it) with a per-corner index array that mirrors the position indices —
+		// colour is a property of the vertex, so it rides the same corners the position does.
+		if ( mesh.VertexColors is not null )
+		{
+			w.OpenArray( Color, "color_array" );
+
+			for ( var v = 0; v < mesh.VertexCount; v++ )
+			{
+				var tint = mesh.VertexColors[v].Tint();
+				w.ArrayValue( DmxText.Vector4( tint.x, tint.y, tint.z, 1f ) );
+			}
+
+			w.CloseArray();
+
+			w.IntArray( Color + "Indices", positionIndices );
+		}
 
 		var weights = new List<float>( mesh.VertexCount * MaxInfluences );
 		var joints = new List<int>( mesh.VertexCount * MaxInfluences );
@@ -721,6 +747,9 @@ internal sealed class DmxText
 	public static string Vector2( Vec2 v ) => $"{Number( v.x )} {Number( v.y )}";
 
 	public static string Vector3( Vec3 v ) => $"{Number( v.x )} {Number( v.y )} {Number( v.z )}";
+
+	public static string Vector4( float x, float y, float z, float w ) =>
+		$"{Number( x )} {Number( y )} {Number( z )} {Number( w )}";
 
 	/// <summary>
 	/// The rotation part of an Xform as a quaternion, x y z w.

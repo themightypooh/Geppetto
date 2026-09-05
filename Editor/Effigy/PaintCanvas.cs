@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace Effigy;
 
@@ -104,6 +105,90 @@ public sealed class PaintCanvas
 	public void Clear()
 	{
 		Array.Clear( Rgba, 0, Rgba.Length );
+
+		_dirty = true;
+		_minX = 0;
+		_minY = 0;
+		_maxX = Width - 1;
+		_maxY = Height - 1;
+	}
+
+	/// <summary>
+	/// Bleed filled texels outward, so a shader filtering across an island's edge finds colour there
+	/// instead of the transparent gutter. Same idea as <see cref="NormalBake.Dilate"/> — each pass
+	/// averages the filled neighbours into the unfilled ones — but over RGBA, where "filled" is
+	/// simply a non-zero alpha and the alpha itself is one of the channels being averaged.
+	///
+	/// Marks the whole canvas dirty: dilation spreads outward and could touch anywhere, so there is
+	/// no smaller rect worth tracking.
+	/// </summary>
+	internal void Dilate( int passes )
+	{
+		if ( passes <= 0 )
+			return;
+
+		var filled = new bool[Width * Height];
+
+		for ( var i = 0; i < filled.Length; i++ )
+			filled[i] = Rgba[i * 4 + 3] > 0;
+
+		for ( var pass = 0; pass < passes; pass++ )
+		{
+			var added = new List<(int Index, int R, int G, int B, int A)>();
+
+			for ( var y = 0; y < Height; y++ )
+			{
+				for ( var x = 0; x < Width; x++ )
+				{
+					var index = y * Width + x;
+
+					if ( filled[index] )
+						continue;
+
+					int r = 0, g = 0, b = 0, a = 0, n = 0;
+
+					for ( var dy = -1; dy <= 1; dy++ )
+					{
+						for ( var dx = -1; dx <= 1; dx++ )
+						{
+							var nx = x + dx;
+							var ny = y + dy;
+
+							if ( nx < 0 || ny < 0 || nx >= Width || ny >= Height )
+								continue;
+
+							var other = ny * Width + nx;
+
+							if ( !filled[other] )
+								continue;
+
+							var o = other * 4;
+							r += Rgba[o];
+							g += Rgba[o + 1];
+							b += Rgba[o + 2];
+							a += Rgba[o + 3];
+							n++;
+						}
+					}
+
+					if ( n > 0 )
+						added.Add( (index, r / n, g / n, b / n, a / n) );
+				}
+			}
+
+			if ( added.Count == 0 )
+				return;
+
+			foreach ( var (index, r, g, b, a) in added )
+			{
+				var o = index * 4;
+				Rgba[o] = (byte)r;
+				Rgba[o + 1] = (byte)g;
+				Rgba[o + 2] = (byte)b;
+				Rgba[o + 3] = (byte)a;
+				filled[index] = true;
+			}
+		}
 
 		_dirty = true;
 		_minX = 0;

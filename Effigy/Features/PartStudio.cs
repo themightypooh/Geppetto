@@ -129,6 +129,28 @@ public sealed class PartStudio
 	/// </summary>
 	public List<Note> Notes = new();
 
+	/// <summary>
+	/// The skeleton the part is rigged with, and which body hangs off which bone.
+	///
+	/// DOCUMENT STATE, for exactly the reason Notes above are: a rig that is lost on reopen is not
+	/// a rig. It lived on the editor's rig PANEL until soft bones needed somewhere to be saved, and
+	/// the panel's copy was cleared on every load and written to no file at all - place bones, save,
+	/// reopen, and they were simply gone. Nothing said so, because nothing had ever been asked to.
+	///
+	/// NOT IN <see cref="Features"/>, same rule the notes follow. A rig is not a modelling
+	/// operation: it does not build geometry, it does not participate in rollback, and putting it
+	/// in the tree would mean every writer and every rebuild needed a skip-the-rig branch that
+	/// somebody would eventually forget. Nothing joins it to the mesh except the exporters that ask
+	/// for it by name.
+	///
+	/// The map is body id -> bone NAME rather than index, because SkinBinder.BindBodies takes it
+	/// that way and because an index is not stable across a delete while a name is what a rename
+	/// has to chase anyway.
+	/// </summary>
+	public Skeleton Rig = new();
+
+	public Dictionary<string, string> BodyBoneMap = new();
+
 	/// <summary>Result of the last rebuild.</summary>
 	public List<Body> Bodies { get; private set; } = new();
 
