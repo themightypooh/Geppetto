@@ -78,6 +78,11 @@ internal sealed class RigInspectorPanel : Widget
 					"Offset from the parent bone. Changing this pulls the joint away from its " +
 					"parent and stretches the skin, so leave it alone unless you're placing a root " +
 					"or an IK target." ),
+
+				RigHelpBox.S( "Scale",
+					"Uniform size of the bone, 1 = normal. Scaling stretches or squashes the skin " +
+					"along the bone - the squash-and-stretch tool. It's carried through keyframes, " +
+					"so a bone can grow and shrink over a clip." ),
 			} ) );
 
 		var header = new Widget( this ) { Layout = Layout.Row() };
@@ -137,6 +142,9 @@ internal sealed class RigInspectorPanel : Widget
 
 		if ( serialized.TryGetProperty( nameof( BoneTransform.Position ), out var position ) )
 			_sheet.AddRow( position );
+
+		if ( serialized.TryGetProperty( nameof( BoneTransform.Scale ), out var scale ) )
+			_sheet.AddRow( scale );
 	}
 }
 
@@ -190,8 +198,21 @@ internal sealed class BoneTransform
 		}
 	}
 
-	/// <summary>Scale is carried through untouched rather than exposed - nothing in this tool
-	/// poses by scaling a bone, and a scale field is a good way to break a rig by accident.</summary>
+	/// <summary>Uniform scale, read off the X axis of the (uniform) scale vector. Uniform because
+	/// a bone scale that isn't is how a rig gets skewed past fixing by eye.</summary>
+	[Property]
+	public float Scale
+	{
+		get => Current.Scale.x;
+		set
+		{
+			var current = Current;
+			var s = value.Clamp( 0.001f, 1000f );
+
+			Write( new Transform( current.Position, current.Rotation, new Vector3( s, s, s ) ) );
+		}
+	}
+
 	private void Write( Transform local )
 	{
 		if ( Viewport is null || string.IsNullOrEmpty( Bone ) )

@@ -475,7 +475,13 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 
 	private void ToggleDragMode()
 	{
-		_viewport.DragMode = _viewport.DragMode == BoneDragMode.Rotate ? BoneDragMode.Move : BoneDragMode.Rotate;
+		_viewport.DragMode = _viewport.DragMode switch
+		{
+			BoneDragMode.Rotate => BoneDragMode.Move,
+			BoneDragMode.Move => BoneDragMode.Scale,
+			_ => BoneDragMode.Rotate
+		};
+
 		UpdateDragModeOption();
 	}
 
@@ -483,12 +489,19 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 	{
 		if ( _dragModeOption is null ) return;
 
-		var rotate = _viewport.DragMode == BoneDragMode.Rotate;
+		_dragModeOption.Icon = _viewport.DragMode switch
+		{
+			BoneDragMode.Rotate => "3d_rotation",
+			BoneDragMode.Move => "open_with",
+			_ => "zoom_out_map"
+		};
 
-		_dragModeOption.Icon = rotate ? "3d_rotation" : "open_with";
-		_dragModeOption.ToolTip = rotate
-			? "Dragging a bone rotates it. Hold E to move instead. Rotation is what you want for almost all posing - joints pivot, they don't slide."
-			: "Dragging a bone moves it. Hold E to rotate instead. Moving a bone stretches the skin, so it's mainly for root and IK-target bones.";
+		_dragModeOption.ToolTip = _viewport.DragMode switch
+		{
+			BoneDragMode.Rotate => "Dragging a bone rotates it. Hold E to move instead. Rotation is what you want for almost all posing - joints pivot, they don't slide.",
+			BoneDragMode.Move => "Dragging a bone moves it. Hold E to rotate instead. Moving a bone stretches the skin, so it's mainly for root and IK-target bones.",
+			_ => "Dragging a bone scales it uniformly. Scaling stretches the skin - use it for squash-and-stretch, not for normal posing."
+		};
 	}
 
 	private void New()

@@ -7,12 +7,15 @@ using System.Linq;
 
 namespace Marionette.Tools;
 
-/// <summary>What dragging a bone does. Held E flips to the other one for as long as it's down,
-/// so the common case (rotate) needs no modifier and the occasional one is still one key away.</summary>
+/// <summary>What dragging a bone does. Held E flips between rotate and move for as long as it's
+/// down, so the common case (rotate) needs no modifier and the occasional one is still one key
+/// away. Scale is reached through the toolbar only - it's the rare case, and a bone scale that
+/// isn't deliberate is a good way to ruin a rig.</summary>
 internal enum BoneDragMode
 {
 	Rotate,
-	Move
+	Move,
+	Scale
 }
 
 /// <summary>
@@ -42,7 +45,24 @@ internal sealed class RigViewport : Widget
 	private float _boneHandleRadius = 1f;
 
 	public Action<string> BoneSelected { get; set; }
-	public string SelectedBone { get; private set; }
+
+	/// <summary>The bone dot / hitbox scale the user set, or 1 for the model-derived default.
+	/// Persisted in an EditorCookie so it survives the window - the right handle size is a property
+	/// of you and your rig, not of the clip you happen to have open.</summary>
+	public float BoneHandleScale
+	{
+		get => _boneHandleScale;
+		set
+		{
+			_boneHandleScale = value;
+			EditorCookie.Set( "marionette.bonehandle.scale", value );
+		}
+	}
+
+	private float _boneHandleScale = 1f;
+
+	/// <summary>The per-bone dot and hitbox radius, scaled by the user's handle-size setting.</summary>
+	private float HandleRadius => _boneHandleRadius * BoneHandleScale;
 
 	/// <summary>The control rig whose constraints apply while posing. Null poses plain FK.</summary>
 	public RigDocument Rig { get; set; }
@@ -256,10 +276,22 @@ internal sealed class RigViewport : Widget
 				Apply( child );
 		}
 
-		// Hiding the selected bone would otherwise leave its control floating with nothing under
-		// it - the dot is gone but the gizmo isn't.
-		if ( hidden && !ShowHiddenBones && SelectedBone is { } selected && IsHidden( selected ) )
-			Select( null );
+		// Hiding a selected bone would otherwise leave its control floating with nothing under
+		// it - the dot is gone but the gizmo isn't. Drop any hidden bones out of the selection.
+		if ( hidden && !ShowHiddenBones )
+		{
+			var removed = _selectedBones.RemoveWhere( IsHidden );
+
+			if ( removed > 0 )
+			{
+				if ( _selectedBones.Count == 0 )
+					_primaryBone = null;
+				else if ( _primaryBone is null || !_selectedBones.Contains( _primaryBone ) )
+					_primaryBone = _selectedBones.First();
+
+				BoneSelected?.Invoke( SelectedBone );
+			}
+		}
 
 		BoneVisibilityChanged?.Invoke();
 
@@ -302,6 +334,8 @@ internal sealed class RigViewport : Widget
 
 	public RigViewport( Widget parent ) : base( parent )
 	{
+		_boneHandleScale = EditorCookie.Get( "marionette.bonehandle.scale", 1f );
+
 		MinimumSize = 200;
 		Layout = Layout.Column();
 
@@ -399,6 +433,25 @@ internal sealed class RigViewport : Widget
 		};
 		_showTwistToggle.Toggled = () => SetViewMode( () => ShowTwistBones = _showTwistToggle.Value );
 		bar.Add( _showTwistToggle );
+
+		bar.AddSpacingCell( 12 );
+
+		// The bone dot / handle size, in one place. On a dense rig the dots overlap and every
+		// click grabs the wrong bone, so this is a first-class setting rather than a hidden one.
+		bar.Add( new Editor.Label( "Handle Size" ) { FixedWidth = 62, ToolTip = "Size of the bone dots and their clickable area" } );
+
+		var sizeSlider = new FloatSlider( this )
+		{
+			Minimum = 0.25f,
+			Maximum = 3f,
+			Step = 0.05f,
+			Value = BoneHandleScale,
+			FixedWidth = 110,
+			ToolTip = "Size of the bone dots and their clickable area. Smaller makes adjacent bones easier to pick apart."
+		};
+
+		sizeSlider.OnValueEdited = () => BoneHandleScale = sizeSlider.Value;
+		bar.Add( sizeSlider );
 
 		bar.AddSpacingCell( 12 );
 
@@ -603,9 +656,34 @@ internal sealed class RigViewport : Widget
 
 	public SkinnedModelRenderer Renderer => _renderer;
 
-	public void Select( string bone )
+	/// <summary>Every selected bone. A plain replace leaves just <paramref name="bone"/>; an
+	/// additive select toggles it in or out, which is how Shift-click builds up a finger-full of
+	/// bones to pose together.</summary>
+	private readonly HashSet<string> _selectedBones = new();
+
+	/// <summary>The bone the Inspector / Timeline / tutorial read - the most recently touched one
+	/// still in the selection, or null when nothing is selected.</summary>
+	private string _primaryBone;
+
+	public string SelectedBone => _selectedBones.Count > 0 ? _primaryBone : null;
+
+	public IReadOnlyCollection<string> SelectedBones => _selectedBones;
+
+	public void Select( string bone, bool additive = false )
 	{
-		SelectedBone = bone;
+		if ( additive && bone is not null )
+		{
+			// Toggle: Shift-clicking a selected bone takes it back out of the set.
+			if ( !_selectedBones.Remove( bone ) )
+				_selectedBones.Add( bone );
+		}
+		else
+		{
+			_selectedBones.Clear();
+
+			if ( bone is not null )
+				_selectedBones.Add( bone );
+		}
 
 		// Selecting a bone drops any prop selection, so there is never more than one gizmo on
 		// screen competing for the same drag. Guarded on null so clearing the bone selection -
@@ -613,7 +691,15 @@ internal sealed class RigViewport : Widget
 		if ( bone is not null )
 			SelectedReferenceProp = -1;
 
-		BoneSelected?.Invoke( bone );
+		if ( bone is not null && _selectedBones.Contains( bone ) )
+			_primaryBone = bone;
+
+		if ( _selectedBones.Count == 0 )
+			_primaryBone = null;
+		else if ( _primaryBone is null || !_selectedBones.Contains( _primaryBone ) )
+			_primaryBone = _selectedBones.First();
+
+		BoneSelected?.Invoke( SelectedBone );
 	}
 
 	private void FrameCamera()
@@ -944,7 +1030,7 @@ internal sealed class RigViewport : Widget
 
 			Gizmo.Draw.IgnoreDepth = true;
 			Gizmo.Draw.Color = isSelected ? Theme.Yellow : Theme.Green.WithAlpha( 0.7f );
-			Gizmo.Draw.SolidSphere( 0f, _boneHandleRadius * (isSelected ? 0.6f : 0.45f), 8, 8 );
+			Gizmo.Draw.SolidSphere( 0f, HandleRadius * (isSelected ? 0.6f : 0.45f), 8, 8 );
 			Gizmo.Draw.IgnoreDepth = false;
 
 			if ( isSelected )
@@ -965,7 +1051,7 @@ internal sealed class RigViewport : Widget
 			if ( prop.Model is { } propModel )
 				Gizmo.Hitbox.BBox( propModel.Bounds.Grow( 0.5f ) );
 			else
-				Gizmo.Hitbox.Sphere( new Sphere( 0f, _boneHandleRadius ) );
+				Gizmo.Hitbox.Sphere( new Sphere( 0f, HandleRadius ) );
 
 			if ( !Gizmo.IsHovered )
 				continue;
@@ -1143,9 +1229,9 @@ internal sealed class RigViewport : Widget
 
 			foreach ( var (bone, world) in LiveBones() )
 			{
-				// The dragged bone keeps its live transform, and must still be resolvable as a
-				// parent for anything under it.
-				if ( bone.Name == SelectedBone && _draggingBone )
+				// Dragged bones keep their live transform, and must still be resolvable as a
+				// parent for anything under them.
+				if ( _draggingBone && _selectedBones.Contains( bone.Name ) )
 				{
 					resolved[bone.Name] = world;
 					continue;
@@ -1302,30 +1388,35 @@ internal sealed class RigViewport : Widget
 		// worth reading at a glance, so it keeps full contrast; the values sit back.
 		var angles = local.Rotation.Angles();
 
+		// Scale only shows once it's not 1 - it's noise for the ninety-nine-in-a-hundred poses
+		// that don't touch it, and the thing you're actively judging when you are scaling.
+		var scale = local.Scale == Vector3.One
+			? ""
+			: $"\nscl  {local.Scale.x:0.#}  {local.Scale.y:0.#}  {local.Scale.z:0.#}";
+
 		Gizmo.Draw.Color = Color.White.WithAlpha( 0.85f );
 		Gizmo.Draw.ScreenText( SelectedBone, new Vector2( 12, 12 ), size: 13, flags: TextFlag.LeftTop );
 
 		Gizmo.Draw.Color = Color.White.WithAlpha( 0.4f );
 		Gizmo.Draw.ScreenText(
 			$"rot  {angles.pitch:0.#}  {angles.yaw:0.#}  {angles.roll:0.#}\n" +
-			$"pos  {local.Position.x:0.#}  {local.Position.y:0.#}  {local.Position.z:0.#}",
+			$"pos  {local.Position.x:0.#}  {local.Position.y:0.#}  {local.Position.z:0.#}{scale}",
 			new Vector2( 12, 30 ), size: 11, flags: TextFlag.LeftTop );
 	}
 
 	private bool _draggingBone;
 
-	/// <summary>One dot per bone, click to select, click-and-drag to move it directly - hold E
-	/// while dragging to rotate in place instead. This replaces an earlier select-then-a-separate-
-	/// ring-appears-elsewhere design: MovieMaker's own docs describe bone posing as "click and
-	/// drag from a joint... hold E to rotate", a single unified control per bone, not two.
-	/// Unselected bones get a plain click-to-select hitbox. The selected bone gets no hitbox of
-	/// ours at all - only Gizmo.Control, which brings its own. Registering both is what broke
-	/// dragging for so long; see the comment on the selected branch below.</summary>
+	/// <summary>One dot per bone, click to select, Shift-click to add or remove, click-and-drag to
+	/// pose - hold E to flip rotate/move, or use the toolbar for scale. A single selected bone gets
+	/// a gizmo on itself; several selected bones get one gizmo on their centroid that poses the lot
+	/// together. Unselected bones get a plain click-to-select hitbox. The selected bone gets no
+	/// hitbox of ours at all - only Gizmo.Control, which brings its own. Registering both is what
+	/// broke dragging for so long; see the comment on the selected branch below.</summary>
 	private void DrawBoneHandles()
 	{
-		// The selected bone's control is run after the loop, in its own top-level scope, so it
-		// isn't nested inside this bone's rotated drawing scope.
-		(BoneCollection.Bone Bone, Transform World)? selected = null;
+		// Selected bones are collected through the loop, then the control is run after it in its
+		// own top-level scope, so it isn't nested inside a bone's rotated drawing scope.
+		var selectedBones = new List<(BoneCollection.Bone Bone, Transform World)>();
 		string hovered = null;
 
 		// Placing the whole model is its own mode with its own single handle. Bone dots are
@@ -1343,11 +1434,18 @@ internal sealed class RigViewport : Widget
 
 		if ( !ShowBoneHandles )
 		{
-			// Handles hidden, but the selected bone still gets its control - otherwise turning
+			// Handles hidden, but the selected bones still get their control - otherwise turning
 			// dots off would silently take away the ability to pose.
-			if ( SelectedBone is { } stillSelected && FindBoneData( stillSelected ) is { } stillBone
-				&& _renderer.TryGetBoneTransform( stillBone, out var stillWorld ) )
-				DragSelectedBone( stillBone, stillWorld );
+			foreach ( var name in _selectedBones )
+			{
+				if ( FindBoneData( name ) is { } bone && _renderer.TryGetBoneTransform( bone, out var world ) )
+					selectedBones.Add( (bone, world) );
+			}
+
+			if ( selectedBones.Count == 1 )
+				DragSelectedBone( selectedBones[0].Bone, selectedBones[0].World );
+			else if ( selectedBones.Count > 1 )
+				DragSelectedBones( selectedBones );
 
 			return;
 		}
@@ -1365,7 +1463,7 @@ internal sealed class RigViewport : Widget
 			if ( IsHidden( bone.Name ) && !ShowHiddenBones )
 				continue;
 
-			var isSelected = bone.Name == SelectedBone;
+			var isSelected = _selectedBones.Contains( bone.Name );
 			var isTwist = IsTwistBone( bone.Name );
 
 			// A twist bone that's actually selected keeps its handle regardless - selecting one
@@ -1374,9 +1472,12 @@ internal sealed class RigViewport : Widget
 			if ( isTwist && !ShowTwistBones && !isSelected )
 				continue;
 
+			if ( isSelected )
+				selectedBones.Add( (bone, world) );
+
 			using var boneScope = Gizmo.Scope( $"Bone{bone.Index}", world );
 
-			var radius = _boneHandleRadius;
+			var radius = HandleRadius;
 
 			if ( bone.Parent is { } parentBone && _renderer.TryGetBoneTransform( parentBone, out var parentWorld ) )
 			{
@@ -1399,15 +1500,16 @@ internal sealed class RigViewport : Widget
 
 			Gizmo.Draw.SolidSphere( 0f, radius * (isSelected ? 0.5f : isTwist ? 0.16f : 0.35f), 8, 8 );
 
-			// No hitbox of our own on the selected bone. Gizmo.Control registers its own hitboxes
-			// for its handles, and a sphere sitting at the same scope origin - depth-biased in
-			// front, no less - wins the hover test against them, so the control never sees the
+			// No hitbox of our own on a single selected bone. Gizmo.Control registers its own
+			// hitboxes for its handles, and a sphere sitting at the same scope origin - depth-biased
+			// in front, no less - wins the hover test against them, so the control never sees the
 			// press and the drag never starts. That was the actual reason dragging did nothing.
-			if ( isSelected )
-			{
-				selected = (bone, world);
+			//
+			// With a group selected the control lives at the centroid, away from any one bone, so
+			// the selected bones keep their hitboxes - that's what lets Shift-click take one back
+			// out of the set.
+			if ( isSelected && _selectedBones.Count == 1 )
 				continue;
-			}
 
 			Gizmo.Hitbox.DepthBias = 0.01f;
 
@@ -1422,7 +1524,7 @@ internal sealed class RigViewport : Widget
 				hovered = bone.Name;
 
 				if ( Gizmo.WasLeftMousePressed )
-					Select( bone.Name );
+					Select( bone.Name, Editor.Application.KeyboardModifiers.HasFlag( KeyboardModifiers.Shift ) );
 			}
 		}
 
@@ -1432,9 +1534,11 @@ internal sealed class RigViewport : Widget
 		// Named after the loop so the hint reflects this frame, not last frame's hover.
 		if ( hovered is not null )
 		{
-			RigStatusBar.Show( DragMode == BoneDragMode.Rotate
-				? $"{hovered}  -  click to select, then drag to rotate. Hold E to move instead."
-				: $"{hovered}  -  click to select, then drag to move. Hold E to rotate instead." );
+			RigStatusBar.Show( DragHint( hovered ) );
+		}
+		else if ( _selectedBones.Count > 1 )
+		{
+			RigStatusBar.Show( $"{_selectedBones.Count} bones selected  -  drag the gizmo to pose them together" );
 		}
 		else if ( SelectedBone is not null )
 		{
@@ -1449,10 +1553,26 @@ internal sealed class RigViewport : Widget
 		// editor's own move gizmo.
 		Gizmo.Draw.IgnoreDepth = false;
 
-		if ( selected is { } sel )
-			DragSelectedBone( sel.Bone, sel.World );
+		if ( selectedBones.Count == 1 )
+			DragSelectedBone( selectedBones[0].Bone, selectedBones[0].World );
+		else if ( selectedBones.Count > 1 )
+			DragSelectedBones( selectedBones );
 
 		DeselectOnEmptyClick( hovered );
+	}
+
+	/// <summary>Status-bar copy for a hovered bone - names the current drag mode and reminds that
+	/// Shift-click extends the selection rather than replacing it.</summary>
+	private string DragHint( string subject )
+	{
+		var (verb, flip) = DragMode switch
+		{
+			BoneDragMode.Rotate => ("rotate", "Hold E to move instead."),
+			BoneDragMode.Move => ("move", "Hold E to rotate instead."),
+			_ => ("scale", "")
+		};
+
+		return $"{subject}  -  click to select, Shift-click to add, drag to {verb}. {flip}".TrimEnd();
 	}
 
 	/// <summary>
@@ -1475,7 +1595,7 @@ internal sealed class RigViewport : Widget
 			return;
 
 		// A drag that happens to finish over empty space is still a drag, not a click on nothing.
-		if ( _draggingBone || _dragBoneName is not null || _propDragIndex >= 0 )
+		if ( _draggingBone || _dragBoneName is not null || _groupDragTargets is not null || _propDragIndex >= 0 )
 			return;
 
 		if ( hovered is not null || Gizmo.HasHovered )
@@ -1507,7 +1627,7 @@ internal sealed class RigViewport : Widget
 
 		Gizmo.Draw.IgnoreDepth = true;
 		Gizmo.Draw.Color = Theme.Green;
-		Gizmo.Draw.SolidSphere( 0f, _boneHandleRadius * 0.7f, 8, 8 );
+		Gizmo.Draw.SolidSphere( 0f, HandleRadius * 0.7f, 8, 8 );
 		Gizmo.Draw.IgnoreDepth = false;
 
 		Gizmo.Hitbox.DepthBias = 0.01f;
@@ -1597,6 +1717,13 @@ internal sealed class RigViewport : Widget
 	private Transform _dragStart;
 	private Vector3 _moveDelta;
 
+	// Group drag state. _groupDragTargets holds the top-most selected bones (a selected bone with
+	// a selected ancestor is carried by that ancestor, not transformed directly), captured with
+	// their start transforms; _groupPivot is the centroid the gizmo and the transform act around.
+	private List<(BoneCollection.Bone Bone, Transform Start)> _groupDragTargets;
+	private Vector3 _groupPivot;
+	private Vector3 _groupMoveDelta;
+
 	/// <summary>Latches the drag's starting pose on its first frame. Called only after a control
 	/// has reported movement, so a hover never counts as a drag.</summary>
 	private void BeginDrag( BoneCollection.Bone bone, Transform world, ref Transform start )
@@ -1639,13 +1766,14 @@ internal sealed class RigViewport : Widget
 
 	private void EndDrag()
 	{
-		var was = _dragBoneName;
+		var wasDragging = _dragBoneName is not null || _groupDragTargets is not null;
 
 		_dragBoneName = null;
+		_groupDragTargets = null;
 		_draggingBone = false;
 
 		// Only fire on an actual drag ending - this runs every frame the control isn't active.
-		if ( was is not null )
+		if ( wasDragging )
 			BoneDragEnded?.Invoke();
 	}
 
@@ -1695,42 +1823,70 @@ internal sealed class RigViewport : Widget
 		// E is a hold-to-flip, not a toggle - it borrows the other mode for as long as it's down
 		// and springs back, so you can nudge a bone's position mid-rotation-pass without losing
 		// your place.
-		var rotating = (DragMode == BoneDragMode.Rotate) != Editor.Application.IsKeyDown( KeyCode.E );
+		var mode = EffectiveDragMode();
 
 		Transform newWorld;
 
-		if ( rotating )
+		switch ( mode )
 		{
-			// Rotate's value is CUMULATIVE since the grab - RotationEditorTool assigns it rather
-			// than accumulating, and applies it to the start rotation. Position's is per-frame.
-			// The two controls genuinely differ; this is not a typo.
-			if ( !Gizmo.Control.Rotate( "bone-rotate", Rotation.Identity, out var rotation ) )
+			case BoneDragMode.Rotate:
 			{
-				EndDragIfReleased();
-				return;
+				// Rotate's value is CUMULATIVE since the grab - RotationEditorTool assigns it rather
+				// than accumulating, and applies it to the start rotation. Position's is per-frame.
+				// The two controls genuinely differ; this is not a typo.
+				if ( !Gizmo.Control.Rotate( "bone-rotate", Rotation.Identity, out var rotation ) )
+				{
+					EndDragIfReleased();
+					return;
+				}
+
+				BeginDrag( bone, world, ref start );
+
+				var basis = handleRotation;
+				var applied = basis * rotation * basis.Inverse;
+
+				newWorld = new Transform( start.Position, applied * start.Rotation, start.Scale );
+				break;
 			}
 
-			BeginDrag( bone, world, ref start );
-
-			var basis = handleRotation;
-			var applied = basis * rotation * basis.Inverse;
-
-			newWorld = new Transform( start.Position, applied * start.Rotation, start.Scale );
-		}
-		else
-		{
-			if ( !Gizmo.Control.Position( "bone-move", Vector3.Zero, out var delta, handleRotation ) )
+			case BoneDragMode.Move:
 			{
-				EndDragIfReleased();
-				return;
+				if ( !Gizmo.Control.Position( "bone-move", Vector3.Zero, out var delta, handleRotation ) )
+				{
+					EndDragIfReleased();
+					return;
+				}
+
+				BeginDrag( bone, world, ref start );
+
+				// Per-frame delta, accumulated - "moveDelta += delta" - then applied to the start.
+				_moveDelta += delta;
+
+				newWorld = new Transform( start.Position + _moveDelta, start.Rotation, start.Scale );
+				break;
 			}
 
-			BeginDrag( bone, world, ref start );
+			default:
+			{
+				// Scale, like Rotate, reports CUMULATIVE since the grab - the value passed in is
+				// the baseline (1), the value handed back is the factor to multiply by. Uniform,
+				// because Source2 scale is 1D and a joint scale that isn't uniform skews the mesh
+				// in a way no rig wants.
+				if ( !Gizmo.Control.Scale( "bone-scale", 1f, out var scale ) )
+				{
+					EndDragIfReleased();
+					return;
+				}
 
-			// Per-frame delta, accumulated - "moveDelta += delta" - then applied to the start.
-			_moveDelta += delta;
+				BeginDrag( bone, world, ref start );
 
-			newWorld = new Transform( start.Position + _moveDelta, start.Rotation, start.Scale );
+				var s = scale.Clamp( 0.01f, 100f );
+
+				// A bone scales in place about its own joint - position and rotation hold, the
+				// scale multiplies.
+				newWorld = new Transform( start.Position, start.Rotation, start.Scale * s );
+				break;
+			}
 		}
 
 		_draggingBone = true;
@@ -1743,7 +1899,7 @@ internal sealed class RigViewport : Widget
 		// overwriting it every frame.
 		if ( DebugDrag )
 		{
-			Log.Info( $"[rigdrag] {bone.Name} mode={(rotating ? "rot" : "pos")} " +
+			Log.Info( $"[rigdrag] {bone.Name} mode={mode} " +
 				$"readback={world.Position} wrote={newWorld.Position} " +
 				$"viewmodel={ViewmodelMode} locked={LockCameraToView}" );
 		}
@@ -1802,6 +1958,149 @@ internal sealed class RigViewport : Widget
 
 		NotifyPosed( bone, newWorld );
 	}
+
+	/// <summary>The drag mode the gizmo should act in this frame, with E's hold-to-flip applied.
+	/// E flips rotate/move and never implies scale - scale is deliberate, reached from the toolbar.</summary>
+	private BoneDragMode EffectiveDragMode()
+	{
+		if ( !Editor.Application.IsKeyDown( KeyCode.E ) )
+			return DragMode;
+
+		return DragMode switch
+		{
+			BoneDragMode.Rotate => BoneDragMode.Move,
+			BoneDragMode.Move => BoneDragMode.Rotate,
+			_ => DragMode
+		};
+	}
+
+	/// <summary>
+	/// Drag several selected bones as a group, from one gizmo at their centroid.
+	///
+	/// Only the TOP-MOST selected bones are transformed and keyed: a selected child is carried by
+	/// its selected parent through PropagateToDescendants, so transforming both would apply the
+	/// parent's rotation and then the child's own on top - double motion. The transform itself is
+	/// applied about the centroid (rotate and scale move each bone around it), which is what makes
+	/// a handful of fingers curl as one hand rather than each bone spinning on its own joint.
+	///
+	/// IK is deliberately not run here - it's a single-bone solve, and a group drag is plain FK.
+	/// </summary>
+	private void DragSelectedBones( List<(BoneCollection.Bone Bone, Transform World)> targets )
+	{
+		var pivot = _groupDragTargets is not null ? _groupPivot : Centroid( targets );
+
+		using var scope = Gizmo.Scope( "BoneGroup", new Transform( pivot ) );
+
+		Gizmo.Hitbox.DepthBias = 0.01f;
+
+		var mode = EffectiveDragMode();
+
+		// Rotate and Scale hand back values CUMULATIVE since the grab; Position hands back a
+		// per-frame delta. Same contract as DragSelectedBone - see the note there.
+		var rotation = Rotation.Identity;
+		var moveDelta = Vector3.Zero;
+		var scale = 1f;
+
+		switch ( mode )
+		{
+			case BoneDragMode.Rotate:
+				if ( !Gizmo.Control.Rotate( "bone-rotate", Rotation.Identity, out rotation ) )
+				{
+					EndDragIfReleased();
+					return;
+				}
+				break;
+
+			case BoneDragMode.Move:
+				if ( !Gizmo.Control.Position( "bone-move", Vector3.Zero, out moveDelta, Rotation.Identity ) )
+				{
+					EndDragIfReleased();
+					return;
+				}
+				break;
+
+			default:
+				if ( !Gizmo.Control.Scale( "bone-scale", 1f, out scale ) )
+				{
+					EndDragIfReleased();
+					return;
+				}
+
+				scale = scale.Clamp( 0.01f, 100f );
+				break;
+		}
+
+		BeginGroupDrag( targets );
+
+		// Position's delta accumulates onto the frozen start, after BeginGroupDrag has zeroed it.
+		if ( mode == BoneDragMode.Move )
+			_groupMoveDelta += moveDelta;
+
+		_draggingBone = true;
+
+		foreach ( var (bone, start) in _groupDragTargets )
+		{
+			var newWorld = TransformGroup( start, _groupPivot, rotation, _groupMoveDelta, scale, mode );
+
+			newWorld = ApplyLimits( bone, newWorld );
+
+			ApplyWorldTransform( bone, newWorld );
+
+			// Carries unselected descendants - and any selected ones nested under this bone -
+			// with the moved parent.
+			PropagateToDescendants( bone, newWorld );
+
+			NotifyPosed( bone, newWorld );
+		}
+	}
+
+	/// <summary>Latches the group drag's targets and centroid on its first frame of movement.
+	/// Captured as the TOP-MOST bones only, so a parent and its selected children are transformed
+	/// once, not once each.</summary>
+	private void BeginGroupDrag( List<(BoneCollection.Bone Bone, Transform World)> targets )
+	{
+		if ( _groupDragTargets is not null )
+			return;
+
+		var tops = TopMost( targets );
+
+		_groupDragTargets = tops;
+		_groupPivot = Centroid( tops );
+		_groupMoveDelta = Vector3.Zero;
+
+		BoneDragStarted?.Invoke( SelectedBone ?? (tops.Count > 0 ? tops[0].Bone.Name : null) );
+	}
+
+	/// <summary>The selected bones with no selected ancestor - those are the ones the group
+	/// transform is applied to; anything under one follows it.</summary>
+	private static List<(BoneCollection.Bone Bone, Transform World)> TopMost( List<(BoneCollection.Bone Bone, Transform World)> bones )
+	{
+		var names = new HashSet<string>( bones.Select( t => t.Bone.Name ) );
+
+		return bones.Where( t => t.Bone.Parent is null || !names.Contains( t.Bone.Parent.Name ) ).ToList();
+	}
+
+	private static Vector3 Centroid( List<(BoneCollection.Bone Bone, Transform World)> bones )
+	{
+		if ( bones.Count == 0 )
+			return Vector3.Zero;
+
+		var sum = Vector3.Zero;
+
+		foreach ( var (_, world) in bones )
+			sum += world.Position;
+
+		return sum / (float)bones.Count;
+	}
+
+	/// <summary>Apply a group transform to one bone's start pose. Rotate and scale act about the
+	/// group pivot; move is a plain translation of every bone by the same delta.</summary>
+	private static Transform TransformGroup( Transform start, Vector3 pivot, Rotation rotation, Vector3 move, float scale, BoneDragMode mode ) => mode switch
+	{
+		BoneDragMode.Rotate => new Transform( pivot + rotation * (start.Position - pivot), rotation * start.Rotation, start.Scale ),
+		BoneDragMode.Move => new Transform( start.Position + move, start.Rotation, start.Scale ),
+		_ => new Transform( pivot + (start.Position - pivot) * scale, start.Rotation, start.Scale * scale )
+	};
 
 	/// <summary>The toolbar's Link icon - off, dragging a bone poses it live without writing a
 	/// keyframe, same as scrubbing between existing keys does.</summary>

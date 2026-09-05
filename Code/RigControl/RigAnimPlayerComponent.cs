@@ -167,6 +167,7 @@ public sealed class RigAnimPlayerComponent : Component
 			var local = track.Evaluate( frame );
 			bone.LocalPosition = local.Position;
 			bone.LocalRotation = local.Rotation;
+			bone.LocalScale = local.Scale;
 		}
 
 		_events?.SetFrame( frame );
