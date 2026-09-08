@@ -1,6 +1,8 @@
 ﻿using Editor;
 using Sandbox;
 using System;
+using System.Collections.Generic;
+using System.Linq;
 
 namespace Marionette.EditorTools;
 
@@ -138,6 +140,112 @@ internal sealed class EffigyToggleSwitch : Widget
 }
 
 /// <summary>
+/// A titled block whose body folds away when its header is clicked.
+///
+/// s&amp;box's own collapsible category is internal to the base editor library, so this is drawn here
+/// the same way <see cref="EffigyToggleSwitch"/> is — a text triangle and a bold title, nothing that
+/// needs an icon asset. The open/closed state is remembered in an EditorCookie, so the window comes
+/// back the way it was left.
+/// </summary>
+internal sealed class CollapsibleSection : Widget
+{
+	private readonly SectionHeader _header;
+	private readonly Widget _body;
+	private readonly string _cookie;
+
+	private bool _expanded;
+
+	/// <summary>The controls for this section. Add to this, not to the section itself.</summary>
+	public Widget Body => _body;
+
+	public CollapsibleSection( Widget parent, string title, string cookie, bool defaultExpanded = true ) : base( parent )
+	{
+		_cookie = cookie;
+		_expanded = cookie is null ? defaultExpanded : EditorCookie.Get( cookie, defaultExpanded );
+
+		Layout = Layout.Column();
+		Layout.Spacing = 4;
+
+		_header = Layout.Add( new SectionHeader( this, title, _expanded ) );
+		_header.Clicked = Toggle;
+
+		_body = Layout.Add( new Widget( this ) );
+		_body.Layout = Layout.Column();
+		_body.Layout.Spacing = 10;
+		_body.Layout.Margin = new Sandbox.UI.Margin( 12, 0, 0, 0 );
+		_body.Visible = _expanded;
+	}
+
+	private void Toggle()
+	{
+		_expanded = !_expanded;
+		_header.SetExpanded( _expanded );
+		_body.Visible = _expanded;
+
+		if ( _cookie is not null )
+			EditorCookie.Set( _cookie, _expanded );
+	}
+
+	/// <summary>The clickable bar at the top of a <see cref="CollapsibleSection"/>.</summary>
+	private sealed class SectionHeader : Widget
+	{
+		private readonly Editor.Label _arrow;
+
+		public Action Clicked { get; set; }
+
+		public SectionHeader( Widget parent, string title, bool expanded ) : base( parent )
+		{
+			Cursor = CursorShape.Finger;
+			MouseTracking = true;
+
+			TranslucentBackground = true;
+			NoSystemBackground = true;
+
+			Layout = Layout.Row();
+			Layout.Spacing = 6;
+
+			_arrow = Layout.Add( new Editor.Label( "" ) { Color = Theme.TextControl.WithAlpha( 0.6f ) } );
+
+			var label = Layout.Add( new Editor.Label( title ) );
+			label.SetStyles( "font-weight: 600;" );
+
+			Layout.AddStretchCell();
+
+			SetExpanded( expanded );
+		}
+
+		public void SetExpanded( bool expanded ) => _arrow.Text = expanded ? "▾" : "▸";
+
+		protected override void OnMousePress( MouseEvent e )
+		{
+			if ( !e.LeftMouseButton )
+				return;
+
+			e.Accepted = true;
+			Clicked?.Invoke();
+		}
+	}
+}
+
+/// <summary>
+/// A key-capture box for rebinding a shortcut. Click it, press the new key, and the box shows the
+/// result and hands it back through <see cref="KeyBind.ValueChanged"/>.
+///
+/// Built on the editor's own KeyBind, with one override: the shortcut system stores keys by
+/// <see cref="KeyEvent.Name"/> (what the editor's keybind page captures), while the stock KeyBind
+/// reads the button-code name — two spellings that disagree for the same key.
+/// </summary>
+internal sealed class EffigyKeyBind : KeyBind
+{
+	public EffigyKeyBind( Widget parent ) : base( parent )
+	{
+		MinimumWidth = 110;
+	}
+
+	protected override string GetKeyName( KeyEvent e ) => e.Name.ToUpperInvariant();
+}
+
+/// <summary>
 /// Effigy's settings, in their own window off the Edit menu.
 ///
 /// A WINDOW RATHER THAN MORE MENU. Both of these lived in the View menu as checkable options, which
@@ -182,6 +290,10 @@ internal sealed class EffigySettingsWindow : Window
 		/// <summary>OUT ONLY — how many point lights are currently in the viewport, so the caption
 		/// under the switch can say so.</summary>
 		public int PlacedLightCount;
+
+		/// <summary>Draw the model with a checker instead of its own materials, so UV stretching
+		/// and seams are visible on the surface. A diagnostic, not how the part looks.</summary>
+		public bool ShowUVChecker;
 
 		/// <summary>Normal-map bake: DirectX green (-Y) rather than OpenGL (+Y), the row order, and
 		/// the square size in texels. Read by the Bake button, not by the viewport.</summary>
@@ -278,9 +390,22 @@ internal sealed class EffigySettingsWindow : Window
 		canvas.Layout.Margin = 16;
 		canvas.Layout.Spacing = 12;
 
-		Heading( canvas, "Grid" );
+		// The settings now run long enough to need scrolling — six folded sections plus the hotkeys
+		// list would otherwise push the bottom ones off the fixed-size window.
+		var scroll = canvas.Layout.Add( new ScrollArea( canvas ), 1 );
+		scroll.VerticalScrollbarMode = ScrollbarMode.Auto;
+		scroll.HorizontalScrollbarMode = ScrollbarMode.Off;
 
-		AddSwitch( canvas, "Show plane grid",
+		var body = new Widget( canvas );
+		body.Layout = Layout.Column();
+		body.Layout.Spacing = 12;
+		scroll.Canvas = body;
+
+		// --- grid ----------------------------------------------------------------------------
+
+		var grid = Section( body, "Grid", "Effigy.Settings.Grid" );
+
+		AddSwitch( grid, "Show plane grid",
 			"The lattice inside every plane's outline - the three reference planes and the one you "
 			+ "are sketching on.",
 			_values.ShowGrid,
@@ -288,12 +413,12 @@ internal sealed class EffigySettingsWindow : Window
 
 		// --- spacing -------------------------------------------------------------------------
 
-		var spacingRow = canvas.Layout.AddRow();
+		var spacingRow = grid.Layout.AddRow();
 
 		spacingRow.Add( new Editor.Label( "Grid spacing" ) );
 		spacingRow.AddStretchCell();
 
-		var spacing = new ComboBox( canvas )
+		var spacing = new ComboBox( grid )
 		{
 			MinimumWidth = 150,
 			ToolTip = "How far apart the grid lines sit, in sketch units. This is the same step the "
@@ -313,21 +438,21 @@ internal sealed class EffigySettingsWindow : Window
 
 		// --- snapping ------------------------------------------------------------------------
 
-		Heading( canvas, "Snapping" );
+		var snapping = Section( body, "Snapping", "Effigy.Settings.Snapping" );
 
-		AddSwitch( canvas, "Snap to grid",
+		AddSwitch( snapping, "Snap to grid",
 			"Round the cursor to the nearest grid intersection. Off draws freehand on the plane.",
 			_values.SnapToGrid,
 			value => { _values.SnapToGrid = value; Changed(); } );
 
-		AddSwitch( canvas, "Snap to points",
+		AddSwitch( snapping, "Snap to points",
 			"Jump the cursor onto existing sketch points. This is what closes a chain - without it "
 			+ "two clicks in the same spot leave two points a hair apart and the profile will not "
 			+ "extrude.",
 			_values.SnapToPoints,
 			value => { _values.SnapToPoints = value; Changed(); } );
 
-		AddSwitch( canvas, "Snap to the face underneath",
+		AddSwitch( snapping, "Snap to the face underneath",
 			"While sketching on the face of a part, jump the cursor onto that face's own corners "
 			+ "and slide it along its edges. Off leaves the outline drawn but inert - useful when "
 			+ "you want to draw across a face rather than measure from it.",
@@ -336,15 +461,15 @@ internal sealed class EffigySettingsWindow : Window
 
 		// --- the size reference ---------------------------------------------------------------
 
-		Heading( canvas, "Reference" );
+		var reference = Section( body, "Reference", "Effigy.Settings.Reference" );
 
-		_referenceToggle = AddSwitch( canvas, "Show citizen",
+		_referenceToggle = AddSwitch( reference, "Show citizen",
 			"Stand the base citizen at the origin, to build against. It is scenery only - it takes "
 			+ "no clicks, joins no feature and is never exported.",
 			_values.ShowSizeReference,
 			value => { _values.ShowSizeReference = value; Changed(); } );
 
-		_referenceNote = canvas.Layout.Add( new Editor.Label( ReferenceNote( _values ) ) );
+		_referenceNote = reference.Layout.Add( new Editor.Label( ReferenceNote( _values ) ) );
 
 		// Dim and small, because it is a readout rather than a control - it sits under the switch
 		// the way a hint does, not in the column of things you can change.
@@ -352,18 +477,18 @@ internal sealed class EffigySettingsWindow : Window
 
 		// --- lighting ------------------------------------------------------------------------
 
-		Heading( canvas, "Lighting" );
+		var lighting = Section( body, "Lighting", "Effigy.Settings.Lighting" );
 
-		_brightToggle = AddSwitch( canvas, "Full bright",
+		_brightToggle = AddSwitch( lighting, "Full bright",
 			"Even light from every side, so a face is never in shadow while you model. Off is a "
 			+ "sun like a game scene, plus any lights you have placed.",
 			_values.FullBright,
 			value => { _values.FullBright = value; Changed(); } );
 
-		_lightsNote = canvas.Layout.Add( new Editor.Label( LightsNote( _values ) ) );
+		_lightsNote = lighting.Layout.Add( new Editor.Label( LightsNote( _values ) ) );
 		_lightsNote.SetStyles( "color: #808080; font-size: 11px;" );
 
-		var lightsRow = canvas.Layout.AddRow();
+		var lightsRow = lighting.Layout.AddRow();
 		lightsRow.Spacing = 8;
 
 		var addLight = new Button( "Add point light", "wb_incandescent" )
@@ -382,16 +507,27 @@ internal sealed class EffigySettingsWindow : Window
 		lightsRow.Add( addLight );
 		lightsRow.Add( clearLights );
 
+		// --- view ----------------------------------------------------------------------------
+
+		var view = Section( body, "View", "Effigy.Settings.View" );
+
+		AddSwitch( view, "UV checker",
+			"Draw the model with a checker pattern instead of its own materials, so stretching and "
+			+ "seams in the UVs are visible on the surface. A toggle because a checker is a "
+			+ "diagnostic, not how the part looks.",
+			_values.ShowUVChecker,
+			value => { _values.ShowUVChecker = value; Changed(); } );
+
 		// --- the palette ---------------------------------------------------------------------
 
-		Heading( canvas, "Appearance" );
+		var appearance = Section( body, "Appearance", "Effigy.Settings.Appearance" );
 
-		var paletteRow = canvas.Layout.AddRow();
+		var paletteRow = appearance.Layout.AddRow();
 
 		paletteRow.Add( new Editor.Label( "Colour palette" ) );
 		paletteRow.AddStretchCell();
 
-		var combo = new ComboBox( canvas ) { MinimumWidth = 150 };
+		var combo = new ComboBox( appearance ) { MinimumWidth = 150 };
 
 		for ( var i = 0; i < EffigyPalette.All.Length; i++ )
 		{
@@ -406,27 +542,27 @@ internal sealed class EffigySettingsWindow : Window
 
 		// --- normal map bake ----------------------------------------------------------------
 
-		Heading( canvas, "Normal map bake" );
+		var bake = Section( body, "Normal map bake", "Effigy.Settings.Bake" );
 
-		AddSwitch( canvas, "DirectX green channel",
+		AddSwitch( bake, "DirectX green channel",
 			"Which way the green channel points. On is DirectX-style (-Y), off is OpenGL-style "
 			+ "(+Y). If a baked map looks inverted where a surface curves, this is the switch. Only "
 			+ "the Bake button in a Sculpt feature reads it.",
 			_values.BakeDirectXGreen,
 			value => { _values.BakeDirectXGreen = value; Changed(); } );
 
-		AddSwitch( canvas, "Flip vertically",
+		AddSwitch( bake, "Flip vertically",
 			"Where row zero of the image sits. Off puts v = 0 at the top, on puts it at the bottom "
 			+ "- flip this if the bake comes out mirrored top to bottom.",
 			_values.BakeFlipV,
 			value => { _values.BakeFlipV = value; Changed(); } );
 
-		var bakeSizeRow = canvas.Layout.AddRow();
+		var bakeSizeRow = bake.Layout.AddRow();
 
 		bakeSizeRow.Add( new Editor.Label( "Bake size" ) );
 		bakeSizeRow.AddStretchCell();
 
-		var bakeSize = new ComboBox( canvas )
+		var bakeSize = new ComboBox( bake )
 		{
 			MinimumWidth = 150,
 			ToolTip = "The side length of the baked normal map, in texels. The map is square.",
@@ -443,7 +579,9 @@ internal sealed class EffigySettingsWindow : Window
 
 		bakeSizeRow.Add( bakeSize );
 
-		canvas.Layout.AddStretchCell();
+		// --- hotkeys -------------------------------------------------------------------------
+
+		BuildHotkeys( body );
 
 		Canvas = canvas;
 	}
@@ -529,29 +667,129 @@ internal sealed class EffigySettingsWindow : Window
 			: $"Studio sun, like a game scene. {lamps}";
 	}
 
-	private static void Heading( Widget canvas, string text )
+	/// <summary>A collapsible section, added to the settings column and returned as its body — the
+	/// widget every control in that section should be added to.</summary>
+	private static Widget Section( Widget parent, string title, string cookie, bool defaultExpanded = true )
 	{
-		var label = canvas.Layout.Add( new Editor.Label( text ) );
+		var section = parent.Layout.Add( new CollapsibleSection( parent, title, cookie, defaultExpanded ) );
 
-		label.SetStyles( "font-weight: 600;" );
+		return section.Body;
 	}
 
 	/// <summary>A labelled row with the switch pushed out to the right edge, which is the shape
 	/// every one of these settings wants.</summary>
-	private static EffigyToggleSwitch AddSwitch( Widget canvas, string label, string tip, bool value, Action<bool> changed )
+	private static EffigyToggleSwitch AddSwitch( Widget container, string label, string tip, bool value, Action<bool> changed )
 	{
-		var row = canvas.Layout.AddRow();
+		var row = container.Layout.AddRow();
 
 		row.Add( new Editor.Label( label ) { ToolTip = tip } );
 		row.AddStretchCell();
 
-		var toggle = new EffigyToggleSwitch( canvas, value ) { ToolTip = tip };
+		var toggle = new EffigyToggleSwitch( container, value ) { ToolTip = tip };
 
 		toggle.ValueChanged = changed;
 
 		row.Add( toggle );
 
 		return toggle;
+	}
+
+	/// <summary>
+	/// The shortcut rebinding section.
+	///
+	/// Every tool key Effigy registers with the engine's own <c>[Shortcut]</c> system appears here,
+	/// each on a row with a key box. Reassigning writes into the engine's ShortcutOverrides store
+	/// and re-registers the keys immediately, which is the same mechanism the editor's own keybind
+	/// page uses — so a key changed here shows up in Edit &gt; Preferences &gt; Editor Keybinds too,
+	/// and vice versa.
+	/// </summary>
+	private void BuildHotkeys( Widget body )
+	{
+		var section = Section( body, "Hotkeys", "Effigy.Settings.Hotkeys" );
+
+		var note = section.Layout.Add( new Editor.Label(
+			"Click a key, then press the new one. Reset puts a key back to its default." ) );
+		note.SetStyles( "color: #808080; font-size: 11px;" );
+
+		var shown = 0;
+
+		foreach ( var entry in EffigyShortcuts() )
+		{
+			var ident = entry.Identifier;
+
+			var row = section.Layout.AddRow();
+			row.Spacing = 8;
+
+			row.Add( new Editor.Label( FriendlyName( entry ) ), 1 );
+
+			var keys = EditorShortcuts.GetKeys( ident );
+
+			var bind = new EffigyKeyBind( section )
+			{
+				Value = string.IsNullOrEmpty( keys ) ? "None" : keys,
+				ToolTip = "Click, then press the new key. Esc cancels.",
+			};
+			bind.ValueChanged = key => OnKeyBound( ident, key );
+
+			row.Add( bind );
+
+			row.Add( new Button( "Reset" ) { Clicked = () => OnKeyReset( ident, bind ) } );
+
+			shown++;
+		}
+
+		if ( shown == 0 )
+		{
+			section.Layout.Add( new Editor.Label(
+				"No rebindable shortcuts are registered — open Effigy once and reopen this window." )
+			{
+				Color = Theme.TextControl.WithAlpha( 0.6f ),
+			} );
+		}
+	}
+
+	/// <summary>The shortcuts this package owns, in a stable order: everything under the
+	/// <c>effigy.</c> and <c>rig.</c> identifiers, plus the shared <c>editor.</c> commands it binds
+	/// (undo, redo, save). Duplicate identifiers are collapsed to one row.</summary>
+	private static List<EditorShortcuts.Entry> EffigyShortcuts()
+	{
+		var entries = EditorShortcuts.Entries ?? new List<EditorShortcuts.Entry>();
+
+		return entries
+			.Where( e => e.Identifier.StartsWith( "effigy." )
+				|| e.Identifier.StartsWith( "rig." )
+				|| e.Identifier.StartsWith( "editor." ) )
+			.GroupBy( e => e.Identifier )
+			.Select( g => g.First() )
+			.OrderBy( e => e.Identifier, StringComparer.Ordinal )
+			.ToList();
+	}
+
+	/// <summary>The editor's own name for a shortcut, with the raw identifier as the fallback — it
+	/// is not always humanised, and a bare identifier still reads better than an empty row.</summary>
+	private static string FriendlyName( EditorShortcuts.Entry entry ) =>
+		string.IsNullOrWhiteSpace( entry.Name ) ? entry.Identifier : entry.Name;
+
+	private void OnKeyBound( string ident, string key )
+	{
+		var overrides = EditorPreferences.ShortcutOverrides;
+		overrides[ident] = key;
+		EditorPreferences.ShortcutOverrides = overrides;
+
+		// Re-register every window's keybinds so the new key is live immediately, not next session.
+		EditorEvent.Run( "keybinds.update" );
+	}
+
+	private void OnKeyReset( string ident, KeyBind bind )
+	{
+		var overrides = EditorPreferences.ShortcutOverrides;
+		overrides.Remove( ident );
+		EditorPreferences.ShortcutOverrides = overrides;
+
+		EditorEvent.Run( "keybinds.update" );
+
+		var keys = EditorShortcuts.GetDefaultKeys( ident );
+		bind.Value = string.IsNullOrEmpty( keys ) ? "None" : keys;
 	}
 
 	/// <summary>Zero is the adaptive step rather than "no grid", so it has to say so — a dropdown

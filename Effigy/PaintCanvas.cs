@@ -6,15 +6,11 @@ namespace Effigy;
 /// <summary>
 /// An RGBA canvas a paint stroke composites into, held CPU-side.
 ///
-/// PARKED, NOT LIVE. Nothing in the shipped tool calls this - the paint that ships is vertex
-/// colour, and its path is PaintReplay.ReplayColors. This texture side is reachable only from its
-/// own tests. It is kept rather than deleted because docs/dev/PAINTING.md §6 closes the question
-/// "for now" and names texels as the better long-term answer: resolution independent of mesh
-/// density, exporting as a real texture. Reviving it needs the authoring half nobody has written -
-/// bake the canvas to PNG, compile a .vtex, generate a .vmat, bind the slot.
-///
-/// SO DO NOT READ IT AS THE PAINT PIPELINE. If you are following how a stroke reaches the screen,
-/// you want PaintReplay.ReplayColors and PaintFeature, not this.
+/// THIS IS THE LIVE PAINT TARGET NOW. Paint stores strokes and replays them onto this canvas, so
+/// resolution is independent of mesh density - a bare box paints at the same texel resolution a
+/// sculpted one does, which is the whole reason the vertex-colour path was replaced. The editor
+/// uploads the canvas to a texture and renders it as an ordinary material; on export the same
+/// canvas is baked to a PNG and authored into a .vmat.
 ///
 /// DELIBERATELY THE SAME SHAPE AS BakedMap. A baked normal map is a `byte[] Rgb` plus a `bool[]`
 /// mask, written straight out by PngWriter; this is a `byte[] Rgba`, four bytes a texel with the
@@ -48,6 +44,15 @@ public sealed class PaintCanvas
 		Rgba = new byte[width * height * 4];
 	}
 
+	/// <summary>A deep copy, for <see cref="PolyMesh.Clone"/>. The dirty flag is NOT copied — a clone
+	/// is a snapshot, not a live canvas, and its upload state is its new owner's business.</summary>
+	public PaintCanvas Clone()
+	{
+		var copy = new PaintCanvas( Width, Height );
+		Array.Copy( Rgba, copy.Rgba, Rgba.Length );
+		return copy;
+	}
+
 	/// <summary>
 	/// Source-over composite of a solid colour at <paramref name="weight"/> coverage onto one texel.
 	///
@@ -71,28 +76,121 @@ public sealed class PaintCanvas
 
 		var i = (y * Width + x) * 4;
 
-		var sa = Math.Min( weight, 1f );
-		var da = Rgba[i + 3] / 255f;
-		var oa = sa + da * (1f - sa);
+		var (or, og, ob, oa) = SourceOver( Rgba[i], Rgba[i + 1], Rgba[i + 2], Rgba[i + 3], r, g, b, weight );
 
+		Rgba[i] = or;
+		Rgba[i + 1] = og;
+		Rgba[i + 2] = ob;
+		Rgba[i + 3] = oa;
+
+		Mark( x, y );
+	}
+
+	/// <summary>
+	/// Source-over over straight-alpha RGBA, in byte space — the one copy of the colour math.
+	///
+	/// WHY THIS IS A STATIC AND NOT PRIVATE TO <see cref="Blend"/>. A paint stroke is composited
+	/// once rather than per dab (see PaintReplay), and the live session recomposes a texel from a
+	/// pre-stroke base rather than from the canvas's current value. Both need the same source-over,
+	/// and a second hand-written copy of this arithmetic is exactly the thing that drifts into
+	/// "two half dabs are one full dab" (see PaintCanvasTests). One function, used everywhere.
+	/// </summary>
+	internal static (byte R, byte G, byte B, byte A) SourceOver(
+		byte dr, byte dg, byte db, byte da, byte sr, byte sg, byte sb, float weight )
+	{
 		// Source-over, computed in premultiplied form and divided back out to straight alpha: the
 		// incoming colour scaled by its own coverage, the colour already there by what of it the new
 		// coverage does not cover. oa is never zero here — sa > 0 implies oa >= sa.
-		var or = (r / 255f) * sa + (Rgba[i] / 255f) * da * (1f - sa);
-		var og = (g / 255f) * sa + (Rgba[i + 1] / 255f) * da * (1f - sa);
-		var ob = (b / 255f) * sa + (Rgba[i + 2] / 255f) * da * (1f - sa);
+		var sa = Math.Min( weight, 1f );
+		var daF = da / 255f;
+		var oa = sa + daF * (1f - sa);
+
+		var or = (sr / 255f) * sa + (dr / 255f) * daF * (1f - sa);
+		var og = (sg / 255f) * sa + (dg / 255f) * daF * (1f - sa);
+		var ob = (sb / 255f) * sa + (db / 255f) * daF * (1f - sa);
 
 		or /= oa;
 		og /= oa;
 		ob /= oa;
 
-		Rgba[i] = (byte)MathF.Round( or * 255f );
-		Rgba[i + 1] = (byte)MathF.Round( og * 255f );
-		Rgba[i + 2] = (byte)MathF.Round( ob * 255f );
-		Rgba[i + 3] = (byte)MathF.Round( oa * 255f );
+		return (
+			(byte)MathF.Round( or * 255f ),
+			(byte)MathF.Round( og * 255f ),
+			(byte)MathF.Round( ob * 255f ),
+			(byte)MathF.Round( oa * 255f ) );
+	}
+
+	/// <summary>Write one texel straight, bypassing the blend. The live session uses this to lay a
+	/// recomposed texel back onto the canvas; it is not a general-purpose API and skips every guard
+	/// <see cref="Blend"/> makes, because the caller has already resolved them.</summary>
+	internal void Write( int x, int y, byte r, byte g, byte b, byte a )
+	{
+		var i = (y * Width + x) * 4;
+
+		Rgba[i] = r;
+		Rgba[i + 1] = g;
+		Rgba[i + 2] = b;
+		Rgba[i + 3] = a;
 
 		Mark( x, y );
 	}
+
+	/// <summary>
+	/// Bake a rectangular region of the canvas over an opaque base colour, into a dense RGBA
+	/// buffer <paramref name="dest"/> sized <c>w * h * 4</c>.
+	///
+	/// WHY THE CANVAS IS BAKED OPAQUE AT ALL. The canvas holds straight RGBA with the paint's
+	/// coverage in its alpha, so an unpainted texel is fully transparent. A texture bound as an
+	/// ordinary material's colour map has nothing sensible to show in a transparent texel - it
+	/// reads as a hole, or black, depending on the shader - so the canvas is composited over a
+	/// base before it reaches a texture. The base is the "surface the paint covers": white, the
+	/// same trick the vertex-colour Replace mode used, so an unpainted region is a flat blank
+	/// rather than a see-through one.
+	///
+	/// Rectangular because the editor only re-uploads the dirty rect while painting - baking the
+	/// whole 1024² for a single dab is the same four-megabyte-per-mouse-move cost the dirty rect
+	/// exists to avoid. The whole-canvas form below is the one-shot for the initial upload and for
+	/// export.
+	/// </summary>
+	internal void BakeOpaque( byte[] dest, byte br, byte bg, byte bb, int x, int y, int w, int h )
+	{
+		var o = 0;
+
+		for ( var yy = y; yy < y + h; yy++ )
+		{
+			for ( var xx = x; xx < x + w; xx++ )
+			{
+				var i = (yy * Width + xx) * 4;
+				var coverage = Rgba[i + 3] / 255f;
+
+				// A transparent texel needs no blend - source-over of nothing over the base IS the
+				// base. Skirting the blend also keeps the byte math off the hot path for a canvas
+				// that is mostly empty.
+				if ( coverage <= 0f )
+				{
+					dest[o] = br;
+					dest[o + 1] = bg;
+					dest[o + 2] = bb;
+					dest[o + 3] = 255;
+				}
+				else
+				{
+					var (r, g, b, _) = SourceOver( br, bg, bb, 255, Rgba[i], Rgba[i + 1], Rgba[i + 2], coverage );
+
+					dest[o] = r;
+					dest[o + 1] = g;
+					dest[o + 2] = b;
+					dest[o + 3] = 255;
+				}
+
+				o += 4;
+			}
+		}
+	}
+
+	/// <summary>The whole canvas baked over the base colour, for the initial upload and for export.</summary>
+	internal void BakeOpaque( byte[] dest, byte br, byte bg, byte bb ) =>
+		BakeOpaque( dest, br, bg, bb, 0, 0, Width, Height );
 
 	/// <summary>Whether anything has touched the canvas since the last <see cref="ClearDirty"/>.</summary>
 	public bool HasDirty => _dirty;
@@ -110,6 +208,18 @@ public sealed class PaintCanvas
 	public int MaxY => _maxY;
 
 	public void ClearDirty() => _dirty = false;
+
+	/// <summary>Mark the whole canvas dirty without touching its pixels, so the next upload repaints
+	/// everything. The live session calls this when the visible canvas is rebuilt wholesale from the
+	/// committed one, where the pixels changed everywhere but were not written through <see cref="Blend"/>.</summary>
+	internal void Invalidate()
+	{
+		_dirty = true;
+		_minX = 0;
+		_minY = 0;
+		_maxX = Width - 1;
+		_maxY = Height - 1;
+	}
 
 	/// <summary>Back to transparent, the whole canvas marked dirty so the next upload repaints it all.</summary>
 	public void Clear()

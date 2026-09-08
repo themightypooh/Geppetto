@@ -541,7 +541,6 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		_viewport.SketchGridBar = _gridBar;
 
 		_viewport.SculptStrokeFinished = NoteSculptEdited;
-		_viewport.SculptSettingsChanged = OnSculptSettingsChanged;
 
 		// The paint bar, in the same floating spot the sculpt bar keeps — it is about the stroke
 		// you are making, not the tool you picked.
@@ -559,7 +558,6 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		_viewport.AddPaintOverlay( _paintBar );
 
 		_viewport.PaintStrokeFinished = OnPaintStrokeFinished;
-		_viewport.PaintSettingsChanged = OnPaintSettingsChanged;
 
 		_viewport.NoteChanged = OnNoteEdited;
 		_viewport.NoteTextRequested = PromptNoteText;
@@ -1209,6 +1207,88 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	/// <summary>The feature being painted, so finishing knows what to mark dirty.</summary>
 	private PaintFeature _paintFeature;
 
+	// The material and texture the CAD preview shows a painted body with, after painting has finished
+	// and the ordinary merged preview takes over. Cached keyed on the canvas object, so a rebuild that
+	// reused the feature's canvas — a slider drag on something else — does not re-create a 1024²
+	// texture.
+	private PaintCanvas _previewPaintCanvas;
+	private Texture _previewPaintTexture;
+	private Material _previewPaintMaterial;
+
+	/// <summary>
+	/// The CAD preview for a mesh carrying a paint atlas: one material with the canvas texture bound,
+	/// the same path the live paint session uses.
+	///
+	/// The texture and material are cached keyed on the canvas object, because the feature's own
+	/// replay cache means a rebuild that changed neither the topology nor the atlas hands back the
+	/// same canvas — and re-creating a 1024² texture on every slider drag of an unrelated feature
+	/// would be the exact waste the dirty rect exists to avoid.
+	/// </summary>
+	private Model BuildPaintPreview( PolyMesh mesh )
+	{
+		var canvas = mesh.Paint;
+
+		if ( canvas is null )
+		{
+			_previewPaintCanvas = null;
+			_previewPaintTexture = null;
+			_previewPaintMaterial = null;
+			return null;
+		}
+
+		if ( !ReferenceEquals( _previewPaintCanvas, canvas ) )
+		{
+			var res = canvas.Width;
+			var opaque = new byte[res * res * 4];
+			canvas.BakeOpaque( opaque, 255, 255, 255 );
+
+			_previewPaintTexture = Texture.Create( res, res, ImageFormat.RGBA8888 )
+				.WithData( opaque )
+				.Finish();
+
+			_previewPaintMaterial = Material.Load( "materials/default.vmat" )?.CreateCopy( "effigy_paint" );
+			_previewPaintMaterial?.Set( "g_tColor", _previewPaintTexture );
+
+			_previewPaintCanvas = canvas;
+		}
+
+		return EffigyPreview.Build( mesh, _previewPaintMaterial );
+	}
+
+	/// <summary>
+	/// The authoring chain for a painted part, run once on compile: canvas → opaque PNG → a .vmat
+	/// naming the PNG, then the .vmat is bound to the painted body's default slot so the compiled
+	/// model samples the atlas rather than the missing-material shader. There is no .vtex step — the
+	/// engine's material compiler does not accept a .vtex as a texture input, so the material names
+	/// the PNG and the asset system compiles it to a texture on its own.
+	///
+	/// A face the user dropped a material on keeps that material — paint takes the slot that had
+	/// nothing, the same rule the vertex-colour Blend option kept. The slot binding is a real edit
+	/// to MaterialNames, which is what makes the remap list pick it up; it persists in the document
+	/// the way any dropped material does.
+	/// </summary>
+	private void AuthorPaint( PolyMesh mesh, string name, string folder )
+	{
+		if ( mesh.Paint is not { } canvas )
+			return;
+
+		var opaque = PaintMaterial.OpaqueRgba( canvas );
+
+		var pngPath = Path.Combine( folder, $"{name}_paint.png" );
+		var vmatPath = Path.Combine( folder, $"{name}_paint.vmat" );
+
+		PngWriter.WriteFileRgba( pngPath, opaque, canvas.Width, canvas.Height );
+
+		var relPng = $"models/effigy/{name}_paint.png";
+		var relVmat = $"models/effigy/{name}_paint.vmat";
+
+		File.WriteAllText( vmatPath, PaintMaterial.VmatSource( relPng ) );
+
+		_studio.MaterialNames[0] = relVmat;
+
+		Log.Info( $"[Effigy] authored paint atlas {relVmat} ({canvas.Width}x{canvas.Height})" );
+	}
+
 	private readonly List<(EffigyStageTool Tool, BrushKind Kind)> _brushTools = new();
 	private EffigyStageTool _maskTool;
 	private EffigyStageTool _symmetryTool;
@@ -1552,8 +1632,8 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			RebuildStudio();
 		}
 
-		// Paint paints ONE body at a time — one stroke list, one set of vertex colours. Anything else
-		// is a door refusal. No unwrap gate: vertex colours need no UVs, which is half the point.
+		// Paint paints ONE body at a time — one stroke list, one atlas. Anything else is a door
+		// refusal.
 		var targets = _studio.Bodies.Where( b => feature.Bodies.Matches( b ) ).ToList();
 
 		if ( targets.Count != 1 )
@@ -1562,6 +1642,27 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 				? "Paint needs a body to paint on — add a primitive or extrude a sketch first."
 				: "Paint paints one body at a time — pick one in the Parts list, then press Paint again." );
 			return;
+		}
+
+		// AUTO-UNWRAP, NOT A GATE. Texel paint needs UVs where every face owns its own texels, but the
+		// user must not have to know that. A bare box ships six overlapping islands, so entering paint
+		// on one inserts a UV Project (Unwrap) above this feature and carries on. It is an ordinary
+		// feature in the history, so it appears in the tree, participates in rollback, and is undone
+		// by one Ctrl+Z — which is why the prompt says so rather than changing the tree silently.
+		var unwrapped = false;
+
+		if ( !NormalBake.Measure( targets[0].Mesh ).CanBake )
+		{
+			RecordUndo();
+
+			var uv = new UVProjectFeature();
+			uv.Mode.Index = Array.IndexOf( uv.Mode.Options, "Unwrap" );
+			_studio.Insert( index, uv );
+
+			RebuildStudio();
+
+			targets = _studio.Bodies.Where( b => feature.Bodies.Matches( b ) ).ToList();
+			unwrapped = targets.Count == 1;
 		}
 
 		_paintFeature = feature;
@@ -1577,22 +1678,28 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		// The session replays whatever strokes already exist, so re-entering a painted feature shows
 		// the paint as it was left, not a blank surface.
-		var session = new PaintSession( targets[0].Mesh, feature.Strokes );
+		var session = new PaintSession( targets[0].Mesh, PaintFeature.Resolution, feature.Strokes );
 		session.Radius = session.SuggestedRadius;
 
-		_viewport.BeginPaint( session, slot => _studio.MaterialNames.TryGetValue( slot, out var name ) ? name : null );
+		_viewport.BeginPaint( session );
 		_paintBar.Bind( session, feature );
 		_viewport.RefreshPaintPreview();
 
-		// SAY IT AT THE DOOR ON A COARSE PART. Paint colours vertices, so a bare box has eight
-		// places for colour to land and a stroke reads as a gradient across whole faces rather than
-		// a mark where the cursor was. That is the tool working as designed and it looks exactly
-		// like the tool being broken, which is what it looked like until somebody said so here.
-		SetPrompt( session.IsCoarse
-			? $"Paint: drag on the model. This body has only {targets[0].Mesh.Positions.Count} vertices "
-				+ "and paint colours vertices — add a Subdivide above the Paint feature for a "
-				+ "brush that follows the cursor instead of tinting whole faces."
-			: "Paint: drag on the model. Colour, size and strength are on the bar below." );
+		// Say what the auto-unwrap did, and what it costs. An unwrap is 0..1 and does not repeat, so a
+		// part whose material was sized to tile will sit differently — said rather than silently done.
+		if ( unwrapped )
+		{
+			var tiling = _studio.MaterialScales.Count > 0
+				? " Its materials were sized to tile, and an unwrap does not tile, so they will sit differently."
+				: "";
+
+			SetPrompt( $"Paint: drag on the model. Added a UV Project so the paint has its own texels "
+				+ $"(one Ctrl+Z removes it).{tiling}" );
+		}
+		else
+		{
+			SetPrompt( "Paint: drag on the model. Colour, size and strength are on the bar below." );
+		}
 	}
 
 	/// <summary>
@@ -2349,8 +2456,8 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	/// brush ring is drawn at the new size.</summary>
 	private void OnSculptBarChanged() => _viewport?.Update();
 
-	/// <summary>The viewport changed a brush setting itself - the X and M shortcuts - so the strip's
-	/// ticks and the bar's readout have to catch up with it.</summary>
+	/// <summary>Put the strip's ticks and the bar's readout back in step with the session after a
+	/// sculpt shortcut changed a brush setting — the radius keys, X and M.</summary>
 	private void OnSculptSettingsChanged()
 	{
 		UpdateSculptChecks();
@@ -2632,11 +2739,43 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	/// Which body a sketch was drawn on, or null for one on a global plane. This is what Auto
 	/// reads, so it is what the strip's Auto hint has to read too.
 	///
-	/// Straight off SketchFeature.Face rather than through the kernel's own resolution, because
-	/// that needs a FeatureContext which only exists mid-rebuild - see EffigyResultStrip.ResolveAuto.
+	/// Straight off the features rather than through the kernel's own resolution, because that needs
+	/// a FeatureContext which only exists mid-rebuild - see EffigyResultStrip.ResolveAuto. Which
+	/// means the chain it walks has to be kept in step with SketchFeature.Execute BY HAND, and the
+	/// day it was not, the strip said "new body" while the rebuild quietly added to a part.
 	/// </summary>
-	private string SketchHostBodyId( string sketchId ) =>
-		_studio.Features.OfType<SketchFeature>().FirstOrDefault( f => f.Id == sketchId )?.Face?.BodyId;
+	private string SketchHostBodyId( string sketchId )
+	{
+		if ( _studio.Features.OfType<SketchFeature>().FirstOrDefault( f => f.Id == sketchId ) is not { } sketch )
+			return null;
+
+		// A sketch on a datum plane inherits whatever that plane came off, following a chain of
+		// planes to whichever one named a face. Bounded by the feature count rather than trusted to
+		// terminate: a document can be hand-edited, and a strip that hangs is worse than one that
+		// gives up.
+		if ( !string.IsNullOrEmpty( sketch.PlaneFeatureId ) )
+		{
+			var planeId = sketch.PlaneFeatureId;
+
+			for ( var step = 0; step < _studio.Features.Count; step++ )
+			{
+				if ( _studio.Features.OfType<PlaneFeature>().FirstOrDefault( f => f.Id == planeId ) is not { } plane )
+					return null;
+
+				if ( !string.IsNullOrEmpty( plane.BasePlaneId ) )
+				{
+					planeId = plane.BasePlaneId;
+					continue;
+				}
+
+				return plane.Face?.BodyId;
+			}
+
+			return null;
+		}
+
+		return sketch.Face?.BodyId;
+	}
 
 	/// <summary>The left half of the status bar — what the active tool wants next.</summary>
 	private void SetPrompt( string prompt )
@@ -2659,7 +2798,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	/// </summary>
 	private enum ToolKind
 	{
-		Sketch, Primitive, Extrude, Revolve, Sweep, Loft, Chamfer, Fillet, Shell, Subdivide,
+		Sketch, Plane, Primitive, Extrude, Revolve, Sweep, Loft, Chamfer, Fillet, Shell, Subdivide,
 		Draft, Hole, Sculpt, Mirror, LinearPattern, CircularPattern, Transform, UVProject, FaceMaterial,
 		MoveFace, Paint, Boolean,
 	}
@@ -2668,6 +2807,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	private static Feature NewFeature( ToolKind kind, int choice ) => kind switch
 	{
 		ToolKind.Sketch => new SketchFeature(),
+		ToolKind.Plane => new PlaneFeature(),
 		ToolKind.Primitive => NewPrimitive( choice ),
 		ToolKind.Extrude => AwaitingPick( new ExtrudeFeature() ),
 		ToolKind.Revolve => AwaitingPick( NewRevolve() ),
@@ -2819,6 +2959,14 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		new() { Icon = EffigyIcon.Sketch, Label = "Sketch", Stage = StageSketch, MenuIcon = "edit",
 			Tip = "Add a Sketch feature — draw lines/arcs on a plane",
 			Kind = ToolKind.Sketch },
+
+		// BESIDE SKETCH, because it is the tool you reach for when the answer to "which plane?" is
+		// none of the three on offer. It builds nothing on its own, which is why it is not on Solid
+		// with the tools that do — a plane is somewhere to put a sketch, and Sketch is where the
+		// person who needs one is already standing.
+		new() { Icon = EffigyIcon.Plane, Label = "Plane", Stage = StageSketch, MenuIcon = "layers",
+			Tip = "Add a Plane — offset or angled off a global plane, a face, or another plane",
+			Kind = ToolKind.Plane },
 
 		new() { Icon = EffigyIcon.Primitive, Label = "Primitive", Stage = StageSketch,
 			Tip = "Add a Primitive — pick a shape",
@@ -3613,6 +3761,15 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			case "front": _viewport.FrontPlaneVisible = visible; break;
 			case "right": _viewport.RightPlaneVisible = visible; break;
 			default:
+				// A datum plane's flag is read out of the tree by UpdateDatumPlanes rather than
+				// pushed as a property, because the viewport is handed the whole list every rebuild
+				// anyway and a second copy of "is this one hidden" would be one too many.
+				if ( key.StartsWith( "plane:" ) )
+				{
+					UpdateDatumPlanes( _dialog?.Feature );
+					break;
+				}
+
 				var sketch = _studio.Features.OfType<SketchFeature>()
 					.FirstOrDefault( x => $"sketch:{x.Id}" == key );
 				_viewport.SetSketchVisibility( sketch?.Sketch, visible );
@@ -3834,19 +3991,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		// Show whatever DID build, errors or not. A broken feature halfway down the tree should
 		// leave the part above it on screen — going blank hides the very geometry you need to
 		// look at to work out what the failing feature is missing.
-		// Preview shows only what is visible; export below deliberately still takes everything.
-		// Each face's slot resolves to the material dropped on it, so the preview wears the real
-		// vmats rather than one flat placeholder. Unbound slots come back null and fall back.
-		// Vertex colours ride on the mesh and composite over the material, so a painted body needs
-		// no special material here — the ordinary build already carries them.
-		var preview = EffigyPreview.Build( _studio.ToVisibleMesh(),
-			slot => _studio.MaterialNames.TryGetValue( slot, out var name ) ? name : null );
-
-		// Frame only when geometry first appears. Every later rebuild leaves the camera alone,
-		// because rebuilds also happen on every parameter tick and the view must hold still
-		// while you drag.
-		_viewport?.SetModel( preview, frameCamera: preview is not null && !_hasPreview );
-		_hasPreview = preview is not null;
+		RefreshPreview();
 
 		// The preview model is one flat grey, so a material slot is invisible in it. The viewport
 		// tints the faces that carry one instead, and needs the bodies to do it - the mesh handed to
@@ -3884,6 +4029,58 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		if ( report.HasErrors )
 			Log.Warning( $"[Effigy] rebuild: {string.Join( "; ", report.Errors.Select( e => e.Message ) )}" );
+	}
+
+	/// <summary>The engine's dev checker, worn as a whole-part material when the UV checker overlay
+	/// is on. The number grid says scale and orientation, and any stretch or seam in the UVs reads
+	/// straight off the surface.</summary>
+	private const string CheckerMaterialPath = "materials/dev/dev_measuregeneric01.vmat";
+
+	/// <summary>Whether the part is drawn with the checker instead of its own materials. A view
+	/// setting, so it is remembered in a cookie and never marks the document dirty.</summary>
+	private bool _showUVChecker;
+
+	/// <summary>
+	/// Rebuild the on-screen model from the studio as it already stands, without re-running the
+	/// features.
+	///
+	/// The checker overlay toggles only the material the preview wears, so it needs this rather than
+	/// a full <see cref="RebuildStudio"/> — a view setting must not re-execute the history or mark
+	/// the document dirty.
+	/// </summary>
+	private void RefreshPreview()
+	{
+		var visible = _studio.ToVisibleMesh();
+		var preview = BuildPreview( visible );
+
+		// Frame only when geometry first appears. Every later rebuild leaves the camera alone,
+		// because rebuilds also happen on every parameter tick and the view must hold still
+		// while you drag.
+		_viewport?.SetModel( preview, frameCamera: preview is not null && !_hasPreview );
+		_hasPreview = preview is not null;
+	}
+
+	/// <summary>
+	/// The preview for a mesh: each face's slot resolves to the material dropped on it, so the part
+	/// wears the real vmats rather than one flat placeholder. Unbound slots come back null and fall
+	/// back. A painted body carries its atlas, which needs the paint-preview path — one material
+	/// with the canvas texture bound — rather than the per-slot bucketing. The checker overlay
+	/// overrides all of that, because a diagnostic is the thing you asked to see, not the part.
+	/// </summary>
+	private Model BuildPreview( PolyMesh visible )
+	{
+		if ( _showUVChecker )
+		{
+			var checker = Material.Load( CheckerMaterialPath );
+
+			if ( checker is not null )
+				return EffigyPreview.Build( visible, checker );
+		}
+
+		if ( visible.HasPaint )
+			return BuildPaintPreview( visible );
+
+		return EffigyPreview.Build( visible, slot => _studio.MaterialNames.TryGetValue( slot, out var name ) ? name : null );
 	}
 
 	// --- tutorial ------------------------------------------------------------------------------
@@ -4039,7 +4236,55 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		_viewport.SetPickableSketches( _studio.Features.Take( cutoff )
 			.OfType<SketchFeature>()
 			.Select( f => new EffigyViewport.PickableSketch( f.Id, f.Name ?? f.TypeName, f.Sketch ) ) );
+
+		UpdateDatumPlanes( editing );
 	}
+
+	/// <summary>
+	/// Hand the viewport the datum planes the last rebuild published, with the names, hide flags and
+	/// tree positions it needs to draw and offer them.
+	///
+	/// TAKEN FROM THE REBUILD, NOT FROM THE FEATURES. PartStudio.Planes is what the tree actually
+	/// produced; the features carry the parameters that produced it, and during a parameter drag
+	/// those are ahead of the model. Drawing from them would put the plane where the number says
+	/// while everything built on it is still where the rebuild left it.
+	///
+	/// EVERY PLANE IS DRAWN AND ONLY SOME ARE PICKABLE. A feature can only be built on a plane
+	/// standing before it in the history, so the ones at or below it are not answers — but they are
+	/// still part of the model, and the one you are editing is the one you most need to see. The
+	/// sketch list a few lines up cuts at the same point and does not need the distinction, because
+	/// nothing is ever editing a sketch's own dialog and looking at that sketch in space at once.
+	/// </summary>
+	private void UpdateDatumPlanes( Feature editing )
+	{
+		var cutoff = editing is null ? int.MaxValue : _studio.Features.IndexOf( editing );
+
+		if ( cutoff < 0 )
+			cutoff = int.MaxValue;
+
+		// Only while a plane's own dialog is open: the axes are the answer to that dialog's Tilt
+		// about dropdown, and a permanent pair of crosshairs on every plane would be clutter.
+		_viewport.PlaneAxesShownOn = (editing as PlaneFeature)?.Id;
+
+		_viewport.SetDatumPlanes( _studio.Features
+			.Select( ( f, index ) => (Feature: f as PlaneFeature, Index: index) )
+			.Where( entry => entry.Feature is not null && _studio.Planes.ContainsKey( entry.Feature.Id ) )
+			.Select( entry => new EffigyViewport.PickablePlane(
+				entry.Feature.Id,
+				entry.Feature.Name ?? entry.Feature.TypeName,
+				_studio.Planes[entry.Feature.Id],
+				_featureTree?.IsVisible( PlaneVisibilityKey( entry.Feature ) ) ?? true,
+				entry.Index < cutoff,
+
+				// Which way this plane's offset handle pulls. Worked out here rather than in the
+				// viewport because it needs the feature's Angle and Hinge, and the viewport is handed
+				// the results of a rebuild rather than the parameters a drag is busy changing.
+				entry.Feature.OffsetAxis( _studio.Planes[entry.Feature.Id] ) ) ) );
+	}
+
+	/// <summary>The tree's hide flag for a datum plane. One spelling of the key, because the tree
+	/// writes it and the viewport reads it and a second spelling would silently hide nothing.</summary>
+	internal static string PlaneVisibilityKey( Feature plane ) => $"plane:{plane.Id}";
 
 	/// <summary>
 	/// Hide the sketches that have already been turned into geometry, keeping the eye in the
@@ -4865,6 +5110,11 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			ApplyPivot( mesh );
 			skeleton = PivotedSkeleton( skeleton );
 
+			// Paint rides on the mesh as an atlas now; author it (canvas → PNG → vmat) and bind it to
+			// the painted body's slot before the remap list is written, so the compiled model samples
+			// the atlas rather than the missing-material shader.
+			AuthorPaint( mesh, name, folder );
+
 			// DMX, not SMD. ModelDoc's loader takes FBX, DMX, OBJ and VOX and nothing else (see
 			// DmxWriter for the exact string it prints), so DMX is the only supported format that
 			// carries a skeleton and per-vertex weights. The .smd is still written alongside it
@@ -4921,6 +5171,8 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		var staticObjPath = Path.Combine( folder, $"{name}.obj" );
 		var staticMesh = _studio.ToMesh();
 		ApplyPivot( staticMesh );
+
+		AuthorPaint( staticMesh, name, folder );
 
 		ObjWriter.WriteFile( staticMesh, staticObjPath, name,
 			materialName: _studio.NameForSlot );
@@ -5647,6 +5899,104 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		_stageBar?.Refresh();
 	}
 
+	// --- sculpt / paint / note / bone shortcuts ---------------------------------------------
+
+	// The viewport keys are registered as shortcuts now rather than read out of OnKeyPress, so they
+	// appear in Settings > Hotkeys and can be rebound. They are scoped to the viewport (the
+	// typeof( EffigyViewport ) override) rather than to the window, because several of them are
+	// digits and brackets that a numeric field would otherwise swallow as typing. Each is guarded to
+	// its own mode; X is sculpt's mirror AND paint's symmetry, E is the note eraser AND bone rotate,
+	// and the two sides of each pair can never be live at once, so the guards are what keep them
+	// apart instead of the old OnKeyPress ordering.
+
+	[Shortcut( "effigy.sculpt.mirror", "X", typeof( EffigyViewport ) )]
+	private void ShortcutSculptMirror() => ToggleSculptSymmetry();
+
+	[Shortcut( "effigy.sculpt.mask", "M", typeof( EffigyViewport ) )]
+	private void ShortcutSculptMask() => ToggleSculptMasking();
+
+	[Shortcut( "effigy.sculpt.brush1", "1", typeof( EffigyViewport ) )]
+	private void ShortcutSculptBrush1() => SelectSculptBrush( 0 );
+
+	[Shortcut( "effigy.sculpt.brush2", "2", typeof( EffigyViewport ) )]
+	private void ShortcutSculptBrush2() => SelectSculptBrush( 1 );
+
+	[Shortcut( "effigy.sculpt.brush3", "3", typeof( EffigyViewport ) )]
+	private void ShortcutSculptBrush3() => SelectSculptBrush( 2 );
+
+	[Shortcut( "effigy.sculpt.brush4", "4", typeof( EffigyViewport ) )]
+	private void ShortcutSculptBrush4() => SelectSculptBrush( 3 );
+
+	[Shortcut( "effigy.sculpt.brush5", "5", typeof( EffigyViewport ) )]
+	private void ShortcutSculptBrush5() => SelectSculptBrush( 4 );
+
+	[Shortcut( "effigy.sculpt.brush6", "6", typeof( EffigyViewport ) )]
+	private void ShortcutSculptBrush6() => SelectSculptBrush( 5 );
+
+	[Shortcut( "effigy.sculpt.radius.decrease", "[", typeof( EffigyViewport ) )]
+	private void ShortcutSculptRadiusDecrease() => ScaleSculptRadius( 0.8f );
+
+	[Shortcut( "effigy.sculpt.radius.increase", "]", typeof( EffigyViewport ) )]
+	private void ShortcutSculptRadiusIncrease() => ScaleSculptRadius( 1.25f );
+
+	[Shortcut( "effigy.paint.symmetry", "X", typeof( EffigyViewport ) )]
+	private void ShortcutPaintSymmetry()
+	{
+		if ( _viewport?.PaintSession is not { } session )
+			return;
+
+		session.MirrorX = !session.MirrorX;
+		OnPaintSettingsChanged();
+	}
+
+	[Shortcut( "effigy.note.erase", "E", typeof( EffigyViewport ) )]
+	private void ShortcutNoteErase()
+	{
+		if ( _viewport?.NoteSession is null )
+			return;
+
+		_viewport.NoteErasing = !_viewport.NoteErasing;
+		UpdateNoteChecks();
+	}
+
+	[Shortcut( "effigy.note.hide", "H", typeof( EffigyViewport ) )]
+	private void ShortcutNoteHide()
+	{
+		if ( _viewport?.NoteSession is null )
+			return;
+
+		_viewport.ShowNotes = !_viewport.ShowNotes;
+		_viewport.Update();
+	}
+
+	[Shortcut( "effigy.bone.move", "W", typeof( EffigyViewport ) )]
+	private void ShortcutBoneMove() => _viewport?.SetBoneDragMode( EffigyViewport.BoneDragMode.Move );
+
+	[Shortcut( "effigy.bone.rotate", "E", typeof( EffigyViewport ) )]
+	private void ShortcutBoneRotate() => _viewport?.SetBoneDragMode( EffigyViewport.BoneDragMode.Rotate );
+
+	[Shortcut( "effigy.bone.scale", "R", typeof( EffigyViewport ) )]
+	private void ShortcutBoneScale() => _viewport?.SetBoneDragMode( EffigyViewport.BoneDragMode.Scale );
+
+	/// <summary>The index is into <see cref="_brushTools"/>, so the keyboard order and the stage
+	/// bar's order are one list rather than two that can drift apart.</summary>
+	private void SelectSculptBrush( int index )
+	{
+		if ( index < 0 || index >= _brushTools.Count )
+			return;
+
+		SetSculptBrush( _brushTools[index].Kind );
+	}
+
+	private void ScaleSculptRadius( float factor )
+	{
+		if ( _viewport?.SculptSession is not { } session )
+			return;
+
+		session.Radius = MathF.Max( session.Radius * factor, 1e-4f );
+		OnSculptSettingsChanged();
+	}
+
 	/// <summary>A sketch tool key outside sketch mode has nothing to arm, and silently switching a
 	/// hidden tool would leave the strip disagreeing with the viewport next time it opened.</summary>
 	private void ArmSketchTool( SketchToolKind kind )
@@ -5700,6 +6050,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	/// <summary>Defaults to on. Modelling wants every face readable; the studio sun is the setting
 	/// you turn on when you want to judge a material, not the light you sketch under.</summary>
 	private const string FullBrightCookie = "Effigy.FullBright";
+
+	/// <summary>Defaults to off. The checker is a diagnostic, not how the part looks.</summary>
+	private const string CheckerCookie = "Effigy.ShowUVChecker";
 
 	/// <summary>The normal-map bake conventions and size. Defaults match the reference sample in
 	/// Effigy.Tests/out: OpenGL green, no vertical flip, 1024.</summary>
@@ -5760,6 +6113,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		SizeReferenceHeight = _viewport?.SizeReferenceHeight ?? 0f,
 		FullBright = _viewport?.FullBright ?? true,
 		PlacedLightCount = _viewport?.PlacedLightCount ?? 0,
+		ShowUVChecker = _showUVChecker,
 		BakeDirectXGreen = _bakeFlipGreen,
 		BakeFlipV = _bakeFlipV,
 		BakeSize = _bakeSize,
@@ -5794,6 +6148,16 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		if ( values.PaletteIndex != _paletteIndex )
 			SetPalette( values.PaletteIndex );
 
+		// The checker is a preview-material toggle, not viewport state: it changes what the preview
+		// is built with, so flipping it rebuilds the model rather than drawing something over it.
+		if ( _showUVChecker != values.ShowUVChecker )
+		{
+			_showUVChecker = values.ShowUVChecker;
+
+			if ( _studio is not null )
+				RefreshPreview();
+		}
+
 		// Not viewport state - the bake reads these fields directly when the Bake button is pressed,
 		// so applying them is just storing them.
 		_bakeFlipGreen = values.BakeDirectXGreen;
@@ -5811,6 +6175,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		EditorCookie.Set( SnapFaceEdgesCookie, values.SnapToFaceEdges );
 		EditorCookie.Set( SizeReferenceCookie, values.ShowSizeReference );
 		EditorCookie.Set( FullBrightCookie, values.FullBright );
+		EditorCookie.Set( CheckerCookie, values.ShowUVChecker );
 
 		return values;
 	}
@@ -5823,6 +6188,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		_bakeFlipGreen = EditorCookie.Get( BakeGreenCookie, false );
 		_bakeFlipV = EditorCookie.Get( BakeFlipVCookie, false );
 		_bakeSize = EditorCookie.Get( BakeSizeCookie, 1024 );
+		_showUVChecker = EditorCookie.Get( CheckerCookie, false );
 
 		if ( !_viewport.IsValid() )
 			return;
@@ -6632,32 +6998,43 @@ internal sealed class EffigyFeatureTreePanel : Widget
 	/// to be decoded rather than read. See EffigyFeatureDialog.FaceLabel, which is the other half
 	/// of this and must keep saying the same thing.
 	/// </summary>
-	public string AttachmentLabel( SketchFeature sketch )
+	public string AttachmentLabel( Feature feature )
 	{
-		if ( sketch is null )
+		// A datum plane is attached to things in exactly the same three ways a sketch is, and its
+		// row raises the same question — is this one anchored to a part, or standing in world space?
+		// One reader rather than two, so a plane and a sketch on it never describe the same
+		// attachment differently.
+		var (face, planeId, choice, offset) = feature switch
+		{
+			SketchFeature sketch => (sketch.Face, sketch.PlaneFeatureId, sketch.Plane.Value, sketch.PlaneOffset.Value),
+			PlaneFeature plane => (plane.Face, plane.BasePlaneId, plane.Base.Value, plane.Offset.Value),
+			_ => (null, null, null, 0f),
+		};
+
+		if ( choice is null )
 			return "";
 
-		if ( sketch.Face is not { } face )
-		{
-			var offset = sketch.PlaneOffset.Value;
+		var shift = offset == 0f ? "" : $" {offset:+0.##;-0.##}";
 
-			return offset == 0f ? sketch.Plane.Value : $"{sketch.Plane.Value} {offset:+0.##;-0.##}";
+		if ( !string.IsNullOrEmpty( planeId ) )
+		{
+			var on = _studio?.Features.FirstOrDefault( f => f.Id == planeId );
+
+			// Same shout as a lost face below: the feature is about to fail, or already has.
+			return on is null ? "On (missing)" : $"On {on.Name ?? on.TypeName}{shift}";
 		}
 
-		var body = _studio?.Bodies.FirstOrDefault( b => b.Id == face.BodyId );
+		if ( face is not { } attached )
+			return $"{choice}{shift}";
 
-		// A face reference that resolves to nothing is the one case worth shouting about: the
-		// sketch is about to fail, or already has.
+		var body = _studio?.Bodies.FirstOrDefault( b => b.Id == attached.BodyId );
+
 		if ( body is null )
 			return "Face of (missing)";
 
-		var raised = sketch.PlaneOffset.Value;
-
 		// The offset applies to a face-attached sketch exactly as it does to a global plane, and
 		// leaving it off the row here said the sketch was ON a face when it was floating above it.
-		return raised == 0f
-			? $"Face of {body.Name ?? "part"}"
-			: $"Face of {body.Name ?? "part"} {raised:+0.##;-0.##}";
+		return $"Face of {body.Name ?? "part"}{shift}";
 	}
 
 	/// <summary>True when the rollback bar sits above this feature, so it is not being evaluated.
@@ -6726,11 +7103,12 @@ internal sealed class EffigyFeatureTreePanel : Widget
 		menu.AddOption( feature.Suppressed ? "Unsuppress" : "Suppress", "block",
 			() => CommandRequested?.Invoke( feature, EffigyFeatureCommand.ToggleSuppress ) );
 
-		if ( feature is SketchFeature )
+		if ( feature is SketchFeature or PlaneFeature )
 		{
-			var key = $"sketch:{feature.Id}";
+			var noun = feature is PlaneFeature ? "plane" : "sketch";
+			var key = feature is PlaneFeature ? EffigyWindow.PlaneVisibilityKey( feature ) : $"sketch:{feature.Id}";
 
-			menu.AddOption( IsVisible( key ) ? "Hide sketch" : "Show sketch",
+			menu.AddOption( IsVisible( key ) ? $"Hide {noun}" : $"Show {noun}",
 				IsVisible( key ) ? "visibility_off" : "visibility", () => ToggleVisibility( key ) );
 		}
 
@@ -6925,9 +7303,16 @@ internal sealed class EffigyFeatureTreePanel : Widget
 	private sealed class FeatureNode : TreeNode<Feature>, IVisibilityNode
 	{
 		private readonly EffigyFeatureTreePanel _panel;
-		public string VisibilityKey => $"sketch:{Feature.Id}";
-		public bool IsVisible => Feature is SketchFeature && _panel.IsVisible( VisibilityKey );
-		public void ToggleVisibility() { if ( Feature is SketchFeature ) _panel.ToggleVisibility( VisibilityKey ); }
+		/// <summary>Sketches and datum planes are the two features that are DRAWN rather than built,
+		/// so they are the two that have something to hide. The prefix distinguishes them because
+		/// the flags share one dictionary and one id could otherwise mean two things.</summary>
+		public string VisibilityKey => Feature is PlaneFeature
+			? EffigyWindow.PlaneVisibilityKey( Feature )
+			: $"sketch:{Feature.Id}";
+
+		private bool Hideable => Feature is SketchFeature or PlaneFeature;
+		public bool IsVisible => Hideable && _panel.IsVisible( VisibilityKey );
+		public void ToggleVisibility() { if ( Hideable ) _panel.ToggleVisibility( VisibilityKey ); }
 		public Feature Feature => Value;
 
 		public FeatureNode( EffigyFeatureTreePanel panel, Feature feature ) : base( feature ) { _panel = panel; }
@@ -6988,14 +7373,14 @@ internal sealed class EffigyFeatureTreePanel : Widget
 			Paint.DrawText( item.Rect.Shrink( 22, 0, 0, 0 ), label, TextFlag.LeftCenter );
 			// Right-aligned, clear of the eye's strip: what this sketch is attached to, and
 			// therefore whether anything built from it will follow an edit upstream.
-			if ( Value is SketchFeature attached )
+			if ( Value is SketchFeature or PlaneFeature )
 			{
 				Paint.SetPen( Theme.TextLight.WithAlpha( 0.55f ) );
 				Paint.DrawText( item.Rect.Shrink( 0, 0, TreeEyeIcon.SecondaryTextRightMargin, 0 ),
-					_panel.AttachmentLabel( attached ), TextFlag.RightCenter );
+					_panel.AttachmentLabel( Value ), TextFlag.RightCenter );
 			}
 
-			if ( Value is SketchFeature ) _panel.PaintEye( item, VisibilityKey );
+			if ( Hideable ) _panel.PaintEye( item, VisibilityKey );
 		}
 	}
 }

@@ -210,7 +210,24 @@ public sealed partial class EffigyWindow
 		if ( _viewport.IsMaterialBrushing )
 			LeaveMaterialBrush();
 
+		// The note pen (grease pencil) owns the click the same way every brush does, and it is the
+		// one mode none of the entries below ever disarmed - so it stayed armed across a switch,
+		// and the next sketch or sculpt also scribbled notes. Notes commit per stroke, so leaving
+		// the pen is only a disarm, never a commit. UpdateNoteChecks puts the CAD bar's pen tick
+		// back, so it is not still lit as armed when you come back.
+		if ( _viewport.IsNoting )
+		{
+			_viewport.EndNotes();
+			UpdateNoteChecks();
+		}
+
 		_rigPanel?.CancelBoneTool();
+
+		// The soft preview solves against the rig every frame, and its whole point is the rig
+		// workspace; leaving it would leave the bones sagging and swinging while you model. Stopped
+		// rather than merely hidden - the bones snap back to their authored pose.
+		if ( _viewport.SoftPreviewRunning )
+			_viewport.StopSoftPreview();
 
 		// The rig bar is the one mode with nothing to finish — no feature, no session, just a stage
 		// set on the bar — so leaving it is only a matter of not still claiming to be in it. The

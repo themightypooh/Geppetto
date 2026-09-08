@@ -23,9 +23,14 @@ internal sealed class EffigySculptBar : Widget
 
 	private readonly EffigyNumericField _radius;
 	private readonly EffigyNumericField _strength;
+	private readonly ComboBox _falloff;
 	private readonly Editor.Label _level;
 
 	private SculptSession _session;
+
+	/// <summary>Set while Refresh is writing the controls, so a ComboBox firing its own selection
+	/// callback on AddItem does not read back as the user having chosen something.</summary>
+	private bool _refreshing;
 
 	/// <summary>Raised when something here changed a value the viewport should redraw for.</summary>
 	public Action Changed { get; set; }
@@ -39,7 +44,9 @@ internal sealed class EffigySculptBar : Widget
 
 		Visible = false;
 		FixedHeight = BarHeight;
-		FixedWidth = 460f;
+		// Wide enough for the Falloff dropdown that joined the two stroke controls; the row does not
+		// wrap, so a short bar clips the last thing on it rather than pushing it onto a second line.
+		FixedWidth = 640f;
 
 		Layout = Layout.Row();
 		Layout.Spacing = 8;
@@ -65,6 +72,18 @@ internal sealed class EffigySculptBar : Widget
 		};
 
 		Layout.Add( _strength );
+
+		Layout.Add( new Editor.Label( "Falloff" ) { Color = Theme.TextControl.WithAlpha( 0.6f ) } );
+
+		_falloff = new ComboBox( this )
+		{
+			MinimumWidth = 90f,
+			ToolTip = "How the brush fades from its centre to its edge. Smooth is a soft mound; "
+				+ "Sharp stays hard to the rim, for a crease; Linear fades evenly; Constant moves "
+				+ "the whole disc by the same amount.",
+		};
+
+		Layout.Add( _falloff );
 
 		_level = new Editor.Label( "" ) { Color = Theme.TextControl.WithAlpha( 0.75f ) };
 		Layout.Add( _level, 1 );
@@ -101,6 +120,8 @@ internal sealed class EffigySculptBar : Widget
 		_radius.SetValue( _session.Radius );
 		_strength.SetValue( _session.Strength );
 
+		RefreshFalloff();
+
 		var (vertices, faces) = _session.Cost( _session.Level );
 		var top = _session.Sculpt.TopLevel;
 
@@ -122,6 +143,47 @@ internal sealed class EffigySculptBar : Widget
 			text += $" · {_session.ActiveMask.ProtectedFraction:P0} held";
 
 		_level.Text = text;
+	}
+
+	/// <summary>
+	/// Rebuilt rather than re-selected, because ComboBox has no "set index without telling anyone"
+	/// and AddItem takes the selected flag. The guard is what keeps that from writing the value
+	/// back onto the session and firing Changed for a control nobody touched.
+	/// </summary>
+	private void RefreshFalloff()
+	{
+		if ( _falloff is null )
+			return;
+
+		_refreshing = true;
+
+		try
+		{
+			_falloff.Clear();
+
+			foreach ( var falloff in Enum.GetValues<BrushFalloff>() )
+			{
+				var kind = falloff;
+
+				_falloff.AddItem( kind.ToString(), onSelected: () => OnFalloffPicked( kind ),
+					selected: kind == _session.Falloff );
+			}
+		}
+		finally
+		{
+			_refreshing = false;
+		}
+	}
+
+	private void OnFalloffPicked( BrushFalloff kind )
+	{
+		if ( _refreshing || _session is null || _session.Falloff == kind )
+			return;
+
+		// A brush setting, not a document edit: it redraws the viewport through Changed and must
+		// not mark the feature tree unsaved, the way Radius and Strength do not.
+		_session.Falloff = kind;
+		Changed?.Invoke();
 	}
 
 	private void OnRadiusEdited( float value )

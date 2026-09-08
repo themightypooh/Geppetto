@@ -154,6 +154,16 @@ public sealed class PartStudio
 	/// <summary>Result of the last rebuild.</summary>
 	public List<Body> Bodies { get; private set; } = new();
 
+	/// <summary>
+	/// The datum planes the last rebuild published, keyed by the PlaneFeature's id.
+	///
+	/// Beside Bodies because it is the same kind of thing: an OUTPUT of the rebuild, not state
+	/// somebody set. A viewport drawing planes straight off the features would be drawing whatever
+	/// the parameters say at this instant, which during a parameter drag is not the model — the
+	/// same reason it does not build its own meshes either.
+	/// </summary>
+	public Dictionary<string, SketchPlane> Planes { get; private set; } = new();
+
 	/// <summary>A snapshot of everything a feature can see, taken after each one runs.</summary>
 	sealed class Snapshot
 	{
@@ -165,11 +175,20 @@ public sealed class PartStudio
 		/// to, and the extrude above it would quietly start making its own body again.</summary>
 		public Dictionary<string, string> SketchHostBodies;
 
+		/// <summary>Datum planes, carried for the reason the sketches are: resume from the cache
+		/// without them and a sketch drawn on a plane above the edit finds nothing to stand on and
+		/// fails, on a rebuild that changed nothing it could see.</summary>
+		public Dictionary<string, SketchPlane> Planes;
+
+		public Dictionary<string, string> PlaneHostBodies;
+
 		public static Snapshot Of( FeatureContext ctx ) => new()
 		{
 			Bodies = ctx.Bodies.Select( b => b.Clone() ).ToList(),
 			Sketches = ctx.Sketches.ToDictionary( kv => kv.Key, kv => kv.Value.Clone() ),
-			SketchHostBodies = new Dictionary<string, string>( ctx.SketchHostBodies )
+			SketchHostBodies = new Dictionary<string, string>( ctx.SketchHostBodies ),
+			Planes = ctx.Planes.ToDictionary( kv => kv.Key, kv => kv.Value.Clone() ),
+			PlaneHostBodies = new Dictionary<string, string>( ctx.PlaneHostBodies )
 		};
 
 		public void RestoreInto( FeatureContext ctx )
@@ -177,6 +196,8 @@ public sealed class PartStudio
 			ctx.Bodies = Bodies.Select( b => b.Clone() ).ToList();
 			ctx.Sketches = Sketches.ToDictionary( kv => kv.Key, kv => kv.Value.Clone() );
 			ctx.SketchHostBodies = new Dictionary<string, string>( SketchHostBodies );
+			ctx.Planes = Planes.ToDictionary( kv => kv.Key, kv => kv.Value.Clone() );
+			ctx.PlaneHostBodies = new Dictionary<string, string>( PlaneHostBodies );
 		}
 	}
 
@@ -354,6 +375,7 @@ public sealed class PartStudio
 		}
 
 		Bodies = ctx.Bodies;
+		Planes = ctx.Planes;
 		ApplyBodyPresentation();
 
 		// AFTER the feature loop, for the same reason ApplyBodyPresentation is: the features produce

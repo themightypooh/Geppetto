@@ -136,7 +136,7 @@ public static class AcceptsTests
 
 		foreach ( var expected in new[]
 		{
-			nameof( SketchFeature ), nameof( DraftFeature ), nameof( HoleFeature ),
+			nameof( SketchFeature ), nameof( PlaneFeature ), nameof( DraftFeature ), nameof( HoleFeature ),
 			nameof( FaceMaterialFeature ), nameof( SubdivideFeature ), nameof( ShellFeature ),
 			nameof( FilletFeature ), nameof( ChamferFeature ),
 

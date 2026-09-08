@@ -22,6 +22,7 @@ public static class UVTests
 		TestBoxProjection();
 		TestPlanarProjection();
 		TestInTheTree();
+		TestUnwrapReport();
 	}
 
 	static void TestBoxProjection()
@@ -181,6 +182,32 @@ public static class UVTests
 
 		var widest = studio.Bodies[0].Mesh.Faces.Max( f => f.UVs.Max( uv => uv.x ) - f.UVs.Min( uv => uv.x ) );
 		Check( "widening the model re-tiles rather than stretching", Near( widest, 4f, 1e-3f ), $"{widest:0.###}" );
+	}
+
+	static void TestUnwrapReport()
+	{
+		// The report the feature used to throw away: the editor panel reads it so an unwrap says what
+		// it did, and the coverage so it can say when the result still will not hold a bake.
+		var studio = new PartStudio();
+		studio.Add( new PrimitiveFeature() );
+
+		var project = studio.Add( new UVProjectFeature() );
+		project.Mode.Index = Array.IndexOf( project.Mode.Options, "Unwrap" );
+		studio.Rebuild();
+
+		Check( "unwrap runs", project.Error is null, project.Error );
+		Check( "the unwrap report is kept for the panel", project.LastUnwrap is not null, "discarded" );
+		Check( "a box unwraps to six charts", project.LastUnwrap?.Charts == 6, project.LastUnwrap?.ToString() );
+		Check( "and reports itself bakeable", project.LastCoverage is { CanBake: true }, project.LastCoverage?.Problem );
+
+		// Box projection must keep no report and no verdict - it overlaps by construction, which is
+		// correct for tiling, so a "these UVs overlap" warning must not appear on it.
+		project.Mode.Index = Array.IndexOf( project.Mode.Options, "Box" );
+		studio.MarkDirty( project );
+		studio.Rebuild();
+
+		Check( "box projection keeps no report", project.LastUnwrap is null, "box projection is not an unwrap" );
+		Check( "and no coverage verdict either", project.LastCoverage is null, "tiling overlap is correct, not unusable" );
 	}
 
 	/// <summary>Signed area of a face's UV polygon by the shoelace formula. Its sign says which way

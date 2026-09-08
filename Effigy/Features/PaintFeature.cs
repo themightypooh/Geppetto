@@ -6,16 +6,21 @@ namespace Effigy;
 /// A paint layer in the feature tree.
 ///
 /// WHERE THE PAINT LIVES: strokes in object space, replayed onto whatever the mesh currently is.
-/// The vertex colours are a derived artifact — the same bet the rest of the kernel already made by
+/// The texture atlas is a derived artifact — the same bet the rest of the kernel already made by
 /// keeping the mesh a function of the feature history. Nothing else in the document holds paint, undo
 /// is the feature tree's undo, and a stroke is one entry in the list.
 ///
-/// EXECUTE REPLAYS THE STROKES ONTO PER-VERTEX COLOURS. The dab — vertices in radius, reject the far
-/// side by its normal, falloff-weighted source-over blend — lives in PaintReplay, shared with the
-/// live session so a stroke painted by hand and the same stroke rebuilt later produce identical
-/// colours. Vertex colours rather than a texture atlas because that is what the engine composites
-/// over a material natively, and it needs no UVs — the whole unwrap gate the texture path required is
-/// gone.
+/// EXECUTE REPLAYS THE STROKES ONTO A TEXTURE ATLAS. The dab — faces in radius, reject the far side
+/// by its normal, falloff-weighted coverage — lives in PaintReplay, shared with the live session so a
+/// stroke painted by hand and the same stroke rebuilt later produce identical texels. A texture atlas
+/// rather than vertex colours because paint resolution must not equal mesh density: a bare box paints
+/// at the same texel resolution a sculpted part does, which is the whole reason the vertex-colour
+/// path was replaced.
+///
+/// THE ATLAS IS KEYED TO THE UV LAYOUT, which is the trap the vertex-colour cache never had. A
+/// re-unwrap keeps the topology and moves every island, so a canvas cached on topology alone would be
+/// handed back against a rearranged atlas — paint scattered onto unrelated faces, silently. The cache
+/// is keyed on both the topology id and <see cref="AtlasId"/>.
 ///
 /// ITS STALENESS GUARD IS COPIED FROM SculptFeature FOR THE SAME REASON. A paint session appends
 /// strokes nowhere near the studio, so nothing calls MarkDirty and the rebuild would happily reuse
@@ -25,6 +30,10 @@ namespace Effigy;
 /// </summary>
 public sealed class PaintFeature : Feature
 {
+	/// <summary>How many texels across the replayed canvas is. 1024, the figure the parked texture
+	/// path was always written against; resolution is independent of mesh density, which is the point.</summary>
+	public const int Resolution = 1024;
+
 	public override string TypeName => "Paint";
 
 	public override GeometryKind Accepts => GeometryKind.Body;
@@ -34,21 +43,12 @@ public sealed class PaintFeature : Feature
 	/// <summary>
 	/// Whether the paint tints what is underneath it or stands in for it.
 	///
-	/// BOTH ARE THE SAME ONE MULTIPLY. Vertex colour is a tint and there is no shader here to make
-	/// it anything else - what changes is the surface it multiplies into. Tint keeps
-	/// <c>materials/default.vmat</c>, whose colour texture carries the default surface, so the
-	/// paint darkens and colours that. Replace binds <c>materials/default/white.vmat</c> instead,
-	/// and a multiply against white IS the paint colour, so it reads as covering.
-	///
-	/// WHY NOT A SHADER, which is what docs/dev/PAINTING.md assumed covering would need: it would,
-	/// to composite by alpha over an arbitrary material. Swapping the material underneath gets the
-	/// covering LOOK for a slot nobody has bound, which is the case that was compiling to red
-	/// anyway. A slot with a material dropped on it is untouched by this either way - the drop is
-	/// a deliberate choice and paint tints it.
-	///
-	/// IT ONLY MOVES UNBOUND SLOTS, and it is read across the whole document rather than per body:
-	/// what an unbound slot compiles to is one line in the model's remap list, and there is one of
-	/// those per model. Setting any paint layer to Replace sets it for the export.
+	/// CARRIED FOR THE DOCUMENT FORMAT, NOT READ BY THE ATLAS. The vertex-colour path used it to pick
+	/// which material an unbound slot compiled to (tint keeps default.vmat, replace binds white.vmat);
+	/// a texture atlas is the surface colour itself, and telling tint from replace through a texture
+	/// needs a shader that combines the base material with the atlas, which nothing shipped provides.
+	/// The atlas covers. The choice stays on the feature so documents saved before the switch still
+	/// load and round-trip unchanged.
 	/// </summary>
 	public readonly ChoiceParam Blend = new( "Blend", new[] { "Tint", "Replace" } );
 
@@ -71,15 +71,21 @@ public sealed class PaintFeature : Feature
 	// the studio, so nothing calls MarkDirty and this is what catches it.
 	int _builtRevision = -1;
 
-	// The replay cache: the colours last produced, and the topology + revision they were produced
-	// from. Keyed on TOPOLOGY (vertex count and face indices, deliberately not positions) and
-	// revision, so a parametric edit that moves the geometry without changing its structure reuses
-	// the colours rather than re-replaying, and a new stroke invalidates them.
-	Vec4[] _cachedColors;
+	// The replay cache: the canvas last produced, and the topology + atlas + revision it was produced
+	// from. Keyed on topology (vertex count and face indices, deliberately not positions), the atlas
+	// (every corner UV, so a re-unwrap invalidates it) and revision, so a parametric edit that moves
+	// geometry without changing its structure or UVs reuses the canvas rather than re-replaying, while
+	// a new stroke or a moved atlas does not.
+	PaintCanvas _cachedCanvas;
 	long _topologyId;
-	int _colorsRevision = -1;
+	long _atlasId;
+	int _canvasRevision = -1;
 
 	public override bool IsStale => Revision != _builtRevision;
+
+	/// <summary>The canvas last replayed by this feature, or null before a build. The editor reads it
+	/// to show paint after a rebuild — it is the same canvas <see cref="Execute"/> put on the body.</summary>
+	public PaintCanvas Canvas => _cachedCanvas;
 
 	/// <summary>Append a stroke and mark the feature stale, so the next rebuild replays it. The list
 	/// is lazily created here so a fresh feature never has to check for null before painting.</summary>
@@ -94,7 +100,7 @@ public sealed class PaintFeature : Feature
 	///
 	/// The revision is bumped, not merely the list swapped, because the replay cache is keyed on it: a
 	/// plain assignment would leave <see cref="Revision"/> unchanged, the cache would see no reason to
-	/// re-render, and the model would keep serving colours the restored strokes do not describe. The
+	/// re-render, and the model would keep serving paint the restored strokes do not describe. The
 	/// strokes themselves are copied by reference — they are immutable once painted, so sharing them
 	/// across undo snapshots is the correct and cheapest read.
 	/// </summary>
@@ -108,22 +114,24 @@ public sealed class PaintFeature : Feature
 	{
 		var targets = RequireBodies( ctx, Bodies );
 
-		// Paint paints ONE body at a time — one stroke list, one set of vertex colours. A studio
-		// with several bodies needs a picked body, which is exactly what the editor's door gate asks
-		// for before a session starts.
+		// Paint paints ONE body at a time — one stroke list, one atlas. A studio with several bodies
+		// needs a picked body, which is exactly what the editor's door gate asks for before a session
+		// starts.
 		if ( Strokes is { Count: > 0 } && targets.Count == 1 )
 		{
 			var mesh = targets[0].Mesh;
 			var topology = MultiresSculpt.TopologyId( mesh );
+			var atlas = AtlasId.Of( mesh );
 
-			if ( _cachedColors is null || _topologyId != topology || _colorsRevision != Revision )
+			if ( _cachedCanvas is null || _topologyId != topology || _atlasId != atlas || _canvasRevision != Revision )
 			{
-				_cachedColors = PaintReplay.ReplayColors( mesh, Strokes );
+				_cachedCanvas = PaintReplay.Replay( mesh, Strokes, Resolution );
 				_topologyId = topology;
-				_colorsRevision = Revision;
+				_atlasId = atlas;
+				_canvasRevision = Revision;
 			}
 
-			mesh.VertexColors = _cachedColors;
+			mesh.Paint = _cachedCanvas;
 		}
 
 		// Last, so a failure above leaves the feature stale and the next rebuild tries again.

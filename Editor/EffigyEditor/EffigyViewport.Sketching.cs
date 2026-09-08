@@ -101,6 +101,11 @@ internal sealed partial class EffigyViewport
 		HitPlane( 0, new Vector3( top, top, PlanePickThickness ) );      // Top   (XY), normal Z
 		HitPlane( 1, new Vector3( front, PlanePickThickness, front ) );  // Front (XZ), normal Y
 		HitPlane( 2, new Vector3( PlanePickThickness, right, right ) );  // Right (YZ), normal X
+
+		// The planes a PlaneFeature put there are the same question's other answers, so they are
+		// registered in the same frame and resolve against the same solid — see
+		// EffigyViewport.Planes.cs for why they are not folded into HitPlane's index scheme.
+		DrawDatumPlaneHitboxes();
 	}
 
 	private void HitPlane( int index, Vector3 size )

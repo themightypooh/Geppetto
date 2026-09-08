@@ -297,9 +297,10 @@ public static class AllFeaturesTests
 				continue;
 
 			// It ran. It must also have DONE something - produced a body, changed one, or (for
-			// Sketch) published a sketch. A tool that runs clean and changes nothing is the case
-			// that reads as a dead button.
-			var didSomething = feature is SketchFeature
+			// Sketch and Plane, which build no geometry at all) published something a later feature
+			// can consume. A tool that runs clean and changes nothing is the case that reads as a
+			// dead button.
+			var didSomething = feature is SketchFeature or PlaneFeature
 				|| studio.Bodies.Count != bodiesBefore
 				|| studio.Bodies.Any( b => b.Mesh.FaceCount > 0 );
 

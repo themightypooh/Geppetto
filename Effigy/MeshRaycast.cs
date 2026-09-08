@@ -21,6 +21,37 @@ public readonly struct MeshHit
 }
 
 /// <summary>
+/// A run of solid the ray passes through: where it went in, where it came out, and the point
+/// halfway between them.
+///
+/// THE MIDPOINT IS WHERE A JOINT GOES. A bone belongs on the medial line of the limb it drives, and
+/// a click can only ever name a surface — so a spine placed by clicking lands on the skin of the
+/// chest, and every weight it drives is computed from a line running down the front of the model
+/// rather than through the middle of it. Halfway between the front and the back of the material you
+/// pointed at is that line, for the price of one more ray query.
+/// </summary>
+public readonly struct SolidSpan
+{
+	/// <summary>Where the ray entered the material — the same point a click already gives you.</summary>
+	public readonly Vec3 Entry;
+
+	/// <summary>Where it left again.</summary>
+	public readonly Vec3 Exit;
+
+	public SolidSpan( Vec3 entry, Vec3 exit )
+	{
+		Entry = entry;
+		Exit = exit;
+	}
+
+	public Vec3 Midpoint => (Entry + Exit) * 0.5f;
+
+	/// <summary>How much material the ray crossed. Worth showing: it is the number that says
+	/// whether the midpoint is meaningfully different from the surface.</summary>
+	public float Thickness => (Exit - Entry).Length;
+}
+
+/// <summary>
 /// Ray-mesh intersection, for clicking a face of a solid in the viewport.
 ///
 /// PURE GEOMETRY, NO ENGINE SURFACE — which is why it lives here rather than in the editor. The
@@ -61,6 +92,36 @@ public static class MeshRaycast
 		}
 
 		return best;
+	}
+
+	/// <summary>
+	/// Every face the ray crosses, nearest first — not just the one you can see.
+	///
+	/// The nearest hit is what a CLICK wants: you pointed at a surface and that surface is the
+	/// answer. Placing something INSIDE a solid is the opposite question — where does the material
+	/// begin and end along this line — and it cannot be answered by the front face alone.
+	///
+	/// Back faces count, and have to. The exit is by definition a face pointing away from the ray,
+	/// so a front-face-only scan finds every entry and no exit at all.
+	/// </summary>
+	public static List<MeshHit> AllHits( PolyMesh mesh, Vec3 origin, Vec3 direction )
+	{
+		var hits = new List<MeshHit>();
+
+		if ( mesh is null )
+			return hits;
+
+		var dir = direction.Normal;
+
+		for ( var fi = 0; fi < mesh.Faces.Count; fi++ )
+		{
+			if ( HitFace( mesh, fi, origin, dir, out var t, out var point ) )
+				hits.Add( new MeshHit( point, fi, mesh.FaceNormal( mesh.Faces[fi] ), t ) );
+		}
+
+		hits.Sort( ( a, b ) => a.Distance.CompareTo( b.Distance ) );
+
+		return hits;
 	}
 
 	/// <summary>
@@ -233,6 +294,58 @@ public static class MeshRaycast
 
 			if ( !buried )
 				return candidate;
+		}
+
+		return null;
+	}
+
+	/// <summary>
+	/// The first run of material the ray passes through, or null when it passes through none.
+	///
+	/// THE FIRST RUN, NOT THE WHOLE SPREAD. Entry to the LAST hit would be the middle of everything
+	/// the ray crosses, and on anything concave that is a point in mid-air — look between a model's
+	/// two legs and the "middle" is the gap. Entry to the first exit is always inside material,
+	/// which is the property worth having: a joint slightly off the medial line can be nudged, and a
+	/// joint floating in space beside the model cannot be told from one that is correct.
+	///
+	/// The consequence to know about is a SHELLED model, where the first run is the thickness of the
+	/// near wall rather than the hollow it encloses — so a bone lands inside that wall. Still inside
+	/// the part, still better than on its skin, and the preview draws the run it measured so it is
+	/// visible before the click rather than surprising afterwards.
+	///
+	/// Entry is the first face pointing back at the ray and exit the first one after it pointing
+	/// away, rather than simply the first two hits. A mesh with a stray inward-facing face — which a
+	/// boolean can leave behind — otherwise pairs an entry with an entry and reports a run that
+	/// starts and ends on the same side of the material.
+	///
+	/// ONE MESH, deliberately. Across several bodies a run would enter the near one and leave the
+	/// far one, putting its midpoint in the air between them — so the caller picks the body first
+	/// (Raycast over the bodies already answers that, buried surfaces and all) and measures inside
+	/// the one it names. Which is also the cheaper order: the caller doing the picking already has
+	/// the hit, and this way nothing casts the same ray twice.
+	/// </summary>
+	public static SolidSpan? FirstSolidSpan( PolyMesh mesh, Vec3 origin, Vec3 direction )
+	{
+		var dir = direction.Normal;
+		var hits = AllHits( mesh, origin, dir );
+		var entry = -1;
+
+		for ( var i = 0; i < hits.Count; i++ )
+		{
+			if ( Vec3.Dot( dir, hits[i].Normal ) < 0f )
+			{
+				entry = i;
+				break;
+			}
+		}
+
+		if ( entry < 0 )
+			return null;
+
+		for ( var i = entry + 1; i < hits.Count; i++ )
+		{
+			if ( Vec3.Dot( dir, hits[i].Normal ) > 0f )
+				return new SolidSpan( hits[entry].Point, hits[i].Point );
 		}
 
 		return null;

@@ -116,6 +116,18 @@ internal sealed partial class EffigyViewport : Widget
 	/// <summary>Current drag mode — E flips to the other mode while held.</summary>
 	private BoneDragMode _boneDragMode = BoneDragMode.Rotate;
 
+	/// <summary>
+	/// Set the drag mode for the selected bone, or do nothing when none is selected — the W/E/R
+	/// shortcuts call this, and a mode with no bone to apply it to is a key that did nothing.
+	/// </summary>
+	public void SetBoneDragMode( BoneDragMode mode )
+	{
+		if ( _selectedBoneIndex < 0 )
+			return;
+
+		_boneDragMode = mode;
+	}
+
 	/// <summary>True while a drag is in progress (mouse down and control reporting).</summary>
 	private bool _boneDragging;
 
@@ -770,6 +782,7 @@ internal sealed partial class EffigyViewport : Widget
 		{
 			Gizmo.Draw.IgnoreDepth = false;
 			DrawPlaneHitboxes();
+			DrawDatumPlanes();
 			DrawHoveredPlaneHighlight();
 			return;
 		}
@@ -804,6 +817,11 @@ internal sealed partial class EffigyViewport : Widget
 		Gizmo.Draw.IgnoreDepth = false;
 
 		DrawPlaneHitboxes();
+
+		// AFTER the hitboxes, which is where the hover state comes from — drawn before them, a datum
+		// plane would light up one frame behind the cursor. The same reason DrawHoveredPlaneHighlight
+		// sits here rather than up with the outlines it washes over.
+		DrawDatumPlanes();
 		DrawHoveredPlaneHighlight();
 	}
 
@@ -1459,7 +1477,14 @@ internal sealed partial class EffigyViewport : Widget
 		// that would keep registering a hitbox over a selection made before the workspace changed,
 		// and a stray arrow over the model is exactly the kind of thing that eats a bone click.
 		if ( !RigMode )
+		{
 			FaceDragFrame();
+
+			// Beside it because it is the same kind of handle - the open feature's number, answered
+			// with the mouse - and it wants the same protection from a Gizmo.Control hitbox outliving
+			// the workspace that put it there.
+			PlaneOffsetHandleFrame();
+		}
 
 		// BoneToolActive and BodyPickMode: the same "you can click here" signal every other live
 		// pick mode already gets from Gizmo.HasHovered/_hoveredSketchId/_hoveredFaceBodyId. Without
@@ -1893,7 +1918,8 @@ internal sealed partial class EffigyViewport : Widget
 	}
 
 	/// <summary>Escape backs out of the half-drawn entity, then out of the tool - the same two
-	/// stages every CAD sketcher uses. W/E/R switch bone drag modes when a bone is selected.</summary>
+	/// stages every CAD sketcher uses. The sculpt, paint, note and bone-drag keys are [Shortcut]s
+	/// now, registered on the window, so they never reach this method.</summary>
 	protected override void OnKeyPress( KeyEvent e )
 	{
 		// A dimension box up on screen owns the keyboard first - digits, Enter and its own Escape.
@@ -1902,45 +1928,10 @@ internal sealed partial class EffigyViewport : Widget
 		if ( HandleDimensionKey( e ) )
 			return;
 
-		// Sculpting owns X and M while it is running, and owns nothing at all when it is not.
-		if ( HandleSculptKey( e ) )
-			return;
-
-		// Painting owns X while it is running, and nothing when it is not. The same letter as sculpt —
-		// one brush tool should not need a different key for symmetry than the other.
-		if ( HandlePaintKey( e ) )
-			return;
-
-		// The pen owns E and H while it is armed, and nothing when it is not. Same shape as the
-		// line above, and it has to sit above the bone shortcuts for the same reason that one does:
-		// a mode you are actively in gets first refusal on a letter.
-		if ( HandleNoteKey( e ) )
-			return;
-
 		// The spline is the one tool with no fixed number of clicks, so Enter is how it ends. After
 		// the dimension box, which owns Enter whenever it is up.
 		if ( HandleSketchToolKey( e ) )
 			return;
-
-		// W/E/R switch bone drag mode while a bone is selected.
-		if ( _selectedBoneIndex >= 0 )
-		{
-			switch ( e.Key )
-			{
-				case KeyCode.W:
-					_boneDragMode = BoneDragMode.Move;
-					e.Accepted = true;
-					return;
-				case KeyCode.E:
-					_boneDragMode = BoneDragMode.Rotate;
-					e.Accepted = true;
-					return;
-				case KeyCode.R:
-					_boneDragMode = BoneDragMode.Scale;
-					e.Accepted = true;
-					return;
-			}
-		}
 
 		if ( LightSelected && (e.Key == KeyCode.Delete || e.Key == KeyCode.Backspace) )
 		{

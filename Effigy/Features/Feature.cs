@@ -204,6 +204,28 @@ public sealed class FeatureContext
 	/// </summary>
 	public Dictionary<string, string> SketchHostBodies = new();
 
+	/// <summary>
+	/// Planes published by PlaneFeature, keyed by that feature's id. A sketch — or another plane —
+	/// looks itself up here rather than holding the SketchPlane object.
+	///
+	/// Beside Sketches and for exactly the same reason: move the plane, rebuild, and everything
+	/// drawn on it follows, with no second reference anywhere that could be left pointing at the old
+	/// one. It is also what makes a reference to a plane that is suppressed or below the rollback
+	/// bar fail honestly rather than quietly using last rebuild's answer — a feature that has not
+	/// run is not in here.
+	/// </summary>
+	public Dictionary<string, SketchPlane> Planes = new();
+
+	/// <summary>
+	/// For a plane built from a face, the id of the body that face belongs to — inherited along a
+	/// chain of planes. Keyed by plane feature id, same as Planes.
+	///
+	/// The plane half of SketchHostBodies above, and it feeds straight into it: a sketch on a plane
+	/// that came off a part is a sketch on that part as far as Extrude's Auto result is concerned,
+	/// which is what keeps "three bosses off one block" one part rather than four.
+	/// </summary>
+	public Dictionary<string, string> PlaneHostBodies = new();
+
 	int _nextId = 1;
 	string _featureId;
 	int _featureBodies;
@@ -342,8 +364,8 @@ public abstract class Feature
 	/// Seed this feature from geometry that was already picked, the way Onshape's tools consume
 	/// the current selection instead of making you pick again after the button.
 	///
-	/// Faces go to anything that stores FaceRefs — a sketch's plane, draft, hole, face material,
-	/// subdivide, move face, and now EXTRUDE, which pulls the face itself. Body ids go onto every
+	/// Faces go to anything that stores FaceRefs — a sketch's plane, a datum plane, draft, hole,
+	/// face material, subdivide, move face, and EXTRUDE, which pulls the face itself. Body ids go onto every
 	/// BodySelectionParam. A face selection with no explicit
 	/// body list still names those faces' bodies, so clicking a face and then Fillet fillets that
 	/// part rather than every part.
@@ -360,7 +382,19 @@ public abstract class Feature
 		edges ??= Array.Empty<EdgeRef>();
 
 		if ( this is SketchFeature sketch && faces.Count > 0 )
+		{
 			sketch.Face = faces[0];
+			sketch.PlaneFeatureId = "";
+		}
+
+		// A datum plane takes a face the same way a sketch does, and the two other things it could
+		// have been built from are cleared: they are three answers to one question, and a stale one
+		// left set would win on the next rebuild (see PlaneFeature.ResolveBasePlane's order).
+		if ( this is PlaneFeature datum && faces.Count > 0 )
+		{
+			datum.Face = faces[0];
+			datum.BasePlaneId = "";
+		}
 
 		if ( this is SketchConsumingFeature consumer
 			&& !string.IsNullOrEmpty( sketchFeatureId )

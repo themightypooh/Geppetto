@@ -267,6 +267,25 @@ public sealed class UVProjectFeature : Feature
 	/// under mipmapping, and without a gutter that bleed runs into the neighbour.</summary>
 	public readonly FloatParam Margin = new( "Island margin", 0.01f, 0f, 0.2f );
 
+	/// <summary>
+	/// What the last Unwrap produced, so the editor can say "12 charts, 340 faces, 1.4 units per
+	/// UV unit" rather than discarding the report. Null while Mode is Box or Planar, and null
+	/// before the feature has first run.
+	///
+	/// NOT SERIALISED ON PURPOSE — it is a RESULT, recomputed on every rebuild, not state a
+	/// document needs to remember. The document writer walks public fields only, so internal keeps
+	/// it out of the file without a second serialisation rule.
+	/// </summary>
+	internal UnwrapReport LastUnwrap;
+
+	/// <summary>
+	/// Whether the last Unwrap left UVs a bake or a paint could use, judged the same way those two
+	/// flows judge UVs — NormalBake.Measure. Null for Box and Planar, which overlap BY CONSTRUCTION:
+	/// that overlap is correct for tiling, so a "these UVs overlap" warning must never appear on a
+	/// projection. Unwrap is the mode built for bakes, so it is the one that reports.
+	/// </summary>
+	internal UVCoverage LastCoverage;
+
 	public override IReadOnlyList<IParam> Parameters => Mode.Value switch
 	{
 		"Planar" => new IParam[] { Bodies, Mode, Direction, Scale },
@@ -276,6 +295,9 @@ public sealed class UVProjectFeature : Feature
 
 	protected override void Execute( FeatureContext ctx )
 	{
+		LastUnwrap = null;
+		LastCoverage = null;
+
 		if ( Mode.Value == "Planar" && Direction.Value.LengthSquared < 1e-12f )
 		{
 			FailOn( "Direction",
@@ -283,6 +305,14 @@ public sealed class UVProjectFeature : Feature
 				"A planar projection needs a direction, and this one is (0, 0, 0).",
 				"Set Direction to the axis you want the texture to face" );
 		}
+
+		// Aggregated across every body the feature unwraps, so the panel reports one number rather
+		// than whatever the last body happened to be. Scale is per body — a bigger body packs
+		// smaller — so the last one is the value shown.
+		var charts = 0;
+		var faces = 0;
+		var skipped = 0;
+		var scale = 1f;
 
 		foreach ( var body in RequireBodies( ctx, Bodies ) )
 		{
@@ -292,6 +322,16 @@ public sealed class UVProjectFeature : Feature
 			if ( Mode.Value == "Unwrap" )
 			{
 				var report = UVUnwrap.Unwrap( body.Mesh, ChartAngle.Clamped, Margin.Clamped );
+
+				charts += report.Charts;
+				faces += report.Faces;
+				skipped += report.SkippedFaces;
+				scale = report.Scale;
+
+				// Measured AFTER the unwrap, so it reflects what the unwrap actually wrote, and kept
+				// for the panel to say "these UVs still will not bake" when a degenerate face was
+				// skipped and left its old, overlapping UVs behind.
+				LastCoverage = NormalBake.Measure( body.Mesh );
 
 				if ( report.SkippedFaces > 0 )
 				{
@@ -310,6 +350,9 @@ public sealed class UVProjectFeature : Feature
 				UVProjection.BoxProject( body.Mesh, Scale.Clamped );
 			}
 		}
+
+		if ( Mode.Value == "Unwrap" )
+			LastUnwrap = new UnwrapReport( charts, faces, skipped, scale );
 	}
 }
 

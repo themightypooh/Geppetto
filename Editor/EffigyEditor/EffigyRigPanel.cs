@@ -45,6 +45,17 @@ internal sealed class EffigyRigPanel : Widget
 	private Button _assignBodyButton;
 	private Button _mirrorButton;
 
+	// --- where a click puts the joint ---------------------------------------------------------
+
+	private ComboBox _placementBox;
+	private Checkbox _centreSnap;
+
+	/// <summary>Where the two placement settings persist between sessions. EditorCookie is what the
+	/// viewport's own grid and palette settings already use — these are tool state, not document
+	/// state, so they belong beside those rather than in the .effigy file.</summary>
+	private const string PlacementCookie = "Effigy.BonePlacementMiddle";
+	private const string CentreSnapCookie = "Effigy.BoneSnapCentre";
+
 	// --- numeric inspector ------------------------------------------------------------------
 
 	private Widget _inspector;
@@ -140,6 +151,8 @@ internal sealed class EffigyRigPanel : Widget
 		};
 		toolRow.Layout.Add( _addBoneButton, 1 );
 		header.Layout.Add( toolRow );
+
+		header.Layout.Add( BuildPlacementRow( header ) );
 
 		Layout.Add( header );
 
@@ -442,8 +455,9 @@ internal sealed class EffigyRigPanel : Widget
 			_viewport.BonePointPicked = OnBonePointPicked;
 			_viewport.BoneToolEscape = OnBoneToolEscape;
 			_viewport.SetPickPrompt( branchFrom >= 0
-				? $"Click to extend a bone from '{Skeleton.Bones[branchFrom].Name}'. Escape when done."
-				: "Click to place a bone. Click again to extend the chain. Escape when done." );
+				? $"Click to extend a bone from '{Skeleton.Bones[branchFrom].Name}', {PlacementWhere()}. "
+					+ "Escape when done."
+				: PlacementPrompt() );
 		}
 		else
 		{
@@ -510,6 +524,104 @@ internal sealed class EffigyRigPanel : Widget
 		while ( Skeleton.IndexOf( $"bone_{n}" ) >= 0 )
 			n++;
 		return $"bone_{n}";
+	}
+
+	/// <summary>
+	/// The two answers to "where along the ray does the click land", above the tree because they
+	/// change what the NEXT click does rather than describing the bone already selected.
+	///
+	/// THIS IS THE CONTROL THAT WAS MISSING, not a preference. A click can only ever name a surface,
+	/// so every joint this tool placed sat on the skin — a spine down the front of a chest, an
+	/// upper arm along the outside of a shoulder — and the only way to reach the middle of the model
+	/// was to place it wrong and then type coordinates into the inspector below. Middle measures the
+	/// material behind the cursor and puts the joint halfway through it, which is where a joint
+	/// belongs, and it is the default for that reason.
+	///
+	/// The snap sits beside it because they answer the same question on different axes: Middle fixes
+	/// the depth the cursor cannot express, and the snap fixes the one number a symmetric rig cannot
+	/// afford to have wrong.
+	/// </summary>
+	private Widget BuildPlacementRow( Widget parent )
+	{
+		// Restored before the controls read it, or they would open showing the default while the
+		// viewport used the remembered value.
+		_viewport.BonePlacementMode = EditorCookie.Get( PlacementCookie, true )
+			? EffigyViewport.BonePlacement.Middle
+			: EffigyViewport.BonePlacement.Surface;
+
+		_viewport.SnapBonesToCentre = EditorCookie.Get( CentreSnapCookie, false );
+
+		var row = new Widget( parent ) { Layout = Layout.Row() };
+		row.Layout.Spacing = 6;
+
+		_placementBox = new ComboBox( row )
+		{
+			ToolTip = "Middle: the joint lands halfway through the material under the cursor, which "
+				+ "is where a joint belongs. Surface: on the skin, for an attachment point.",
+		};
+
+		_placementBox.AddItem( "Middle", "vertical_align_center",
+			() => SetPlacement( EffigyViewport.BonePlacement.Middle ), "",
+			_viewport.BonePlacementMode == EffigyViewport.BonePlacement.Middle, true );
+
+		_placementBox.AddItem( "Surface", "layers",
+			() => SetPlacement( EffigyViewport.BonePlacement.Surface ), "",
+			_viewport.BonePlacementMode == EffigyViewport.BonePlacement.Surface, true );
+
+		row.Layout.Add( _placementBox, 1 );
+
+		_centreSnap = new Checkbox( "Y=0" )
+		{
+			Value = _viewport.SnapBonesToCentre,
+			ToolTip = "Put every placed joint exactly on y = 0 — the plane Mirror reflects across, "
+				+ "so a spine placed with this on mirrors cleanly.",
+		};
+
+		_centreSnap.Toggled = () =>
+		{
+			_viewport.SnapBonesToCentre = _centreSnap.Value;
+			EditorCookie.Set( CentreSnapCookie, _centreSnap.Value );
+
+			if ( _viewport.BoneToolActive )
+				_viewport.SetPickPrompt( PlacementPrompt() );
+		};
+		row.Layout.Add( _centreSnap );
+
+		return row;
+	}
+
+	/// <summary>Not a RigChanging step: this changes what the next click will do, not the rig, so
+	/// it must not mark the document dirty or land on the undo stack.</summary>
+	private void SetPlacement( EffigyViewport.BonePlacement mode )
+	{
+		_viewport.BonePlacementMode = mode;
+		EditorCookie.Set( PlacementCookie, mode == EffigyViewport.BonePlacement.Middle );
+
+		if ( _viewport.BoneToolActive )
+			_viewport.SetPickPrompt( PlacementPrompt() );
+	}
+
+	/// <summary>What the status bar says while the tool is armed. Names the mode, because the whole
+	/// difference between the two is invisible until a click lands somewhere the cursor was not.
+	/// </summary>
+	private string PlacementPrompt()
+	{
+		if ( _chainHead is not null || _chainParent >= 0 )
+			return $"Click to extend the chain, {PlacementWhere()}. Escape when done.";
+
+		return $"Click to place a bone {PlacementWhere()}. Click again to extend the chain. "
+			+ "Escape when done.";
+	}
+
+	/// <summary>Where the next click will land, as a phrase. Shared by every prompt that mentions
+	/// it so the two cannot describe the same setting differently.</summary>
+	private string PlacementWhere()
+	{
+		var where = _viewport.BonePlacementMode == EffigyViewport.BonePlacement.Middle
+			? "through the middle of the model"
+			: "on the surface";
+
+		return _viewport.SnapBonesToCentre ? $"{where} and snapped to y=0" : where;
 	}
 
 	// --- body assignment -------------------------------------------------------------------

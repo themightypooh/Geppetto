@@ -87,6 +87,7 @@ public static class SculptTests
 		TestHoverFindsTheSurfaceAndMissesPastIt();
 		TestAMissedClickStartsNothing();
 		TestAClickLeavesAMark();
+		TestInvertFlipsTheDisplacementSign();
 		TestHoldingStillDoesNotPileUpSamples();
 		TestAFastDragFillsTheGapInsteadOfDotting();
 		TestOneStrokeIsOneRevisionAndOneUndo();
@@ -1843,6 +1844,37 @@ public static class SculptTests
 		Check( "and shows on the model", !SamePositions( s.Sculpt.Evaluate( 1 ), before ) );
 	}
 
+	static void TestInvertFlipsTheDisplacementSign()
+	{
+		// Draw pushes the surface out along its normal, so a Ctrl-drag has to do the reverse — carve
+		// in. Invert is a session flag rather than a negated Strength because the number in the bar
+		// must not flip while a modifier is held; this checks both halves: the displacement sign
+		// flips, and Strength itself does not.
+		var outward = Session();
+		var rest = outward.Sculpt.Evaluate( 1 ).Clone();
+		var flatPeak = HighestZ( rest );
+
+		outward.BeginStroke( Down(), Into() );
+		outward.EndStroke();
+
+		var peakOut = HighestZ( outward.Sculpt.Evaluate( 1 ) );
+
+		var inward = Session();
+		inward.Inverted = true;
+
+		inward.BeginStroke( Down(), Into() );
+		inward.EndStroke();
+
+		var peakIn = HighestZ( inward.Sculpt.Evaluate( 1 ) );
+
+		Check( "draw raises the surface", peakOut > flatPeak,
+			$"{flatPeak:0.####} → {peakOut:0.####}" );
+		Check( "an inverted draw lowers it instead", peakIn < flatPeak,
+			$"{flatPeak:0.####} → {peakIn:0.####}" );
+		Check( "and Strength itself never changed", inward.Strength == 0.05f,
+			$"{inward.Strength:0.####}" );
+	}
+
 	static void TestHoldingStillDoesNotPileUpSamples()
 	{
 		// A pointer reports far faster than a brush needs. Without spacing, holding still would bite
@@ -2476,6 +2508,19 @@ public static class SculptTests
 			s += p;
 
 		return s / mesh.VertexCount;
+	}
+
+	static float HighestZ( PolyMesh mesh )
+	{
+		var peak = float.NegativeInfinity;
+
+		foreach ( var p in mesh.Positions )
+		{
+			if ( p.z > peak )
+				peak = p.z;
+		}
+
+		return peak;
 	}
 
 	static float MeanDistanceToAxis( PolyMesh mesh, Vec3 origin, Vec3 axis, float radius )

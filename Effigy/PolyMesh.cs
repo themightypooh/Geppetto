@@ -102,6 +102,20 @@ public sealed class PolyMesh
 
 	public bool HasVertexColors => VertexColors is not null && VertexColors.Length == Positions.Count;
 
+	/// <summary>
+	/// The paint atlas a <see cref="PaintFeature"/> replayed onto this body, or null when it
+	/// carries none.
+	///
+	/// WHY IT RIDES THE MESH, the same reason <see cref="VertexColors"/> did before it: the exporters
+	/// and the preview read the merged mesh, not the feature tree, so paint has to travel with the
+	/// mesh to reach them. It is a derived artifact — the feature replays its strokes onto it every
+	/// rebuild — and it is keyed to THIS body's UV layout, which is why a merged mesh can only carry
+	/// one body's atlas; the common case is one painted body, and that is the case the merge preserves.
+	/// </summary>
+	public PaintCanvas Paint;
+
+	public bool HasPaint => Paint is not null;
+
 	public PolyMesh() { }
 
 	public PolyMesh( IEnumerable<Vec3> positions, IEnumerable<Face> faces )
@@ -332,6 +346,9 @@ public sealed class PolyMesh
 
 		if ( VertexColors is not null )
 			m.VertexColors = (Vec4[])VertexColors.Clone();
+
+		if ( Paint is not null )
+			m.Paint = Paint.Clone();
 
 		foreach ( var f in Faces )
 			m.Faces.Add( new Face( (int[])f.Indices.Clone(), (Vec2[])f.UVs.Clone(), f.Material ) );

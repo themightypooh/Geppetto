@@ -163,38 +163,10 @@ internal sealed partial class EffigyViewport
 	}
 
 	/// <summary>
-	/// E for the eraser, H to hide the notes. Undo is NOT here — it is Ctrl+Z like everywhere else,
-	/// routed to the session by EffigyWindow.Undo.
-	///
-	/// Letters only, for the reason HandleSculptKey gives at length: nothing in this editor names a
-	/// KeyCode outside letters, Escape, Enter, Delete and Backspace, so anything else here would be
-	/// a guess at an enum member that may not exist.
+	/// E for the eraser, H to hide the notes. Both are [Shortcut]s on the window now, so they show
+	/// up in Settings &gt; Hotkeys and can be rebound. Undo is NOT here — it is Ctrl+Z like
+	/// everywhere else, routed to the session by EffigyWindow.Undo.
 	/// </summary>
-	public bool HandleNoteKey( KeyEvent e )
-	{
-		if ( NoteSession is null )
-			return false;
-
-		switch ( e.Key )
-		{
-			case KeyCode.E:
-				NoteErasing = !NoteErasing;
-				break;
-
-			case KeyCode.H:
-				ShowNotes = !ShowNotes;
-				break;
-
-			default:
-				return false;
-		}
-
-		e.Accepted = true;
-		Update();
-
-		return true;
-	}
-
 	// --- drawing -------------------------------------------------------------------------------
 
 	/// <summary>

@@ -4,6 +4,30 @@ using System.Collections.Generic;
 namespace Effigy;
 
 /// <summary>
+/// The texel bounds a dab touched, so the live session can recompose and re-upload only what a dab
+/// changed rather than the whole canvas. A value type with no allocation, because a stroke fires
+/// thousands of dabs and a class here would be thousands of objects a second.
+/// </summary>
+public readonly struct TexelBounds
+{
+	public readonly bool Any;
+	public readonly int MinX, MinY, MaxX, MaxY;
+
+	public TexelBounds( int minX, int minY, int maxX, int maxY )
+	{
+		Any = true;
+		MinX = minX;
+		MinY = minY;
+		MaxX = maxX;
+		MaxY = maxY;
+	}
+
+	public TexelBounds With( int x, int y ) => Any
+		? new TexelBounds( Math.Min( MinX, x ), Math.Min( MinY, y ), Math.Max( MaxX, x ), Math.Max( MaxY, y ) )
+		: new TexelBounds( x, y, x, y );
+}
+
+/// <summary>
 /// Replays paint strokes onto a canvas — the derived-artifact half of the storage decision in
 /// docs/dev/PAINTING.md §4.
 ///
@@ -14,9 +38,16 @@ namespace Effigy;
 /// the brush nor the rasteriser ever learns what a seam is — a stroke crossing a chart boundary
 /// paints both charts because both have faces inside the sphere.
 ///
+/// A STROKE IS COMPOSITED ONCE, NOT PER DAB. The vertex-colour path blended every dab straight into
+/// the result, so a held brush kept compositing the same coverage over itself and the colour "ticked
+/// up" like a sculpt brush instead of laying down like a paint brush. Here each stroke's dabs are
+/// first stamped into a per-stroke COVERAGE buffer (the maximum falloff any dab reached at each
+/// texel, never the sum), and then that one buffer is composited into the canvas. Holding still
+/// re-stamps the same coverage and changes nothing.
+///
 /// THE DAB IS SHARED, NOT DUPLICATED. <see cref="PaintSession"/> composites a live dab through
-/// <see cref="Dab"/>; a rebuild replays the whole list through <see cref="Replay"/>. Both paths end
-/// at the same rasterise-and-blend, so a stroke painted live and the same stroke replayed later
+/// <see cref="StampDab"/>; a rebuild replays the whole list through <see cref="Replay"/>. Both paths
+/// end at the same rasterise-and-stamp, so a stroke painted live and the same stroke replayed later
 /// produce identical texels.
 /// </summary>
 public static class PaintReplay
@@ -25,12 +56,10 @@ public static class PaintReplay
 	/// filtering across a seam finds colour there instead of the gutter. Same figure the bake uses.</summary>
 	const int DilatePasses = 4;
 
-	/// PARKED. This is the texture half - see the note on PaintCanvas. The live path is
-	/// <see cref="ReplayColors"/> just below, which is what PaintFeature and PaintSession use.
-	///
 	/// <summary>
 	/// Replay every stroke, in order, onto a fresh canvas. The order is the whole point — colour
-	/// blending does not commute — and this preserves it exactly.
+	/// blending does not commute — and this preserves it exactly, compositing each stroke once from
+	/// its own coverage buffer so dabs within a stroke never accumulate.
 	/// </summary>
 	public static PaintCanvas Replay( PolyMesh mesh, IReadOnlyList<PaintStroke> strokes, int resolution )
 	{
@@ -46,9 +75,14 @@ public static class PaintReplay
 		{
 			var bvh = MeshBVH.Build( mesh );
 			var faces = new List<int>();
+			var coverage = new float[resolution * resolution];
 
 			foreach ( var stroke in strokes )
-				PaintStroke( stroke, mesh, bvh, canvas, faces );
+			{
+				Array.Clear( coverage, 0, coverage.Length );
+				StampStroke( stroke, mesh, bvh, coverage, resolution, faces );
+				Composite( canvas, coverage, ToByte( stroke.R ), ToByte( stroke.G ), ToByte( stroke.B ) );
+			}
 
 			canvas.Dilate( DilatePasses );
 		}
@@ -56,43 +90,50 @@ public static class PaintReplay
 		return canvas;
 	}
 
-	/// <summary>Paint one stroke's dabs onto an existing canvas, without the final dilation. The live
-	/// session uses this to seed its canvas from already-committed strokes.</summary>
-	internal static void PaintStroke( PaintStroke stroke, PolyMesh mesh, MeshBVH bvh, PaintCanvas canvas, List<int> faces )
+	/// <summary>Stamp one stroke's dabs into a coverage buffer, taking the maximum. The live session
+	/// uses this to seed its coverage from the stroke in flight, so it must not composite anything —
+	/// the composite is the caller's step, once, at the end.</summary>
+	internal static void StampStroke( PaintStroke stroke, PolyMesh mesh, MeshBVH bvh,
+		float[] coverage, int resolution, List<int> faces )
 	{
 		if ( stroke is null || stroke.Path.Count == 0 )
 			return;
 
-		var r = ToByte( stroke.R );
-		var g = ToByte( stroke.G );
-		var b = ToByte( stroke.B );
-
-		// Coverage folds the stroke's own opacity into its strength, so the alpha Blend sees is
-		// "how much paint arrives here" and the colour has no alpha of its own to double-count.
-		var coverage = stroke.Strength * stroke.A;
+		// Coverage folds the stroke's own opacity into its strength, so the alpha the composite sees
+		// is "how much paint arrives here" and the colour has no alpha of its own to double-count.
+		var coverageScale = stroke.Strength * stroke.A;
 
 		foreach ( var point in stroke.Path )
-			Dab( mesh, bvh, canvas, point.Position, point.Normal, stroke.Radius, coverage, stroke.Falloff, r, g, b, faces );
+			StampDab( mesh, bvh, coverage, resolution, point.Position, point.Normal,
+				stroke.Radius, coverageScale, stroke.Falloff, faces );
 	}
 
 	/// <summary>
-	/// One dab: the brush sphere at <paramref name="point"/>, rasterised into the faces it reaches.
+	/// One dab into a coverage buffer: the brush sphere at <paramref name="point"/>, rasterised into
+	/// the faces it reaches, each texel's coverage raised to the dab's weight where that is higher.
+	/// Returns the texel bounds it actually touched, so the live session can recompose and re-upload
+	/// only that region.
 	///
 	/// THE 3D FOOTPRINT IS THE WHOLE DESIGN. A 2D disc in UV space cannot know a seam exists; a sphere
 	/// in object space touches faces on both sides of one and paints them both for free. The normal
 	/// gate is the other half of the same idea — a dab on one side of a thin wall must not bleed
 	/// through to the far face, which is rejected by comparing its normal to the recorded surface
 	/// normal.
+	///
+	/// MAX, NOT SUM, is what makes a stroke lay down like paint. Two dabs of one stroke overlapping
+	/// must not darken each other — the coverage is the strongest the brush pressed anywhere, and the
+	/// stroke is composited from that once.
 	/// </summary>
-	internal static void Dab( PolyMesh mesh, MeshBVH bvh, PaintCanvas canvas, Vec3 point, Vec3 normal,
-		float radius, float strength, BrushFalloff falloff, byte r, byte g, byte b, List<int> faces )
+	internal static TexelBounds StampDab( PolyMesh mesh, MeshBVH bvh, float[] coverage, int resolution,
+		Vec3 point, Vec3 normal, float radius, float strength, BrushFalloff falloff, List<int> faces )
 	{
 		if ( radius <= 0f || strength <= 0f )
-			return;
+			return default;
 
 		bvh.FacesInRadius( mesh, point, radius, faces );
 
 		var n = normal.LengthSquared >= 0.5f ? normal.Normal : new Vec3( 0, 0, 1 );
+		var bounds = default( TexelBounds );
 
 		foreach ( var fi in faces )
 		{
@@ -121,7 +162,7 @@ public static class PaintReplay
 				var u1 = face.UVs[ib];
 				var u2 = face.UVs[ic];
 
-				NormalBake.Rasterise( u0, u1, u2, canvas.Width, canvas.Height, ( x, y, wa, wb, wc ) =>
+				NormalBake.Rasterise( u0, u1, u2, resolution, resolution, ( x, y, wa, wb, wc ) =>
 				{
 					// The barycentrics Rasterise hands back let a texel's 3D position be rebuilt from
 					// its three corners, so the falloff can be measured in object space rather than in
@@ -133,106 +174,36 @@ public static class PaintReplay
 					if ( weight <= 0f )
 						return;
 
-					canvas.Blend( x, y, r, g, b, weight );
+					var index = y * resolution + x;
+
+					if ( weight > coverage[index] )
+					{
+						coverage[index] = weight;
+						bounds = bounds.With( x, y );
+					}
 				} );
+			}
+		}
+
+		return bounds;
+	}
+
+	/// <summary>Composite a coverage buffer into a canvas once, at the stroke's colour. The coverage
+	/// is the stroke's per-texel alpha, already capped at the maximum any of its dabs reached.</summary>
+	internal static void Composite( PaintCanvas canvas, float[] coverage, byte r, byte g, byte b )
+	{
+		for ( var y = 0; y < canvas.Height; y++ )
+		{
+			for ( var x = 0; x < canvas.Width; x++ )
+			{
+				var weight = coverage[y * canvas.Width + x];
+
+				if ( weight > 0f )
+					canvas.Blend( x, y, r, g, b, weight );
 			}
 		}
 	}
 
 	/// <summary>A float colour channel to a byte, the same rounding the canvas blend uses.</summary>
 	internal static byte ToByte( float v ) => (byte)Math.Clamp( MathF.Round( v * 255f ), 0f, 255f );
-
-	// --- vertex-colour output ------------------------------------------------------------------
-
-	/// <summary>
-	/// Replay every stroke, in order, onto a per-vertex colour array — the vertex-colour half of the
-	/// same storage. Where the texture path rasterises dabs into an atlas, this one colours vertices,
-	/// so it needs no UVs at all and composes over a material the engine multiplies by vertex colour.
-	/// Resolution is the mesh's, which is why it is meant to run after a Subdivide or Sculpt.
-	/// </summary>
-	public static Vec4[] ReplayColors( PolyMesh mesh, IReadOnlyList<PaintStroke> strokes )
-	{
-		if ( mesh is null )
-			throw new ArgumentNullException( nameof( mesh ) );
-
-		var colors = new Vec4[mesh.VertexCount];
-
-		if ( strokes is { Count: > 0 } )
-		{
-			var bvh = MeshBVH.Build( mesh );
-			var normals = mesh.ComputeVertexNormals();
-			var found = new List<int>();
-
-			foreach ( var stroke in strokes )
-				PaintStrokeColors( stroke, mesh, bvh, normals, colors, found );
-		}
-
-		return colors;
-	}
-
-	internal static void PaintStrokeColors( PaintStroke stroke, PolyMesh mesh, MeshBVH bvh,
-		Vec3[] normals, Vec4[] colors, List<int> found )
-	{
-		if ( stroke is null || stroke.Path.Count == 0 )
-			return;
-
-		var coverage = stroke.Strength * stroke.A;
-
-		foreach ( var point in stroke.Path )
-			DabColors( mesh, bvh, normals, colors, point.Position, point.Normal,
-				stroke.Radius, coverage, stroke.Falloff, stroke.R, stroke.G, stroke.B, found );
-	}
-
-	/// <summary>
-	/// One dab into vertex colours: the vertices in the brush sphere, the far side of a thin wall
-	/// rejected by its normal, each weighted by its 3D distance through the falloff and blended
-	/// source-over — the same colour math the texture dab uses, per vertex instead of per texel.
-	/// </summary>
-	internal static void DabColors( PolyMesh mesh, MeshBVH bvh, Vec3[] normals, Vec4[] colors,
-		Vec3 point, Vec3 normal, float radius, float coverage, BrushFalloff falloff,
-		float r, float g, float b, List<int> found )
-	{
-		if ( radius <= 0f || coverage <= 0f )
-			return;
-
-		bvh.VerticesInRadius( mesh, point, radius, found );
-
-		var n = normal.LengthSquared >= 0.5f ? normal.Normal : new Vec3( 0, 0, 1 );
-
-		foreach ( var vi in found )
-		{
-			// A vertex whose normal points away from the brush is on the far side of a thin wall and
-			// must not be painted from here.
-			if ( Vec3.Dot( normals[vi], n ) <= 0f )
-				continue;
-
-			var dist = (mesh.Positions[vi] - point).Length;
-			var t = dist / radius;
-			var weight = Brush.Falloff( t, falloff ) * coverage;
-
-			if ( weight <= 0f )
-				continue;
-
-			colors[vi] = SourceOver( colors[vi], r, g, b, weight );
-		}
-	}
-
-	/// <summary>Source-over over straight-alpha RGBA, in float space. Mirrors PaintCanvas.Blend so a
-	/// vertex dab and a texel dab read the same colour, but keeps full float precision.</summary>
-	internal static Vec4 SourceOver( Vec4 dst, float r, float g, float b, float a )
-	{
-		a = Math.Clamp( a, 0f, 1f );
-
-		var da = dst.w;
-		var oa = a + da * (1f - a);
-
-		if ( oa <= 0f )
-			return dst;
-
-		var or = (r * a + dst.x * da * (1f - a)) / oa;
-		var og = (g * a + dst.y * da * (1f - a)) / oa;
-		var ob = (b * a + dst.z * da * (1f - a)) / oa;
-
-		return new Vec4( or, og, ob, oa );
-	}
 }

@@ -7,18 +7,19 @@ using System.Collections.Generic;
 namespace Marionette.EditorTools;
 
 /// <summary>
-/// Paint mode in the viewport: rays in, vertex colours out.
+/// Paint mode in the viewport: rays in, a live texture out.
 ///
 /// AS THIN AS EffigyViewport.Sculpting.cs, AND FOR THE SAME REASON. Everything with a decision in it —
 /// where the cursor sits, whether the pointer has travelled far enough to earn a sample, the dab
 /// itself, the falloff — lives in <see cref="PaintSession"/> and <see cref="PaintReplay"/> in the
-/// kernel, where a test can see it. This file converts Vector3 to Vec3, calls four methods, rebuilds
-/// the model when colours change, and draws a ring.
+/// kernel, where a test can see it. This file converts Vector3 to Vec3, calls four methods, uploads
+/// the canvas's dirty rect to a texture, and draws a ring.
 ///
-/// VERTEX COLOURS, NOT A TEXTURE. Paint lives on the mesh's vertices, so the engine composites it
-/// over whatever material each face wears — no atlas, no unwrap, no dynamic texture. The cost is that
-/// a dab changes the vertex buffer, so the model rebuilds while a stroke is live, exactly the way the
-/// sculpt preview rebuilds while a sculpt stroke moves geometry.
+/// THE PAINT IS A TEXTURE, NOT VERTEX COLOURS. The session holds a live canvas whose dirty rect is
+/// exactly what a dab touched, so a mouse-move re-uploads only that region rather than the whole
+/// 1024² image — the four-megabytes-per-dab cost the old paint project paid. The canvas is baked
+/// opaque over white before it reaches the GPU, because an ordinary material's colour map has nothing
+/// sensible to show in a transparent texel.
 /// </summary>
 internal sealed partial class EffigyViewport
 {
@@ -31,9 +32,6 @@ internal sealed partial class EffigyViewport
 	/// it to the feature. Not raised per sample — a stroke is one edit.</summary>
 	public Action<PaintStroke> PaintStrokeFinished { get; set; }
 
-	/// <summary>Raised when the viewport itself changes a brush setting, so the paint bar can catch up.</summary>
-	public Action PaintSettingsChanged { get; set; }
-
 	/// <summary>Where the brush ring is drawn this frame, or null when the cursor is off the model.</summary>
 	private MeshHit? _paintCursor;
 
@@ -44,9 +42,11 @@ internal sealed partial class EffigyViewport
 
 	private bool _paintPreviewStale;
 
-	// The material resolver the paint preview builds with, so the paint composes over the materials
-	// the user dropped rather than over a flat placeholder. Held from BeginPaint for the frame loop.
-	private Func<int, string> _paintMaterialForSlot;
+	// The dynamic texture and its material, held for the life of a paint session and re-uploaded in
+	// place. Held rather than recreated per dab — a fresh texture + material copy per mouse-move is
+	// exactly the garbage a held drag would make thousands of.
+	private Texture _paintTexture;
+	private Material _paintMaterial;
 
 	public void AddPaintOverlay( Widget bar )
 	{
@@ -55,10 +55,11 @@ internal sealed partial class EffigyViewport
 		bar.Visible = false;
 	}
 
-	public void BeginPaint( PaintSession session, Func<int, string> materialForSlot )
+	public void BeginPaint( PaintSession session )
 	{
 		PaintSession = session ?? throw new ArgumentNullException( nameof( session ) );
-		_paintMaterialForSlot = materialForSlot;
+
+		CreatePaintTexture( session );
 		_paintPreviewStale = true;
 	}
 
@@ -71,18 +72,58 @@ internal sealed partial class EffigyViewport
 
 		PaintSession = null;
 		_paintCursor = null;
+
+		_paintMaterial = null;
+		_paintTexture = null;
 	}
 
-	/// <summary>Push the painted surface into the viewport, replacing the model in place. The colour
-	/// array is copied onto the mesh so the preview's vertex buffer picks it up.</summary>
+	/// <summary>Create the texture and material the whole session will draw with. The canvas is baked
+	/// opaque over white in full, so the material's colour map is opaque from the first frame — which
+	/// is also why the canvas's dirty rect is cleared afterwards, since that full bake IS the upload.</summary>
+	private void CreatePaintTexture( PaintSession session )
+	{
+		var res = session.Resolution;
+
+		var opaque = new byte[res * res * 4];
+		session.Canvas.BakeOpaque( opaque, 255, 255, 255 );
+
+		_paintTexture = Texture.Create( res, res, ImageFormat.RGBA8888 )
+			.WithDynamicUsage()
+			.WithData( opaque )
+			.Finish();
+
+		// The paint is the surface colour, so the base is any ordinary lit material — its own colour
+		// map is overridden with the atlas below. default.vmat is the placeholder the rest of the
+		// preview already falls back to.
+		_paintMaterial = Material.Load( "materials/default.vmat" )?.CreateCopy( "effigy_paint" );
+		_paintMaterial?.Set( "g_tColor", _paintTexture );
+
+		session.Canvas.ClearDirty();
+	}
+
+	/// <summary>Upload whatever the canvas's dirty rect names, then push the painted surface into the
+	/// viewport. The dirty rect is what makes a mouse-move cheap: only the texels a dab touched are
+	/// baked and uploaded, not the whole image.</summary>
 	public void RefreshPaintPreview()
 	{
-		if ( PaintSession is null )
+		if ( PaintSession is null || _paintMaterial is null || _paintTexture is null )
 			return;
 
-		PaintSession.Mesh.VertexColors = PaintSession.Colors;
+		var canvas = PaintSession.Canvas;
 
-		var model = EffigyPreview.Build( PaintSession.Mesh, _paintMaterialForSlot );
+		if ( canvas.HasDirty )
+		{
+			var w = canvas.MaxX - canvas.MinX + 1;
+			var h = canvas.MaxY - canvas.MinY + 1;
+			var sub = new byte[w * h * 4];
+
+			canvas.BakeOpaque( sub, 255, 255, 255, canvas.MinX, canvas.MinY, w, h );
+			_paintTexture.Update( sub, canvas.MinX, canvas.MinY, w, h );
+
+			canvas.ClearDirty();
+		}
+
+		var model = EffigyPreview.Build( PaintSession.Mesh, _paintMaterial );
 
 		if ( model is null )
 			return;
@@ -187,21 +228,4 @@ internal sealed partial class EffigyViewport
 	/// <summary>A paint ring is a paint ring — a colour distinct from sculpt's blue, so the two
 	/// modes are never confused when a brush is armed.</summary>
 	private static readonly Color PaintCursorColor = new( 1f, 0.45f, 0.75f, 0.9f );
-
-	/// <summary>X for symmetry, the one toggle worth reaching for without leaving the model. Same
-	/// letter as sculpt, same reason — it is the convention every brush tool uses.</summary>
-	public bool HandlePaintKey( KeyEvent e )
-	{
-		if ( PaintSession is null )
-			return false;
-
-		if ( e.Key != KeyCode.X )
-			return false;
-
-		PaintSession.MirrorX = !PaintSession.MirrorX;
-		PaintSettingsChanged?.Invoke();
-		e.Accepted = true;
-
-		return true;
-	}
 }

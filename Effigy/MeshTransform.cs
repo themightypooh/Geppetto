@@ -100,6 +100,13 @@ public static class MeshTransform
 			target.VertexColors = merged;
 		}
 
+		// Paint is one atlas per body, not per vertex, so it cannot be padded the way colours are. A
+		// merged mesh can show one body's atlas, so the target keeps its own and only adopts the
+		// source's when it has none — paint paints one body at a time, so the common merge is one
+		// painted body into an unpainted rest, and that is the case this preserves.
+		if ( target.Paint is null && source.Paint is not null )
+			target.Paint = source.Paint;
+
 		foreach ( var f in source.Faces )
 		{
 			var indices = new int[f.Count];

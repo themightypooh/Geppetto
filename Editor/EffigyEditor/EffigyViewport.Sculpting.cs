@@ -29,10 +29,6 @@ internal sealed partial class EffigyViewport
 	/// rebuild. Not raised per sample — a stroke is one edit.</summary>
 	public Action SculptStrokeFinished { get; set; }
 
-	/// <summary>Raised when the viewport itself changes a brush setting — the X and M shortcuts —
-	/// so the strip's ticks and the bar's readout can catch up with it.</summary>
-	public Action SculptSettingsChanged { get; set; }
-
 	/// <summary>The mesh the preview was last built from, so a frame that changed nothing does not
 	/// rebuild a model.</summary>
 	private bool _sculptPreviewStale;
@@ -117,6 +113,10 @@ internal sealed partial class EffigyViewport
 
 			if ( !stroking && Gizmo.WasLeftMousePressed )
 			{
+				// Invert is read ONCE, when the stroke starts. Reading the modifier every frame
+				// would reverse the brush halfway through a gesture the moment Ctrl is released.
+				SculptSession.Inverted = Editor.Application.IsKeyDown( KeyCode.Control );
+
 				if ( SculptSession.BeginStroke( origin, direction ) )
 				{
 					stroking = true;
@@ -172,9 +172,12 @@ internal sealed partial class EffigyViewport
 
 		var radius = SculptSession.Radius;
 
+		// Invert is a geometry thing; masking has its own erase direction and never reads Inverted.
+		var inverted = SculptSession.Inverted && !SculptSession.Masking;
+
 		Gizmo.Draw.IgnoreDepth = true;
 		Gizmo.Draw.LineThickness = 1.5f;
-		Gizmo.Draw.Color = SculptSession.Masking ? MaskCursorColor : BrushCursorColor;
+		Gizmo.Draw.Color = SculptSession.Masking ? MaskCursorColor : inverted ? BrushInvertedColor : BrushCursorColor;
 
 		// Lifted off the surface by a whisker so it is not z-fighting the face it sits on.
 		var lift = normal * (radius * 0.01f);
@@ -194,6 +197,14 @@ internal sealed partial class EffigyViewport
 		// somewhere near it — the one thing a flat ring on a curved model is genuinely ambiguous
 		// about.
 		Gizmo.Draw.Line( centre, centre + normal * (radius * 0.35f) );
+
+		// A minus in the middle, so the inverted state is visible BEFORE the click, not after it —
+		// a carved stroke that reads as a draw until it bites is a control that lies.
+		if ( inverted )
+		{
+			var half = radius * 0.35f;
+			Gizmo.Draw.Line( centre + lift - right * half, centre + lift + right * half );
+		}
 	}
 
 	/// <summary>Ordinary brush: the same blue the rest of this editor uses for "you can act here".
@@ -204,41 +215,7 @@ internal sealed partial class EffigyViewport
 	/// looks exactly like one that sculpts.</summary>
 	private static readonly Color MaskCursorColor = new( 1f, 0.85f, 0.3f, 0.9f );
 
-	/// <summary>
-	/// The two toggles worth reaching for without leaving the model: X for symmetry, M for masking.
-	///
-	/// LETTERS ONLY, AND THAT IS DELIBERATE. Every sculpting tool in the world puts brush radius on
-	/// the bracket keys, and this one does not, because nothing in this editor has ever named a
-	/// KeyCode outside letters, Escape, Enter, Delete and Backspace — so the bracket names are a
-	/// guess, and a guessed enum member is a compile error at best and a dead key at worst. Radius
-	/// and strength live on the sculpt bar instead, where they are also more discoverable. Put the
-	/// brackets back once somebody has read the real KeyCode enum out of the shipped assembly.
-	///
-	/// X and M follow the convention every other sculpting tool uses, and the W/E/R bone shortcuts
-	/// in this same viewport already prove letters work.
-	/// </summary>
-	public bool HandleSculptKey( KeyEvent e )
-	{
-		if ( SculptSession is null )
-			return false;
-
-		switch ( e.Key )
-		{
-			case KeyCode.X:
-				SculptSession.MirrorX = !SculptSession.MirrorX;
-				break;
-
-			case KeyCode.M:
-				SculptSession.Masking = !SculptSession.Masking;
-				break;
-
-			default:
-				return false;
-		}
-
-		SculptSettingsChanged?.Invoke();
-		e.Accepted = true;
-
-		return true;
-	}
+	/// <summary>Ctrl-inverted brush: carving, so it gets the warm "removing" red rather than the
+	/// "you can act here" blue — the state has to read before the click, not after.</summary>
+	private static readonly Color BrushInvertedColor = new( 1f, 0.45f, 0.4f, 0.9f );
 }

@@ -34,6 +34,31 @@ public sealed class SketchPlane
 	public SketchPlane Offset( float distance ) =>
 		new( Origin + Normal * distance, XAxis, YAxis );
 
+	/// <summary>
+	/// This plane leaned over, turning about one of its own in-plane axes through its own origin.
+	/// Onshape's angled plane, minus the part where you pick the edge to hinge on.
+	///
+	/// THE HINGE IS ONE OF THE PLANE'S OWN AXES, not a line you point at. Onshape asks for an edge
+	/// and rotates about that, which is the better answer and needs an axis picker the sketcher does
+	/// not have yet. What it has is a frame that is already orthonormal and already deterministic,
+	/// so hinging on X or on Y — with a signed angle — reaches all four of the leans anyone asks for
+	/// off a given plane. On the three global planes the axes are world axes and this reads exactly
+	/// as it sounds; on a plane derived from a face they come from the normal alone (see
+	/// FacePlane.FromPointAndNormal) and which is which is worth looking at rather than predicting.
+	///
+	/// THE ORIGIN DOES NOT MOVE, which is what makes offset-then-tilt mean what it looks like: the
+	/// plane pivots where it sits rather than swinging away from the thing it was offset from.
+	/// </summary>
+	public SketchPlane Tilted( float degrees, bool aboutY )
+	{
+		if ( degrees == 0f )
+			return Clone();
+
+		var rotate = Xform.Rotate( aboutY ? YAxis : XAxis, degrees * MathF.PI / 180f );
+
+		return new SketchPlane( Origin, rotate.TransformDirection( XAxis ), rotate.TransformDirection( YAxis ) );
+	}
+
 	public Vec3 ToWorld( Vec2 p ) => Origin + XAxis * p.x + YAxis * p.y;
 
 	/// <summary>Project a world point onto the plane. Anything off the plane loses its offset —

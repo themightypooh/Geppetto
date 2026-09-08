@@ -87,13 +87,19 @@ public static class ObjWriter
 			for ( var i = 0; i < f.Count; i++ )
 			{
 				var uv = f.UVs[i];
-				var key = ((long)MathF.Round( uv.x * 1e5f ), (long)MathF.Round( uv.y * 1e5f ));
+
+				// OBJ puts the UV origin at the bottom-left where Effigy's is top-left, so V is
+				// flipped on the way out — the same flip FbxWriter makes for the same reason, and the
+				// one DmxWriter avoids by leaving flipVCoordinates off and writing V as-is. Without it
+				// a compiled static model samples its texture upside down relative to the viewport.
+				var flippedV = 1f - uv.y;
+				var key = ((long)MathF.Round( uv.x * 1e5f ), (long)MathF.Round( flippedV * 1e5f ));
 
 				if ( !uvIndex.TryGetValue( key, out var idx ) )
 				{
 					idx = uvIndex.Count;
 					uvIndex[key] = idx;
-					sb.Append( string.Format( c, "vt {0:0.######} {1:0.######}\n", uv.x, uv.y ) );
+					sb.Append( string.Format( c, "vt {0:0.######} {1:0.######}\n", uv.x, flippedV ) );
 				}
 
 				faceUVRefs[fi][i] = idx;

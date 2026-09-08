@@ -34,6 +34,17 @@ public sealed class SketchFeature : Feature
 	/// </summary>
 	public FaceRef? Face;
 
+	/// <summary>
+	/// Feature id of a PlaneFeature to draw on, instead of a global plane or a face. Empty for
+	/// either of those.
+	///
+	/// The third answer to the question <see cref="Plane"/> and <see cref="Face"/> already answer,
+	/// and it wins over both — see ResolveBasePlane. Only a plane ABOVE this sketch can be named: a
+	/// plane below it, or one that is suppressed, has not published anything and the sketch says so
+	/// rather than falling back to Top.
+	/// </summary>
+	public string PlaneFeatureId = "";
+
 	public override IReadOnlyList<IParam> Parameters => new IParam[] { Plane, PlaneOffset };
 
 	protected override void Execute( FeatureContext ctx )
@@ -69,16 +80,46 @@ public sealed class SketchFeature : Feature
 		ctx.Sketches[Id] = Sketch;
 
 		// Publish what this sketch is growing out of, so a consumer can add to that body instead of
-		// starting a new one. Cleared when there is no face, or a sketch moved back onto a global
-		// plane would keep merging into whatever it used to sit on.
-		if ( Face is { } attached )
+		// starting a new one. Cleared when there is nothing to grow out of, or a sketch moved back
+		// onto a global plane would keep merging into whatever it used to sit on.
+		//
+		// A sketch on a DATUM PLANE inherits whatever that plane grew out of, so a plane placed 2
+		// units off the top of a block still says "this belongs to the block" and Extrude's Auto
+		// adds to it. A plane built from a global plane carries no host and starts a new part,
+		// which is the same rule a sketch on Top has always followed.
+		if ( !string.IsNullOrEmpty( PlaneFeatureId )
+			&& ctx.PlaneHostBodies.TryGetValue( PlaneFeatureId, out var inherited ) )
+			ctx.SketchHostBodies[Id] = inherited;
+		else if ( string.IsNullOrEmpty( PlaneFeatureId ) && Face is { } attached )
 			ctx.SketchHostBodies[Id] = attached.BodyId;
 		else
 			ctx.SketchHostBodies.Remove( Id );
 	}
 
+	/// <summary>
+	/// The plane this sketch draws on, before its own offset.
+	///
+	/// MOST SPECIFIC FIRST, the same order PlaneFeature.ResolveBasePlane uses and for the same
+	/// reason: all three can be set at once in a file, because switching between them in the editor
+	/// leaves the previous answer behind unless something clears it, and precedence is better
+	/// written down than discovered.
+	/// </summary>
 	SketchPlane ResolveBasePlane( FeatureContext ctx )
 	{
+		if ( !string.IsNullOrEmpty( PlaneFeatureId ) )
+		{
+			if ( ctx.Planes.TryGetValue( PlaneFeatureId, out var datum ) )
+				return datum;
+
+			Fail(
+				"The plane this sketch is drawn on is not there any more",
+				"It was deleted, suppressed, or moved below this sketch in the tree — a sketch can "
+				+ "only draw on a plane that has already run.",
+				"Move this sketch below the plane it draws on",
+				"Unsuppress the plane it draws on",
+				"Move the sketch to a face, or back to one of the global planes" );
+		}
+
 		if ( Face is not { } face )
 		{
 			return Plane.Index switch

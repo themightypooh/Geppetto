@@ -113,6 +113,7 @@ public static class Program
 
 		PaintCanvasTests.Run();
 		PaintReplayTests.Run();
+		PaintMaterialTests.Run();
 
 		BooleanFeatureTests.Run();
 
@@ -136,6 +137,8 @@ public static class Program
 		FaceSurfaceTests.Run();
 
 		FaceSketchTests.Run();
+
+		PlaneTests.Run();
 
 		ConstraintTests.Run();
 
@@ -478,6 +481,14 @@ public static class Program
 			.Split( '\n' ).Count( l => l.StartsWith( "vn " ) );
 
 		Check( "cylinder gets smoothed sides", cylNormals >= 16, $"got {cylNormals}" );
+
+		// OBJ's UV origin is bottom-left, Effigy's is top-left, so V is flipped on the way out — the
+		// same flip FbxWriter makes. A plane's (0,0) corner must come out as (0,1); this is what keeps
+		// a compiled static model's texture from sampling upside down.
+		var planeText = ObjWriter.Write( Primitives.Plane( 1, 1, 1, 1 ), "plane" );
+
+		Check( "OBJ flips V to its bottom-left origin",
+			planeText.Contains( "vt 0 1" ) && planeText.Contains( "vt 1 1" ) && planeText.Contains( "vt 0 0" ) );
 	}
 
 	static void WriteSamples( string outDir )

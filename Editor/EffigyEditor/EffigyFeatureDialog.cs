@@ -145,6 +145,43 @@ internal sealed class EffigyFeatureDialog : Widget
 		Rebuild();
 	}
 
+	/// <summary>
+	/// What Offset was when the handle was grabbed.
+	///
+	/// THE DRAG IS RELATIVE AND THE PARAMETER IS ABSOLUTE, so one of them has to remember. A plane
+	/// already 10 units up, grabbed and nudged, must end at 10 plus the nudge — assigning the drag
+	/// distance straight into Offset would snap it back to the base plane on the first frame of
+	/// every drag and then travel from there, which is a jump nobody asked for and a value nobody
+	/// typed.
+	/// </summary>
+	private float _planeOffsetAtDragStart;
+
+	private void OnPlaneOffsetDragBegan()
+	{
+		if ( _feature is PlaneFeature datum )
+			_planeOffsetAtDragStart = datum.Offset.Value;
+	}
+
+	/// <summary>
+	/// The offset handle was dragged. Write it into the open plane's Offset and rebuild.
+	///
+	/// TYPING, WITH THE MOUSE — the same thing OnFaceDragged is and for the same reason. Nothing is
+	/// added to the history: the drag sets a parameter of the feature whose dialog is already open,
+	/// exactly as if the number had been entered in the field beside it, and it goes through
+	/// RaiseEdited so undo, dirty-marking and the rebuild all behave identically. Everything built on
+	/// the plane follows on the rebuild, which is the thing worth watching while you drag.
+	/// </summary>
+	private void OnPlaneOffsetDragged( float distance )
+	{
+		if ( _feature is not PlaneFeature datum )
+			return;
+
+		datum.Offset.Value = _planeOffsetAtDragStart + distance;
+
+		RaiseEdited();
+		Rebuild();
+	}
+
 	private void RaiseEdited()
 	{
 		_touched = true;
@@ -318,7 +355,9 @@ internal sealed class EffigyFeatureDialog : Widget
 		// An existing sketch already has its plane; a brand new one is waiting for you to pick —
 		// unless a face was already selected when the tool was pressed, in which case that face
 		// IS the plane and opening the dialog is entering the sketch.
-		_planeChosen = !isNew || (_feature is SketchFeature alreadyOnFace && alreadyOnFace.Face is not null);
+		_planeChosen = !isNew
+			|| (_feature is SketchFeature alreadyOnFace && alreadyOnFace.Face is not null)
+			|| (_feature is PlaneFeature alreadyOnPlane && alreadyOnPlane.Face is not null);
 
 		TakeSnapshot();
 
@@ -367,6 +406,17 @@ internal sealed class EffigyFeatureDialog : Widget
 		if ( _feature is SketchFeature sketch )
 		{
 			if ( isNew && sketch.Face is null )
+				_activeArmable?.Arm();
+
+			return;
+		}
+
+		// A brand new plane is waiting on the same answer a brand new sketch is, and for the same
+		// reason: its default is Top with no offset, which is a value but not a decision. Unless a
+		// face was already picked when the tool was pressed, in which case that face IS the answer.
+		if ( _feature is PlaneFeature datum )
+		{
+			if ( isNew && datum.Face is null )
 				_activeArmable?.Arm();
 
 			return;
@@ -458,6 +508,7 @@ internal sealed class EffigyFeatureDialog : Widget
 
 		_activeArmable = null;
 		_viewport.PlanePickMode = false;
+		_viewport.DatumPlanePicked = null;
 		_viewport.FacePickMode = false;
 		_viewport.FacePicked = null;
 		_viewport.EdgePickMode = false;
@@ -633,6 +684,7 @@ internal sealed class EffigyFeatureDialog : Widget
 		{
 			FillDiagnostic( diagnostic );
 			_statusSlot.Visible = true;
+			ShowUnwrapResult();
 			return;
 		}
 
@@ -640,16 +692,45 @@ internal sealed class EffigyFeatureDialog : Widget
 		var warning = _feature?.Warning;
 		var text = error ?? warning ?? "";
 
-		if ( text.Length == 0 )
+		if ( text.Length > 0 )
 		{
-			_statusSlot.Visible = false;
-			return;
+			var label = new Editor.Label( text ) { WordWrap = true };
+			label.Color = error is not null ? Theme.Red : Theme.Yellow;
+			_statusSlot.Layout.Add( label );
+			_statusSlot.Visible = true;
 		}
 
-		var label = new Editor.Label( text ) { WordWrap = true };
-		label.Color = error is not null ? Theme.Red : Theme.Yellow;
-		_statusSlot.Layout.Add( label );
+		if ( !ShowUnwrapResult() && text.Length == 0 )
+			_statusSlot.Visible = false;
+	}
+
+	/// <summary>
+	/// The UV Project feature's read-out: what the unwrap did, and whether what it did will hold a
+	/// bake. Shows nothing for Box and Planar — those overlap by construction, which is correct for
+	/// tiling and is why a "these UVs overlap" warning must not appear on them.
+	/// </summary>
+	bool ShowUnwrapResult()
+	{
+		if ( _feature is not UVProjectFeature { LastUnwrap: not null } uv )
+			return false;
+
 		_statusSlot.Visible = true;
+
+		// Neutral rather than yellow: this is a result to read, not something that went wrong.
+		var report = new Editor.Label( uv.LastUnwrap.ToString() ) { WordWrap = true };
+		report.Color = Theme.TextLight;
+		_statusSlot.Layout.Add( report );
+
+		// A degenerate face the unwrap had to skip keeps the UVs it had before — usually an
+		// overlapping projection — so the result is measured rather than assumed good.
+		if ( uv.LastCoverage is { CanBake: false } coverage )
+		{
+			var unusable = new Editor.Label( coverage.Problem ) { WordWrap = true };
+			unusable.Color = Theme.Yellow;
+			_statusSlot.Layout.Add( unusable );
+		}
+
+		return true;
 	}
 
 	void FillDiagnostic( FeatureDiagnostic diagnostic )
@@ -743,8 +824,19 @@ internal sealed class EffigyFeatureDialog : Widget
 		// The pull handle belongs to whichever feature is open, so it goes off by default here and
 		// is turned back on below for the ones that can use it. A feature that does not consume
 		// faces must not leave arrows on the model.
-		_viewport.FaceDragEnabled = _feature is not null && _feature.Accepts.HasFlag( GeometryKind.Face );
+		// A DATUM PLANE IS EXCLUDED THOUGH IT ACCEPTS FACES, because what it does with a face is build
+		// itself from one — there is no distance on it for a face arrow to write, and OnFaceDragged
+		// falls through to doing nothing. An arrow that does nothing when dragged is read as broken
+		// rather than as a no-op (see EffigyViewport.FaceDrag, which is why there is one arrow there
+		// and not three), and the plane has its own handle below that does mean something.
+		_viewport.FaceDragEnabled = _feature is not null and not PlaneFeature
+			&& _feature.Accepts.HasFlag( GeometryKind.Face );
 		_viewport.FaceDragMoved = _viewport.FaceDragEnabled ? OnFaceDragged : null;
+
+		// The offset handle, on the same terms: it belongs to whichever feature is open, so it goes
+		// off by default here and comes back only for the one kind that has an Offset to drive.
+		_viewport.PlaneOffsetDragBegan = _feature is PlaneFeature ? OnPlaneOffsetDragBegan : null;
+		_viewport.PlaneOffsetDragged = _feature is PlaneFeature ? OnPlaneOffsetDragged : null;
 
 		if ( _feature is null )
 			return;
@@ -758,13 +850,30 @@ internal sealed class EffigyFeatureDialog : Widget
 			// let a click resolve against a body that no longer exists.
 			_viewport.SetPickableBodies( _pickableBodiesLookup?.Invoke() );
 
-			var faceLabel = sketch.Face is not null ? FaceLabel( sketch ) : null;
-
 			var planeSelector = new EffigyPlaneSelector( _body, _viewport, sketch.Plane, OnPlaneChanged,
-				_planeChosen, OnFaceChanged, faceLabel );
+				_planeChosen, OnFaceChanged, AttachedLabel( sketch ), OnSketchDatumChanged );
 			_activeArmable = planeSelector;
 			AddRow( planeSelector );
 			AddRow( BuildFloatRow( sketch.PlaneOffset ) );
+			return;
+		}
+
+		// A datum plane asks the same question a sketch does — which plane is this built on — and
+		// then differs only in what it does with the answer. Same box, reworded, so the two are one
+		// thing to learn rather than two.
+		if ( _feature is PlaneFeature datum )
+		{
+			_viewport.SetPickableBodies( _pickableBodiesLookup?.Invoke() );
+
+			var baseSelector = new EffigyPlaneSelector( _body, _viewport, datum.Base, OnPlaneChanged,
+				_planeChosen, OnFaceChanged, AttachedLabel( datum ), OnPlaneDatumChanged, "Built from" );
+			_activeArmable = baseSelector;
+			AddRow( baseSelector );
+
+			// Base is what the box above owns, so it is skipped here for the reason Extrude's
+			// Result is: two controls for one value is one control too many, and the quieter of
+			// the two wins arguments it should not.
+			AddParamRows( datum.Parameters, datum.Base );
 			return;
 		}
 
@@ -946,11 +1055,20 @@ internal sealed class EffigyFeatureDialog : Widget
 	{
 		_planeChosen = true;
 
-		// A plane click and a face click are mutually exclusive ways to answer the same question,
-		// so choosing one clears the other rather than leaving a stale Face reference that
-		// ResolveBasePlane would prefer over the plane just picked.
-		if ( _feature is SketchFeature clearedFace )
-			clearedFace.Face = null;
+		// A global plane, a face and a datum plane are mutually exclusive ways to answer one
+		// question, so choosing any of them clears the other two rather than leaving a stale
+		// reference that ResolveBasePlane would prefer over the thing just picked.
+		if ( _feature is SketchFeature clearedSketch )
+		{
+			clearedSketch.Face = null;
+			clearedSketch.PlaneFeatureId = "";
+		}
+
+		if ( _feature is PlaneFeature clearedPlane )
+		{
+			clearedPlane.Face = null;
+			clearedPlane.BasePlaneId = "";
+		}
 
 		RaiseEdited();
 		Rebuild();
@@ -960,15 +1078,28 @@ internal sealed class EffigyFeatureDialog : Widget
 	}
 
 	/// <summary>A face of an existing body was picked, so the sketch is fully specified the same
-	/// way a plane pick specifies it - straight into sketch mode.</summary>
+	/// way a plane pick specifies it - straight into sketch mode. A datum plane built from a face
+	/// stops at the dialog instead: there is nothing to enter, and its offset and angle are the
+	/// next thing to answer.</summary>
 	private void OnFaceChanged( FaceRef face )
 	{
 		_planeChosen = true;
+
+		if ( _feature is PlaneFeature datum )
+		{
+			datum.Face = face;
+			datum.BasePlaneId = "";
+
+			RaiseEdited();
+			Rebuild();
+			return;
+		}
 
 		if ( _feature is not SketchFeature sketch )
 			return;
 
 		sketch.Face = face;
+		sketch.PlaneFeatureId = "";
 
 		RaiseEdited();
 		Rebuild();
@@ -976,12 +1107,68 @@ internal sealed class EffigyFeatureDialog : Widget
 		SketchRequested?.Invoke( sketch );
 	}
 
-	/// <summary>Where a chosen face is reported which body it came from. Falls back to the raw id
-	/// if the body has since been renamed or removed - a lookup failing here should not make the
-	/// dialog throw, only say something slightly less specific.</summary>
-	private string FaceLabel( SketchFeature sketch )
+	/// <summary>A plane somebody placed was picked as the one to draw on. The sketch is fully
+	/// specified, so this drops into it exactly as picking a global plane does.</summary>
+	private void OnSketchDatumChanged( string planeFeatureId )
 	{
-		var name = sketch.Face is { } f ? _bodyNameLookup?.Invoke( f.BodyId ) : null;
+		_planeChosen = true;
+
+		if ( _feature is not SketchFeature sketch )
+			return;
+
+		sketch.PlaneFeatureId = planeFeatureId;
+		sketch.Face = null;
+
+		RaiseEdited();
+		Rebuild();
+
+		SketchRequested?.Invoke( sketch );
+	}
+
+	/// <summary>A plane built on another plane. Stacking, which is what makes three ribs ten apart
+	/// three edits of one number rather than three numbers to keep in step.</summary>
+	private void OnPlaneDatumChanged( string planeFeatureId )
+	{
+		_planeChosen = true;
+
+		if ( _feature is not PlaneFeature datum )
+			return;
+
+		datum.BasePlaneId = planeFeatureId;
+		datum.Face = null;
+
+		RaiseEdited();
+		Rebuild();
+	}
+
+	/// <summary>
+	/// What the selection box reads for a feature that is already attached to something, or null
+	/// when it is on a plain global plane and the ChoiceParam's own label will do.
+	///
+	/// Both features that own one of these boxes go through here, so a sketch and a plane describe
+	/// the same attachment the same way. Falls back to a vaguer phrase rather than throwing if a
+	/// lookup misses — a renamed or deleted body should cost the sentence some precision, not the
+	/// dialog its paint pass.
+	/// </summary>
+	private string AttachedLabel( Feature feature )
+	{
+		var (face, planeId) = feature switch
+		{
+			SketchFeature sketch => (sketch.Face, sketch.PlaneFeatureId),
+			PlaneFeature plane => (plane.Face, plane.BasePlaneId),
+			_ => (null, null),
+		};
+
+		if ( !string.IsNullOrEmpty( planeId ) )
+		{
+			var plane = _viewport.DatumPlanes.FirstOrDefault( p => p.FeatureId == planeId );
+			return string.IsNullOrEmpty( plane?.Name ) ? "A plane you made" : plane.Name;
+		}
+
+		if ( face is not { } f )
+			return null;
+
+		var name = _bodyNameLookup?.Invoke( f.BodyId );
 		return name is not null ? $"Face of {name}" : "Face of an existing part";
 	}
 
@@ -1707,6 +1894,16 @@ internal sealed class EffigyPlaneSelector : Widget, IArmableSelection
 	/// <summary>Set when the sketch is also allowed to sit on a face of an existing solid — only
 	/// true for SketchFeature's own dialog. Extrude/Revolve reuse none of this box.</summary>
 	private readonly Action<FaceRef> _faceChosen;
+
+	/// <summary>Set when a datum plane is also an answer — true for the Sketch and Plane dialogs,
+	/// which are the two features that can be built on one. Fires with the plane's feature id.</summary>
+	private readonly Action<string> _datumChosen;
+
+	/// <summary>What the box is asking. "Sketch plane" for a sketch, "Built from" for a plane
+	/// standing on another one — the same control asking a question in the caller's own words,
+	/// rather than a sketch's label sitting over a plane's dialog.</summary>
+	private readonly string _title;
+
 	private readonly Action _changed;
 
 	/// <summary>True while waiting for a viewport click. The box goes accent-coloured and the
@@ -1726,7 +1923,8 @@ internal sealed class EffigyPlaneSelector : Widget, IArmableSelection
 	private string _chosenLabel;
 
 	public EffigyPlaneSelector( Widget parent, EffigyViewport viewport, ChoiceParam plane, Action changed,
-		bool chosen, Action<FaceRef> faceChosen = null, string chosenFaceLabel = null )
+		bool chosen, Action<FaceRef> faceChosen = null, string chosenFaceLabel = null,
+		Action<string> datumChosen = null, string title = "Sketch plane" )
 		: base( parent )
 	{
 		_viewport = viewport;
@@ -1734,6 +1932,8 @@ internal sealed class EffigyPlaneSelector : Widget, IArmableSelection
 		_changed = changed;
 		_chosen = chosen;
 		_faceChosen = faceChosen;
+		_datumChosen = datumChosen;
+		_title = title;
 		_chosenLabel = chosenFaceLabel ?? (chosen ? plane.Value : null);
 
 		Layout = Layout.Row();
@@ -1750,7 +1950,7 @@ internal sealed class EffigyPlaneSelector : Widget, IArmableSelection
 
 		Paint.SetPen( Theme.TextLight );
 		Paint.SetDefaultFont( 8 );
-		Paint.DrawText( label.Shrink( 8f, 2f, 0f, 0f ), "Sketch plane", TextFlag.LeftTop );
+		Paint.DrawText( label.Shrink( 8f, 2f, 0f, 0f ), _title, TextFlag.LeftTop );
 
 		var box = new Rect( 8f, 18f, Width - 16f, 22f );
 
@@ -1768,11 +1968,7 @@ internal sealed class EffigyPlaneSelector : Widget, IArmableSelection
 		{
 			Paint.SetPen( Theme.Blue );
 
-			var prompt = _faceChosen is not null
-				? "Pick a plane, or click a face of an existing part"
-				: "Pick a plane in the viewport";
-
-			Paint.DrawText( box.Shrink( 6f, 0f, 0f, 0f ), prompt, TextFlag.LeftCenter );
+			Paint.DrawText( box.Shrink( 6f, 0f, 0f, 0f ), Prompt(), TextFlag.LeftCenter );
 		}
 		else if ( _chosen )
 		{
@@ -1784,6 +1980,22 @@ internal sealed class EffigyPlaneSelector : Widget, IArmableSelection
 			Paint.SetPen( Theme.TextControl.WithAlpha( 0.45f ) );
 			Paint.DrawText( box.Shrink( 6f, 0f, 0f, 0f ), "Select a plane", TextFlag.LeftCenter );
 		}
+	}
+
+	/// <summary>What the box says while it waits. Written from what is actually clickable rather
+	/// than fixed, because a prompt offering a face on a dialog that will not take one is worse than
+	/// no prompt at all.</summary>
+	private string Prompt()
+	{
+		if ( _faceChosen is null )
+			return "Pick a plane in the viewport";
+
+		// PICKABLE, not merely present. A plane's own dialog draws that plane and refuses it as an
+		// answer, so counting what is on screen would offer "one you made" to somebody whose only
+		// one is the plane they are editing.
+		return _viewport.DatumPlanes.Any( p => p.Visible && p.Pickable )
+			? "Pick a plane, one you made, or a face of an existing part"
+			: "Pick a plane, or click a face of an existing part";
 	}
 
 	protected override void OnMousePress( MouseEvent e )
@@ -1822,9 +2034,11 @@ internal sealed class EffigyPlaneSelector : Widget, IArmableSelection
 			_viewport.FacePicked = OnFacePicked;
 		}
 
-		_viewport.SetPickPrompt( _faceChosen is not null
-			? "Pick a plane, or click a face of an existing part"
-			: "Pick a plane in the viewport" );
+		// Datum planes are drawn and hit-tested by PlanePickMode alone, so a box that cannot USE
+		// one still has to refuse the answer rather than leaving a stale handler wired in.
+		_viewport.DatumPlanePicked = _datumChosen is not null ? OnDatumPicked : null;
+
+		_viewport.SetPickPrompt( Prompt() );
 
 		Update();
 	}
@@ -1839,6 +2053,7 @@ internal sealed class EffigyPlaneSelector : Widget, IArmableSelection
 		_viewport.PlanePicked = null;
 		_viewport.FacePickMode = false;
 		_viewport.FacePicked = null;
+		_viewport.DatumPlanePicked = null;
 		_viewport.SetPickPrompt( "" );
 		Update();
 	}
@@ -1862,6 +2077,21 @@ internal sealed class EffigyPlaneSelector : Widget, IArmableSelection
 
 		Disarm();
 		_faceChosen?.Invoke( face );
+	}
+
+	/// <summary>A plane somebody placed was clicked. Named rather than described — "Roof line" is
+	/// what the viewport writes beside it and what the feature tree calls it, and a box saying
+	/// anything else would be a third name for one thing.</summary>
+	private void OnDatumPicked( string featureId )
+	{
+		var name = _viewport.DatumPlanes.FirstOrDefault( p => p.FeatureId == featureId )?.Name;
+
+		_chosen = true;
+		_chosenLabel = string.IsNullOrEmpty( name ) ? "A plane you made" : name;
+		_viewport.IgnoreNextSketchClick();
+
+		Disarm();
+		_datumChosen?.Invoke( featureId );
 	}
 
 	public override void OnDestroyed()

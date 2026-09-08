@@ -169,6 +169,22 @@ public sealed class SculptSession
 	public bool Erasing;
 
 	/// <summary>
+	/// While held, strokes run with a negated Strength — Draw carves in, Inflate deflates, Grab
+	/// drags the opposite way.
+	///
+	/// A session flag rather than a negative Strength in the bar, because the bar IS the number: a
+	/// modifier held down must not rewrite the box the user just typed into, or the tool reads as
+	/// the editor guessing wrong.
+	///
+	/// WHICH BRUSHES FEEL IT. Draw, Inflate and Grab scale their displacement by the signed
+	/// strength, so they invert cleanly. Smooth, Flatten and Pinch clamp their weight to [0, 1] and
+	/// a negative strength clamps to zero, so they are unaffected — Smooth inverted is
+	/// conventionally "sharpen", which this kernel does not have, and leaving the three of them as
+	/// no-ops beats an arbitrary reversal of a clamp.
+	/// </summary>
+	public bool Inverted;
+
+	/// <summary>
 	/// Draw the level with the fully masked parts dropped, so you can get at what is behind them.
 	///
 	/// A VIEW, like ViewLevel, and it reaches the model exactly as far as that one does: nowhere. The
@@ -553,7 +569,7 @@ public sealed class SculptSession
 		}
 
 		var stroke = new BrushStroke { Kind = Brush, Falloff = Falloff, MirrorX = MirrorX };
-		stroke.Samples.Add( new BrushSample( point, normal, Radius, Strength, direction ) );
+		stroke.Samples.Add( new BrushSample( point, normal, Radius, Inverted ? -Strength : Strength, direction ) );
 
 		// The mask is passed EVERY stroke, not applied afterwards. Brush.Apply folds it into the
 		// per-vertex weight, so a half-masked vertex moves half as far; masking after the fact would

@@ -10,11 +10,13 @@ namespace Effigy;
 /// the pointer and the mesh is arithmetic — project a ray, decide whether the cursor has moved far
 /// enough to earn a sample, drop a dab, record it as a stroke. All of it is testable with no engine
 /// anywhere, and all of it is where the bugs are. What is left for the editor is genuinely thin: hand
-/// this rays, show <see cref="Colors"/>, and draw a ring at <see cref="Hover"/>.
+/// this rays, upload <see cref="Canvas"/>, and draw a ring at <see cref="Hover"/>.
 ///
-/// THE SESSION PAINTS VERTEX COLOURS DIRECTLY. A new dab composites straight onto the colour array,
-/// no replay, which is exactly as cheap as painting should be. Replaying the whole stroke list is the
-/// REBUILD path (<see cref="PaintReplay.ReplayColors"/>), not the stroke path. A stroke ends as a
+/// THE SESSION PAINTS TEXELS, NOT VERTICES. A dab stamps coverage into a per-stroke buffer rather
+/// than blending straight into the canvas; the canvas the editor reads is recomposed from the
+/// committed strokes plus the stroke in flight. That is what makes holding the brush still a no-op
+/// instead of a darkening — the in-flight stroke's coverage is the maximum its dabs reached, so the
+/// same dab re-stamped over and over recomposes to the same texels. A stroke ends as a
 /// <see cref="PaintStroke"/> the caller appends to the feature; undo is the feature tree's undo, so
 /// this session carries no undo stack.
 /// </summary>
@@ -22,12 +24,23 @@ public sealed class PaintSession
 {
 	readonly PolyMesh _mesh;
 	readonly MeshBVH _bvh;
-	readonly Vec3[] _normals;
 	readonly List<int> _found = new();
+	readonly int _resolution;
+
+	// Two canvases, because the live canvas must be recomposable from a base. _committed holds every
+	// finished stroke and never shows the one in flight; Canvas is _committed with the in-flight
+	// stroke composited over it, rebuilt over the dab's bounds each time a dab lands. The editor
+	// uploads Canvas, not _committed.
+	readonly PaintCanvas _committed;
+
+	// The in-flight stroke's per-texel coverage — the maximum any dab of this stroke reached. Cleared
+	// on BeginStroke, stamped by each dab, composited into _committed once on EndStroke.
+	readonly float[] _coverage;
 
 	// Live only between BeginStroke and EndStroke.
 	PaintStroke _current;
 	Vec3 _lastSample;
+	byte _strokeR, _strokeG, _strokeB;
 
 	// Brush settings. Floats in 0..1, the same units PaintStroke stores, so a stroke committed here
 	// and one read back from the document describe the same colour.
@@ -63,34 +76,41 @@ public sealed class PaintSession
 
 	/// <summary>
 	/// The strokes committed so far, in order. The caller mirrors each <see cref="EndStroke"/> result
-	/// into its feature; this list is the session's own copy, used to rebuild the colours when a stroke
+	/// into its feature; this list is the session's own copy, used to rebuild the canvas when a stroke
 	/// is cancelled mid-flight.
 	/// </summary>
 	public readonly List<PaintStroke> Strokes = new();
 
-	/// <summary>The per-vertex colours, straight RGBA in 0..1, parallel to <see cref="Mesh"/>'s
-	/// positions. The editor reads this to colour the model.</summary>
-	public Vec4[] Colors { get; }
+	/// <summary>The live canvas — committed strokes with the stroke in flight composited over them.
+	/// The editor uploads this to a texture; its dirty rect is exactly what a dab touched.</summary>
+	public PaintCanvas Canvas { get; }
 
-	public PaintSession( PolyMesh mesh, IReadOnlyList<PaintStroke> existing = null )
+	public PaintSession( PolyMesh mesh, int resolution, IReadOnlyList<PaintStroke> existing = null )
 	{
 		_mesh = mesh ?? throw new ArgumentNullException( nameof( mesh ) );
 
-		Colors = new Vec4[mesh.VertexCount];
+		if ( resolution < 1 )
+			throw new ArgumentOutOfRangeException( nameof( resolution ) );
+
+		_resolution = resolution;
+		_coverage = new float[resolution * resolution];
+		_committed = new PaintCanvas( resolution, resolution );
+		Canvas = new PaintCanvas( resolution, resolution );
 
 		// Built once and never refitted: unlike a sculpt stroke, a paint stroke moves no geometry, so
 		// the tree stays valid for the life of the session. Paint is strictly cheaper than sculpt here.
 		_bvh = MeshBVH.Build( mesh );
-		_normals = mesh.ComputeVertexNormals();
 
 		if ( existing is { Count: > 0 } )
 		{
 			foreach ( var stroke in existing )
 			{
 				Strokes.Add( stroke );
-				PaintReplay.PaintStrokeColors( stroke, _mesh, _bvh, _normals, Colors, _found );
+				CommitStroke( stroke );
 			}
 		}
+
+		RefreshCanvas();
 	}
 
 	public bool IsStroking => _current is not null;
@@ -98,77 +118,27 @@ public sealed class PaintSession
 	/// <summary>
 	/// A starting radius that suits this model: a twelfth of the diagonal, the same argument
 	/// SculptSession makes — Effigy's units are dimensionless, so a fixed default is the whole model
-	/// on one part and invisible on the next.
-	///
-	/// FLOORED AT THE VERTEX SPACING, which the diagonal on its own does not account for and which
-	/// made the brush do NOTHING on the most ordinary part there is. Paint colours the vertices
-	/// inside the brush sphere; a 1-unit box has eight of them, all at the corners, so a dab in the
-	/// middle of a face sits 0.707 away from the nearest one while a twelfth of the diagonal is
-	/// 0.144. The brush reached no vertex at all, painted nothing, and said nothing about it — and
-	/// every test and sample subdivides first, so nothing caught it.
-	///
-	/// This does not make paint FINE on a coarse mesh - it cannot, the colours live on the vertices
-	/// - but it makes the tool do something you can see, which is the difference between a coarse
-	/// result and a broken one. <see cref="IsCoarse"/> is what says the rest out loud.
+	/// on one part and invisible on the next. Unlike the vertex-colour brush there is no spacing floor
+	/// here: a texel dab needs no vertices to reach, so a bare box paints fine at any radius.
 	/// </summary>
 	public float SuggestedRadius
 	{
 		get
 		{
 			var diagonal = _mesh.BoundsDiagonal;
-			var fromBounds = diagonal > 1e-6f ? diagonal / 12f : 0.25f;
-			var spacing = MeanEdgeLength;
-
-			return spacing > 1e-6f ? MathF.Max( fromBounds, spacing * 0.75f ) : fromBounds;
+			return diagonal > 1e-6f ? diagonal / 12f : 0.25f;
 		}
 	}
-
-	/// <summary>
-	/// The average distance between neighbouring vertices — how far apart the things paint can
-	/// actually colour are.
-	/// </summary>
-	public float MeanEdgeLength
-	{
-		get
-		{
-			if ( _mesh?.Faces is null || _mesh.Positions is null )
-				return 0f;
-
-			var total = 0f;
-			var count = 0;
-
-			foreach ( var face in _mesh.Faces )
-			{
-				for ( var c = 0; c < face.Count; c++ )
-				{
-					var a = _mesh.Positions[face.Indices[c]];
-					var b = _mesh.Positions[face.Indices[(c + 1) % face.Count]];
-
-					total += (b - a).Length;
-					count++;
-				}
-			}
-
-			return count > 0 ? total / count : 0f;
-		}
-	}
-
-	/// <summary>
-	/// Whether this mesh is too coarse for paint to look like paint.
-	///
-	/// The threshold is the mesh's own spacing rather than a vertex count: 200 vertices is dense on
-	/// a doorknob and nothing on a terrain. If a brush has to be as wide as the gaps between
-	/// vertices to touch any of them, every dab lands on one or two and the result is a gradient
-	/// across whole faces rather than a mark where the cursor was.
-	/// </summary>
-	public bool IsCoarse => _mesh?.Positions is { Count: > 0 } && _mesh.Positions.Count < 64;
 
 	/// <summary>The mesh the strokes land on, exposed so the editor can build a preview from it —
 	/// the same surface the brush works on, which is the one the user is looking at.</summary>
 	public PolyMesh Mesh => _mesh;
 
+	/// <summary>The resolution the canvas is rasterised at, for an editor that must size a texture.</summary>
+	public int Resolution => _resolution;
+
 	/// <summary>Where the cursor sits on the surface, or null if the ray missed. The editor draws its
-	/// ring here; nothing about it changes the colours.</summary>
+	/// ring here; nothing about it changes the canvas.</summary>
 	public MeshHit? Hover( Vec3 origin, Vec3 direction )
 	{
 		var dir = direction.Normal;
@@ -210,7 +180,13 @@ public sealed class PaintSession
 			Spacing = Spacing,
 		};
 
+		_strokeR = PaintReplay.ToByte( R );
+		_strokeG = PaintReplay.ToByte( G );
+		_strokeB = PaintReplay.ToByte( B );
+
 		_lastSample = hit.Value.Point;
+
+		Array.Clear( _coverage, 0, _coverage.Length );
 
 		AddSample( hit.Value.Point, hit.Value.Normal );
 
@@ -270,32 +246,39 @@ public sealed class PaintSession
 		_current = null;
 
 		if ( stroke.Path.Count == 0 )
+		{
+			Array.Clear( _coverage, 0, _coverage.Length );
 			return null;
+		}
 
 		Strokes.Add( stroke );
+
+		// Composite the stroke ONCE. The live canvas already shows it (it was recomposed from this
+		// very coverage over the committed base), so committing the same coverage into _committed
+		// leaves the two canvases in agreement and nothing to re-upload.
+		PaintReplay.Composite( _committed, _coverage, _strokeR, _strokeG, _strokeB );
+		Array.Clear( _coverage, 0, _coverage.Length );
+
 		return stroke;
 	}
 
 	/// <summary>
-	/// Abandon the stroke in flight. The colours have already absorbed its dabs, so abandoning is a
-	/// rebuild from the committed strokes rather than a removal — cheaper than tracking per-vertex
-	/// undo, and the same answer the document itself would give.
+	/// Abandon the stroke in flight. The committed canvas never absorbed its dabs, so abandoning is a
+	/// rebuild of the visible canvas from the committed one — cheaper than tracking per-texel undo,
+	/// and the same answer the document itself would give.
 	/// </summary>
 	public void CancelStroke()
 	{
 		_current = null;
-
-		Array.Clear( Colors, 0, Colors.Length );
-
-		foreach ( var stroke in Strokes )
-			PaintReplay.PaintStrokeColors( stroke, _mesh, _bvh, _normals, Colors, _found );
+		Array.Clear( _coverage, 0, _coverage.Length );
+		RefreshCanvas();
 	}
 
 	/// <summary>
 	/// Reset the session to a different stroke list — undo/redo's route in.
 	///
-	/// The document restore only rewrites the feature's stroke list; the session's colour array is its
-	/// own copy and does not change with it. Leaving it would make the next stroke resurrect colours
+	/// The document restore only rewrites the feature's stroke list; the session's canvas is its
+	/// own copy and does not change with it. Leaving it would make the next stroke resurrect paint
 	/// the undo just removed. So this drops any stroke in flight, adopts the new list, and replays it
 	/// from scratch — the same path <see cref="CancelStroke"/> walks.
 	/// </summary>
@@ -308,20 +291,41 @@ public sealed class PaintSession
 		if ( strokes is not null )
 			Strokes.AddRange( strokes );
 
-		Array.Clear( Colors, 0, Colors.Length );
+		_committed.Clear();
 
 		foreach ( var stroke in Strokes )
-			PaintReplay.PaintStrokeColors( stroke, _mesh, _bvh, _normals, Colors, _found );
+			CommitStroke( stroke );
+
+		Array.Clear( _coverage, 0, _coverage.Length );
+		RefreshCanvas();
 	}
 
-	/// <summary>One sample onto the stroke and the colours, mirrored across X when
+	/// <summary>Replay one committed stroke into the committed canvas. Uses the live coverage buffer
+	/// as its scratch — BeginStroke clears it, and this only ever runs between strokes.</summary>
+	void CommitStroke( PaintStroke stroke )
+	{
+		Array.Clear( _coverage, 0, _coverage.Length );
+		PaintReplay.StampStroke( stroke, _mesh, _bvh, _coverage, _resolution, _found );
+		PaintReplay.Composite( _committed, _coverage,
+			PaintReplay.ToByte( stroke.R ), PaintReplay.ToByte( stroke.G ), PaintReplay.ToByte( stroke.B ) );
+	}
+
+	/// <summary>Copy the committed canvas into the visible one and mark the whole thing dirty, so the
+	/// next upload sends everything. Used when the canvas is rebuilt wholesale — a cancel or a reload.</summary>
+	void RefreshCanvas()
+	{
+		Array.Copy( _committed.Rgba, Canvas.Rgba, _committed.Rgba.Length );
+		Canvas.Invalidate();
+	}
+
+	/// <summary>One sample onto the stroke and the coverage, mirrored across X when
 	/// <see cref="MirrorX"/> is on. The mirrored point is written into the path alongside the real one,
 	/// so the mirror is part of the stroke's own record rather than a live-only effect that a rebuild
 	/// would drop.</summary>
 	void AddSample( Vec3 point, Vec3 normal )
 	{
 		_current.Path.Add( new PaintStrokePoint( point, normal ) );
-		Dab( point, normal );
+		Recompose( Stamp( point, normal ) );
 
 		if ( !MirrorX )
 			return;
@@ -330,12 +334,39 @@ public sealed class PaintSession
 		var mirroredNormal = new Vec3( -normal.x, normal.y, normal.z );
 
 		_current.Path.Add( new PaintStrokePoint( mirroredPoint, mirroredNormal ) );
-		Dab( mirroredPoint, mirroredNormal );
+		Recompose( Stamp( mirroredPoint, mirroredNormal ) );
 	}
 
-	void Dab( Vec3 point, Vec3 normal )
+	/// <summary>Stamp one dab's coverage and return the bounds it touched, so the caller recomposes
+	/// the visible canvas over exactly that region.</summary>
+	TexelBounds Stamp( Vec3 point, Vec3 normal ) =>
+		PaintReplay.StampDab( _mesh, _bvh, _coverage, _resolution,
+			point, normal, Radius, Strength * A, Falloff, _found );
+
+	/// <summary>
+	/// Rebuild the visible canvas over a texel region: each texel becomes the committed colour with
+	/// the in-flight stroke composited over it at its running coverage. Reading the base from
+	/// _committed rather than from the canvas's current value is what stops overlapping dabs within
+	/// one stroke from stacking.
+	/// </summary>
+	void Recompose( TexelBounds bounds )
 	{
-		PaintReplay.DabColors( _mesh, _bvh, _normals, Colors, point, normal,
-			Radius, Strength * A, Falloff, R, G, B, _found );
+		if ( !bounds.Any )
+			return;
+
+		for ( var y = bounds.MinY; y <= bounds.MaxY; y++ )
+		{
+			for ( var x = bounds.MinX; x <= bounds.MaxX; x++ )
+			{
+				var i = (y * _resolution + x) * 4;
+				var coverage = _coverage[y * _resolution + x];
+
+				var (r, g, b, a) = PaintCanvas.SourceOver(
+					_committed.Rgba[i], _committed.Rgba[i + 1], _committed.Rgba[i + 2], _committed.Rgba[i + 3],
+					_strokeR, _strokeG, _strokeB, coverage );
+
+				Canvas.Write( x, y, r, g, b, a );
+			}
+		}
 	}
 }

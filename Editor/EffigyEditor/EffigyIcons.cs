@@ -9,6 +9,7 @@ namespace Marionette.EditorTools;
 internal enum EffigyIcon
 {
 	Sketch,
+	Plane,
 	Primitive,
 	Extrude,
 	Revolve,
@@ -183,6 +184,7 @@ internal static class EffigyIcons
 			case EffigyIcon.UVProject: PaintUVProject( center, color ); return;
 			case EffigyIcon.FaceMaterial: PaintFaceMaterial( center, color ); return;
 			case EffigyIcon.Boolean: PaintBoolean( center, color ); return;
+			case EffigyIcon.Plane: PaintPlane( center, color ); return;
 
 			case EffigyIcon.SelectTool: PaintSelectTool( center, color ); return;
 			case EffigyIcon.LineTool: PaintLineTool( center, color ); return;
@@ -746,6 +748,51 @@ internal static class EffigyIcons
 		// Reflection: outlined, so the two are not mistaken for a pattern.
 		Stroked( color );
 		Outline( At( c, 2.4f, -5.6f ), At( c, 8, 0 ), At( c, 2.4f, 5.6f ) );
+	}
+
+	/// <summary>
+	/// A plane placed clear of the one it came from: a faint parallelogram below, a solid one above,
+	/// and the gap between them called out.
+	///
+	/// TWO OF THEM, NOT ONE. A single parallelogram is what "face" or "surface" looks like in every
+	/// icon set there is, and this tool is not about a plane — it is about a plane's RELATIONSHIP to
+	/// something else. The pair says offset without a caption, and the arrow between them says which
+	/// of the two is the new one.
+	/// </summary>
+	private static void PaintPlane( Vector2 c, Color color )
+	{
+		// The reference: faint, because it is what you already had.
+		Stroked( color.WithAlpha( 0.4f ) );
+		Outline( Parallelogram( c, 3.9f ) );
+
+		// The new plane, filled just enough to read as a surface rather than as a wire loop.
+		Filled( color.WithAlpha( 0.18f ) );
+		Editor.Paint.DrawPolygon( Parallelogram( c, -3.9f ) );
+
+		Stroked( color );
+		Outline( Parallelogram( c, -3.9f ) );
+
+		// The offset itself, pointing at the plane that was made rather than the one it came from.
+		Stroked( color.WithAlpha( 0.75f ), 1.2f );
+		Editor.Paint.DrawLine( At( c, 0, 3.2f ), At( c, 0, -2.2f ) );
+		ArrowHead( At( c, 0, -3.2f ), new Vector2( 0, -1 ), color.WithAlpha( 0.75f ), 2.6f );
+	}
+
+	/// <summary>A plane in three-quarter view, centred on <paramref name="y"/>. Shared by the two
+	/// halves of the Plane glyph so they cannot drift into different shapes.</summary>
+	private static Vector2[] Parallelogram( Vector2 c, float y )
+	{
+		const float Half = 5.4f;
+		const float SkewX = 2.5f;
+		const float SkewY = 2.2f;
+
+		return new[]
+		{
+			At( c, -Half + SkewX, y - SkewY ),
+			At( c, Half + SkewX, y - SkewY ),
+			At( c, Half - SkewX, y + SkewY ),
+			At( c, -Half - SkewX, y + SkewY ),
+		};
 	}
 
 	/// <summary>One body copied along a direction — first solid, copies outlined and fading.</summary>

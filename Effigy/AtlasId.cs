@@ -5,15 +5,10 @@ namespace Effigy;
 /// <summary>
 /// A stable id for a mesh's atlas: every corner UV, in face order then corner order.
 ///
-/// PARKED, NOT LIVE. Nothing in the shipped tool calls this - the paint that ships is vertex
-/// colour, and its path is PaintReplay.ReplayColors. This texture side is reachable only from its
-/// own tests. It is kept rather than deleted because docs/dev/PAINTING.md §6 closes the question
-/// "for now" and names texels as the better long-term answer: resolution independent of mesh
-/// density, exporting as a real texture. Reviving it needs the authoring half nobody has written -
-/// bake the canvas to PNG, compile a .vtex, generate a .vmat, bind the slot.
-///
-/// SO DO NOT READ IT AS THE PAINT PIPELINE. If you are following how a stroke reaches the screen,
-/// you want PaintReplay.ReplayColors and PaintFeature, not this.
+/// LIVE NOW, and the whole reason it exists is the move back to a texture atlas. A replayed paint
+/// canvas is keyed to the UV layout, because a re-unwrap keeps the topology and moves every island —
+/// a canvas cached on topology alone would be handed back against a rearranged atlas, paint scattered
+/// onto unrelated faces, silently.
 ///
 /// <see cref="MultiresSculpt.TopologyId"/> deliberately ignores UVs, because positions are what a
 /// parametric edit is expected to change. That is exactly what makes it the wrong key for a cached

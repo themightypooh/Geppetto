@@ -36,6 +36,35 @@ forgotten.
 ## Unreleased
 
 ### Added
+- **Bones can be placed inside a model, not just on its skin.** The bone tool has a Middle/Surface
+  choice, and Middle is the default: a click measures how much material is under the cursor and
+  puts the joint halfway through it. `EffigyViewport.Rig.cs`
+- So a spine runs down the middle of a chest instead of down the front of it, which is where a
+  joint has to be for the weights around it to make sense.
+- While placing, the run of material being measured is drawn with its thickness, so you can see
+  where the joint will land before you click rather than finding out afterwards.
+- A **Y=0** toggle beside it forces every placed joint onto the mirror plane exactly. Mirror
+  reflects across that plane, so a chain placed with this on mirrors cleanly.
+- Both settings are remembered between sessions.
+- **Planes you place yourself.** A Plane button beside Sketch, so "which plane?" is no longer
+  answered only by Top, Front, Right or a face that already exists. `PlaneFeature.cs`
+- Build one off a global plane, off a face of a part, or off another plane, then push it along
+  its normal with Offset and lean it over with Angle.
+- **Drag a plane instead of typing its offset.** While a plane's dialog is open an arrow stands
+  on it: pull the arrow and the plane slides, with everything drawn on it following as it goes.
+  `EffigyViewport.Planes.cs`
+- The arrow points the way the plane MOVES rather than the way it faces, so it still follows the
+  cursor on a plane you have leaned over. The Offset field counts along under the drag.
+- A plane built from a face rides that face: make the part taller and everything drawn on the
+  plane moves up with it, instead of being left where the part used to end.
+- Planes stack, so three ribs ten apart can each be "ten further on" rather than three heights
+  to keep in step -- change the bottom one and the rest follow.
+- Sketch on one the same way you sketch on anything else: press Sketch, click the plane. A boss
+  built through a plane that came off a part joins that part rather than starting a new one.
+- Planes are drawn in the viewport with their names beside them, and each has an eye in the
+  feature tree for when a document has more of them than you want to look at.
+- While a plane's dialog is open its own X and Y axes are drawn on it, so the Tilt about
+  dropdown is something you read off the model rather than find by trying both.
 - A **material brush**. Press Material in the Paint workspace and drag on the model to
   lay a material onto faces, instead of picking them one at a time. The material is
   whatever is selected in the Materials browser, which the Paint workspace already opens
@@ -47,34 +76,83 @@ forgotten.
 - It makes the same edit dropping a material makes, so one Ctrl+Z is one dab, the slot is
   reused rather than multiplied, and a slot the brush swept the last face off is retired
   instead of being left named on nothing.
-- Paint can cover instead of tinting. A **Blend** dropdown on the paint bar, beside the
-  colour, radius and strength: **Tint** multiplies the paint into the material underneath
-  so the surface shows through, **Replace** paints onto white so what you brushed is the
-  colour that renders. Both are the same multiply -- what moves is the surface under it --
-  which is why covering needed no shader in the end. A face you dropped a material on
-  keeps that material either way; Blend only moves the slots that had nothing on them.
+- Paint is a texture atlas now, not per-vertex colour. A stroke is stamped into a 1024x1024
+  canvas whose resolution has nothing to do with how many vertices the part has, so a bare
+  box paints at brush resolution without a Subdivide. `PaintCanvas.cs`, `PaintReplay.cs`,
+  `PaintSession.cs`, `PaintFeature.cs`
+- A painted part exports its own material. On Compile .vmdl the canvas is written to a PNG and
+  wrapped in a .vmat, then bound to the part's material slot -- so the compiled model samples
+  the paint like any other texture, and the vertex-colour workaround (`vertex_color.vmat`) is
+  gone. `PaintMaterial.cs`
+- Entering Paint on a part whose UVs will not hold paint inserts a **UV Project** in
+  **Unwrap** mode above it automatically, then carries on. It is an ordinary feature in the
+  tree, so it rolls back and undoes with one Ctrl+Z, and the prompt says when it was added.
+  `EffigyWindow.cs`
+- The **Blend** choice on the paint bar stays, carried for documents saved before the
+  switch. With a texture the paint covers, so the tint/replace distinction that choice used
+  to make is no longer drawn. A face you dropped a material on still keeps that material.
   `PaintFeature.cs`, `EffigyPaintBar.cs`
+- A **Falloff** dropdown on the sculpt bar, beside Radius and Strength. Falloff is how the
+  brush fades from its centre to its edge: **Smooth** for a soft mound, **Sharp** for a hard
+  crease, **Linear** for an even fade, **Constant** to move the whole disc at once. The choice
+  was always in the kernel and nowhere reachable -- Sharp versus Smooth is the difference
+  between a crease and a mound. `EffigySculptBar.cs`
+- Hold **Ctrl** while sculpting to invert the brush. Draw carves in instead of pushing out,
+  Inflate deflates, and Grab drags the opposite way. The brush ring turns red with a minus in
+  the middle while inverted, so you can see which way the stroke will go before you click --
+  and the Strength box never changes on its own. `SculptSession.cs`,
+  `EffigyViewport.Sculpting.cs`
+- Sculpting hotkeys. **1–6** arm the six brushes in the order they appear on the bar, **X**
+  mirrors and **M** masks as before, and **[** and **]** shrink and grow the brush -- hold
+  either to keep resizing. The toolbar's ticks and the bar's numbers follow the keys.
+  `EffigyViewport.Sculpting.cs`
+- Rebind any Effigy tool key. Settings has a **Hotkeys** section: every key the tool registers
+  -- the sketch tools, the sculpt brushes and their mirror/mask/radius keys, paint symmetry,
+  the note eraser and hide, the bone drag modes, the rig keys, undo/redo/save -- is listed with
+  its current key. Click one, press the new key, and it takes effect immediately; Reset puts one
+  back to its default. The keys live in the engine's own shortcut store, so a change here also
+  shows up in the editor's Editor Keybinds page, and the other way round. `EffigySettingsWindow.cs`
+- See the UVs. A **UV checker** view toggle draws the model with a checker pattern instead of its
+  own materials, so stretching and seams in the UVs show on the surface instead of waiting for a
+  paint or a bake to smudge them. It is in Settings, under View. `EffigyWindow.cs`,
+  `EffigySettingsWindow.cs`
+- An unwrap says what it did. The UV Project feature's panel reports the result of an **Unwrap**
+  -- how many charts, how many faces, and the texel density -- instead of discarding it, and warns
+  when the result still will not hold a bake. Box and planar projection stay silent, because their
+  overlap is what makes them tile. `SolidFeatures.cs`, `EffigyFeatureDialog.cs`
+
+### Improved
+- The settings window folds up. Each section -- Grid, Snapping, Reference, Lighting,
+  Appearance, Normal map bake -- is now a header you click to collapse or expand, and the
+  window remembers which ones you had open next time. `EffigySettingsWindow.cs`
 
 ### Fixed
-- Paint is visible. It never was: the colours are written into the mesh's vertex COLOR
+- A plane's dialog no longer puts the face pull arrow on the model. A plane can be built from a
+  face, so the arrow appeared -- and dragging it did nothing, because a plane has no distance for
+  it to write. The plane's own offset arrow is the handle there now.
+- Switching workspaces now puts away what you were doing. The note pen (grease pencil) used
+  to stay armed across the switch, so the next thing you drew also scribbled notes; and a
+  running soft-bone preview kept the bones sagging and swinging in the workspace you switched
+  to. Leaving a workspace now disarms the pen and stops the preview, the same way it already
+  finished a sketch, sculpt or paint. `EffigyWindow.Workspaces.cs`
+- Paint is visible. It never was: the colours were written into the mesh's vertex COLOR
   stream, and the material everything rendered with does not read that stream at all --
   `complex.shader`'s model tint is a per-draw constant and its tint mask is a texture, so
   the paint was packed into the vertex buffer correctly and thrown away by the shader. A
   painted part looked exactly like an unpainted one, in the viewport and in the compiled
-  model. Painted meshes now bind `materials/default/vertex_color.vmat`, which the engine
-  already ships and which declares the COLOR stream by name.
-  `EffigyPreview.cs`, `VmdlMaterials.cs`
+  model. The paint is a texture on an ordinary material now, so the shader that ignored
+  vertex colour is out of the picture entirely.
+  `PaintCanvas.cs`, `EffigyPreview.cs`, `EffigyViewport.Painting.cs`
 - A material dropped on a face still wins on a painted part -- paint takes the slots that
   had nothing, not the ones you chose.
-- The paint brush lands on a part you have not subdivided. Paint colours vertices, and the
-  default brush was a twelfth of the model's diagonal -- on a 1-unit box that is 0.144, while
-  the nearest corner to the middle of a face is 0.707 away, so the brush reached no vertex at
-  all. It painted nothing and said nothing about it, which reads as the tool being broken
-  rather than as the mesh being too coarse to hold the paint. The starting radius now clears
-  the spacing between vertices. `PaintSession.cs`
-- Entering Paint on a coarse body says so, and says what to do: a bare box has eight places
-  for colour to land, so a stroke tints whole faces instead of following the cursor. Add a
-  Subdivide above the Paint feature and the same brush gets as fine as the mesh.
+- Paint is no longer limited by the mesh. Paint was vertex colour, and a bare box has eight
+  vertices, all at the corners -- a stroke landed on corners and spread across whole faces,
+  nowhere near the cursor, and the only fix was to Subdivide first. It is a texture atlas
+  now, so the brush resolves paint as finely as the canvas whatever the mesh. `PaintReplay.cs`
+- A held brush no longer keeps darkening. Each dab composited straight onto the result, so
+  holding the button still ticked the colour up like a sculpt brush; a stroke is now
+  composited once from its own coverage, so the same spot re-stamped over and over stays
+  the same mark. `PaintReplay.cs`, `PaintSession.cs`
 - Dragging a multi-bone selection in Marionette no longer moves one bone twice as far as
   the rest. A group drag is applied to the selected bones that nothing above them is
   carrying -- but it only checked each bone's immediate parent, so selecting a bone and
@@ -98,11 +176,14 @@ forgotten.
   material it cannot find. Since the geometry, UVs and skinning were all fine, the first
   thing anyone saw after their first export was a broken-looking model that was not broken.
   `VmdlMaterials.cs`
-- Paint survives the compile, for the same reason. Paint is vertex colour, and vertex
-  colour is a tint -- it needs a material underneath to multiply into, and an unbound slot
-  had none, so a painted part compiled to red rather than to its paint. Bound to the
-  default it renders AS the paint, which is what painting a part and exporting it should
-  do. What still has not been checked is the far side of the compile in a real scene.
+- A painted part compiles to its paint. With vertex colour the only material that read it
+  was a shader nobody else used, and the whole thing needed a fallback to look right; now
+  the paint is an ordinary texture on an ordinary material, so it survives the compile the
+  way any texture does.
+- A compiled static model samples its texture the right way up. OBJ's UV origin is the
+  bottom-left and Effigy's is the top-left, so the exporter was writing V unflipped and a
+  painted (or otherwise textured) static model came out upside down. V is flipped on the way
+  out now, the same way the FBX writer already does. `ObjWriter.cs`
 
 ### Known Issues
 - Animation clips have to be added again every time you open the tool. File → Animation
