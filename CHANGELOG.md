@@ -40,6 +40,9 @@ forgotten.
   and dropped the bone selection. A part click now keeps the bone. Select a bone, select a part,
   press Assign — that pins them. With no part selected it still arms click-to-assign in the
   viewport.
+- **Clicking a bone in the viewport now selects it.** Bones sit inside the mesh, so a click used
+  to hit the part instead. Assign, Paint Weights and Parent all need that selection, and they
+  stayed grey. Clicking the visible bone selects it even through the solid.
 
 ### Improved
 - **Bone from Part is on the Rig bar**, not only the part right-click menu. Select a part and
@@ -47,6 +50,9 @@ forgotten.
   (Make a bone from this part, Assign to the selected bone).
 
 ### Added
+- **Parent bones to each other.** Right-click a bone in the Rig tree → Parent to. Hang trigger
+  and mag off root and they follow it in Marionette. Same pose, new parent. A bone cannot parent
+  to something that already hangs off it.
 - **A first rigging tutorial.** Help → Start Rigging Tutorial. Two boxes (a post and a sign),
   a bone from each, pose the sign, compile. The smallest loop that still needs a skeleton.
 - **Named variables.** View → Variables, then type `#thickness` in any dimension. Change it once

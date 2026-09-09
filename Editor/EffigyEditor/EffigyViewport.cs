@@ -1502,6 +1502,7 @@ internal sealed partial class EffigyViewport : Widget
 		// that left the cursor a plain arrow the entire time.
 		Cursor = Gizmo.HasHovered || IsSketching || IsPainting || IsMaterialBrushing || _hoveredSketchId is not null || _hoveredFaceBodyId is not null
 			|| BoneToolActive || BodyPickMode || FacePickMode || EdgePickMode
+			|| ( RigMode && TryPickBoneUnderCursor( out _ ) )
 			? CursorShape.Finger : CursorShape.Arrow;
 	}
 
@@ -1514,8 +1515,10 @@ internal sealed partial class EffigyViewport : Widget
 		// The selected bone's gizmo needs IgnoreDepth=false to match normal editor gizmos.
 		Gizmo.Draw.IgnoreDepth = true;
 
+		var hoverBone = TryPickBoneUnderCursor( out var hoveredIndex ) ? hoveredIndex : -1;
+
 		for ( var i = 0; i < RigSkeleton.Count; i++ )
-			DrawBoneHandle( i );
+			DrawBoneHandle( i, i == hoverBone );
 
 		// The selected bone's gizmo runs after the loop, in its own scope, so its hitboxes
 		// do not fight with the bone hitboxes.
@@ -1524,20 +1527,132 @@ internal sealed partial class EffigyViewport : Widget
 
 		Gizmo.Draw.IgnoreDepth = false;
 
-		// Click empty space to deselect — AFTER the gizmo so Gizmo.HasHovered covers both
-		// our bone hitboxes AND the gizmo control's own hitboxes. Using !Gizmo.IsHovered
-		// here was the bug: IsHovered only sees Hitbox.Sphere calls, not Control hitboxes,
-		// so clicking the gizmo counted as empty space and deselected immediately.
-		//
-		// A click on a PART is not empty space. Assign Body is "select a bone, select a
-		// part, press Assign", and treating the mesh as a miss dropped the bone the moment
-		// you picked the body you wanted to pin — which is why the button went grey.
-		if ( Gizmo.WasLeftMousePressed && !Gizmo.HasHovered && _selectedBoneIndex >= 0 && !_boneDragging
-			&& !TryPickFaceUnderCursor( out _ ) )
+		if ( BoneToolActive || _boneDragging || !Gizmo.WasLeftMousePressed )
+			return;
+
+		// Bones are drawn IgnoreDepth so they show through the mesh they sit inside. Their
+		// gizmo hitboxes are not — a click on the visible bone hits the solid in front of
+		// it, the bone never selects, and every tool that needs a selected bone (Assign,
+		// Paint Weights, Parent) stays grey. Pick the bone with the same cursor ray as the
+		// mesh, ignoring occlusion, then let a miss fall through to part / empty space.
+		if ( TryPickBoneUnderCursor( out var picked ) )
+		{
+			if ( picked != _selectedBoneIndex )
+			{
+				_selectedBoneIndex = picked;
+				BoneSelectionChanged?.Invoke( picked );
+				Update();
+			}
+
+			return;
+		}
+
+		if ( Gizmo.HasHovered || TryPickFaceUnderCursor( out _ ) )
+			return;
+
+		if ( _selectedBoneIndex >= 0 )
 		{
 			_selectedBoneIndex = -1;
 			BoneSelectionChanged?.Invoke( -1 );
 		}
+	}
+
+	/// <summary>
+	/// The bone under the cursor, even when the mesh is in front of it. Bones live inside
+	/// the parts they drive; drawing them through the mesh is the only way to see them, and
+	/// a pick that lost to the mesh made clicking one a no-op.
+	/// </summary>
+	internal bool TryPickBoneUnderCursor( out int index )
+	{
+		index = -1;
+
+		if ( RigSkeleton is null || RigSkeleton.Count == 0 || !_cursorRayValid || BoneToolActive )
+			return false;
+
+		var origin = _cursorRayOrigin;
+		var dir = _cursorRayDirection;
+		var dirLen = dir.Length;
+
+		if ( dirLen < 1e-8f )
+			return false;
+
+		dir = dir / dirLen;
+
+		var best = float.MaxValue;
+
+		for ( var i = 0; i < RigSkeleton.Count; i++ )
+		{
+			var world = BoneWorld( i );
+			var bone = RigSkeleton.Bones[i];
+			var head = world.Origin;
+			var tail = world.TransformPoint( new Vec3( 0, bone.Length, 0 ) );
+			var boneLen = (tail - head).Length;
+
+			if ( boneLen < 0.01f )
+				continue;
+
+			var dist = RaySegmentDistance( origin, dir, head, tail, out var rayT );
+
+			if ( rayT < 0f )
+				continue;
+
+			var mid = (head + tail) * 0.5f;
+			var midWorld = new Vector3( mid.x, mid.y, mid.z );
+			var radius = MathF.Max( boneLen * DogBoneKnobScale, MinBonePickRadius );
+			radius = MathF.Max( radius, WorldRadiusAt( midWorld, 14f ) );
+
+			if ( dist > radius || rayT >= best )
+				continue;
+
+			best = rayT;
+			index = i;
+		}
+
+		return index >= 0;
+	}
+
+	static float RaySegmentDistance( Vec3 rayOrigin, Vec3 rayDir, Vec3 a, Vec3 b, out float rayT )
+	{
+		var v = b - a;
+		var w0 = rayOrigin - a;
+		var vv = Vec3.Dot( v, v );
+		var uv = Vec3.Dot( rayDir, v );
+		var uw = Vec3.Dot( rayDir, w0 );
+		var vw = Vec3.Dot( v, w0 );
+		var denom = vv - uv * uv;
+
+		float segT;
+
+		if ( denom < 1e-12f )
+		{
+			segT = 0f;
+			rayT = -uw;
+		}
+		else
+		{
+			segT = (uv * uw - vw) / denom;
+			rayT = uv * segT - uw;
+		}
+
+		if ( rayT < 0f )
+		{
+			rayT = 0f;
+			segT = vv > 1e-12f ? Math.Clamp( -vw / vv, 0f, 1f ) : 0f;
+		}
+		else if ( segT < 0f )
+		{
+			segT = 0f;
+			rayT = -uw;
+		}
+		else if ( segT > 1f )
+		{
+			segT = 1f;
+			rayT = uv - uw;
+		}
+
+		var onRay = rayOrigin + rayDir * rayT;
+		var onSeg = a + v * segT;
+		return (onRay - onSeg).Length;
 	}
 
 	/// <summary>Base radius of a bone's head sphere in world units.</summary>
@@ -1565,7 +1680,7 @@ internal sealed partial class EffigyViewport : Widget
 
 	/// <summary>Draw one bone as a dog-bone: a knobby ball at the head, a knobby ball at the
 	/// tail, and a thin shaft between them.</summary>
-	private void DrawBoneHandle( int index )
+	private void DrawBoneHandle( int index, bool hovered )
 	{
 		// BoneWorld, not WorldBind: while the soft preview runs this is where the bone actually IS,
 		// which is where it has to be drawn and where its hit sphere has to sit. See
@@ -1625,8 +1740,6 @@ internal sealed partial class EffigyViewport : Widget
 		// hitbox below be a single box that lies along the bone instead of a string of spheres
 		// approximating one. ExtractRotation maps the kernel's basis the same way the pose gizmo
 		// does - the bone's own axis becomes the scope's FORWARD - so local +X runs head to tail.
-		var hovered = false;
-
 		using ( Gizmo.Scope( $"EffigyBone{index}", new Transform( head, ExtractRotation( world ) ) ) )
 		{
 			// THE HITBOX IS SIZED FROM THE DRAWING, and that is the whole fix for a hit target that
@@ -1659,16 +1772,6 @@ internal sealed partial class EffigyViewport : Widget
 			Gizmo.Hitbox.BBox( new BBox(
 				new Vector3( 0f, -knobR, -knobR ),
 				new Vector3( boneLen, knobR, knobR ) ) );
-
-			hovered = Gizmo.IsHovered;
-
-			// Selecting what is already selected would only re-fire the callbacks - and one of them
-			// rebuilds the tree selection, which is not free.
-			if ( hovered && !isSelected && Gizmo.WasLeftMousePressed )
-			{
-				_selectedBoneIndex = index;
-				BoneSelectionChanged?.Invoke( index );
-			}
 		}
 
 		// The highlight is the BONE, not a blob near it, and it is drawn out here in world space

@@ -288,6 +288,96 @@ public sealed class Skeleton
 	}
 
 	/// <summary>
+	/// Hang <paramref name="index"/> under <paramref name="newParent"/> (-1 to make it a root).
+	/// The bone keeps its WORLD bind pose; only Local is rewritten against the new parent, so a
+	/// trigger and a mag parented onto a root stay where they were drawn and then follow the root
+	/// when it moves — which is the whole point of a hierarchy.
+	///
+	/// May reorder the list. Parent index &lt; child index is an invariant, and parenting an
+	/// earlier bone onto a later one would break it without a rebuild. Returns the bone's index
+	/// after the rebuild, which is what a UI holding a selection has to switch to.
+	///
+	/// A cycle is refused: a bone cannot parent to itself or to anything that already hangs off it.
+	/// </summary>
+	public int SetParent( int index, int newParent )
+	{
+		if ( index < 0 || index >= Bones.Count )
+			throw new ArgumentOutOfRangeException( nameof( index ) );
+
+		if ( newParent < -1 || newParent >= Bones.Count )
+			throw new ArgumentOutOfRangeException( nameof( newParent ) );
+
+		if ( newParent == index )
+			throw new ArgumentException( $"Bone '{Bones[index].Name}' cannot parent to itself." );
+
+		if ( Bones[index].Parent == newParent )
+			return index;
+
+		for ( var p = newParent; p >= 0; p = Bones[p].Parent )
+		{
+			if ( p == index )
+				throw new ArgumentException(
+					$"Bone '{Bones[index].Name}' cannot parent to '{Bones[newParent].Name}' — that bone already hangs off it." );
+		}
+
+		var count = Bones.Count;
+		var names = new string[count];
+		var heads = new Vec3[count];
+		var tails = new Vec3[count];
+		var ups = new Vec3[count];
+		var softs = new SoftBone[count];
+		var parents = new int[count];
+		var movedName = Bones[index].Name;
+
+		for ( var i = 0; i < count; i++ )
+		{
+			var world = WorldBind( i );
+			names[i] = Bones[i].Name;
+			heads[i] = world.Origin;
+			tails[i] = TailWorld( i );
+			ups[i] = world.Z;
+			softs[i] = Bones[i].Soft?.Clone();
+			parents[i] = Bones[i].Parent;
+		}
+
+		parents[index] = newParent;
+
+		var order = new List<int>( count );
+		var state = new byte[count];
+
+		void Visit( int i )
+		{
+			if ( state[i] == 2 )
+				return;
+
+			if ( state[i] == 1 )
+				throw new InvalidOperationException( "Cycle in the parent list." );
+
+			state[i] = 1;
+
+			if ( parents[i] >= 0 )
+				Visit( parents[i] );
+
+			state[i] = 2;
+			order.Add( i );
+		}
+
+		for ( var i = 0; i < count; i++ )
+			Visit( i );
+
+		Bones = new List<Bone>( count );
+
+		foreach ( var i in order )
+		{
+			var mappedParent = parents[i] < 0 ? -1 : IndexOf( names[parents[i]] );
+			AddBoneFromPoints( names[i], mappedParent, heads[i], tails[i], ups[i] );
+			Bones[Bones.Count - 1].Soft = softs[i];
+		}
+
+		return IndexOf( movedName );
+	}
+
+	/// <summary>
 	/// Mirror a bone and everything beneath it across the plane through the origin with the given
 	/// normal, appended as new bones under `newParent` (-1 for a new root, or an existing bone —
 	/// mirroring an arm should graft onto the spine bone the original arm hangs from, not become

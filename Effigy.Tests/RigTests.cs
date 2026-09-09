@@ -25,6 +25,9 @@ public static class RigTests
 		Section( "removing and renaming a bone" );
 		TestRemoveRenameBone();
 
+		Section( "reparenting a bone" );
+		TestSetParent();
+
 		Section( "mirroring a bone subtree" );
 		TestMirrorSubtree();
 
@@ -239,6 +242,63 @@ public static class RigTests
 		threw = false;
 		try { chain.RenameBone( 0, "  " ); } catch ( ArgumentException ) { threw = true; }
 		Check( "a blank name is refused", threw );
+	}
+
+	/// <summary>
+	/// The gun-rig case: three roots (root, trigger, mag) then hang the last two off the first.
+	/// World poses stay put; moving the root afterwards carries the children. Parenting the other
+	/// way — an earlier bone onto a later one — has to reorder the list or the parent-before-child
+	/// invariant dies.
+	/// </summary>
+	static void TestSetParent()
+	{
+		var s = new Skeleton();
+		s.AddBoneFromPoints( "root", -1, new Vec3( 0, 0, 0 ), new Vec3( 0, 2, 0 ) );
+		s.AddBoneFromPoints( "trigger", -1, new Vec3( 1, 0, 0 ), new Vec3( 1, 1, 0 ) );
+		s.AddBoneFromPoints( "mag", -1, new Vec3( 0, 0, -1 ), new Vec3( 0, 1, -1 ) );
+
+		var triggerHead = s.HeadWorld( 1 );
+		var magTail = s.TailWorld( 2 );
+
+		var trigger = s.SetParent( 1, 0 );
+		var mag = s.SetParent( s.IndexOf( "mag" ), 0 );
+
+		Check( "trigger hangs off root", s.Bones[trigger].Parent == 0 );
+		Check( "mag hangs off root", s.Bones[mag].Parent == 0 );
+		Check( "trigger kept its world head", Near( s.HeadWorld( trigger ), triggerHead ) );
+		Check( "mag kept its world tail", Near( s.TailWorld( mag ), magTail ) );
+		Check( "root still has two children", s.Children( 0 ).Count() == 2 );
+
+		var noOp = s.SetParent( trigger, 0 );
+		Check( "parenting to the parent it already has is a no-op", noOp == trigger );
+
+		var threw = false;
+		try { s.SetParent( 0, trigger ); } catch ( ArgumentException ) { threw = true; }
+		Check( "a bone cannot parent to something that already hangs off it", threw );
+
+		threw = false;
+		try { s.SetParent( 0, 0 ); } catch ( ArgumentException ) { threw = true; }
+		Check( "a bone cannot parent to itself", threw );
+
+		// Parent the first bone onto the last: indices must move so the parent still comes first.
+		var flipped = new Skeleton();
+		flipped.AddBoneFromPoints( "leaf", -1, new Vec3( 3, 0, 0 ), new Vec3( 4, 0, 0 ) );
+		flipped.AddBoneFromPoints( "stem", -1, Vec3.Zero, new Vec3( 0, 2, 0 ) );
+
+		var leafHead = flipped.HeadWorld( 0 );
+		var newLeaf = flipped.SetParent( 0, 1 );
+
+		Check( "the new parent is earlier in the list than the child",
+			flipped.Bones[newLeaf].Parent >= 0
+			&& flipped.Bones[newLeaf].Parent < newLeaf );
+		Check( "leaf kept its world head after the reorder",
+			Near( flipped.HeadWorld( newLeaf ), leafHead ) );
+		Check( "stem is a root", flipped.Bones[flipped.IndexOf( "stem" )].Parent == -1 );
+
+		var unhooked = flipped.SetParent( newLeaf, -1 );
+		Check( "parenting to none makes a root", flipped.Bones[unhooked].Parent == -1 );
+		Check( "and the world pose is still the one that was drawn",
+			Near( flipped.HeadWorld( unhooked ), leafHead ) );
 	}
 
 	/// <summary>A spine root with one arm off to the +X side — the shape mirroring an arm across

@@ -1476,6 +1476,36 @@ internal sealed class EffigyRigPanel : Widget
 		RefreshInspector();
 	}
 
+	/// <summary>Hang this bone under another, or make it a root. Same world pose, new parent —
+	/// so a trigger and a mag follow the root in Marionette without being redrawn.</summary>
+	private void SetBoneParent( int index, int newParent )
+	{
+		if ( index < 0 || index >= Skeleton.Count )
+			return;
+
+		if ( newParent < -1 || newParent >= Skeleton.Count || newParent == index )
+			return;
+
+		RigChanging?.Invoke();
+		var moved = Skeleton.SetParent( index, newParent );
+		RebuildTree();
+		_viewport.SelectBone( moved );
+		OnViewportBoneSelectionChanged( moved );
+	}
+
+	/// <summary>Select a bone by name after creating it, so Assign and Paint Weights light up
+	/// without a second click that used to do nothing in the viewport.</summary>
+	public void SelectBoneNamed( string name )
+	{
+		var index = string.IsNullOrEmpty( name ) ? -1 : Skeleton.IndexOf( name );
+
+		if ( index < 0 )
+			return;
+
+		_viewport.SelectBone( index );
+		OnViewportBoneSelectionChanged( index );
+	}
+
 	private void OpenBoneMenu( int index )
 	{
 		if ( index < 0 || index >= Skeleton.Count )
@@ -1483,6 +1513,41 @@ internal sealed class EffigyRigPanel : Widget
 
 		var menu = new Menu( this );
 		menu.AddOption( "Rename", "edit", () => BeginRename( index ) );
+
+		var parentMenu = menu.AddMenu( "Parent to", "account_tree" );
+		var currentParent = Skeleton.Bones[index].Parent;
+
+		var makeRoot = parentMenu.AddOption( "None (root)", "close", () => SetBoneParent( index, -1 ) );
+		makeRoot.Enabled = currentParent >= 0;
+
+		if ( Skeleton.Count > 1 )
+			parentMenu.AddSeparator();
+
+		for ( var i = 0; i < Skeleton.Count; i++ )
+		{
+			if ( i == index )
+				continue;
+
+			var cycle = false;
+
+			for ( var p = i; p >= 0; p = Skeleton.Bones[p].Parent )
+			{
+				if ( p != index )
+					continue;
+
+				cycle = true;
+				break;
+			}
+
+			if ( cycle )
+				continue;
+
+			var target = i;
+			var option = parentMenu.AddOption( Skeleton.Bones[i].Name, null,
+				() => SetBoneParent( index, target ) );
+			option.Enabled = target != currentParent;
+		}
+
 		menu.AddSeparator();
 
 		// Deleting reindexes every bone after it in Skeleton.Bones. _chainParent (see

@@ -3911,6 +3911,8 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		RecordUndo();
 
+		string lastName = null;
+
 		foreach ( var (body, head, tail, up) in derived )
 		{
 			// Named after the part, which is named after the feature that made it unless somebody
@@ -3920,12 +3922,16 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 			rig.AddBoneFromPoints( name, parent, head, tail, up );
 			_studio.BodyBoneMap[body.Id] = name;
+			lastName = name;
 		}
 
 		NoteRigEdited();
 
 		_rigPanel?.Refresh();
 		_partsPanel?.Refresh();
+
+		if ( lastName is not null )
+			_rigPanel?.SelectBoneNamed( lastName );
 
 		if ( skipped.Count > 0 )
 		{

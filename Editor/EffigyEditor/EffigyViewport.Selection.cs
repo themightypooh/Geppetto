@@ -217,6 +217,11 @@ internal sealed partial class EffigyViewport
 		if ( !_canvasHasCursor )
 			return;
 
+		// A bone under the cursor is a bone click, even when the mesh is in front of it.
+		// Taking the part instead is why clicking a 3D bone did nothing and Assign stayed grey.
+		if ( RigMode && TryPickBoneUnderCursor( out _ ) )
+			return;
+
 		// Sketches are a CAD question. In the rig workspace a click names a part (or a bone),
 		// and a profile lighting up under the cursor would steal the body you meant to pin.
 		if ( !RigMode
