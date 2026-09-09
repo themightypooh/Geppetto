@@ -1693,12 +1693,13 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 				? " Its materials were sized to tile, and an unwrap does not tile, so they will sit differently."
 				: "";
 
-			SetPrompt( $"Paint: drag on the model. Added a UV Project so the paint has its own texels "
-				+ $"(one Ctrl+Z removes it).{tiling}" );
+			SetPrompt( $"Paint: drag on the model, hold Ctrl to erase. Added a UV Project so the paint "
+				+ $"has its own texels (one Ctrl+Z removes it).{tiling}" );
 		}
 		else
 		{
-			SetPrompt( "Paint: drag on the model. Colour, size and strength are on the bar below." );
+			SetPrompt( "Paint: drag on the model, hold Ctrl to erase. Colour, size and strength are "
+				+ "on the bar below." );
 		}
 	}
 

@@ -57,6 +57,23 @@ public sealed class PaintStroke
 	/// <summary>Distance between dabs along the path, as a fraction of <see cref="Radius"/>.</summary>
 	public float Spacing = 0.5f;
 
+	/// <summary>
+	/// Whether this stroke TAKES paint away rather than laying it down.
+	///
+	/// AN ERASE IS A STROKE, NOT AN EDIT TO THE CANVAS. The canvas is a derived artifact replayed
+	/// from this list on every rebuild, so an erase that scrubbed texels directly would be undone by
+	/// the next rebuild — the paint would come back on its own, which is worse than having no eraser
+	/// at all. Recorded here it sits in the log in the order the hand made it, and colour blending
+	/// does not commute, so that order is the whole point.
+	///
+	/// THE COLOUR FIELDS ARE STILL CARRIED AND STILL MEAN NOTHING HERE. An erase subtracts its
+	/// coverage from the canvas's alpha and never reads R/G/B. They stay rather than moving to a
+	/// second type so that one writer and one reader serve both kinds — see StudioDocument, where an
+	/// erase is a different LINE KIND rather than a ninth header field, because appending a field
+	/// would shift the path every older document parses from.
+	/// </summary>
+	public bool Erase;
+
 	/// <summary>The path, in the order it was painted, each point carrying a position and the
 	/// surface normal there. Order is the whole point: strokes are a log and colour blending does
 	/// not commute.</summary>

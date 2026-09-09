@@ -32,6 +32,13 @@ public static class PaintReplayTests
 		Section( "paint: replay is deterministic" );
 		TestReplayIsDeterministic();
 
+		Section( "paint: an erase takes paint back off" );
+		TestEraseRemovesPaint();
+		TestEraseOnlyWhereTheBrushReached();
+		TestEraseAndPaintReplayInOrder();
+		TestDilateDoesNotRefillAnErasedHole();
+		TestSessionErases();
+
 		Section( "paint: the session's stroke contract" );
 		TestSessionLifecycle();
 		TestCancelRestoresCommittedStrokes();
@@ -227,6 +234,153 @@ public static class PaintReplayTests
 		var b = PaintReplay.Replay( mesh, strokes, Res );
 
 		Check( "replaying the same strokes twice is identical", Equal( a.Rgba, b.Rgba ) );
+	}
+
+	// --- erasing -------------------------------------------------------------------------------
+
+	/// <summary>A hard-edged erase, so "erased" means alpha zero rather than alpha nearly zero. A
+	/// Smooth erase fades to nothing at its rim like any brush, which is right for the tool and
+	/// useless for an assertion about whether the paint is gone.</summary>
+	static PaintStroke Eraser( Vec3 point, Vec3 normal, float radius )
+	{
+		var s = new PaintStroke
+		{
+			Radius = radius,
+			Strength = 1f,
+			A = 1f,
+			Falloff = BrushFalloff.Constant,
+			Erase = true,
+		};
+
+		s.Path.Add( new PaintStrokePoint( point, normal ) );
+
+		return s;
+	}
+
+	static byte Alpha( PaintCanvas canvas, int x, int y ) => canvas.Rgba[(y * canvas.Width + x) * 4 + 3];
+
+	static void TestEraseRemovesPaint()
+	{
+		var mesh = Grid();
+		var paint = Stroke( new Vec3( 0, 0, 0 ), new Vec3( 0, 0, 1 ), 0.9f );
+		var erase = Eraser( new Vec3( 0, 0, 0 ), new Vec3( 0, 0, 1 ), 0.4f );
+
+		var before = PaintReplay.Replay( mesh, new[] { paint }, Res );
+		var after = PaintReplay.Replay( mesh, new[] { paint, erase }, Res );
+
+		var mid = Res / 2;
+
+		Check( "paint lands under the brush", Alpha( before, mid, mid ) > 200, $"alpha {Alpha( before, mid, mid )}" );
+		Check( "and an erase over it takes it back off", Alpha( after, mid, mid ) == 0,
+			$"alpha {Alpha( after, mid, mid )}" );
+	}
+
+	static void TestEraseOnlyWhereTheBrushReached()
+	{
+		var mesh = Grid();
+		var paint = Stroke( new Vec3( 0, 0, 0 ), new Vec3( 0, 0, 1 ), 0.9f );
+		var erase = Eraser( new Vec3( 0, 0, 0 ), new Vec3( 0, 0, 1 ), 0.3f );
+
+		var painted = CountPainted( PaintReplay.Replay( mesh, new[] { paint }, Res ) );
+		var rubbed = CountPainted( PaintReplay.Replay( mesh, new[] { paint, erase }, Res ) );
+
+		// An eraser is a brush, not a Clear. Both halves matter: it has to remove something, and it
+		// has to leave the paint it never reached alone.
+		Check( "an erase removes paint", rubbed < painted, $"{rubbed} of {painted} texels still painted" );
+		Check( "and leaves the paint outside its radius", rubbed > 0, $"{rubbed} texels still painted" );
+	}
+
+	/// <summary>
+	/// THE REASON AN ERASE IS A STROKE RATHER THAN A CANVAS EDIT. Strokes are a log replayed in order
+	/// on every rebuild, so an erase has to sit in that log at the point the hand made it: erase then
+	/// paint puts the paint back, paint then erase does not. A canvas-scrubbing eraser would give the
+	/// same answer to both, and would lose to the next rebuild either way.
+	/// </summary>
+	static void TestEraseAndPaintReplayInOrder()
+	{
+		var mesh = Grid();
+		var paint = Stroke( new Vec3( 0, 0, 0 ), new Vec3( 0, 0, 1 ), 0.9f );
+		var erase = Eraser( new Vec3( 0, 0, 0 ), new Vec3( 0, 0, 1 ), 0.4f );
+
+		var mid = Res / 2;
+		var paintLast = PaintReplay.Replay( mesh, new[] { erase, paint }, Res );
+		var eraseLast = PaintReplay.Replay( mesh, new[] { paint, erase }, Res );
+
+		Check( "erasing and then painting leaves paint", Alpha( paintLast, mid, mid ) > 200,
+			$"alpha {Alpha( paintLast, mid, mid )}" );
+		Check( "painting and then erasing does not", Alpha( eraseLast, mid, mid ) == 0,
+			$"alpha {Alpha( eraseLast, mid, mid )}" );
+	}
+
+	/// <summary>
+	/// THE TRAP THIS FEATURE WALKED STRAIGHT INTO. Replay dilates at the end so a shader filtering
+	/// across an island's edge finds colour in the gutter — and a dilate cannot tell the gutter from
+	/// a hole somebody deliberately erased. Unprotected, four passes eat four texels off every side
+	/// of an erased hole, so a small erase vanishes and a large one grows back soft edges — and only
+	/// on REBUILD, because the live session never dilates. The hole here is a hard-edged 32 texels
+	/// across; unprotected it would come back 24.
+	/// </summary>
+	static void TestDilateDoesNotRefillAnErasedHole()
+	{
+		var mesh = Grid();
+		var paint = Stroke( new Vec3( 0, 0, 0 ), new Vec3( 0, 0, 1 ), 0.9f );
+		var erase = Eraser( new Vec3( 0, 0, 0 ), new Vec3( 0, 0, 1 ), 0.4f );
+
+		var canvas = PaintReplay.Replay( mesh, new[] { paint, erase }, Res );
+		var run = LongestClearRun( canvas, Res / 2 );
+
+		Check( "the dilate does not bleed paint back into an erased hole", run >= 30,
+			$"{run} texels clear across the middle" );
+	}
+
+	/// <summary>The longest unbroken run of fully transparent texels along one row.</summary>
+	static int LongestClearRun( PaintCanvas canvas, int y )
+	{
+		int best = 0, run = 0;
+
+		for ( var x = 0; x < canvas.Width; x++ )
+		{
+			run = Alpha( canvas, x, y ) == 0 ? run + 1 : 0;
+
+			if ( run > best )
+				best = run;
+		}
+
+		return best;
+	}
+
+	/// <summary>The live half: the session must erase on screen the way the replay erases on rebuild,
+	/// and the stroke it hands back must be marked so the document records which kind it was.</summary>
+	static void TestSessionErases()
+	{
+		var mesh = Grid();
+		var session = new PaintSession( mesh, Res ) { R = 1f, G = 0f, B = 0f, Radius = 0.9f };
+
+		session.BeginStroke( new Vec3( 0, 0, 5f ), new Vec3( 0, 0, -1f ) );
+		session.EndStroke();
+
+		var mid = Res / 2;
+		Check( "the session paints", Alpha( session.Canvas, mid, mid ) > 200,
+			$"alpha {Alpha( session.Canvas, mid, mid )}" );
+
+		session.Erasing = true;
+		session.Radius = 0.4f;
+		session.Falloff = BrushFalloff.Constant;
+
+		session.BeginStroke( new Vec3( 0, 0, 5f ), new Vec3( 0, 0, -1f ) );
+		var stroke = session.EndStroke();
+
+		Check( "an erase stroke is marked as one", stroke is { Erase: true } );
+		Check( "and the live canvas shows the hole immediately", Alpha( session.Canvas, mid, mid ) == 0,
+			$"alpha {Alpha( session.Canvas, mid, mid )}" );
+
+		// The claim the whole design rests on: what the hand saw and what a rebuild produces are the
+		// same mark. Compared at the erased texel rather than byte-for-byte, because Replay dilates
+		// the gutter and the live session deliberately does not.
+		var replayed = PaintReplay.Replay( mesh, session.Strokes, Res );
+
+		Check( "and a rebuild from the same strokes agrees", Alpha( replayed, mid, mid ) == 0,
+			$"alpha {Alpha( replayed, mid, mid )}" );
 	}
 
 	// --- the session ---------------------------------------------------------------------------

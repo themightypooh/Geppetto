@@ -336,8 +336,16 @@ public static class StudioDocument
 				// time rather than becoming one unbounded line. Written in list order on purpose:
 				// strokes are a log and colour blending does not commute, so the order the writer
 				// emits is the order replay must reproduce.
+				//
+				// AN ERASE IS ITS OWN LINE KIND, NOT A NINTH HEADER FIELD. The header is exactly
+				// eight numbers and the path is whatever follows it, six floats a point — so a ninth
+				// field would make every older document's first path point read as the flag and shift
+				// the entire path by one. A second keyword costs nothing, reads as what it is in a
+				// format meant to be diffed by hand, and lands in the same list at the same position,
+				// which is all the ordering an interleaved log needs.
 				foreach ( var s in strokes )
-					sb.Append( "\tstroke " ).Append( field.Name ).Append( ' ' ).Append( Stroke( s ) ).Append( '\n' );
+					sb.Append( s.Erase ? "\terase " : "\tstroke " )
+						.Append( field.Name ).Append( ' ' ).Append( Stroke( s ) ).Append( '\n' );
 
 				return;
 
@@ -902,7 +910,14 @@ public static class StudioDocument
 			}
 
 			case "stroke":
+			case "erase":
 			{
+				// BOTH KINDS LAND IN ONE LIST, IN FILE ORDER. Paint and erase interleave — the log is
+				// what makes an erase survive a rebuild — so they share the field, and clearedLists
+				// is keyed on the field name rather than on the keyword so the first line of either
+				// kind clears it exactly once. A document written before erasing existed has no
+				// "erase" lines at all, which reads as "nothing is an erase" without a version field.
+				//
 				// Strokes is null until the first one lands, so a document that paints has to create
 				// the list rather than assume it — unlike the facelist/edgelist fields, which are
 				// never null and can rely on their initialiser.
@@ -918,7 +933,9 @@ public static class StudioDocument
 					clearedLists.Add( field.Name );
 				}
 
-				strokes.Add( ParseStroke( value ) );
+				var stroke = ParseStroke( value );
+				stroke.Erase = key == "erase";
+				strokes.Add( stroke );
 				return;
 			}
 

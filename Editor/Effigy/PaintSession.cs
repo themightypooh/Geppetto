@@ -19,6 +19,12 @@ namespace Effigy;
 /// same dab re-stamped over and over recomposes to the same texels. A stroke ends as a
 /// <see cref="PaintStroke"/> the caller appends to the feature; undo is the feature tree's undo, so
 /// this session carries no undo stack.
+///
+/// ERASING IS THE SAME STROKE MACHINERY, not a second mode with its own path. <see cref="Erasing"/>
+/// decides which kind the next stroke is, the dabs and the coverage buffer are identical either way,
+/// and only the final application differs. So an erase costs one undo step like any stroke, saves
+/// into the document like any stroke, and replays in its place in the log — which is what stops the
+/// paint underneath it from coming back on the next rebuild.
 /// </summary>
 public sealed class PaintSession
 {
@@ -65,6 +71,17 @@ public sealed class PaintSession
 	/// <summary>Most samples one pointer move may be split into, so a drag across the whole model in
 	/// one frame under-samples rather than stalls.</summary>
 	public int MaxSamplesPerMove = 64;
+
+	/// <summary>
+	/// Whether the next stroke ERASES rather than paints.
+	///
+	/// A SESSION FLAG RATHER THAN SOMETHING READ PER DAB, the same shape and the same reason as
+	/// <see cref="SculptSession.Inverted"/>: the editor sets it from a held modifier at the moment a
+	/// stroke begins and leaves it alone for the rest of that stroke, so letting go of the key
+	/// halfway through a gesture cannot turn half of one mark into the other kind. The stroke carries
+	/// its own copy from here, so changing this afterwards does not rewrite what was already painted.
+	/// </summary>
+	public bool Erasing;
 
 	/// <summary>
 	/// Mirror every sample across X — the cheap symmetry that covers most of what symmetry is for,
@@ -178,6 +195,10 @@ public sealed class PaintSession
 			Strength = Strength,
 			Falloff = Falloff,
 			Spacing = Spacing,
+
+			// Copied at the press and never re-read, so a modifier released mid-gesture does not
+			// turn the back half of one mark into the other kind. See Erasing.
+			Erase = Erasing,
 		};
 
 		_strokeR = PaintReplay.ToByte( R );
@@ -253,10 +274,10 @@ public sealed class PaintSession
 
 		Strokes.Add( stroke );
 
-		// Composite the stroke ONCE. The live canvas already shows it (it was recomposed from this
-		// very coverage over the committed base), so committing the same coverage into _committed
-		// leaves the two canvases in agreement and nothing to re-upload.
-		PaintReplay.Composite( _committed, _coverage, _strokeR, _strokeG, _strokeB );
+		// Apply the stroke ONCE, as whichever kind it is. The live canvas already shows it (it was
+		// recomposed from this very coverage over the committed base), so applying the same coverage
+		// to _committed leaves the two canvases in agreement and nothing to re-upload.
+		PaintReplay.Apply( _committed, stroke, _coverage );
 		Array.Clear( _coverage, 0, _coverage.Length );
 
 		return stroke;
@@ -306,8 +327,7 @@ public sealed class PaintSession
 	{
 		Array.Clear( _coverage, 0, _coverage.Length );
 		PaintReplay.StampStroke( stroke, _mesh, _bvh, _coverage, _resolution, _found );
-		PaintReplay.Composite( _committed, _coverage,
-			PaintReplay.ToByte( stroke.R ), PaintReplay.ToByte( stroke.G ), PaintReplay.ToByte( stroke.B ) );
+		PaintReplay.Apply( _committed, stroke, _coverage );
 	}
 
 	/// <summary>Copy the committed canvas into the visible one and mark the whole thing dirty, so the
@@ -345,14 +365,19 @@ public sealed class PaintSession
 
 	/// <summary>
 	/// Rebuild the visible canvas over a texel region: each texel becomes the committed colour with
-	/// the in-flight stroke composited over it at its running coverage. Reading the base from
-	/// _committed rather than from the canvas's current value is what stops overlapping dabs within
-	/// one stroke from stacking.
+	/// the in-flight stroke applied over it at its running coverage. Reading the base from _committed
+	/// rather than from the canvas's current value is what stops overlapping dabs within one stroke
+	/// from stacking — and it is what lets an erase preview at all, since the texels it is taking
+	/// away have to come from somewhere once they are gone from the visible canvas.
 	/// </summary>
 	void Recompose( TexelBounds bounds )
 	{
 		if ( !bounds.Any )
 			return;
+
+		// Read once rather than per texel. Both branches end at the same arithmetic the replay uses,
+		// so the mark on screen and the mark after a rebuild are the same mark.
+		var erasing = _current is { Erase: true };
 
 		for ( var y = bounds.MinY; y <= bounds.MaxY; y++ )
 		{
@@ -360,6 +385,15 @@ public sealed class PaintSession
 			{
 				var i = (y * _resolution + x) * 4;
 				var coverage = _coverage[y * _resolution + x];
+
+				if ( erasing )
+				{
+					Canvas.Write( x, y,
+						_committed.Rgba[i], _committed.Rgba[i + 1], _committed.Rgba[i + 2],
+						PaintCanvas.DestinationOut( _committed.Rgba[i + 3], coverage ) );
+
+					continue;
+				}
 
 				var (r, g, b, a) = PaintCanvas.SourceOver(
 					_committed.Rgba[i], _committed.Rgba[i + 1], _committed.Rgba[i + 2], _committed.Rgba[i + 3],

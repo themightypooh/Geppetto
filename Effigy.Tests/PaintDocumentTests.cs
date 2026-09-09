@@ -26,6 +26,10 @@ Section( "paint: strokes survive the document round trip" );
 		TestEmptyPathRoundTrips();
 		TestSavingTwiceIsIdentical();
 		TestStaleness();
+
+		Section( "paint: erases round trip, and older documents have none" );
+		TestErasesRoundTripInPlace();
+		TestDocumentWithoutErasesReadsAsPaint();
 	}
 
 
@@ -153,6 +157,65 @@ Section( "paint: strokes survive the document round trip" );
 				Check( $"stroke {s} point {p} keeps its normal", Close( a.Path[p].Normal, b.Path[p].Normal ) );
 			}
 		}
+	}
+
+	/// <summary>
+	/// An erase is a different LINE KIND in the file, and the thing that has to survive is not just
+	/// the flag but its POSITION. Paint, erase, paint is three entries in one log and the middle one
+	/// only means anything where it sits — a round trip that grouped the erases at the end, or that
+	/// dropped them into a second list, would replay as a part with a hole in the wrong place.
+	/// </summary>
+	static void TestErasesRoundTripInPlace()
+	{
+		var studio = new PartStudio();
+		var paint = studio.Add( new PaintFeature() );
+
+		paint.AddStroke( MakeStroke( 0.9f, 0.1f, 0.2f, 1f, 0.5f, 0.8f, BrushFalloff.Sharp, 0.25f, 3 ) );
+
+		var rubbed = MakeStroke( 0.1f, 0.9f, 0.3f, 0.5f, 0.2f, 0.4f, BrushFalloff.Constant, 0.5f, 4 );
+		rubbed.Erase = true;
+		paint.AddStroke( rubbed );
+
+		paint.AddStroke( MakeStroke( 0.2f, 0.3f, 0.9f, 1f, 0.7f, 0.6f, BrushFalloff.Linear, 0.5f, 2 ) );
+
+		var text = StudioDocument.Write( studio );
+		var back = StudioDocument.Read( text ).Features.OfType<PaintFeature>().Single();
+
+		Check( "the file writes an erase as its own line kind", text.Contains( "\terase " ),
+			text.Contains( "\tstroke " ) ? "only stroke lines were written" : "no stroke lines at all" );
+
+		Check( "all three entries come back", back.Strokes?.Count == 3, $"{back.Strokes?.Count ?? 0}" );
+
+		if ( back.Strokes?.Count != 3 )
+			return;
+
+		Check( "the erase comes back in the middle, where it was made",
+			!back.Strokes[0].Erase && back.Strokes[1].Erase && !back.Strokes[2].Erase,
+			$"{back.Strokes[0].Erase}, {back.Strokes[1].Erase}, {back.Strokes[2].Erase}" );
+
+		// The erase carries a full brush header like any stroke, and replay reads every field of it.
+		Check( "and keeps the brush it was made with",
+			back.Strokes[1].Radius == rubbed.Radius && back.Strokes[1].Falloff == rubbed.Falloff
+			&& back.Strokes[1].Path.Count == rubbed.Path.Count );
+	}
+
+	/// <summary>
+	/// FORWARD COMPATIBILITY, WITHOUT A VERSION FIELD. Every .effigy written before erasing existed
+	/// has only "stroke" lines, and the absence of an "erase" line has to read as "nothing here is an
+	/// erase" — which it does, because the flag lives in the keyword rather than in the header. Had it
+	/// been a ninth header number instead, every one of those documents would read its first path
+	/// point as the flag and shift the whole path by one.
+	/// </summary>
+	static void TestDocumentWithoutErasesReadsAsPaint()
+	{
+		var text = StudioDocument.Write( Painted() );
+
+		Check( "a document with no erases writes none", !text.Contains( "\terase " ) );
+
+		var back = StudioDocument.Read( text ).Features.OfType<PaintFeature>().Single();
+		var allPaint = back.Strokes is { Count: 2 } && back.Strokes.TrueForAll( s => !s.Erase );
+
+		Check( "and reads back as paint, every stroke of it", allPaint );
 	}
 
 	static void TestOrderIsPreserved()

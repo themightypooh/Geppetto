@@ -15,6 +15,10 @@ namespace Marionette.EditorTools;
 /// kernel, where a test can see it. This file converts Vector3 to Vec3, calls four methods, uploads
 /// the canvas's dirty rect to a texture, and draws a ring.
 ///
+/// CTRL ERASES, and it is the same stroke machinery — the session is told which kind the stroke is
+/// at the press and the kernel does the rest. Nothing here knows how an erase composites; this file
+/// reads one modifier and picks a ring colour.
+///
 /// THE PAINT IS A TEXTURE, NOT VERTEX COLOURS. The session holds a live canvas whose dirty rect is
 /// exactly what a dab touched, so a mouse-move re-uploads only that region rather than the whole
 /// 1024² image — the four-megabytes-per-dab cost the old paint project paid. The canvas is baked
@@ -157,6 +161,11 @@ internal sealed partial class EffigyViewport
 
 			if ( !stroking && Gizmo.WasLeftMousePressed )
 			{
+				// Ctrl decides which KIND of stroke this is, read once here and not again — the same
+				// rule and the same reason as sculpt's invert: letting go of the key halfway through
+				// a drag must not turn the back half of one mark into the other kind.
+				PaintSession.Erasing = Editor.Application.IsKeyDown( KeyCode.Control );
+
 				if ( PaintSession.BeginStroke( origin, direction ) )
 				{
 					stroking = true;
@@ -205,9 +214,17 @@ internal sealed partial class EffigyViewport
 
 		var radius = PaintSession.Radius;
 
+		// While a stroke runs the ring shows what THAT stroke is; between strokes it shows what the
+		// next one would be, read live off the modifier. Reading only the session flag would make the
+		// ring tell the truth one stroke late — the "visible after the click rather than before it"
+		// complaint, which is the whole reason the ring is coloured at all.
+		var erasing = PaintSession.IsStroking
+			? PaintSession.Erasing
+			: Editor.Application.IsKeyDown( KeyCode.Control );
+
 		Gizmo.Draw.IgnoreDepth = true;
 		Gizmo.Draw.LineThickness = 1.5f;
-		Gizmo.Draw.Color = PaintCursorColor;
+		Gizmo.Draw.Color = erasing ? PaintEraseCursorColor : PaintCursorColor;
 
 		var lift = normal * (radius * 0.01f);
 		const int Segments = 40;
@@ -228,4 +245,8 @@ internal sealed partial class EffigyViewport
 	/// <summary>A paint ring is a paint ring — a colour distinct from sculpt's blue, so the two
 	/// modes are never confused when a brush is armed.</summary>
 	private static readonly Color PaintCursorColor = new( 1f, 0.45f, 0.75f, 0.9f );
+
+	/// <summary>Erasing, shown while Ctrl is held. The same red the note eraser and the inverted
+	/// sculpt brush use, because it means the same thing in all three: this stroke takes away.</summary>
+	private static readonly Color PaintEraseCursorColor = new( 1f, 0.35f, 0.32f, 0.9f );
 }

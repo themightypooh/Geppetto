@@ -87,6 +87,49 @@ public sealed class PaintCanvas
 	}
 
 	/// <summary>
+	/// Destination-out of <paramref name="weight"/> coverage from one texel: take that much of the
+	/// paint away and leave the colour where it is.
+	///
+	/// STRAIGHT ALPHA IS WHY THE COLOUR DOES NOT MOVE. This buffer is non-premultiplied, so a texel's
+	/// RGB is what the paint looks like and its alpha is how much of it is there. Erasing is entirely
+	/// a statement about how much; fading RGB toward the base here would be premultiplying by hand,
+	/// and <see cref="BakeOpaque(byte[], byte, byte, byte)"/> would then composite over the base a
+	/// second time — the paint would come out half-erased twice, and a fully erased texel would still
+	/// be tinted.
+	///
+	/// Same two guards as <see cref="Blend"/> and for the same reasons: weight &lt;= 0 does not touch
+	/// the dirty rect, and out-of-bounds is ignored rather than thrown.
+	/// </summary>
+	public void Erase( int x, int y, float weight )
+	{
+		if ( weight <= 0f )
+			return;
+
+		if ( x < 0 || y < 0 || x >= Width || y >= Height )
+			return;
+
+		var i = (y * Width + x) * 4;
+
+		Rgba[i + 3] = DestinationOut( Rgba[i + 3], weight );
+
+		Mark( x, y );
+	}
+
+	/// <summary>
+	/// Destination-out over straight alpha, in byte space — the one copy of the erase math, kept a
+	/// static for the same reason <see cref="SourceOver"/> is one. The live session recomposes an
+	/// erasing texel from the pre-stroke base while the replay applies the finished stroke to the
+	/// canvas; two hand-written copies of this is how the live canvas and the rebuilt one would come
+	/// to disagree about what an erase did.
+	/// </summary>
+	internal static byte DestinationOut( byte da, float weight )
+	{
+		var sa = Math.Min( weight, 1f );
+
+		return (byte)MathF.Round( da * (1f - sa) );
+	}
+
+	/// <summary>
 	/// Source-over over straight-alpha RGBA, in byte space — the one copy of the colour math.
 	///
 	/// WHY THIS IS A STATIC AND NOT PRIVATE TO <see cref="Blend"/>. A paint stroke is composited
@@ -239,10 +282,20 @@ public sealed class PaintCanvas
 	/// averages the filled neighbours into the unfilled ones — but over RGBA, where "filled" is
 	/// simply a non-zero alpha and the alpha itself is one of the channels being averaged.
 	///
+	/// WHAT <paramref name="protect"/> IS FOR, AND WHY IT IS NOT OPTIONAL ONCE ERASING EXISTS. This
+	/// fills any transparent texel that has a filled neighbour, and it cannot tell the gutter outside
+	/// an island from a hole somebody deliberately erased in the middle of one. Without the mask, an
+	/// erased hole is bled back in from its own edges — four passes eat four texels off every side of
+	/// it, so a small erase disappears entirely and a large one comes back with soft edges. That
+	/// reads as "the eraser does not work", and it would only happen on REBUILD, because the live
+	/// session never dilates. A texel flagged here is one the stroke log last spoke about with an
+	/// erase, and it is left alone. It can still be a source for its neighbours when it holds paint:
+	/// a half-erased texel is filled, and the gutter beside it should find that half.
+	///
 	/// Marks the whole canvas dirty: dilation spreads outward and could touch anywhere, so there is
 	/// no smaller rect worth tracking.
 	/// </summary>
-	internal void Dilate( int passes )
+	internal void Dilate( int passes, bool[] protect = null )
 	{
 		if ( passes <= 0 )
 			return;
@@ -263,6 +316,11 @@ public sealed class PaintCanvas
 					var index = y * Width + x;
 
 					if ( filled[index] )
+						continue;
+
+					// Deliberately empty, not gutter. Never filled, and never marked filled, so it
+					// stays empty for every remaining pass too.
+					if ( protect is not null && protect[index] )
 						continue;
 
 					int r = 0, g = 0, b = 0, a = 0, n = 0;

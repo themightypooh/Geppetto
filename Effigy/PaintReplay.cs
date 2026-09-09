@@ -49,6 +49,11 @@ public readonly struct TexelBounds
 /// <see cref="StampDab"/>; a rebuild replays the whole list through <see cref="Replay"/>. Both paths
 /// end at the same rasterise-and-stamp, so a stroke painted live and the same stroke replayed later
 /// produce identical texels.
+///
+/// AN ERASE IS A STROKE LIKE ANY OTHER, and takes the identical route: same dabs, same coverage
+/// buffer, same once-per-stroke application. Only the last step differs — <see cref="Apply"/> sends a
+/// painting stroke to <see cref="Composite"/> and an erasing one to <see cref="Erase"/>. That is why
+/// erases and paint interleave correctly without any ordering machinery: they are the same log.
 /// </summary>
 public static class PaintReplay
 {
@@ -77,17 +82,58 @@ public static class PaintReplay
 			var faces = new List<int>();
 			var coverage = new float[resolution * resolution];
 
+			// Which texels the log last spoke about with an ERASE, so the dilate below leaves them
+			// alone. Without this an erased hole inside an island is indistinguishable from the
+			// gutter outside one, and the dilate bleeds the paint straight back into it — see
+			// PaintCanvas.Dilate. Allocated only when something actually erases, because the
+			// overwhelmingly common document has no erases in it at all.
+			bool[] erased = null;
+
 			foreach ( var stroke in strokes )
 			{
 				Array.Clear( coverage, 0, coverage.Length );
 				StampStroke( stroke, mesh, bvh, coverage, resolution, faces );
-				Composite( canvas, coverage, ToByte( stroke.R ), ToByte( stroke.G ), ToByte( stroke.B ) );
+				Apply( canvas, stroke, coverage );
+
+				if ( stroke.Erase )
+					erased ??= new bool[resolution * resolution];
+
+				if ( erased is not null )
+					MarkErased( erased, coverage, stroke.Erase );
 			}
 
-			canvas.Dilate( DilatePasses );
+			canvas.Dilate( DilatePasses, erased );
 		}
 
 		return canvas;
+	}
+
+	/// <summary>
+	/// Apply one stroke's finished coverage to a canvas: paint composites its colour in, an erase
+	/// takes coverage back out of the alpha.
+	///
+	/// THE ONE PLACE THAT BRANCH IS MADE. The replay, the live session's commit and its reload all
+	/// end here, so there is no route by which a stroke painted by hand and the same stroke replayed
+	/// later could disagree about which of the two it was.
+	/// </summary>
+	internal static void Apply( PaintCanvas canvas, PaintStroke stroke, float[] coverage )
+	{
+		if ( stroke.Erase )
+			Erase( canvas, coverage );
+		else
+			Composite( canvas, coverage, ToByte( stroke.R ), ToByte( stroke.G ), ToByte( stroke.B ) );
+	}
+
+	/// <summary>Note which texels this stroke touched, and whether it was an erase that touched them.
+	/// LAST WRITER WINS, because the strokes are a log: painting over an erased texel makes it
+	/// painted again, and erasing a painted one makes it deliberately empty.</summary>
+	static void MarkErased( bool[] erased, float[] coverage, bool erasing )
+	{
+		for ( var i = 0; i < erased.Length; i++ )
+		{
+			if ( coverage[i] > 0f )
+				erased[i] = erasing;
+		}
 	}
 
 	/// <summary>Stamp one stroke's dabs into a coverage buffer, taking the maximum. The live session
@@ -200,6 +246,23 @@ public static class PaintReplay
 
 				if ( weight > 0f )
 					canvas.Blend( x, y, r, g, b, weight );
+			}
+		}
+	}
+
+	/// <summary>Take a coverage buffer back out of a canvas's alpha, once — the mirror of
+	/// <see cref="Composite"/>. Colour is left alone; see PaintCanvas.Erase for why straight alpha
+	/// means an erase is entirely a statement about how much paint is there.</summary>
+	internal static void Erase( PaintCanvas canvas, float[] coverage )
+	{
+		for ( var y = 0; y < canvas.Height; y++ )
+		{
+			for ( var x = 0; x < canvas.Width; x++ )
+			{
+				var weight = coverage[y * canvas.Width + x];
+
+				if ( weight > 0f )
+					canvas.Erase( x, y, weight );
 			}
 		}
 	}
