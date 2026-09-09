@@ -35,6 +35,10 @@ forgotten.
 
 ## Unreleased
 
+Nothing yet.
+
+## v368962 — 2026-09-09
+
 ### Added
 - **Bones can be placed inside a model, not just on its skin.** The bone tool has a Middle/Surface
   choice, and Middle is the default: a click measures how much material is under the cursor and
