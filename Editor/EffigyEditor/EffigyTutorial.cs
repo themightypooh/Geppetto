@@ -18,6 +18,16 @@ internal enum EffigyToolTarget
 {
 	Primitive,
 	Hole,
+	AddBone,
+	BoneFromPart,
+}
+
+/// <summary>Which first-run lesson is on the panel. House is CAD; Rigging is the smallest
+/// loop that still needs a bone, an assignment and a pose.</summary>
+internal enum EffigyLesson
+{
+	House,
+	Rigging,
 }
 
 /// <summary>
@@ -31,10 +41,15 @@ internal enum EffigyToolTarget
 internal readonly struct EffigyTutorialState
 {
 	public readonly PartStudio Studio;
+	public readonly EffigyWorkspace Workspace;
+	public readonly bool Posing;
 
-	public EffigyTutorialState( PartStudio studio )
+	public EffigyTutorialState( PartStudio studio, EffigyWorkspace workspace = EffigyWorkspace.Cad,
+		bool posing = false )
 	{
 		Studio = studio;
+		Workspace = workspace;
+		Posing = posing;
 	}
 
 	// --- the vocabulary the steps below are written in ---------------------------------------
@@ -58,6 +73,16 @@ internal readonly struct EffigyTutorialState
 	/// the wreckage of a boolean that went wrong, and none of those are "you made a solid".</summary>
 	public int SolidCount =>
 		Studio?.Bodies.Count( b => MathF.Abs( b.Mesh.SignedVolume() ) > 1e-4f ) ?? 0;
+
+	/// <summary>Bodies a "make a bone from this part" click would actually accept. A cube has
+	/// no long axis and is skipped, so a tutorial that asks for a post has to count measurable
+	/// parts, not merely solids.</summary>
+	public int MeasurableBodies =>
+		Studio?.Bodies.Count( b => BoneFromBody.TryDerive( b.Mesh, out _, out _, out _, null ) ) ?? 0;
+
+	public int BoneCount => Studio?.Rig?.Count ?? 0;
+
+	public int AssignedBodies => Studio?.BodyBoneMap?.Count ?? 0;
 }
 
 /// <summary>
@@ -103,6 +128,10 @@ internal sealed class EffigyTutorial
 		/// not exist in between, so there is no widget to point at. Kept as its own case rather
 		/// than as None so the limit is stated where a step author will read it.</summary>
 		Menu,
+
+		/// <summary>A workspace pill on the switcher. The panel offers a button that switches,
+		/// because a highlight on a bar the reader is not looking at is a highlight on nothing.</summary>
+		Workspace,
 	}
 
 	/// <summary>A drawn glyph per step, painted rather than shipped as art - same reasoning as
@@ -112,6 +141,8 @@ internal sealed class EffigyTutorial
 		Solid,
 		Hole,
 		Export,
+		Bone,
+		Pose,
 	}
 
 	public sealed class Step
@@ -135,15 +166,29 @@ internal sealed class EffigyTutorial
 		/// <summary>Which dock to offer, when Points is Panel.</summary>
 		public string Panel { get; init; }
 
+		/// <summary>Which workspace pill to offer, when Points is Workspace.</summary>
+		public EffigyWorkspace Workspace { get; init; }
+
 		/// <summary>True once the reader has actually done this.</summary>
 		public Func<EffigyTutorialState, bool> IsDone { get; init; }
 	}
 
-	private readonly List<Step> _steps;
+	private readonly List<Step> _house;
+	private readonly List<Step> _rigging;
+	private List<Step> _steps;
+
+	public EffigyLesson Lesson { get; private set; } = EffigyLesson.House;
+
+	public string Title => Lesson == EffigyLesson.Rigging ? "Rig a Signpost" : "Build a House";
 
 	public EffigyTutorial()
 	{
-		_steps = new List<Step>
+		_house = HouseSteps();
+		_rigging = RiggingSteps();
+		_steps = _house;
+	}
+
+	static List<Step> HouseSteps() => new()
 		{
 			// ---------------------------------------------------------------------------------
 			//  PHASE 1 - THE SHAPE
@@ -260,7 +305,142 @@ internal sealed class EffigyTutorial
 				IsDone = _ => false
 			},
 		};
-	}
+
+	static List<Step> RiggingSteps() => new()
+		{
+			// ---------------------------------------------------------------------------------
+			//  PHASE 1 - THE PARTS
+			//
+			//  Two solids, each with a long axis, so "make a bone from this part" has something
+			//  to measure. A cube is skipped, which is the whole reason these are a post and a
+			//  sign rather than two default boxes.
+			// ---------------------------------------------------------------------------------
+
+			new()
+			{
+				Instruction = "A tall post",
+				Bullets = new[]
+				{
+					"Click Primitive and pick Box",
+					"Set Width 0.5, Depth 0.5, Height 6",
+				},
+				Detail = "A bone is measured along the longest axis of a part. A cube has none, "
+					+ "and Make a bone from this part will skip it. Tall is the whole point.",
+				Art = StepArt.Solid,
+				Points = PointAt.Tool,
+				Tool = EffigyToolTarget.Primitive,
+				IsDone = s => s.HasClean<PrimitiveFeature>() && s.MeasurableBodies >= 1
+			},
+
+			new()
+			{
+				Instruction = "A flat sign on it",
+				Bullets = new[]
+				{
+					"Click Primitive again and pick Box",
+					"Set Width 3, Height 2, Depth 0.3",
+					"Lift it onto the post: set Position's Z to 2.5",
+				},
+				Detail = "Two bodies, not one box with a second box merged in. Each part will get "
+					+ "its own bone, and posing one will leave the other standing - which is how "
+					+ "you can see that the rig is doing anything at all.",
+				Art = StepArt.Solid,
+				Points = PointAt.Tool,
+				Tool = EffigyToolTarget.Primitive,
+				IsDone = s => s.SolidCount >= 2 && s.MeasurableBodies >= 2
+			},
+
+			// ---------------------------------------------------------------------------------
+			//  PHASE 2 - THE BONES
+			// ---------------------------------------------------------------------------------
+
+			new()
+			{
+				Instruction = "Switch to the Rig workspace",
+				Bullets = new[]
+				{
+					"Click Rig on the bar above the tools",
+				},
+				Detail = "CAD is where parts are made. Rig is where they get a skeleton. The two "
+					+ "are meant to feel like the same tool in a different mode, not like a second "
+					+ "window.",
+				Art = StepArt.Bone,
+				Points = PointAt.Workspace,
+				Workspace = EffigyWorkspace.Rig,
+				IsDone = s => s.Workspace == EffigyWorkspace.Rig
+			},
+
+			new()
+			{
+				Instruction = "A bone down the post",
+				Bullets = new[]
+				{
+					"Click the tall part — in the viewport or the Parts list",
+					"Press Bone from Part on the bar",
+				},
+				Detail = "The bone is measured along the post and pinned to it, already named after "
+					+ "the part. Right-click the part and pick Make a bone from this part does the "
+					+ "same thing. You should see the bone running through the post.",
+				Art = StepArt.Bone,
+				Points = PointAt.Tool,
+				Tool = EffigyToolTarget.BoneFromPart,
+				IsDone = s => s.BoneCount >= 1 && s.AssignedBodies >= 1
+			},
+
+			new()
+			{
+				Instruction = "Hang the sign off that bone",
+				Bullets = new[]
+				{
+					"Click the post's bone in the Rig tree so it is selected",
+					"Select the sign, then Bone from Part again",
+				},
+				Detail = "A selected bone is the parent of the next one. The sign's bone hangs off "
+					+ "the post's, pointing away from it. That chain is the whole of a rig. Assign "
+					+ "Body is the other button: it pins a part to a bone that already exists, "
+					+ "without making a new one.",
+				Art = StepArt.Bone,
+				Points = PointAt.Tool,
+				Tool = EffigyToolTarget.BoneFromPart,
+				IsDone = s => s.BoneCount >= 2 && s.AssignedBodies >= 2
+			},
+
+			// ---------------------------------------------------------------------------------
+			//  PHASE 3 - THE POSE
+			// ---------------------------------------------------------------------------------
+
+			new()
+			{
+				Instruction = "Pose it and watch it swing",
+				Bullets = new[]
+				{
+					"Press Pose in the Rig panel",
+					"Drag the sign's bone",
+				},
+				Detail = "If the sign swings and the post stays, the assignment is right. If the "
+					+ "whole model rotates as one, a part is still pinned to the wrong bone. "
+					+ "Pose is a scratchpad - Reset Pose or toggling Pose off puts it back.",
+				Art = StepArt.Pose,
+				Points = PointAt.Panel,
+				Panel = "Rig",
+				IsDone = s => s.Posing
+			},
+
+			new()
+			{
+				Instruction = "Compile it",
+				Bullets = new[]
+				{
+					"File → Compile .vmdl",
+				},
+				Detail = "That writes a skinned model you can drop in a scene or open in "
+					+ "Marionette. The recipe stays in the .effigy - change a box and compile "
+					+ "again, and the bones follow the parts.",
+				Art = StepArt.Export,
+				Points = PointAt.Menu,
+				IsDone = _ => false
+			},
+		};
 
 	/// <summary>
 	/// Whether the tutorial dock opens itself when Effigy starts.
@@ -284,6 +464,15 @@ internal sealed class EffigyTutorial
 	/// dropped into step one of something they never asked for.</summary>
 	public bool Active { get; private set; }
 
+	public void Restart( EffigyLesson lesson )
+	{
+		Lesson = lesson;
+		_steps = lesson == EffigyLesson.Rigging ? _rigging : _house;
+		Active = true;
+		CurrentIndex = 0;
+		_furthest = 0;
+	}
+
 	public int CurrentIndex { get; private set; }
 
 	public int StepCount => _steps.Count;
@@ -296,12 +485,7 @@ internal sealed class EffigyTutorial
 	/// again. See Evaluate.</summary>
 	private int _furthest;
 
-	public void Restart()
-	{
-		Active = true;
-		CurrentIndex = 0;
-		_furthest = 0;
-	}
+	public void Restart() => Restart( Lesson );
 
 	public void Dismiss() => Active = false;
 

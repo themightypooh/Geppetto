@@ -64,7 +64,8 @@ public sealed class WeightPaintSession
 	Vec3 _lastSample;
 	bool _stroking;
 
-	public WeightPaintSession( PolyMesh mesh, SkinWeights weights, Skeleton skeleton )
+	public WeightPaintSession( PolyMesh mesh, SkinWeights weights, Skeleton skeleton,
+		WeightPaintLayer layer = null )
 	{
 		_mesh = mesh ?? throw new ArgumentNullException( nameof( mesh ) );
 		_weights = weights ?? throw new ArgumentNullException( nameof( weights ) );
@@ -76,8 +77,22 @@ public sealed class WeightPaintSession
 		// Built once. The mesh does not move while weights are painted, which is the one thing that
 		// makes this cheaper than the sculpt session - there is no working copy and no refit.
 		_bvh = MeshBVH.Build( mesh );
-		Layer = new WeightPaintLayer( mesh );
+
+		// Reuse the document's layer when its topology still matches, so paint survives leaving
+		// the tool and coming back. A stale layer is kept (see WeightPaintLayer) and a fresh one
+		// is started rather than misapplied.
+		if ( layer is not null && layer.CanApply( mesh, out _ ) )
+			Layer = layer;
+		else
+			Layer = new WeightPaintLayer( mesh );
 	}
+
+	/// <summary>
+	/// The heat-map atlas for the painted bone, rasterised through the mesh UVs. Not vertex
+	/// colours — see <see cref="WeightRamp"/>.
+	/// </summary>
+	public PaintCanvas Ramp( int resolution = 512 ) =>
+		WeightRamp.Bake( _mesh, Influence( Bone ), resolution );
 
 	public PolyMesh Mesh => _mesh;
 	public SkinWeights Weights => _weights;
@@ -123,6 +138,12 @@ public sealed class WeightPaintSession
 	public int MaxSamplesPerMove = 64;
 
 	public bool IsStroking => _stroking;
+
+	/// <summary>Where the cursor sits on the surface, or null if the ray missed. The editor draws
+	/// its ring here; nothing about it changes the weights.</summary>
+	public MeshHit? Hover( Vec3 origin, Vec3 direction ) =>
+		_bvh.Raycast( _mesh, origin, direction.Normal );
+
 	public bool CanUndo => _done.Count > 0;
 	public bool CanRedo => _undone.Count > 0;
 

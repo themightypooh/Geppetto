@@ -59,9 +59,9 @@ internal sealed partial class EffigyViewport
 	/// <summary>Whether a left click on a face is a selection rather than an answer to a dialog.
 	/// Anything else with a click of its own owns the mouse while it is armed.</summary>
 	private bool IdlePickingAllowed =>
-		!IsSketching && !IsSculpting && !IsPainting && !IsMaterialBrushing && !IsNoting
+		!IsSketching && !IsSculpting && !IsPainting && !IsMaterialBrushing && !IsNoting && !IsWeightPainting
 		&& !PlanePickMode && !SketchPickMode && !FacePickMode && !EdgePickMode && !BodyPickMode
-		&& !BoneToolActive && !RigMode
+		&& !BoneToolActive
 		&& !_draggingOrigin && !_draggingLight && !_draggingFace;
 
 	/// <summary>
@@ -217,7 +217,10 @@ internal sealed partial class EffigyViewport
 		if ( !_canvasHasCursor )
 			return;
 
-		if ( TryResolveSketchHover( out var sketchId, out var sketchSeed, out var sketchDistance )
+		// Sketches are a CAD question. In the rig workspace a click names a part (or a bone),
+		// and a profile lighting up under the cursor would steal the body you meant to pin.
+		if ( !RigMode
+			&& TryResolveSketchHover( out var sketchId, out var sketchSeed, out var sketchDistance )
 			&& SketchBeatsFace( sketchDistance ) )
 		{
 			_hoveredFaceBodyId = sketchId;
@@ -237,6 +240,19 @@ internal sealed partial class EffigyViewport
 		if ( TryPickFaceUnderCursor( out var hit ) )
 		{
 			_hoveredFaceBodyId = hit.Body.Id;
+
+			// Rigging assigns WHOLE parts. A face or an edge under the cursor is still the part,
+			// and lighting a single face would look like CAD selection in a workspace that has
+			// no face tools.
+			if ( RigMode )
+			{
+				DrawBodyHighlight( hit.Body, BodyPickHoverColor );
+
+				if ( Gizmo.WasLeftMousePressed && !Gizmo.HasHovered )
+					SelectIdleBody( hit.Body.Id, Gizmo.IsShiftPressed );
+
+				return;
+			}
 
 			if ( TryIdleEdge( hit, out var edge, out var key ) )
 			{
@@ -347,6 +363,30 @@ internal sealed partial class EffigyViewport
 	/// more than you asked for.
 	/// </summary>
 	public void SelectFace( EffigyFaceHit hit ) => SelectIdleFace( hit, add: false );
+
+	/// <summary>Click a part in the rig workspace: the whole body, never one of its faces.</summary>
+	private void SelectIdleBody( string bodyId, bool add )
+	{
+		if ( string.IsNullOrEmpty( bodyId ) )
+			return;
+
+		_idleFaces.Clear();
+		_idleEdges.Clear();
+		ClearIdleSketch();
+
+		if ( add )
+		{
+			if ( !_idleBodyIds.Remove( bodyId ) )
+				_idleBodyIds.Add( bodyId );
+		}
+		else
+		{
+			_idleBodyIds.Clear();
+			_idleBodyIds.Add( bodyId );
+		}
+
+		IdleSelectionChanged?.Invoke();
+	}
 
 	/// <summary>Click a face: replace the selection, or Shift-click to toggle it in.</summary>
 	private void SelectIdleFace( EffigyFaceHit hit, bool add )

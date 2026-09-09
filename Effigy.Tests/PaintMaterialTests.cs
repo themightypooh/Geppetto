@@ -14,8 +14,12 @@ public static class PaintMaterialTests
 {
 	public static void Run()
 	{
-		Section( "paint material: the canvas bakes opaque over white" );
+		Section( "paint material: the canvas bakes opaque over the base colour" );
 		TestOpaqueBake();
+
+		Section( "paint bind: the atlas goes on the slots the faces actually wear" );
+		TestBindUsesThePaintedSlots();
+		TestMergeDropIsNamed();
 
 		Section( "paint material: the vmat names its image" );
 		TestVmatNamesTheImage();
@@ -36,9 +40,49 @@ public static class PaintMaterialTests
 			opaque[0] == 255 && opaque[1] == 0 && opaque[2] == 0 && opaque[3] == 255,
 			$"({opaque[0]},{opaque[1]},{opaque[2]},{opaque[3]})" );
 
-		Check( "an unpainted texel falls back to opaque white",
-			opaque[4] == 255 && opaque[5] == 255 && opaque[6] == 255 && opaque[7] == 255,
+		Check( "an unpainted texel falls back to the default base, not white",
+			opaque[4] == PaintMaterial.DefaultBaseR
+			&& opaque[5] == PaintMaterial.DefaultBaseG
+			&& opaque[6] == PaintMaterial.DefaultBaseB
+			&& opaque[7] == 255,
 			$"({opaque[4]},{opaque[5]},{opaque[6]},{opaque[7]})" );
+
+		var overRed = PaintMaterial.OpaqueRgba( canvas, 200, 10, 10 );
+
+		Check( "a caller can pass the bound material's colour as the base",
+			overRed[4] == 200 && overRed[5] == 10 && overRed[6] == 10 && overRed[7] == 255 );
+	}
+
+	static void TestBindUsesThePaintedSlots()
+	{
+		var mesh = Primitives.Box( 2f, 2f, 2f );
+
+		foreach ( var face in mesh.Faces )
+			face.Material = 2;
+
+		var slots = PaintBind.SlotsToBind( mesh );
+
+		Check( "faces on slot 2 bind slot 2, not slot 0",
+			slots.Count == 1 && slots[0] == 2,
+			string.Join( ",", slots ) );
+
+		Check( "slot 0 is not invented", !slots.Contains( 0 ) );
+	}
+
+	static void TestMergeDropIsNamed()
+	{
+		var a = Primitives.Box( 2f, 2f, 2f );
+		var b = Primitives.Box( 2f, 2f, 2f );
+		a.Paint = new PaintCanvas( 8, 8 );
+		b.Paint = new PaintCanvas( 8, 8 );
+
+		Check( "two painted bodies merging is a drop, said rather than silent",
+			PaintBind.MergeDropsPaint( a, b ) );
+
+		var plain = Primitives.Box( 1f, 1f, 1f );
+
+		Check( "a painted body into an unpainted rest is not a drop",
+			!PaintBind.MergeDropsPaint( plain, a ) );
 	}
 
 	static void TestVmatNamesTheImage()

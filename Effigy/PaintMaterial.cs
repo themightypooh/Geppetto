@@ -30,7 +30,8 @@ public static class PaintMaterial
 	/// to the base, painted ones are source-over the base at their coverage, and the alpha is 255
 	/// everywhere.
 	/// </summary>
-	public static byte[] OpaqueRgba( PaintCanvas canvas, byte baseR = 255, byte baseG = 255, byte baseB = 255 )
+	public static byte[] OpaqueRgba( PaintCanvas canvas,
+		byte baseR = DefaultBaseR, byte baseG = DefaultBaseG, byte baseB = DefaultBaseB )
 	{
 		if ( canvas is null )
 			throw new ArgumentNullException( nameof( canvas ) );
@@ -39,6 +40,19 @@ public static class PaintMaterial
 		canvas.BakeOpaque( opaque, baseR, baseG, baseB );
 		return opaque;
 	}
+
+	/// <summary>
+	/// What an unpainted texel becomes when nobody has given a better answer.
+	///
+	/// WHITE WAS A GUESS, and a bad one: paint one dot on a part and the compiled model is a white
+	/// part with a dot on it. The live preview used the same white, so they agreed with each other
+	/// and with nothing the part actually looked like. This grey is the placeholder the rest of the
+	/// preview already falls back to — closer to an unbound slot than 255,255,255 is. A bound
+	/// material should pass its own colour in; this is the default when it cannot.
+	/// </summary>
+	public const byte DefaultBaseR = 180;
+	public const byte DefaultBaseG = 180;
+	public const byte DefaultBaseB = 180;
 
 	/// <summary>
 	/// The .vmat source that binds <paramref name="imagePath"/> as an ordinary lit material's colour.

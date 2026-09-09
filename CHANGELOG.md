@@ -35,7 +35,28 @@ forgotten.
 
 ## Unreleased
 
+### Fixed
+- **Assign Body stayed grey after you picked a part.** Clicking the mesh counted as empty space
+  and dropped the bone selection. A part click now keeps the bone. Select a bone, select a part,
+  press Assign — that pins them. With no part selected it still arms click-to-assign in the
+  viewport.
+
+### Improved
+- **Bone from Part is on the Rig bar**, not only the part right-click menu. Select a part and
+  press it. In the Rig workspace, right-clicking the solid itself opens the same part menu
+  (Make a bone from this part, Assign to the selected bone).
+
 ### Added
+- **A first rigging tutorial.** Help → Start Rigging Tutorial. Two boxes (a post and a sign),
+  a bone from each, pose the sign, compile. The smallest loop that still needs a skeleton.
+- **Named variables.** View → Variables, then type `#thickness` in any dimension. Change it once
+  and every feature that refers to it moves. Cycles are refused rather than looping.
+- **Section view.** View → Section View clips the preview through the origin along +X so a
+  shelled interior is visible. Nothing is cut in the history.
+- **Weight painting.** Rig workspace → Weights → Paint Weights. Pick a bone in the Rig tree and
+  drag. The heat map is a texture atlas, not vertex colour — paint already taught that lesson.
+  Skin weights stay per-vertex for the compiler. `WeightRamp`, `WeightPaintSession`
+- **Paint Falloff and an Erase button** on the paint bar. Ctrl still inverts for one stroke.
 - **Revolve can spin about a line you drew in the sketch.** Set Axis to "A line of the sketch"
   and pick the line from the new Axis line box — construction lines included, which is what the
   dashed centreline of a lathe profile is. `RevolveFeature.AxisLineId`
@@ -174,11 +195,27 @@ forgotten.
   overlap is what makes them tile. `SolidFeatures.cs`, `EffigyFeatureDialog.cs`
 
 ### Improved
+- The tool row scrolls left and right when the buttons no longer fit. Mouse wheel pans it
+  (Shift for a bigger jump); arrows appear at the ends when there is more to see. The
+  tutorial still pans a highlighted button into view.
 - The settings window folds up. Each section -- Grid, Snapping, Reference, Lighting,
   Appearance, Normal map bake -- is now a header you click to collapse or expand, and the
   window remembers which ones you had open next time. `EffigySettingsWindow.cs`
+- Unpainted paint texels bake over a grey base rather than white, so one dab no longer turns
+  the compiled model into a white brick. Preview and export use the same base.
+- The material brush works on a studio with more than one body. It raycasts each and paints
+  the nearest.
 
 ### Fixed
+- Compile no longer binds the paint atlas to slot 0 blindly. It binds the slots the painted
+  faces actually wear, and isolates a second painted body onto its own slot.
+- Paint on two bodies at once is an error with a remedy, not a silent no-op.
+- The dead Blend combo is off the paint bar. The field stays on the feature so old documents
+  still load; it does not change the fallback any more.
+- A plane's dialog no longer puts the face pull arrow on the model. A plane can be built from a
+  face, so the arrow appeared -- and dragging it did nothing, because a plane has no distance for
+  it to write. The plane's own offset arrow is the handle there now.
+- Switching workspaces now puts away what you were doing. The note pen (grease pencil) used
 - A plane's dialog no longer puts the face pull arrow on the model. A plane can be built from a
   face, so the arrow appeared -- and dragging it did nothing, because a plane has no distance for
   it to write. The plane's own offset arrow is the handle there now.

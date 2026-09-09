@@ -33,8 +33,8 @@ public static class VmdlMaterialsTests
 		Section( "vmdl materials: paint is a bound material, not a fallback" );
 		TestPaintTakesNoFallback();
 
-		Section( "vmdl materials: tint or cover" );
-		TestBlendChoosesTheFallback();
+		Section( "vmdl materials: paint no longer votes on the fallback" );
+		TestBlendDoesNotChooseTheFallback();
 
 		Section( "vmdl materials: several slots, several spellings" );
 		TestAliases();
@@ -204,7 +204,7 @@ public static class VmdlMaterialsTests
 	/// entirely, because only one material read those colours - and that override is gone with the
 	/// vertex-colour fallback it belonged to. Blend is now the only thing an unbound slot consults.
 	/// </summary>
-	static void TestBlendChoosesTheFallback()
+	static void TestBlendDoesNotChooseTheFallback()
 	{
 		var studio = new PartStudio();
 		var box = studio.Add( new PrimitiveFeature() );
@@ -213,22 +213,23 @@ public static class VmdlMaterialsTests
 		var paint = studio.Add( new PaintFeature() );
 		studio.Rebuild();
 
-		Check( "a paint layer tints by default", paint.Blend.Value == "Tint", paint.Blend.Value );
+		Check( "Blend is still on the feature so old documents load",
+			paint.Blend.Value == "Tint", paint.Blend.Value );
 
-		Check( "so an unbound slot takes the default material",
-			VmdlMaterials.FallbackFor( studio ) == VmdlMaterials.DefaultMaterial );
+		Check( "and it is not a parameter the dialog offers",
+			!paint.Parameters.Contains( paint.Blend ) );
 
 		paint.Blend.Index = Array.IndexOf( paint.Blend.Options, "Replace" );
 
-		Check( "asking it to cover swaps the surface for white",
-			VmdlMaterials.FallbackFor( studio ) == VmdlMaterials.ReplaceMaterial,
+		Check( "Replace no longer turns unbound slots white — paint is a bound texture now",
+			VmdlMaterials.FallbackFor( studio ) == VmdlMaterials.DefaultMaterial,
 			VmdlMaterials.FallbackFor( studio ) );
 
 		var remaps = VmdlMaterials.Remaps( studio.ToMesh(), studio.NameForSlot, studio.MaterialNames,
 			VmdlMaterials.FallbackFor( studio ) );
 
 		Check( "and that is what reaches the remap list",
-			remaps.Count == 1 && remaps[0].To == VmdlMaterials.ReplaceMaterial,
+			remaps.Count == 1 && remaps[0].To == VmdlMaterials.DefaultMaterial,
 			string.Join( ", ", remaps.Select( r => $"{r.From}->{r.To}" ) ) );
 
 		// A BOUND SLOT IS NOT TOUCHED. Dropping a material on a face is a deliberate choice, and

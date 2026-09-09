@@ -36,7 +36,19 @@ public static class Expression
 	/// <param name="text">What the user typed.</param>
 	/// <param name="unit">The parameter's unit - "deg" for an angle, null for a bare number.</param>
 	/// <param name="value">The result, in the parameter's own unit.</param>
-	public static bool TryEvaluate( string text, string unit, out float value )
+	public static bool TryEvaluate( string text, string unit, out float value ) =>
+		TryEvaluate( text, unit, null, out value );
+
+	/// <summary>
+	/// Evaluate with named values. <paramref name="resolve"/> is asked for names that start with
+	/// <c>#</c> — <c>#thickness</c>, <c>#gap / 2</c>. Unknown names and cycles are parse failures,
+	/// the same "hold the last good value" path a half-typed <c>1/</c> already takes.
+	///
+	/// THE KERNEL DOES NOT KNOW WHAT A DOCUMENT IS. A <c>Func&lt;string, float?&gt;</c> is the
+	/// whole of the contract, so ExpressionTests still runs headless and a host can plug in a
+	/// variable table, a visiting-set for cycles, or nothing.
+	/// </summary>
+	public static bool TryEvaluate( string text, string unit, Func<string, float?> resolve, out float value )
 	{
 		value = 0f;
 
@@ -45,7 +57,7 @@ public static class Expression
 
 		try
 		{
-			var parser = new Parser( text, unit );
+			var parser = new Parser( text, unit, resolve );
 			var result = parser.ParseExpression();
 
 			parser.SkipSpace();
@@ -96,12 +108,14 @@ public static class Expression
 	{
 		readonly string _text;
 		readonly string _unit;
+		readonly Func<string, float?> _resolve;
 		int _pos;
 
-		public Parser( string text, string unit )
+		public Parser( string text, string unit, Func<string, float?> resolve )
 		{
 			_text = text;
 			_unit = unit;
+			_resolve = resolve;
 		}
 
 		public bool AtEnd => _pos >= _text.Length;
@@ -211,6 +225,15 @@ public static class Expression
 			if ( char.IsDigit( c ) || c == '.' )
 				return ParseNumber();
 
+			// #thickness is a variable, not a comment. Bare names stay constants and functions
+			// (pi, sin) so a typo cannot silently pick up a variable that happens to share a name
+			// with a function, and so documents without a table keep parsing the way they always did.
+			if ( c == '#' )
+			{
+				_pos++;
+				return ParseVariable();
+			}
+
 			if ( char.IsLetter( c ) || c == '_' )
 				return ParseName();
 
@@ -299,6 +322,31 @@ public static class Expression
 		}
 
 		static bool IsUnit( string s ) => s is "deg" or "degree" or "degrees" or "rad" or "radian" or "radians";
+
+		float ParseVariable()
+		{
+			SkipSpace();
+
+			if ( AtEnd || !( char.IsLetter( _text[_pos] ) || _text[_pos] == '_' ) )
+				throw new FormatException( "expected a name after '#'" );
+
+			var start = _pos;
+
+			while ( _pos < _text.Length && ( char.IsLetterOrDigit( _text[_pos] ) || _text[_pos] == '_' ) )
+				_pos++;
+
+			var name = _text.Substring( start, _pos - start );
+
+			if ( _resolve is null )
+				throw new FormatException( $"unknown name '#{name}'" );
+
+			var found = _resolve( name );
+
+			if ( found is null )
+				throw new FormatException( $"unknown name '#{name}'" );
+
+			return found.Value;
+		}
 
 		float ParseName()
 		{

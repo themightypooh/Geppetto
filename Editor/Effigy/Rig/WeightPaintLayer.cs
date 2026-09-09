@@ -66,6 +66,25 @@ public sealed class WeightPaintLayer
 		Topology = MultiresSculpt.TopologyId( mesh );
 	}
 
+	/// <summary>Rebuild a layer from a saved document. Topology is stored, not re-derived, because
+	/// the mesh it was painted on is not in the file.</summary>
+	public static WeightPaintLayer FromSaved( long topology,
+		IEnumerable<(int Vertex, List<(string Bone, float Weight)> Weights)> rows )
+	{
+		var layer = new WeightPaintLayer { Topology = topology };
+
+		if ( rows is null )
+			return layer;
+
+		foreach ( var (vertex, weights) in rows )
+		{
+			if ( weights is { Count: > 0 } )
+				layer._painted[vertex] = new List<(string, float)>( weights );
+		}
+
+		return layer;
+	}
+
 	/// <summary>Every painted vertex, for a writer or a UI that wants to list them.</summary>
 	public IEnumerable<(int Vertex, IReadOnlyList<(string Bone, float Weight)> Weights)> Painted
 	{

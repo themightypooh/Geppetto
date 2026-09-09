@@ -592,7 +592,7 @@ public static class DocumentTests
 
 		return (x, y) switch
 		{
-			(FloatParam p, FloatParam q) => p.Value == q.Value,
+			(FloatParam p, FloatParam q) => p.Value == q.Value && p.Expr == q.Expr,
 			(IntParam p, IntParam q) => p.Value == q.Value,
 			(BoolParam p, BoolParam q) => p.Value == q.Value,
 			(ChoiceParam p, ChoiceParam q) => p.Index == q.Index,

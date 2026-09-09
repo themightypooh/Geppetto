@@ -120,6 +120,8 @@ public static class Program
 		BooleanFeatureTests.Run();
 
 		ExpressionTests.Run();
+		VariableTests.Run();
+		MeshClipTests.Run();
 
 		SnapTests.Run();
 

@@ -78,6 +78,14 @@ internal sealed partial class EffigyViewport : Widget
 	/// relative to this, so dragging it shifts the whole coordinate frame.</summary>
 	public Vector3 OriginPosition { get; private set; } = Vector3.Zero;
 
+	/// <summary>A render-side clip plane through the origin along +X. Nothing is cut in the
+	/// history; only the preview is clipped, so a shelled interior can be looked at.</summary>
+	public bool SectionEnabled { get; set; }
+
+	public Vec3 SectionOrigin => new( OriginPosition.x, OriginPosition.y, OriginPosition.z );
+
+	public Vec3 SectionNormal => new( 1f, 0f, 0f );
+
 	/// <summary>True while the user is dragging the origin gizmo.</summary>
 	private bool _draggingOrigin;
 
@@ -1379,6 +1387,7 @@ internal sealed partial class EffigyViewport : Widget
 
 		var overAnyOverlay = (_resultOverlay?.IsUnderMouse ?? false)
 			|| (_sculptBarOverlay?.IsUnderMouse ?? false)
+			|| (_weightBarOverlay?.IsValid() == true && _weightBarOverlay.IsUnderMouse)
 			|| _paintBarOverlays.Any( b => b.IsValid() && b.IsUnderMouse );
 		var overCanvas = _canvas.IsUnderMouse && !overAnyOverlay;
 
@@ -1430,6 +1439,7 @@ internal sealed partial class EffigyViewport : Widget
 		SculptFrame();
 		PaintFrame();
 		MaterialBrushFrame();
+		WeightPaintFrame();
 
 		// AFTER the pick passes and after sculpting, so a note is drawn over everything it is about
 		// and an erase click is resolved against a hover the other modes have already declined.
@@ -1446,7 +1456,7 @@ internal sealed partial class EffigyViewport : Widget
 		// Origin and lamps on top of the planes. Hidden while sketching or picking anything - they
 		// sit where first clicks land, and stealing them was the first thing that broke.
 		// RigMode joins the list for the same reason every other entry is on it: these sit where
-		// first clicks land, and in the rig workspace every first click is meant for a bone.
+		// first clicks land, and in the rig workspace those clicks are meant for bones and parts.
 		if ( !IsSketching && !PlanePickMode && !SketchPickMode && !FacePickMode && !EdgePickMode
 			&& !BodyPickMode && !BoneToolActive && !RigMode )
 		{
@@ -1518,7 +1528,12 @@ internal sealed partial class EffigyViewport : Widget
 		// our bone hitboxes AND the gizmo control's own hitboxes. Using !Gizmo.IsHovered
 		// here was the bug: IsHovered only sees Hitbox.Sphere calls, not Control hitboxes,
 		// so clicking the gizmo counted as empty space and deselected immediately.
-		if ( Gizmo.WasLeftMousePressed && !Gizmo.HasHovered && _selectedBoneIndex >= 0 && !_boneDragging )
+		//
+		// A click on a PART is not empty space. Assign Body is "select a bone, select a
+		// part, press Assign", and treating the mesh as a miss dropped the bone the moment
+		// you picked the body you wanted to pin — which is why the button went grey.
+		if ( Gizmo.WasLeftMousePressed && !Gizmo.HasHovered && _selectedBoneIndex >= 0 && !_boneDragging
+			&& !TryPickFaceUnderCursor( out _ ) )
 		{
 			_selectedBoneIndex = -1;
 			BoneSelectionChanged?.Invoke( -1 );

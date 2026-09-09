@@ -19,7 +19,7 @@ internal sealed class EffigyTutorialPanel : Widget
 {
 	/// <summary>The tutorial's name, in one place. Rig Control's was written out at three call
 	/// sites and two of them went stale - which is exactly what a duplicated string does.</summary>
-	private const string Title = "Build a House";
+	private const string HouseTitle = "Build a House";
 
 	private readonly Widget _list;
 	private readonly Editor.Label _heading;
@@ -58,6 +58,10 @@ internal sealed class EffigyTutorialPanel : Widget
 	/// </summary>
 	public Action<EffigyToolTarget?> HighlightTool { get; set; }
 
+	/// <summary>Switch to a workspace. The Rigging tutorial's first real step is "click Rig",
+	/// and a highlight on a bar the reader is not looking at is a highlight on nothing.</summary>
+	public Action<EffigyWorkspace> SwitchWorkspace { get; set; }
+
 	public EffigyTutorialPanel( Widget parent ) : base( parent )
 	{
 		Name = "Tutorial";
@@ -71,7 +75,7 @@ internal sealed class EffigyTutorialPanel : Widget
 		header.Margin = new Sandbox.UI.Margin( 12, 10, 12, 6 );
 		header.Spacing = 8;
 
-		_heading = new Editor.Label( Title );
+		_heading = new Editor.Label( HouseTitle );
 		_heading.SetStyles( "font-weight: 600; font-size: 20px;" );
 		header.Add( _heading, 1 );
 
@@ -124,7 +128,7 @@ internal sealed class EffigyTutorialPanel : Widget
 	/// </summary>
 	private void BuildStartScreen()
 	{
-		_heading.Text = Title;
+		_heading.Text = Tutorial?.Title ?? HouseTitle;
 
 		// No step count here. "9 steps" reads as a length to get through, which is the wrong
 		// first impression of something meant to take twenty minutes and be enjoyable.
@@ -133,25 +137,51 @@ internal sealed class EffigyTutorialPanel : Widget
 		// Separate labels rather than one string with line breaks in it. Escaped newlines have
 		// been written into files in this repo as real ones twice, leaving string literals
 		// unterminated; separate labels cannot do that.
-		AddLine( "You will build a small house: a box for the walls, a wedge for a sloped roof, "
-			+ "and holes cut through the walls for windows and a door. It is the smallest model that "
-			+ "still needs everything a first session teaches.", 15f, 0.95f );
+		if ( Tutorial.Lesson == EffigyLesson.Rigging )
+		{
+			AddLine( "You will build a post and a sign, hang a bone down each, and pose the sign so "
+				+ "it swings. It is the smallest rig that still needs the loop every later lesson "
+				+ "builds on: a part, a bone from that part, a child bone, and a pose you can see.",
+				15f, 0.95f );
 
-		_list.Layout.AddSpacingCell( 6f );
+			_list.Layout.AddSpacingCell( 6f );
 
-		AddLine( "It runs in two phases:", 14f, 0.8f );
+			AddLine( "It runs in three phases:", 14f, 0.8f );
 
-		_list.Layout.AddSpacingCell( 4f );
+			_list.Layout.AddSpacingCell( 4f );
 
-		AddPhase( "THE SHAPE", "two primitives - a box, then a wedge" );
-		AddPhase( "THE CUTS", "holes for the windows and the door" );
+			AddPhase( "THE PARTS", "two boxes - a tall post, then a flat sign" );
+			AddPhase( "THE BONES", "one bone per part, the sign hanging off the post" );
+			AddPhase( "THE POSE", "drag it, then compile" );
 
-		_list.Layout.AddSpacingCell( 6f );
+			_list.Layout.AddSpacingCell( 6f );
 
-		AddLine( "The holes are the part worth noticing. You are not deleting wall to make a window - "
-			+ "you are telling the tool to subtract a cylinder, and it re-does that subtraction "
-			+ "whenever you resize the house. That is what parametric means, and it is the idea every "
-			+ "later tutorial builds on.", 14f, 0.8f );
+			AddLine( "The pose is the part worth noticing. If the sign swings and the post stays, "
+				+ "the assignment is right. If the whole model rotates as one, a part is still pinned "
+				+ "to the wrong bone. That is the whole of a first rig.", 14f, 0.8f );
+		}
+		else
+		{
+			AddLine( "You will build a small house: a box for the walls, a wedge for a sloped roof, "
+				+ "and holes cut through the walls for windows and a door. It is the smallest model that "
+				+ "still needs everything a first session teaches.", 15f, 0.95f );
+
+			_list.Layout.AddSpacingCell( 6f );
+
+			AddLine( "It runs in two phases:", 14f, 0.8f );
+
+			_list.Layout.AddSpacingCell( 4f );
+
+			AddPhase( "THE SHAPE", "two primitives - a box, then a wedge" );
+			AddPhase( "THE CUTS", "holes for the windows and the door" );
+
+			_list.Layout.AddSpacingCell( 6f );
+
+			AddLine( "The holes are the part worth noticing. You are not deleting wall to make a window - "
+				+ "you are telling the tool to subtract a cylinder, and it re-does that subtraction "
+				+ "whenever you resize the house. That is what parametric means, and it is the idea every "
+				+ "later tutorial builds on.", 14f, 0.8f );
+		}
 
 		_list.Layout.AddSpacingCell( 6f );
 
@@ -263,7 +293,7 @@ internal sealed class EffigyTutorialPanel : Widget
 			return;
 		}
 
-		_heading.Text = Title;
+		_heading.Text = Tutorial?.Title ?? HouseTitle;
 
 		var index = Math.Min( Tutorial.CurrentIndex, Tutorial.StepCount - 1 );
 		var step = Tutorial.StepAt( index );
@@ -389,6 +419,17 @@ internal sealed class EffigyTutorialPanel : Widget
 				path.SetStyles( "font-size: 13px;" );
 				_list.Layout.Add( path );
 				break;
+
+			case EffigyTutorial.PointAt.Workspace:
+				_list.Layout.AddSpacingCell( 6f );
+
+				var go = _list.Layout.AddRow();
+				go.Add( new Button( $"Switch to {step.Workspace}", "my_location" )
+				{
+					Clicked = () => SwitchWorkspace?.Invoke( step.Workspace )
+				} );
+				go.AddStretchCell();
+				break;
 		}
 	}
 
@@ -396,11 +437,15 @@ internal sealed class EffigyTutorialPanel : Widget
 	/// stopping - finishing something should feel like finishing something.</summary>
 	private void BuildFinishScreen()
 	{
-		var done = new Editor.Label(
-			"That is a house, and it is still a recipe. Change the box and the roof follows; widen "
-			+ "the door and the wall re-cuts itself around it. Nothing you did was a one-way edit, "
-			+ "which is the whole point of modelling this way - and the next tutorial starts where "
-			+ "this one leaves off: drawing the shapes a primitive cannot make." )
+		var done = new Editor.Label( Tutorial.Lesson == EffigyLesson.Rigging
+			? "That is a rig, and it is still a recipe. Move the post and the bone follows; compile "
+				+ "again and Marionette poses the new shape. Pose was a scratchpad - Reset Pose puts "
+				+ "the bind back. Weight painting is the next lesson, for the joints that do not "
+				+ "crease where you want."
+			: "That is a house, and it is still a recipe. Change the box and the roof follows; widen "
+				+ "the door and the wall re-cuts itself around it. Nothing you did was a one-way edit, "
+				+ "which is the whole point of modelling this way - and the next tutorial starts where "
+				+ "this one leaves off: drawing the shapes a primitive cannot make." )
 		{ WordWrap = true, Color = Theme.Green };
 
 		done.SetStyles( "font-size: 15px; line-height: 1.45;" );
@@ -485,6 +530,24 @@ internal sealed class EffigyStepGlyph : Widget
 					center + new Vector2( -5, -3 ),
 					center + new Vector2( 5, -3 ),
 					center + new Vector2( 0, -11 ) );
+				break;
+
+			// A bone: two knobs and a shaft, the same silhouette the rig bar uses.
+			case EffigyTutorial.StepArt.Bone:
+				Paint.DrawCircle( center + new Vector2( 0, -8 ), 3.5f );
+				Paint.DrawCircle( center + new Vector2( 0, 8 ), 3.5f );
+				Paint.DrawLine( center + new Vector2( 0, -5 ), center + new Vector2( 0, 5 ) );
+				break;
+
+			// A bent chain: two bones at an angle, which is what a pose looks like.
+			case EffigyTutorial.StepArt.Pose:
+				Paint.DrawLine( center + new Vector2( -2, 8 ), center + new Vector2( -2, -1 ) );
+				Paint.DrawLine( center + new Vector2( -2, -1 ), center + new Vector2( 8, -6 ) );
+				Paint.ClearPen();
+				Paint.SetBrush( color );
+				Paint.DrawCircle( center + new Vector2( -2, 8 ), 2.5f );
+				Paint.DrawCircle( center + new Vector2( -2, -1 ), 2.5f );
+				Paint.DrawCircle( center + new Vector2( 8, -6 ), 2.5f );
 				break;
 		}
 

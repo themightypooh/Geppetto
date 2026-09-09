@@ -806,11 +806,27 @@ internal sealed class EffigyStageToolRow : Widget
 	private int _pressed = -1;
 	private bool _pressedChevron;
 
+	/// <summary>How far the row has been panned left, in pixels. Zero is the first tool flush
+	/// with the left inset. Clamped in the paint pass against the width last measured, so a
+	/// stage switch that shortens the row cannot leave the view parked in empty space.</summary>
+	private float _scroll;
+
+	/// <summary>Which stage <see cref="_scroll"/> belongs to. A new stage starts at the left
+	/// rather than inheriting the previous stage's pan — the tools are a different set.</summary>
+	private int _scrollStage = int.MinValue;
+
+	/// <summary>Total width of the tools, including gaps, as of the last paint. Wheel and the
+	/// edge arrows read this; they cannot measure text themselves (Paint.MeasureText is paint-
+	/// pass only).</summary>
+	private float _contentWidth;
+
 	private const float Pad = 9f;
 	private const float IconWidth = 21f;
 	private const float IconGap = 6f;
 	private const float ChevronWidth = 16f;
 	private const float Gap = 3f;
+	private const float Inset = 7f;
+	private const float ArrowWidth = 18f;
 
 	public EffigyStageToolRow( Widget parent ) : base( parent )
 	{
@@ -849,27 +865,175 @@ internal sealed class EffigyStageToolRow : Widget
 		_rects.Clear();
 
 		var tools = Tools;
-		var x = 7f;
-		var top = (Height - EffigyToolChrome.ButtonHeight) * 0.5f;
+		var stageIndex = Bar?.SelectedIndex ?? -1;
+
+		if ( stageIndex != _scrollStage )
+		{
+			_scroll = 0f;
+			_scrollStage = stageIndex;
+		}
+
+		var viewLeft = Inset;
+		var viewRight = ToolsRight();
+		var viewWidth = MathF.Max( viewRight - viewLeft, 1f );
+
+		// First pass: widths only, so overflow can be known before anything is drawn. The
+		// painted rects have to include the scroll, and the arrows take a bite out of the view
+		// only when there is somewhere to pan.
+		var widths = new float[tools.Count];
+		var content = 0f;
 
 		for ( var i = 0; i < tools.Count; i++ )
 		{
-			var tool = tools[i];
-
 			Paint.SetDefaultFont( EffigyToolChrome.LabelFontSize, 450 );
 
-			var label = tool.FaceLabel ?? "";
+			var label = tools[i].FaceLabel ?? "";
 			var textWidth = Paint.MeasureText( label ).x;
 			var width = Pad + IconWidth + IconGap + textWidth + Pad
-				+ (tool.HasVariants ? ChevronWidth : 0f);
+				+ (tools[i].HasVariants ? ChevronWidth : 0f);
 
-			var rect = new Rect( x, top, width, EffigyToolChrome.ButtonHeight );
+			widths[i] = width;
+			content += width + (i + 1 < tools.Count ? Gap : 0f);
+		}
+
+		_contentWidth = content;
+
+		var overflow = content > viewWidth + 0.5f;
+		var maxScroll = overflow ? MathF.Max( content - viewWidth, 0f ) : 0f;
+		_scroll = Math.Clamp( _scroll, 0f, maxScroll );
+
+		BringAttentionIntoView( widths, viewWidth, maxScroll );
+
+		var top = (Height - EffigyToolChrome.ButtonHeight) * 0.5f;
+		var x = viewLeft - _scroll;
+
+		for ( var i = 0; i < tools.Count; i++ )
+		{
+			var rect = new Rect( x, top, widths[i], EffigyToolChrome.ButtonHeight );
 			_rects.Add( rect );
 
-			PaintTool( tool, rect, i );
+			// Skip anything wholly off the usable strip so a scrolled-away button cannot paint
+			// over the trailing control or the edge arrows.
+			if ( rect.Right > viewLeft && rect.Left < viewRight )
+				PaintTool( tools[i], rect, i );
 
-			x += width + Gap;
+			x += widths[i] + Gap;
 		}
+
+		if ( overflow )
+			PaintScrollEdges( viewLeft, viewRight, maxScroll );
+	}
+
+	/// <summary>The right edge of the tool strip, short of the trailing widget when one is up.</summary>
+	private float ToolsRight()
+	{
+		if ( Trailing is { IsValid: true, Visible: true } trailing )
+			return MathF.Max( trailing.Position.x - Gap, Inset + 1f );
+
+		return Width - Inset;
+	}
+
+	private float MaxScroll()
+	{
+		var view = MathF.Max( ToolsRight() - Inset, 1f );
+		return MathF.Max( _contentWidth - view, 0f );
+	}
+
+	/// <summary>
+	/// If the tutorial (or anything else) has marked a tool with Attention, pan just far enough
+	/// that the button is fully in view. A highlight on a button you have to scroll to find is
+	/// a highlight on nothing.
+	/// </summary>
+	private void BringAttentionIntoView( float[] widths, float viewWidth, float maxScroll )
+	{
+		if ( maxScroll <= 0f )
+			return;
+
+		var tools = Tools;
+		var x = 0f;
+
+		for ( var i = 0; i < tools.Count && i < widths.Length; i++ )
+		{
+			if ( tools[i].Attention )
+			{
+				var left = x;
+				var right = x + widths[i];
+
+				if ( left < _scroll )
+					_scroll = left;
+				else if ( right > _scroll + viewWidth )
+					_scroll = right - viewWidth;
+
+				_scroll = Math.Clamp( _scroll, 0f, maxScroll );
+				return;
+			}
+
+			x += widths[i] + Gap;
+		}
+	}
+
+	private void PaintScrollEdges( float viewLeft, float viewRight, float maxScroll )
+	{
+		var top = 4f;
+		var h = Height - 8f;
+
+		if ( _scroll > 0.5f )
+		{
+			var left = new Rect( viewLeft, top, ArrowWidth, h );
+
+			Paint.ClearPen();
+			Paint.SetBrush( ChromeColor.WithAlpha( 0.92f ) );
+			Paint.DrawRect( left );
+
+			Paint.SetPen( Theme.TextControl.WithAlpha( 0.75f ) );
+			Paint.DrawText( left, "‹", TextFlag.Center );
+		}
+
+		if ( _scroll < maxScroll - 0.5f )
+		{
+			var right = new Rect( viewRight - ArrowWidth, top, ArrowWidth, h );
+
+			Paint.ClearPen();
+			Paint.SetBrush( ChromeColor.WithAlpha( 0.92f ) );
+			Paint.DrawRect( right );
+
+			Paint.SetPen( Theme.TextControl.WithAlpha( 0.75f ) );
+			Paint.DrawText( right, "›", TextFlag.Center );
+		}
+	}
+
+	private bool ScrollArrowAt( Vector2 local, out int direction )
+	{
+		direction = 0;
+
+		if ( MaxScroll() <= 0.5f )
+			return false;
+
+		var viewLeft = Inset;
+		var viewRight = ToolsRight();
+		var top = 4f;
+		var h = Height - 8f;
+
+		if ( _scroll > 0.5f && new Rect( viewLeft, top, ArrowWidth, h ).IsInside( local ) )
+		{
+			direction = -1;
+			return true;
+		}
+
+		if ( _scroll < MaxScroll() - 0.5f && new Rect( viewRight - ArrowWidth, top, ArrowWidth, h ).IsInside( local ) )
+		{
+			direction = 1;
+			return true;
+		}
+
+		return false;
+	}
+
+	private void NudgeScroll( int direction )
+	{
+		var step = 80f;
+		_scroll = Math.Clamp( _scroll + direction * step, 0f, MaxScroll() );
+		Update();
 	}
 
 	private void PaintTool( EffigyStageTool tool, Rect rect, int index )
@@ -978,8 +1142,34 @@ internal sealed class EffigyStageToolRow : Widget
 		menu.OpenAtCursor();
 	}
 
+	protected override void OnMouseWheel( WheelEvent e )
+	{
+		var max = MaxScroll();
+
+		if ( max <= 0.5f )
+		{
+			base.OnMouseWheel( e );
+			return;
+		}
+
+		// The row has no vertical overflow, so the wheel pans it. One notch is roughly a
+		// button's width; Shift takes a bigger bite for getting across a long sketch strip.
+		var step = e.HasShift ? 160f : 72f;
+		_scroll = Math.Clamp( _scroll + ( e.Delta > 0 ? -step : step ), 0f, max );
+		e.Accept();
+		Update();
+	}
+
 	protected override void OnMouseMove( MouseEvent e )
 	{
+		if ( ScrollArrowAt( e.LocalPosition, out var direction ) )
+		{
+			_hovered = -1;
+			ToolTip = direction < 0 ? "Scroll tools left" : "Scroll tools right";
+			Update();
+			return;
+		}
+
 		var index = ToolAt( e.LocalPosition );
 
 		if ( index == _hovered )
@@ -1016,6 +1206,12 @@ internal sealed class EffigyStageToolRow : Widget
 			return;
 
 		e.Accepted = true;
+
+		if ( ScrollArrowAt( e.LocalPosition, out var direction ) )
+		{
+			NudgeScroll( direction );
+			return;
+		}
 
 		var index = ToolAt( e.LocalPosition );
 

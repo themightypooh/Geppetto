@@ -86,11 +86,12 @@ public static class VmdlMaterials
 	/// </summary>
 	public static string FallbackFor( PartStudio studio )
 	{
-		var covering = studio?.Features?
-			.OfType<PaintFeature>()
-			.Any( f => f.Error is null && !f.Suppressed && f.Blend.Value == "Replace" ) ?? false;
-
-		return covering ? ReplaceMaterial : DefaultMaterial;
+		// Paint is a bound texture now. Blend used to pick white.vmat so vertex colour would show
+		// on an unbound slot; that path is gone, and consulting Blend here made an unbound slot
+		// compile white whenever a paint layer existed anywhere in the tree — including one that
+		// had never been brushed. Unbound is default.vmat. A painted body reaches export bound.
+		_ = studio;
+		return DefaultMaterial;
 	}
 
 	/// <summary>

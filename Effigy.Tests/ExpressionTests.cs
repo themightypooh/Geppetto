@@ -33,6 +33,22 @@ public static class ExpressionTests
 
 		Report.Section( "expressions: formatting a value back out" );
 		TestFormat();
+
+		Report.Section( "expressions: #names through a resolver" );
+		TestHashNames();
+	}
+
+	static void TestHashNames()
+	{
+		float? Resolve( string name ) => name == "t" ? 8f : null;
+
+		var parsed = Expression.TryEvaluate( "#t / 2", null, Resolve, out var value );
+
+		Report.Check( "#t / 2 = 4", parsed && MathF.Abs( value - 4f ) < 1e-4f,
+			parsed ? $"got {value}" : "refused" );
+
+		Report.Check( "#missing with no table is refused",
+			!Expression.TryEvaluate( "#t", null, null, out _ ) );
 	}
 
 	static void Ok( string text, float expected, string unit = null )

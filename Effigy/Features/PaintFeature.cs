@@ -59,7 +59,12 @@ public sealed class PaintFeature : Feature
 	/// </summary>
 	public readonly ChoiceParam Blend = new( "Blend", new[] { "Tint", "Replace" } );
 
-	public override IReadOnlyList<IParam> Parameters => new IParam[] { Bodies, Resolution, Blend };
+	/// <summary>
+	/// Blend is carried for old documents and is not a parameter the dialog or the bar offer.
+	/// A texture atlas is the surface colour; tint-versus-replace needed a shader nothing ships.
+	/// Showing a combo that changes nothing is a bug report waiting to be filed.
+	/// </summary>
+	public override IReadOnlyList<IParam> Parameters => new IParam[] { Bodies, Resolution };
 
 	/// <summary>
 	/// The strokes, in the order they were painted.
@@ -123,10 +128,20 @@ public sealed class PaintFeature : Feature
 	{
 		var targets = RequireBodies( ctx, Bodies );
 
-		// Paint paints ONE body at a time — one stroke list, one atlas. A studio with several bodies
-		// needs a picked body, which is exactly what the editor's door gate asks for before a session
-		// starts.
-		if ( Strokes is { Count: > 0 } && targets.Count == 1 )
+		// ONE BODY, LOUDLY. An empty selection matches every body, so a two-body studio used to
+		// walk in here, skip the replay, and leave both canvases untouched with no error — paint
+		// that looks like it ran and did nothing. Fail at the door so the editor's "pick one"
+		// prompt and the kernel agree.
+		if ( targets.Count != 1 )
+		{
+			Fail(
+				"Paint paints one body at a time",
+				$"This feature matched {targets.Count} bodies and a paint layer is one stroke list, one atlas.",
+				"Pick one body in the Parts list",
+				"Add a Paint per body rather than one Paint over all of them" );
+		}
+
+		if ( Strokes is { Count: > 0 } )
 		{
 			var mesh = targets[0].Mesh;
 			var topology = MultiresSculpt.TopologyId( mesh );

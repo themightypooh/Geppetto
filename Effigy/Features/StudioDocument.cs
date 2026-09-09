@@ -112,6 +112,19 @@ public static class StudioDocument
 				sb.Append( "hiddenbody " ).Append( id ).Append( '\n' );
 		}
 
+		// Same rule as origin: a document with no variables must not grow a line. Names sorted so
+		// two saves of the same table are the same bytes.
+		foreach ( var variable in studio.Variables
+			.Where( v => v is not null && !string.IsNullOrWhiteSpace( v.Name ) )
+			.OrderBy( v => v.Name, StringComparer.OrdinalIgnoreCase ) )
+		{
+			sb.Append( "variable " ).Append( OneLine( variable.Name ) ).Append( ' ' )
+				.Append( OneLine( string.IsNullOrWhiteSpace( variable.Expr )
+					? Num( variable.Value )
+					: variable.Expr ) )
+				.Append( '\n' );
+		}
+
 		// BEFORE the features, with the rest of the document-level state, because that is what a
 		// note is — see PartStudio.Notes. Writing them after the tree would read as if they were
 		// part of it, and the one thing this format should not imply is that a note is a feature.
@@ -215,7 +228,30 @@ public static class StudioDocument
 				sb.Append( "\tbind " ).Append( body ).Append( ' ' ).Append( OneLine( bone ) ).Append( '\n' );
 		}
 
+		// INSIDE THE RIG BLOCK so an older reader skips it rather than refusing the file — ReadRig
+		// ignores keys it does not recognise. Weight paint without bones is not a thing, so a
+		// document that has never been rigged still writes no rig block at all.
+		if ( studio.WeightPaint is { Count: > 0 } layer )
+			WriteWeights( sb, layer );
+
 		sb.Append( "endrig\n" );
+	}
+
+	static void WriteWeights( StringBuilder sb, WeightPaintLayer layer )
+	{
+		sb.Append( "\tweights " ).Append( layer.Topology ).Append( '\n' );
+
+		foreach ( var (vertex, weights) in layer.Painted.OrderBy( p => p.Vertex ) )
+		{
+			sb.Append( "\t\tv " ).Append( vertex );
+
+			foreach ( var (bone, weight) in weights )
+				sb.Append( ' ' ).Append( OneLine( bone ) ).Append( ' ' ).Append( Num( weight ) );
+
+			sb.Append( '\n' );
+		}
+
+		sb.Append( "\tendweights\n" );
 	}
 
 	static void WriteFeature( StringBuilder sb, Feature feature )
@@ -244,7 +280,11 @@ public static class StudioDocument
 		switch ( value )
 		{
 			case FloatParam p:
-				sb.Append( "\tparam " ).Append( field.Name ).Append( ' ' ).Append( Num( p.Value ) ).Append( '\n' );
+				// The expression is the source of truth when there is one; writing the evaluated
+				// number would freeze #thickness at whatever it was the day the file was saved.
+				sb.Append( "\tparam " ).Append( field.Name ).Append( ' ' )
+					.Append( string.IsNullOrWhiteSpace( p.Expr ) ? Num( p.Value ) : OneLine( p.Expr ) )
+					.Append( '\n' );
 				return;
 
 			case IntParam p:
@@ -542,6 +582,16 @@ public static class StudioDocument
 				continue;
 			}
 
+			if ( line.StartsWith( "variable " ) )
+			{
+				var (name, expr) = Split( line[9..] );
+
+				if ( VariableResolver.IsLegalName( name ) )
+					studio.SetVariable( name, string.IsNullOrWhiteSpace( expr ) ? "0" : expr );
+
+				continue;
+			}
+
 			if ( line.StartsWith( "note " ) )
 			{
 				var note = ReadNote( lines, ref i );
@@ -627,7 +677,58 @@ public static class StudioDocument
 				ReadBone( studio.Rig, lines, ref i );
 				continue;
 			}
+
+			if ( line.StartsWith( "weights " ) || line == "weights" )
+			{
+				ReadWeights( studio, lines, ref i );
+				continue;
+			}
 		}
+	}
+
+	static void ReadWeights( PartStudio studio, string[] lines, ref int i )
+	{
+		var header = lines[i].Trim();
+		var topology = 0L;
+
+		if ( header.StartsWith( "weights " ) )
+			long.TryParse( header[8..].Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out topology );
+
+		var rows = new List<(int Vertex, List<(string Bone, float Weight)> Weights)>();
+
+		for ( i++; i < lines.Length; i++ )
+		{
+			var line = lines[i].Trim();
+
+			if ( line.Length == 0 )
+				continue;
+
+			if ( line == "endweights" )
+				break;
+
+			if ( !line.StartsWith( "v " ) )
+				continue;
+
+			var parts = line[2..].Split( ' ', StringSplitOptions.RemoveEmptyEntries );
+
+			if ( parts.Length < 1 )
+				continue;
+
+			var vertex = ParseInt( parts[0], -1 );
+
+			if ( vertex < 0 )
+				continue;
+
+			var weights = new List<(string, float)>();
+
+			for ( var p = 1; p + 1 < parts.Length; p += 2 )
+				weights.Add( (parts[p], ParseFloat( parts[p + 1] )) );
+
+			if ( weights.Count > 0 )
+				rows.Add( (vertex, weights) );
+		}
+
+		studio.WeightPaint = WeightPaintLayer.FromSaved( topology, rows );
 	}
 
 	/// <summary>One bone block. Everything is read before anything is added, because AddBone takes
@@ -798,7 +899,20 @@ public static class StudioDocument
 			case "param":
 				switch ( current )
 				{
-					case FloatParam p: p.Value = ParseFloat( value ); return;
+					case FloatParam p:
+						// A number is a literal. Anything else is an expression — #thickness, 1/8 —
+						// stored as Expr and evaluated on rebuild. Old files only ever wrote numbers.
+						if ( LooksLikeNumber( value ) )
+						{
+							p.Value = ParseFloat( value );
+							p.Expr = null;
+						}
+						else
+						{
+							p.Expr = value;
+						}
+
+						return;
 					case IntParam p: p.Value = ParseInt( value, p.Value ); return;
 					case BoolParam p: p.Value = value == "1"; return;
 					case ChoiceParam p: p.Index = ParseInt( value, p.Index ); return;
@@ -1198,6 +1312,19 @@ public static class StudioDocument
 		var space = line.IndexOf( ' ' );
 
 		return space < 0 ? (line, "") : (line[..space], line[(space + 1)..].Trim());
+	}
+
+	/// <summary>
+	/// A parameter that is a literal number, not an expression. Scientific notation is a number;
+	/// <c>#thickness</c> and <c>1/8</c> are not — they have to round-trip as text so rebuild can
+	/// re-evaluate them.
+	/// </summary>
+	static bool LooksLikeNumber( string s )
+	{
+		if ( string.IsNullOrWhiteSpace( s ) )
+			return false;
+
+		return float.TryParse( s.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out _ );
 	}
 
 	static float ParseFloat( string s ) =>

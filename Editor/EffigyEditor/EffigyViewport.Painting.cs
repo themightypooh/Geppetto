@@ -46,6 +46,10 @@ internal sealed partial class EffigyViewport
 
 	private bool _paintPreviewStale;
 
+	/// <summary>The bar's Erase mode at the moment the current stroke began, so Ctrl can invert
+	/// it for one mark without leaving the mode flipped afterwards.</summary>
+	private bool _paintEraseMode;
+
 	// The dynamic texture and its material, held for the life of a paint session and re-uploaded in
 	// place. Held rather than recreated per dab — a fresh texture + material copy per mouse-move is
 	// exactly the garbage a held drag would make thousands of.
@@ -89,7 +93,7 @@ internal sealed partial class EffigyViewport
 		var res = session.Resolution;
 
 		var opaque = new byte[res * res * 4];
-		session.Canvas.BakeOpaque( opaque, 255, 255, 255 );
+		session.Canvas.BakeOpaque( opaque, PaintMaterial.DefaultBaseR, PaintMaterial.DefaultBaseG, PaintMaterial.DefaultBaseB );
 
 		_paintTexture = Texture.Create( res, res, ImageFormat.RGBA8888 )
 			.WithDynamicUsage()
@@ -121,7 +125,8 @@ internal sealed partial class EffigyViewport
 			var h = canvas.MaxY - canvas.MinY + 1;
 			var sub = new byte[w * h * 4];
 
-			canvas.BakeOpaque( sub, 255, 255, 255, canvas.MinX, canvas.MinY, w, h );
+			canvas.BakeOpaque( sub, PaintMaterial.DefaultBaseR, PaintMaterial.DefaultBaseG, PaintMaterial.DefaultBaseB,
+				canvas.MinX, canvas.MinY, w, h );
 			_paintTexture.Update( sub, canvas.MinX, canvas.MinY, w, h );
 
 			canvas.ClearDirty();
@@ -161,10 +166,12 @@ internal sealed partial class EffigyViewport
 
 			if ( !stroking && Gizmo.WasLeftMousePressed )
 			{
-				// Ctrl decides which KIND of stroke this is, read once here and not again — the same
-				// rule and the same reason as sculpt's invert: letting go of the key halfway through
-				// a drag must not turn the back half of one mark into the other kind.
-				PaintSession.Erasing = Editor.Application.IsKeyDown( KeyCode.Control );
+				// The bar's Erase toggle is the mode. Ctrl inverts it for this stroke only, the
+				// same "read once at the press" rule sculpt uses, so releasing mid-drag cannot
+				// split one mark into two kinds.
+				_paintEraseMode = PaintSession.Erasing;
+				var hold = Editor.Application.IsKeyDown( KeyCode.Control );
+				PaintSession.Erasing = hold ? !_paintEraseMode : _paintEraseMode;
 
 				if ( PaintSession.BeginStroke( origin, direction ) )
 				{
@@ -187,6 +194,8 @@ internal sealed partial class EffigyViewport
 
 			if ( stroke is not null )
 				PaintStrokeFinished?.Invoke( stroke );
+
+			PaintSession.Erasing = _paintEraseMode;
 		}
 
 		if ( _paintPreviewStale )

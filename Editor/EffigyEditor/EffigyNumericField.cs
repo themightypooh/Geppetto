@@ -45,6 +45,15 @@ internal sealed class EffigyNumericField : Widget
 	/// value rather than pushing a NaN into the feature and blanking the viewport.</summary>
 	public Action<float> ValueEdited { get; set; }
 
+	/// <summary>The typed text that produced the last good value, so a host can store
+	/// <c>#thickness</c> rather than freezing 2. Null when the text is just the formatted number.
+	/// </summary>
+	public Action<string> ExpressionEdited { get; set; }
+
+	/// <summary>Resolve <c>#name</c> against the document's variable table. Null means names fail,
+	/// which is how a field behaves before the table exists.</summary>
+	public Func<string, float?> Resolver { get; set; }
+
 	private float _value;
 
 	public float Value => _value;
@@ -91,9 +100,21 @@ internal sealed class EffigyNumericField : Widget
 		ShowReadout( null );
 	}
 
+	/// <summary>Show the typed expression (e.g. <c>#thickness / 2</c>) rather than the evaluated
+	/// number, so reopening the dialog does not freeze a variable into a literal.</summary>
+	public void SetExpression( string expr, float value )
+	{
+		_value = Clamp( value );
+
+		if ( _edit.IsValid() )
+			_edit.Text = string.IsNullOrWhiteSpace( expr ) ? Expression.Format( _value ) : expr;
+
+		ShowReadout( string.IsNullOrWhiteSpace( expr ) ? null : $"= {Expression.Format( _value )}" );
+	}
+
 	private void OnTextEdited( string text )
 	{
-		if ( !Expression.TryEvaluate( text, Unit, out var parsed ) )
+		if ( !Expression.TryEvaluate( text, Unit, Resolver, out var parsed ) )
 		{
 			// Half-typed is the common case, not an error worth shouting about - the field just
 			// stops agreeing with the model until it makes sense again.
@@ -109,6 +130,9 @@ internal sealed class EffigyNumericField : Widget
 		ShowReadout( Expression.Format( clamped ) == text.Trim()
 			? null
 			: $"= {Expression.Format( clamped )}" );
+
+		var expr = Expression.Format( clamped ) == text.Trim() ? null : text.Trim();
+		ExpressionEdited?.Invoke( expr );
 
 		if ( clamped == _value )
 			return;

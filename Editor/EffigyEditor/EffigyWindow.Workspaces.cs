@@ -50,7 +50,7 @@ public sealed partial class EffigyWindow
 	/// <summary>The rig stage set, built once at startup alongside the other four.</summary>
 	private List<EffigyStage> _rigStages;
 
-	private EffigyStageTool _boneTool, _boneAssignTool, _boneMirrorTool, _boneDeleteTool;
+	private EffigyStageTool _boneTool, _boneFromPartTool, _boneAssignTool, _boneMirrorTool, _boneDeleteTool;
 	private EffigyStageTool _boneSoftTool, _softPreviewTool, _softRestTool;
 
 	/// <summary>Which part-studio stage was last looked at in the Rig workspace, so leaving and
@@ -110,8 +110,9 @@ public sealed partial class EffigyWindow
 	private EffigyBarMode _barMode = EffigyBarMode.Part;
 
 	/// <summary>
-	/// Push the workspace down onto the viewport's input, where a bone is the only clickable thing
-	/// in the rig workspace and the CAD selection runs everywhere else. See EffigyViewport.RigMode.
+	/// Push the workspace down onto the viewport's input. In the rig workspace a click is a bone
+	/// or a whole part (Assign / Bone from Part need both); CAD idle selection runs everywhere
+	/// else. See EffigyViewport.RigMode.
 	///
 	/// NOT ONLY FROM THE BarMode SETTER, which is where it belongs and is not sufficient on its
 	/// own: that setter returns early when the mode has not changed, so a hotload taken while the
@@ -175,6 +176,8 @@ public sealed partial class EffigyWindow
 		// answer — see the summary.
 		if ( _workspaceBar is not null )
 			_workspaceBar.Selected = CurrentWorkspace;
+
+		RefreshTutorial();
 	}
 
 	/// <summary>
@@ -209,6 +212,9 @@ public sealed partial class EffigyWindow
 		// whatever workspace you switched to.
 		if ( _viewport.IsMaterialBrushing )
 			LeaveMaterialBrush();
+
+		if ( _viewport.IsWeightPainting )
+			FinishWeightPaint();
 
 		// The note pen (grease pencil) owns the click the same way every brush does, and it is the
 		// one mode none of the entries below ever disarmed - so it stayed armed across a switch,
@@ -389,6 +395,21 @@ public sealed partial class EffigyWindow
 
 		bones.Add( _boneTool );
 
+		_boneFromPartTool = new EffigyStageTool
+		{
+			Icon = EffigyIcon.Bone,
+			Label = "Bone from Part",
+			Tip = "Measure the selected part and add a bone down its longest axis, already pinned "
+				+ "to it. Select a bone first to parent the new one.",
+			Clicked = () =>
+			{
+				MakeBonesFromSelectedParts();
+				UpdateRigChecks();
+			},
+		};
+
+		bones.Add( _boneFromPartTool );
+
 		_boneDeleteTool = new EffigyStageTool
 		{
 			Icon = EffigyIcon.CutTool,
@@ -413,7 +434,8 @@ public sealed partial class EffigyWindow
 		{
 			Icon = EffigyIcon.BoneBind,
 			Label = "Assign Body",
-			Tip = "Click bodies in the viewport to pin them to the selected bone. "
+			Tip = "Select a bone, select a part, then press this to pin them. "
+				+ "With no part selected it arms click-to-assign in the viewport. "
 				+ "Anything left unassigned falls back to the nearest bone.",
 			Checkable = true,
 			Clicked = () =>
@@ -500,7 +522,19 @@ public sealed partial class EffigyWindow
 
 		soft.Add( _softRestTool );
 
-		return new List<EffigyStage> { bones, bind, soft };
+		var weights = new EffigyStage { Name = "Weights" };
+
+		weights.Add( new EffigyStageTool
+		{
+			Icon = EffigyIcon.BoneBind,
+			Label = "Paint Weights",
+			Tip = "Paint which bone owns which part of the mesh. The ramp is a texture atlas, "
+				+ "not vertex colour — pick a bone in the Rig tree first.",
+			Checkable = true,
+			Clicked = ToggleWeightPaint,
+		} );
+
+		return new List<EffigyStage> { bones, bind, soft, weights };
 	}
 
 	/// <summary>
@@ -512,6 +546,69 @@ public sealed partial class EffigyWindow
 	/// sags an inch and stops looks like a broken preview until you know that settling is the
 	/// point.
 	/// </summary>
+	private void ToggleWeightPaint()
+	{
+		if ( _viewport is { IsWeightPainting: true } )
+		{
+			FinishWeightPaint();
+			return;
+		}
+
+		EnterWeightPaint();
+	}
+
+	private void EnterWeightPaint()
+	{
+		if ( _viewport is null || _studio is null || _rigPanel is not { HasBones: true } rig )
+		{
+			SetPrompt( "Paint Weights needs a skeleton — place a bone first." );
+			return;
+		}
+
+		if ( !rig.HasSelectedBone )
+		{
+			SetPrompt( "Pick a bone in the Rig tree, then press Paint Weights." );
+			return;
+		}
+
+		BarMode = EffigyBarMode.Rig;
+
+		var (mesh, ranges) = _studio.ToMeshWithBodies();
+
+		if ( !NormalBake.Measure( mesh ).CanBake )
+			UVUnwrap.Unwrap( mesh );
+
+		var weights = SkinBinder.BindBodies( mesh, ranges, rig.BodyBoneMap, rig.Skeleton );
+		weights = SkinBinder.SmoothWeights( mesh, weights );
+
+		if ( _studio.WeightPaint is { Count: > 0 } layer && layer.CanApply( mesh, out _ ) )
+			layer.Apply( mesh, weights, rig.Skeleton, out _ );
+
+		var session = new WeightPaintSession( mesh, weights, rig.Skeleton, _studio.WeightPaint )
+		{
+			Bone = rig.SelectedBoneIndex,
+			Radius = 0.25f,
+		};
+		session.Radius = session.SuggestedRadius;
+
+		_viewport.BeginWeightPaint( session );
+		_weightBar?.Bind( session, rig.SelectedBoneName );
+		SetPrompt( $"Painting {rig.SelectedBoneName}. The ramp is a texture, not vertex colour. Drag on the mesh." );
+	}
+
+	private void FinishWeightPaint()
+	{
+		if ( _viewport is null || !_viewport.IsWeightPainting )
+			return;
+
+		if ( _viewport.WeightSession is not null )
+			_studio.WeightPaint = _viewport.WeightSession.Layer;
+
+		_viewport.EndWeightPaint();
+		_weightBar?.Bind( null, null );
+		RebuildStudio();
+	}
+
 	private void ToggleSoftPreview()
 	{
 		if ( _viewport is null )
@@ -552,8 +649,26 @@ public sealed partial class EffigyWindow
 					+ "Select a bone first to branch from its tail.";
 		}
 
+		var hasParts = _viewport is { IdleBodyIds.Count: > 0 };
+
+		if ( _boneFromPartTool is not null )
+		{
+			_boneFromPartTool.Enabled = hasParts;
+			_boneFromPartTool.DisabledReason = hasParts
+				? null
+				: "Select a part first — in the Parts list or the viewport";
+		}
+
 		if ( _boneAssignTool is not null )
+		{
 			_boneAssignTool.Checked = _rigPanel.AssigningBody;
+			_boneAssignTool.Tip = hasBone && hasParts
+				? $"Pin the selected part(s) to '{_rigPanel.SelectedBoneName}'."
+				: hasBone
+					? "Click bodies in the viewport to pin them to the selected bone. "
+						+ "Anything left unassigned falls back to the nearest bone."
+					: "Select a bone, select a part, then press Assign.";
+		}
 
 		if ( _boneSoftTool is not null )
 			_boneSoftTool.Checked = _rigPanel.SelectedBoneIsSoft;

@@ -151,6 +151,22 @@ public sealed class PartStudio
 
 	public Dictionary<string, string> BodyBoneMap = new();
 
+	/// <summary>
+	/// Named values the whole document can refer to as <c>#name</c> in a numeric field.
+	///
+	/// DOCUMENT STATE, next to MaterialNames: a variable that belongs to a feature is just a
+	/// parameter. Evaluated once at the start of every rebuild, before the first feature runs, so
+	/// a feature's value does not depend on when it happened to be asked. Changing one dirties
+	/// the whole tree, because any feature might use it.
+	/// </summary>
+	public List<StudioVariable> Variables = new();
+
+	/// <summary>
+	/// Painted skin weights that survive a rebuild. Null until somebody paints. See
+	/// <see cref="WeightPaintLayer"/> for why this is topology-keyed and stored by bone name.
+	/// </summary>
+	public WeightPaintLayer WeightPaint;
+
 	/// <summary>Result of the last rebuild.</summary>
 	public List<Body> Bodies { get; private set; } = new();
 
@@ -271,6 +287,53 @@ public sealed class PartStudio
 
 	public void MarkAllDirty() => _dirtyFrom = 0;
 
+	/// <summary>
+	/// Add or replace a variable and dirty the whole tree. Names are case-insensitive; illegal
+	/// names are refused rather than stored, because a name the parser cannot read is a variable
+	/// nobody can refer to.
+	/// </summary>
+	public bool SetVariable( string name, string expr )
+	{
+		if ( !VariableResolver.IsLegalName( name ) )
+			return false;
+
+		StudioVariable match = null;
+
+		foreach ( var variable in Variables )
+		{
+			if ( variable?.Name is not null
+				&& string.Equals( variable.Name, name, StringComparison.OrdinalIgnoreCase ) )
+			{
+				match = variable;
+				break;
+			}
+		}
+
+		if ( match is null )
+		{
+			match = new StudioVariable( name, expr ?? "" );
+			Variables.Add( match );
+		}
+		else
+		{
+			match.Expr = expr ?? "";
+		}
+
+		MarkAllDirty();
+		return true;
+	}
+
+	public bool RemoveVariable( string name )
+	{
+		var removed = Variables.RemoveAll( v =>
+			v?.Name is not null && string.Equals( v.Name, name, StringComparison.OrdinalIgnoreCase ) ) > 0;
+
+		if ( removed )
+			MarkAllDirty();
+
+		return removed;
+	}
+
 	/// <summary>Unique name in the style Onshape uses — "Box 1", "Box 2", "Linear pattern 1".</summary>
 	string DefaultName( Feature feature )
 	{
@@ -289,6 +352,11 @@ public sealed class PartStudio
 		var report = new RebuildReport();
 		var count = EffectiveCount;
 
+		// Variables first, and not lazily inside a parameter read: a feature's value must not
+		// depend on when it happened to be asked, and a cycle has to fail before any geometry
+		// moves. Changing a variable dirties the whole tree (see SetVariable).
+		VariableResolver.EvaluateAll( Variables );
+
 		// The cache can only be trusted up to the first dirty feature, and only as far as it was
 		// filled last time.
 		var reusableUpTo = Math.Min( _dirtyFrom, _cache.Count );
@@ -305,7 +373,7 @@ public sealed class PartStudio
 			break;
 		}
 
-		var ctx = new FeatureContext();
+		var ctx = new FeatureContext { Resolve = VariableResolver.Bind( Variables ) };
 
 		if ( reusableUpTo > 0 )
 		{

@@ -151,6 +151,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	private EffigyPartsPanel _partsPanel;
 	private EffigyMaterialsPanel _materialsPanel;
 	private EffigyRigPanel _rigPanel;
+	private EffigyVariablesPanel _variablesPanel;
 	private Widget _leftPanel;
 
 	// --- View menu dock toggles ----------------------------------------------------------------
@@ -159,7 +160,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	/// back at what DockManager actually has open. Held as fields because the menu is built before
 	/// the docks exist, so the ticks cannot be right at the moment they are created.</summary>
 	private Option _featuresDockOption, _materialsDockOption, _rigDockOption, _tutorialDockOption,
-		_consoleDockOption;
+		_consoleDockOption, _variablesDockOption;
 
 	/// <summary>Set while SyncDockChecks writes the ticks. Assigning Checked fires Toggled just as
 	/// a click does, and without this the sync would turn straight round and re-issue SetDockState
@@ -395,6 +396,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		var help = MenuBar.FindOrCreateMenu( "Help" );
 		help.Clear();
 		help.AddOption( "Start House Tutorial", "school", StartTutorial );
+		help.AddOption( "Start Rigging Tutorial", "accessibility", StartRigTutorial );
 
 		var view = MenuBar.FindOrCreateMenu( "View" );
 		view.Clear();
@@ -420,6 +422,8 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		_materialsDockOption = AddDockOption( view, "Material Browser", "palette", "Materials" );
 		_rigDockOption = AddDockOption( view, "Rig", "polyline", "Rig" );
 		_tutorialDockOption = AddDockOption( view, "Tutorial", "school", "Tutorial" );
+		_variablesDockOption = AddDockOption( view, "Variables", "tag", "Variables" );
+		view.AddOption( "Section View", "content_cut", ToggleSectionView );
 		_consoleDockOption = AddDockOption( view, "Console", "terminal", "Console" );
 
 		// Named views, same list Onshape puts on the cube. The cube itself is gone — this camera
@@ -481,6 +485,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			SetDockCheck( _rigDockOption, "Rig" );
 			SetDockCheck( _tutorialDockOption, "Tutorial" );
 			SetDockCheck( _consoleDockOption, "Console" );
+			SetDockCheck( _variablesDockOption, "Variables" );
 		}
 		finally
 		{
@@ -547,7 +552,6 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		_paintBar = new EffigyPaintBar( _viewport.Canvas )
 		{
 			Changed = OnPaintBarChanged,
-			BlendChanged = OnPaintBlendChanged,
 		};
 
 		_materialBrushBar = new EffigyMaterialBrushBar( _viewport.Canvas ) { Changed = OnPaintBarChanged };
@@ -558,6 +562,10 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		_viewport.AddPaintOverlay( _paintBar );
 
 		_viewport.PaintStrokeFinished = OnPaintStrokeFinished;
+
+		_weightBar = new EffigyWeightBar( _viewport.Canvas ) { Changed = () => _viewport?.Update() };
+		_viewport.AddWeightOverlay( _weightBar );
+		_viewport.WeightStrokeFinished = OnWeightStrokeFinished;
 
 		_viewport.NoteChanged = OnNoteEdited;
 		_viewport.NoteTextRequested = PromptNoteText;
@@ -1206,6 +1214,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 	private EffigyPaintBar _paintBar;
 	private EffigyMaterialBrushBar _materialBrushBar;
+	private EffigyWeightBar _weightBar;
 
 	/// <summary>The feature being painted, so finishing knows what to mark dirty.</summary>
 	private PaintFeature _paintFeature;
@@ -1243,7 +1252,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		{
 			var res = canvas.Width;
 			var opaque = new byte[res * res * 4];
-			canvas.BakeOpaque( opaque, 255, 255, 255 );
+			canvas.BakeOpaque( opaque, PaintMaterial.DefaultBaseR, PaintMaterial.DefaultBaseG, PaintMaterial.DefaultBaseB );
 
 			_previewPaintTexture = Texture.Create( res, res, ImageFormat.RGBA8888 )
 				.WithData( opaque )
@@ -1272,24 +1281,63 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	/// </summary>
 	private void AuthorPaint( PolyMesh mesh, string name, string folder )
 	{
-		if ( mesh.Paint is not { } canvas )
-			return;
+		// Per painted BODY, not the merged mesh. A merge keeps one atlas, so two painted bodies
+		// used to write one file and bind it to slot 0 — which is the slot nothing might be on.
+		// Bind the slots each body's faces actually wear. Isolate a body onto a fresh slot when
+		// it would share one with another painted body this compile.
+		var claimed = new HashSet<int>();
 
-		var opaque = PaintMaterial.OpaqueRgba( canvas );
+		foreach ( var body in _studio.Bodies )
+		{
+			if ( body.Mesh.Paint is not { } canvas )
+				continue;
 
-		var pngPath = Path.Combine( folder, $"{name}_paint.png" );
-		var vmatPath = Path.Combine( folder, $"{name}_paint.vmat" );
+			var slots = PaintBind.SlotsToBind( body.Mesh );
+			var shared = slots.Any( s => claimed.Contains( s ) );
 
-		PngWriter.WriteFileRgba( pngPath, opaque, canvas.Width, canvas.Height );
+			if ( shared || slots.Count == 0 )
+			{
+				var fresh = PaintBind.NextFreeSlot( _studio.MaterialNames, claimed.Concat( slots ) );
 
-		var relPng = $"models/effigy/{name}_paint.png";
-		var relVmat = $"models/effigy/{name}_paint.vmat";
+				if ( fresh < 0 )
+				{
+					Log.Warning( $"[Effigy] paint on {body.Name}: no free material slot left" );
+					continue;
+				}
 
-		File.WriteAllText( vmatPath, PaintMaterial.VmatSource( relPng ) );
+				PaintBind.AssignAllFaces( body.Mesh, fresh );
+				slots = new List<int> { fresh };
+			}
 
-		_studio.MaterialNames[0] = relVmat;
+			foreach ( var slot in slots )
+				claimed.Add( slot );
 
-		Log.Info( $"[Effigy] authored paint atlas {relVmat} ({canvas.Width}x{canvas.Height})" );
+			var tag = SanitizePaintTag( body.Id );
+			var opaque = PaintMaterial.OpaqueRgba( canvas );
+			var pngPath = Path.Combine( folder, $"{name}_{tag}_paint.png" );
+			var vmatPath = Path.Combine( folder, $"{name}_{tag}_paint.vmat" );
+			var relPng = $"models/effigy/{name}_{tag}_paint.png";
+			var relVmat = $"models/effigy/{name}_{tag}_paint.vmat";
+
+			PngWriter.WriteFileRgba( pngPath, opaque, canvas.Width, canvas.Height );
+			File.WriteAllText( vmatPath, PaintMaterial.VmatSource( relPng ) );
+
+			foreach ( var slot in slots )
+				_studio.MaterialNames[slot] = relVmat;
+
+			Log.Info( $"[Effigy] authored paint atlas {relVmat} on slot(s) {string.Join( ",", slots )} ({canvas.Width}x{canvas.Height})" );
+		}
+
+		_ = mesh;
+	}
+
+	static string SanitizePaintTag( string id )
+	{
+		if ( string.IsNullOrWhiteSpace( id ) )
+			return "body";
+
+		var chars = id.Select( c => char.IsLetterOrDigit( c ) ? c : '_' ).ToArray();
+		return new string( chars );
 	}
 
 	private readonly List<(EffigyStageTool Tool, BrushKind Kind)> _brushTools = new();
@@ -1721,18 +1769,13 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		LeaveCurrentWorkspace();
 
-		// ONE BODY AT A TIME, the same door refusal Paint makes and for a plainer reason: the
-		// session builds one BVH over one mesh, and "which body did the ray hit" is a question it
-		// would have to answer before it could answer any other.
-		if ( _studio.Bodies.Count != 1 )
+		var bodies = _studio.Bodies.Where( b => b.Visible && b.Mesh is not null ).ToList();
+
+		if ( bodies.Count == 0 )
 		{
-			SetPrompt( _studio.Bodies.Count == 0
-				? "The material brush needs a body to paint on — add a primitive or extrude a sketch first."
-				: "The material brush works on one body at a time — hide the others in the Parts list." );
+			SetPrompt( "The material brush needs a body to paint on — add a primitive or extrude a sketch first." );
 			return;
 		}
-
-		var body = _studio.Bodies[0];
 
 		BarMode = EffigyBarMode.Paint;
 
@@ -1742,10 +1785,8 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		_dialog?.Close();
 
-		var session = new MaterialBrushSession( body.Mesh );
+		var session = new MaterialBrushSession( bodies.Select( b => (b.Id, b.Mesh) ) );
 		session.Radius = session.SuggestedRadius;
-
-		_materialBrushBodyId = body.Id;
 
 		_viewport.BeginMaterialBrush( session );
 		_materialBrushBar.Bind( session );
@@ -1808,7 +1849,6 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	{
 		_viewport?.EndMaterialBrush();
 		_materialBrushBar?.Bind( null );
-		_materialBrushBodyId = null;
 	}
 
 	/// <summary>The material brush's stage set: one always-armed brush, the same shape the colour
@@ -1848,7 +1888,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		if ( string.IsNullOrWhiteSpace( material ) || faces is null || faces.Count == 0 )
 			return;
 
-		var body = _studio?.Bodies.FirstOrDefault( b => b.Id == _materialBrushBodyId );
+		var bodyId = _viewport?.MaterialBrush?.HoverBodyId;
+		var body = _studio?.Bodies.FirstOrDefault( b => b.Id == bodyId )
+			?? _studio?.Bodies.FirstOrDefault();
 
 		if ( body is null )
 			return;
@@ -1870,8 +1912,6 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 				+ $"{string.Join( ", ", released )} freed. Ctrl+Z puts it back."
 			: $"{MaterialFileName( material )} → slot {slot}. Ctrl+Z puts it back." );
 	}
-
-	private string _materialBrushBodyId;
 
 	private void FinishPaint()
 	{
@@ -1899,6 +1939,21 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 	/// <summary>A stroke landed. The document is now unsaved and the paint bar's readouts may have
 	/// moved, but the feature tree deliberately does NOT rebuild — see FinishPaint.</summary>
+	private void OnWeightStrokeFinished()
+	{
+		if ( _viewport?.WeightSession is not null )
+			_studio.WeightPaint = _viewport.WeightSession.Layer;
+
+		if ( !_dirty )
+		{
+			_dirty = true;
+			UpdateTitle();
+		}
+
+		_viewport?.RefreshWeightRamp();
+		_weightBar?.Refresh( _rigPanel?.SelectedBoneName );
+	}
+
 	private void OnPaintStrokeFinished( PaintStroke stroke )
 	{
 		// An undo point per stroke, taken BEFORE the stroke joins the list: the snapshot captures the
@@ -1922,22 +1977,6 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	private void OnPaintSettingsChanged() => _paintBar?.Refresh();
 
 	private void OnPaintBarChanged() => _viewport?.Update();
-
-	/// <summary>
-	/// Blend moved, which is a DOCUMENT edit rather than a brush setting.
-	///
-	/// It changes nothing on screen - the viewport already composites vertex colour over the
-	/// material the same way both settings do - and everything about the compiled model, which is
-	/// exactly the shape of edit that used to leave the title bar saying there was nothing to save.
-	/// </summary>
-	private void OnPaintBlendChanged()
-	{
-		if ( !_dirty )
-		{
-			_dirty = true;
-			UpdateTitle();
-		}
-	}
 
 	// --- grease pencil -------------------------------------------------------------------------
 
@@ -2489,6 +2528,8 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		}
 
 		_viewport?.Update();
+		_partsPanel?.Refresh();
+		RefreshTutorial();
 	}
 
 	private void NoteSculptEdited()
@@ -3272,6 +3313,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		_dialog = new EffigyFeatureDialog( this, _viewport )
 		{
+			VariableResolve = name => VariableResolver.Bind( _studio.Variables )( name ),
 			Edited = OnFeatureEdited,
 			Renamed = () => _featureTree?.Rebuild(),
 			Accepted = OnDialogAccepted,
@@ -3297,6 +3339,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			RenameCommitted = OnPartRenamed,
 			SelectionChanged = OnPartTreeSelectionChanged,
 			BoneAssigned = OnBodyBoneAssigned,
+			SelectedBoneName = () => _rigPanel?.SelectedBoneName,
 		};
 
 		// The Materials dock is the material BROWSER - a grid of the project's materials you drag
@@ -3315,6 +3358,12 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		_rigPanel = new EffigyRigPanel( this, _studio, _viewport );
 
+		_variablesPanel = new EffigyVariablesPanel( this, _studio )
+		{
+			Changing = RecordUndo,
+			Changed = OnVariablesChanged,
+		};
+
 		// Built here with the rest so the dock's CreateAction has something to hand back. The
 		// engine's console widget goes inside it - see EffigyConsolePanel for why that takes any
 		// code at all.
@@ -3327,6 +3376,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			Tutorial = _tutorial,
 			RevealPanel = RevealDock,
 			HighlightTool = HighlightTool,
+			SwitchWorkspace = SetWorkspace,
 
 			// Restart and Dismiss both change what the strip should be showing, and the panel
 			// itself has no idea a toolbar exists. Re-evaluating here also means a Restart drops
@@ -3402,6 +3452,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		// Right, tabbed behind the Rig, because both are things you do to a part that is already
 		// modelled and neither is worth permanent screen room while you are still modelling it.
 		DockManager.RegisterDock( new() { Title = "Materials", Icon = "palette", Area = DockArea.Right, CreateAction = () => _materialsPanel } );
+		DockManager.RegisterDock( new() { Title = "Variables", Icon = "tag", Area = DockArea.Left, CreateAction = () => _variablesPanel } );
 
 		// Bottom, full width, and NOT tabbed behind anything. A tutorial that shares a tab strip
 		// is a tutorial you lose the moment you look at the thing it told you to look at — which
@@ -3435,7 +3486,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		// Bumped from Effigy7: the Console dock is new. A restored Effigy7 layout knows nothing
 		// about it, so the panel would exist, be registered, and have nowhere on screen to go -
 		// the same failure the Materials and Tutorial docks each hit when they arrived.
-		StateCookie = "Effigy8";
+		StateCookie = "Effigy9";
 	}
 
 	/// <summary>The Parts list clicked a row. That is a whole-part selection — faces drop, the
@@ -3451,6 +3502,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		_viewport.SelectBodies( bodyIds );
 		_syncingSelection = false;
 		DescribeGeometrySelection();
+		UpdateRigChecks();
 	}
 
 	/// <summary>A face (or empty space) was clicked in the viewport. Keep the Parts list on the
@@ -3464,6 +3516,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		_partsPanel.Select( _viewport.IdleBodyIds );
 		_syncingSelection = false;
 		DescribeGeometrySelection();
+		UpdateRigChecks();
 	}
 
 	/// <summary>
@@ -3789,6 +3842,25 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		_partsPanel?.Refresh();
 	}
 
+	/// <summary>The Rig bar's Bone from Part — same as the Parts-list menu, pointed at whatever
+	/// is currently selected rather than at one right-clicked row.</summary>
+	private void MakeBonesFromSelectedParts()
+	{
+		if ( _studio is null || _viewport is null )
+			return;
+
+		var ids = _viewport.IdleBodyIds;
+		var bodies = _studio.Bodies.Where( b => ids.Contains( b.Id ) ).ToList();
+
+		if ( bodies.Count == 0 )
+		{
+			SetPrompt( "Select a part first — in the Parts list or the viewport." );
+			return;
+		}
+
+		MakeBonesFromBodies( bodies );
+	}
+
 	/// <summary>
 	/// Derive a bone for each of <paramref name="bodies"/> and pin the body to it. The Parts list
 	/// arrives here with one body; the feature tree arrives with every body one feature produced.
@@ -3905,6 +3977,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			_rigPanel.RefreshPoseState();
 			_viewport.Update();
 			RefreshPreview();
+			RefreshTutorial();
 			return;
 		}
 
@@ -3915,11 +3988,16 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		var weights = SkinBinder.BindBodies( mesh, ranges, rig.BodyBoneMap, rig.Skeleton );
 		weights = SkinBinder.SmoothWeights( mesh, weights );
 
+		if ( _studio.WeightPaint is { Count: > 0 } )
+			_studio.WeightPaint.Apply( mesh, weights, rig.Skeleton, out _ );
+
 		if ( _viewport.ArmPosePreview( mesh, weights, rig.Skeleton ) )
 		{
 			_rigPanel.RefreshPoseState();
 			RefreshPosePreview();
 		}
+
+		RefreshTutorial();
 	}
 
 	private void OnPoseReset()
@@ -4188,6 +4266,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		_featureTree?.Rebuild();
 		_partsPanel?.Refresh();
 		_materialsPanel?.Refresh();
+		_variablesPanel?.Rebuild();
 		_rigPanel?.RefreshBodyNames();
 
 		// Covers every other way the lock can change — undo back past the first sketch, deleting
@@ -4285,10 +4364,33 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 				return EffigyPreview.Build( visible, checker );
 		}
 
+		if ( _viewport is { SectionEnabled: true } )
+			visible = MeshClip.Keep( visible, _viewport.SectionOrigin, _viewport.SectionNormal );
+
 		if ( visible.HasPaint )
 			return BuildPaintPreview( visible );
 
 		return EffigyPreview.Build( visible, slot => _studio.MaterialNames.TryGetValue( slot, out var name ) ? name : null );
+	}
+
+	private void OnVariablesChanged()
+	{
+		_dirty = true;
+		UpdateTitle();
+		RebuildStudio();
+		_variablesPanel?.Rebuild();
+	}
+
+	private void ToggleSectionView()
+	{
+		if ( _viewport is null )
+			return;
+
+		_viewport.SectionEnabled = !_viewport.SectionEnabled;
+		RebuildStudio();
+		SetPrompt( _viewport.SectionEnabled
+			? "Section view on — looking through the origin along +X. Toggle again to restore."
+			: "Section view off." );
 	}
 
 	// --- tutorial ------------------------------------------------------------------------------
@@ -4301,7 +4403,17 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		DockManager.RaiseDock( "Tutorial" );
 		SyncDockChecks();
 
-		_tutorial?.Restart();
+		_tutorial?.Restart( EffigyLesson.House );
+		RefreshTutorial();
+	}
+
+	private void StartRigTutorial()
+	{
+		DockManager.SetDockState( "Tutorial", true );
+		DockManager.RaiseDock( "Tutorial" );
+		SyncDockChecks();
+
+		_tutorial?.Restart( EffigyLesson.Rigging );
 		RefreshTutorial();
 	}
 
@@ -4326,7 +4438,8 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		if ( _tutorial is null )
 			return;
 
-		_tutorial.Evaluate( new EffigyTutorialState( _studio ) );
+		_tutorial.Evaluate( new EffigyTutorialState( _studio, CurrentWorkspace,
+			_viewport is { PosePreviewActive: true } ) );
 
 		// Rebuild unconditionally rather than only when Evaluate moved. The panel also renders
 		// Active, the step's own pointer affordance and the highlight, and those change on a
@@ -4356,6 +4469,32 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	/// </summary>
 	private void ApplyToolHighlight()
 	{
+		if ( _boneTool is not null )
+			_boneTool.Attention = _highlightedTool == EffigyToolTarget.AddBone;
+
+		if ( _boneFromPartTool is not null )
+			_boneFromPartTool.Attention = _highlightedTool == EffigyToolTarget.BoneFromPart;
+
+		if ( _highlightedTool == EffigyToolTarget.AddBone && _boneTool is not null )
+		{
+			foreach ( var (_, tool) in _featureTools )
+				tool.Attention = false;
+
+			_stageBar?.Reveal( _boneTool );
+			_stageBar?.Refresh();
+			return;
+		}
+
+		if ( _highlightedTool == EffigyToolTarget.BoneFromPart && _boneFromPartTool is not null )
+		{
+			foreach ( var (_, tool) in _featureTools )
+				tool.Attention = false;
+
+			_stageBar?.Reveal( _boneFromPartTool );
+			_stageBar?.Refresh();
+			return;
+		}
+
 		if ( _featureTools.Count == 0 || BarMode != EffigyBarMode.Part )
 			return;
 
@@ -4523,6 +4662,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		_featureTree?.SetStudio( _studio );
 		_partsPanel?.SetStudio( _studio );
 		_materialsPanel?.SetStudio( _studio );
+		_variablesPanel?.Bind( _studio );
 		_rigPanel?.SetStudio( _studio );
 		_dialog?.Close();
 
@@ -4891,6 +5031,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		_featureTree?.SetStudio( _studio );
 		_partsPanel?.SetStudio( _studio );
 		_materialsPanel?.SetStudio( _studio );
+		_variablesPanel?.Bind( _studio );
 		_rigPanel?.SetStudio( _studio );
 		_dialog?.Close();
 
@@ -5316,6 +5457,10 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			// then diffuses across mesh adjacency so joints bend rather than crease.
 			var weights = SkinBinder.BindBodies( mesh, ranges, rig.BodyBoneMap, skeleton );
 			weights = SkinBinder.SmoothWeights( mesh, weights );
+
+			if ( _studio.WeightPaint is { Count: > 0 } )
+				_studio.WeightPaint.Apply( mesh, weights, skeleton, out _ );
+
 			mesh.Skin = weights;
 
 			// AFTER binding, and both together. The weights come from distances between vertices and
@@ -6673,6 +6818,16 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		if ( _studio is null || _viewport is null || hit.Body is null )
 			return;
 
+		// In the rig workspace a right-click on a part is about bones, not materials. The Parts
+		// list already had Make a bone from this part; pointing at the solid itself has to reach
+		// the same menu or the first-rig path only exists if you know to use the dock.
+		if ( CurrentWorkspace == EffigyWorkspace.Rig && _partsPanel is not null )
+		{
+			_viewport.SelectBodies( new[] { hit.Body.Id } );
+			_partsPanel.OpenPartMenu( hit.Body );
+			return;
+		}
+
 		var menu = new Menu( _viewport );
 
 		AddFaceToolOptions( menu, hit );
@@ -7681,6 +7836,10 @@ internal sealed class EffigyPartsPanel : Widget
 	/// the refresh, exactly the way the rig panel's own Assign Body does.</summary>
 	public Action<string, string> BoneAssigned { get; set; }
 
+	/// <summary>The bone currently selected in the Rig tree, or null. Used to offer a one-click
+	/// "Assign to this bone" on the part menu so you do not have to hunt the submenu.</summary>
+	public Func<string> SelectedBoneName { get; set; }
+
 	private readonly List<string> _selectedBodyIds = new();
 	private readonly Dictionary<string, PartNode> _nodes = new();
 	private bool _restoringSelection;
@@ -7857,6 +8016,16 @@ internal sealed class EffigyPartsPanel : Widget
 			() => CommandRequested?.Invoke( bodyId, EffigyPartCommand.MakeBone ) );
 
 		makeBone.StatusTip = "Adds a bone spanning the part's longest axis, and pins the part to it.";
+
+		var selectedBone = SelectedBoneName?.Invoke();
+
+		if ( !string.IsNullOrEmpty( selectedBone ) )
+		{
+			var pin = menu.AddOption( $"Assign to '{selectedBone}'", "link",
+				() => BoneAssigned?.Invoke( bodyId, selectedBone ) );
+
+			pin.StatusTip = "Pin this part to the bone currently selected in the Rig tree.";
+		}
 
 		// The body -> bone direction. The rig panel pins bodies to a bone from the bone's side; this
 		// is the same binding reachable from the body's side, so a part built of many bodies can be

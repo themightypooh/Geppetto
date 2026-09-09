@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
+using System.Reflection;
 
 namespace Effigy;
 
@@ -64,6 +65,16 @@ public sealed class FloatParam : IParam
 		Max = max;
 		Unit = unit;
 	}
+
+	/// <summary>
+	/// The expression this parameter was typed as, or null when the number is a literal.
+	///
+	/// A LITERAL STAYS A LITERAL. Typing <c>4</c> must not become a formula that re-evaluates;
+	/// typing <c>#thickness / 2</c> must, or changing the variable does not move the feature.
+	/// Rebuild evaluates this through the studio's variable table and writes the result into
+	/// <see cref="Value"/>. An empty or unparsable expression holds the last good value.
+	/// </summary>
+	public string Expr;
 
 	public float Clamped => Math.Clamp( Value, Min, Max );
 }
@@ -225,6 +236,13 @@ public sealed class FeatureContext
 	/// which is what keeps "three bosses off one block" one part rather than four.
 	/// </summary>
 	public Dictionary<string, string> PlaneHostBodies = new();
+
+	/// <summary>
+	/// Resolve a variable name (without the <c>#</c>) during this rebuild. Null when the studio
+	/// has no table. Set once before the first feature runs, so a feature's value does not depend
+	/// on when it happened to be asked.
+	/// </summary>
+	public Func<string, float?> Resolve;
 
 	int _nextId = 1;
 	string _featureId;
@@ -523,6 +541,31 @@ public abstract class Feature
 		}
 	}
 
+	/// <summary>
+	/// Re-evaluate every <see cref="FloatParam"/> that still carries its typed expression, so a
+	/// variable change moves the feature without anyone reopening the dialog.
+	///
+	/// ALL PUBLIC FLOAT FIELDS, not only <see cref="Parameters"/>. PrimitiveFeature hides SizeX
+	/// when the shape is a cylinder, and Execute still reads it; skipping hidden ones would leave
+	/// a stale number the moment the dropdown flipped back.
+	/// </summary>
+	internal void EvaluateExpressions( Func<string, float?> resolve )
+	{
+		foreach ( var field in GetType().GetFields() )
+		{
+			if ( field.GetValue( this ) is not FloatParam param )
+				continue;
+
+			if ( string.IsNullOrWhiteSpace( param.Expr ) )
+				continue;
+
+			if ( !Expression.TryEvaluate( param.Expr, param.Unit, resolve, out var value ) )
+				continue;
+
+			param.Value = Math.Clamp( value, param.Min, param.Max );
+		}
+	}
+
 	protected abstract void Execute( FeatureContext ctx );
 
 	internal void Run( FeatureContext ctx )
@@ -540,6 +583,7 @@ public abstract class Feature
 
 		try
 		{
+			EvaluateExpressions( ctx.Resolve );
 			Execute( ctx );
 		}
 		catch ( FeatureException e )

@@ -99,6 +99,10 @@ internal sealed class EffigyFeatureDialog : Widget
 	/// <summary>Any parameter edit — the studio rebuilds live, as Onshape does.</summary>
 	public Action Edited { get; set; }
 
+	/// <summary>Resolve <c>#name</c> against the document variable table. The window sets this
+	/// so a field can evaluate <c>#thickness / 2</c> without the dialog knowing what a studio is.</summary>
+	public Func<string, float?> VariableResolve { get; set; }
+
 	/// <summary>
 	/// Someone has answered something on the open feature - a number typed, a plane clicked, a body
 	/// picked. EVERY user edit in this dialog goes through RaiseEdited, so this is the whole picture
@@ -586,7 +590,7 @@ internal sealed class EffigyFeatureDialog : Widget
 		{
 			switch ( p )
 			{
-				case FloatParam f: _snapshot[p] = f.Value; break;
+				case FloatParam f: _snapshot[p] = (f.Value, f.Expr); break;
 				case IntParam i: _snapshot[p] = i.Value; break;
 				case BoolParam b: _snapshot[p] = b.Value; break;
 				case Vec3Param v: _snapshot[p] = v.Value; break;
@@ -620,6 +624,10 @@ internal sealed class EffigyFeatureDialog : Widget
 		{
 			switch ( p )
 			{
+				case FloatParam f when value is ValueTuple<float, string> ft:
+					f.Value = ft.Item1;
+					f.Expr = ft.Item2;
+					break;
 				case FloatParam f when value is float fv: f.Value = fv; break;
 				case IntParam i when value is int iv: i.Value = iv; break;
 				case BoolParam b when value is bool bv: b.Value = bv; break;
@@ -1387,7 +1395,11 @@ internal sealed class EffigyFeatureDialog : Widget
 		{
 			Min = fp.Min,
 			Max = fp.Max,
+			Resolver = name => VariableResolve?.Invoke( name ),
 		};
+
+		if ( !string.IsNullOrWhiteSpace( fp.Expr ) )
+			field.SetExpression( fp.Expr, fp.Clamped );
 
 		FloatSlider slider = null;
 
@@ -1404,6 +1416,7 @@ internal sealed class EffigyFeatureDialog : Widget
 			slider.OnValueEdited = () =>
 			{
 				fp.Value = slider.Value;
+				fp.Expr = null;
 
 				// SetValue rather than assigning through the field's text, so pushing the slider
 				// does not echo back out of the field as another edit.
@@ -1424,6 +1437,7 @@ internal sealed class EffigyFeatureDialog : Widget
 			Dragged = v =>
 			{
 				fp.Value = v;
+				fp.Expr = null;
 				field.SetValue( v );
 
 				if ( slider.IsValid() )
@@ -1442,6 +1456,8 @@ internal sealed class EffigyFeatureDialog : Widget
 
 			RaiseEdited();
 		};
+
+		field.ExpressionEdited = expr => fp.Expr = expr;
 
 		layout.Add( scrub );
 

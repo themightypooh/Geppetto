@@ -43,6 +43,9 @@ public static class WeightPaintTests
 		TestStrokeUndoRedo();
 		TestUndoTakesTheLayerBackToo();
 
+		Section( "weight paint: the ramp is a texture atlas, not vertex colour" );
+		TestRampIsACanvasNotVertexColours();
+
 		Section( "weight paint: paint survives a rebuild, and refuses one it cannot" );
 		TestPaintSurvivesAMovedCage();
 		TestPaintIsKeptRatherThanMisappliedOnATopologyChange();
@@ -471,6 +474,33 @@ public static class WeightPaintTests
 			worst = MathF.Max( worst, MathF.Abs( auto[v].Sum( w => w.Weight ) - 1f ) );
 
 		Check( "and every vertex still sums to 1 afterwards", worst < 1e-4f, $"worst drift {worst:0.#######}" );
+	}
+
+	static void TestRampIsACanvasNotVertexColours()
+	{
+		var (mesh, weights, skeleton) = Rigged();
+		var session = new WeightPaintSession( mesh, weights, skeleton ) { Bone = 2 };
+
+		var canvas = session.Ramp( 64 );
+		var painted = 0;
+		var anyRed = false;
+
+		for ( var i = 0; i < canvas.Rgba.Length; i += 4 )
+		{
+			if ( canvas.Rgba[i + 3] == 0 )
+				continue;
+
+			painted++;
+
+			if ( canvas.Rgba[i] > canvas.Rgba[i + 2] )
+				anyRed = true;
+		}
+
+		Check( "the ramp is a texture atlas", canvas.Width == 64 && painted > 0, $"{painted} texels" );
+		Check( "and it never writes vertex colours — paint already taught that lesson",
+			!mesh.HasVertexColors );
+		Check( "a bone that owns some of the mesh shows up as warm texels, not as eight coloured corners",
+			anyRed, "ramp was all cold" );
 	}
 
 	// --- fixtures ---------------------------------------------------------------------------------

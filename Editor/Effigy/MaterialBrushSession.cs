@@ -26,18 +26,51 @@ namespace Effigy;
 /// </summary>
 public sealed class MaterialBrushSession
 {
-	readonly PolyMesh _mesh;
-	readonly MeshBVH _bvh;
+	readonly List<(string BodyId, PolyMesh Mesh, MeshBVH Bvh)> _targets = new();
 	readonly List<int> _found = new();
+
+	PolyMesh _mesh;
+	MeshBVH _bvh;
 
 	/// <summary>Brush radius in model units. The same meaning it has on the colour brush, so the
 	/// two feel like one tool with two payloads.</summary>
 	public float Radius = 0.1f;
 
+	/// <summary>Which body the last hover hit, so a dab can be assigned to the right part when
+	/// more than one body is in the studio.</summary>
+	public string HoverBodyId { get; private set; }
+
 	public MaterialBrushSession( PolyMesh mesh )
+		: this( mesh is null ? null : new[] { ("", mesh) } )
 	{
-		_mesh = mesh ?? throw new System.ArgumentNullException( nameof( mesh ) );
-		_bvh = MeshBVH.Build( mesh );
+	}
+
+	/// <summary>
+	/// One session over every body, raycasting each and taking the nearest hit.
+	///
+	/// THE ONE-BODY LIMIT WAS THE SESSION, NOT THE TOOL. A dab is still per-body because
+	/// MaterialDrop.Brush takes one Body; what this answers is "which body did the ray hit",
+	/// which a single BVH over a merged mesh cannot, because face indices would not survive
+	/// the merge.
+	/// </summary>
+	public MaterialBrushSession( IEnumerable<(string BodyId, PolyMesh Mesh)> bodies )
+	{
+		if ( bodies is null )
+			throw new System.ArgumentNullException( nameof( bodies ) );
+
+		foreach ( var (id, mesh) in bodies )
+		{
+			if ( mesh is null )
+				continue;
+
+			_targets.Add( (id ?? "", mesh, MeshBVH.Build( mesh )) );
+		}
+
+		if ( _targets.Count == 0 )
+			throw new System.ArgumentException( "The material brush needs at least one body." );
+
+		_mesh = _targets[0].Mesh;
+		_bvh = _targets[0].Bvh;
 	}
 
 	/// <summary>The mesh the dabs land on, exposed so the editor can draw the cursor against the
@@ -64,7 +97,35 @@ public sealed class MaterialBrushSession
 		if ( dir.Length < 1e-6f )
 			return null;
 
-		return _bvh.Raycast( _mesh, origin, dir );
+		MeshHit? best = null;
+		var bestId = "";
+		PolyMesh bestMesh = null;
+		MeshBVH bestBvh = null;
+
+		foreach ( var (id, mesh, bvh) in _targets )
+		{
+			var hit = bvh.Raycast( mesh, origin, dir );
+
+			if ( hit is null )
+				continue;
+
+			if ( best is { } current && hit.Value.Distance >= current.Distance )
+				continue;
+
+			best = hit;
+			bestId = id;
+			bestMesh = mesh;
+			bestBvh = bvh;
+		}
+
+		if ( best is not null )
+		{
+			HoverBodyId = bestId;
+			_mesh = bestMesh;
+			_bvh = bestBvh;
+		}
+
+		return best;
 	}
 
 	/// <summary>

@@ -21,7 +21,8 @@ internal sealed class EffigyPaintBar : Widget
 	private readonly PaintSwatch _swatch;
 	private readonly EffigyNumericField _radius;
 	private readonly EffigyNumericField _strength;
-	private readonly ComboBox _blend;
+	private readonly ComboBox _falloff;
+	private readonly Button _erase;
 
 	private PaintSession _session;
 
@@ -51,9 +52,8 @@ internal sealed class EffigyPaintBar : Widget
 
 		Visible = false;
 		FixedHeight = BarHeight;
-		// Wide enough for the Blend dropdown that joined the three stroke controls; the row does not
-		// wrap, so a short bar clips the last thing on it rather than pushing it onto a second line.
-		FixedWidth = 560f;
+		// Wide enough for Falloff and the Erase toggle that replaced the dead Blend combo.
+		FixedWidth = 640f;
 
 		Layout = Layout.Row();
 		Layout.Spacing = 8;
@@ -83,17 +83,24 @@ internal sealed class EffigyPaintBar : Widget
 
 		Layout.Add( _strength );
 
-		Layout.Add( new Editor.Label( "Blend" ) { Color = Theme.TextControl.WithAlpha( 0.6f ) } );
+		Layout.Add( new Editor.Label( "Falloff" ) { Color = Theme.TextControl.WithAlpha( 0.6f ) } );
 
-		_blend = new ComboBox( this )
+		_falloff = new ComboBox( this )
 		{
 			MinimumWidth = 90f,
-			ToolTip = "Tint multiplies the paint into the material underneath, so the surface shows "
-				+ "through. Replace paints onto white, so what you brushed is the colour that "
-				+ "renders. Either way a face you dropped a material on keeps that material.",
+			ToolTip = "How the brush fades from its centre to its edge. Smooth is a soft dab; "
+				+ "Constant takes a hard bite. The kernel has supported this the whole time; "
+				+ "the bar just never offered it.",
 		};
 
-		Layout.Add( _blend );
+		Layout.Add( _falloff );
+
+		_erase = new Button( "Erase", this )
+		{
+			ToolTip = "Erase (or hold Ctrl). A modifier nobody is told about is not a tool you can find.",
+		};
+		_erase.Clicked = ToggleErase;
+		Layout.Add( _erase );
 	}
 
 	/// <summary>The viewport's background, so the gaps between controls disappear into the 3D view.</summary>
@@ -127,38 +134,26 @@ internal sealed class EffigyPaintBar : Widget
 		_radius.SetValue( _session.Radius );
 		_strength.SetValue( _session.Strength );
 
-		RefreshBlend();
+		RefreshFalloff();
+		RefreshErase();
 	}
 
-	/// <summary>
-	/// Rebuilt rather than re-selected, because ComboBox has no "set index without telling anyone"
-	/// and AddItem takes the selected flag. The guard is what keeps that from writing the value
-	/// back onto the feature and marking the document dirty for a control nobody touched.
-	/// </summary>
-	private void RefreshBlend()
+	private void RefreshFalloff()
 	{
-		if ( _blend is null )
+		if ( _falloff is null || _session is null )
 			return;
-
-		_blend.Enabled = _feature is not null;
 
 		_refreshing = true;
 
 		try
 		{
-			_blend.Clear();
+			_falloff.Clear();
 
-			if ( _feature is null )
-				return;
-
-			var options = _feature.Blend.Options;
-
-			for ( var i = 0; i < options.Length; i++ )
+			foreach ( var falloff in Enum.GetValues<BrushFalloff>() )
 			{
-				var index = i;
-
-				_blend.AddItem( options[index], onSelected: () => OnBlendPicked( index ),
-					selected: index == _feature.Blend.Index );
+				var kind = falloff;
+				_falloff.AddItem( kind.ToString(), onSelected: () => OnFalloffPicked( kind ),
+					selected: kind == _session.Falloff );
 			}
 		}
 		finally
@@ -167,23 +162,32 @@ internal sealed class EffigyPaintBar : Widget
 		}
 	}
 
-	private void OnBlendPicked( int index )
+	private void OnFalloffPicked( BrushFalloff kind )
 	{
-		if ( _refreshing || _feature is null || _feature.Blend.Index == index )
+		if ( _refreshing || _session is null || _session.Falloff == kind )
 			return;
 
-		_feature.Blend.Index = index;
-
-		// Changed drives the viewport redraw; the document also has to know it has an unsaved edit,
-		// which is the trap the rig panel already paid for - a value changed nowhere near the
-		// studio leaves the title bar claiming there is nothing to save.
-		BlendChanged?.Invoke();
+		_session.Falloff = kind;
+		Changed?.Invoke();
 	}
 
-	/// <summary>Raised when Blend moved. Separate from <see cref="Changed"/> because this edits the
-	/// DOCUMENT rather than the brush, so it has to mark unsaved and rebuild, not just redraw.
-	/// </summary>
-	public Action BlendChanged { get; set; }
+	private void RefreshErase()
+	{
+		if ( _erase is null || _session is null )
+			return;
+
+		_erase.Text = _session.Erasing ? "Erasing" : "Erase";
+	}
+
+	private void ToggleErase()
+	{
+		if ( _session is null )
+			return;
+
+		_session.Erasing = !_session.Erasing;
+		RefreshErase();
+		Changed?.Invoke();
+	}
 
 	private void OnColorPicked( Color color )
 	{

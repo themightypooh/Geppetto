@@ -185,8 +185,8 @@ internal sealed class EffigyRigPanel : Widget
 		// act on is the whole fix.
 		_assignBodyButton = new Button( "Assign Body", "link" )
 		{
-			ToolTip = "Click bodies in the viewport to pin them to this bone. "
-				+ "Optional — unassigned bodies still skin, to whichever bone is nearest.",
+			ToolTip = "Pin the selected parts to this bone. If nothing is selected, click bodies "
+				+ "in the viewport instead. Optional — unassigned bodies still skin to the nearest bone.",
 			Clicked = ToggleAssignBody,
 		};
 
@@ -395,6 +395,9 @@ internal sealed class EffigyRigPanel : Widget
 	/// <summary>Whether there is a bone to assign to or mirror. Both tools are dead without one,
 	/// and the bar dims them rather than letting a click do nothing.</summary>
 	public bool HasSelectedBone => _selectedBone >= 0 && _selectedBone < Skeleton.Count;
+
+	/// <summary>Index into the skeleton, or -1. The weight brush paints this bone.</summary>
+	public int SelectedBoneIndex => HasSelectedBone ? _selectedBone : -1;
 
 	/// <summary>The name of the selected bone, for a prompt that can say which one.</summary>
 	public string SelectedBoneName => HasSelectedBone ? Skeleton.Bones[_selectedBone].Name : null;
@@ -676,10 +679,16 @@ internal sealed class EffigyRigPanel : Widget
 	// --- body assignment -------------------------------------------------------------------
 
 	/// <summary>
-	/// Arm or disarm assigning bodies to the selected bone. While armed, clicking a body toggles
-	/// it onto (or off of) the selected bone — same "click to add or remove" feel
-	/// EffigyFeatureDialog's body picker already has, reusing the same BodyPickMode the viewport
-	/// exposes for it.
+	/// Pin parts to the selected bone.
+	///
+	/// If parts are already selected (Parts list or a click in the viewport), they are pinned
+	/// immediately — that is the loop people actually try: select a bone, select a part, press
+	/// Assign. Arming a click-to-pick mode instead left Assign looking like it did nothing, and
+	/// worse, a viewport click on the part used to drop the bone and grey the button.
+	///
+	/// With nothing selected, clicking a body toggles it onto (or off of) the selected bone —
+	/// same "click to add or remove" feel EffigyFeatureDialog's body picker already has, reusing
+	/// the same BodyPickMode the viewport exposes for it.
 	///
 	/// Optional: BindBodies falls back to nearest-bone rigid weighting, smoothed across mesh
 	/// adjacency, for anything left unassigned. A skeleton with no assignments at all still
@@ -695,6 +704,9 @@ internal sealed class EffigyRigPanel : Widget
 		}
 
 		if ( _selectedBone < 0 || _selectedBone >= Skeleton.Count )
+			return;
+
+		if ( TryAssignIdleBodies() )
 			return;
 
 		// The tree stays clickable while the bone tool is armed (selecting a different bone mid-
@@ -742,6 +754,49 @@ internal sealed class EffigyRigPanel : Widget
 		_assignBodyButton.Text = "Assign Body";
 
 		ToolStateChanged?.Invoke();
+	}
+
+	/// <summary>Pin every currently selected part to the selected bone. Returns false when there
+	/// is nothing selected, so the caller can fall through to click-to-pick.</summary>
+	private bool TryAssignIdleBodies()
+	{
+		var ids = _viewport?.IdleBodyIds;
+
+		if ( ids is null || ids.Count == 0 )
+			return false;
+
+		var boneName = Skeleton.Bones[_selectedBone].Name;
+		var changed = false;
+
+		foreach ( var id in ids )
+		{
+			if ( string.IsNullOrEmpty( id ) )
+				continue;
+
+			if ( Bindings.TryGetValue( id, out var current ) && current == boneName )
+				continue;
+
+			if ( !changed )
+			{
+				RigChanging?.Invoke();
+				changed = true;
+			}
+
+			Bindings[id] = boneName;
+		}
+
+		if ( !changed )
+		{
+			_viewport.SetPickPrompt( $"Those parts are already on '{boneName}'." );
+			return true;
+		}
+
+		_tree.Update();
+		RefreshBodyList();
+		RigChanged?.Invoke();
+		_viewport.SetPickPrompt( $"Pinned to '{boneName}'." );
+		ToolStateChanged?.Invoke();
+		return true;
 	}
 
 	private void OnBodyPicked( string bodyId )
@@ -1244,6 +1299,7 @@ internal sealed class EffigyRigPanel : Widget
 		// See OnBodyPicked — only a displayed count changed, not the tree's shape.
 		_tree.Update();
 		RefreshBodyList();
+		RigChanged?.Invoke();
 	}
 
 	private void OnHeadFieldEdited( float _ )
