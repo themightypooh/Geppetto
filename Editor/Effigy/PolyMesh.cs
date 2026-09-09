@@ -89,14 +89,22 @@ public sealed class PolyMesh
 
 	/// <summary>
 	/// Per-vertex colour, parallel to <see cref="Positions"/>, in straight (non-premultiplied) RGBA
-	/// 0..1. Null until paint is applied, the same way <see cref="Skin"/> is null until something rigs
-	/// the mesh.
+	/// 0..1. Null unless a caller fills it in.
 	///
-	/// Vertex colours rather than a texture atlas is the paint output s&amp;box composites over a
-	/// material natively — the material multiplies its colour by the vertex colour, so a painted part
-	/// keeps its base material everywhere the paint has no alpha. The cost is resolution: colour is
-	/// per-vertex, so it is only as fine as the mesh, which is why painting is meant to happen after a
-	/// Subdivide or a Sculpt.
+	/// NOTHING IN THE TOOL WRITES THIS ANY MORE, and that is deliberate rather than an oversight.
+	/// This was where paint lived: per-vertex colour, composited by the material's own multiply. It
+	/// was only ever as fine as the mesh — a bare box has eight vertices and all of them are corners
+	/// — and the shader everything renders with turned out not to read the COLOR stream at all, so
+	/// the resolution problem was academic next to the paint being invisible. Paint is a texture now;
+	/// see <see cref="Paint"/>.
+	///
+	/// IT STAYS BECAUSE THE WRITERS TAKE IT. <c>DmxWriter</c> and <c>ObjWriter</c> both emit
+	/// per-vertex colour for a mesh that carries it, <c>MeshTransform</c> preserves it across a
+	/// merge, and DmxGrammarTests pins the DMX spelling — that is a capability of the mesh writers,
+	/// held by a test, and it is independent of how paint happens to be stored this month. What it is
+	/// NOT any more is a thing the tool produces: no feature, no brush and no rebuild fills this in,
+	/// so any code branching on <see cref="HasVertexColors"/> to decide what a PART looks like is
+	/// branching on something that never happens.
 	/// </summary>
 	public Vec4[] VertexColors;
 

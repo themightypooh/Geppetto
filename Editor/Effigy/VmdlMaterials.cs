@@ -48,11 +48,16 @@ public static class VmdlMaterials
 	/// anybody saw after their first export, and it reads as the exporter having failed.
 	///
 	/// IT DOES NOT SHOW PAINT, and an earlier version of this comment claimed it did. The claim
-	/// was that <c>complex.vfx</c>'s <c>g_flModelTintAmount 1.0</c> would multiply the vertex
-	/// colour in. It does not: model tint is a per-draw constant and the tint MASK is a texture,
-	/// and neither is the per-vertex COLOR stream paint is written to. A painted part bound here
-	/// compiles with its paint silently discarded. <see cref="PaintedMaterial"/> is the one that
-	/// reads it.
+	/// was that <c>complex.vfx</c>'s <c>g_flModelTintAmount 1.0</c> would multiply a vertex colour
+	/// in. It does not: model tint is a per-draw constant and the tint MASK is a texture, and
+	/// neither is a per-vertex COLOR stream. That was true of the vertex-colour paint this once
+	/// carried and it is why painting appeared to do nothing at all.
+	///
+	/// PAINT NO LONGER ARRIVES HERE. It is a texture: <see cref="PaintMaterial"/> writes the canvas
+	/// out as a PNG wrapped in a .vmat, and that .vmat is bound to the painted body's slot through
+	/// MaterialNames like any dropped material. A bound slot never takes a fallback, so there is no
+	/// longer such a thing as a painted slot arriving unbound and needing a material that reads
+	/// paint.
 	/// </summary>
 	public const string DefaultMaterial = "materials/default.vmat";
 
@@ -67,46 +72,20 @@ public static class VmdlMaterials
 	public const string ReplaceMaterial = "materials/default/white.vmat";
 
 	/// <summary>
-	/// What an unbound slot compiles to on a mesh that carries paint.
-	///
-	/// THE ONE MATERIAL THAT ACTUALLY READS THE PAINT. Vertex colour is written into the COLOR
-	/// stream, and complex.shader - which default.vmat and every ordinary material use - does not
-	/// look at it: its model tint is a per-draw constant and its tint mask is a texture. So a
-	/// painted part bound to default.vmat compiles to a part with the paint silently discarded.
-	///
-	/// vertex_color.shader takes `float4 vColor : COLOR0` and shades it lit, and the engine ships
-	/// a material on it already. Binding painted slots here is what makes paint survive the
-	/// compile at all.
-	/// </summary>
-	public const string PaintedMaterial = "materials/default/vertex_color.vmat";
-
-	/// <summary>
-	/// Which of the two an unbound slot in this studio should take.
-	///
-	/// Whole-document by design: see PaintFeature.Blend. A suppressed or failed paint layer does
-	/// not get a vote, the same rule the rest of the exporters apply to a feature that produced no
-	/// geometry.
-	/// </summary>
-	public static string FallbackFor( PartStudio studio ) => FallbackFor( studio, null );
-
-	/// <summary>
 	/// Which fallback an unbound slot in this studio should take.
 	///
-	/// PAINT WINS OVER BOTH OTHERS. If the mesh carries vertex colours then the only material that
-	/// will show them is <see cref="PaintedMaterial"/>; binding default.vmat or white.vmat would
-	/// compile a part whose paint is thrown away by the shader, which is what happened before this
-	/// existed. Blend's Tint and Replace both land here for now - telling them apart needs a shader
-	/// that combines a base texture with the vertex colour, and nothing shipped does.
+	/// THE MESH GETS NO VOTE, and it used to. A mesh carrying vertex colours took a third answer -
+	/// vertex_color.vmat, the one material that read the COLOR stream - because paint was per-vertex
+	/// colour and every ordinary material threw it away. Paint is a texture now, bound to its body's
+	/// slot as an ordinary .vmat, so a painted slot reaches export BOUND and a fallback is only ever
+	/// asked about slots nobody has given a material to. There is nothing left for the mesh to say.
 	///
 	/// Whole-document by design: see PaintFeature.Blend. A suppressed or failed paint layer does
 	/// not get a vote, the same rule the rest of the exporters apply to a feature that produced no
 	/// geometry.
 	/// </summary>
-	public static string FallbackFor( PartStudio studio, PolyMesh mesh )
+	public static string FallbackFor( PartStudio studio )
 	{
-		if ( mesh is not null && mesh.HasVertexColors )
-			return PaintedMaterial;
-
 		var covering = studio?.Features?
 			.OfType<PaintFeature>()
 			.Any( f => f.Error is null && !f.Suppressed && f.Blend.Value == "Replace" ) ?? false;
@@ -127,7 +106,7 @@ public static class VmdlMaterials
 		if ( studio is null )
 			return GroupList( mesh, null, null );
 
-		return GroupList( mesh, studio.NameForSlot, studio.MaterialNames, FallbackFor( studio, mesh ) );
+		return GroupList( mesh, studio.NameForSlot, studio.MaterialNames, FallbackFor( studio ) );
 	}
 
 	/// <summary>

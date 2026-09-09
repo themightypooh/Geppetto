@@ -39,21 +39,6 @@ internal static class EffigyPreview
 	private const string PreviewMaterial = "materials/dev/gray_50.vmat";
 
 	/// <summary>
-	/// The placeholder for a mesh carrying paint.
-	///
-	/// WHY NOT gray_50, WHICH IS WHY PAINT WAS INVISIBLE. Paint is packed into the vertex COLOR
-	/// stream, and nothing gray_50 uses reads it: complex.shader has a model tint (a per-draw
-	/// constant) and a tint-mask TEXTURE, neither of which is per-vertex. So the colours were
-	/// written faithfully into the vertex buffer and thrown away by the shader, and a painted part
-	/// rendered exactly like an unpainted one.
-	///
-	/// vertex_color.shader is the engine's own answer and it ships compiled: it declares
-	/// `float4 vColor : COLOR0 &lt; Semantic( Color ); &gt;` - the same stream Vertex.Color writes -
-	/// and shades it lit. No shader had to be written for this; it had to be found.
-	/// </summary>
-	private const string PaintedPreviewMaterial = "materials/default/vertex_color.vmat";
-
-	/// <summary>
 	/// Build a Model from the mesh, optionally resolving each face's material slot to a real vmat.
 	/// </summary>
 	/// <param name="materialForSlot">Slot number to bound material path, or null / empty for an
@@ -66,8 +51,7 @@ internal static class EffigyPreview
 
 		var (cornerNormals, normals) = MeshNormals.ComputeCornerNormals( mesh, smoothingAngleDegrees );
 
-		// A painted mesh needs a material that reads the colour it is carrying.
-		var placeholder = Material.Load( mesh.HasVertexColors ? PaintedPreviewMaterial : PreviewMaterial );
+		var placeholder = Material.Load( PreviewMaterial );
 		var bounds = BoundsOf( mesh );
 
 		// Faces bucketed by the material they render with. One drop of brushed steel onto three
@@ -169,19 +153,16 @@ internal static class EffigyPreview
 		return cache[slot] = material ?? placeholder;
 	}
 
-	/// <summary>One Mesh over a subset of the faces, all sharing one material.</summary>
+	/// <summary>
+	/// One Mesh over a subset of the faces, all sharing one material.
+	///
+	/// ONE VERTEX FORMAT, since paint stopped being vertex colour. There was a second path here that
+	/// built the richer <c>Vertex</c> so the engine could multiply a material by a per-vertex colour;
+	/// it was chosen by <c>PolyMesh.HasVertexColors</c>, which nothing sets any more, so it rendered
+	/// nothing that this path does not. Paint reaches the viewport as the painted body's material
+	/// now, the same way a dropped material does.
+	/// </summary>
 	private static Mesh BuildSubmesh( PolyMesh mesh, List<int> faceIndices, int[][] cornerNormals,
-		List<Vec3> normals, Material material, BBox bounds )
-	{
-		// Vertex colour needs a richer vertex than SimpleVertex — the engine multiplies a material by
-		// its vertex colour, which is how paint composes over whatever the face is wearing. A mesh
-		// nobody has painted keeps the lighter SimpleVertex path byte-for-byte.
-		return mesh.HasVertexColors
-			? BuildColoredSubmesh( mesh, faceIndices, cornerNormals, normals, material, bounds )
-			: BuildPlainSubmesh( mesh, faceIndices, cornerNormals, normals, material, bounds );
-	}
-
-	private static Mesh BuildPlainSubmesh( PolyMesh mesh, List<int> faceIndices, int[][] cornerNormals,
 		List<Vec3> normals, Material material, BBox bounds )
 	{
 		// One vertex per face corner rather than per position. Corner normals are the whole point
@@ -217,62 +198,6 @@ internal static class EffigyPreview
 
 		var sbMesh = new Mesh( material );
 		sbMesh.CreateVertexBuffer<SimpleVertex>( vertices.Count, vertices );
-		sbMesh.CreateIndexBuffer( indices.Count, indices );
-		sbMesh.Bounds = bounds;
-
-		return sbMesh;
-	}
-
-	private static Mesh BuildColoredSubmesh( PolyMesh mesh, List<int> faceIndices, int[][] cornerNormals,
-		List<Vec3> normals, Material material, BBox bounds )
-	{
-		var colors = mesh.VertexColors;
-		var vertices = new List<Vertex>( faceIndices.Count * 4 );
-		var indices = new List<int>( faceIndices.Count * 6 );
-
-		foreach ( var fi in faceIndices )
-		{
-			var face = mesh.Faces[fi];
-			var corners = cornerNormals[fi];
-
-			var first = vertices.Count;
-
-			for ( var c = 0; c < face.Count; c++ )
-			{
-				var p = mesh.Positions[face.Indices[c]];
-				var n = normals[corners[c]];
-				var uv = face.UVs is not null && c < face.UVs.Length ? face.UVs[c] : default;
-
-				var position = new Vector3( p.x, p.y, p.z );
-				var normal = new Vector3( n.x, n.y, n.z );
-
-				// The engine's standard material multiplies by vertex colour, so "no paint" must be
-				// WHITE — anything else would darken the material everywhere the brush never went.
-				// Tint() is that: coverage fades the vertex from white toward the paint colour.
-				var tint = colors[face.Indices[c]].Tint();
-
-				vertices.Add( new Vertex
-				{
-					Position = position,
-					Normal = normal,
-					Tangent = new Vector4( TangentFor( normal ), 1f ),
-					TexCoord0 = new Vector2( uv.x, uv.y ),
-					Color = new Color32(
-						(byte)MathF.Round( tint.x * 255f ),
-						(byte)MathF.Round( tint.y * 255f ),
-						(byte)MathF.Round( tint.z * 255f ),
-						255 ),
-				} );
-			}
-
-			AppendTriangles( mesh, face, first, indices );
-		}
-
-		if ( indices.Count == 0 )
-			return null;
-
-		var sbMesh = new Mesh( material );
-		sbMesh.CreateVertexBuffer<Vertex>( vertices.Count, vertices );
 		sbMesh.CreateIndexBuffer( indices.Count, indices );
 		sbMesh.Bounds = bounds;
 
