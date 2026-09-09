@@ -153,8 +153,9 @@ public sealed class SculptSession
 
 	public float Strength = 0.05f;
 
-	/// <summary>Mirror every sample across X. The cheap symmetry that covers most of what it is for.</summary>
-	public bool MirrorX;
+	/// <summary>Which origin plane every sample mirrors across, or none. Shared enum, shared helper —
+	/// see <see cref="MirrorAxis"/>.</summary>
+	public MirrorAxis Mirror;
 
 	/// <summary>
 	/// Strokes paint the mask instead of moving the surface.
@@ -561,14 +562,14 @@ public sealed class SculptSession
 			var mask = MaskFor( Level );
 			mask.Paint( _working, _bvh, point, Radius, Erasing ? -Strength : Strength, Falloff );
 
-			if ( MirrorX )
-				mask.Paint( _working, _bvh, new Vec3( -point.x, point.y, point.z ), Radius,
+			if ( Mirror != MirrorAxis.None )
+				mask.Paint( _working, _bvh, Effigy.Brush.Mirror( point, Mirror ), Radius,
 					Erasing ? -Strength : Strength, Falloff );
 
 			return;
 		}
 
-		var stroke = new BrushStroke { Kind = Brush, Falloff = Falloff, MirrorX = MirrorX };
+		var stroke = new BrushStroke { Kind = Brush, Falloff = Falloff, Mirror = Mirror };
 		stroke.Samples.Add( new BrushSample( point, normal, Radius, Inverted ? -Strength : Strength, direction ) );
 
 		// The mask is passed EVERY stroke, not applied afterwards. Brush.Apply folds it into the

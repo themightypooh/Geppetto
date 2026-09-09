@@ -134,7 +134,7 @@ internal sealed class EffigySculptBar : Widget
 		if ( _session.Level < top )
 			text += $" · showing {_session.Level}, model builds at {top}";
 
-		if ( _session.MirrorX )
+		if ( _session.Mirror != MirrorAxis.None )
 			text += " · mirrored";
 
 		if ( _session.Masking )

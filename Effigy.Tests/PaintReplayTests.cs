@@ -43,7 +43,7 @@ public static class PaintReplayTests
 		TestSessionLifecycle();
 		TestCancelRestoresCommittedStrokes();
 		TestSessionReload();
-		TestMirrorXPaintsBothSides();
+		TestMirrorPaintsBothSides();
 
 		Section( "paint: the feature replays onto an atlas" );
 		TestFeatureProducesCanvas();
@@ -457,12 +457,13 @@ public static class PaintReplayTests
 		Check( "and reloading with the stroke brings it back", CountPainted( session.Canvas ) > 0 );
 	}
 
-	static void TestMirrorXPaintsBothSides()
+	static void TestMirrorPaintsBothSides()
 	{
 		// Mirror is recorded INTO the stroke's path rather than applied only live, so a rebuild and an
 		// export reproduce it. This is the "mirror vanishes when you reopen" failure, caught here.
+		// X is the exercised axis; Y and Z share the same Brush.Mirror helper, so they ride with it.
 		var mesh = Grid();
-		var session = new PaintSession( mesh, Res ) { R = 1f, G = 0f, B = 0f, Radius = 0.3f, MirrorX = true };
+		var session = new PaintSession( mesh, Res ) { R = 1f, G = 0f, B = 0f, Radius = 0.3f, Mirror = MirrorAxis.X };
 
 		session.BeginStroke( new Vec3( 0.5f, 0, 2 ), new Vec3( 0, 0, -1 ) );
 		var stroke = session.EndStroke();

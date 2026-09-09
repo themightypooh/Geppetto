@@ -48,7 +48,9 @@ public sealed class WeightStroke
 	/// <summary>Where Set is heading. Ignored by everything else.</summary>
 	public float Target = 1f;
 
-	public bool MirrorX;
+	/// <summary>Which origin plane this stroke mirrors across, or none. Shared enum — see
+	/// <see cref="MirrorAxis"/>.</summary>
+	public MirrorAxis Mirror;
 
 	public readonly List<WeightSample> Samples = new();
 }
@@ -158,13 +160,13 @@ public static class WeightBrush
 		{
 			ApplySample( mesh, weights, stroke, mask, bvh, neighbours, found, undo, sample );
 
-			if ( !stroke.MirrorX )
+			if ( stroke.Mirror == MirrorAxis.None )
 				continue;
 
+			var flipped = Brush.Mirror( sample.Position, stroke.Mirror );
+
 			ApplySample( mesh, weights, stroke, mask, bvh, neighbours, found, undo,
-				new WeightSample(
-					new Vec3( -sample.Position.x, sample.Position.y, sample.Position.z ),
-					sample.Radius, sample.Strength ) );
+				new WeightSample( flipped, sample.Radius, sample.Strength ) );
 		}
 
 		return undo;

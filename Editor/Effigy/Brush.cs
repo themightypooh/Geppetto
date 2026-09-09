@@ -21,6 +21,22 @@ public enum BrushFalloff
 	Constant
 }
 
+/// <summary>
+/// Which plane a brush mirrors its samples across, or none.
+///
+/// ONE ENUM, SHARED BY SCULPT, PAINT AND WEIGHT PAINT. Mirroring was a `bool MirrorX` in three
+/// separate sessions, which made "a model facing +X gets symmetry everywhere" true and "a model
+/// facing +Y gets it nowhere" true at once, with no setting that could help. The plane is always
+/// the origin plane — nothing here mirrors about an arbitrary plane, and this must not grow that.
+/// </summary>
+public enum MirrorAxis
+{
+	None,
+	X,
+	Y,
+	Z
+}
+
 /// <summary>One sample on a stroke. The editor produces these; the kernel never learns what a mouse is.</summary>
 public readonly struct BrushSample
 {
@@ -45,7 +61,7 @@ public sealed class BrushStroke
 {
 	public BrushKind Kind;
 	public BrushFalloff Falloff = BrushFalloff.Smooth;
-	public bool MirrorX;
+	public MirrorAxis Mirror;
 	public readonly List<BrushSample> Samples = new();
 }
 
@@ -124,10 +140,10 @@ public static class Brush
 		{
 			ApplySample( mesh, stroke, frames, mask, bvh, neighbors, found, undo, sample );
 
-			if ( !stroke.MirrorX )
+			if ( stroke.Mirror == MirrorAxis.None )
 				continue;
 
-			ApplySample( mesh, stroke, frames, mask, bvh, neighbors, found, undo, MirrorX( sample ) );
+			ApplySample( mesh, stroke, frames, mask, bvh, neighbors, found, undo, Mirror( sample, stroke.Mirror ) );
 		}
 
 		return undo;
@@ -241,11 +257,21 @@ public static class Brush
 		return sum / edges.Count;
 	}
 
-	static BrushSample MirrorX( BrushSample s ) =>
+	/// <summary>Flip a vector across the chosen origin plane. The one place the "which component"
+	/// decision lives, shared by sculpt, paint and weight paint so they cannot drift apart.</summary>
+	public static Vec3 Mirror( Vec3 v, MirrorAxis axis ) => axis switch
+	{
+		MirrorAxis.X => new Vec3( -v.x, v.y, v.z ),
+		MirrorAxis.Y => new Vec3( v.x, -v.y, v.z ),
+		MirrorAxis.Z => new Vec3( v.x, v.y, -v.z ),
+		_ => v
+	};
+
+	static BrushSample Mirror( BrushSample s, MirrorAxis axis ) =>
 		new(
-			new Vec3( -s.Position.x, s.Position.y, s.Position.z ),
-			new Vec3( -s.Normal.x, s.Normal.y, s.Normal.z ),
+			Mirror( s.Position, axis ),
+			Mirror( s.Normal, axis ),
 			s.Radius,
 			s.Strength,
-			new Vec3( -s.Direction.x, s.Direction.y, s.Direction.z ) );
+			Mirror( s.Direction, axis ) );
 }

@@ -1879,6 +1879,11 @@ internal sealed partial class EffigyViewport : Widget
 		// same bones live is the reason: without this it goes stale the instant a drag starts and
 		// stays wrong until the bone is reselected, which is worse than not showing numbers at all.
 		BonePosed?.Invoke( index );
+
+		// The pose preview re-deforms the display mesh on the same per-frame cadence, so the arm
+		// follows the drag rather than jumping at the release.
+		if ( PosePreviewActive )
+			PoseChanged?.Invoke();
 	}
 
 	/// <summary>Raised whenever the pose gizmo writes a new transform into a bone — see

@@ -57,7 +57,7 @@ public static class SculptTests
 		TestFlattenPullsTowardPlane();
 		TestPinchPullsTowardAxis();
 		TestUndoRestoresPositions();
-		TestMirrorXIsSymmetric();
+		TestMirrorIsSymmetric();
 		TestBrushHasAStopwatch();
 
 		Section( "sculpt: multires levels" );
@@ -828,13 +828,16 @@ public static class SculptTests
 		Check( "restore puts every affected vertex back", moved == 0, $"{moved} still moved" );
 	}
 
-	static void TestMirrorXIsSymmetric()
+	static void TestMirrorIsSymmetric()
 	{
-		var mesh = Sphere();
-		var stroke = new BrushStroke { Kind = BrushKind.Draw, MirrorX = true };
-		stroke.Samples.Add( new BrushSample( new Vec3( 0.3f, 0, 0.3f ), new Vec3( 0.5f, 0, 0.8f ).Normal, 0.25f, 0.08f ) );
-		Brush.Apply( mesh, stroke, SculptFrames.Build( mesh ) );
-		Check( "a mirrored stroke leaves a mesh symmetric across X", IsSymmetricX( mesh ) );
+		foreach ( var axis in new[] { MirrorAxis.X, MirrorAxis.Y, MirrorAxis.Z } )
+		{
+			var mesh = Sphere();
+			var stroke = new BrushStroke { Kind = BrushKind.Draw, Mirror = axis };
+			stroke.Samples.Add( new BrushSample( new Vec3( 0.3f, 0, 0.3f ), new Vec3( 0.5f, 0, 0.8f ).Normal, 0.25f, 0.08f ) );
+			Brush.Apply( mesh, stroke, SculptFrames.Build( mesh ) );
+			Check( $"a mirrored stroke leaves a mesh symmetric across {axis}", IsSymmetric( mesh, axis ) );
+		}
 	}
 
 	static void TestBrushHasAStopwatch()
@@ -2543,12 +2546,12 @@ public static class SculptTests
 		return n == 0 ? 0f : sum / n;
 	}
 
-	static bool IsSymmetricX( PolyMesh mesh )
+	static bool IsSymmetric( PolyMesh mesh, MirrorAxis axis )
 	{
 		for ( var i = 0; i < mesh.VertexCount; i++ )
 		{
 			var p = mesh.Positions[i];
-			var target = new Vec3( -p.x, p.y, p.z );
+			var target = Brush.Mirror( p, axis );
 			var found = false;
 
 			for ( var j = 0; j < mesh.VertexCount; j++ )

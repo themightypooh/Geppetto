@@ -84,12 +84,11 @@ public sealed class PaintSession
 	public bool Erasing;
 
 	/// <summary>
-	/// Mirror every sample across X — the cheap symmetry that covers most of what symmetry is for,
-	/// and the same flag SculptSession carries for the same reason. Recorded INTO the stroke's path
+	/// Which origin plane every sample mirrors across, or none. Recorded INTO the stroke's path
 	/// (the mirrored point joins the real one), so a mirrored stroke survives replay and export the
-	/// way a live-only mirror would not.
+	/// way a live-only mirror would not. Shared enum — see <see cref="MirrorAxis"/>.
 	/// </summary>
-	public bool MirrorX;
+	public MirrorAxis Mirror;
 
 	/// <summary>
 	/// The strokes committed so far, in order. The caller mirrors each <see cref="EndStroke"/> result
@@ -338,8 +337,8 @@ public sealed class PaintSession
 		Canvas.Invalidate();
 	}
 
-	/// <summary>One sample onto the stroke and the coverage, mirrored across X when
-	/// <see cref="MirrorX"/> is on. The mirrored point is written into the path alongside the real one,
+	/// <summary>One sample onto the stroke and the coverage, mirrored across the chosen plane when
+	/// <see cref="Mirror"/> is set. The mirrored point is written into the path alongside the real one,
 	/// so the mirror is part of the stroke's own record rather than a live-only effect that a rebuild
 	/// would drop.</summary>
 	void AddSample( Vec3 point, Vec3 normal )
@@ -347,11 +346,11 @@ public sealed class PaintSession
 		_current.Path.Add( new PaintStrokePoint( point, normal ) );
 		Recompose( Stamp( point, normal ) );
 
-		if ( !MirrorX )
+		if ( Mirror == MirrorAxis.None )
 			return;
 
-		var mirroredPoint = new Vec3( -point.x, point.y, point.z );
-		var mirroredNormal = new Vec3( -normal.x, normal.y, normal.z );
+		var mirroredPoint = Brush.Mirror( point, Mirror );
+		var mirroredNormal = Brush.Mirror( normal, Mirror );
 
 		_current.Path.Add( new PaintStrokePoint( mirroredPoint, mirroredNormal ) );
 		Recompose( Stamp( mirroredPoint, mirroredNormal ) );

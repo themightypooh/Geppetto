@@ -1678,7 +1678,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		// The session replays whatever strokes already exist, so re-entering a painted feature shows
 		// the paint as it was left, not a blank surface.
-		var session = new PaintSession( targets[0].Mesh, PaintFeature.Resolution, feature.Strokes );
+		var session = new PaintSession( targets[0].Mesh, feature.Resolution.Value, feature.Strokes );
 		session.Radius = session.SuggestedRadius;
 
 		_viewport.BeginPaint( session );
@@ -2177,7 +2177,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		if ( _viewport?.SculptSession is not { } session )
 			return;
 
-		session.MirrorX = !session.MirrorX;
+		// The strip button toggles X — the default plane — on and off. Y and Z are available to a
+		// future axis picker now that the session carries a MirrorAxis rather than a bool.
+		session.Mirror = session.Mirror == MirrorAxis.None ? MirrorAxis.X : MirrorAxis.None;
 
 		UpdateSculptChecks();
 		_sculptBar?.Refresh();
@@ -2196,7 +2198,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			_maskTool.Checked = session?.Masking ?? false;
 
 		if ( _symmetryTool is not null )
-			_symmetryTool.Checked = session?.MirrorX ?? false;
+			_symmetryTool.Checked = session is not null && session.Mirror != MirrorAxis.None;
 
 		_stageBar?.Refresh();
 	}
@@ -3291,6 +3293,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			CommandRequested = OnPartCommand,
 			RenameCommitted = OnPartRenamed,
 			SelectionChanged = OnPartTreeSelectionChanged,
+			BoneAssigned = OnBodyBoneAssigned,
 		};
 
 		// The Materials dock is the material BROWSER - a grid of the project's materials you drag
@@ -3363,6 +3366,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		_viewport.MaterialDropped = OnMaterialDropped;
 		_viewport.SketchConstraintMenuRequested = OpenSketchConstraintMenu;
 
+		// Re-deform the display mesh every drag frame while posing.
+		_viewport.PoseChanged = OnPoseChanged;
+
 		// Fired BEFORE the viewport changes a sketch, which is the only moment a useful "before"
 		// exists to snapshot.
 		_viewport.SketchEditing = RecordUndo;
@@ -3370,6 +3376,11 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		// Same "before" moment, for the rig: a bone placed, deleted, renamed, or mirrored.
 		_rigPanel.RigChanging = RecordUndo;
+
+		// The pose preview's two buttons. The viewport owns the pose (bind snapshot + weights), the
+		// window owns the mesh and the Model, so both flow through here.
+		_rigPanel.PoseToggled = OnPoseToggled;
+		_rigPanel.PoseReset = OnPoseReset;
 
 		// AND THE "AFTER", which nothing had ever subscribed to. RigChanged has been declared and
 		// raised from five places since the panel was written, with no listener on the other end,
@@ -3741,6 +3752,97 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			_studio.BodyNames[bodyId] = trimmed;
 
 		RebuildStudio();
+	}
+
+	/// <summary>Assign a body to a bone (or clear it) from the Parts list. The same binding the rig
+	/// panel makes from the bone's side, keyed on the same map, so both stay in agreement. Undo is
+	/// recorded here because the panel only reports the click — the window owns the studio.</summary>
+	private void OnBodyBoneAssigned( string bodyId, string boneName )
+	{
+		if ( string.IsNullOrEmpty( bodyId ) || _studio is null )
+			return;
+
+		// A bone name that does not resolve is refused rather than written — writing it would only
+		// throw at export time, and the menu only offers bones that exist, so this is a guard
+		// against drift rather than a user-facing path.
+		if ( !string.IsNullOrEmpty( boneName ) && _studio.Rig.IndexOf( boneName ) < 0 )
+			return;
+
+		RecordUndo();
+
+		if ( string.IsNullOrEmpty( boneName ) )
+			_studio.BodyBoneMap.Remove( bodyId );
+		else
+			_studio.BodyBoneMap[bodyId] = boneName;
+
+		NoteRigEdited();
+
+		_rigPanel?.RefreshBodyAssignments();
+		_partsPanel?.Refresh();
+	}
+
+	// --- pose preview -----------------------------------------------------------------------
+
+	/// <summary>The Pose button. Arms the preview against a bind-pose snapshot and the export's own
+	/// weights, so what the preview deforms is what the compiled model would ship. Toggling off is a
+	/// reset: the pose is a scratchpad, never a saved state.</summary>
+	private void OnPoseToggled()
+	{
+		if ( _viewport is null || _rigPanel is not { HasBones: true } rig )
+			return;
+
+		if ( _viewport.PosePreviewActive )
+		{
+			// Leaving pose mode restores the bind pose — a rig you can bend and cannot un-bend is
+			// worse than one that does not bend, and the toggle is the obvious way out.
+			_viewport.ResetPose();
+			_viewport.DisarmPosePreview();
+			_rigPanel.RefreshPoseState();
+			_viewport.Update();
+			RefreshPreview();
+			return;
+		}
+
+		// Same weights, same bind as CompileVmdl: BindBodies for the body pins, then SmoothWeights
+		// so joints bend rather than crease. Deforming with anything else would show a preview that
+		// disagrees with the export.
+		var (mesh, ranges) = _studio.ToMeshWithBodies();
+		var weights = SkinBinder.BindBodies( mesh, ranges, rig.BodyBoneMap, rig.Skeleton );
+		weights = SkinBinder.SmoothWeights( mesh, weights );
+
+		if ( _viewport.ArmPosePreview( mesh, weights, rig.Skeleton ) )
+		{
+			_rigPanel.RefreshPoseState();
+			RefreshPosePreview();
+		}
+	}
+
+	private void OnPoseReset()
+	{
+		_viewport?.ResetPose();
+		_viewport?.Update();
+		RefreshPosePreview();
+	}
+
+	private void OnPoseChanged() => RefreshPosePreview();
+
+	/// <summary>Deform the display mesh by the current pose and put it on screen. Falls back to the
+	/// ordinary (bind) preview when the preview is off, or when the skeleton changed shape under it
+	/// (a bone placed or deleted) — re-arming is a fresh Pose press rather than a guess.</summary>
+	private void RefreshPosePreview()
+	{
+		if ( _viewport is null )
+			return;
+
+		var deformed = _viewport.PosePreviewActive ? _viewport.PoseMesh() : null;
+
+		if ( deformed is null )
+		{
+			RefreshPreview();
+			return;
+		}
+
+		_viewport.SetModel( BuildPreview( deformed ), frameCamera: false );
 	}
 
 	private Feature FeatureForBody( string bodyId )
@@ -5946,7 +6048,8 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		if ( _viewport?.PaintSession is not { } session )
 			return;
 
-		session.MirrorX = !session.MirrorX;
+		// X toggles the default plane on and off; Y and Z are available to a future axis picker.
+		session.Mirror = session.Mirror == MirrorAxis.None ? MirrorAxis.X : MirrorAxis.None;
 		OnPaintSettingsChanged();
 	}
 
@@ -7437,6 +7540,11 @@ internal sealed class EffigyPartsPanel : Widget
 	/// <summary>The row highlight changed. Body ids of the selected parts, empty for none.</summary>
 	public Action<IReadOnlyList<string>> SelectionChanged { get; set; }
 
+	/// <summary>A bone was assigned to (or removed from) a body from the Parts list. Carries the
+	/// body id and the bone name — empty means unassign — so the window owns the undo, the write and
+	/// the refresh, exactly the way the rig panel's own Assign Body does.</summary>
+	public Action<string, string> BoneAssigned { get; set; }
+
 	private readonly List<string> _selectedBodyIds = new();
 	private readonly Dictionary<string, PartNode> _nodes = new();
 	private bool _restoringSelection;
@@ -7603,11 +7711,38 @@ internal sealed class EffigyPartsPanel : Widget
 		if ( siblings > 1 )
 			delete.StatusTip = "Removes the feature that made this part, and every other part it made.";
 
+		// The body -> bone direction. The rig panel pins bodies to a bone from the bone's side; this
+		// is the same binding reachable from the body's side, so a part built of many bodies can be
+		// rigged without hunting through the bone tree for each one.
+		if ( _studio.Rig is { Count: > 0 } rig )
+		{
+			menu.AddSeparator();
+
+			var assign = menu.AddMenu( "Assign to bone", "account_tree" );
+
+			if ( _studio.BodyBoneMap.ContainsKey( bodyId ) )
+			{
+				assign.AddOption( "None", "close", () => BoneAssigned?.Invoke( bodyId, "" ) );
+				assign.AddSeparator();
+			}
+
+			foreach ( var bone in rig.Bones )
+			{
+				var name = bone.Name;
+				assign.AddOption( name, null, () => BoneAssigned?.Invoke( bodyId, name ) );
+			}
+		}
+
 		menu.OpenAtCursor();
 	}
 
 	private Body BodyById( string bodyId ) =>
 		_studio?.Bodies.FirstOrDefault( b => b.Id == bodyId );
+
+	/// <summary>The bone a body is pinned to, or null — shown right-aligned on the row so the Parts
+	/// list reads as a rig as well as a result list.</summary>
+	private string BoneFor( string bodyId ) =>
+		_studio is not null && _studio.BodyBoneMap.TryGetValue( bodyId, out var bone ) ? bone : null;
 
 	private sealed class PartsTreeView : TreeView
 	{
@@ -7664,12 +7799,23 @@ internal sealed class EffigyPartsPanel : Widget
 			Paint.DrawText( item.Rect.Shrink( 22, 0, TreeEyeIcon.SecondaryTextRightMargin, 0 ),
 				Value.Name ?? "Part", TextFlag.LeftCenter );
 
-			// Always drawn, same as the Features tree's attachment label — the shared margin
-			// already keeps it clear of the eye, so there is no need to make it vanish and
-			// reappear on hover the way this row used to.
-			Paint.SetPen( Theme.TextLight.WithAlpha( 0.6f ) );
-			Paint.DrawText( item.Rect.Shrink( 0, 0, TreeEyeIcon.SecondaryTextRightMargin, 0 ),
-				$"{Value.Mesh?.FaceCount ?? 0}", TextFlag.RightCenter );
+			// An assigned body shows its bone (blue, to match the rig tree) instead of its face
+			// count — a rigged part's bone is the more meaningful thing to read at a glance, and it
+			// is the only place this half of the binding is visible outside the rig panel.
+			var bone = _panel.BoneFor( Value.Id );
+
+			if ( bone is not null )
+			{
+				Paint.SetPen( Theme.Blue );
+				Paint.DrawText( item.Rect.Shrink( 0, 0, TreeEyeIcon.SecondaryTextRightMargin, 0 ),
+					bone, TextFlag.RightCenter );
+			}
+			else
+			{
+				Paint.SetPen( Theme.TextLight.WithAlpha( 0.6f ) );
+				Paint.DrawText( item.Rect.Shrink( 0, 0, TreeEyeIcon.SecondaryTextRightMargin, 0 ),
+					$"{Value.Mesh?.FaceCount ?? 0}", TextFlag.RightCenter );
+			}
 
 			TreeEyeIcon.Draw( _panel._tree, item, visible );
 		}

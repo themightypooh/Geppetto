@@ -30,6 +30,9 @@ Section( "paint: strokes survive the document round trip" );
 		Section( "paint: erases round trip, and older documents have none" );
 		TestErasesRoundTripInPlace();
 		TestDocumentWithoutErasesReadsAsPaint();
+
+		Section( "paint: resolution is a parameter, not a constant" );
+		TestResolutionIsAParameter();
 	}
 
 
@@ -58,7 +61,7 @@ Section( "paint: strokes survive the document round trip" );
 		Report.Check( "a 1-unit box really does have only its corners",
 			mesh.Positions.Count == 8, $"{mesh.Positions.Count} vertices" );
 
-		var session = new PaintSession( mesh, PaintFeature.Resolution );
+		var session = new PaintSession( mesh, 1024 );
 		session.Radius = session.SuggestedRadius;
 
 		var hit = session.Hover( new Vec3( 0, 0, 10f ), new Vec3( 0, 0, -1f ) );
@@ -285,4 +288,61 @@ Section( "paint: strokes survive the document round trip" );
 
 	static bool Close( Vec3 a, Vec3 b ) =>
 		MathF.Abs( a.x - b.x ) < 1e-5f && MathF.Abs( a.y - b.y ) < 1e-5f && MathF.Abs( a.z - b.z ) < 1e-5f;
+
+	/// <summary>
+	/// Resolution used to be a const, so every part painted at 1024 whether that was a matchbox or a
+	/// stadium. It is a parameter now, and the three things that used to break when it was a const
+	/// have to hold: the replay cache misses when it changes (no stale canvas served at the old
+	/// size), the strokes re-replay rather than scale or clear, and the setting survives a save.
+	/// </summary>
+	static void TestResolutionIsAParameter()
+	{
+		var studio = new PartStudio();
+
+		var box = studio.Add( new PrimitiveFeature() );
+		box.SizeX.Value = box.SizeY.Value = box.SizeZ.Value = 1f;
+
+		var uv = studio.Add( new UVProjectFeature() );
+		uv.Mode.Index = Array.IndexOf( uv.Mode.Options, "Unwrap" );
+
+		var paint = studio.Add( new PaintFeature() );
+		paint.AddStroke( TopFaceStroke() );
+
+		studio.Rebuild();
+
+		var first = paint.Canvas;
+		Check( "a fresh paint feature replays at the 1024 default",
+			first is not null && first.Width == 1024, first is null ? "no canvas" : $"{first.Width}" );
+
+		var paintedAtDefault = CountPainted( first );
+		Check( "and the box is painted", paintedAtDefault > 0, $"{paintedAtDefault} texels" );
+
+		// The editor marks the feature dirty when a parameter changes; done by hand here.
+		paint.Resolution.Value = 256;
+		studio.MarkDirty( paint );
+		studio.Rebuild();
+
+		var second = paint.Canvas;
+		Check( "changing the resolution replays at the new size",
+			second.Width == 256 && second.Height == 256, $"{second.Width}x{second.Height}" );
+		Check( "and is not the stale canvas", !ReferenceEquals( first, second ) );
+		Check( "and the paint is still there, not cleared", CountPainted( second ) > 0,
+			$"{CountPainted( second )} texels" );
+
+		var back = StudioDocument.Read( StudioDocument.Write( studio ) ).Features.OfType<PaintFeature>().Single();
+		Check( "save and reopen keeps the resolution", back.Resolution.Value == 256, $"{back.Resolution.Value}" );
+	}
+
+	/// <summary>One dab flat on the top of a 1-unit box, where the replay can actually land.</summary>
+	static PaintStroke TopFaceStroke()
+	{
+		var stroke = new PaintStroke
+		{
+			R = 1f, G = 0f, B = 0f, A = 1f,
+			Radius = 0.3f, Strength = 1f, Falloff = BrushFalloff.Sharp, Spacing = 0.5f,
+		};
+
+		stroke.Path.Add( new PaintStrokePoint( new Vec3( 0, 0, 0.5f ), new Vec3( 0, 0, 1 ) ) );
+		return stroke;
+	}
 }

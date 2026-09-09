@@ -30,9 +30,16 @@ namespace Effigy;
 /// </summary>
 public sealed class PaintFeature : Feature
 {
-	/// <summary>How many texels across the replayed canvas is. 1024, the figure the parked texture
-	/// path was always written against; resolution is independent of mesh density, which is the point.</summary>
-	public const int Resolution = 1024;
+	/// <summary>
+	/// How many texels across the replayed canvas is.
+	///
+	/// A PARAMETER RATHER THAN A CONSTANT because it belongs to the document, the same way a sculpt
+	/// cage's level does: a part with one small painted detail and one big painted wall wants two
+	/// answers, and 1024 texels across a matchbox is enormous while across a 4000-unit part it is
+	/// four texels per inch. Strokes are resolution-independent — points and radii, replayed — so a
+	/// change re-replays and loses nothing.
+	/// </summary>
+	public readonly IntParam Resolution = new( "Resolution", 1024, 64, 4096 );
 
 	public override string TypeName => "Paint";
 
@@ -52,7 +59,7 @@ public sealed class PaintFeature : Feature
 	/// </summary>
 	public readonly ChoiceParam Blend = new( "Blend", new[] { "Tint", "Replace" } );
 
-	public override IReadOnlyList<IParam> Parameters => new IParam[] { Bodies, Blend };
+	public override IReadOnlyList<IParam> Parameters => new IParam[] { Bodies, Resolution, Blend };
 
 	/// <summary>
 	/// The strokes, in the order they were painted.
@@ -71,15 +78,17 @@ public sealed class PaintFeature : Feature
 	// the studio, so nothing calls MarkDirty and this is what catches it.
 	int _builtRevision = -1;
 
-	// The replay cache: the canvas last produced, and the topology + atlas + revision it was produced
-	// from. Keyed on topology (vertex count and face indices, deliberately not positions), the atlas
-	// (every corner UV, so a re-unwrap invalidates it) and revision, so a parametric edit that moves
-	// geometry without changing its structure or UVs reuses the canvas rather than re-replaying, while
-	// a new stroke or a moved atlas does not.
+	// The replay cache: the canvas last produced, and the topology + atlas + revision + resolution it
+	// was produced from. Keyed on topology (vertex count and face indices, deliberately not
+	// positions), the atlas (every corner UV, so a re-unwrap invalidates it), the revision (so a new
+	// stroke does) and the resolution (so changing it re-replays rather than serving a stale canvas
+	// at the old size). A parametric edit that moves geometry without changing structure, UVs or
+	// resolution reuses the canvas rather than re-replaying.
 	PaintCanvas _cachedCanvas;
 	long _topologyId;
 	long _atlasId;
 	int _canvasRevision = -1;
+	int _canvasResolution = -1;
 
 	public override bool IsStale => Revision != _builtRevision;
 
@@ -122,13 +131,16 @@ public sealed class PaintFeature : Feature
 			var mesh = targets[0].Mesh;
 			var topology = MultiresSculpt.TopologyId( mesh );
 			var atlas = AtlasId.Of( mesh );
+			var resolution = Resolution.Clamped;
 
-			if ( _cachedCanvas is null || _topologyId != topology || _atlasId != atlas || _canvasRevision != Revision )
+			if ( _cachedCanvas is null || _topologyId != topology || _atlasId != atlas
+				|| _canvasRevision != Revision || _canvasResolution != resolution )
 			{
-				_cachedCanvas = PaintReplay.Replay( mesh, Strokes, Resolution );
+				_cachedCanvas = PaintReplay.Replay( mesh, Strokes, resolution );
 				_topologyId = topology;
 				_atlasId = atlas;
 				_canvasRevision = Revision;
+				_canvasResolution = resolution;
 			}
 
 			mesh.Paint = _cachedCanvas;

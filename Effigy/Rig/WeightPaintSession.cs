@@ -111,7 +111,9 @@ public sealed class WeightPaintSession
 	/// <summary>Where Set is heading, when the brush is Set.</summary>
 	public float Target = 1f;
 
-	public bool MirrorX;
+	/// <summary>Which origin plane every sample mirrors across, or none. Shared enum — see
+	/// <see cref="MirrorAxis"/>.</summary>
+	public MirrorAxis Mirror;
 
 	/// <summary>Fraction of the radius the cursor must travel to earn another sample.</summary>
 	public float Spacing = 0.25f;
@@ -341,6 +343,6 @@ public sealed class WeightPaintSession
 		Falloff = Falloff,
 		Bone = Bone,
 		Target = Target,
-		MirrorX = MirrorX,
+		Mirror = Mirror,
 	};
 }

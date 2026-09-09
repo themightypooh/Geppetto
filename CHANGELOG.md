@@ -36,6 +36,14 @@ forgotten.
 ## Unreleased
 
 ### Added
+- **Pose the rig and watch it bend.** A Pose button in the Rig panel — press it, drag a bone, and
+  the mesh deforms with it, so a bad weight shows up as a crease instead of a number in a panel.
+  Reset Pose (or toggling Pose off) returns to the bind pose; nothing is saved. Built on the same
+  weights the export uses, so what you see is what compiles. `SkinBinder.Deform`,
+  `EffigyViewport.PosePreview.cs`
+- **Assign bones from the Parts list.** Right-click a part and pick **Assign to bone** — the same
+  pinning the rig panel does, reachable from the body's side. An assigned part shows its bone in
+  blue on the row. `EffigyPartsPanel`, `EffigyWindow.OnBodyBoneAssigned`
 - **An eraser.** Hold Ctrl while you paint and the brush takes paint off instead of putting
   it on, back to the surface underneath. `PaintStroke.cs`, `PaintReplay.cs`
 - The brush ring turns red while Ctrl is held, so you can see which one you are about to

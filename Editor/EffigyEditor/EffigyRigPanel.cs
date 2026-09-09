@@ -44,6 +44,8 @@ internal sealed class EffigyRigPanel : Widget
 	private Button _addBoneButton;
 	private Button _assignBodyButton;
 	private Button _mirrorButton;
+	private Button _poseButton;
+	private Button _resetPoseButton;
 
 	// --- where a click puts the joint ---------------------------------------------------------
 
@@ -150,6 +152,26 @@ internal sealed class EffigyRigPanel : Widget
 			Clicked = () => SetBoneToolActive( !_viewport.BoneToolActive ),
 		};
 		toolRow.Layout.Add( _addBoneButton, 1 );
+
+		// Pose and Reset — the pose preview's whole surface. Pose is owned by the window, which has
+		// the studio to compute weights from; the panel only reports the clicks, the way it reports
+		// every other tool action. The button text tracks the mode so the toggle teaches itself.
+		_poseButton = new Button( "Pose", "accessibility_new" )
+		{
+			ToolTip = "Pose the rig: drag a bone and the mesh deforms with it, so a weight is a "
+				+ "crease in the surface instead of a number in a panel. Nothing is saved — Reset "
+				+ "Pose returns every bone to the bind pose.",
+			Clicked = () => PoseToggled?.Invoke(),
+		};
+		toolRow.Layout.Add( _poseButton );
+
+		_resetPoseButton = new Button( "Reset Pose", "restart_alt" )
+		{
+			ToolTip = "Return every bone to the bind pose it was posed from.",
+			Clicked = () => PoseReset?.Invoke(),
+		};
+		toolRow.Layout.Add( _resetPoseButton );
+
 		header.Layout.Add( toolRow );
 
 		header.Layout.Add( BuildPlacementRow( header ) );
@@ -262,6 +284,13 @@ internal sealed class EffigyRigPanel : Widget
 	/// </summary>
 	public Action RigChanged { get; set; }
 
+	/// <summary>The Pose button was pressed. The window owns the pose preview — it has the studio
+	/// to compute skin weights from — so this reports the click and the window toggles the mode.</summary>
+	public Action PoseToggled { get; set; }
+
+	/// <summary>Reset Pose was pressed. The window restores the bind pose and refreshes.</summary>
+	public Action PoseReset { get; set; }
+
 	/// <summary>
 	/// Replace the skeleton and body-bone map wholesale — the undo/redo restore path. Unlike
 	/// SetStudio, the mesh underneath hasn't changed, only the rig; still clears any in-progress
@@ -311,6 +340,26 @@ internal sealed class EffigyRigPanel : Widget
 		// body a bone was pinned to going away, or a mesh gaining vertices no bone reaches. Those
 		// appear and disappear on ordinary CAD edits, which is exactly when this is called.
 		RefreshProblems();
+	}
+
+	/// <summary>An assignment changed somewhere OTHER than this panel's own Assign Body — the Parts
+	/// list's Assign to bone. Refreshes the tree's per-bone counts and the inspector WITHOUT a
+	/// RebuildTree, which would collapse every chain this panel had left expanded over a single
+	/// right-click on the other side of the window.</summary>
+	public void RefreshBodyAssignments()
+	{
+		_tree.Update();
+		RefreshInspector();
+		RefreshProblems();
+	}
+
+	/// <summary>Keep the Pose and Reset buttons honest against the viewport's mode — the Pose button
+	/// labels itself "Posing…" while on, and Reset is dead when there is nothing to reset to.</summary>
+	public void RefreshPoseState()
+	{
+		var posing = _viewport?.PosePreviewActive ?? false;
+		_poseButton.Text = posing ? "Posing…" : "Pose";
+		_resetPoseButton.Enabled = posing;
 	}
 
 	// --- bone placement -------------------------------------------------------------------

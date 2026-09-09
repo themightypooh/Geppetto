@@ -237,6 +237,51 @@ public static class SkinBinder
 		return current;
 	}
 
+	/// <summary>
+	/// Linear blend skinning: deform bind positions by a posed skeleton.
+	///
+	/// THE FIFTEEN LINES THE POSE PREVIEW RUNS ON. For each vertex, blend its bind position through
+	/// every influencing bone's skin matrix — <c>pose * bind⁻¹</c>, the transform that carries the
+	/// bind pose to the current pose — and sum by weight. At a zero pose (pose == bind) every skin
+	/// matrix is identity and the mesh is unchanged, which is the property a "reset pose" leans on.
+	///
+	/// Positions come back as a fresh array parallel to <paramref name="positions"/>; the caller
+	/// owns putting them on a display copy. The cage is never touched — the CAD history owns the
+	/// bind mesh, and a pose must not be able to write its way back into it.
+	/// </summary>
+	public static Vec3[] Deform( IReadOnlyList<Vec3> positions, SkinWeights weights,
+		IReadOnlyList<Xform> bindWorld, IReadOnlyList<Xform> poseWorld )
+	{
+		if ( positions is null ) throw new ArgumentNullException( nameof( positions ) );
+		if ( weights is null ) throw new ArgumentNullException( nameof( weights ) );
+		if ( bindWorld is null ) throw new ArgumentNullException( nameof( bindWorld ) );
+		if ( poseWorld is null ) throw new ArgumentNullException( nameof( poseWorld ) );
+
+		// One skin matrix per bone, computed once rather than per vertex. A bone that has not moved
+		// still pays for an identity here, which is cheap and keeps the loop branch-free.
+		var skin = new Xform[bindWorld.Count];
+
+		for ( var b = 0; b < skin.Length; b++ )
+			skin[b] = poseWorld[b] * bindWorld[b].Inverse;
+
+		var result = new Vec3[positions.Count];
+
+		for ( var v = 0; v < positions.Count; v++ )
+		{
+			var p = positions[v];
+			var acc = Vec3.Zero;
+
+			foreach ( var bw in weights[v] )
+				acc += skin[bw.Bone].TransformPoint( p ) * bw.Weight;
+
+			// An unweighted vertex has no bone to move it; leaving it on its bind position is the
+			// honest answer, and a world better than collapsing it onto the origin.
+			result[v] = weights[v].Length == 0 ? p : acc;
+		}
+
+		return result;
+	}
+
 	// --- helpers -----------------------------------------------------------------------------
 
 	static void RequireBones( Skeleton skeleton )

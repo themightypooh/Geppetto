@@ -37,6 +37,9 @@ public static class RigTests
 		Section( "auto-binding produces valid weights" );
 		TestBinding();
 
+		Section( "linear blend skinning deforms a posed rig" );
+		TestDeform();
+
 		Section( "weights survive subdivision" );
 		TestWeightsThroughSubdivision();
 
@@ -605,6 +608,61 @@ public static class RigTests
 	// --- helpers ------------------------------------------------------------------------
 
 	static bool Near( Vec3 a, Vec3 b, float tolerance = 1e-4f ) => (a - b).Length < tolerance;
+
+	/// <summary>
+	/// The mesh the pose preview deforms: a cylinder bound to a two-bone chain down Z, the top half
+	/// owned by the "upper" bone. Posing that bone must move the top and leave the bottom, which is
+	/// the one distinction a broken bind-pose convention gets wrong silently.
+	/// </summary>
+	static void TestDeform()
+	{
+		var mesh = Primitives.Cylinder( 0.5f, 4f, 16 );
+		var skeleton = CylinderChain( 4f );
+		var weights = SkinBinder.BindRigid( mesh, skeleton );
+
+		var bind = new Xform[skeleton.Count];
+		for ( var i = 0; i < skeleton.Count; i++ )
+			bind[i] = skeleton.WorldBind( i );
+
+		var atBind = SkinBinder.Deform( mesh.Positions, weights, bind, bind );
+		Check( "a zero pose leaves the mesh unchanged", Same( mesh.Positions, atBind ) );
+
+		// Rotate the upper bone 90 degrees about +X. Its bind transform sits with its head at the
+		// origin and its tail at +Z, so the swing is about the joint — the tail sweeps from +Z to -Y.
+		var pose = (Xform[])bind.Clone();
+		pose[1] = Xform.Rotate( new Vec3( 1, 0, 0 ), MathF.PI / 2f ) * bind[1];
+
+		var posed = SkinBinder.Deform( mesh.Positions, weights, bind, pose );
+
+		var top = 0;
+		var bottom = 0;
+
+		for ( var i = 0; i < mesh.Positions.Count; i++ )
+		{
+			if ( mesh.Positions[i].z > mesh.Positions[top].z ) top = i;
+			if ( mesh.Positions[i].z < mesh.Positions[bottom].z ) bottom = i;
+		}
+
+		Check( "the top of the cylinder swings with its bone",
+			Near( posed[top], Xform.Rotate( new Vec3( 1, 0, 0 ), MathF.PI / 2f ).TransformPoint( mesh.Positions[top] ), 1e-3f ),
+			posed[top].ToString() );
+		Check( "the bottom stays on its unposed bone",
+			Near( posed[bottom], mesh.Positions[bottom], 1e-3f ), posed[bottom].ToString() );
+	}
+
+	static bool Same( IReadOnlyList<Vec3> a, IReadOnlyList<Vec3> b )
+	{
+		if ( a.Count != b.Count )
+			return false;
+
+		for ( var i = 0; i < a.Count; i++ )
+		{
+			if ( !Near( a[i], b[i] ) )
+				return false;
+		}
+
+		return true;
+	}
 
 	static void Section( string title ) => Report.Section( title );
 

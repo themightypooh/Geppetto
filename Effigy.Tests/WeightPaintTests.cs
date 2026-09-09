@@ -64,7 +64,7 @@ public static class WeightPaintTests
 		{
 			var (mesh, weights, _) = Rigged();
 
-			var stroke = new WeightStroke { Kind = kind, Bone = 1, Target = 0.6f, MirrorX = true };
+			var stroke = new WeightStroke { Kind = kind, Bone = 1, Target = 0.6f, Mirror = MirrorAxis.X };
 
 			// Several dabs, deliberately overlapping, because a brush that renormalises correctly
 			// once can still drift when applied on top of its own output.
