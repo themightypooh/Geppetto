@@ -35,7 +35,17 @@ forgotten.
 
 ## Unreleased
 
-Nothing yet.
+### Added
+- **An eraser.** Hold Ctrl while you paint and the brush takes paint off instead of putting
+  it on, back to the surface underneath. `PaintStroke.cs`, `PaintReplay.cs`
+- The brush ring turns red while Ctrl is held, so you can see which one you are about to
+  do before you press rather than after.
+- Erasing uses the brush you already have -- the same size, strength and falloff -- so a
+  soft eraser fades out at its edge and a Constant one takes a hard bite.
+- An erase is a stroke like any other: one Ctrl+Z, saved into the .effigy, and still there
+  after you edit a feature underneath it and the part rebuilds.
+- Ctrl is read once, when you press. Letting go halfway through does not turn the back half
+  of the mark into paint.
 
 ## v368962 — 2026-09-09
 
@@ -96,16 +106,6 @@ Nothing yet.
   switch. With a texture the paint covers, so the tint/replace distinction that choice used
   to make is no longer drawn. A face you dropped a material on still keeps that material.
   `PaintFeature.cs`, `EffigyPaintBar.cs`
-- **An eraser.** Hold Ctrl while you paint and the brush takes paint off instead of putting
-  it on, back to the surface underneath. `PaintStroke.cs`, `PaintReplay.cs`
-- The brush ring turns red while Ctrl is held, so you can see which one you are about to
-  do before you press rather than after.
-- Erasing uses the brush you already have -- the same size, strength and falloff -- so a
-  soft eraser fades out at its edge and a Constant one takes a hard bite.
-- An erase is a stroke like any other: one Ctrl+Z, saved into the .effigy, and still there
-  after you edit a feature underneath it and the part rebuilds.
-- Ctrl is read once, when you press. Letting go halfway through does not turn the back half
-  of the mark into paint.
 - A **Falloff** dropdown on the sculpt bar, beside Radius and Strength. Falloff is how the
   brush fades from its centre to its edge: **Smooth** for a soft mound, **Sharp** for a hard
   crease, **Linear** for an even fade, **Constant** to move the whole disc at once. The choice
