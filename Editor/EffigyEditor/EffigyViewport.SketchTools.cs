@@ -30,6 +30,10 @@ namespace Marionette.EditorTools;
 /// button, so it never reaches ClickTool at all — CutStrokeFrame takes the mouse a frame earlier,
 /// which is what keeps one stroke to one undo step instead of one per press. See it at the bottom
 /// of this file.
+///
+/// AND ONE THAT CONSUMES A SELECTION: **Mirror**. The Select tool (and its drag box) collects
+/// the geometry; Mirror's single click names the line to reflect it across. It is here because it
+/// is the same shape of pick as Trim and Extend, not a placement. See EffigyViewport.SketchMirror.cs.
 /// </summary>
 internal sealed partial class EffigyViewport
 {
@@ -48,7 +52,7 @@ internal sealed partial class EffigyViewport
 	private static bool IsNewSketchTool( SketchToolKind tool ) => tool
 		is SketchToolKind.Ellipse or SketchToolKind.Spline or SketchToolKind.Trim
 		or SketchToolKind.Extend or SketchToolKind.Fillet or SketchToolKind.Offset
-		or SketchToolKind.Use or SketchToolKind.Cut;
+		or SketchToolKind.Use or SketchToolKind.Cut or SketchToolKind.Mirror;
 
 	// --- clicks ---------------------------------------------------------------------------------
 
@@ -99,6 +103,11 @@ internal sealed partial class EffigyViewport
 			case SketchToolKind.Use:
 				_pending.Clear();
 				ApplyUse();
+				return true;
+
+			case SketchToolKind.Mirror:
+				_pending.Clear();
+				ApplyMirror( p );
 				return true;
 
 			// A click never reaches here: CutStrokeFrame takes the press a step earlier in the frame
@@ -509,6 +518,10 @@ internal sealed partial class EffigyViewport
 			case SketchToolKind.Cut:
 				DrawCutStroke();
 				break;
+
+			case SketchToolKind.Mirror:
+				DrawMirrorPreview();
+				break;
 		}
 
 		return true;
@@ -600,6 +613,8 @@ internal sealed partial class EffigyViewport
 			SketchToolKind.Offset => "Offset - click which side, and how far",
 
 			SketchToolKind.Cut => "Cut - hold the left button and drag a line through what you want gone",
+
+			SketchToolKind.Mirror => MirrorPrompt(),
 
 			_ => null,
 		};

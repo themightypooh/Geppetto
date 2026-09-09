@@ -43,6 +43,17 @@ internal sealed class EffigyFeatureDialog : Widget
 	/// abandoned face pick would outlive the Cancel that was meant to undo it.</summary>
 	private List<Vec2> _regionSeedsSnapshot;
 
+	/// <summary>The parameter row a non-parameter control follows, and the control. Set for the
+	/// duration of one Rebuild by whichever branch wants one; see AddParamRows.</summary>
+	private IParam _followRowAfter;
+
+	private Func<Widget> _followRow;
+
+	/// <summary>Revolve's chosen axis line when the dialog opened. A plain string field like
+	/// <see cref="_sketchIdSnapshot"/>, so the generic snapshot cannot see it and Cancel has to put
+	/// it back by hand.</summary>
+	private string _axisLineIdSnapshot;
+
 	/// <summary>
 	/// Whether a sketch plane has actually been chosen.
 	///
@@ -557,6 +568,7 @@ internal sealed class EffigyFeatureDialog : Widget
 		_snapshot.Clear();
 		_sketchIdSnapshot = null;
 		_regionSeedsSnapshot = null;
+		_axisLineIdSnapshot = null;
 
 		if ( _feature is null )
 			return;
@@ -566,6 +578,9 @@ internal sealed class EffigyFeatureDialog : Widget
 			_sketchIdSnapshot = consumer.SketchFeatureId;
 			_regionSeedsSnapshot = consumer.RegionSeeds.ToList();
 		}
+
+		if ( _feature is RevolveFeature revolve )
+			_axisLineIdSnapshot = revolve.AxisLineId;
 
 		foreach ( var p in _feature.Parameters )
 		{
@@ -598,6 +613,9 @@ internal sealed class EffigyFeatureDialog : Widget
 			}
 		}
 
+		if ( _feature is RevolveFeature revolve && _axisLineIdSnapshot is not null )
+			revolve.AxisLineId = _axisLineIdSnapshot;
+
 		foreach ( var (p, value) in _snapshot )
 		{
 			switch ( p )
@@ -625,6 +643,9 @@ internal sealed class EffigyFeatureDialog : Widget
 		_materialRow = null;
 		_materialRowSlot = -1;
 		_advancedHeader = null;
+
+		_followRowAfter = null;
+		_followRow = null;
 	}
 
 	/// <summary>Re-read every parameter into its row, for when something outside the dialog is
@@ -962,6 +983,15 @@ internal sealed class EffigyFeatureDialog : Widget
 			// meant the dropdown was a quieter, worse copy of the one you can read from across the
 			// viewport, four rows down where a cut mode is exactly what you do not want to have to
 			// go looking for. Skipped by reference, the same way the sketch is.
+			// Revolve spinning about a line somebody drew: the line itself has no IParam — a curve
+			// reference has no generic control the way a float or a choice does — so it gets a row
+			// of its own directly under the Axis dropdown that asked for it.
+			if ( _feature is RevolveFeature revolve && revolve.UsesSketchLineAxis )
+			{
+				_followRowAfter = revolve.AxisMode;
+				_followRow = () => BuildAxisLineRow( revolve );
+			}
+
 			AddParamRows( _feature.Parameters, consumer.Sketch, consumer.Result );
 
 			return;
@@ -993,6 +1023,12 @@ internal sealed class EffigyFeatureDialog : Widget
 				continue;
 
 			AddRow( BuildParamRow( param ) );
+
+			// A control that is not a parameter but is the answer to the one above it — Revolve's
+			// axis line under its Axis dropdown. Placed here rather than appended at the end
+			// because a picker four rows below the choice it belongs to reads as unrelated.
+			if ( ReferenceEquals( param, _followRowAfter ) )
+				AddRow( _followRow?.Invoke() );
 		}
 
 		AddAdvancedRows( parameters );
@@ -1560,6 +1596,105 @@ internal sealed class EffigyFeatureDialog : Widget
 
 		layout.Add( toggle, 1 );
 		return row;
+	}
+
+	/// <summary>
+	/// The sketch an open consumer is pointed at, or null while it is still waiting to be told.
+	///
+	/// Resolved the same two ways ResolveSketch resolves it — a named id, or the most recent
+	/// sketch when the reference is unset — against the viewport's list, which the window has
+	/// already filtered to the sketches sitting ABOVE this feature. Reading that list rather than
+	/// the studio is what keeps the picker from offering a line the rebuild could not use.
+	/// </summary>
+	private Sketch ConsumedSketch( SketchConsumingFeature consumer )
+	{
+		var sketches = _viewport.PickableSketches;
+
+		if ( sketches.Count == 0 || consumer.IsAwaitingPick )
+			return null;
+
+		if ( string.IsNullOrEmpty( consumer.SketchFeatureId ) )
+			return sketches[sketches.Count - 1].Sketch;
+
+		return sketches.FirstOrDefault( s => s.FeatureId == consumer.SketchFeatureId )?.Sketch;
+	}
+
+	/// <summary>
+	/// Which line of the sketch the revolve spins about.
+	///
+	/// CONSTRUCTION LINES ARE LISTED, and are usually the answer: a lathe profile with a dashed
+	/// centreline down it is the drawing this mode exists for, and that centreline is exactly the
+	/// line the profile finder throws away. Offering only real edges would hide it.
+	///
+	/// It stores the curve's Id, so the axis follows the line when the line moves — see
+	/// RevolveFeature.AxisLineId. Nothing is chosen for you: an axis guessed from the drawing is
+	/// how a part comes back a different shape with nothing to say it changed.
+	/// </summary>
+	private Widget BuildAxisLineRow( RevolveFeature revolve )
+	{
+		var row = NewRow( out var layout, highlightLabel: RevolveFeature.AxisLineLabel );
+		layout.Add( new Editor.Label( RevolveFeature.AxisLineLabel ) { FixedWidth = 110 } );
+
+		var sketch = ConsumedSketch( revolve );
+		var lines = sketch?.Curves.OfType<SketchLine>().ToList() ?? new List<SketchLine>();
+		var chosen = lines.FindIndex( l => l.Id == revolve.AxisLineId );
+
+		var combo = new ComboBox( row );
+
+		var empty = sketch is null
+			? "Pick the profile first"
+			: lines.Count == 0 ? "This sketch has no straight lines" : "Choose a line";
+
+		combo.AddItem( empty, "", () =>
+		{
+			if ( revolve.AxisLineId.Length == 0 )
+				return;
+
+			revolve.AxisLineId = "";
+			RaiseEdited();
+		}, "", chosen < 0, true );
+
+		for ( var i = 0; i < lines.Count; i++ )
+		{
+			var line = lines[i];
+
+			combo.AddItem( DescribeLine( sketch, line, i + 1 ), "", () =>
+			{
+				if ( revolve.AxisLineId == line.Id )
+					return;
+
+				revolve.AxisLineId = line.Id;
+				RaiseEdited();
+			}, "", line.Id == revolve.AxisLineId, true );
+		}
+
+		combo.CurrentIndex = chosen + 1;
+
+		layout.Add( combo, 1 );
+		return row;
+	}
+
+	/// <summary>
+	/// One line of a sketch, said in a way you can match against the drawing.
+	///
+	/// Horizontal and vertical are called out by name because a lathe axis is one or the other
+	/// essentially always, and "vertical at x 0" is findable on screen in a way that four
+	/// coordinates is not. The ordinal is there for the case the coordinates coincide.
+	/// </summary>
+	private static string DescribeLine( Sketch sketch, SketchLine line, int ordinal )
+	{
+		var a = sketch.Points[line.Start];
+		var b = sketch.Points[line.End];
+
+		var where = MathF.Abs( a.x - b.x ) < 1e-4f
+			? $"vertical at x {a.x:0.###}"
+			: MathF.Abs( a.y - b.y ) < 1e-4f
+				? $"horizontal at y {a.y:0.###}"
+				: $"({a.x:0.###}, {a.y:0.###}) to ({b.x:0.###}, {b.y:0.###})";
+
+		return line.Construction
+			? $"Line {ordinal} — {where}, construction"
+			: $"Line {ordinal} — {where}";
 	}
 
 	private Widget BuildChoiceRow( ChoiceParam cp )

@@ -97,6 +97,8 @@ public static class Program
 
 		RigTests.Run();
 
+		BoneFromBodyTests.Run();
+
 		RigDiagnosticTests.Run();
 
 		SoftBoneTests.Run();

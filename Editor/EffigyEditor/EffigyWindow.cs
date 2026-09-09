@@ -964,7 +964,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	private List<EffigyStage> BuildSketchStages()
 	{
 		var select = SketchTool( EffigyIcon.SelectTool, "Select",
-			"Select - drag a point, or the grip at the middle of a curve; click points and curves to select them, and a selected point brings the rest of the selection with it",
+			"Select - drag a point, or the grip at the middle of a curve; click points and curves to select them, or drag a box on empty space (left to right takes what is inside, right to left takes what it touches); a selected point brings the rest of the selection with it",
 			SketchToolKind.Select );
 
 		var draw = new EffigyStage { Name = "Draw" };
@@ -1030,6 +1030,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			"Fillet - click a corner, then set the radius", SketchToolKind.Fillet ) );
 		modify.Add( SketchTool( EffigyIcon.OffsetTool, "Offset",
 			"Offset - click a curve, then which side and how far", SketchToolKind.Offset ) );
+		modify.Add( SketchTool( EffigyIcon.MirrorTool, "Mirror",
+			"Mirror - select what you want mirrored with the Select tool, then click the line to "
+			+ "reflect it across", SketchToolKind.Mirror ) );
 
 		// CUT sits with the four edits because that is what it does, but it is worked differently
 		// from every other tool here: hold the button and drag, and the line you draw cuts what it
@@ -3734,6 +3737,11 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 				_studio.HiddenBodyIds.Clear();
 				RebuildStudio();
 				break;
+
+			case EffigyPartCommand.MakeBone:
+				if ( _studio.Bodies.FirstOrDefault( b => b.Id == bodyId ) is { } part )
+					MakeBonesFromBodies( new[] { part } );
+				break;
 		}
 	}
 
@@ -3779,6 +3787,103 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		_rigPanel?.RefreshBodyAssignments();
 		_partsPanel?.Refresh();
+	}
+
+	/// <summary>
+	/// Derive a bone for each of <paramref name="bodies"/> and pin the body to it. The Parts list
+	/// arrives here with one body; the feature tree arrives with every body one feature produced.
+	///
+	/// PARENTED TO THE SELECTED BONE WHEN THERE IS ONE, and that is more than a convenience. The
+	/// selected bone's tail is handed over as the anchor, which is the only thing that can tell a
+	/// derived bone which of its two ends is the root — measuring a finger says where it lies, never
+	/// which end is the knuckle. With a palm bone selected, a row of fingers therefore comes out
+	/// pointing away from the palm together; with nothing selected they come out canonically
+	/// oriented and some will want turning around by hand.
+	///
+	/// A BODY WITH NO AXIS IS SKIPPED, NOT REFUSED. Asking for eight bones and finding that one of
+	/// the eight is a sphere should still leave seven bones and a note about the eighth, so nothing
+	/// is written until every body has been measured and the batch is known to be worth an undo
+	/// step.
+	/// </summary>
+	private void MakeBonesFromBodies( IReadOnlyList<Body> bodies )
+	{
+		if ( _studio is null || bodies is null || bodies.Count == 0 )
+			return;
+
+		var rig = _studio.Rig;
+
+		var parent = _rigPanel is { HasSelectedBone: true } panel
+			? rig.IndexOf( panel.SelectedBoneName )
+			: -1;
+
+		Vec3? anchor = parent >= 0 ? rig.TailWorld( parent ) : null;
+
+		var derived = new List<(Body Body, Vec3 Head, Vec3 Tail, Vec3 Up)>();
+		var skipped = new List<string>();
+
+		foreach ( var body in bodies )
+		{
+			if ( BoneFromBody.TryDerive( body.Mesh, out var head, out var tail, out var up, anchor ) )
+				derived.Add( (body, head, tail, up) );
+			else
+				skipped.Add( body.Name );
+		}
+
+		if ( derived.Count == 0 )
+		{
+			// No undo step, because nothing happened. Said out loud rather than silently, since a
+			// menu item that appears to do nothing is indistinguishable from a broken one.
+			Log.Warning( $"[Effigy] nothing to measure a bone along in {string.Join( ", ", skipped )}" );
+			return;
+		}
+
+		RecordUndo();
+
+		foreach ( var (body, head, tail, up) in derived )
+		{
+			// Named after the part, which is named after the feature that made it unless somebody
+			// renamed the part — so the bone carries whatever the modeller last called this thing,
+			// which is the whole reason the feature tree is a way in to this at all.
+			var name = rig.UniqueName( BoneNameFor( body.Name ) );
+
+			rig.AddBoneFromPoints( name, parent, head, tail, up );
+			_studio.BodyBoneMap[body.Id] = name;
+		}
+
+		NoteRigEdited();
+
+		_rigPanel?.Refresh();
+		_partsPanel?.Refresh();
+
+		if ( skipped.Count > 0 )
+		{
+			Log.Warning( $"[Effigy] {derived.Count} bone(s) made; "
+				+ $"no axis to measure along in {string.Join( ", ", skipped )}" );
+		}
+		else
+		{
+			Log.Info( $"[Effigy] {derived.Count} bone(s) made from the part's shape" );
+		}
+	}
+
+	/// <summary>
+	/// A part's name as a bone name.
+	///
+	/// Only whitespace is touched, and only because bone names travel: they are written into DMX,
+	/// SMD and the compiled model, read back by animation code, and typed into console commands
+	/// like the rig probe's. "index finger" survives all of those quoted and breaks the moment
+	/// something is not. Everything else about the name is left exactly as the modeller typed it —
+	/// a bone that does not match the part it came from would defeat the point of naming it after
+	/// the part.
+	/// </summary>
+	private static string BoneNameFor( string bodyName )
+	{
+		if ( string.IsNullOrWhiteSpace( bodyName ) )
+			return "bone";
+
+		var parts = bodyName.Split( (char[])null, StringSplitOptions.RemoveEmptyEntries );
+
+		return string.Join( "_", parts );
 	}
 
 	// --- pose preview -----------------------------------------------------------------------
@@ -4541,6 +4646,13 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 				RecordUndo();
 				_rollbackBeforeEdit = null;
 				SetRollback( int.MaxValue );
+				break;
+
+			// Bodies in the order the rebuild appended them, which is the order the feature made
+			// them in — so a pattern's copies become bones numbered the way the pattern laid them
+			// out rather than in some order of the rig's own.
+			case EffigyFeatureCommand.MakeBones:
+				MakeBonesFromBodies( _studio.Bodies.Where( b => b.FeatureId == feature.Id ).ToList() );
 				break;
 		}
 	}
@@ -7033,6 +7145,7 @@ internal enum EffigyFeatureCommand
 	RollbackTo,
 	RollForward,
 	Sculpt,
+	MakeBones,
 }
 
 /// <summary>What the Parts list's context menu asked the window to do. Same split as
@@ -7045,6 +7158,7 @@ internal enum EffigyPartCommand
 	Delete,
 	Isolate,
 	ShowAll,
+	MakeBone,
 }
 
 internal sealed class EffigyFeatureTreePanel : Widget
@@ -7231,6 +7345,28 @@ internal sealed class EffigyFeatureTreePanel : Widget
 			menu.AddOption( "Roll forward to end", "last_page",
 				() => CommandRequested?.Invoke( feature, EffigyFeatureCommand.RollForward ) );
 		}
+
+		menu.AddSeparator();
+
+		// RIGGING, REACHED FROM THE TREE — and note what it does not do. The rig stays out of the
+		// feature list for the reasons PartStudio.Rig gives, so this creates no feature and stores
+		// nothing here: it derives a bone for each body the feature PRODUCED, which is the same
+		// operation the Parts list offers one row at a time. The tree is offered as a way in
+		// because that is where the modeller typed the name, so it is where they look for the
+		// thing they named.
+		var produced = _studio?.Bodies.Count( b => b.FeatureId == feature.Id ) ?? 0;
+
+		var makeBones = menu.AddOption(
+			produced > 1 ? $"Make {produced} bones from this feature" : "Make a bone from this feature",
+			"straighten",
+			() => CommandRequested?.Invoke( feature, EffigyFeatureCommand.MakeBones ) );
+
+		makeBones.Enabled = produced > 0;
+
+		makeBones.StatusTip = produced > 0
+			? "Adds a bone spanning each part this feature made, and pins the part to it."
+			: "This feature changed parts that already existed rather than making one of its own, "
+				+ "so there is nothing here to hang a bone on.";
 
 		menu.AddSeparator();
 
@@ -7711,13 +7847,22 @@ internal sealed class EffigyPartsPanel : Widget
 		if ( siblings > 1 )
 			delete.StatusTip = "Removes the feature that made this part, and every other part it made.";
 
+		menu.AddSeparator();
+
+		// The other half of the binding below. "Assign" attaches this body to a bone somebody has
+		// already drawn; this measures the body and draws the bone for it. Deliberately NOT behind
+		// the same "are there bones yet" guard, because an empty rig is exactly when it is the only
+		// one of the two that can do anything.
+		var makeBone = menu.AddOption( "Make a bone from this part", "straighten",
+			() => CommandRequested?.Invoke( bodyId, EffigyPartCommand.MakeBone ) );
+
+		makeBone.StatusTip = "Adds a bone spanning the part's longest axis, and pins the part to it.";
+
 		// The body -> bone direction. The rig panel pins bodies to a bone from the bone's side; this
 		// is the same binding reachable from the body's side, so a part built of many bodies can be
 		// rigged without hunting through the bone tree for each one.
 		if ( _studio.Rig is { Count: > 0 } rig )
 		{
-			menu.AddSeparator();
-
 			var assign = menu.AddMenu( "Assign to bone", "account_tree" );
 
 			if ( _studio.BodyBoneMap.ContainsKey( bodyId ) )

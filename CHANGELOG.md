@@ -36,6 +36,23 @@ forgotten.
 ## Unreleased
 
 ### Added
+- **Revolve can spin about a line you drew in the sketch.** Set Axis to "A line of the sketch"
+  and pick the line from the new Axis line box — construction lines included, which is what the
+  dashed centreline of a lathe profile is. `RevolveFeature.AxisLineId`
+- The axis follows that line when you move it, so dragging the centreline moves the bore with it.
+- **Bones from the shape of your parts.** Right-click a part and pick **Make a bone from this
+  part**: it measures the part and adds a bone down its longest axis, already pinned to it.
+  `BoneFromBody`, `EffigyWindow.MakeBonesFromBodies`
+- The same from the feature tree — right-click the feature that built the parts and get one bone
+  per part it made, so a patterned row of eight fingers is one click instead of eight.
+- The bone takes the part's name, and a part is named after the feature that made it. Call the
+  extrude `index_finger` and that is what the bone is called.
+- It is rolled to match the part, so the flat of the bone runs with the flat of the part and there
+  is no arbitrary twist to undo on every one.
+- Select a bone first and the new ones hang off it, pointing away from it — which is also what
+  decides which end of the part is the root, so place the palm bone before the fingers.
+- A part with no long axis, like a sphere or a cube, is skipped and named in the console rather
+  than given a bone pointing nowhere in particular.
 - **Pose the rig and watch it bend.** A Pose button in the Rig panel — press it, drag a bone, and
   the mesh deforms with it, so a bad weight shows up as a crease instead of a number in a panel.
   Reset Pose (or toggling Pose off) returns to the bind pose; nothing is saved. Built on the same
@@ -54,6 +71,19 @@ forgotten.
   after you edit a feature underneath it and the part rebuilds.
 - Ctrl is read once, when you press. Letting go halfway through does not turn the back half
   of the mark into paint.
+- **Drag a box to select in a sketch.** Press on empty space in the sketcher and drag: left to
+  right takes only what is completely inside the box, right to left takes anything the box
+  touches, the same two boxes Onshape has. `EffigyViewport.Constraints.cs`
+- The box adds to what is already selected, so you can build a selection up out of several
+  boxes. Clicking empty space still clears it.
+- **A mirror tool.** Select the geometry, arm Mirror, and click the line to reflect it across.
+  `SketchEdit.Mirror`, `EffigyViewport.SketchMirror.cs`
+- The copy is held symmetric to the original rather than just pasted, so dragging one half
+  moves the other.
+- A point already sitting on the mirror line is shared rather than doubled, so a half profile
+  drawn against the line closes into one region when it is mirrored.
+- The selection stays lit while a tool that uses it is armed, so Mirror and Offset are no
+  longer aimed at something invisible.
 
 ## v368962 — 2026-09-09
 

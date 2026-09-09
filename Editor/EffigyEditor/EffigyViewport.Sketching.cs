@@ -46,6 +46,16 @@ internal enum SketchToolKind
 	/// here driven by a HELD BUTTON rather than by clicks, which is why it never reaches ClickTool
 	/// at all - see CutStrokeFrame in EffigyViewport.SketchTools.cs.</summary>
 	Cut,
+
+	/// <summary>
+	/// Reflect the selected geometry across a line you then click. Onshape's sketch Mirror.
+	///
+	/// THE ONLY TOOL HERE THAT CONSUMES A SELECTION rather than making one. Everything else acts on
+	/// what is under the cursor at the moment it is clicked; this acts on what was picked with the
+	/// Select tool before it was armed, and its one click names the axis. See
+	/// EffigyViewport.SketchMirror.cs.
+	/// </summary>
+	Mirror,
 }
 
 /// <summary>
@@ -578,9 +588,11 @@ internal sealed partial class EffigyViewport
 
 	/// <summary>Tools whose cursor is a POSITION rather than a point about to be placed, and which
 	/// therefore must not be rounded onto the grid or pulled onto existing geometry. Select reads
-	/// what is already there; Cut draws a path the hand made.</summary>
+	/// what is already there; Cut draws a path the hand made; Mirror points at a line and places
+	/// nothing at all, and a cursor rounded half a grid step off that line is a mirror that misses
+	/// its axis for no visible reason.</summary>
 	private static bool IsFreehandSketchTool( SketchToolKind tool ) =>
-		tool is SketchToolKind.Select or SketchToolKind.Cut;
+		tool is SketchToolKind.Select or SketchToolKind.Cut or SketchToolKind.Mirror;
 
 	/// <summary>Change the active sketch tool through one state boundary. Switching tools abandons
 	/// the half-finished entity, matching CAD sketchers instead of carrying stale clicks into the
@@ -3355,7 +3367,13 @@ internal sealed partial class EffigyViewport
 	{
 		// The selection outranks the tool's own prompt. While something is selected the next useful
 		// thing to know is what can be done with it, not how to draw another line.
-		SketchPromptChanged?.Invoke( SelectionPrompt() ?? CurrentPrompt() );
+		//
+		// EXCEPT FOR A TOOL THAT CONSUMES THE SELECTION. Mirror is armed with things already
+		// picked, so being told again how many of them there are is the one thing you already
+		// know; what its own prompt says is what it is about to do with them.
+		var selection = SketchTool == SketchToolKind.Mirror ? null : SelectionPrompt();
+
+		SketchPromptChanged?.Invoke( selection ?? CurrentPrompt() );
 	}
 
 	private string CurrentPrompt() => NewSketchToolPrompt() ?? SketchTool switch

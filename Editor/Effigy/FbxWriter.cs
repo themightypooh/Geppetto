@@ -12,16 +12,22 @@ namespace Effigy;
 ///
 /// WHY FBX AND NOT DMX. ModelDoc takes "FBX, DMX, OBJ, VOX". DmxWriter's header argues that DMX is
 /// the only option on the grounds that "FBX is a binary format nobody should hand-write". That is
-/// wrong twice over, and the engine ships the proof in bin/win64:
-///
-///   fbx2dmx.exe     the engine's own FBX importer
-///   libfbxsdk.dll   Autodesk's official SDK, which reads ASCII FBX as happily as binary
+/// wrong twice over, and the engine ships the proof in bin/win64 as fbx2dmx.exe, its own FBX
+/// importer, which reads ASCII FBX as happily as binary.
 ///
 /// So writing FBX means fbx2dmx produces the DMX, and the job of getting DMX exactly right stops
 /// being ours. That is the entire argument for this file: not that FBX is a nicer format, but that
-/// it hands a decades-hardened importer the work we were otherwise doing by hand from strings
-/// scraped out of a DLL. DmxWriter still works and still ships — this is the path that does not
-/// depend on our own reading of a format.
+/// it hands a hardened importer the work we were otherwise doing by hand from strings scraped out
+/// of a DLL. DmxWriter still works and still ships — this is the path that does not depend on our
+/// own reading of a format.
+///
+/// THE IMPORTER UNDERNEATH IT CHANGED, AND THIS PATH SURVIVED IT. Until s&box 26.09.08 that was
+/// Autodesk's own libfbxsdk.dll, and the argument above used to lean on the SDK's pedigree by name.
+/// That update removed the Autodesk SDK and rebuilt fbx2dmx on ufbx. The exe is still there, still
+/// takes the same flags, and still reads what this writes — checked, not assumed, by running the
+/// oracle below over out/sample_rigged.fbx and feeding the result to dmxconvert. Worth remembering
+/// if the output ever stops loading: the reader on the far side is no longer the one this file was
+/// originally written against, so a fault could be ours OR a corner ufbx reads differently.
 ///
 /// IT ALSO COMES WITH AN ORACLE. Any file this writes can be checked without the editor running:
 ///

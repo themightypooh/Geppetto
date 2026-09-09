@@ -85,14 +85,36 @@ internal sealed partial class EffigyViewport
 	{
 		_hoverCurveId = null;
 
-		if ( ActiveSketch is null || SketchTool != SketchToolKind.Select )
+		if ( ActiveSketch is null )
 		{
 			_pressedPoint = -1;
+			_boxSelecting = false;
 			return;
 		}
 
+		// PRUNED AND DRAWN WHATEVER TOOL IS ARMED, which it was not before. Mirror and Offset both
+		// act on the selection rather than on what is under the cursor, and a selection you cannot
+		// see while the tool that eats it is armed is a tool aimed at something invisible. Only the
+		// picking below is Select's alone.
 		PruneSelection();
 		DrawSketchSelection();
+
+		if ( SketchTool != SketchToolKind.Select )
+		{
+			_pressedPoint = -1;
+			_boxSelecting = false;
+			return;
+		}
+
+		// A box owns the mouse from the frame it starts until the button comes up, wherever the
+		// cursor wanders in between - the same rule the cut stroke follows, and for the same
+		// reason: a gesture that ends because the hand crossed the edge of the canvas is a gesture
+		// that appears to drop input.
+		if ( _boxSelecting )
+		{
+			BoxSelectFrame();
+			return;
+		}
 
 		// A press that landed on a point is settled on RELEASE: moved means it was a drag and the
 		// selection is none of its business, still means it was a click.
@@ -150,10 +172,269 @@ internal sealed partial class EffigyViewport
 			return;
 		}
 
-		// Empty plane. Clearing here is what makes the accumulating selection bearable — there is
-		// always somewhere to click that means "start again".
-		if ( HasSketchSelection )
+		// Empty plane. A press here is either a click - which clears, and clearing is what makes
+		// the accumulating selection bearable, since there is always somewhere to press that means
+		// "start again" - or the corner of a box. Which one it was is not knowable until the button
+		// comes up, so the box starts either way and BoxSelectFrame decides on release.
+		BeginBoxSelect( _cursorOnPlane );
+	}
+
+	// --- the drag box -----------------------------------------------------------------------------
+	//
+	// ONSHAPE'S TWO BOXES, both of them. Drag LEFT TO RIGHT and only what is entirely inside the box
+	// is taken; drag RIGHT TO LEFT and anything the box so much as touches is taken. They are not
+	// decoration on one another: a window box is how you take a whole feature out of a crowded
+	// sketch without its neighbours, and a crossing box is how you take a long line whose ends are
+	// both somewhere off screen. Neither can do the other's job, which is why every CAD package
+	// ships both.
+	//
+	// IT ADDS TO THE SELECTION RATHER THAN REPLACING IT. Onshape replaces unless you hold shift,
+	// and this file has already made the opposite trade for clicks - see the header - so a box that
+	// replaced would be the one gesture here that throws away what you picked a moment ago. A press
+	// on empty space still clears, so "start again" is still one click away.
+	//
+	// THE RECTANGLE IS IN SKETCH-PLANE COORDINATES, not in screen pixels. Everything else in this
+	// sketcher is picked on the plane, and it is the only frame in which "inside the box" means
+	// something stable while the camera moves. The one thing that DOES have to come from the screen
+	// is which way the drag went, because plane x and the direction your hand moved are unrelated
+	// once the view is turned around - so the left-to-right test is taken against the camera's own
+	// right, and reads the way it looks.
+
+	/// <summary>True between the press on empty plane and the release.</summary>
+	private bool _boxSelecting;
+
+	/// <summary>The corner the press landed on, and the corner the cursor is at now.</summary>
+	private Vec2 _boxFrom, _boxTo;
+
+	/// <summary>How far, in SCREEN PIXELS, the cursor has to travel before a press stops being a
+	/// click that clears and starts being a box. Small enough that a deliberate box is never
+	/// mistaken for a click, large enough that a hand that shifts a pixel on the way up does not
+	/// turn "clear the selection" into "select nothing".</summary>
+	private const float BoxSelectPixels = 4f;
+
+	/// <summary>The window box: solid, and the same blue selected geometry is drawn in, because
+	/// what it takes is what ends up that colour.</summary>
+	private static readonly Color SketchBoxColor = new( 0.35f, 0.78f, 1f, 1f );
+
+	/// <summary>The crossing box: green and dashed, which is the convention every CAD package
+	/// shares and the one thing about box select that is worth not inventing.</summary>
+	private static readonly Color SketchBoxCrossColor = new( 0.45f, 1f, 0.6f, 1f );
+
+	private void BeginBoxSelect( Vec2 at )
+	{
+		_boxSelecting = true;
+		_boxFrom = at;
+		_boxTo = at;
+	}
+
+	/// <summary>Track the box, draw it, and on release either take what it covers or - if it never
+	/// grew - treat the press as the plain click it turned out to be.</summary>
+	private void BoxSelectFrame()
+	{
+		// A cursor off the canvas or off the plane freezes the corner where it was rather than
+		// ending the box. Same as the cut stroke: a drag that swings out over the tool strip and
+		// back is one gesture.
+		if ( _canvasHasCursor && _cursorOnPlaneValid )
+			_boxTo = _cursorOnPlane;
+
+		if ( Gizmo.IsLeftMouseDown )
+		{
+			if ( BoxGrew() )
+				DrawSelectBox();
+
+			return;
+		}
+
+		var grew = BoxGrew();
+
+		_boxSelecting = false;
+
+		if ( grew )
+			ApplyBoxSelection();
+		else if ( HasSketchSelection )
 			ClearSketchSelection();
+	}
+
+	/// <summary>Whether the box is big enough to have been meant. Either side on its own is enough:
+	/// a box drawn along a row of collinear points is a legitimate shape to want.</summary>
+	private bool BoxGrew()
+	{
+		var reach = UnitsPerPixel() * BoxSelectPixels;
+
+		return MathF.Abs( _boxTo.x - _boxFrom.x ) > reach || MathF.Abs( _boxTo.y - _boxFrom.y ) > reach;
+	}
+
+	/// <summary>Whether this is a CROSSING box - dragged right to left, taking anything it touches -
+	/// rather than a window box. Measured against the camera's right rather than against plane x,
+	/// so it means the direction the hand actually went whichever way the view is turned.</summary>
+	private bool BoxIsCrossing() =>
+		Vector3.Dot( PlaneToWorld( _boxTo ) - PlaneToWorld( _boxFrom ), _camera.WorldRotation.Right ) < 0f;
+
+	private void ApplyBoxSelection()
+	{
+		var min = new Vec2( MathF.Min( _boxFrom.x, _boxTo.x ), MathF.Min( _boxFrom.y, _boxTo.y ) );
+		var max = new Vec2( MathF.Max( _boxFrom.x, _boxTo.x ), MathF.Max( _boxFrom.y, _boxTo.y ) );
+		var crossing = BoxIsCrossing();
+
+		for ( var i = 0; i < ActiveSketch.Points.Count; i++ )
+		{
+			// A point has no size, so there is nothing for a crossing box to catch that a window
+			// box would not - the two modes are the same test here, and only differ for curves.
+			if ( Inside( ActiveSketch.Points[i], min, max ) && !SketchSelection.Points.Contains( i ) )
+				SketchSelection.Points.Add( i );
+		}
+
+		foreach ( var curve in ActiveSketch.Curves )
+		{
+			if ( SketchSelection.Curves.Contains( curve.Id ) )
+				continue;
+
+			if ( CurveInBox( curve, min, max, crossing ) )
+				SketchSelection.Curves.Add( curve.Id );
+		}
+
+		PushPrompt();
+	}
+
+	/// <summary>
+	/// Whether the box takes this curve, tested against its TESSELLATION - so an arc is caught
+	/// where it is drawn rather than where its ideal geometry would put it, which is the same rule
+	/// CurveUnderCursor picks by.
+	///
+	/// The crossing test is segment-against-rectangle rather than "is any sample inside", because a
+	/// line long enough to cross a small box has no sample in it at all: both its ends are outside
+	/// and the tessellation of a straight line is its two ends. That case - a box thrown across a
+	/// long edge - is most of what a crossing box is FOR.
+	/// </summary>
+	private bool CurveInBox( SketchCurve curve, Vec2 min, Vec2 max, bool crossing )
+	{
+		var points = curve.Tessellate( ActiveSketch, ActiveSketch.Tolerance );
+
+		if ( points.Count == 0 )
+			return false;
+
+		if ( !crossing )
+		{
+			foreach ( var p in points )
+			{
+				if ( !Inside( p, min, max ) )
+					return false;
+			}
+
+			return true;
+		}
+
+		for ( var i = 0; i < points.Count - 1; i++ )
+		{
+			if ( SegmentHitsBox( points[i], points[i + 1], min, max ) )
+				return true;
+		}
+
+		return points.Count == 1 && Inside( points[0], min, max );
+	}
+
+	private static bool Inside( Vec2 p, Vec2 min, Vec2 max ) =>
+		p.x >= min.x && p.x <= max.x && p.y >= min.y && p.y <= max.y;
+
+	/// <summary>Whether a segment touches an axis-aligned box at all — Liang-Barsky, clipping the
+	/// segment against the four slabs and asking whether anything is left.</summary>
+	private static bool SegmentHitsBox( Vec2 a, Vec2 b, Vec2 min, Vec2 max )
+	{
+		var t0 = 0f;
+		var t1 = 1f;
+		var dx = b.x - a.x;
+		var dy = b.y - a.y;
+
+		return Clip( -dx, a.x - min.x, ref t0, ref t1 )
+			&& Clip( dx, max.x - a.x, ref t0, ref t1 )
+			&& Clip( -dy, a.y - min.y, ref t0, ref t1 )
+			&& Clip( dy, max.y - a.y, ref t0, ref t1 );
+	}
+
+	/// <summary>One slab of the clip. A zero <paramref name="p"/> means the segment runs parallel
+	/// to this pair of edges, so it survives only if it started between them.</summary>
+	private static bool Clip( float p, float q, ref float t0, ref float t1 )
+	{
+		if ( MathF.Abs( p ) < 1e-12f )
+			return q >= 0f;
+
+		var r = q / p;
+
+		if ( p < 0f )
+		{
+			if ( r > t1 )
+				return false;
+
+			if ( r > t0 )
+				t0 = r;
+
+			return true;
+		}
+
+		if ( r < t0 )
+			return false;
+
+		if ( r < t1 )
+			t1 = r;
+
+		return true;
+	}
+
+	private void DrawSelectBox()
+	{
+		var crossing = BoxIsCrossing();
+		var color = crossing ? SketchBoxCrossColor : SketchBoxColor;
+
+		var a = new Vec2( _boxFrom.x, _boxFrom.y );
+		var b = new Vec2( _boxTo.x, _boxFrom.y );
+		var c = new Vec2( _boxTo.x, _boxTo.y );
+		var d = new Vec2( _boxFrom.x, _boxTo.y );
+
+		Gizmo.Draw.IgnoreDepth = true;
+
+		// A wash inside it, so the box reads as an area rather than as four lines that happen to
+		// meet. Faint enough that the geometry underneath is still the thing you are looking at.
+		Gizmo.Draw.Color = color.WithAlpha( 0.1f );
+		Gizmo.Draw.SolidTriangle( new Triangle( PlaneToWorld( a ), PlaneToWorld( b ), PlaneToWorld( c ) ) );
+		Gizmo.Draw.SolidTriangle( new Triangle( PlaneToWorld( a ), PlaneToWorld( c ), PlaneToWorld( d ) ) );
+
+		Gizmo.Draw.Color = color;
+		Gizmo.Draw.LineThickness = 1.5f;
+
+		BoxEdge( a, b, crossing );
+		BoxEdge( b, c, crossing );
+		BoxEdge( c, d, crossing );
+		BoxEdge( d, a, crossing );
+
+		Gizmo.Draw.IgnoreDepth = false;
+	}
+
+	/// <summary>One edge of the box: solid for a window, dashed for a crossing. The dash length is
+	/// in SCREEN PIXELS, so the two boxes look like themselves at any zoom rather than the dashes
+	/// closing up into a solid line on a small sketch.</summary>
+	private void BoxEdge( Vec2 from, Vec2 to, bool dashed )
+	{
+		if ( !dashed )
+		{
+			Gizmo.Draw.Line( PlaneToWorld( from ), PlaneToWorld( to ) );
+			return;
+		}
+
+		var along = to - from;
+		var length = along.Length;
+		var dash = UnitsPerPixel() * 5f;
+
+		if ( length < 1e-6f || dash < 1e-9f )
+			return;
+
+		for ( var travelled = 0f; travelled < length; travelled += dash * 2f )
+		{
+			var head = MathF.Min( travelled + dash, length );
+
+			Gizmo.Draw.Line(
+				PlaneToWorld( from + along * (travelled / length) ),
+				PlaneToWorld( from + along * (head / length) ) );
+		}
 	}
 
 	/// <summary>The curve nearest the cursor within the pick radius, or null. Measured against the

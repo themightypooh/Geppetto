@@ -869,6 +869,182 @@ public static class SketchEdit
 		return true;
 	}
 
+	/// <summary>
+	/// Reflect sketch geometry across one of its own lines. Onshape's sketch Mirror.
+	///
+	/// THE AXIS IS A LINE IN THE SKETCH, not an angle typed at the tool, and the reflection is
+	/// recorded as <see cref="SketchConstraintKind.Symmetric"/> rules against that line's own two
+	/// points. So the mirror SURVIVES EDITING: drag the original half and the copy follows, drag
+	/// the axis and both halves swing with it. A mirror that only copied coordinates would come
+	/// apart the first time anything moved, which is the whole difference between a mirror and a
+	/// paste.
+	///
+	/// A POINT ALREADY ON THE AXIS REFLECTS TO ITSELF AND IS REUSED rather than duplicated. That is
+	/// what closes a mirrored half-profile: the two halves meet at the same point INDICES, so the
+	/// loop walk joins them into one region. Duplicating them would leave two points a
+	/// floating-point hair apart and a profile that refuses to close for no visible reason — the
+	/// same failure the shared-point model in <see cref="SketchCurve"/> exists to prevent.
+	///
+	/// The copies are added to the sketch AND returned, the same way <see cref="Offset"/> hands
+	/// back what it made, so a caller can pick the new curves out without diffing the list.
+	/// </summary>
+	public static bool Mirror( Sketch sketch, IReadOnlyList<SketchCurve> curves, IReadOnlyList<int> points,
+		SketchLine axis, out List<SketchCurve> created, out string error )
+	{
+		created = new List<SketchCurve>();
+		error = null;
+
+		if ( axis is null )
+		{
+			error = "A mirror needs a straight line to reflect across.";
+			return false;
+		}
+
+		if ( axis.Start < 0 || axis.Start >= sketch.Points.Count
+			|| axis.End < 0 || axis.End >= sketch.Points.Count )
+		{
+			error = "That mirror line is not part of this sketch.";
+			return false;
+		}
+
+		var a = sketch.Points[axis.Start];
+		var b = sketch.Points[axis.End];
+
+		if ( (b - a).Length < Eps )
+		{
+			error = "The mirror line has no length.";
+			return false;
+		}
+
+		// THE AXIS IS NEVER MIRRORED, even when it was part of the selection. Its reflection is
+		// itself, so a copy would be a second line lying exactly on the first — invisible, and
+		// picked instead of the original about half the time from then on.
+		var source = new List<SketchCurve>();
+
+		if ( curves is not null )
+		{
+			foreach ( var curve in curves )
+			{
+				if ( curve is null || ReferenceEquals( curve, axis ) || source.Contains( curve ) )
+					continue;
+
+				if ( curve is not (SketchLine or SketchArc or SketchCircle or SketchEllipse or SketchSpline) )
+				{
+					// Checked for the WHOLE selection before anything is written, the same as
+					// Offset. A refusal half way through would leave a sketch that is neither what
+					// it was nor what was asked for.
+					error = $"Mirroring a {curve.GetType().Name} is not supported.";
+					return false;
+				}
+
+				source.Add( curve );
+			}
+		}
+
+		var lonePoints = new List<int>();
+
+		if ( points is not null )
+		{
+			foreach ( var point in points )
+			{
+				if ( point >= 0 && point < sketch.Points.Count && !lonePoints.Contains( point ) )
+					lonePoints.Add( point );
+			}
+		}
+
+		if ( source.Count == 0 && lonePoints.Count == 0 )
+		{
+			error = "Nothing was selected to mirror.";
+			return false;
+		}
+
+		var map = new Dictionary<int, int>();
+
+		int Reflected( int index )
+		{
+			if ( map.TryGetValue( index, out var already ) )
+				return already;
+
+			var from = sketch.Points[index];
+			var to = Reflect( from, a, b );
+			int made;
+
+			if ( (to - from).Length < Eps )
+			{
+				// On the axis. Its own mirror image, so the copy shares the point rather than
+				// stacking a second one on it — see the note above about closing a half-profile.
+				made = index;
+			}
+			else
+			{
+				made = sketch.AddPoint( to );
+
+				sketch.Constraints.Add( new SketchConstraint(
+					SketchConstraintKind.Symmetric, index, made, axis.Start, axis.End ) );
+			}
+
+			map[index] = made;
+			return made;
+		}
+
+		foreach ( var point in lonePoints )
+			Reflected( point );
+
+		foreach ( var curve in source )
+		{
+			var copy = Reflect( curve, Reflected );
+
+			// Construction carries across rather than being re-decided. Mirroring a centreline
+			// should give a centreline; mirroring a wall should give a wall.
+			copy.Construction = curve.Construction;
+
+			created.Add( sketch.Add( copy ) );
+		}
+
+		return true;
+	}
+
+	/// <summary>
+	/// One curve reflected, with its points already mapped through <paramref name="point"/>.
+	///
+	/// A FRESH CURVE RATHER THAN Clone(), because Clone keeps the Id — two curves answering to the
+	/// same id would make every lookup in the sketcher a coin flip.
+	/// </summary>
+	static SketchCurve Reflect( SketchCurve curve, Func<int, int> point ) => curve switch
+	{
+		SketchLine line => new SketchLine( point( line.Start ), point( line.End ) ),
+
+		// THE SWEEP FLIPS. A reflection reverses handedness, so an arc that ran counter-clockwise
+		// runs clockwise in the mirror. Left alone, the copy would take the long way round between
+		// the same two ends and the mirrored shape would be inside out.
+		SketchArc arc => new SketchArc( point( arc.Center ), point( arc.Start ), point( arc.End ), !arc.Clockwise ),
+
+		SketchCircle circle => new SketchCircle( point( circle.Center ), circle.Radius ),
+		SketchEllipse ellipse => new SketchEllipse( point( ellipse.Center ), point( ellipse.MajorPoint ), ellipse.MinorRadius ),
+		SketchSpline spline => new SketchSpline( spline.Points.Select( point ).ToList(), spline.Closed ),
+		_ => null,
+	};
+
+	/// <summary>
+	/// A point reflected across the line through <paramref name="a"/> and <paramref name="b"/>.
+	///
+	/// Public because the sketcher draws the mirror before you commit to it, and a preview computed
+	/// any other way is a preview that can disagree with the result.
+	/// </summary>
+	public static Vec2 Reflect( Vec2 p, Vec2 a, Vec2 b )
+	{
+		var along = (b - a).Normal;
+
+		// Vec2.Normal answers Zero for a degenerate vector rather than NaN, so a zero-length axis
+		// leaves the point where it is instead of poisoning the sketch.
+		if ( along.LengthSquared < 0.5f )
+			return p;
+
+		var v = p - a;
+
+		return a + along * (2f * Vec2.Dot( v, along )) - v;
+	}
+
 	static bool Touching( SketchCurve a, SketchCurve b )
 	{
 		var (a0, a1) = a.Endpoints;

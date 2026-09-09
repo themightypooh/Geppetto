@@ -87,14 +87,13 @@ public sealed class Skeleton
 	/// Add a bone from a head and tail point in WORLD bind space, which is what drawing a bone
 	/// chain in a viewport produces.
 	///
-	/// The bone's +Y is aimed head→tail; the other two axes are any stable perpendicular pair,
-	/// since nothing here has a concept of roll yet. If roll ever matters — it will, the moment
-	/// anyone hand-authors a twist — LocalFromWorldPoints is the function that grows a parameter,
-	/// and nothing else has to change.
+	/// The bone's +Y is aimed head→tail. <paramref name="up"/> settles the roll about that aim by
+	/// naming which way the bone's +Z should lean; leave it null and the roll is an arbitrary but
+	/// stable perpendicular, which is all this took before roll could be asked for.
 	/// </summary>
-	public int AddBoneFromPoints( string name, int parent, Vec3 head, Vec3 tail )
+	public int AddBoneFromPoints( string name, int parent, Vec3 head, Vec3 tail, Vec3? up = null )
 	{
-		var (local, length) = LocalFromWorldPoints( parent, head, tail, name );
+		var (local, length) = LocalFromWorldPoints( parent, head, tail, name, up );
 		return AddBone( name, parent, local, length );
 	}
 
@@ -107,21 +106,22 @@ public sealed class Skeleton
 	/// bone, and WorldBind always walks the parent chain fresh rather than caching a result, so
 	/// they follow automatically the moment this bone's Local changes underneath them.
 	/// </summary>
-	public void SetHeadTail( int index, Vec3 head, Vec3 tail )
+	public void SetHeadTail( int index, Vec3 head, Vec3 tail, Vec3? up = null )
 	{
 		if ( index < 0 || index >= Bones.Count )
 			throw new ArgumentOutOfRangeException( nameof( index ) );
 
-		var (local, length) = LocalFromWorldPoints( Bones[index].Parent, head, tail, Bones[index].Name );
+		var (local, length) = LocalFromWorldPoints( Bones[index].Parent, head, tail, Bones[index].Name, up );
 
 		Bones[index].Local = local;
 		Bones[index].Length = length;
 	}
 
 	/// <summary>Shared math behind AddBoneFromPoints and SetHeadTail — a bone's Local and Length
-	/// from a head/tail pair in world space and the parent it will sit under. One copy so a future
-	/// change (roll, most likely) cannot land in one caller and not the other.</summary>
-	(Xform local, float length) LocalFromWorldPoints( int parent, Vec3 head, Vec3 tail, string boneNameForError )
+	/// from a head/tail pair in world space and the parent it will sit under. One copy so a change
+	/// to how the axes are built cannot land in one caller and not the other.</summary>
+	(Xform local, float length) LocalFromWorldPoints( int parent, Vec3 head, Vec3 tail, string boneNameForError,
+		Vec3? up = null )
 	{
 		var along = tail - head;
 		var length = along.Length;
@@ -132,16 +132,53 @@ public sealed class Skeleton
 
 		var y = along / length;
 
-		// Any axis not parallel to y works as a seed; picking the one y leans on least keeps the
-		// cross product well-conditioned.
-		var seed = MathF.Abs( y.x ) < 0.9f ? new Vec3( 1, 0, 0 ) : new Vec3( 0, 0, 1 );
-		var x = Vec3.Cross( seed, y ).Normal;
-		var z = Vec3.Cross( x, y );
+		var (x, z) = PerpendicularAxes( y, up );
 
 		var world = new Xform( x, y, z, head );
 		var local = parent < 0 ? world : WorldBind( parent ).Inverse * world;
 
 		return (local, length);
+	}
+
+	/// <summary>
+	/// The two axes across a bone, given the one along it.
+	///
+	/// WHY ROLL IS WORTH A PARAMETER. Aiming a bone head→tail pins two of its three axes and
+	/// leaves it free to spin about its own length, and something has to choose. Choosing
+	/// arbitrarily is fine for a bone that only ever bends — but not for one an animator snaps a
+	/// hand or a prop onto, where "which way is up" is the whole point of the bone existing. A
+	/// grip bone whose roll came out of whichever world axis it happened to lean on least hands
+	/// the animator a rotation to undo by eye on every single weapon.
+	///
+	/// So <paramref name="up"/> names the direction the bone's +Z should lean, and the component
+	/// of it along the bone is projected out — the caller says roughly which way is up and does
+	/// not have to supply something exactly perpendicular.
+	///
+	/// A hint parallel to the bone selects nothing (its perpendicular component is zero), and so
+	/// does no hint at all, so both fall back to the arbitrary-but-stable seed this used before
+	/// roll could be asked for. Falling back rather than throwing is deliberate: a hint is a
+	/// preference, and a bone aimed straight up with an up-hint of +Z is a caller being consistent
+	/// rather than one making a mistake.
+	/// </summary>
+	static (Vec3 X, Vec3 Z) PerpendicularAxes( Vec3 y, Vec3? up )
+	{
+		if ( up is Vec3 hint )
+		{
+			var z = hint - y * Vec3.Dot( hint, y );
+
+			if ( z.Length > 1e-4f )
+			{
+				z = z.Normal;
+				return (Vec3.Cross( y, z ), z);
+			}
+		}
+
+		// Any axis not parallel to y works as a seed; picking the one y leans on least keeps the
+		// cross product well-conditioned.
+		var seed = MathF.Abs( y.x ) < 0.9f ? new Vec3( 1, 0, 0 ) : new Vec3( 0, 0, 1 );
+		var sx = Vec3.Cross( seed, y ).Normal;
+
+		return (sx, Vec3.Cross( sx, y ));
 	}
 
 	public int IndexOf( string name )
@@ -323,7 +360,16 @@ public sealed class Skeleton
 		return name + "_mirrored";
 	}
 
-	string UniqueName( string baseName )
+	/// <summary>
+	/// <paramref name="baseName"/> if no bone has it, otherwise the same with the lowest free
+	/// numeric suffix.
+	///
+	/// Public because a caller naming a bone after something else — a body, a feature — has the
+	/// same collision to solve and no way to solve it as cheaply from outside. AddBone throws on a
+	/// duplicate, which is right for a name somebody typed and wrong for one derived from a model
+	/// where two parts are perfectly entitled to share a name.
+	/// </summary>
+	public string UniqueName( string baseName )
 	{
 		if ( IndexOf( baseName ) < 0 )
 			return baseName;

@@ -31,6 +31,9 @@ public static class RigTests
 		Section( "editing a bone's head/tail numerically" );
 		TestSetHeadTail();
 
+		Section( "an up-hint settles a bone's roll" );
+		TestBoneRoll();
+
 		Section( "Euler conversion round-trips" );
 		TestEuler();
 
@@ -118,6 +121,64 @@ public static class RigTests
 		threw = false;
 		try { angled.AddBoneFromPoints( "z", -1, Vec3.Zero, Vec3.Zero ); } catch ( ArgumentException ) { threw = true; }
 		Check( "a zero-length bone is refused", threw );
+	}
+
+	/// <summary>
+	/// The up-hint on AddBoneFromPoints, which is what makes a grip or muzzle bone land at a roll
+	/// an animator can predict rather than one falling out of whichever world axis the bone leaned
+	/// on least.
+	/// </summary>
+	static void TestBoneRoll()
+	{
+		// Aimed down +X, so the roll is genuinely free and any of the three answers below is
+		// geometrically valid. That is exactly why the caller has to be able to pick one.
+		var head = new Vec3( 0, 0, 0 );
+		var tail = new Vec3( 4, 0, 0 );
+
+		var up = new Skeleton();
+		up.AddBoneFromPoints( "aim", -1, head, tail, new Vec3( 0, 0, 1 ) );
+		var world = up.WorldBind( 0 );
+
+		Check( "+Y still runs head to tail", Near( world.Y, new Vec3( 1, 0, 0 ) ), world.Y.ToString() );
+		Check( "+Z takes the up-hint", Near( world.Z, new Vec3( 0, 0, 1 ) ), world.Z.ToString() );
+		Check( "the basis stays right-handed",
+			Near( Vec3.Cross( world.Y, world.Z ), world.X ), world.X.ToString() );
+
+		// Rolled a quarter turn: same aim, different up, and the bone has to follow the hint
+		// rather than snap back to a canonical answer.
+		var side = new Skeleton();
+		side.AddBoneFromPoints( "aim", -1, head, tail, new Vec3( 0, 1, 0 ) );
+		Check( "a different hint rolls the bone", Near( side.WorldBind( 0 ).Z, new Vec3( 0, 1, 0 ) ),
+			side.WorldBind( 0 ).Z.ToString() );
+
+		// A hint need not be perpendicular — the component along the bone is projected out, so
+		// "roughly upwards" is a usable thing to pass.
+		var sloppy = new Skeleton();
+		sloppy.AddBoneFromPoints( "aim", -1, head, tail, new Vec3( 9, 0, 1 ) );
+		Check( "a hint along the bone is projected out",
+			Near( sloppy.WorldBind( 0 ).Z, new Vec3( 0, 0, 1 ) ), sloppy.WorldBind( 0 ).Z.ToString() );
+
+		// Parallel to the aim it selects nothing, and that must degrade to the old arbitrary
+		// perpendicular rather than throwing or producing a zero axis — a caller passing a
+		// constant up-vector for every bone in a rig will hit this on the one bone that points up.
+		var degenerate = new Skeleton();
+		degenerate.AddBoneFromPoints( "aim", -1, head, tail, new Vec3( 1, 0, 0 ) );
+		var fallback = degenerate.WorldBind( 0 );
+		var plain = new Skeleton();
+		plain.AddBoneFromPoints( "aim", -1, head, tail );
+
+		Check( "a hint along the aim falls back rather than throwing",
+			Near( fallback.Z, plain.WorldBind( 0 ).Z ), fallback.Z.ToString() );
+		Check( "the fallback basis is still unit length",
+			MathF.Abs( fallback.Z.Length - 1f ) < 1e-4f, fallback.Z.Length.ToString() );
+
+		// The no-hint path has to be untouched: every existing rig and every test above it was
+		// built without one, and a change in that answer would move geometry nobody edited.
+		var before = new Skeleton();
+		before.AddBoneFromPoints( "a", -1, new Vec3( 1, 0, 0 ), new Vec3( 3, 1, 0 ) );
+		Check( "no hint keeps the original axes",
+			Near( before.WorldBind( 0 ).X, Vec3.Cross( new Vec3( 1, 0, 0 ),
+				(new Vec3( 3, 1, 0 ) - new Vec3( 1, 0, 0 )).Normal ).Normal ) );
 	}
 
 	/// <summary>Three-bone chain: root -> mid -> tip. Deleting the middle one is the case that

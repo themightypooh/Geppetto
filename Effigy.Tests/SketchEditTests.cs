@@ -32,6 +32,9 @@ public static class SketchEditTests
 
 		Report.Section( "sketch cut stroke" );
 		TestCut();
+
+		Report.Section( "sketch mirror" );
+		TestMirror();
 	}
 
 	static void TestFillet()
@@ -461,6 +464,220 @@ public static class SketchEditTests
 		Report.Check( "a spline, which trim will not cut, goes whole",
 			SketchCut.Cut( wiggly, new Vec2( 1f, 0f ), new Vec2( 1f, 3f ) ) == 1 && wiggly.Curves.Count == 0,
 			$"{wiggly.Curves.Count} curves left" );
+	}
+
+	/// <summary>
+	/// Mirror, which is the one edit here that ADDS geometry rather than reshaping what is there —
+	/// and the only one whose result has to survive being dragged afterwards.
+	///
+	/// So the checks come in two halves. The first is the reflection itself: the copies land where
+	/// the closed form says, an arc's sweep flips, and a point already on the axis is SHARED rather
+	/// than duplicated. The second is the part that makes it a mirror instead of a paste — the
+	/// Symmetric rules it leaves behind hold, and moving an original drags its reflection after it.
+	/// A test that only checked coordinates would pass for a mirror that falls apart on the first
+	/// drag, which is the most likely way for this to be broken.
+	/// </summary>
+	static void TestMirror()
+	{
+		// A vertical axis on x = 0, and an L drawn entirely to the right of it.
+		var sketch = new Sketch();
+		var axis = sketch.Add( new SketchLine( sketch.AddPoint( 0f, -5f ), sketch.AddPoint( 0f, 5f ) ) );
+		axis.Construction = true;
+
+		var foot = sketch.AddPoint( 1f, 0f );
+		var knee = sketch.AddPoint( 3f, 0f );
+		var top = sketch.AddPoint( 3f, 2f );
+
+		var shin = sketch.Add( new SketchLine( foot, knee ) );
+		var thigh = sketch.Add( new SketchLine( knee, top ) );
+
+		var ok = SketchEdit.Mirror( sketch, new[] { shin, thigh }, null, axis, out var created, out var error );
+
+		Report.Check( "two lines mirror across a vertical axis", ok, error );
+		Report.Check( "and produce one copy each", created.Count == 2, $"{created.Count} created" );
+
+		if ( !ok || created.Count != 2 )
+			return;
+
+		var copyShin = (SketchLine)created[0];
+		var copyThigh = (SketchLine)created[1];
+
+		Report.Check( "the copies land where the closed form says",
+			(sketch.Points[copyShin.Start] - new Vec2( -1f, 0f )).Length < 1e-5f &&
+			(sketch.Points[copyShin.End] - new Vec2( -3f, 0f )).Length < 1e-5f &&
+			(sketch.Points[copyThigh.End] - new Vec2( -3f, 2f )).Length < 1e-5f,
+			$"{sketch.Points[copyShin.Start]} {sketch.Points[copyShin.End]} {sketch.Points[copyThigh.End]}" );
+
+		// The copies share their corner with each other exactly the way the originals do. Mirroring
+		// each curve into its own fresh points would leave a corner that looks joined and comes
+		// apart the moment either half is dragged.
+		Report.Check( "and share their own corner by index, not by coordinate",
+			copyShin.End == copyThigh.Start, $"{copyShin.End} against {copyThigh.Start}" );
+
+		Report.Check( "the originals were not moved",
+			(sketch.Points[foot] - new Vec2( 1f, 0f )).Length < 1e-6f &&
+			(sketch.Points[top] - new Vec2( 3f, 2f )).Length < 1e-6f );
+
+		Report.Check( "the axis itself was not copied",
+			sketch.Curves.OfType<SketchLine>().Count( l => MathF.Abs( sketch.Points[l.Start].x ) < 1e-5f
+				&& MathF.Abs( sketch.Points[l.End].x ) < 1e-5f ) == 1 );
+
+		// THE PART THAT MAKES IT A MIRROR. Every mirrored point carries a Symmetric rule against
+		// the axis, so the solver knows the two halves belong to each other.
+		var symmetric = sketch.Constraints.Count( c => c.Kind == SketchConstraintKind.Symmetric );
+
+		Report.Check( "each mirrored point is held symmetric to its original",
+			symmetric == 3, $"{symmetric} symmetric constraints for 3 mirrored points" );
+
+		// Solving a sketch that is ALREADY symmetric must not move anything. If it does, the
+		// constraints disagree with the geometry the mirror just wrote, and every mirror in the
+		// editor would jump the moment anything else was constrained.
+		sketch.Solve();
+
+		Report.Check( "and the sketch as built already satisfies them, so solving moves nothing",
+			(sketch.Points[copyThigh.End] - new Vec2( -3f, 2f )).Length < 1e-3f,
+			sketch.Points[copyThigh.End].ToString() );
+
+		// Move the original's top corner and re-solve, pinned on the point that moved - which is
+		// what a drag does; see the Solve call in EffigyViewport.Sketching.cs.
+		//
+		// WHAT IS CHECKED IS THAT THE SYMMETRY STILL HOLDS, not that the copy landed on a
+		// coordinate worked out by hand. Nothing in this sketch is fixed, so the solver is free to
+		// meet the new position by moving the axis a little as well as the copy - which is
+		// ordinary parametric behaviour, and would be the answer Onshape gives for an
+		// unconstrained mirror line too. Asserting a hand-computed position would be asserting
+		// that the axis never moves, which nothing here promises.
+		sketch.Points[top] = new Vec2( 5f, 3f );
+
+		var solved = SketchSolver.Solve( sketch, top );
+
+		var axisA = sketch.Points[axis.Start];
+		var axisB = sketch.Points[axis.End];
+		var wanted = SketchEdit.Reflect( sketch.Points[top], axisA, axisB );
+
+		Report.Check( "moving an original drags its reflection after it",
+			solved.Converged && (sketch.Points[copyThigh.End] - wanted).Length < 1e-2f,
+			$"{sketch.Points[copyThigh.End]} against the reflection {wanted}" );
+
+		Report.Check( "and the point that was dragged stayed where it was put",
+			(sketch.Points[top] - new Vec2( 5f, 3f )).Length < 1e-4f, sketch.Points[top].ToString() );
+
+		TestMirrorOnAxis();
+		TestMirrorArcAndCircle();
+		TestMirrorRefusals();
+	}
+
+	/// <summary>A half profile drawn against the axis has to come back as ONE closed shape, which
+	/// only happens if the points sitting on the axis are shared rather than doubled.</summary>
+	static void TestMirrorOnAxis()
+	{
+		var sketch = new Sketch();
+		var axis = sketch.Add( new SketchLine( sketch.AddPoint( 0f, -5f ), sketch.AddPoint( 0f, 5f ) ) );
+
+		// Half a triangle: out from the axis, up, and back to the axis.
+		var bottom = sketch.AddPoint( 0f, 0f );
+		var side = sketch.AddPoint( 2f, 1f );
+		var apex = sketch.AddPoint( 0f, 2f );
+
+		var lower = sketch.Add( new SketchLine( bottom, side ) );
+		var upper = sketch.Add( new SketchLine( side, apex ) );
+
+		var before = sketch.Points.Count;
+
+		Report.Check( "a half profile drawn against the axis mirrors",
+			SketchEdit.Mirror( sketch, new[] { lower, upper }, null, axis, out var created, out var error ), error );
+
+		Report.Check( "and only the one point off the axis is duplicated",
+			sketch.Points.Count == before + 1, $"{sketch.Points.Count - before} points added" );
+
+		var copyLower = (SketchLine)created[0];
+		var copyUpper = (SketchLine)created[1];
+
+		Report.Check( "so the two halves meet at the same indices and the loop closes",
+			copyLower.Start == bottom && copyUpper.End == apex,
+			$"{copyLower.Start}/{bottom} and {copyUpper.End}/{apex}" );
+
+		Report.Check( "and a point on the axis gets no symmetry rule of its own",
+			sketch.Constraints.Count( c => c.Kind == SketchConstraintKind.Symmetric ) == 1 );
+	}
+
+	static void TestMirrorArcAndCircle()
+	{
+		var sketch = new Sketch();
+		var axis = sketch.Add( new SketchLine( sketch.AddPoint( 0f, -5f ), sketch.AddPoint( 0f, 5f ) ) );
+
+		var arc = sketch.Add( new SketchArc(
+			sketch.AddPoint( 2f, 0f ), sketch.AddPoint( 3f, 0f ), sketch.AddPoint( 2f, 1f ) ) );
+
+		var circle = sketch.Add( new SketchCircle( sketch.AddPoint( 4f, 1f ), 0.75f ) );
+		circle.Construction = true;
+
+		Report.Check( "an arc and a circle mirror",
+			SketchEdit.Mirror( sketch, new SketchCurve[] { arc, circle }, null, axis, out var created, out var error ),
+			error );
+
+		var copyArc = created.OfType<SketchArc>().FirstOrDefault();
+		var copyCircle = created.OfType<SketchCircle>().FirstOrDefault();
+
+		Report.Check( "the arc's sweep flips, because a reflection reverses handedness",
+			copyArc is not null && copyArc.Clockwise != arc.Clockwise );
+
+		if ( copyArc is not null )
+		{
+			// The reflected arc has to pass through the reflections of the points the original
+			// passes through, which is a stronger claim than its ends landing in the right place -
+			// and it is the one that catches a sweep left unflipped.
+			var original = arc.Tessellate( sketch, 0.001f );
+			var copy = copyArc.Tessellate( sketch, 0.001f );
+
+			var matched = original.Count == copy.Count && original.Count > 0;
+
+			for ( var i = 0; matched && i < original.Count; i++ )
+				matched = (copy[i] - new Vec2( -original[i].x, original[i].y )).Length < 1e-3f;
+
+			Report.Check( "and the copy traces the reflection of the original along its whole length", matched );
+		}
+
+		Report.Check( "a circle keeps its radius and reflects its centre",
+			copyCircle is not null && MathF.Abs( copyCircle.Radius - 0.75f ) < 1e-5f &&
+			(sketch.Points[copyCircle.Center] - new Vec2( -4f, 1f )).Length < 1e-5f );
+
+		Report.Check( "and construction geometry mirrors as construction geometry",
+			copyCircle is not null && copyCircle.Construction );
+	}
+
+	static void TestMirrorRefusals()
+	{
+		var sketch = new Sketch();
+		var axis = sketch.Add( new SketchLine( sketch.AddPoint( 0f, -1f ), sketch.AddPoint( 0f, 1f ) ) );
+		var line = sketch.Add( new SketchLine( sketch.AddPoint( 1f, 0f ), sketch.AddPoint( 2f, 0f ) ) );
+
+		Report.Check( "mirroring nothing is refused rather than silently doing nothing",
+			!SketchEdit.Mirror( sketch, null, null, axis, out _, out var emptyError ), emptyError );
+
+		Report.Check( "and so is a mirror line with no length",
+			!SketchEdit.Mirror( sketch, new[] { line }, null,
+				new SketchLine( axis.Start, axis.Start ), out _, out var shortError ), shortError );
+
+		// Selecting the axis along with everything else is the ordinary way to work - a box drawn
+		// round the whole sketch takes the centreline too - so it has to be dropped rather than
+		// reflected onto itself.
+		var count = sketch.Curves.Count;
+
+		Report.Check( "the axis in the selection is dropped, not copied onto itself",
+			SketchEdit.Mirror( sketch, new[] { axis, line }, null, axis, out var created, out var error )
+				&& created.Count == 1 && sketch.Curves.Count == count + 1,
+			error ?? $"{created?.Count} created" );
+
+		// A lone point - what the Point tool leaves behind - is geometry too, and mirrors with no
+		// curve attached to it.
+		var lone = new Sketch();
+		var loneAxis = lone.Add( new SketchLine( lone.AddPoint( 0f, -1f ), lone.AddPoint( 0f, 1f ) ) );
+		var dot = lone.AddPoint( 3f, 1f );
+
+		Report.Check( "a lone point mirrors on its own",
+			SketchEdit.Mirror( lone, null, new[] { dot }, loneAxis, out _, out var loneError ) &&
+			lone.Points.Any( p => (p - new Vec2( -3f, 1f )).Length < 1e-5f ), loneError );
 	}
 
 	static float DistanceToSegment( Vec2 p, Vec2 a, Vec2 b )

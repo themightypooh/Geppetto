@@ -81,6 +81,7 @@ internal enum EffigyIcon
 	ExtendTool,
 	SketchFilletTool,
 	OffsetTool,
+	MirrorTool,
 
 	// --- taking the face's own outline into the sketch -------------------------------------------
 	UseTool,
@@ -242,6 +243,7 @@ internal static class EffigyIcons
 			case EffigyIcon.ExtendTool: PaintExtendTool( center, color ); return;
 			case EffigyIcon.SketchFilletTool: PaintSketchFilletTool( center, color ); return;
 			case EffigyIcon.OffsetTool: PaintOffsetTool( center, color ); return;
+			case EffigyIcon.MirrorTool: PaintMirrorTool( center, color ); return;
 
 			case EffigyIcon.UseTool: PaintUseTool( center, color ); return;
 			case EffigyIcon.UseAllTool: PaintUseAllTool( center, color ); return;
@@ -1814,6 +1816,29 @@ internal static class EffigyIcons
 		Editor.Paint.DrawLine( At( c, -9.5f, 6 ), At( c, -9.5f, -2 ) );
 		Arc( At( c, -1.5f, -2f ), 8f, 180f, 270f, 12 );
 		Editor.Paint.DrawLine( At( c, -1.5f, -10f ), At( c, 5, -10f ) );
+	}
+
+	/// <summary>An open L and its reflection across a dashed line you click. Distinct from the
+	/// solid-feature Mirror glyph, which is a filled triangle: this one is a sketch polyline, and
+	/// the dot on the axis is what says the line is the thing you pick.</summary>
+	private static void PaintMirrorTool( Vector2 c, Color color )
+	{
+		// The axis, dashed, copied from PaintMirror so the two glyphs share a language.
+		Stroked( color.WithAlpha( 0.5f ), 1.2f );
+		for ( var y = -8f; y < 8f; y += 3.6f )
+			Editor.Paint.DrawLine( At( c, 0, y ), At( c, 0, y + 2.1f ) );
+
+		// Source: an open L, solid.
+		Stroked( color, 1.8f );
+		Editor.Paint.DrawLine( At( c, -6.5f, 6.5f ), At( c, -6.5f, -6.5f ) );
+		Editor.Paint.DrawLine( At( c, -6.5f, -6.5f ), At( c, -1.4f, -6.5f ) );
+
+		// Reflection, fainter, so it reads as a copy rather than as a second original.
+		Stroked( color.WithAlpha( 0.5f ), 1.6f );
+		Editor.Paint.DrawLine( At( c, 6.5f, 6.5f ), At( c, 6.5f, -6.5f ) );
+		Editor.Paint.DrawLine( At( c, 6.5f, -6.5f ), At( c, 1.4f, -6.5f ) );
+
+		ClickDot( At( c, 0, 0 ) );
 	}
 
 	/// <summary>The face's outline drawn faint, with ONE of its edges taken - solid, and in the

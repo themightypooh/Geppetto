@@ -1409,8 +1409,28 @@ public sealed class RevolveFeature : SketchConsumingFeature
 	public readonly ChoiceParam AxisMode = new( "Axis", new[]
 	{
 		"Custom", "Profile's left edge", "Profile's right edge", "Profile's bottom edge",
-		"Profile's top edge", "Sketch X axis", "Sketch Y axis",
+		"Profile's top edge", "Sketch X axis", "Sketch Y axis", "A line of the sketch",
 	} );
+
+	/// <summary>
+	/// Curve id of the sketch line the axis runs along, when <see cref="AxisMode"/> is
+	/// <see cref="AxisSketchLine"/>. Empty means one has not been chosen yet.
+	///
+	/// AN ID RATHER THAN AN INDEX OR A PAIR OF POINTS, which is the opposite of what
+	/// <see cref="SketchConsumingFeature.RegionSeeds"/> does, and for a reason: a profile has no
+	/// identity to store - it is re-found from the curve graph every rebuild - whereas a curve has
+	/// carried a stable Id since before the solver existed, and SketchConstraint already addresses
+	/// curves by it. Storing the id is what makes the axis FOLLOW the line: drag the line, or let
+	/// the solver move it, and the axis moves with it. Stored endpoints would have stayed behind.
+	///
+	/// A construction line is a legal choice and is usually the right one - that is what the blue
+	/// dashed line down the middle of a lathe profile is for - so ResolveAxis does not filter them.
+	/// </summary>
+	public string AxisLineId = "";
+
+	/// <summary>What the editor calls the line picker, and what a refusal names so the dialog rings
+	/// the right control. One constant rather than the string typed in two files.</summary>
+	public const string AxisLineLabel = "Axis line";
 
 	public readonly Vec3Param AxisPoint = new( "Axis through (sketch coords)", Vec3.Zero );
 	public readonly Vec3Param AxisDirection = new( "Axis direction (sketch coords)", new Vec3( 1, 0, 0 ) );
@@ -1424,6 +1444,15 @@ public sealed class RevolveFeature : SketchConsumingFeature
 
 	/// <summary>What a NEW revolve should use, which is not what an old one defaults to. See AxisMode.</summary>
 	public const int AxisProfileLeftEdge = 1;
+
+	/// <summary>Index into AxisMode for spinning about a line drawn in the sketch, named by
+	/// <see cref="AxisLineId"/>. Appended last, because the order of these options is a promise -
+	/// see AxisMode.</summary>
+	public const int AxisSketchLine = 7;
+
+	/// <summary>Spinning about a line of the sketch, so the line picker is the control that
+	/// answers the axis rather than the two Vec3 boxes.</summary>
+	public bool UsesSketchLineAxis => AxisMode.Index == AxisSketchLine;
 
 	public override IReadOnlyList<IParam> Parameters => AxisMode.Index == AxisCustom
 		? new IParam[] { Sketch, AxisMode, AxisPoint, AxisDirection, Angle, Segments, Result, Material }
@@ -1440,11 +1469,14 @@ public sealed class RevolveFeature : SketchConsumingFeature
 	/// the one placement that is always legal, because a profile cannot straddle a line it only
 	/// touches. That is what makes the default press work instead of refusing.
 	/// </summary>
-	(Vec2 Point, Vec2 Direction) ResolveAxis( List<Profile> profiles )
+	(Vec2 Point, Vec2 Direction) ResolveAxis( Sketch sketch, List<Profile> profiles )
 	{
 		if ( AxisMode.Index == AxisCustom )
 			return (new Vec2( AxisPoint.Value.x, AxisPoint.Value.y ),
 				new Vec2( AxisDirection.Value.x, AxisDirection.Value.y ));
+
+		if ( AxisMode.Index == AxisSketchLine )
+			return ResolveLineAxis( sketch );
 
 		if ( AxisMode.Value == "Sketch X axis" )
 			return (Vec2.Zero, new Vec2( 1, 0 ));
@@ -1473,6 +1505,70 @@ public sealed class RevolveFeature : SketchConsumingFeature
 		};
 	}
 
+	/// <summary>
+	/// The axis taken from a line drawn in the sketch — the lathe centreline, which is the one
+	/// answer nobody can type from memory and the reason this mode exists.
+	///
+	/// The line is looked up by id on every rebuild rather than cached, so moving it moves the
+	/// axis. Losing it is an error rather than a silent fall back to the typed axis: falling back
+	/// would spin the part about the sketch origin and hand back a shape that looks built.
+	/// </summary>
+	(Vec2 Point, Vec2 Direction) ResolveLineAxis( Sketch sketch )
+	{
+		if ( string.IsNullOrEmpty( AxisLineId ) )
+		{
+			FailOn( AxisLineLabel,
+				"Pick the line this spins around",
+				"The axis is set to a line of the sketch, and no line has been chosen yet.",
+				"Choose a line in the Axis line box",
+				"Or pick one of the profile's own edges from the Axis dropdown" );
+		}
+
+		var line = FindAxisLine( sketch );
+
+		if ( line is null )
+		{
+			FailOn( AxisLineLabel,
+				"The line this spins around is not in the sketch any more",
+				"It was deleted, or this feature was pointed at a different sketch.",
+				"Choose another line in the Axis line box",
+				"Or pick one of the profile's own edges from the Axis dropdown" );
+		}
+
+		var a = sketch.Points[line.Start];
+		var b = sketch.Points[line.End];
+		var direction = new Vec2( b.x - a.x, b.y - a.y );
+
+		if ( direction.x * direction.x + direction.y * direction.y < 1e-12f )
+		{
+			FailOn( AxisLineLabel,
+				"The line chosen as the axis has no length",
+				"Its two ends sit on top of each other, so there is no direction to spin about.",
+				"Move one end of that line",
+				"Or pick a different line in the Axis line box" );
+		}
+
+		return (a, direction);
+	}
+
+	/// <summary>
+	/// The chosen line, or null when the sketch no longer has it. Public so the editor's line
+	/// picker reads the same answer the rebuild does rather than keeping its own copy of the rule.
+	/// </summary>
+	public SketchLine FindAxisLine( Sketch sketch )
+	{
+		if ( sketch is null || string.IsNullOrEmpty( AxisLineId ) )
+			return null;
+
+		foreach ( var curve in sketch.Curves )
+		{
+			if ( curve is SketchLine line && line.Id == AxisLineId )
+				return line;
+		}
+
+		return null;
+	}
+
 	protected override void Execute( FeatureContext ctx )
 	{
 		var sketch = ResolveSketch( ctx );
@@ -1497,7 +1593,7 @@ public sealed class RevolveFeature : SketchConsumingFeature
 		}
 
 		var plane = sketch.Plane;
-		var (axis2d, axisDir2d) = ResolveAxis( profiles );
+		var (axis2d, axisDir2d) = ResolveAxis( sketch, profiles );
 
 		// The axis is authored in sketch coordinates and lifted into world space, so it moves with
 		// the plane like everything else in the sketch.

@@ -47,6 +47,12 @@ public static class EditorFlowTests
 		TestAnEdgeAxisBuildsTheProfileAsDrawn();
 		TestOldDocumentsKeepTheAxisTheyWereSavedWith();
 
+		Report.Section( "editor flow: a revolve spun about a line drawn in the sketch" );
+		TestALineOfTheSketchIsAnAxis();
+		TestTheAxisFollowsTheLineWhenTheLineMoves();
+		TestALostAxisLineIsAnErrorRatherThanASilentFallback();
+		TestTheChosenAxisLineSurvivesASaveAndLoad();
+
 		Report.Section( "editor flow: a new extrude waits to be pointed at a sketch" );
 		TestANewExtrudeBuildsNothingUntilItIsPicked();
 		TestPickingTheSketchBuildsTheSolid();
@@ -206,6 +212,136 @@ public static class EditorFlowTests
 
 			Report.Check( $"axis mode {mode} builds too", each.Error is null, each.Error ?? "" );
 		}
+	}
+
+	/// <summary>
+	/// A lathe as somebody actually draws one: a profile off to one side, and a construction line
+	/// down the middle to spin it about.
+	///
+	/// The centreline is CONSTRUCTION on purpose — that is what the blue dashed line in a lathe
+	/// sketch is, and the profile finder throws it away, so a picker that only offered real edges
+	/// would not offer the one line the drawing exists around.
+	/// </summary>
+	static (PartStudio Studio, SketchFeature Sketch, SketchLine Axis, RevolveFeature Revolve) LatheOnALine()
+	{
+		var studio = new PartStudio();
+		var sketch = studio.Add( new SketchFeature() );
+
+		sketch.Sketch.AddRectangle( new Vec2( 1f, 0f ), new Vec2( 3f, 4f ) );
+
+		// Off the sketch Y axis on purpose. A centreline at x = 0 produces the same solid as
+		// "Sketch Y axis", so a revolve that never took this branch would still pass on volume.
+		var axis = sketch.Sketch.AddLine( new Vec2( -1f, -1f ), new Vec2( -1f, 5f ) );
+		axis.Construction = true;
+
+		var revolve = studio.Add( new RevolveFeature() );
+		revolve.AxisMode.Index = RevolveFeature.AxisSketchLine;
+		revolve.AxisLineId = axis.Id;
+
+		studio.Rebuild();
+
+		return (studio, sketch, axis, revolve);
+	}
+
+	/// <summary>
+	/// The point of the mode: the axis is a line you drew, not four numbers in sketch coordinates
+	/// that nobody can produce from memory.
+	/// </summary>
+	static void TestALineOfTheSketchIsAnAxis()
+	{
+		var (studio, _, _, revolve) = LatheOnALine();
+
+		Report.Check( "a revolve about a line of the sketch builds", revolve.Error is null,
+			revolve.Error ?? "" );
+		Report.Check( "and produces a solid", studio.Bodies.Count == 1 && studio.Bodies[0].Mesh.FaceCount > 0,
+			$"{studio.Bodies.Count} bodies" );
+
+		// Pappus: a 2 by 4 rectangle whose centroid sits 3 from the line at x = -1.
+		var volume = MathF.Abs( studio.Bodies[0].Mesh.SignedVolume() );
+		var pappus = 8f * 2f * MathF.PI * 3f;
+
+		Report.Check( "with the volume Pappus predicts, to within the faceting",
+			MathF.Abs( volume - pappus ) < pappus * 0.02f,
+			$"{volume:0.###}, expected about {pappus:0.###}" );
+
+		// A tube, not a disc. The sketch is on Top (XY), so the centreline at sketch x = -1 is
+		// the world line x = -1, z = 0. Distance from that axis is sqrt((x+1)² + z²).
+		Report.Check( "and a bore where the centreline is",
+			studio.Bodies[0].Mesh.Positions.All( v =>
+				MathF.Sqrt( (v.x + 1f) * (v.x + 1f) + v.z * v.z ) > 1.5f ),
+			"a vertex sits on the axis" );
+	}
+
+	/// <summary>
+	/// WHY THE CURVE ID IS STORED AND NOT THE COORDINATES. Move the line and the axis moves with
+	/// it, the same way a sketch's own geometry follows its points. Stored endpoints would have
+	/// left the axis behind, and the part would have kept a bore that no longer matched the drawing.
+	/// </summary>
+	static void TestTheAxisFollowsTheLineWhenTheLineMoves()
+	{
+		var (studio, sketch, axis, revolve) = LatheOnALine();
+
+		var before = MathF.Abs( studio.Bodies[0].Mesh.SignedVolume() );
+
+		// Slide the centreline one unit left, so the centroid is now 4 from it rather than 3.
+		sketch.Sketch.Points[axis.Start] = new Vec2( -2f, -1f );
+		sketch.Sketch.Points[axis.End] = new Vec2( -2f, 5f );
+		studio.MarkDirty( sketch );
+		studio.Rebuild();
+
+		Report.Check( "it still builds after the line moved", revolve.Error is null, revolve.Error ?? "" );
+
+		var after = MathF.Abs( studio.Bodies[0].Mesh.SignedVolume() );
+		var pappus = 8f * 2f * MathF.PI * 4f;
+
+		Report.Check( "and the solid grew, because the axis went with the line",
+			after > before && MathF.Abs( after - pappus ) < pappus * 0.02f,
+			$"{before:0.###} then {after:0.###}, expected about {pappus:0.###}" );
+	}
+
+	/// <summary>
+	/// Deleting the line is an ERROR, not a quiet return to the typed axis. Falling back would
+	/// spin the part about the sketch origin and hand back a shape that looks built.
+	/// </summary>
+	static void TestALostAxisLineIsAnErrorRatherThanASilentFallback()
+	{
+		var (studio, sketch, axis, revolve) = LatheOnALine();
+
+		sketch.Sketch.Curves.RemoveAll( c => c.Id == axis.Id );
+		studio.MarkDirty( sketch );
+		studio.Rebuild();
+
+		Report.Check( "a deleted axis line fails the revolve", revolve.Error is not null, "it built" );
+		Report.Check( "and the refusal names the box that fixes it",
+			revolve.Diagnostic?.ParameterLabel == RevolveFeature.AxisLineLabel,
+			revolve.Diagnostic?.ParameterLabel ?? "no label" );
+		Report.Check( "leaving no solid behind", studio.Bodies.Count == 0, $"{studio.Bodies.Count} bodies" );
+
+		// Nothing picked at all is the same refusal, which is what a revolve reads as the moment
+		// the mode is chosen and before a line has been.
+		revolve.AxisLineId = "";
+		studio.MarkDirty( revolve );
+		studio.Rebuild();
+
+		Report.Check( "and so does the mode with nothing picked yet", revolve.Error is not null, "it built" );
+	}
+
+	static void TestTheChosenAxisLineSurvivesASaveAndLoad()
+	{
+		var (studio, _, axis, _) = LatheOnALine();
+
+		var reloaded = StudioDocument.Read( StudioDocument.Write( studio ) );
+		var revolve = reloaded.Features.OfType<RevolveFeature>().Single();
+
+		Report.Check( "the axis mode round-trips",
+			revolve.AxisMode.Index == RevolveFeature.AxisSketchLine, $"index {revolve.AxisMode.Index}" );
+		Report.Check( "and so does the line it names", revolve.AxisLineId == axis.Id,
+			$"'{revolve.AxisLineId}' rather than '{axis.Id}'" );
+
+		reloaded.Rebuild();
+
+		Report.Check( "and it rebuilds to the same solid",
+			revolve.Error is null && reloaded.Bodies.Count == 1, revolve.Error ?? $"{reloaded.Bodies.Count} bodies" );
 	}
 
 	/// <summary>
