@@ -35,6 +35,10 @@ forgotten.
 
 ## Unreleased
 
+Nothing yet.
+
+## v379386 — 2026-09-10
+
 ### Improved
 - **Dense imports are workable now.** Hovering, picking, dragging and sculpting a several-hundred-
   thousand-face mesh used to stall the viewport for a fraction of a second at a time, and got worse
