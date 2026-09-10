@@ -336,8 +336,9 @@ public sealed class SubdivideFeature : Feature
 	public override GeometryKind Accepts => GeometryKind.Face | GeometryKind.Body;
 
 	/// <summary>
-	/// Which faces to subdivide. EMPTY MEANS THE WHOLE BODY, which is both the old behaviour and
-	/// the honest default — a subdivision surface is a property of a cage, not of a corner of one.
+	/// Which faces to subdivide. EMPTY MEANS WHOLE BODY OR ALL FACES, depending on <see cref="AllFaces"/>,
+	/// and the whole-body form is the old behaviour and the honest default — a subdivision surface
+	/// is a property of a cage, not of a corner of one.
 	///
 	/// Picking faces switches the operation from smooth to linear, and the two really are different
 	/// operations rather than a flag on one. See CatmullClark.SubdivideFaces: you cannot apply the
@@ -353,7 +354,19 @@ public sealed class SubdivideFeature : Feature
 	public readonly BodySelectionParam Bodies = new( "Bodies" );
 	public readonly IntParam Levels = new( "Levels", 1, 0, 6 );
 
-	public override IReadOnlyList<IParam> Parameters => new IParam[] { Bodies, Levels };
+	/// <summary>
+	/// Subdivide EVERY face, not the whole body. Only read when <see cref="Faces"/> is empty — a
+	/// picked face already names its region, and a pick is more specific than "everything".
+	///
+	/// The whole-body form (this off, no picks) runs the full Catmull-Clark and SMOOTHS: it moves
+	/// the original vertices onto the limit surface. This is the density version of the same idea —
+	/// midpoints and centroids, so the shape stays exactly where it is and every face just gets
+	/// more polygons. You want it when the whole cage is too coarse but the silhouette is already
+	/// right, and it is why it is a tick rather than "pick 40 faces".
+	/// </summary>
+	public readonly BoolParam AllFaces = new( "All faces", false );
+
+	public override IReadOnlyList<IParam> Parameters => new IParam[] { Bodies, Levels, AllFaces };
 
 	/// <summary>What this feature will cost at the current settings, for a UI that warns before
 	/// rather than after. Levels are exponential and the jump from 4 to 6 is 16x.</summary>
@@ -384,7 +397,10 @@ public sealed class SubdivideFeature : Feature
 
 		foreach ( var body in list.Where( Bodies.Matches ) )
 		{
-			var (bv, bf) = CatmullClark.PredictCost( body.Mesh, Levels.Clamped );
+			var (bv, bf) = AllFaces.Value
+				? CatmullClark.PredictLocalCost( body.Mesh, AllIndices( body.Mesh ), Levels.Clamped )
+				: CatmullClark.PredictCost( body.Mesh, Levels.Clamped );
+
 			v += bv;
 			f += bf;
 		}
@@ -421,38 +437,56 @@ public sealed class SubdivideFeature : Feature
 		if ( Levels.Clamped == 0 )
 			return;
 
-		if ( Faces.Count == 0 )
+		if ( Faces.Count > 0 )
 		{
-			foreach ( var body in RequireBodies( ctx, Bodies ) )
-				body.Mesh = CatmullClark.Subdivide( body.Mesh, Levels.Clamped );
+			// A picked face already names its body, so the Bodies filter has nothing left to decide and
+			// is not consulted here. Two picks on the same body are subdivided in ONE call rather than
+			// one call each: the second call would be running against a mesh whose face indices the
+			// first has already renumbered.
+			var picked = Resolve( ctx.Bodies, out var lost );
+
+			if ( picked.Count == 0 )
+			{
+				Fail(
+					"None of the picked faces are still there",
+					"Every face this feature subdivides was removed or replaced by a change further up the tree.",
+					"Pick the faces again",
+					"Or clear the picks to subdivide the whole body" );
+			}
+
+			foreach ( var (body, indices) in picked )
+				body.Mesh = CatmullClark.SubdivideFaces( body.Mesh, indices, Levels.Clamped );
+
+			if ( lost > 0 )
+			{
+				Warn(
+					$"{lost} picked {(lost == 1 ? "face is" : "faces are")} no longer there",
+					"A change further up the tree removed or replaced them, so they were skipped.",
+					"Pick them again if the extra density is still wanted" );
+			}
 
 			return;
 		}
 
-		// A picked face already names its body, so the Bodies filter has nothing left to decide and
-		// is not consulted here. Two picks on the same body are subdivided in ONE call rather than
-		// one call each: the second call would be running against a mesh whose face indices the
-		// first has already renumbered.
-		var picked = Resolve( ctx.Bodies, out var lost );
-
-		if ( picked.Count == 0 )
+		// No picks. AllFaces chooses between densifying every face (linear, shape unchanged) and
+		// the whole-body Catmull-Clark that smooths.
+		foreach ( var body in RequireBodies( ctx, Bodies ) )
 		{
-			Fail(
-				"None of the picked faces are still there",
-				"Every face this feature subdivides was removed or replaced by a change further up the tree.",
-				"Pick the faces again",
-				"Or clear the picks to subdivide the whole body" );
+			if ( AllFaces.Value )
+				body.Mesh = CatmullClark.SubdivideFaces( body.Mesh, AllIndices( body.Mesh ), Levels.Clamped );
+			else
+				body.Mesh = CatmullClark.Subdivide( body.Mesh, Levels.Clamped );
 		}
+	}
 
-		foreach ( var (body, indices) in picked )
-			body.Mesh = CatmullClark.SubdivideFaces( body.Mesh, indices, Levels.Clamped );
+	/// <summary>Every face index of a mesh, as a list — the "all faces" version of a pick list.</summary>
+	static int[] AllIndices( PolyMesh mesh )
+	{
+		var all = new int[mesh.FaceCount];
 
-		if ( lost > 0 )
-		{
-			Warn(
-				$"{lost} picked {(lost == 1 ? "face is" : "faces are")} no longer there",
-				"A change further up the tree removed or replaced them, so they were skipped.",
-				"Pick them again if the extra density is still wanted" );
-		}
+		for ( var i = 0; i < all.Length; i++ )
+			all[i] = i;
+
+		return all;
 	}
 }

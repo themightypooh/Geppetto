@@ -114,7 +114,7 @@ internal sealed partial class EffigyViewport
 		var origin = new Vec3( ray.Position.x, ray.Position.y, ray.Position.z );
 		var direction = new Vec3( ray.Forward.x, ray.Forward.y, ray.Forward.z );
 
-		if ( MeshRaycast.Raycast( _displayBodies, origin, direction ) is not { } hit )
+		if ( MeshRaycast.Raycast( _displayBodies, origin, direction, PickTreeFor ) is not { } hit )
 			return;
 
 		// MEASURED IN THE BODY THE HIT NAMES, not across all of them. Raycast above has already

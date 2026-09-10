@@ -150,6 +150,24 @@ public sealed class ChoiceParam : IParam
 	public string Value => Options[Math.Clamp( Index, 0, Options.Length - 1 )];
 }
 
+/// <summary>
+/// A free-text parameter. Paths, names, anything a number or a dropdown cannot hold.
+///
+/// Written as the rest of the line, so a path with spaces survives. The dialog renders it as a
+/// field; Import is the feature that asked for it.
+/// </summary>
+public sealed class StringParam : IParam
+{
+	public string Label { get; }
+	public string Value;
+
+	public StringParam( string label, string value = "" )
+	{
+		Label = label;
+		Value = value ?? "";
+	}
+}
+
 /// <summary>Which bodies a feature acts on. Empty means every body, which is what Onshape's
 /// "all" behaves like and is the sane default for a studio holding one part.</summary>
 public sealed class BodySelectionParam : IParam

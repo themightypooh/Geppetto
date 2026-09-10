@@ -20,14 +20,19 @@ internal enum EffigyToolTarget
 	Hole,
 	AddBone,
 	BoneFromPart,
+	Subdivide,
+	Sculpt,
+	Paint,
 }
 
 /// <summary>Which first-run lesson is on the panel. House is CAD; Rigging is the smallest
-/// loop that still needs a bone, an assignment and a pose.</summary>
+/// loop that still needs a bone, an assignment and a pose; Hand walks the four workspaces
+/// on one model.</summary>
 internal enum EffigyLesson
 {
 	House,
 	Rigging,
+	Hand,
 }
 
 /// <summary>
@@ -83,6 +88,11 @@ internal readonly struct EffigyTutorialState
 	public int BoneCount => Studio?.Rig?.Count ?? 0;
 
 	public int AssignedBodies => Studio?.BodyBoneMap?.Count ?? 0;
+
+	/// <summary>Bones that hang off another bone. A hand whose every bone is a root will not
+	/// curl a finger when the palm turns.</summary>
+	public int ChildBones =>
+		Studio?.Rig?.Bones.Count( b => b.Parent >= 0 ) ?? 0;
 }
 
 /// <summary>
@@ -143,6 +153,8 @@ internal sealed class EffigyTutorial
 		Export,
 		Bone,
 		Pose,
+		Sculpt,
+		Paint,
 	}
 
 	public sealed class Step
@@ -175,16 +187,23 @@ internal sealed class EffigyTutorial
 
 	private readonly List<Step> _house;
 	private readonly List<Step> _rigging;
+	private readonly List<Step> _hand;
 	private List<Step> _steps;
 
 	public EffigyLesson Lesson { get; private set; } = EffigyLesson.House;
 
-	public string Title => Lesson == EffigyLesson.Rigging ? "Rig a Signpost" : "Build a House";
+	public string Title => Lesson switch
+	{
+		EffigyLesson.Rigging => "Rig a Signpost",
+		EffigyLesson.Hand => "Make a Hand",
+		_ => "Build a House",
+	};
 
 	public EffigyTutorial()
 	{
 		_house = HouseSteps();
 		_rigging = RiggingSteps();
+		_hand = HandSteps();
 		_steps = _house;
 	}
 
@@ -442,6 +461,240 @@ internal sealed class EffigyTutorial
 			},
 		};
 
+	static List<Step> HandSteps() => new()
+		{
+			// ---------------------------------------------------------------------------------
+			//  PHASE 1 - THE PARTS
+			//
+			//  Separate bodies, not one merged mesh. Each phalanx is its own part so Bone from
+			//  Part has something to measure, and posing one joint leaves the others standing.
+			//  Cubes are skipped, so every box here is longer in one axis than the other two.
+			// ---------------------------------------------------------------------------------
+
+			new()
+			{
+				Instruction = "The palm",
+				Bullets = new[]
+				{
+					"Click Primitive and pick Box",
+					"Set Width 2.5, Depth 1, Height 3",
+				},
+				Detail = "Height is the long axis, wrist to knuckles, so a bone down the palm has "
+					+ "something to measure. A cube would be skipped. Leave it at the origin.",
+				Art = StepArt.Solid,
+				Points = PointAt.Tool,
+				Tool = EffigyToolTarget.Primitive,
+				IsDone = s => s.HasClean<PrimitiveFeature>() && s.MeasurableBodies >= 1
+			},
+
+			new()
+			{
+				Instruction = "Index finger, three joints",
+				Bullets = new[]
+				{
+					"Another Box: Width 0.6, Depth 0.6, Height 1.4. Position X 0.8, Z 2.2",
+					"The middle: 0.5 × 0.5 × 1.1 at X 0.8, Z 3.5",
+					"The tip: 0.45 × 0.45 × 0.8 at X 0.8, Z 4.4",
+				},
+				Detail = "Three parts, not one long finger. Each will get its own bone, and that "
+					+ "is how a finger curls instead of waving as a stick. Keep them in a line up Z.",
+				Art = StepArt.Solid,
+				Points = PointAt.Tool,
+				Tool = EffigyToolTarget.Primitive,
+				IsDone = s => s.SolidCount >= 4 && s.MeasurableBodies >= 4
+			},
+
+			new()
+			{
+				Instruction = "The other fingers, and a thumb",
+				Bullets = new[]
+				{
+					"Three more 0.6 × 0.6 × 1.4 boxes at Z 2.2, X 0.2, then −0.4, then −1.0",
+					"A thumb: 0.7 × 0.7 × 1.5 at X 1.3, Y 0.5, Z 0.3",
+				},
+				Detail = "One box per remaining digit is enough for this lesson. A production hand "
+					+ "gives every joint three segments the way the index already has. The thumb "
+					+ "sits off to the side so it is not another finger in a row.",
+				Art = StepArt.Solid,
+				Points = PointAt.Tool,
+				Tool = EffigyToolTarget.Primitive,
+				IsDone = s => s.SolidCount >= 8 && s.MeasurableBodies >= 8
+			},
+
+			// ---------------------------------------------------------------------------------
+			//  PHASE 2 - SCULPT
+			// ---------------------------------------------------------------------------------
+
+			new()
+			{
+				Instruction = "Switch to Sculpt",
+				Bullets = new[]
+				{
+					"Click Sculpt on the bar above the tools",
+				},
+				Detail = "A Sculpt carries its own levels — you do not Subdivide first. Subdivide "
+					+ "is for smoothing a part you are not going to brush.",
+				Art = StepArt.Sculpt,
+				Points = PointAt.Workspace,
+				Workspace = EffigyWorkspace.Sculpt,
+				IsDone = s => s.Workspace == EffigyWorkspace.Sculpt
+			},
+
+			new()
+			{
+				Instruction = "Brush some knuckles",
+				Bullets = new[]
+				{
+					"Click the palm in the Parts list",
+					"Press Sculpt, then drag on the surface",
+				},
+				Detail = "Draw pushes out, Ctrl inverts and carves. The levels are the cage: drop "
+					+ "down to work broadly, step up for the crease of a knuckle. Finish when the "
+					+ "palm no longer reads as a box.",
+				Art = StepArt.Sculpt,
+				Points = PointAt.Tool,
+				Tool = EffigyToolTarget.Sculpt,
+				IsDone = s => s.HasClean<SculptFeature>()
+			},
+
+			// ---------------------------------------------------------------------------------
+			//  PHASE 3 - PAINT
+			// ---------------------------------------------------------------------------------
+
+			new()
+			{
+				Instruction = "Switch to Paint",
+				Bullets = new[]
+				{
+					"Click Paint on the bar above the tools",
+				},
+				Detail = "Colour is a texture atlas, not vertex paint. If the part has no UVs that "
+					+ "can hold a stroke, Paint inserts an Unwrap for you.",
+				Art = StepArt.Paint,
+				Points = PointAt.Workspace,
+				Workspace = EffigyWorkspace.Paint,
+				IsDone = s => s.Workspace == EffigyWorkspace.Paint
+			},
+
+			new()
+			{
+				Instruction = "Paint the skin",
+				Bullets = new[]
+				{
+					"Select a part, press Paint",
+					"Pick a colour and drag",
+				},
+				Detail = "One body at a time. Repeat on the fingers if you want, or leave them: "
+					+ "the lesson is that paint survives a rebuild, not that every phalanx is "
+					+ "shaded. Ctrl erases.",
+				Art = StepArt.Paint,
+				Points = PointAt.Tool,
+				Tool = EffigyToolTarget.Paint,
+				IsDone = s => s.HasClean<PaintFeature>()
+			},
+
+			// ---------------------------------------------------------------------------------
+			//  PHASE 4 - THE BONES
+			// ---------------------------------------------------------------------------------
+
+			new()
+			{
+				Instruction = "Switch to Rig",
+				Bullets = new[]
+				{
+					"Click Rig on the bar above the tools",
+				},
+				Detail = "The parts are done. A skeleton is one bone per part, parented so a "
+					+ "finger hangs off the palm and a tip hangs off the middle joint.",
+				Art = StepArt.Bone,
+				Points = PointAt.Workspace,
+				Workspace = EffigyWorkspace.Rig,
+				IsDone = s => s.Workspace == EffigyWorkspace.Rig
+			},
+
+			new()
+			{
+				Instruction = "A bone down the palm",
+				Bullets = new[]
+				{
+					"Click the palm — viewport or Parts list",
+					"Press Bone from Part",
+				},
+				Detail = "This is the root of the hand. Everything else hangs off it, the way a "
+					+ "trigger hangs off a gun's root. Select it and leave it selected.",
+				Art = StepArt.Bone,
+				Points = PointAt.Tool,
+				Tool = EffigyToolTarget.BoneFromPart,
+				IsDone = s => s.BoneCount >= 1 && s.AssignedBodies >= 1
+			},
+
+			new()
+			{
+				Instruction = "Chain the index finger",
+				Bullets = new[]
+				{
+					"With the palm bone selected, Bone from Part on the first joint",
+					"Select that new bone, then Bone from Part on the middle, then the tip",
+				},
+				Detail = "A selected bone is the parent of the next one. Palm → knuckle → middle "
+					+ "→ tip is a finger. If a bone came out as its own root, right-click it in "
+					+ "the Rig tree and Parent to the one it should hang off.",
+				Art = StepArt.Bone,
+				Points = PointAt.Tool,
+				Tool = EffigyToolTarget.BoneFromPart,
+				IsDone = s => s.BoneCount >= 4 && s.ChildBones >= 3
+			},
+
+			new()
+			{
+				Instruction = "Hang the other digits off the palm",
+				Bullets = new[]
+				{
+					"Select the palm bone",
+					"Bone from Part on each remaining finger, and the thumb",
+				},
+				Detail = "They all parent to the palm because they are one-bone digits. A "
+					+ "three-joint finger on each would parent joint-to-joint the way the index "
+					+ "already does. Pose the palm and every child should follow.",
+				Art = StepArt.Bone,
+				Points = PointAt.Tool,
+				Tool = EffigyToolTarget.BoneFromPart,
+				IsDone = s => s.BoneCount >= 8 && s.AssignedBodies >= 8 && s.ChildBones >= 7
+			},
+
+			new()
+			{
+				Instruction = "Curl a finger",
+				Bullets = new[]
+				{
+					"Press Pose in the Rig panel",
+					"Drag the index tip, then the palm",
+				},
+				Detail = "The tip should curl without taking the palm with it. The palm should "
+					+ "carry the whole hand. If a finger stays behind, it is still a root — Parent "
+					+ "to the palm. Pose is a scratchpad; Reset Pose puts the bind back.",
+				Art = StepArt.Pose,
+				Points = PointAt.Panel,
+				Panel = "Rig",
+				IsDone = s => s.Posing
+			},
+
+			new()
+			{
+				Instruction = "Compile it",
+				Bullets = new[]
+				{
+					"File → Compile .vmdl",
+				},
+				Detail = "A skinned hand you can drop in a scene or open in Marionette. The "
+					+ "recipe stays in the .effigy: change a box, compile again, and the bones "
+					+ "follow the parts.",
+				Art = StepArt.Export,
+				Points = PointAt.Menu,
+				IsDone = _ => false
+			},
+		};
+
 	/// <summary>
 	/// Whether the tutorial dock opens itself when Effigy starts.
 	///
@@ -467,7 +720,12 @@ internal sealed class EffigyTutorial
 	public void Restart( EffigyLesson lesson )
 	{
 		Lesson = lesson;
-		_steps = lesson == EffigyLesson.Rigging ? _rigging : _house;
+		_steps = lesson switch
+		{
+			EffigyLesson.Rigging => _rigging,
+			EffigyLesson.Hand => _hand,
+			_ => _house,
+		};
 		Active = true;
 		CurrentIndex = 0;
 		_furthest = 0;

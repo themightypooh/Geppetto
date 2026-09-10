@@ -196,6 +196,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	private List<EffigyStage> _paintStages;
 	private List<EffigyStage> _sculptHomeStages;
 	private List<EffigyStage> _paintHomeStages;
+	private EffigyStageTool _subdivideHomeTool, _sculptHomeTool, _paintHomeTool;
 
 	// Which mode's stages the bar is showing lives in EffigyWindow.Workspaces.cs, as the BarMode
 	// PROPERTY rather than a plain field: assigning it is also what re-lights the workspace
@@ -397,6 +398,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		help.Clear();
 		help.AddOption( "Start House Tutorial", "school", StartTutorial );
 		help.AddOption( "Start Rigging Tutorial", "accessibility", StartRigTutorial );
+		help.AddOption( "Start Hand Tutorial", "back_hand", StartHandTutorial );
 
 		var view = MenuBar.FindOrCreateMenu( "View" );
 		view.Clear();
@@ -536,13 +538,30 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		_viewport.AddSculptOverlay( _sculptBar );
 
-		// The grid switch, at the right-hand end of the tool row and only while a sketch is open.
-		// On the chrome with the tools rather than floating on the model: it belongs to the mode
-		// you are in, the way the tool buttons beside it do. Changed saves the setting through the
-		// same path the settings dialog uses, so flipping it here is remembered.
-		_gridBar = new EffigySketchGridBar( _stageBar, _viewport ) { Changed = OnGridBarChanged };
+		// Citizen first, then the grid, both flush-right on the tool row. The citizen is scenery
+		// in the viewport, so the switch that hides it lives next to the viewport — Settings is
+		// still the other home, and both write the same bool. The grid still only shows while a
+		// sketch is open; the citizen switch stays, because a ruler is useful in every mode.
+		var trailing = new Widget( _stageBar )
+		{
+			TranslucentBackground = true,
+			NoSystemBackground = true,
+			Layout = Layout.Row(),
+			FixedHeight = EffigyToolChrome.ButtonHeight,
+			FixedWidth = EffigySizeReferenceButton.BarWidth,
+		};
+		trailing.Layout.Spacing = 6;
 
-		_stageBar.SetToolRowTrailing( _gridBar );
+		_citizenButton = new EffigySizeReferenceButton( trailing, _viewport )
+		{
+			Changed = OnSizeReferenceChanged,
+		};
+		_gridBar = new EffigySketchGridBar( trailing, _viewport ) { Changed = OnGridBarChanged };
+
+		trailing.Layout.Add( _citizenButton );
+		trailing.Layout.Add( _gridBar );
+
+		_stageBar.SetToolRowTrailing( trailing );
 		_viewport.SketchGridBar = _gridBar;
 
 		_viewport.SculptStrokeFinished = NoteSculptEdited;
@@ -1355,21 +1374,25 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	{
 		var stage = new EffigyStage { Name = "Sculpt" };
 
-		stage.Add( new EffigyStageTool
+		_subdivideHomeTool = new EffigyStageTool
 		{
 			Icon = EffigyIcon.Subdivide,
 			Label = "Subdivide",
 			Tip = "Add a Subdivide — Catmull-Clark subdivision",
 			Clicked = () => AddFeature( NewFeature( ToolKind.Subdivide, -1 ) ),
-		} );
+		};
 
-		stage.Add( new EffigyStageTool
+		stage.Add( _subdivideHomeTool );
+
+		_sculptHomeTool = new EffigyStageTool
 		{
 			Icon = EffigyIcon.Sculpt,
 			Label = "Sculpt",
 			Tip = "Add a Sculpt — brush detail onto the cage in levels",
 			Clicked = () => AddFeature( NewFeature( ToolKind.Sculpt, -1 ) ),
-		} );
+		};
+
+		stage.Add( _sculptHomeTool );
 
 		return new List<EffigyStage> { stage };
 	}
@@ -1589,13 +1612,15 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			Clicked = () => AddFeature( NewFeature( ToolKind.UVProject, -1 ) ),
 		} );
 
-		stage.Add( new EffigyStageTool
+		_paintHomeTool = new EffigyStageTool
 		{
 			Icon = EffigyIcon.Paint,
 			Label = "Paint",
 			Tip = "Add a Paint — brush colour straight onto the model",
 			Clicked = AddPaint,
-		} );
+		};
+
+		stage.Add( _paintHomeTool );
 
 		stage.Add( new EffigyStageTool
 		{
@@ -2845,7 +2870,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	/// </summary>
 	private enum ToolKind
 	{
-		Sketch, Plane, Primitive, Extrude, Revolve, Sweep, Loft, Chamfer, Fillet, Shell, Subdivide,
+		Sketch, Plane, Primitive, Import, Extrude, Revolve, Sweep, Loft, Chamfer, Fillet, Shell, Subdivide,
 		Draft, Hole, Sculpt, Mirror, LinearPattern, CircularPattern, Transform, UVProject, FaceMaterial,
 		MoveFace, Paint, Boolean,
 	}
@@ -2856,6 +2881,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		ToolKind.Sketch => new SketchFeature(),
 		ToolKind.Plane => new PlaneFeature(),
 		ToolKind.Primitive => NewPrimitive( choice ),
+		ToolKind.Import => new ImportFeature(),
 		ToolKind.Extrude => AwaitingPick( new ExtrudeFeature() ),
 		ToolKind.Revolve => AwaitingPick( NewRevolve() ),
 		ToolKind.Sweep => new SweepFeature(),
@@ -3018,6 +3044,12 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		new() { Icon = EffigyIcon.Primitive, Label = "Primitive", Stage = StageSketch,
 			Tip = "Add a Primitive — pick a shape",
 			Kind = ToolKind.Primitive, Choices = PrimitiveShapes },
+
+		// BESIDE PRIMITIVE because both start a part from nothing. This one is a mesh that already
+		// exists — a sculpt, a scan — and the kernel has no other way to make a body out of one.
+		new() { Icon = EffigyIcon.Primitive, Label = "Import", Stage = StageSketch, MenuIcon = "file_open",
+			Tip = "Add an Import — load a Wavefront OBJ as a body",
+			Kind = ToolKind.Import },
 
 		// --- Solid: profiles become bodies ------------------------------------------------------
 		new() { Icon = EffigyIcon.Extrude, Label = "Extrude", Stage = StageSolid, MenuIcon = "arrow_upward",
@@ -3202,6 +3234,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 				(BoolParam x, BoolParam y) => x.Value == y.Value,
 				(Vec3Param x, Vec3Param y) => x.Value.Equals( y.Value ),
 				(ChoiceParam x, ChoiceParam y) => x.Index == y.Index,
+				(StringParam x, StringParam y) => x.Value == y.Value,
 
 				// A parameter kind nobody here knows about: treat it as a difference, so an unknown
 				// setting can never be quietly thrown away by reusing a feature that does not match.
@@ -3222,6 +3255,22 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	/// </summary>
 	private void AddFeature( Feature feature )
 	{
+		// IMPORT ASKS FOR THE FILE FIRST. An empty Source is a refusal, and adding the feature
+		// then making you browse from the dialog is a dead button until you notice the red row.
+		// Cancel the picker and nothing is added, same as Subdivide with nothing selected.
+		if ( feature is ImportFeature import
+			&& string.IsNullOrWhiteSpace( import.Source.Value )
+			&& !import.HasPendingMesh )
+		{
+			if ( !TryPickImportFile( out var path ) )
+				return;
+
+			import.BindSource( path );
+
+			if ( string.IsNullOrWhiteSpace( import.Name ) )
+				import.Name = Path.GetFileNameWithoutExtension( path );
+		}
+
 		// Pressing the same button again while the last one is still sitting there unanswered and
 		// unconfirmed goes BACK TO THAT ONE rather than stacking another copy into the tree.
 		// Impatience with a picker - clicking once more because nothing appeared to happen - produced
@@ -4423,6 +4472,16 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		RefreshTutorial();
 	}
 
+	private void StartHandTutorial()
+	{
+		DockManager.SetDockState( "Tutorial", true );
+		DockManager.RaiseDock( "Tutorial" );
+		SyncDockChecks();
+
+		_tutorial?.Restart( EffigyLesson.Hand );
+		RefreshTutorial();
+	}
+
 	/// <summary>Open a dock and bring it to the front, for the panel's "show me the X panel"
 	/// button. Opening without raising is not enough — a dock tabbed behind another comes back
 	/// visible and still hidden, which looks exactly like the button doing nothing.</summary>
@@ -4497,6 +4556,45 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 				tool.Attention = false;
 
 			_stageBar?.Reveal( _boneFromPartTool );
+			_stageBar?.Refresh();
+			return;
+		}
+
+		if ( _subdivideHomeTool is not null )
+			_subdivideHomeTool.Attention = _highlightedTool == EffigyToolTarget.Subdivide;
+
+		if ( _sculptHomeTool is not null )
+			_sculptHomeTool.Attention = _highlightedTool == EffigyToolTarget.Sculpt;
+
+		if ( _paintHomeTool is not null )
+			_paintHomeTool.Attention = _highlightedTool == EffigyToolTarget.Paint;
+
+		if ( _highlightedTool == EffigyToolTarget.Subdivide && _subdivideHomeTool is not null )
+		{
+			foreach ( var (_, tool) in _featureTools )
+				tool.Attention = false;
+
+			_stageBar?.Reveal( _subdivideHomeTool );
+			_stageBar?.Refresh();
+			return;
+		}
+
+		if ( _highlightedTool == EffigyToolTarget.Sculpt && _sculptHomeTool is not null )
+		{
+			foreach ( var (_, tool) in _featureTools )
+				tool.Attention = false;
+
+			_stageBar?.Reveal( _sculptHomeTool );
+			_stageBar?.Refresh();
+			return;
+		}
+
+		if ( _highlightedTool == EffigyToolTarget.Paint && _paintHomeTool is not null )
+		{
+			foreach ( var (_, tool) in _featureTools )
+				tool.Attention = false;
+
+			_stageBar?.Reveal( _paintHomeTool );
 			_stageBar?.Refresh();
 			return;
 		}
@@ -4974,10 +5072,44 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			Log.Error( $"[Effigy] saved {path} but could NOT write its sculpt data: {e.Message}" );
 		}
 
+		try
+		{
+			var meshes = ImportSidecar.Save( _studio, path );
+
+			if ( meshes > 0 )
+				Log.Info( $"[Effigy] wrote {meshes} imported mesh(es) beside {path}" );
+		}
+		catch ( Exception e )
+		{
+			Log.Error( $"[Effigy] saved {path} but could NOT write its imported mesh: {e.Message}" );
+		}
+
 		_documentPath = path;
 		MarkClean();
 
 		Log.Info( $"[Effigy] saved {path}" );
+	}
+
+	/// <summary>Pick a Wavefront OBJ to import. False if the dialog was cancelled.</summary>
+	private static bool TryPickImportFile( out string path )
+	{
+		path = null;
+
+		var fd = new FileDialog( null )
+		{
+			Title = "Import mesh...",
+			DefaultSuffix = ".obj",
+			Directory = Project.Current?.GetAssetsPath() ?? "",
+		};
+
+		fd.SetFindFile();
+		fd.SetNameFilter( "Wavefront OBJ (*.obj)" );
+
+		if ( !fd.Execute() )
+			return false;
+
+		path = fd.SelectedFile;
+		return !string.IsNullOrWhiteSpace( path );
 	}
 
 	private void Open()
@@ -5031,6 +5163,15 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		catch ( Exception e )
 		{
 			Log.Error( $"[Effigy] opened {path} but could not read its sculpt data: {e.Message}" );
+		}
+
+		try
+		{
+			ImportSidecar.Load( loaded, path );
+		}
+		catch ( Exception e )
+		{
+			Log.Error( $"[Effigy] opened {path} but could not read its imported mesh: {e.Message}" );
 		}
 
 		_studio = loaded;
@@ -6435,6 +6576,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	/// </summary>
 	private EffigySketchGridBar _gridBar;
 
+	/// <summary>The citizen switch at the end of the tool row, or null before the viewport is built.</summary>
+	private EffigySizeReferenceButton _citizenButton;
+
 	/// <summary>
 	/// The overlay changed the grid. It has already written the viewport; this is the rest of what
 	/// the settings window's own callback does — remember it, and put the open settings window
@@ -6451,6 +6595,15 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		EditorCookie.Set( PlaneGridCookie, _viewport.ShowPlaneGrid );
 		EditorCookie.Set( GridSpacingCookie, _viewport.GridSpacing );
 
+		_settingsWindow?.Sync( CurrentSettings() );
+	}
+
+	private void OnSizeReferenceChanged()
+	{
+		if ( !_viewport.IsValid() )
+			return;
+
+		EditorCookie.Set( SizeReferenceCookie, _viewport.ShowSizeReference );
 		_settingsWindow?.Sync( CurrentSettings() );
 	}
 
@@ -6544,6 +6697,8 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		EditorCookie.Set( FullBrightCookie, values.FullBright );
 		EditorCookie.Set( CheckerCookie, values.ShowUVChecker );
 
+		_citizenButton?.Refresh();
+
 		return values;
 	}
 
@@ -6567,6 +6722,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		_viewport.SnapToFaceEdges = EditorCookie.Get( SnapFaceEdgesCookie, true );
 		_viewport.ShowSizeReference = EditorCookie.Get( SizeReferenceCookie, false );
 		_viewport.FullBright = EditorCookie.Get( FullBrightCookie, true );
+
+		_citizenButton?.Refresh();
+		_gridBar?.Refresh();
 	}
 
 	/// <summary>Drop a point light into the viewport. Full bright turns off so the lamp is
@@ -6637,6 +6795,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		// disappear into the bar the way the tool buttons beside it do.
 		if ( _gridBar is not null )
 			_gridBar.GapColor = _palette.Chrome;
+
+		if ( _citizenButton is not null )
+			_citizenButton.GapColor = _palette.Chrome;
 
 		// Grid lines want the palette's dim text colour: it is picked to sit just above the
 		// background in every one of these palettes, which is exactly the job.

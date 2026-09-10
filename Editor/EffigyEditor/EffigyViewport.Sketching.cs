@@ -1505,7 +1505,7 @@ internal sealed partial class EffigyViewport
 		var origin = new Vec3( ray.Position.x, ray.Position.y, ray.Position.z );
 		var direction = new Vec3( ray.Forward.x, ray.Forward.y, ray.Forward.z );
 
-		_facePickHit = MeshRaycast.Raycast( _pickableBodies, origin, direction );
+		_facePickHit = MeshRaycast.Raycast( _pickableBodies, origin, direction, PickTreeFor );
 	}
 
 	/// <summary>How far away the sketch under the cursor is, or MaxValue. Kept from SketchPickFrame,
@@ -1761,9 +1761,50 @@ internal sealed partial class EffigyViewport
 
 	private readonly Dictionary<(PolyMesh Mesh, int Face), FaceSurface> _surfaces = new();
 
+	/// <summary>
+	/// The pick tree for a mesh, built once rather than once per frame.
+	///
+	/// SAME BARGAIN AS <see cref="SurfaceOf"/>, and for a worse symptom. The pick raycast is a
+	/// linear scan over every face, and it runs on every frame the face or edge picker is armed -
+	/// which on a 60k-face import out of Meshy is about 13ms and 25MB of garbage per frame, so the
+	/// viewport spends its entire budget deciding what the cursor is on and the GC does the rest.
+	/// A tree costs ~200ms to build once and turns the scan into a handful of triangle tests.
+	///
+	/// BUILT LAZILY, because most parts are small enough that the scan was never the problem and
+	/// paying 200ms up front on every rebuild to accelerate a 0.1ms raycast is the same mistake
+	/// pointed the other way. The threshold is where the scan starts costing more than a frame.
+	///
+	/// Invalidated exactly like the surface cache: a new PolyMesh instance is the signal, and
+	/// rebuilds hand the viewport new bodies.
+	/// </summary>
+	private MeshBVH PickTreeFor( PolyMesh mesh )
+	{
+		if ( mesh is null || mesh.FaceCount < PickTreeThreshold )
+			return null;
+
+		if ( _pickTrees.TryGetValue( mesh, out var cached ) )
+			return cached;
+
+		var tree = MeshBVH.Build( mesh );
+
+		_pickTrees[mesh] = tree;
+
+		return tree;
+	}
+
+	/// <summary>Face count above which a pick is worth a tree. A few thousand faces scan in well
+	/// under a frame; the build only pays for itself past that.</summary>
+	private const int PickTreeThreshold = 4000;
+
+	private readonly Dictionary<PolyMesh, MeshBVH> _pickTrees = new();
+
 	/// <summary>Drop every cached surface. Called whenever the viewport is given new bodies, which
 	/// is the only moment the meshes underneath them can have changed.</summary>
-	private void ForgetSurfaces() => _surfaces.Clear();
+	private void ForgetSurfaces()
+	{
+		_surfaces.Clear();
+		_pickTrees.Clear();
+	}
 
 	/// <summary>
 	/// Outline where OTHER bodies meet this face.
@@ -2046,7 +2087,7 @@ internal sealed partial class EffigyViewport
 		var origin = new Vec3( ray.Position.x, ray.Position.y, ray.Position.z );
 		var direction = new Vec3( ray.Forward.x, ray.Forward.y, ray.Forward.z );
 
-		if ( MeshRaycast.Raycast( _pickableBodies, origin, direction ) is not { } hit )
+		if ( MeshRaycast.Raycast( _pickableBodies, origin, direction, PickTreeFor ) is not { } hit )
 			return;
 
 		DrawBodyHighlight( hit.Body, BodyPickHoverColor );

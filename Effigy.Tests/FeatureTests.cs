@@ -45,6 +45,9 @@ public static class FeatureTests
 		Section( "subdivide can take a few faces instead of the body" );
 		TestLocalSubdivide();
 
+		Section( "subdivide all faces densifies without smoothing" );
+		TestAllFacesSubdivide();
+
 		Section( "parameter dialogs follow the shape" );
 		TestParameterVisibility();
 
@@ -437,6 +440,50 @@ public static class FeatureTests
 
 		Check( "clearing the picks goes back to the whole body",
 			studio.Bodies[0].Mesh.FaceCount == 24, $"{studio.Bodies[0].Mesh.FaceCount}" );
+	}
+
+	/// <summary>
+	/// "All faces" is the middle of the three subdivide forms: every face gets denser, but LINEARLY
+	/// — the shape does not move, unlike the whole-body Catmull-Clark which pulls the corners in.
+	/// The assertion that matters is the one that would catch it collapsing back into the whole-body
+	/// path: a box subdivided "all faces" is still exactly 2 units across.
+	/// </summary>
+	static void TestAllFacesSubdivide()
+	{
+		var studio = StudioWithBox();
+		var subdiv = studio.Add( new SubdivideFeature() );
+		subdiv.Levels.Value = 1;
+		subdiv.AllFaces.Value = true;
+
+		studio.Rebuild();
+
+		var mesh = studio.Bodies[0].Mesh;
+
+		Check( "every face became four", mesh.FaceCount == 24, $"{mesh.FaceCount}" );
+		Check( "all quads, no n-gons", mesh.Faces.All( f => f.Count == 4 ),
+			string.Join( ",", mesh.Faces.Select( f => f.Count ) ) );
+
+		var width = mesh.Positions.Max( p => p.x ) - mesh.Positions.Min( p => p.x );
+		var height = mesh.Positions.Max( p => p.z ) - mesh.Positions.Min( p => p.z );
+		Check( "the shape did not move (linear, not Catmull-Clark)",
+			Math.Abs( width - 2f ) < 1e-4f && Math.Abs( height - 2f ) < 1e-4f,
+			$"{width:0.###} x {height:0.###}" );
+
+		Check( "still watertight", Watertight( mesh ) );
+
+		var predicted = subdiv.PredictCost( new[] { new Body( "x", "x", Primitives.Box( 2, 2, 2 ) ) } );
+		Check( "cost prediction matches",
+			predicted.Faces == mesh.FaceCount && predicted.Vertices == mesh.VertexCount,
+			$"predicted {predicted.Vertices}v {predicted.Faces}f, got {mesh.VertexCount}v {mesh.FaceCount}f" );
+
+		// A picked face is more specific than "all faces" and wins.
+		studio.Features[0].Id = "box";
+		subdiv.Faces.Add( new FaceRef( "boxb0", new Vec3( 0, 0, 1 ), new Vec3( 0, 0, 1 ) ) );
+		studio.MarkAllDirty();
+		studio.Rebuild();
+
+		Check( "a pick narrows the all-faces form back to the picked face",
+			studio.Bodies[0].Mesh.FaceCount == 9, $"{studio.Bodies[0].Mesh.FaceCount}" );
 	}
 
 	/// <summary>Every edge used by exactly two faces. The cheap test for a crack.</summary>

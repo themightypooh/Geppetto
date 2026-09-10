@@ -71,10 +71,29 @@ public static class MeshRaycast
 	/// The nearest face of <paramref name="mesh"/> that <paramref name="origin"/> + t *
 	/// <paramref name="direction"/> hits, for t > 0. Null if nothing is hit.
 	/// </summary>
-	public static MeshHit? Raycast( PolyMesh mesh, Vec3 origin, Vec3 direction )
+	public static MeshHit? Raycast( PolyMesh mesh, Vec3 origin, Vec3 direction ) =>
+		Raycast( mesh, origin, direction, null );
+
+	/// <summary>
+	/// The same nearest-hit answer, with a <see cref="MeshBVH"/> doing the culling.
+	///
+	/// WHY THE OVERLOAD RATHER THAN A CACHE IN HERE: the linear scan below is O(faces), and the
+	/// viewport runs this every frame the face picker is armed. On a 60k-face import that is
+	/// ~13ms and ~25MB of garbage PER FRAME, which is the whole frame budget spent on deciding
+	/// what the cursor is over. A tree turns it into a handful of triangle tests. The kernel does
+	/// not own the cache because it does not know when the mesh stops changing - the caller does,
+	/// which is the same reason <see cref="Brush.Apply"/> takes its bvh rather than building one.
+	///
+	/// A bvh built on different topology is ignored rather than trusted, so a caller holding a
+	/// stale tree gets a slow answer instead of a wrong one.
+	/// </summary>
+	public static MeshHit? Raycast( PolyMesh mesh, Vec3 origin, Vec3 direction, MeshBVH bvh )
 	{
 		if ( mesh is null )
 			return null;
+
+		if ( bvh is not null && !bvh.IsEmpty && bvh.FaceCount == mesh.FaceCount )
+			return bvh.Raycast( mesh, origin, direction );
 
 		var dir = direction.Normal;
 
@@ -140,6 +159,23 @@ public static class MeshRaycast
 
 		if ( face.Count < 3 )
 			return false;
+
+		// A TRIANGLE IS ITS OWN TRIANGULATION, and the general path below allocates a corner list
+		// and a triangle list to rediscover that. Every mesh that arrives from outside the tool is
+		// triangles - an OBJ out of Blender, Meshy or a scan - so this is not a micro-optimisation
+		// on a rare case, it is the case, and it is what keeps a picking ray off the heap.
+		if ( face.Count == 3 )
+		{
+			if ( !TriangleHit( origin, dir,
+				mesh.Positions[face.Indices[0]],
+				mesh.Positions[face.Indices[1]],
+				mesh.Positions[face.Indices[2]], out var tri, out var triPoint ) )
+				return false;
+
+			t = tri;
+			point = triPoint;
+			return true;
+		}
 
 		var corners = new List<Vec3>( face.Count );
 
@@ -245,7 +281,17 @@ public static class MeshRaycast
 	/// So a hit is discarded when the surface it landed on is inside another solid. Sorting the
 	/// candidates first means the common case - nothing overlapping - costs one containment test.
 	/// </summary>
-	public static (Body Body, MeshHit Hit)? Raycast( IEnumerable<Body> bodies, Vec3 origin, Vec3 direction )
+	public static (Body Body, MeshHit Hit)? Raycast( IEnumerable<Body> bodies, Vec3 origin, Vec3 direction ) =>
+		Raycast( bodies, origin, direction, null );
+
+	/// <summary>
+	/// The same pick, with the caller supplying a <see cref="MeshBVH"/> per mesh. See the note on
+	/// <see cref="Raycast(PolyMesh, Vec3, Vec3, MeshBVH)"/> for why the tree is passed in rather
+	/// than built here. Returning null from <paramref name="bvhFor"/> falls back to the scan, so a
+	/// cache that has not warmed up yet is slow rather than wrong.
+	/// </summary>
+	public static (Body Body, MeshHit Hit)? Raycast( IEnumerable<Body> bodies, Vec3 origin, Vec3 direction,
+		Func<PolyMesh, MeshBVH> bvhFor )
 	{
 		if ( bodies is null )
 			return null;
@@ -262,7 +308,7 @@ public static class MeshRaycast
 
 		foreach ( var body in list )
 		{
-			if ( Raycast( body.Mesh, origin, direction ) is { } hit )
+			if ( Raycast( body.Mesh, origin, direction, bvhFor?.Invoke( body.Mesh ) ) is { } hit )
 				candidates.Add( (body, hit) );
 		}
 

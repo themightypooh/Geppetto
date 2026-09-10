@@ -76,6 +76,14 @@ internal sealed class EffigyStudioPreview : AssetPreview
 		{
 		}
 
+		try
+		{
+			ImportSidecar.Load( studio, path );
+		}
+		catch ( Exception )
+		{
+		}
+
 		using ( Scene.Push() )
 		using ( EditorUtility.DisableTextureStreaming() )
 		{

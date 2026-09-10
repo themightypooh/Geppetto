@@ -160,6 +160,30 @@ internal sealed class EffigyTutorialPanel : Widget
 				+ "the assignment is right. If the whole model rotates as one, a part is still pinned "
 				+ "to the wrong bone. That is the whole of a first rig.", 14f, 0.8f );
 		}
+		else if ( Tutorial.Lesson == EffigyLesson.Hand )
+		{
+			AddLine( "You will build a hand: a palm, an index finger in three joints, the other "
+				+ "digits, then sculpt, paint, and a skeleton that curls. It is the smallest model "
+				+ "that still walks every workspace.",
+				15f, 0.95f );
+
+			_list.Layout.AddSpacingCell( 6f );
+
+			AddLine( "It runs in four phases:", 14f, 0.8f );
+
+			_list.Layout.AddSpacingCell( 4f );
+
+			AddPhase( "THE PARTS", "palm, a three-joint index, then the other fingers and a thumb" );
+			AddPhase( "SCULPT", "brush knuckles onto the palm — no Subdivide first" );
+			AddPhase( "PAINT", "a colour on a part, as a texture, not vertex paint" );
+			AddPhase( "THE BONES", "palm first, chain the index, hang the rest off the palm, pose" );
+
+			_list.Layout.AddSpacingCell( 6f );
+
+			AddLine( "Keep the parts separate. A merged hand is one mesh and needs weight painting "
+				+ "to bend; one body per joint lets Bone from Part pin each piece, and a parented "
+				+ "chain is what makes a finger curl.", 14f, 0.8f );
+		}
 		else
 		{
 			AddLine( "You will build a small house: a box for the walls, a wedge for a sloped roof, "
@@ -437,15 +461,23 @@ internal sealed class EffigyTutorialPanel : Widget
 	/// stopping - finishing something should feel like finishing something.</summary>
 	private void BuildFinishScreen()
 	{
-		var done = new Editor.Label( Tutorial.Lesson == EffigyLesson.Rigging
-			? "That is a rig, and it is still a recipe. Move the post and the bone follows; compile "
+		var done = new Editor.Label( Tutorial.Lesson switch
+		{
+			EffigyLesson.Rigging =>
+				"That is a rig, and it is still a recipe. Move the post and the bone follows; compile "
 				+ "again and Marionette poses the new shape. Pose was a scratchpad - Reset Pose puts "
 				+ "the bind back. Weight painting is the next lesson, for the joints that do not "
-				+ "crease where you want."
-			: "That is a house, and it is still a recipe. Change the box and the roof follows; widen "
+				+ "crease where you want.",
+			EffigyLesson.Hand =>
+				"That is a hand, and it is still a recipe. Change a box and the bone follows; compile "
+				+ "again and Marionette poses the new shape. A production hand gives every finger three "
+				+ "joints and a bit of weight paint at the creases. This one already curls.",
+			_ =>
+				"That is a house, and it is still a recipe. Change the box and the roof follows; widen "
 				+ "the door and the wall re-cuts itself around it. Nothing you did was a one-way edit, "
 				+ "which is the whole point of modelling this way - and the next tutorial starts where "
-				+ "this one leaves off: drawing the shapes a primitive cannot make." )
+				+ "this one leaves off: drawing the shapes a primitive cannot make.",
+		} )
 		{ WordWrap = true, Color = Theme.Green };
 
 		done.SetStyles( "font-size: 15px; line-height: 1.45;" );
@@ -548,6 +580,24 @@ internal sealed class EffigyStepGlyph : Widget
 				Paint.DrawCircle( center + new Vector2( -2, 8 ), 2.5f );
 				Paint.DrawCircle( center + new Vector2( -2, -1 ), 2.5f );
 				Paint.DrawCircle( center + new Vector2( 8, -6 ), 2.5f );
+				break;
+
+			case EffigyTutorial.StepArt.Sculpt:
+				Paint.DrawLine( center + new Vector2( -10, 6 ), center + new Vector2( -4, 2 ) );
+				Paint.DrawLine( center + new Vector2( -4, 2 ), center + new Vector2( 2, 7 ) );
+				Paint.DrawLine( center + new Vector2( 2, 7 ), center + new Vector2( 10, 1 ) );
+				Paint.DrawLine( center + new Vector2( -10, 6 ), center + new Vector2( -10, 10 ) );
+				Paint.DrawLine( center + new Vector2( -10, 10 ), center + new Vector2( 10, 10 ) );
+				Paint.DrawLine( center + new Vector2( 10, 10 ), center + new Vector2( 10, 1 ) );
+				break;
+
+			case EffigyTutorial.StepArt.Paint:
+				Paint.ClearPen();
+				Paint.SetBrush( color );
+				Paint.DrawCircle( center + new Vector2( -2, 2 ), 7f );
+				Paint.SetPen( color, _current ? 2f : 1.5f );
+				Paint.ClearBrush();
+				Paint.DrawLine( center + new Vector2( 4, -4 ), center + new Vector2( 10, -10 ) );
 				break;
 		}
 

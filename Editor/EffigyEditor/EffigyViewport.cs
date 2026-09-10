@@ -1383,7 +1383,19 @@ internal sealed partial class EffigyViewport : Widget
 		// reference planes read it too - but it would be a control on the sketch toolbar for a mode
 		// nobody is in, and Edit > Settings is its home for that case.
 		if ( SketchGridBar.IsValid() )
+		{
 			SketchGridBar.Visible = IsSketching;
+
+			// The citizen switch shares this trailing slot and stays visible in every mode. When
+			// the grid hides, the row has to shrink or it leaves a blank 210px of chrome hanging
+			// off the right of the tools.
+			if ( SketchGridBar.Parent is { IsValid: true } trailing )
+			{
+				var width = EffigySizeReferenceButton.BarWidth
+					+ ( IsSketching ? 6f + EffigySketchGridBar.BarWidth : 0f );
+				trailing.FixedWidth = width;
+			}
+		}
 
 		var overAnyOverlay = (_resultOverlay?.IsUnderMouse ?? false)
 			|| (_sculptBarOverlay?.IsUnderMouse ?? false)

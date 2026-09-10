@@ -147,6 +147,110 @@ internal sealed class RigViewport : Widget
 	private Vector3 _appliedOffset = new( float.NaN, float.NaN, float.NaN );
 	private Angles _appliedRotation = new( float.NaN, float.NaN, float.NaN );
 
+	// PLAYER CONTROLLER REFERENCE
+	//
+	// The default s&box player controller (the walk controller a new project starts with) puts the
+	// eye 64 units up: BodyHeight 72 minus EyeDistanceFromTop 8, both straight out of the shipped
+	// "Player Controller" prefab. That height is the one thing a first-person rig editor can't
+	// derive from the arms model itself - the arms carry a camera bone at their origin, which says
+	// how the arms sit relative to the eye but nothing about how high the eye is above the ground.
+	//
+	// Turning the reference on spawns the controller's body (citizen.vmdl - the same model the
+	// controller's own SkinnedModelRenderer uses) standing on the ground, draws the eye height,
+	// and - in first-person mode - anchors the arms to that eye so the viewport frames what the
+	// player actually sees.
+
+	public const string PlayerBodyModelPath = "models/citizen/citizen.vmdl";
+
+	/// <summary>Eye height of the default s&amp;box player controller, in world units. BodyHeight 72
+	/// minus EyeDistanceFromTop 8, straight out of the shipped "Player Controller" prefab.</summary>
+	public const float PlayerEyeHeight = 64f;
+
+	private const string PlayerControllerCookie = "marionette.playercontroller";
+
+	private bool _showPlayerController;
+	private GameObject _playerBodyObject;
+
+	/// <summary>Spawns the default player controller's body as a ground reference and anchors the
+	/// viewmodel arms to its eye. Persisted, like BoneHandleScale, because it's a property of how
+	/// you work rather than of the clip you have open.</summary>
+	public bool ShowPlayerController
+	{
+		get => _showPlayerController;
+		set
+		{
+			if ( _showPlayerController == value )
+				return;
+
+			_showPlayerController = value;
+			EditorCookie.Set( PlayerControllerCookie, value );
+			RefreshViewToggles();
+		}
+	}
+
+	/// <summary>Where the arms' camera bone goes in viewmodel mode. Zero normally - the arms place
+	/// themselves - but at the player's eye when the controller reference is on, so the framing is
+	/// from the real eye height.</summary>
+	private Vector3 ViewmodelAnchor => ShowPlayerController ? new Vector3( 0f, 0f, PlayerEyeHeight ) : Vector3.Zero;
+
+	/// <summary>Build or tear down the controller body. Idempotent, so it runs every frame and only
+	/// does real work when the reference toggles. Destroyed rather than hidden when off, the same
+	/// reasoning as Effigy's citizen size reference.</summary>
+	private void UpdatePlayerReference()
+	{
+		if ( !_showPlayerController )
+		{
+			if ( _playerBodyObject is not null )
+			{
+				_playerBodyObject.Destroy();
+				_playerBodyObject = null;
+			}
+
+			return;
+		}
+
+		if ( _playerBodyObject.IsValid() )
+			return;
+
+		var model = Model.Load( PlayerBodyModelPath );
+
+		if ( model is null || model.IsError )
+		{
+			Log.Warning( $"Marionette: player controller body '{PlayerBodyModelPath}' could not be loaded." );
+			_showPlayerController = false;
+			RefreshViewToggles();
+			return;
+		}
+
+		using var scope = _canvas.Scene.Push();
+
+		_playerBodyObject = new GameObject( true, "player_controller_reference" );
+
+		var renderer = _playerBodyObject.GetOrAddComponent<SkinnedModelRenderer>( false );
+		renderer.Model = model;
+		renderer.Enabled = true;
+	}
+
+	/// <summary>Ground-to-eye line and a dot at the eye, so the eye height is visible without
+	/// reading a number. Drawn in world space - the body is at the origin, the eye 64 units up.</summary>
+	private void DrawPlayerReference()
+	{
+		if ( !ShowPlayerController )
+			return;
+
+		var eye = new Vector3( 0f, 0f, PlayerEyeHeight );
+
+		Gizmo.Draw.IgnoreDepth = true;
+
+		Gizmo.Draw.Color = Theme.Green.WithAlpha( 0.45f );
+		Gizmo.Draw.Line( Vector3.Zero, eye );
+
+		Gizmo.Draw.Color = Theme.Green;
+		Gizmo.Draw.SolidSphere( eye, 1.5f, 8, 8 );
+
+		Gizmo.Draw.IgnoreDepth = false;
+	}
+
 	/// <summary>Hides the per-bone dots. A first-person rig puts a hundred handles between you and
 	/// the two you're actually moving; this is the way out of that.</summary>
 	public bool ShowBoneHandles
@@ -336,6 +440,7 @@ internal sealed class RigViewport : Widget
 	public RigViewport( Widget parent ) : base( parent )
 	{
 		_boneHandleScale = EditorCookie.Get( "marionette.bonehandle.scale", 1f );
+		_showPlayerController = EditorCookie.Get( PlayerControllerCookie, false );
 
 		MinimumSize = 200;
 		Layout = Layout.Column();
@@ -372,6 +477,7 @@ internal sealed class RigViewport : Widget
 	}
 
 	private Checkbox _firstPersonToggle;
+	private Checkbox _playerControllerToggle;
 	private Checkbox _wholeModelToggle;
 	private Checkbox _showBonesToggle;
 	private Checkbox _showTwistToggle;
@@ -411,6 +517,17 @@ internal sealed class RigViewport : Widget
 		} );
 
 		bar.Add( _firstPersonToggle );
+
+		// The default s&box player controller's body, standing at the origin as a reference, with
+		// its eye marked 64 units up. The arms carry their own camera bone but nothing that says
+		// how high the player's head is above the ground - this is that missing number, and the
+		// body you align props against. In first-person mode it also anchors the arms to that eye.
+		_playerControllerToggle = new Checkbox( "Player Controller" )
+		{
+			ToolTip = "Spawn the default player controller's body at the origin and mark its eye (64 units up). In first-person view, anchor the arms to that eye so what you see is the real in-game view."
+		};
+		_playerControllerToggle.Toggled = () => SetViewMode( () => ShowPlayerController = _playerControllerToggle.Value );
+		bar.Add( _playerControllerToggle );
 
 		bar.AddSpacingCell( 12 );
 
@@ -512,6 +629,7 @@ internal sealed class RigViewport : Widget
 		try
 		{
 			_firstPersonToggle.Value = _viewmodelMode;
+			_playerControllerToggle.Value = ShowPlayerController;
 			_wholeModelToggle.Value = _moveWholeModel;
 			_showBonesToggle.Value = _showBoneHandles;
 			_showTwistToggle.Value = ShowTwistBones;
@@ -586,12 +704,12 @@ internal sealed class RigViewport : Widget
 		// Compared against what WE last applied, rather than against the object's current
 		// transform - reading a rotation back and comparing it needs an equality test on
 		// quaternions, and Angles is a plain struct that compares exactly.
-		if ( _modelObject.IsValid() && (_appliedOffset != ViewmodelOffset || _appliedRotation != ViewmodelRotation) )
+		if ( _modelObject.IsValid() && (_appliedOffset != ViewmodelAnchor + ViewmodelOffset || _appliedRotation != ViewmodelRotation) )
 		{
-			_modelObject.WorldPosition = ViewmodelOffset;
+			_modelObject.WorldPosition = ViewmodelAnchor + ViewmodelOffset;
 			_modelObject.WorldRotation = ViewmodelRotation.ToRotation();
 
-			_appliedOffset = ViewmodelOffset;
+			_appliedOffset = ViewmodelAnchor + ViewmodelOffset;
 			_appliedRotation = ViewmodelRotation;
 		}
 
@@ -1332,6 +1450,7 @@ internal sealed class RigViewport : Widget
 	private void OnPreFrame()
 	{
 		TickScene();
+		UpdatePlayerReference();
 		ApplyPixelStyle();
 		ApplyViewmodelFraming();
 		ApplyReferenceProps();
@@ -1360,6 +1479,7 @@ internal sealed class RigViewport : Widget
 		if ( !ViewmodelMode )
 			Gizmo.Draw.Grid( 0, Gizmo.GridAxis.XY );
 
+		DrawPlayerReference();
 		DrawBoneHandles();
 		DrawReferenceProps();
 		DrawSelectedBoneReadout();
@@ -1699,7 +1819,7 @@ internal sealed class RigViewport : Widget
 	{
 		if ( ViewmodelMode )
 		{
-			ViewmodelOffset = position;
+			ViewmodelOffset = position - ViewmodelAnchor;
 			ViewmodelRotation = rotation.Angles();
 			ViewmodelChanged?.Invoke();
 

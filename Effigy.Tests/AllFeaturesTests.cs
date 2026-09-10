@@ -95,6 +95,15 @@ public static class AllFeaturesTests
 	/// </summary>
 	static void GivePickedInput( Feature feature, PartStudio studio )
 	{
+		// Import is the one feature that needs a FILE rather than a body or a sketch. Bytes in
+		// memory, not a temp path: the harness has no document to sit a sidecar next to, and a
+		// path would leave a file behind.
+		if ( feature is ImportFeature import )
+		{
+			import.LoadMesh( System.Text.Encoding.UTF8.GetBytes( ObjWriter.Write( Primitives.Box(), "box" ) ) );
+			return;
+		}
+
 		// Sweep and loft are the two features that need a SECOND sketch to mean anything — a
 		// path to follow, or another section to skin to. The shared fixture deliberately holds
 		// one sketch, because every other feature resolves "the most recent sketch" and adding
@@ -320,6 +329,7 @@ public static class AllFeaturesTests
 		{
 			typeof( FloatParam ), typeof( IntParam ), typeof( BoolParam ),
 			typeof( ChoiceParam ), typeof( Vec3Param ), typeof( BodySelectionParam ),
+			typeof( StringParam ),
 		};
 
 		foreach ( var type in FeatureTypes() )

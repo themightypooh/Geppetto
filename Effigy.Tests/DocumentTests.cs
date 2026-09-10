@@ -558,6 +558,7 @@ public static class DocumentTests
 			case BoolParam p: p.Value = !p.Value; break;
 			case ChoiceParam p: p.Index = p.Options.Length - 1; break;
 			case Vec3Param p: p.Value = new Vec3( 0.5f, -1.25f, 2f ); break;
+			case StringParam p: p.Value = "meshes/some.obj"; break;
 			case BodySelectionParam p: p.BodyIds.Add( "someb0" ); break;
 			case List<int> ints: ints.Add( 4 ); ints.Add( 7 ); break;
 			case List<string> texts: texts.Add( "sk0001" ); texts.Add( "sk0002" ); break;
@@ -597,6 +598,7 @@ public static class DocumentTests
 			(BoolParam p, BoolParam q) => p.Value == q.Value,
 			(ChoiceParam p, ChoiceParam q) => p.Index == q.Index,
 			(Vec3Param p, Vec3Param q) => p.Value.x == q.Value.x && p.Value.y == q.Value.y && p.Value.z == q.Value.z,
+			(StringParam p, StringParam q) => p.Value == q.Value,
 			(BodySelectionParam p, BodySelectionParam q) => p.BodyIds.SequenceEqual( q.BodyIds ),
 			(List<int> p, List<int> q) => p.SequenceEqual( q ),
 			(List<string> p, List<string> q) => p.SequenceEqual( q ),

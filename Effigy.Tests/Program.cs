@@ -130,6 +130,8 @@ public static class Program
 
 		AllFeaturesTests.Run();
 
+		ImportFeatureTests.Run();
+
 		AcceptsTests.Run();
 
 		FaceMoveTests.Run();
@@ -473,6 +475,16 @@ public static class Program
 			Check( $"{name} OBJ writes normals", vnCount > 0, $"{vnCount} normals" );
 			Check( $"{name} OBJ has no NaN", !text.Contains( "NaN" ) && !text.Contains( "âˆž" ) );
 		}
+
+		// The writer flips V for OBJ's bottom-left origin; the reader must un-flip or every
+		// textured import (and every writer→reader round trip) lands upside down.
+		var boxed = Primitives.Box();
+		var boxedBack = ObjReader.Read( ObjWriter.Write( boxed, "box" ) );
+		var uvSrc = boxed.Faces[0].UVs[0];
+		var uvDst = boxedBack.Faces[0].UVs[0];
+		Check( "OBJ round-trip preserves UVs through the V flip",
+			MathF.Abs( uvSrc.x - uvDst.x ) < 1e-4f && MathF.Abs( uvSrc.y - uvDst.y ) < 1e-4f,
+			$"({uvSrc.x},{uvSrc.y}) -> ({uvDst.x},{uvDst.y})" );
 
 		// The smoothing threshold has to actually do something: a box should end up with exactly
 		// six distinct normals, a cylinder with far more than six.

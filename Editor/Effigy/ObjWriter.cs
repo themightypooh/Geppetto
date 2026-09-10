@@ -140,16 +140,165 @@ public static class ObjWriter
 }
 
 /// <summary>
-/// Minimal OBJ reader, for round-tripping in tests. Not a general importer — it understands only
-/// what ObjWriter emits, which is exactly enough to prove the writer produces something parseable
-/// with the counts and topology intact.
+/// Wavefront OBJ reader — the import path, and the round-trip for tests.
+///
+/// Understands what <see cref="ObjWriter"/> emits, plus the subset a Meshy or Blender export
+/// actually uses: positions, optional vertex colour, UVs, faces (with or without vt/vn), and
+/// <c>usemtl material_N</c>. Everything else on a line is ignored rather than refused, because
+/// a real OBJ is full of <c>o</c> / <c>g</c> / <c>s</c> / <c>vn</c> / <c>mtllib</c> that do not
+/// change the solid.
+///
+/// V IS FLIPPED, matching the writer. OBJ's UV origin is bottom-left; Effigy's is top-left.
+/// Reading without the flip would import every textured mesh upside down, and a writer→reader
+/// round trip would invert V twice and look correct by accident.
 /// </summary>
 public static class ObjReader
 {
+	public static PolyMesh ReadFile( string path ) => Read( File.ReadAllText( path ) );
+
+	/// <summary>One named lump of an OBJ — an <c>o</c> object or a <c>g</c> group, with the faces
+	/// that followed it. See <see cref="ReadPieces"/>.</summary>
+	public readonly struct ObjPiece
+	{
+		public readonly string Name;
+		public readonly PolyMesh Mesh;
+
+		public ObjPiece( string name, PolyMesh mesh )
+		{
+			Name = name;
+			Mesh = mesh;
+		}
+	}
+
+	/// <summary>
+	/// The whole file as one mesh, objects and groups fused. What every caller wanted before
+	/// imports could be split, and what a writer's round-trip still compares against.
+	/// </summary>
 	public static PolyMesh Read( string text )
 	{
-		var mesh = new PolyMesh();
-		var uvs = new List<Vec2>();
+		var parsed = Parse( text );
+		var mesh = new PolyMesh { Positions = parsed.Positions };
+
+		foreach ( var f in parsed.Faces )
+			mesh.AddFace( f.Indices, f.UVs, f.Material );
+
+		if ( parsed.SawColor )
+			mesh.VertexColors = parsed.Colors.ToArray();
+
+		return mesh;
+	}
+
+	/// <summary>
+	/// The file split at its <c>o</c> and <c>g</c> lines, one mesh per lump.
+	///
+	/// WHY THIS EXISTS: an OBJ's vertex indices are global to the FILE, not to the object, so an
+	/// exporter that carefully kept a character's eyelids, brows and hair as separate objects hands
+	/// us one flat pile of triangles with the boundaries recorded only in these marker lines.
+	/// Reading it with <see cref="Read"/> throws that structure away and produces one welded body —
+	/// which is exactly the body you cannot build a tidy feature tree out of, and cannot hide,
+	/// re-material or weight a piece of on its own.
+	///
+	/// Each piece gets its own vertex list, renumbered, holding only the vertices its faces
+	/// actually use. Faces before the first marker land in a piece with an empty name; the caller
+	/// decides what to call that, since only it knows what the file was called.
+	///
+	/// A file with no markers at all comes back as one unnamed piece, so a caller can always take
+	/// this path rather than branching on whether the exporter bothered.
+	/// </summary>
+	public static List<ObjPiece> ReadPieces( string text )
+	{
+		var parsed = Parse( text );
+		var pieces = new List<ObjPiece>();
+
+		// Grouped by index rather than by name so two objects sharing a name stay two pieces —
+		// a duplicated name is an exporter's business, not a reason to weld geometry together.
+		var byGroup = new Dictionary<int, List<ObjFace>>();
+		var order = new List<int>();
+
+		foreach ( var f in parsed.Faces )
+		{
+			if ( !byGroup.TryGetValue( f.Group, out var list ) )
+			{
+				byGroup[f.Group] = list = new List<ObjFace>();
+				order.Add( f.Group );
+			}
+
+			list.Add( f );
+		}
+
+		foreach ( var group in order )
+		{
+			var faces = byGroup[group];
+			var mesh = new PolyMesh();
+			var remap = new Dictionary<int, int>();
+			var colors = parsed.SawColor ? new List<Vec4>() : null;
+
+			foreach ( var f in faces )
+			{
+				var indices = new int[f.Indices.Length];
+
+				for ( var i = 0; i < f.Indices.Length; i++ )
+				{
+					var source = f.Indices[i];
+
+					if ( !remap.TryGetValue( source, out var local ) )
+					{
+						local = mesh.AddVertex( parsed.Positions[source] );
+						remap[source] = local;
+						colors?.Add( parsed.Colors[source] );
+					}
+
+					indices[i] = local;
+				}
+
+				mesh.AddFace( indices, f.UVs, f.Material );
+			}
+
+			if ( colors is not null )
+				mesh.VertexColors = colors.ToArray();
+
+			pieces.Add( new ObjPiece( group >= 0 ? parsed.GroupNames[group] : "", mesh ) );
+		}
+
+		return pieces;
+	}
+
+	readonly struct ObjFace
+	{
+		public readonly int[] Indices;
+		public readonly Vec2[] UVs;
+		public readonly int Material;
+		public readonly int Group;
+
+		public ObjFace( int[] indices, Vec2[] uvs, int material, int group )
+		{
+			Indices = indices;
+			UVs = uvs;
+			Material = material;
+			Group = group;
+		}
+	}
+
+	sealed class ObjData
+	{
+		public List<Vec3> Positions = new();
+		public List<Vec4> Colors = new();
+		public List<Vec2> UVs = new();
+		public List<ObjFace> Faces = new();
+		public List<string> GroupNames = new();
+		public bool SawColor;
+	}
+
+	/// <summary>
+	/// One pass over the text. Both readers above run on this, so a fused read and a split read
+	/// cannot disagree about what the file says — which is the whole reason it is factored out
+	/// rather than written twice.
+	/// </summary>
+	static ObjData Parse( string text )
+	{
+		var data = new ObjData();
+		var material = 0;
+		var group = -1;
 		var c = CultureInfo.InvariantCulture;
 
 		foreach ( var raw in text.Split( '\n' ) )
@@ -161,40 +310,101 @@ public static class ObjReader
 
 			var parts = line.Split( ' ', StringSplitOptions.RemoveEmptyEntries );
 
+			if ( parts.Length == 0 )
+				continue;
+
 			switch ( parts[0] )
 			{
 				case "v":
-					mesh.AddVertex( new Vec3(
+				{
+					data.Positions.Add( new Vec3(
 						float.Parse( parts[1], c ),
 						float.Parse( parts[2], c ),
 						float.Parse( parts[3], c ) ) );
+
+					if ( parts.Length >= 7 )
+					{
+						data.SawColor = true;
+						data.Colors.Add( new Vec4(
+							float.Parse( parts[4], c ),
+							float.Parse( parts[5], c ),
+							float.Parse( parts[6], c ),
+							1f ) );
+					}
+					else
+					{
+						data.Colors.Add( new Vec4( 1f, 1f, 1f, 1f ) );
+					}
+
 					break;
+				}
 
 				case "vt":
-					uvs.Add( new Vec2( float.Parse( parts[1], c ), float.Parse( parts[2], c ) ) );
+					// Writer flips V on the way out; this un-flips it. External OBJs (bottom-left
+					// origin) land in Effigy space the same way.
+					data.UVs.Add( new Vec2( float.Parse( parts[1], c ), 1f - float.Parse( parts[2], c ) ) );
+					break;
+
+				// BOTH MARKERS START A PIECE. Exporters disagree about which one means "object":
+				// Blender writes `o` per object and `g` for its vertex groups, other tools only
+				// ever write `g`. Treating either as a boundary is what makes the split work on
+				// files this tool did not write, which is the only kind it gets.
+				case "o":
+				case "g":
+					data.GroupNames.Add( parts.Length > 1 ? string.Join( " ", parts, 1, parts.Length - 1 ) : "" );
+					group = data.GroupNames.Count - 1;
+					break;
+
+				case "usemtl":
+					material = SlotFromMaterialName( parts.Length > 1 ? parts[1] : "", material );
 					break;
 
 				case "f":
 				{
 					var n = parts.Length - 1;
+
+					if ( n < 3 )
+						break;
+
 					var indices = new int[n];
 					var faceUVs = new Vec2[n];
 
 					for ( var i = 0; i < n; i++ )
 					{
 						var refs = parts[i + 1].Split( '/' );
-						indices[i] = int.Parse( refs[0], c ) - 1;
+						indices[i] = ObjIndex( refs[0], data.Positions.Count, c );
 
-						if ( refs.Length > 1 && refs[1].Length > 0 )
-							faceUVs[i] = uvs[int.Parse( refs[1], c ) - 1];
+						if ( refs.Length > 1 && refs[1].Length > 0 && data.UVs.Count > 0 )
+							faceUVs[i] = data.UVs[ObjIndex( refs[1], data.UVs.Count, c )];
 					}
 
-					mesh.AddFace( indices, faceUVs );
+					data.Faces.Add( new ObjFace( indices, faceUVs, material, group ) );
 					break;
 				}
 			}
 		}
 
-		return mesh;
+		return data;
+	}
+
+	/// <summary>Wavefront indices are 1-based, and negative counts back from the last element.</summary>
+	static int ObjIndex( string token, int count, CultureInfo c )
+	{
+		var n = int.Parse( token, c );
+		return n > 0 ? n - 1 : count + n;
+	}
+
+	/// <summary><see cref="ObjWriter.DefaultMaterialName"/> is <c>material_N</c>; anything else
+	/// leaves the current slot alone rather than inventing one.</summary>
+	static int SlotFromMaterialName( string name, int current )
+	{
+		const string prefix = "material_";
+
+		if ( name.StartsWith( prefix, StringComparison.OrdinalIgnoreCase )
+			&& int.TryParse( name.AsSpan( prefix.Length ), NumberStyles.Integer, CultureInfo.InvariantCulture, out var slot )
+			&& slot >= 0 )
+			return slot;
+
+		return current;
 	}
 }

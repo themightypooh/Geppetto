@@ -28,7 +28,7 @@ var mesh = studio.ToMesh();           // everything;  ToVisibleMesh() honours hi
 **`studio.Add<T>()` appends a feature and returns it.** Order is the history: features run top to
 bottom, each acting on what the ones above produced. Nothing is evaluated until `Rebuild()`.
 
-## Parameters — the five kinds
+## Parameters — the kinds
 
 Every feature exposes typed params. They all carry a value plus editor metadata:
 
@@ -39,6 +39,7 @@ Every feature exposes typed params. They all carry a value plus editor metadata:
 | `BoolParam` | `.Value = true` | |
 | `ChoiceParam` | `.Index = 2` | **`.Value` is READ-ONLY** — it is `Options[Index]` |
 | `Vec3Param` / `Vec2Param` | `.Value = new Vec3( x, y, z )` | |
+| `StringParam` | `.Value = @"meshes/part.obj"` | paths, free text; Import is the feature that asked for it |
 | `BodySelectionParam` | `.BodyIds.Add( id )` | **empty means every body** |
 
 `ChoiceParam.Index` is the one that catches people. `Shape.Index = 0` not `Shape.Value = "Box"`.
@@ -59,6 +60,17 @@ Ids are stable across rebuilds, which is why names and material scales can be ke
 
 **`PrimitiveFeature`** — `Shape.Index`: `0` Box, `1` Cylinder, `2` Quadsphere, `3` Wedge, `4` Tube.
 `SizeX/Y/Z`, `Position`, `Material`. The fastest way to get a solid.
+
+**`ImportFeature`** — a Wavefront OBJ as a body. `Source.Value` is the path; `BindSource(path)`
+also takes the file's bytes so a later rebuild does not depend on the path still existing.
+The mesh never goes into the `.effigy` text — `ImportSidecar.Save` / `Load` write it beside the
+document, the same way `SculptSidecar` does for sculpt deltas. FBX/GLB are a refusal, not a parse.
+
+```csharp
+var import = studio.Add( new ImportFeature() );
+import.Name = "Host";
+import.BindSource( Path.Combine( sourceDir, "host_target.obj" ) );
+```
 
 **`SketchFeature`** — carries a `Sketch` you fill in directly. `Plane.Index`: `0` Top (XY),
 `1` Front (XZ), `2` Right (YZ); `PlaneOffset` shifts it. `Face` draws on a face of an existing

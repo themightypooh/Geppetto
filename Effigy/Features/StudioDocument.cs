@@ -306,6 +306,11 @@ public static class StudioDocument
 				sb.Append( "\tparam " ).Append( field.Name ).Append( ' ' ).Append( Vec( p.Value ) ).Append( '\n' );
 				return;
 
+			case StringParam p:
+				if ( !string.IsNullOrEmpty( p.Value ) )
+					sb.Append( "\tparam " ).Append( field.Name ).Append( ' ' ).Append( OneLine( p.Value ) ).Append( '\n' );
+				return;
+
 			case BodySelectionParam p:
 				sb.Append( "\tbodies " ).Append( field.Name );
 
@@ -917,6 +922,7 @@ public static class StudioDocument
 					case BoolParam p: p.Value = value == "1"; return;
 					case ChoiceParam p: p.Index = ParseInt( value, p.Index ); return;
 					case Vec3Param p: p.Value = ParseVec3( value ); return;
+					case StringParam p: p.Value = value; return;
 				}
 
 				return;

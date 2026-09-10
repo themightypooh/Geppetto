@@ -3,6 +3,7 @@ using Effigy;
 using Sandbox;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 
 namespace Marionette.EditorTools;
@@ -595,6 +596,7 @@ internal sealed class EffigyFeatureDialog : Widget
 				case BoolParam b: _snapshot[p] = b.Value; break;
 				case Vec3Param v: _snapshot[p] = v.Value; break;
 				case ChoiceParam c: _snapshot[p] = c.Index; break;
+				case StringParam s: _snapshot[p] = s.Value; break;
 			}
 		}
 	}
@@ -633,6 +635,7 @@ internal sealed class EffigyFeatureDialog : Widget
 				case BoolParam b when value is bool bv: b.Value = bv; break;
 				case Vec3Param v when value is Vec3 vv: v.Value = vv; break;
 				case ChoiceParam c when value is int ci: c.Index = ci; break;
+				case StringParam s when value is string sv: s.Value = sv; break;
 			}
 		}
 	}
@@ -918,7 +921,7 @@ internal sealed class EffigyFeatureDialog : Widget
 				{
 					DraftFeature => "Faces to taper",
 					HoleFeature => "Faces to drill",
-					SubdivideFeature => "Faces (empty = whole body)",
+					SubdivideFeature => "Faces (empty = whole body or all)",
 					_ => "Faces",
 				} );
 
@@ -1352,6 +1355,7 @@ internal sealed class EffigyFeatureDialog : Widget
 			case ChoiceParam cp: return BuildChoiceRow( cp );
 			case Vec3Param vp: return BuildVec3Row( vp );
 			case BodySelectionParam bs: return BuildBodySelectionRow( bs );
+			case StringParam sp: return BuildStringRow( sp );
 			default: return null;
 		}
 	}
@@ -1577,6 +1581,65 @@ internal sealed class EffigyFeatureDialog : Widget
 		} );
 
 		return row;
+	}
+
+	private Widget BuildStringRow( StringParam sp )
+	{
+		var row = NewRow( out var layout, highlightLabel: sp.Label );
+		layout.Add( new Editor.Label( sp.Label ) { FixedWidth = 110 } );
+
+		var edit = new LineEdit( sp.Value ?? "", row );
+		edit.TextEdited += text =>
+		{
+			sp.Value = text ?? "";
+			RaiseEdited();
+		};
+
+		layout.Add( edit, 1 );
+
+		if ( _feature is ImportFeature import && ReferenceEquals( sp, import.Source ) )
+		{
+			layout.Add( new IconButton( "folder_open", () => BrowseImport( import, edit ) )
+			{
+				ToolTip = "Browse for an OBJ",
+				IconSize = 16,
+				Background = Color.Transparent,
+			} );
+		}
+
+		return row;
+	}
+
+	private void BrowseImport( ImportFeature import, LineEdit edit )
+	{
+		var fd = new FileDialog( null )
+		{
+			Title = "Import mesh...",
+			DefaultSuffix = ".obj",
+			Directory = Project.Current?.GetAssetsPath() ?? "",
+		};
+
+		fd.SetFindFile();
+		fd.SetNameFilter( "Wavefront OBJ (*.obj)" );
+
+		if ( !fd.Execute() )
+			return;
+
+		var path = fd.SelectedFile;
+
+		if ( string.IsNullOrWhiteSpace( path ) )
+			return;
+
+		import.BindSource( path );
+
+		if ( string.IsNullOrWhiteSpace( import.Name ) )
+			import.Name = Path.GetFileNameWithoutExtension( path );
+
+		if ( edit.IsValid() )
+			edit.Text = path;
+
+		RaiseEdited();
+		Renamed?.Invoke();
 	}
 
 	private Widget BuildBoolRow( BoolParam bp )
@@ -3240,7 +3303,7 @@ internal sealed class EffigySubdivideCost : Widget
 	private readonly Func<IEnumerable<Body>> _bodies;
 
 	/// <summary>What the last prediction was made from. Recompute when it moves, not per paint.</summary>
-	private (int Levels, int Picked, int InputFaces) _key = (-1, -1, -1);
+	private (int Levels, int Picked, int InputFaces, bool AllFaces) _key = (-1, -1, -1, false);
 	private (int Vertices, int Faces) _cost;
 
 	public EffigySubdivideCost( Widget parent, SubdivideFeature feature, Func<IEnumerable<Body>> bodies )
@@ -3259,7 +3322,7 @@ internal sealed class EffigySubdivideCost : Widget
 	{
 		var bodies = _bodies?.Invoke()?.ToList() ?? new List<Body>();
 		var inputFaces = bodies.Sum( b => b.Mesh.FaceCount );
-		var key = (_feature.Levels.Clamped, _feature.Faces.Count, inputFaces);
+		var key = (_feature.Levels.Clamped, _feature.Faces.Count, inputFaces, _feature.AllFaces.Value);
 
 		if ( key != _key )
 		{

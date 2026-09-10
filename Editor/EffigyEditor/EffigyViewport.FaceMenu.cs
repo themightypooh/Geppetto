@@ -136,7 +136,7 @@ internal sealed partial class EffigyViewport
 		if ( visible.Count == 0 )
 			return false;
 
-		if ( MeshRaycast.Raycast( visible, origin, direction ) is not { } result )
+		if ( MeshRaycast.Raycast( visible, origin, direction, PickTreeFor ) is not { } result )
 			return false;
 
 		var mesh = result.Body.Mesh;

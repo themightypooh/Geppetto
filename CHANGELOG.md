@@ -36,6 +36,13 @@ forgotten.
 ## Unreleased
 
 ### Fixed
+- **Hovering a dense imported mesh dragged the viewport to a crawl.** The face, edge, body and
+  bone pickers each re-scanned every triangle in the part on every frame the cursor was over the
+  canvas — on a 60k-face import out of Meshy that was about 13ms and 25MB of garbage per frame,
+  so the whole frame budget went on deciding what the cursor was on. Parts past a few thousand
+  faces now get a pick tree, built once per rebuild: the same pick costs microseconds and
+  allocates nothing. Small parts are untouched — they were never the problem, and a tree would
+  have cost more to build than the scan it replaced. `MeshRaycast`, `MeshBVH`
 - **Assign Body stayed grey after you picked a part.** Clicking the mesh counted as empty space
   and dropped the bone selection. A part click now keeps the bone. Select a bone, select a part,
   press Assign — that pins them. With no part selected it still arms click-to-assign in the
@@ -50,11 +57,26 @@ forgotten.
   (Make a bone from this part, Assign to the selected bone).
 
 ### Added
+- **Import splits a file into its parts.** An OBJ that kept its objects separate — brows, lids,
+  hair, a visor — now arrives as one part per object instead of one welded lump, named after
+  whatever the exporter called it. That is the difference between a feature tree you can hide,
+  re-material and weight a piece at a time and one solid you cannot take apart. A file with a
+  single object, or none marked at all, reads exactly as before: one part, named after the
+  feature. `ObjReader.ReadPieces`, `ImportFeature`
+- **Citizen size reference is a button on the tool row.** Right-hand end, labelled Citizen.
+  Same switch as Edit → Settings → Reference — either one turns the stand-in on or off.
+- **Import a mesh as a body.** Sketch stage → Import, pick a Wavefront OBJ. The triangles stay
+  beside the document (`model.import/`), not in the `.effigy` text — same answer sculpt already
+  had for megabytes of per-vertex data. Paint, weight paint and auto-skin then work on it like
+  any other part. FBX and GLB are refused with a remedy, not parsed. `ImportFeature`,
+  `ImportSidecar`, `ObjReader`
 - **Parent bones to each other.** Right-click a bone in the Rig tree → Parent to. Hang trigger
   and mag off root and they follow it in Marionette. Same pose, new parent. A bone cannot parent
   to something that already hangs off it.
 - **A first rigging tutorial.** Help → Start Rigging Tutorial. Two boxes (a post and a sign),
   a bone from each, pose the sign, compile. The smallest loop that still needs a skeleton.
+- **A hand tutorial.** Help → Start Hand Tutorial. Palm, a three-joint index, the other digits,
+  sculpt, paint, then bones parented so a finger curls. The four workspaces on one model.
 - **Named variables.** View → Variables, then type `#thickness` in any dimension. Change it once
   and every feature that refers to it moves. Cycles are refused rather than looping.
 - **Section view.** View → Section View clips the preview through the origin along +X so a
