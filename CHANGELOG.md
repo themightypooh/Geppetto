@@ -35,6 +35,10 @@ forgotten.
 
 ## Unreleased
 
+Nothing yet.
+
+## v379213 — 2026-09-09
+
 ### Fixed
 - **Hovering a dense imported mesh dragged the viewport to a crawl.** The face, edge, body and
   bone pickers each re-scanned every triangle in the part on every frame the cursor was over the
@@ -57,6 +61,14 @@ forgotten.
   (Make a bone from this part, Assign to the selected bone).
 
 ### Added
+- **Subdivide is on the Rig bar now, under Mesh.** A mesh too coarse to bend is a rigging problem
+  and it is found while rigging — you drag the arm and the elbow creases into a hinge. The fix was
+  only reachable through the Sculpt workspace, which reads as "you are about to sculpt" when you
+  are not. Select a part, press Subdivide, and it adds loops. It arrives set to All Faces, which
+  adds density and leaves every vertex exactly where it is, rather than the whole-body smoothing
+  the Sculpt bar defaults to — you have already bound bones to that silhouette and do not want it
+  moving. Same feature, same tree row, same undo; pick faces instead of a part to densify just the
+  joint.
 - **Import splits a file into its parts.** An OBJ that kept its objects separate — brows, lids,
   hair, a visor — now arrives as one part per object instead of one welded lump, named after
   whatever the exporter called it. That is the difference between a feature tree you can hide,
