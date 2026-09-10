@@ -125,6 +125,147 @@ internal static class EffigyPreview
 	}
 
 	/// <summary>
+	/// A preview Model that can be rewritten in place when only vertex positions change — a body
+	/// being dragged by the Transform handle. Rebuilding the Model, its buffers and its GameObject
+	/// every frame is what made dragging a dense import sluggish, so this retains the meshes and
+	/// overwrites their vertex buffers instead. Buckets, triangulation and buffer allocation are
+	/// done once; a drag only recomputes normals and re-uploads the vertex data.
+	/// </summary>
+	internal sealed class LivePreview
+	{
+		public Model Model { get; private set; }
+
+		private readonly List<Mesh> _meshes = new();
+		private readonly List<List<SimpleVertex>> _vertices = new();
+		private readonly Dictionary<Material, int> _bucketIndex = new();
+		private int[] _faceMesh;
+		private int[] _faceCorners;
+		private int _faceCount;
+
+		private LivePreview() { }
+
+		public static LivePreview Build( PolyMesh mesh, Func<int, string> materialForSlot,
+			float smoothingAngleDegrees )
+		{
+			var live = new LivePreview { _faceCount = mesh.FaceCount };
+			live.Rebuild( mesh, materialForSlot, smoothingAngleDegrees );
+			return live;
+		}
+
+		/// <summary>
+		/// Rewrite the vertex buffers from a mesh whose topology matches the one this was built
+		/// from. Returns false — the caller must rebuild — when the face count, material layout or
+		/// corner count changed, because any of those moves the bucketing and the index buffers.
+		/// </summary>
+		public bool TryUpdate( PolyMesh mesh, Func<int, string> materialForSlot, float smoothingAngleDegrees )
+		{
+			if ( Model is null || mesh.FaceCount != _faceCount )
+				return false;
+
+			var placeholder = Material.Load( PreviewMaterial );
+			var slotCache = new Dictionary<int, Material>();
+			var faceLists = new List<List<int>>( _meshes.Count );
+
+			for ( var i = 0; i < _meshes.Count; i++ )
+				faceLists.Add( new List<int>() );
+
+			for ( var fi = 0; fi < mesh.FaceCount; fi++ )
+			{
+				// The index buffers are laid out corner by corner, so two faces swapping corner
+				// counts keeps the per-bucket vertex total the same while scrambling the triangles.
+				if ( mesh.Faces[fi].Count != _faceCorners[fi] )
+					return false;
+
+				if ( mesh.Faces[fi].Count < 3 )
+					continue;
+
+				var material = ResolveMaterial( mesh.Faces[fi].Material, materialForSlot, placeholder, slotCache );
+
+				// A face on a bucket that was not there at build time means the material layout
+				// changed, which an in-place update cannot express.
+				if ( !_bucketIndex.TryGetValue( material, out var bi ) || bi != _faceMesh[fi] )
+					return false;
+
+				faceLists[bi].Add( fi );
+			}
+
+			var (cornerNormals, normals) = MeshNormals.ComputeCornerNormals( mesh, smoothingAngleDegrees );
+			var bounds = BoundsOf( mesh );
+
+			for ( var i = 0; i < _meshes.Count; i++ )
+			{
+				var vertices = BuildVertices( mesh, faceLists[i], cornerNormals, normals );
+
+				if ( vertices.Count != _vertices[i].Count )
+					return false;
+
+				_meshes[i].SetVertexBufferData( vertices, 0 );
+				_meshes[i].Bounds = bounds;
+			}
+
+			return true;
+		}
+
+		void Rebuild( PolyMesh mesh, Func<int, string> materialForSlot, float smoothingAngleDegrees )
+		{
+			_meshes.Clear();
+			_vertices.Clear();
+			_bucketIndex.Clear();
+
+			var (cornerNormals, normals) = MeshNormals.ComputeCornerNormals( mesh, smoothingAngleDegrees );
+			var bounds = BoundsOf( mesh );
+			var placeholder = Material.Load( PreviewMaterial );
+			var slotCache = new Dictionary<int, Material>();
+
+			var buckets = new List<(Material Material, List<int> Faces)>();
+			_faceMesh = new int[mesh.FaceCount];
+			_faceCorners = new int[mesh.FaceCount];
+
+			for ( var fi = 0; fi < mesh.FaceCount; fi++ )
+			{
+				_faceCorners[fi] = mesh.Faces[fi].Count;
+
+				if ( mesh.Faces[fi].Count < 3 )
+					continue;
+
+				var material = ResolveMaterial( mesh.Faces[fi].Material, materialForSlot, placeholder, slotCache );
+
+				if ( !_bucketIndex.TryGetValue( material, out var bi ) )
+				{
+					bi = buckets.Count;
+					_bucketIndex[material] = bi;
+					buckets.Add( (material, new List<int>()) );
+				}
+
+				buckets[bi].Faces.Add( fi );
+				_faceMesh[fi] = bi;
+			}
+
+			var builder = Model.Builder;
+
+			foreach ( var (material, faces) in buckets )
+			{
+				var vertices = BuildVertices( mesh, faces, cornerNormals, normals );
+
+				if ( vertices.Count == 0 )
+					continue;
+
+				var indices = TriangulateIndices( mesh, faces );
+				var sbMesh = new Mesh( material );
+				sbMesh.CreateVertexBuffer<SimpleVertex>( vertices.Count, vertices );
+				sbMesh.CreateIndexBuffer( indices.Count, indices );
+				sbMesh.Bounds = bounds;
+
+				builder.AddMesh( sbMesh );
+				_meshes.Add( sbMesh );
+				_vertices.Add( vertices );
+			}
+
+			Model = _meshes.Count > 0 ? builder.Create() : null;
+		}
+	}
+
+	/// <summary>
 	/// The material a slot renders with: the vmat bound to it, or the flat placeholder.
 	///
 	/// Slot 0 is the slot every face starts on and never carries a material, so it is the
@@ -165,33 +306,8 @@ internal static class EffigyPreview
 	private static Mesh BuildSubmesh( PolyMesh mesh, List<int> faceIndices, int[][] cornerNormals,
 		List<Vec3> normals, Material material, BBox bounds )
 	{
-		// One vertex per face corner rather than per position. Corner normals are the whole point
-		// of MeshNormals - sharing a vertex between two faces that disagree about the normal is
-		// exactly what rounds off a box's edges.
-		var vertices = new List<SimpleVertex>( faceIndices.Count * 4 );
-		var indices = new List<int>( faceIndices.Count * 6 );
-
-		foreach ( var fi in faceIndices )
-		{
-			var face = mesh.Faces[fi];
-			var corners = cornerNormals[fi];
-
-			var first = vertices.Count;
-
-			for ( var c = 0; c < face.Count; c++ )
-			{
-				var p = mesh.Positions[face.Indices[c]];
-				var n = normals[corners[c]];
-				var uv = face.UVs is not null && c < face.UVs.Length ? face.UVs[c] : default;
-
-				var position = new Vector3( p.x, p.y, p.z );
-				var normal = new Vector3( n.x, n.y, n.z );
-
-				vertices.Add( new SimpleVertex( position, normal, TangentFor( normal ), new Vector2( uv.x, uv.y ) ) );
-			}
-
-			AppendTriangles( mesh, face, first, indices );
-		}
+		var vertices = BuildVertices( mesh, faceIndices, cornerNormals, normals );
+		var indices = TriangulateIndices( mesh, faceIndices );
 
 		if ( indices.Count == 0 )
 			return null;
@@ -205,24 +321,67 @@ internal static class EffigyPreview
 	}
 
 	/// <summary>
+	/// One vertex per face corner rather than per position, in the same order
+	/// <see cref="TriangulateIndices"/> indexes them. Corner normals are the whole point of
+	/// MeshNormals - sharing a vertex between two faces that disagree about the normal is exactly
+	/// what rounds off a box's edges.
+	/// </summary>
+	private static List<SimpleVertex> BuildVertices( PolyMesh mesh, List<int> faceIndices,
+		int[][] cornerNormals, List<Vec3> normals )
+	{
+		var vertices = new List<SimpleVertex>( faceIndices.Count * 4 );
+
+		foreach ( var fi in faceIndices )
+		{
+			var face = mesh.Faces[fi];
+			var corners = cornerNormals[fi];
+
+			for ( var c = 0; c < face.Count; c++ )
+			{
+				var p = mesh.Positions[face.Indices[c]];
+				var n = normals[corners[c]];
+				var uv = face.UVs is not null && c < face.UVs.Length ? face.UVs[c] : default;
+
+				var position = new Vector3( p.x, p.y, p.z );
+				var normal = new Vector3( n.x, n.y, n.z );
+
+				vertices.Add( new SimpleVertex( position, normal, TangentFor( normal ), new Vector2( uv.x, uv.y ) ) );
+			}
+		}
+
+		return vertices;
+	}
+
+	/// <summary>
 	/// Ear-clipping, not a fan. This used to fan from corner 0 on the grounds that every face the
 	/// kernel produces is convex. Extrude caps are not: they are whatever closed region was drawn,
 	/// and fanning a concave one fills its notches in — draw a dart and the solid came back as a
 	/// quadrilateral with the concave corner swallowed.
 	/// </summary>
-	static void AppendTriangles( PolyMesh mesh, Face face, int first, List<int> indices )
+	private static List<int> TriangulateIndices( PolyMesh mesh, List<int> faceIndices )
 	{
-		var polygon = new List<Vec3>( face.Count );
+		var indices = new List<int>( faceIndices.Count * 6 );
+		var first = 0;
 
-		for ( var k = 0; k < face.Count; k++ )
-			polygon.Add( mesh.Positions[face.Indices[k]] );
-
-		foreach ( var (a, b, cc) in Triangulate.Face( polygon ) )
+		foreach ( var fi in faceIndices )
 		{
-			indices.Add( first + a );
-			indices.Add( first + b );
-			indices.Add( first + cc );
+			var face = mesh.Faces[fi];
+			var polygon = new List<Vec3>( face.Count );
+
+			for ( var k = 0; k < face.Count; k++ )
+				polygon.Add( mesh.Positions[face.Indices[k]] );
+
+			foreach ( var (a, b, cc) in Triangulate.Face( polygon ) )
+			{
+				indices.Add( first + a );
+				indices.Add( first + b );
+				indices.Add( first + cc );
+			}
+
+			first += face.Count;
 		}
+
+		return indices;
 	}
 
 	/// <summary>

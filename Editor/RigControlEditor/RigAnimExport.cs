@@ -50,8 +50,15 @@ internal static class RigAnimExport
 		if ( doc.SourceModel is null )
 			return Fail( "Set a Model in BonesObject first — export has to know which skeleton this clip is for." );
 
-		if ( doc.BoneTracks is null || !doc.BoneTracks.Any( t => t.Keyframes.Count > 0 ) )
-			return Fail( "Nothing to export — key some bones first." );
+		// Skeleton tracks only. A .vmdl animation is bone channels, so a clip whose keys are all
+		// on whole parts has nothing to write here - and saying "nothing to export" about a clip
+		// you can plainly see keyframes in would read as the exporter being broken.
+		if ( doc.BoneTracks is null || !doc.SkeletonTracks.Any( t => t.Keyframes.Count > 0 ) )
+		{
+			return Fail( doc.PartTracks.Any( t => t.Keyframes.Count > 0 )
+				? "This clip only keys whole parts, which a .vmdl animation can't carry — play it with a RigAnimPlayerComponent instead, or key some bones."
+				: "Nothing to export — key some bones first." );
+		}
 
 		var name = string.IsNullOrWhiteSpace( clipName )
 			? Path.GetFileNameWithoutExtension( riganim.Name )

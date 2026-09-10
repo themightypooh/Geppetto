@@ -41,7 +41,7 @@ public static class Program
 		// `dotnet run --nologo` hands the flag straight through to us. The first positional
 		// argument is the output directory, so an unrecognised flag taken as one wrote the whole
 		// sample set into a folder literally named `--nologo`. Drop flags we do not own.
-		var args = rawArgs.Where( a => !a.StartsWith( "--" ) || a == "--tree" || a == "--tentacle" || a == "--paint" ).ToArray();
+		var args = rawArgs.Where( a => !a.StartsWith( "--" ) || a == "--tree" || a == "--tentacle" || a == "--paint" || a == "--remesh" ).ToArray();
 
 		if ( args.Length > 0 && args[0] == "--tree" )
 			return TreeGen.Run( args.Length > 1 ? args[1] : DefaultOutDir() );
@@ -51,6 +51,11 @@ public static class Program
 
 		if ( args.Length > 0 && args[0] == "--paint" )
 			return PaintGen.Run( args.Length > 1 ? args[1] : DefaultOutDir() );
+
+		if ( args.Length > 0 && args[0] == "--remesh" )
+			return RemeshGen.Run( args.Length > 1 ? args[1] : DefaultOutDir(),
+				args.Length > 2 ? args[2] : null,
+				args.Length > 3 && float.TryParse( args[3], out var keep ) ? keep : (float?)null );
 
 		var outDir = args.Length > 0 ? args[0] : DefaultOutDir();
 
@@ -90,6 +95,8 @@ public static class Program
 		Section( "OBJ round-trips" );
 		TestObjRoundTrip();
 
+		DecimateTests.Run();
+
 		SculptTests.Run();
 
 		FeatureTests.Run();
@@ -100,6 +107,12 @@ public static class Program
 		BoneFromBodyTests.Run();
 
 		RigDiagnosticTests.Run();
+
+		CitizenSkeletonTests.Run();
+
+		SkeletonRetargetTests.Run();
+		PlayermodelSampleTests.Run();
+		TwistWeightsTests.Run();
 
 		SoftBoneTests.Run();
 
@@ -202,7 +215,11 @@ public static class Program
 		VmdlPhysicsTests.Run();
 
 		VmdlMaterialsTests.Run();
+
+		VmdlDocumentTests.Run();
 		BoneSelectionTests.Run();
+
+		RigTrackNameTests.Run();
 
 		UnwrapTests.Run();
 

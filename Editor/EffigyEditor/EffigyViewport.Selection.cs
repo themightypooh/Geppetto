@@ -311,6 +311,16 @@ internal sealed partial class EffigyViewport
 
 	private void DrawIdleSelection()
 	{
+		// A BRUSH WANTS THE SURFACE, NOT THE SELECTION. An amber wash and wireframe over the part
+		// you are painting hides the very colour you are laying down. The selection survives — it
+		// comes back when the brush is put away — only the drawing of it stops. The shell is cleared
+		// too: it is a cached scene object, and a frame that simply stops drawing leaves it lit.
+		if ( IsPainting || IsSculpting || IsMaterialBrushing || IsWeightPainting )
+		{
+			SyncBodyHighlight( null, BodySelectedColor );
+			return;
+		}
+
 		if ( (SelectedSketchFeatureId is null || SelectedSketchFeatureId.Length == 0)
 			&& _idleSketchFeatureId is not null )
 		{
@@ -346,18 +356,57 @@ internal sealed partial class EffigyViewport
 					DrawFace( body, index, FaceSelectedColor );
 			}
 
+			// A face pick names its owning body, so _idleBodyIds is not empty here — but the thing
+			// selected is the face, and shelling the whole part around it would bury the pick.
+			SyncBodyHighlight( null, BodySelectedColor );
 			return;
 		}
 
-		if ( !drawBodies || _idleBodyIds.Count == 0 )
+		// A DIALOG OWNS THE SHELL WHILE ONE IS PICKING BODIES. DrawChosenBodies drives the same
+		// cache from the other side, and clearing it here — which is what "no idle selection" would
+		// otherwise mean — would blank the picker's own highlight every frame.
+		if ( !drawBodies )
 			return;
+
+		// EVERY OTHER PATH OUT OF HERE ANSWERS THIS, including the ones with nothing to light. The
+		// shell is a cached scene object rather than lines drawn this frame (see
+		// EffigyViewport.Highlight), so a frame that simply stops drawing it leaves it on screen.
+		_highlightBodies.Clear();
 
 		foreach ( var body in _displayBodies )
 		{
-			if ( body?.Id is { } id && _idleBodyIds.Contains( id ) )
-				DrawBodyHighlight( body, BodySelectedColor );
+			if ( body?.Id is not { } id || !_idleBodyIds.Contains( id ) )
+				continue;
+
+			// THE SAME DRAW A VIEWPORT CLICK USES, face for face.
+			//
+			// Not a similar one, not a body-shaped variant of one — DrawFace with FaceSelectedColor,
+			// which is literally the call that lights a face up when you click the solid. Clicking a
+			// row in the Parts list means "that whole part", so it runs over every face of the body
+			// and the part comes up in the amber you already know. Every attempt at this that drew
+			// something of its own instead — the wash-and-outline body highlight, the cached shell —
+			// failed in a way that looked from the outside like the click doing nothing at all.
+			//
+			// The shell stays for the case that earns it: an import too dense to draw a face at a
+			// time, where this loop is hundreds of thousands of gizmo calls a frame.
+			// ONE PASS, NOT ONE PER FACE. Calling DrawFace in a loop was the obvious way to say "the
+			// same amber a face pick gives you" and it is quadratic: DrawFace resolves the COPLANAR
+			// SURFACE the face belongs to and draws every face in it, so a surface of forty faces is
+			// drawn forty times, and a part with a few thousand faces spends the frame redrawing
+			// itself. DrawBodyHighlight paints each face exactly once in the colour it is handed,
+			// which is the same picture for a fraction of the work.
+			if ( (body.Mesh?.FaceCount ?? 0) <= HoverHighlightFaceBudget )
+				DrawBodyHighlight( body, FaceSelectedColor );
+			else
+				_highlightBodies.Add( body );
 		}
+
+		SyncBodyHighlight( _highlightBodies, BodySelectedColor );
 	}
+
+	/// <summary>Scratch for the line above — reused rather than allocated, since it is rebuilt every
+	/// frame and thrown away on almost all of them.</summary>
+	private readonly List<Body> _highlightBodies = new();
 
 	/// <summary>
 	/// Select one face outright, from something other than a click — the right-click menu, which

@@ -63,6 +63,8 @@ Ids are stable across rebuilds, which is why names and material scales can be ke
 
 **`ImportFeature`** — a Wavefront OBJ as a body. `Source.Value` is the path; `BindSource(path)`
 also takes the file's bytes so a later rebuild does not depend on the path still existing.
+A rebuild parses `Source` again only when its size or write time has changed, so deleting a piece
+or undoing costs what is left of the import, not the whole file.
 The mesh never goes into the `.effigy` text — `ImportSidecar.Save` / `Load` write it beside the
 document, the same way `SculptSidecar` does for sculpt deltas. FBX/GLB are a refusal, not a parse.
 
@@ -131,6 +133,11 @@ optionally picked edges; leave the edge list empty for every sharp edge. **`Draf
 **`HoleFeature`**, **`MoveFaceFeature`**, **`SubdivideFeature`**, **`UVProjectFeature`**,
 **`FaceMaterialFeature`**, **`SculptFeature`**, **`PaintFeature`**.
 
+**`RemeshFeature`** — `Bodies`, `Target` (`Percentage` | `Triangle count`), `Percent`, `Triangles`,
+`HoldBorders`, `Weld`. Subdivide's opposite: takes a dense import down to a triangle budget and
+keeps its silhouette, open borders and material seams. Returns triangles, so it is for imports
+rather than a quad cage you built with sketches.
+
 ## Naming — do it as you go
 
 ```csharp
@@ -161,6 +168,9 @@ asset or the compiled model renders in the bright red missing-material shader.
   "everything" and quadrupled the whole document.
 - **Subdivide is exponential.** A box at level 6 is 24,576 faces. Architectural models want none of
   it — it is for organic shapes you are about to sculpt.
+- **A Remesh target is in TRIANGLES, not faces** — a 500-face quad cage is 1000 triangles, and
+  typing 500 into the budget gets you half of what you meant. `Decimate.TriangleCount`, not
+  `mesh.FaceCount`.
 - **Check `report.HasErrors` after every `Rebuild()`** and fail loudly. A feature that failed leaves
   the ones above it intact, so a silent error gives you a model that is quietly missing a part.
 - **Fillet and chamfer refuse oversized radii**, correctly — on a 2-unit cube anything above ~1.0

@@ -38,8 +38,22 @@ internal sealed class RigInspectorPanel : Widget
 	private readonly RigViewport _viewport;
 
 	private readonly ControlSheet _sheet;
+	private readonly Editor.Label _kindLabel;
 	private readonly Editor.Label _boneLabel;
 	private readonly BoneTransform _values;
+
+	/// <summary>
+	/// The numbers for a selected object, part or prop - supplied by the window, which owns the
+	/// document and the keying.
+	///
+	/// HERE, NOT IN A POPUP. An object's transform used to be edited in a floating list editor
+	/// opened from a property row, which covered the viewport and the timeline while you used it.
+	/// The Inspector already shows the selection's numbers for a bone; an object is a selection
+	/// like any other, so its numbers go in the same place.
+	/// </summary>
+	public Func<string, MovableTransform> MovableFor { get; set; }
+
+	private MovableTransform _movable;
 
 	/// <summary>Raised after a field edit has already been applied - the window turns this into an
 	/// undo step, matching how every other panel here reports itself.</summary>
@@ -83,12 +97,18 @@ internal sealed class RigInspectorPanel : Widget
 					"Uniform size of the bone, 1 = normal. Scaling stretches or squashes the skin " +
 					"along the bone - the squash-and-stretch tool. It's carried through keyframes, " +
 					"so a bone can grow and shrink over a clip." ),
+
+				RigHelpBox.S( "Objects, parts and props",
+					"Select one in the Objects list or the viewport and its numbers show here. A " +
+					"part's are relative to its object - or to the part it follows, if it follows " +
+					"one - so either can be moved without undoing anything riding on it. An object's are in the world - or relative to Follow Bone, " +
+					"if one is set. With Link on, an edit here keys it at the playhead." ),
 			} ) );
 
 		var header = new Widget( this ) { Layout = Layout.Row() };
 		header.Layout.Margin = new Sandbox.UI.Margin( 8, 4 );
 		header.Layout.Spacing = 8;
-		header.Layout.Add( new Editor.Label( "Bone" ) { FixedWidth = 110 } );
+		_kindLabel = header.Layout.Add( new Editor.Label( "Bone" ) { FixedWidth = 110 } );
 		_boneLabel = header.Layout.Add( new Editor.Label( "" ), 1 );
 		Layout.Add( header );
 
@@ -111,27 +131,90 @@ internal sealed class RigInspectorPanel : Widget
 	{
 		var bone = _viewport?.SelectedBone;
 
-		if ( string.IsNullOrEmpty( bone ) )
+		if ( !string.IsNullOrEmpty( bone ) )
 		{
-			_boneLabel.Text = "(nothing selected)";
-
-			if ( _builtFor is not null )
-			{
-				_sheet.Clear( true );
-				_values.Bone = null;
-				_builtFor = null;
-			}
-
+			RefreshBone( bone );
 			return;
 		}
 
-		_boneLabel.Text = bone;
+		var key = _viewport?.SelectedReferencePropName;
 
-		if ( _builtFor == bone )
+		if ( !string.IsNullOrEmpty( key ) && RefreshMovable( key ) )
+			return;
+
+		_kindLabel.Text = "Bone";
+		_boneLabel.Text = "(nothing selected)";
+
+		if ( _builtFor is not null )
+		{
+			_sheet.Clear( true );
+			_values.Bone = null;
+			_movable = null;
+			_builtFor = null;
+		}
+	}
+
+	/// <summary>An object, part or prop. False when the window has nothing for the name, which
+	/// leaves the sheet reading "nothing selected" rather than showing numbers for nothing.</summary>
+	private bool RefreshMovable( string key )
+	{
+		// Prefixed, like the bone subject, so an object and a bone that share a name are still two
+		// different things to build the sheet for.
+		var subject = "movable:" + key;
+
+		if ( _builtFor != subject || _movable is null )
+		{
+			var movable = MovableFor?.Invoke( key );
+
+			if ( movable is null )
+				return false;
+
+			movable.Edited = () => Edited?.Invoke();
+
+			_movable = movable;
+			_values.Bone = null;
+			_builtFor = subject;
+
+			_sheet.Clear( true );
+
+			var serialized = EditorTypeLibrary.GetSerializedObject( _movable );
+
+			if ( serialized.TryGetProperty( nameof( MovableTransform.Rotation ), out var rotation ) )
+				_sheet.AddRow( rotation );
+
+			if ( serialized.TryGetProperty( nameof( MovableTransform.Position ), out var position ) )
+				_sheet.AddRow( position );
+
+			if ( serialized.TryGetProperty( nameof( MovableTransform.Scale ), out var scale ) )
+				_sheet.AddRow( scale );
+
+			// A part has no Follow Bone of its own - it follows its object.
+			if ( _movable.HasFollowBone && serialized.TryGetProperty( nameof( MovableTransform.FollowBone ), out var follow ) )
+				_sheet.AddRow( follow );
+		}
+
+		_kindLabel.Text = _movable.Kind;
+		_boneLabel.Text = RigTrackName.Display( key );
+
+		return true;
+	}
+
+	private void RefreshBone( string bone )
+	{
+		_kindLabel.Text = "Bone";
+
+		// The bone, with the object it belongs to - the selection is a qualified track name now
+		// that a clip can animate several models at once.
+		_boneLabel.Text = RigTrackName.Display( bone );
+
+		var subject = "bone:" + bone;
+
+		if ( _builtFor == subject )
 			return;
 
 		_values.Bone = bone;
-		_builtFor = bone;
+		_movable = null;
+		_builtFor = subject;
 
 		_sheet.Clear( true );
 
@@ -220,6 +303,96 @@ internal sealed class BoneTransform
 
 		Viewport.SetLocalTransform( Bone, local );
 
+		Edited?.Invoke();
+	}
+}
+
+/// <summary>
+/// A selected object, part or prop's transform, as live properties - the same no-snapshot shape
+/// as BoneTransform, for the same reason.
+///
+/// It reads and writes through delegates rather than holding the object, because the window looks
+/// the thing up by name on every call. Undo replaces the document's objects with fresh copies, and
+/// a sheet still holding the old one would be editing something nothing draws any more.
+/// </summary>
+internal sealed class MovableTransform
+{
+	/// <summary>"Object", "Part" or "Prop", for the Inspector's header.</summary>
+	public string Kind { get; set; }
+
+	public Func<Transform?> ReadLocal { get; set; }
+	public Action<Transform> WriteLocal { get; set; }
+
+	/// <summary>Null for a part, which follows its object rather than a bone.</summary>
+	public Func<string> GetFollowBone { get; set; }
+	public Action<string> SetFollowBone { get; set; }
+
+	public Action Edited { get; set; }
+
+	public bool HasFollowBone => GetFollowBone is not null && SetFollowBone is not null;
+
+	private Transform Current => ReadLocal?.Invoke() ?? Transform.Zero;
+
+	[Property]
+	public Angles Rotation
+	{
+		get => Current.Rotation.Angles();
+		set
+		{
+			var current = Current;
+
+			Write( new Transform( current.Position, value.ToRotation(), current.Scale ) );
+		}
+	}
+
+	[Property]
+	public Vector3 Position
+	{
+		get => Current.Position;
+		set
+		{
+			var current = Current;
+
+			Write( new Transform( value, current.Rotation, current.Scale ) );
+		}
+	}
+
+	/// <summary>Uniform, because that is all an object, part or prop stores.</summary>
+	[Property]
+	public float Scale
+	{
+		get => Current.Scale.x;
+		set
+		{
+			var current = Current;
+			var s = value.Clamp( 0.001f, 1000f );
+
+			Write( new Transform( current.Position, current.Rotation, new Vector3( s, s, s ) ) );
+		}
+	}
+
+	/// <summary>A bone of the main model this follows. Empty means it stays where Position puts
+	/// it.</summary>
+	[Property, Title( "Follow Bone" )]
+	public string FollowBone
+	{
+		get => GetFollowBone?.Invoke() ?? "";
+		set
+		{
+			if ( SetFollowBone is null )
+				return;
+
+			SetFollowBone( value ?? "" );
+			Edited?.Invoke();
+		}
+	}
+
+	private void Write( Transform local )
+	{
+		if ( WriteLocal is null )
+			return;
+
+		WriteLocal( local );
 		Edited?.Invoke();
 	}
 }

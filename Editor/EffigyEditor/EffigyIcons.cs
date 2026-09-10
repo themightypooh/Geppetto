@@ -19,6 +19,11 @@ internal enum EffigyIcon
 	Fillet,
 	Shell,
 	Subdivide,
+
+	// Subdivide's opposite number, and drawn as it: the same square, with the fine grid it is
+	// losing shown faint underneath the coarse one it keeps.
+	Remesh,
+
 	Mirror,
 	LinearPattern,
 	CircularPattern,
@@ -178,6 +183,7 @@ internal static class EffigyIcons
 			case EffigyIcon.Fillet: PaintFillet( center, color ); return;
 			case EffigyIcon.Shell: PaintShell( center, color ); return;
 			case EffigyIcon.Subdivide: PaintSubdivide( center, color ); return;
+			case EffigyIcon.Remesh: PaintRemesh( center, color ); return;
 			case EffigyIcon.Mirror: PaintMirror( center, color ); return;
 			case EffigyIcon.LinearPattern: PaintLinearPattern( center, color ); return;
 			case EffigyIcon.CircularPattern: PaintCircularPattern( center, color ); return;
@@ -733,6 +739,34 @@ internal static class EffigyIcons
 		Stroked( color.WithAlpha( 0.85f ), 1.2f );
 		Editor.Paint.DrawLine( At( c, -4, -8 ), At( c, -4, 0 ) );
 		Editor.Paint.DrawLine( At( c, -8, -4 ), At( c, 0, -4 ) );
+	}
+
+	/// <summary>
+	/// The Subdivide glyph read backwards: a faint fine grid, and a bold coarse one over it.
+	///
+	/// DELIBERATELY THE SAME SQUARE. The two operations are the same axis in opposite directions,
+	/// and a button that looked unrelated to Subdivide would hide that — they sit next to each other
+	/// on two bars. What tells them apart is which grid is emphasised: Subdivide draws the fine
+	/// lines solid because those are the ones it is adding, and this draws them faint because those
+	/// are the ones going away.
+	/// </summary>
+	private static void PaintRemesh( Vector2 c, Color color )
+	{
+		Stroked( color, 1.6f );
+		Outline( At( c, -8, -8 ), At( c, 8, -8 ), At( c, 8, 8 ), At( c, -8, 8 ) );
+
+		// What is being lost.
+		Stroked( color.WithAlpha( 0.28f ), 1f );
+		for ( var i = -4f; i < 8f; i += 4f )
+		{
+			Editor.Paint.DrawLine( At( c, i, -8 ), At( c, i, 8 ) );
+			Editor.Paint.DrawLine( At( c, -8, i ), At( c, 8, i ) );
+		}
+
+		// What is left: one diagonal across the whole square, so it reads as two big triangles
+		// rather than as a coarser grid of the same thing.
+		Stroked( color, 1.8f );
+		Editor.Paint.DrawLine( At( c, -8, 8 ), At( c, 8, -8 ) );
 	}
 
 	/// <summary>A solid shape and its reflection across a dashed mirror line.</summary>

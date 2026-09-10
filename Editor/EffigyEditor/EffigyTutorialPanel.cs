@@ -62,6 +62,16 @@ internal sealed class EffigyTutorialPanel : Widget
 	/// and a highlight on a bar the reader is not looking at is a highlight on nothing.</summary>
 	public Action<EffigyWorkspace> SwitchWorkspace { get; set; }
 
+	/// <summary>
+	/// Replace the document with the lesson's example model. Only the playermodel lesson offers it.
+	///
+	/// AN ACTION RATHER THAN THE PANEL BUILDING THE SAMPLE, because replacing the open document is
+	/// the window's business: there is an unsaved-changes prompt and an undo step to get right, and
+	/// neither belongs to a panel that knows nothing but text. Null-safe, so the panel still works
+	/// in isolation - the button simply starts the lesson on whatever is already open.
+	/// </summary>
+	public Action LoadExample { get; set; }
+
 	public EffigyTutorialPanel( Widget parent ) : base( parent )
 	{
 		Name = "Tutorial";
@@ -184,6 +194,44 @@ internal sealed class EffigyTutorialPanel : Widget
 				+ "to bend; one body per joint lets Bone from Part pin each piece, and a parented "
 				+ "chain is what makes a finger curl.", 14f, 0.8f );
 		}
+		else if ( Tutorial.Lesson == EffigyLesson.Playermodel )
+		{
+			AddLine( "You will turn a humanoid model into a player - something you can walk around "
+				+ "in, using the animations s&box already ships. Start from the example robot, or "
+				+ "bring your own humanoid.",
+				15f, 0.95f );
+
+			_list.Layout.AddSpacingCell( 6f );
+
+			AddLine( "There are only two ideas in it:", 14f, 0.8f );
+
+			_list.Layout.AddSpacingCell( 4f );
+
+			// THE WHOLE LESSON, ON THE SCREEN BEFORE IT STARTS. Someone who reads these two lines
+			// and closes the panel has got the point, and that is a success rather than a skip -
+			// the nine steps after it are the same two ideas with the buttons named.
+			AddPhase( "YOUR SHAPE", "your model keeps its own proportions - nothing gets squashed" );
+			AddPhase( "THEIR NAMES", "bones spelled the way the animations expect, in the right order" );
+
+			_list.Layout.AddSpacingCell( 6f );
+
+			AddLine( "Effigy slides the built-in character's skeleton inside your model, rather than "
+				+ "reshaping your model to match its body. So the animations only say how far each "
+				+ "joint bends - never how long your arms are, or how broad your shoulders. A stocky "
+				+ "robot stays stocky and still walks.", 14f, 0.8f );
+
+			_list.Layout.AddSpacingCell( 6f );
+
+			AddLine( "The one thing you have to match is the hips. The walk decides how high they "
+				+ "ride - about 31 units off the floor - so stand your model with its feet at zero "
+				+ "and its hips near that, or it will float or sink.", 14f, 0.8f );
+
+			_list.Layout.AddSpacingCell( 6f );
+
+			AddLine( "And the names. Each bone has to be called what the animations call it, hanging "
+				+ "off the right parent: a hand off a forearm, off an upper arm, off a shoulder, off "
+				+ "the ribcage. Get those right and everything else is automatic.", 14f, 0.8f );
+		}
 		else
 		{
 			AddLine( "You will build a small house: a box for the walls, a wedge for a sloped roof, "
@@ -220,10 +268,41 @@ internal sealed class EffigyTutorialPanel : Widget
 		var buttons = _list.Layout.AddRow();
 		buttons.Spacing = 8;
 
-		buttons.Add( new Button.Primary( "Start Tutorial", "play_arrow" )
+		// TWO WAYS IN, for the one lesson whose subject is not modelling. The robot exists so the
+		// reader can spend the lesson on names and parents rather than on twenty primitive dialogs;
+		// "I'll use my own model" is offered beside it and not beneath it, because a reader who came
+		// here WITH a character is the reader this lesson is really for, and that route must not
+		// read as the consolation prize.
+		if ( Tutorial.Lesson == EffigyLesson.Playermodel )
 		{
-			Clicked = () => { Tutorial.Restart(); Changed?.Invoke(); Rebuild(); }
-		} );
+			buttons.Add( new Button.Primary( "Use the example robot", "smart_toy" )
+			{
+				ToolTip = "Replaces what is open with a blocky humanoid, already named for you",
+				Clicked = () =>
+				{
+					// LOADED FIRST, STARTED AFTER. The first step checks that the model is standing
+					// on the floor, and the example satisfies it - so loading first means the reader
+					// arrives on step two with step one already ticked, which is the honest picture.
+					LoadExample?.Invoke();
+					Tutorial.Restart();
+					Changed?.Invoke();
+					Rebuild();
+				}
+			} );
+
+			buttons.Add( new Button( "I'll use my own model", "person" )
+			{
+				ToolTip = "Leaves what is open alone and starts the lesson on it",
+				Clicked = () => { Tutorial.Restart(); Changed?.Invoke(); Rebuild(); }
+			} );
+		}
+		else
+		{
+			buttons.Add( new Button.Primary( "Start Tutorial", "play_arrow" )
+			{
+				Clicked = () => { Tutorial.Restart(); Changed?.Invoke(); Rebuild(); }
+			} );
+		}
 
 		buttons.Add( new Button( "Skip", "close" )
 		{
@@ -468,6 +547,13 @@ internal sealed class EffigyTutorialPanel : Widget
 				+ "again and Marionette poses the new shape. Pose was a scratchpad - Reset Pose puts "
 				+ "the bind back. Weight painting is the next lesson, for the joints that do not "
 				+ "crease where you want.",
+			EffigyLesson.Playermodel =>
+				"That is a playermodel. It kept its own shape and it borrows somebody else's "
+				+ "movement, which is the whole trick: the animations only bend joints, so the "
+				+ "proportions you modelled are the proportions that walk. Change a part and compile "
+				+ "again - the bones follow the parts, and the animations do not care. If a limb "
+				+ "holds still, its bone is spelled something the animations do not know; the console "
+				+ "lists those by name every time you compile.",
 			EffigyLesson.Hand =>
 				"That is a hand, and it is still a recipe. Change a box and the bone follows; compile "
 				+ "again and Marionette poses the new shape. A production hand gives every finger three "
@@ -589,6 +675,17 @@ internal sealed class EffigyStepGlyph : Widget
 				Paint.DrawLine( center + new Vector2( -10, 6 ), center + new Vector2( -10, 10 ) );
 				Paint.DrawLine( center + new Vector2( -10, 10 ), center + new Vector2( 10, 10 ) );
 				Paint.DrawLine( center + new Vector2( 10, 10 ), center + new Vector2( 10, 1 ) );
+				break;
+
+			// A figure mid-stride: head, body, one leg forward and one back. The same silhouette the
+			// menu item's own icon carries, so the step and the thing it points at match.
+			case EffigyTutorial.StepArt.Walk:
+				Paint.DrawCircle( center + new Vector2( 0, -9 ), 3.5f );
+				Paint.DrawLine( center + new Vector2( 0, -5 ), center + new Vector2( 0, 2 ) );
+				Paint.DrawLine( center + new Vector2( 0, 2 ), center + new Vector2( -6, 10 ) );
+				Paint.DrawLine( center + new Vector2( 0, 2 ), center + new Vector2( 7, 8 ) );
+				Paint.DrawLine( center + new Vector2( 0, -2 ), center + new Vector2( 7, -5 ) );
+				Paint.DrawLine( center + new Vector2( 0, -2 ), center + new Vector2( -6, 1 ) );
 				break;
 
 			case EffigyTutorial.StepArt.Paint:

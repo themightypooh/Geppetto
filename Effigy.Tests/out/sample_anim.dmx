@@ -64,7 +64,7 @@
 			"DmeTransformList"
 			{
 				"id" "elementid" "0000000d-0000-0000-0000-000000000000"
-				"name" "string" "bind pose"
+				"name" "string" "bind"
 				"transforms" "element_array"
 				[
 					"DmeTransform"

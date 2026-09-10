@@ -198,6 +198,127 @@ internal sealed class EffigyFeatureDialog : Widget
 		Rebuild();
 	}
 
+	/// <summary>
+	/// What Translate was when the handle was grabbed.
+	///
+	/// THE DRAG IS RELATIVE AND THE PARAMETER IS ABSOLUTE, the same split the plane's offset has. A
+	/// body already moved 10 up, grabbed and nudged, must end at 10 plus the nudge — assigning the
+	/// drag displacement straight into Translate would snap it back to where the feature found it on
+	/// the first frame of every drag, which is a jump nobody asked for and a value nobody typed.
+	/// </summary>
+	private Vec3 _translateAtDragStart;
+
+	/// <summary>Rotation and Scale when the handle was grabbed, for the same reason as Translate.</summary>
+	private Rotation _rotationAtDragStart;
+
+	private Vec3 _scaleAtDragStart;
+
+	/// <summary>
+	/// Where the handle stood when it was grabbed: the point rotate and scale turn and grow about.
+	///
+	/// A TRANSFORM ROTATES AND SCALES ABOUT THE WORLD ORIGIN, which is the right meaning for a number
+	/// you type and the wrong feel for a handle — a part two hundred units out would swing across the
+	/// scene on the first degree of drag. So the drag also writes Translate, by exactly what keeps
+	/// this point still.
+	/// </summary>
+	private Vec3 _bodyDragPivot;
+
+	private void OnBodyDragBegan( Vec3 pivot )
+	{
+		if ( _feature is not TransformFeature move )
+			return;
+
+		_translateAtDragStart = move.Translate.Value;
+		_scaleAtDragStart = move.Scale.Value;
+		_bodyDragPivot = pivot;
+
+		// Identity for a zero axis, as Xform.Rotate treats one — FromAxis would hand back NaN.
+		var axis = move.RotationAxis.Value;
+
+		_rotationAtDragStart = axis.LengthSquared < 1e-12f
+			? Rotation.Identity
+			: Rotation.FromAxis( ToVector3( axis.Normal ), move.RotationAngle.Value );
+	}
+
+	/// <summary>
+	/// The rings were turned: a rotation since the grab, world-aligned, about the pivot.
+	///
+	/// The feature puts a point at q = T + R·(S ⊙ p). Turning that by D about c gives
+	/// c + D·(q − c), which is the same form with R = D·R₀ and T = c + D·(T₀ − c) — so the drag
+	/// composes onto whatever rotation was already typed, rather than replacing it.
+	/// </summary>
+	private void OnBodyRotateDragged( Vec3 axis, float degrees )
+	{
+		if ( _feature is not TransformFeature move )
+			return;
+
+		var drag = Rotation.FromAxis( ToVector3( axis.Normal ), degrees );
+		var rotation = drag * _rotationAtDragStart;
+		var arm = drag * ToVector3( _translateAtDragStart - _bodyDragPivot );
+
+		move.Translate.Value = _bodyDragPivot + new Vec3( arm.x, arm.y, arm.z );
+
+		// Back to the axis and angle the feature stores. q and −q are the same rotation; taking the
+		// one with w ≥ 0 keeps the angle in 0..180 instead of counting up to 360 the long way round.
+		var sign = rotation.w < 0f ? -1f : 1f;
+		var w = (rotation.w * sign).Clamp( -1f, 1f );
+		var sin = MathF.Sqrt( MathF.Max( 0f, 1f - w * w ) );
+
+		if ( sin < 1e-6f )
+		{
+			// Turned back to nothing: keep whatever axis was typed, so the field does not blank.
+			move.RotationAngle.Value = 0f;
+		}
+		else
+		{
+			move.RotationAxis.Value = new Vec3( rotation.x, rotation.y, rotation.z ) * (sign / sin);
+			move.RotationAngle.Value = 2f * MathF.Acos( w ).RadianToDegree();
+		}
+
+		RaiseEdited();
+	}
+
+	/// <summary>
+	/// The scale nub was dragged: a uniform factor since the grab, about the pivot.
+	///
+	/// Uniform, so it commutes with the rotation: the parts land at T + f·(q₀ − T₀), and holding the
+	/// pivot still asks T = c − f·(c − T₀). A non-uniform scale already typed is kept and multiplied.
+	/// </summary>
+	private void OnBodyScaleDragged( float factor )
+	{
+		if ( _feature is not TransformFeature move )
+			return;
+
+		move.Scale.Value = _scaleAtDragStart * factor;
+		move.Translate.Value = _bodyDragPivot - (_bodyDragPivot - _translateAtDragStart) * factor;
+
+		RaiseEdited();
+	}
+
+	private static Vector3 ToVector3( Vec3 v ) => new( v.x, v.y, v.z );
+
+	/// <summary>
+	/// The move handle was dragged. Write it into the open Transform and rebuild.
+	///
+	/// TYPING, WITH THE MOUSE — what OnFaceDragged and OnPlaneOffsetDragged are, and for the same
+	/// reason. Nothing is added to the history: the drag sets a parameter of the feature whose dialog
+	/// is already open, exactly as if the three numbers had been entered in the fields beside it, and
+	/// it goes through RaiseEdited so undo, dirty-marking and the rebuild all behave identically.
+	/// </summary>
+	private void OnBodyDragged( Vec3 displacement )
+	{
+		if ( _feature is not TransformFeature move )
+			return;
+
+		move.Translate.Value = _translateAtDragStart + displacement;
+
+		// Rebuilds the rows as well as the model, so the numbers in the fields count under the
+		// cursor rather than being a stale copy of what they were before the drag. The window takes
+		// the light rebuild path while the drag is live (see EffigyWindow.OnFeatureEdited); the
+		// numbers are refreshed there, so this only reports the edit.
+		RaiseEdited();
+	}
+
 	private void RaiseEdited()
 	{
 		_touched = true;
@@ -536,6 +657,17 @@ internal sealed class EffigyFeatureDialog : Widget
 		_viewport.SelectedBodyIds = null;
 		_viewport.SelectedFaces = null;
 		_viewport.SelectedEdges = null;
+
+		// EXPLICITLY, unlike the face handle, which goes quiet on its own because Close clears the
+		// faces it hangs off. The move handle has no such backstop: no bodies picked means EVERY body
+		// to a Transform, so leaving this on would leave arrows on the model after the dialog that
+		// owned them had gone.
+		_viewport.BodyDragEnabled = false;
+		_viewport.BodyDragBegan = null;
+		_viewport.BodyDragMoved = null;
+		_viewport.BodyRotateDragged = null;
+		_viewport.BodyScaleDragged = null;
+
 		_viewport.SetPickPrompt( "" );
 	}
 
@@ -870,6 +1002,16 @@ internal sealed class EffigyFeatureDialog : Widget
 		_viewport.PlaneOffsetDragBegan = _feature is PlaneFeature ? OnPlaneOffsetDragBegan : null;
 		_viewport.PlaneOffsetDragged = _feature is PlaneFeature ? OnPlaneOffsetDragged : null;
 
+		// The move handle, on the same terms again: it belongs to whichever feature is open, and only
+		// a Transform has a Translate for it to drive. Pressing Transform on the strip is what puts
+		// the arrows on the model, and closing the dialog is what takes them away. E and R swap the
+		// arrows for rings and a scale nub, which write Rotation and Scale the same way.
+		_viewport.BodyDragEnabled = _feature is TransformFeature;
+		_viewport.BodyDragBegan = _viewport.BodyDragEnabled ? OnBodyDragBegan : null;
+		_viewport.BodyDragMoved = _viewport.BodyDragEnabled ? OnBodyDragged : null;
+		_viewport.BodyRotateDragged = _viewport.BodyDragEnabled ? OnBodyRotateDragged : null;
+		_viewport.BodyScaleDragged = _viewport.BodyDragEnabled ? OnBodyScaleDragged : null;
+
 		if ( _feature is null )
 			return;
 
@@ -1010,6 +1152,16 @@ internal sealed class EffigyFeatureDialog : Widget
 
 		_viewport.SketchPickMode = false;
 		_viewport.SketchPicked = null;
+
+		// Remesh's cost readout sits under the target fields, because it is the answer to the
+		// question they raise — see EffigyRemeshCost. Placed through the same follow-row hook as
+		// Revolve's axis line rather than appended after the Advanced disclosure, so it reads as a
+		// consequence of the Triangles field instead of a footnote.
+		if ( _feature is RemeshFeature remesh )
+		{
+			_followRowAfter = remesh.Triangles;
+			_followRow = () => new EffigyRemeshCost( _body, remesh, _pickableBodiesLookup );
+		}
 
 		AddParamRows( _feature.Parameters );
 	}
@@ -3350,5 +3502,73 @@ internal sealed class EffigySubdivideCost : Widget
 			text += " — rebuilds may take a while";
 
 		Paint.DrawText( LocalRect.Shrink( 8f, 0f, 8f, 0f ), text, TextFlag.LeftCenter );
+	}
+}
+
+/// <summary>
+/// What the remesh about to happen will cost, under the target fields, updated as they change.
+///
+/// THE SAME JOB AS <see cref="EffigySubdivideCost"/> AND NEEDED MORE. Subdivision's cost is
+/// arithmetic anybody can do in their head — four triangles a level — and "10% of a number you have
+/// never seen" is not. A budget only does its job when you can see the number it will produce
+/// before you commit to it, and the target is in TRIANGLES while the tree everywhere else counts
+/// faces, so reading the mesh's face count does not even get you the right units.
+///
+/// Predicts rather than measures, for the same reason its sibling does: a rebuild is synchronous on
+/// the UI thread, and the predictor here is cheap — a triangle count per body — so it is recomputed
+/// only when something that feeds it changed rather than on every repaint.
+/// </summary>
+internal sealed class EffigyRemeshCost : Widget
+{
+	private const float RowHeight = 24f;
+
+	private readonly RemeshFeature _feature;
+	private readonly Func<IEnumerable<Body>> _bodies;
+
+	/// <summary>What the last prediction was made from. Recompute when it moves, not per paint.</summary>
+	private (int Target, float Percent, int Triangles, int Input, int Picked) _key = (-1, -1f, -1, -1, -1);
+	private (int From, int To) _cost;
+
+	public EffigyRemeshCost( Widget parent, RemeshFeature feature, Func<IEnumerable<Body>> bodies )
+		: base( parent )
+	{
+		_feature = feature;
+		_bodies = bodies;
+
+		TranslucentBackground = true;
+		NoSystemBackground = true;
+
+		FixedHeight = RowHeight;
+	}
+
+	protected override void OnPaint()
+	{
+		var bodies = _bodies?.Invoke()?.ToList() ?? new List<Body>();
+
+		// FACES, NOT TRIANGLES, and only here in the key. Decimate.TriangleCount walks every face
+		// of every body, which is nothing on a CAD part and is nine hundred thousand faces on the
+		// import this feature exists for — running it on every repaint made the dialog stutter each
+		// time the cursor crossed it. FaceCount is a list length, it moves whenever the mesh does,
+		// and that is all a cache key has to do; the real count still happens in PredictCost, on the
+		// frames where the answer actually changed.
+		var input = bodies.Where( _feature.Bodies.Matches ).Sum( b => b.Mesh?.FaceCount ?? 0 );
+
+		// The body count is in the key even though a selection change rebuilds the dialog and
+		// creates a fresh control: PredictCost sums per body, and in Triangle-count mode two parts
+		// with different sizes split one budget differently from a single part of the same total.
+		var key = (_feature.Target.Index, _feature.Percent.Clamped, _feature.Triangles.Clamped,
+			input, _feature.Bodies.BodyIds.Count);
+
+		if ( key != _key )
+		{
+			_key = key;
+			_cost = _feature.PredictCost( bodies );
+		}
+
+		Paint.SetDefaultFont( 8 );
+		Paint.SetPen( Theme.TextLight.WithAlpha( 0.55f ) );
+
+		Paint.DrawText( LocalRect.Shrink( 8f, 0f, 8f, 0f ),
+			$"{_cost.From:N0} → {_cost.To:N0} triangles", TextFlag.LeftCenter );
 	}
 }

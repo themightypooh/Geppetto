@@ -69,7 +69,8 @@
 					"id" "elementid" "0000000c-0000-0000-0000-000000000000"
 					"name" "string" "mesh"
 					"visible" "bool" "1"
-					"bindState" "DmeVertexData"
+					"bindState" "element" ""
+					"currentState" "DmeVertexData"
 					{
 						"id" "elementid" "0000000d-0000-0000-0000-000000000000"
 						"name" "string" "bind"
@@ -213,7 +214,6 @@
 						]
 						"blendweights$0" "float_array"
 						[
-							"1",
 							"0",
 							"0",
 							"0",
@@ -244,45 +244,45 @@
 							"1",
 							"0",
 							"0",
-							"0"
+							"0",
+							"1"
 						]
 						"blendindices$0" "int_array"
 						[
+							"-1",
+							"-1",
+							"-1",
 							"0",
+							"-1",
+							"-1",
+							"-1",
 							"0",
+							"-1",
+							"-1",
+							"-1",
 							"0",
+							"-1",
+							"-1",
+							"-1",
 							"0",
+							"-1",
+							"-1",
+							"-1",
 							"0",
+							"-1",
+							"-1",
+							"-1",
 							"0",
+							"-1",
+							"-1",
+							"-1",
 							"0",
-							"0",
-							"0",
-							"0",
-							"0",
-							"0",
-							"0",
-							"0",
-							"0",
-							"0",
-							"0",
-							"0",
-							"0",
-							"0",
-							"0",
-							"0",
-							"0",
-							"0",
-							"0",
-							"0",
-							"0",
-							"0",
-							"0",
-							"0",
-							"0",
+							"-1",
+							"-1",
+							"-1",
 							"0"
 						]
 					}
-					"currentState" "element" "0000000d-0000-0000-0000-000000000000"
 					"baseStates" "element_array"
 					[
 						"element" "0000000d-0000-0000-0000-000000000000"
@@ -351,7 +351,7 @@
 			"DmeTransformList"
 			{
 				"id" "elementid" "00000010-0000-0000-0000-000000000000"
-				"name" "string" "bind pose"
+				"name" "string" "bind"
 				"transforms" "element_array"
 				[
 					"DmeTransform"

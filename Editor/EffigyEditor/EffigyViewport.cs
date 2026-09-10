@@ -31,6 +31,12 @@ internal sealed partial class EffigyViewport : Widget
 	private GameObject _modelObject;
 	private ModelRenderer _renderer;
 
+	/// <summary>The Model the renderer is currently drawing, or null. The window's preview keeps an
+	/// in-place-updateable copy (see EffigyPreview.LivePreview) and checks this before rewriting it —
+	/// a pose preview, a compiled export or a sculpt/paint session can swap the renderer to a
+	/// different model, and updating the stale copy then would leave the screen showing nothing.</summary>
+	public Model CurrentModel => _renderer.IsValid() ? _renderer.Model : null;
+
 	/// <summary>Half-width a reference plane starts at, in world units. Each plane can be dragged
 	/// to its own size from there — see <see cref="_planeHalfSize"/>.</summary>
 	private const float PlaneSize = 128f;
@@ -192,6 +198,19 @@ internal sealed partial class EffigyViewport : Widget
 	public bool FrontPlaneVisible { get; set; } = true;
 	public bool RightPlaneVisible { get; set; } = true;
 	public Effigy.Skeleton RigSkeleton { get; set; }
+
+	/// <summary>
+	/// Whether the skeleton is drawn — and, with it, whether bones can be hovered or clicked.
+	///
+	/// TIED TO THE RIG DOCK BY THE WINDOW, which passes its panel's visibility in here. Closing the
+	/// tree is how you say "I am done looking at the rig"; leaving a cage of bones over the model
+	/// after that is the tool ignoring you, and worse, the bones keep eating clicks meant for the
+	/// mesh. Gated in one place each for drawing (DrawRigSkeleton) and picking
+	/// (TryPickBoneUnderCursor) so nothing can see a bone the eye cannot.
+	/// </summary>
+	public Func<bool> RigVisible { get; set; }
+
+	private bool BonesShown => RigVisible?.Invoke() ?? true;
 
 	/// <summary>
 	/// The Rig workspace is open, so BONES ARE THE ONLY THING IN HERE THAT CAN BE CLICKED.
@@ -1506,6 +1525,10 @@ internal sealed partial class EffigyViewport : Widget
 			// with the mouse - and it wants the same protection from a Gizmo.Control hitbox outliving
 			// the workspace that put it there.
 			PlaneOffsetHandleFrame();
+
+			// And the third of the same family: the open Transform's Translate, answered with the
+			// mouse instead of three number fields.
+			BodyDragFrame();
 		}
 
 		// BoneToolActive and BodyPickMode: the same "you can click here" signal every other live
@@ -1521,6 +1544,9 @@ internal sealed partial class EffigyViewport : Widget
 	/// <summary>Draw all bones as dog-bone shapes with selection and pose gizmo.</summary>
 	private void DrawRigSkeleton()
 	{
+		if ( !BonesShown )
+			return;
+
 		if ( RigSkeleton is null || RigSkeleton.Count == 0 )
 			return;
 
@@ -1578,7 +1604,7 @@ internal sealed partial class EffigyViewport : Widget
 	{
 		index = -1;
 
-		if ( RigSkeleton is null || RigSkeleton.Count == 0 || !_cursorRayValid || BoneToolActive )
+		if ( !BonesShown || RigSkeleton is null || RigSkeleton.Count == 0 || !_cursorRayValid || BoneToolActive )
 			return false;
 
 		var origin = _cursorRayOrigin;

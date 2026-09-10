@@ -145,8 +145,13 @@ internal static class EffigyAnimExport
 
 		// Tracks with no keys are not tracks: Evaluate would answer Transform.Zero for every frame
 		// of them, which is the collapse-to-origin case above.
-		var tracks = doc.BoneTracks
+		// THE MAIN MODEL'S BONES ONLY. A clip can also carry whole-part tracks and the bones of
+		// other objects in the scene (a weapon's bolt, a door's hinge) - none of which exist in
+		// THIS skeleton. Left in, every one of them would be reported as a bone the model is
+		// missing, which reads as the clip being authored against the wrong model.
+		var tracks = doc.SkeletonTracks
 			.Where( t => !string.IsNullOrWhiteSpace( t.BoneName ) && t.Keyframes.Count > 0 )
+			.Where( t => RigTrackName.SubjectOf( t.BoneName ) == RigTrackName.RootSubject )
 			.GroupBy( t => t.BoneName )
 			.ToDictionary( g => g.Key, g => g.First() );
 

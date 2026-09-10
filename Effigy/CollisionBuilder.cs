@@ -28,6 +28,18 @@ public sealed class CollisionShape
 	/// <summary>Which body this came from, so a caller can group them.</summary>
 	public string BodyId;
 
+	/// <summary>
+	/// The bone this shape rides on, or null to sit on the model root.
+	///
+	/// WITHOUT THIS A RIGGED MODEL'S COLLISION IS FURNITURE. The shapes are welded to the root, the
+	/// mesh bends away from them, and the part is solid where it used to be rather than where it is.
+	/// Null is still the right answer for a static part, which has no bones to hang off.
+	///
+	/// Only a <see cref="CollisionKind.Hull"/> can carry one and mean it — see VmdlPhysics for the
+	/// measurement that says why.
+	/// </summary>
+	public string Bone;
+
 	public override string ToString() => Kind switch
 	{
 		CollisionKind.Box => $"box {Size.x * 2:0.##} x {Size.y * 2:0.##} x {Size.z * 2:0.##}",
@@ -226,6 +238,7 @@ public static class CollisionBuilder
 				Size = shape.Size,
 				Points = shape.Points,
 				BodyId = shape.BodyId,
+				Bone = shape.Bone,
 			} );
 		}
 
@@ -245,7 +258,25 @@ public static class CollisionBuilder
 			shape.Position += offset;
 	}
 
-	/// <summary>One hull per body, which is what an undecomposable model gets.</summary>
+	/// <summary>
+	/// One hull per body, which is what an undecomposable model gets — and what a RIGGED model gets
+	/// whether or not its history could be decomposed.
+	///
+	/// WHY A RIG THROWS THE DECOMPOSITION AWAY. Bones are assigned to BODIES: the rig panel's map is
+	/// body id to bone name, and it is the only statement anywhere about which part of the model
+	/// moves with which bone. A history decomposition does not respect that boundary — a mirror
+	/// duplicates shapes, a move slides them, and the box that comes out the far end belongs to no
+	/// body in particular. One hull per body is coarser and it is ADDRESSABLE, which is worth more
+	/// than exactness the moment a shape has to name the bone it rides on.
+	/// </summary>
+	public static List<CollisionShape> HullsPerBody( PartStudio studio )
+	{
+		if ( studio is null )
+			throw new ArgumentNullException( nameof( studio ) );
+
+		return Hulls( studio );
+	}
+
 	static List<CollisionShape> Hulls( PartStudio studio )
 	{
 		var shapes = new List<CollisionShape>();

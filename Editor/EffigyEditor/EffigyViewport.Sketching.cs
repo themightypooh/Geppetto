@@ -1749,10 +1749,15 @@ internal sealed partial class EffigyViewport
 	/// </summary>
 	private FaceSurface SurfaceOf( PolyMesh mesh, int faceIndex )
 	{
+		// Cast, because an untyped null matches both FromFace overloads and neither is more
+		// specific than the other.
+		if ( mesh is null )
+			return FaceSurface.FromFace( (PolyMesh)null, faceIndex );
+
 		if ( _surfaces.TryGetValue( (mesh, faceIndex), out var cached ) )
 			return cached;
 
-		var surface = FaceSurface.FromFace( mesh, faceIndex );
+		var surface = FaceSurface.FromFace( SurfaceIndexFor( mesh ), faceIndex );
 
 		_surfaces[(mesh, faceIndex)] = surface;
 
@@ -1762,13 +1767,44 @@ internal sealed partial class EffigyViewport
 	private readonly Dictionary<(PolyMesh Mesh, int Face), FaceSurface> _surfaces = new();
 
 	/// <summary>
+	/// The welded adjacency a surface walk starts from, built once per mesh.
+	///
+	/// THE CACHE ABOVE IS KEYED ON THE FACE, WHICH IS THE ONE THING THAT CHANGES WHILE HOVERING.
+	/// Every miss used to run FaceSurface.FromFace, and that did three passes over the whole mesh
+	/// before it grew anything - bounds for the tolerance, a weld of every vertex, and an edge map
+	/// over every face. Moving the cursor across a dense import misses on every frame by
+	/// construction, so the tool paid for all of it, every frame, and looked hung until the mouse
+	/// stopped.
+	///
+	/// This is the part of that work the face index has no say in, so it is cached per mesh and a
+	/// newly hovered face costs only its own flood fill. Same invalidation as the pick trees: a
+	/// new PolyMesh instance is the signal, and ForgetSurfaces drops it.
+	/// </summary>
+	private SurfaceIndex SurfaceIndexFor( PolyMesh mesh )
+	{
+		if ( _surfaceIndices.TryGetValue( mesh, out var cached ) )
+			return cached;
+
+		var index = SurfaceIndex.Build( mesh );
+
+		_surfaceIndices[mesh] = index;
+
+		return index;
+	}
+
+	private readonly Dictionary<PolyMesh, SurfaceIndex> _surfaceIndices = new();
+
+	/// <summary>
 	/// The pick tree for a mesh, built once rather than once per frame.
 	///
 	/// SAME BARGAIN AS <see cref="SurfaceOf"/>, and for a worse symptom. The pick raycast is a
 	/// linear scan over every face, and it runs on every frame the face or edge picker is armed -
 	/// which on a 60k-face import out of Meshy is about 13ms and 25MB of garbage per frame, so the
 	/// viewport spends its entire budget deciding what the cursor is on and the GC does the rest.
-	/// A tree costs ~200ms to build once and turns the scan into a handful of triangle tests.
+	/// A tree turns the scan into a handful of triangle tests for a one-off build - about 25ms on
+	/// that same 60k import, and a third of a second on a million faces. (It used to be nearer
+	/// 200ms at 60k; MeshBVH.Build selects around the median now rather than sorting at every
+	/// node, which is where most of that went.)
 	///
 	/// BUILT LAZILY, because most parts are small enough that the scan was never the problem and
 	/// paying 200ms up front on every rebuild to accelerate a 0.1ms raycast is the same mistake
@@ -1798,12 +1834,58 @@ internal sealed partial class EffigyViewport
 
 	private readonly Dictionary<PolyMesh, MeshBVH> _pickTrees = new();
 
+	/// <summary>
+	/// A mesh's axis-aligned bounds, cached per mesh instance.
+	///
+	/// The translate handle sits at the centre of what is selected, and working that out walked
+	/// every vertex of every selected body EVERY FRAME - the handle is drawn from the viewport's
+	/// paint, not from the selection changing. On a body out of the sketcher that is nothing; on a
+	/// million-vertex import it is several milliseconds a frame spent re-deriving a number that
+	/// cannot have moved, and it is paid while the viewport is merely sitting there with something
+	/// selected.
+	///
+	/// Same invalidation as the surface and pick caches, and it has to be: positions are mutable,
+	/// so this is only sound because a rebuild hands the viewport NEW Body objects with new meshes
+	/// rather than editing the ones it holds. ForgetSurfaces is where that is noticed.
+	/// </summary>
+	private bool TryMeshBounds( PolyMesh mesh, out Vec3 min, out Vec3 max )
+	{
+		min = Vec3.Zero;
+		max = Vec3.Zero;
+
+		if ( mesh is null || mesh.Positions.Count == 0 )
+			return false;
+
+		if ( _meshBounds.TryGetValue( mesh, out var cached ) )
+		{
+			(min, max) = cached;
+			return true;
+		}
+
+		min = mesh.Positions[0];
+		max = min;
+
+		for ( var i = 1; i < mesh.Positions.Count; i++ )
+		{
+			var p = mesh.Positions[i];
+			min = new Vec3( MathF.Min( min.x, p.x ), MathF.Min( min.y, p.y ), MathF.Min( min.z, p.z ) );
+			max = new Vec3( MathF.Max( max.x, p.x ), MathF.Max( max.y, p.y ), MathF.Max( max.z, p.z ) );
+		}
+
+		_meshBounds[mesh] = (min, max);
+		return true;
+	}
+
+	private readonly Dictionary<PolyMesh, (Vec3 Min, Vec3 Max)> _meshBounds = new();
+
 	/// <summary>Drop every cached surface. Called whenever the viewport is given new bodies, which
 	/// is the only moment the meshes underneath them can have changed.</summary>
 	private void ForgetSurfaces()
 	{
 		_surfaces.Clear();
+		_surfaceIndices.Clear();
 		_pickTrees.Clear();
+		_meshBounds.Clear();
 	}
 
 	/// <summary>
@@ -2061,6 +2143,13 @@ internal sealed partial class EffigyViewport
 	/// viewport agree about what is chosen. Pushed by the selector on every change.</summary>
 	public IReadOnlyCollection<string> SelectedBodyIds { get; set; }
 
+	/// <summary>How many faces a body may have before the immediate-mode hover outline gives up on
+	/// it. Roughly a frame's worth of gizmo calls: every face costs a filled triangle fan and a line
+	/// per edge, so ten thousand faces is already tens of thousands of draws for a cue that lasts
+	/// one frame. A CAD part is nowhere near it; a Meshy import clears it by a factor of thirty.
+	/// </summary>
+	private const int HoverHighlightFaceBudget = 10_000;
+
 	private static readonly Color BodyPickHoverColor = new( 0.35f, 0.75f, 1f, 1f );
 	private static readonly Color BodySelectedColor = new( 1f, 0.66f, 0.2f, 1f );
 
@@ -2096,39 +2185,75 @@ internal sealed partial class EffigyViewport
 			BodyPicked?.Invoke( hit.Body.Id );
 	}
 
+	/// <summary>The bodies a dialog's selector has chosen, lit through the same cached shell the
+	/// idle selection uses — see EffigyViewport.Highlight. Returns without touching the cache when
+	/// nothing is chosen, because in that case the idle selection owns it.</summary>
 	private void DrawChosenBodies()
 	{
 		if ( SelectedBodyIds is not { Count: > 0 } selected )
 			return;
 
+		// Same rule as the idle selection: a brush sees the bare surface.
+		if ( IsPainting || IsSculpting || IsMaterialBrushing || IsWeightPainting )
+		{
+			SyncBodyHighlight( null, BodySelectedColor );
+			return;
+		}
+
 		var list = _pickableBodies.Count > 0 ? _pickableBodies : _displayBodies;
+
+		_chosenBodies.Clear();
 
 		foreach ( var body in list )
 		{
-			if ( body?.Id is { } id && selected.Contains( id ) )
+			if ( body?.Id is not { } id || !selected.Contains( id ) )
+				continue;
+
+			// Same split as the idle selection: the draw that is known to be visible for anything
+			// that can afford it, the cached shell only for the imports that kill it.
+			if ( (body.Mesh?.FaceCount ?? 0) <= HoverHighlightFaceBudget )
 				DrawBodyHighlight( body, BodySelectedColor );
+			else
+				_chosenBodies.Add( body );
 		}
+
+		SyncBodyHighlight( _chosenBodies, BodySelectedColor );
 	}
 
-	/// <summary>Shade and outline every face of a body, with the same depth-tested lift the face
-	/// highlight uses — see DrawHoveredFace for why the lift is proportional rather than
-	/// fixed.</summary>
+	private readonly List<Body> _chosenBodies = new();
+
+	/// <summary>
+	/// Shade and outline every face of a body, with the same depth-tested lift the face highlight
+	/// uses — see DrawHoveredFace for why the lift is proportional rather than fixed.
+	///
+	/// THE HOVER PATH, and only that now. A chosen body goes through the cached shell instead,
+	/// because this walks every face of the mesh EVERY FRAME and a hover changes with the cursor,
+	/// which is the one thing a cache cannot help with. Hence the budget below: past it, the honest
+	/// answer is to draw nothing and let the click speak, rather than to spend a second a frame
+	/// outlining a scan.
+	/// </summary>
 	private void DrawBodyHighlight( Body body, Color color )
 	{
-		if ( body?.Mesh is not { } mesh )
+		if ( body?.Mesh is not { } mesh || mesh.FaceCount > HoverHighlightFaceBudget )
 			return;
 
 		var eye = _camera.WorldPosition;
 
 		Gizmo.Draw.IgnoreDepth = false;
 
+		// Two scratch lists for the whole body rather than two per face. At a few thousand faces a
+		// frame the allocation was most of the cost, and every one of them was garbage before the
+		// next face started. Same pattern DrawFace already uses.
+		var corners = _bodyHighlightCorners;
+		var flat = _bodyHighlightFlat;
+
 		foreach ( var face in mesh.Faces )
 		{
 			if ( face.Count < 3 )
 				continue;
 
-			var corners = new List<Vector3>( face.Count );
-			var flat = new List<Vec3>( face.Count );
+			corners.Clear();
+			flat.Clear();
 
 			for ( var i = 0; i < face.Count; i++ )
 			{
@@ -2151,6 +2276,9 @@ internal sealed partial class EffigyViewport
 
 		Gizmo.Draw.LineThickness = 1f;
 	}
+
+	private readonly List<Vector3> _bodyHighlightCorners = new();
+	private readonly List<Vec3> _bodyHighlightFlat = new();
 
 	public void EndSketch()
 	{

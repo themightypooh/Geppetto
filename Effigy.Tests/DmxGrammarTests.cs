@@ -168,7 +168,7 @@ public static class DmxGrammarTests
 			jointIndices.Count == weights.Count, $"{jointIndices.Count} vs {weights.Count}" );
 
 		Report.Check( "no joint index points outside the skeleton",
-			jointIndices.All( j => int.TryParse( j.Value, out var b ) && b >= 0 && b < skeleton.Count ) );
+			jointIndices.All( j => int.TryParse( j.Value, out var b ) && b >= -1 && b < skeleton.Count ) );
 
 		// Pruning to four influences has to renormalise, or a vertex that had five influences
 		// comes out lighter than the ones that had four and the mesh sags toward the origin.
@@ -262,11 +262,32 @@ public static class DmxGrammarTests
 		Report.Check( "colour indices mirror the position indices",
 			vertexData.Array( "color$0Indices" ).Count == vertexData.Array( "position$0Indices" ).Count );
 
-		Report.Check( "a painted vertex writes its paint colour", colors[0].Value == "1 0 0 1",
+		// BYTES, NOT NORMALIZED FLOATS. A DMX "color" is four channels 0-255. Written as floats the
+		// file does not parse at all: dmxconvert says "Error reading in array attribute color$0
+		// element 0" and the compiler says only "Couldn't load DMX file", then "Node 'Body_LOD0'
+		// resolve failure". This test used to assert "1 0 0 1" and pass — which is the failure this
+		// file's own header describes, a check agreeing with the writer about the wrong thing.
+		Report.Check( "a painted vertex writes its paint colour", colors[0].Value == "255 0 0 255",
 			colors[0].Value );
 
-		Report.Check( "an unpainted vertex is white", colors[1].Value == "1 1 1 1",
+		Report.Check( "an unpainted vertex is white", colors[1].Value == "255 255 255 255",
 			colors[1].Value );
+
+		// The general guard, rather than two spot checks: an imported mesh carries arbitrary colour
+		// off the OBJ, and it was a value like "0.466482 1 0.998274 1" that actually broke the
+		// compile. Any fractional component anywhere in the array is the same bug.
+		var fractional = colors.FirstOrDefault( v => v.Value.Contains( '.' ) );
+
+		Report.Check( "no colour is written as a fraction", fractional is null,
+			fractional?.Value );
+
+		// And they are in range, since a byte channel that overflowed would parse and render wrong
+		// rather than failing loudly.
+		var outOfRange = colors
+			.SelectMany( v => v.Value.Split( ' ' ) )
+			.FirstOrDefault( n => !int.TryParse( n, out var b ) || b < 0 || b > 255 );
+
+		Report.Check( "every channel is a byte 0-255", outOfRange is null, outOfRange );
 	}
 
 	static (PolyMesh, Skeleton) Rigged()

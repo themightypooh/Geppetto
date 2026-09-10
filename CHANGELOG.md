@@ -35,7 +35,162 @@ forgotten.
 
 ## Unreleased
 
-Nothing yet.
+### Improved
+- **Dense imports are workable now.** Hovering, picking, dragging and sculpting a several-hundred-
+  thousand-face mesh used to stall the viewport for a fraction of a second at a time, and got worse
+  the denser the model. Every one of those is now under a millisecond at a million faces, and does
+  not grow meaningfully with face count.
+- **Moving the cursor over an imported part no longer freezes it.** Working out which flat surface
+  a face belongs to did three full passes over the whole mesh before it looked at anything local,
+  and it did them again for every face the cursor moved onto — so the tool locked up while the
+  mouse was moving and recovered when it stopped. That groundwork is computed once per part now.
+  On a 240k-face body a newly hovered face went from 237ms to under a tenth of a millisecond.
+  `Effigy/Sketch/SurfaceIndex.cs`
+- **Sculpting a dense mesh keeps up with the brush.** Each dab rebuilt the whole mesh's vertex
+  adjacency and refitted every box in the pick tree, whether or not the brush went near them. A dab
+  on a million-face body went from 148ms to 0.3ms. `Effigy/Brush.cs`, `Effigy/MeshBVH.cs`
+- **Parts load and rebuild faster.** The pick tree builds about five times quicker, smooth-normal
+  generation about four times, and the routines that derive mesh adjacency between four and ten
+  times — with a fraction of the memory churn, so the garbage collector stops interrupting.
+  `Effigy/MeshBVH.cs`, `Effigy/MeshNormals.cs`, `Effigy/PolyMesh.cs`
+- **Selecting a big part no longer costs a frame.** The translate handle re-measured every vertex of
+  everything selected on every frame it was drawn. It is measured once per part now.
+  `Editor/EffigyEditor/EffigyViewport.BodyDrag.cs`
+- **Dragging a part updates it in place.** Moving a body with the Transform handle, or typing
+  into its fields, now rewrites the model already on screen instead of rebuilding it every
+  frame, so dragging a dense part keeps up. `Editor/EffigyEditor/EffigyPreview.cs`
+
+### Fixed
+- **Deleting parts of an imported mesh makes it faster.** Every delete, undo and redo on an import
+  re-read the whole OBJ, parts you had already deleted included — so taking a 900k-face Meshy
+  import down to 20k faces still cost 1.3 seconds per delete, and an undo cost the same. The file is
+  only read again when it changes on disk now, so a delete costs what is left: the last deletes of
+  that trim take a few milliseconds, and undo takes 2ms. `Effigy/Features/ImportFeature.cs`
+- **Painting no longer draws the selection over the part.** A part picked in the Parts list stayed
+  lit in amber wireframe while you painted it, hiding the colour you were laying down. Paint,
+  sculpt, material and weight brushes now show the bare surface; the selection comes back when you
+  finish. `Editor/EffigyEditor/EffigyViewport.Selection.cs`
+- **Rigging an imported mesh made every compile fail.** Import an OBJ that carries vertex colour —
+  which a Meshy export, a scan or anything part-segmented does — add a bone, and the .vmdl compiled
+  to nothing but the orange error model. The DMX we wrote stored colour as fractions where the
+  format wants four bytes 0-255, so the engine rejected the whole file, reporting only
+  "Couldn't load DMX file". Unpainted parts were unaffected, which is why it went unnoticed.
+  `Effigy/DmxWriter.cs`
+- **A model compiled from an OBJ could arrive lying on its side.** ModelDoc's OBJ importer
+  turns the mesh as it reads it, and the correction for that only existed in one of the four
+  places a .vmdl was written — so a model built anywhere else compiled with its axes swapped,
+  and its collision sat at an angle to it. The .vmdl is built in one place now, and the
+  correction is worked out from the mesh file rather than copied. `Effigy/VmdlDocument.cs`
+- **A rigged model's collision stayed where the model used to be.** Pose a bone and the mesh swung
+  away from a collision box lying flat in the bind pose — solid where the part was, air where it
+  is. Rigged exports carried one static shape welded to the model root, because the shapes had no
+  bone to hang off. They do now: a rigged part exports one convex hull per body, each parented to
+  the bone that drives it, taken from the same Parts-list assignment its skin weights come from.
+  Bodies you never assigned go to the bone nearest their centre, which is the bone they were being
+  weighted to anyway. `VmdlPhysics`, `CollisionBuilder`
+- **Collision on a rigged model needs Model Physics in the scene, not Model Collider.** A Model
+  Collider builds one static shape and never looks at the skeleton again, so it cannot follow a
+  pose no matter what the model carries. Add a **Model Physics** component beside the Skinned
+  Model Renderer and turn **Motion Enabled** off — that drives the physics from the animation, and
+  the per-bone hulls above are what it drives.
+- **Deleting a group of selected parts removed only the one you right-clicked.** Select several
+  imported parts in the Parts list, right-click one and choose Delete, and only that one went —
+  the rest of the selection was ignored. Delete now removes every selected part in one undo step,
+  and removing every remaining piece of an import removes the import itself rather than leaving an
+  empty row. `Editor/EffigyEditor/EffigyWindow.cs`
+
+### Added
+- **Make a playermodel out of anything you have modelled.** A character you can walk around in,
+  driven by the animations s&box already ships — no animating, no rigging to somebody else's
+  proportions. **File → Make Player** compiles the model and writes a test scene beside it with a
+  floor, a light and a player wearing it: open the scene, press Play, walk around. **File → Compile
+  Playermodel** does just the model, for dropping into a scene of your own.
+- **Your model keeps its own shape.** Effigy slides the built-in character's skeleton *inside* your
+  model rather than reshaping your model to match its body, so the animations only say how far each
+  joint bends — never how long your arms are. A stocky robot stays stocky and still walks. The
+  earlier approach stretched every model onto the same silhouette.
+- **Help → Start Playermodel Tutorial** walks the whole thing through in the editor, in plain
+  English, with an example robot to practise on — or start it on a model of your own. Nine steps:
+  stand it right, name the bones, hang them off the right parents, wiggle it, walk in it.
+- **The example robot comes pre-named.** Every part is already called what its bone should be
+  called, so the lesson is about which bone hangs off which rather than about typing names.
+- **The bone names are written down**, in the README and in the tutorial: `pelvis` up the spine to
+  `head`, `clavicle` out to `hand`, `thigh` down to `foot`. If your rig already uses the built-in
+  character's own names instead, those work too — nothing to rename.
+- **The console names any bone the animations did not recognise.** Almost always a typo, and the
+  only place you would ever be told: an unrecognised bone is not an error, it just holds still.
+- Hips need to sit around 31 units off the floor with the feet at zero — that one measurement comes
+  from the walk, and a model far from it will float or sink. Everything else about the proportions
+  is yours. `HumanoidSample`, `EffigyPlayermodelExport`, `EffigyPlayerScene`
+
+- **Transform gives you move, rotate and scale handles in the viewport.** Press Transform and a
+  set of arrows appears on the parts it will move. Drag them and the parts move, so you no longer
+  type three numbers into Translate to find out where they land.
+- **W, E and R switch between the arrows, rotate rings and a scale handle** while a Transform is
+  open. These are the same keys that switch a bone's handle.
+- Rotate and scale work around the handle, not the world origin. A part far from the middle turns
+  in place instead of swinging across the scene.
+- Dragging a handle fills in the Transform's own Translate, Rotation and Scale fields as you go,
+  like typing them. Undo works as usual, and nothing is added to the tree.
+- Pick no bodies and the handle sits on the whole model, because a Transform with nothing picked
+  moves the whole model.
+
+- **Subdivide is on the Rig bar now, under Mesh.** A mesh too coarse to bend is a rigging problem
+  and it is found while rigging — you drag the arm and the elbow creases into a hinge. The fix was
+  only reachable through the Sculpt workspace, which reads as "you are about to sculpt" when you
+  are not. Select a part, press Subdivide, and it adds loops. It arrives set to All Faces, which
+  adds density and leaves every vertex exactly where it is, rather than the whole-body smoothing
+  the Sculpt bar defaults to — you have already bound bones to that silhouette and do not want it
+  moving.   Same feature, same tree row, same undo; pick faces instead of a part to densify just the
+  joint.
+- **Remesh reduces a dense import to a triangle budget.** An imported part — a Meshy generation, a
+  scan, a sculpt somebody else exported — arrives at hundreds of thousands of triangles, and until
+  now nothing could take any away: you could not subdivide it, sculpt it, weight-paint it or compile
+  it. Remesh is Subdivide's opposite, on the Sculpt bar and on the Rig bar's Mesh stage. Give it a
+  part and a budget as a percentage or a triangle count, and it keeps the silhouette, open borders
+  and material seams while it takes the count down. It returns triangles, so it is for imports
+  rather than for a quad cage you built with sketches. `Decimate`, `RemeshFeature`
+- **Marionette animates whole parts, not just bones.** A door, a lever, a magazine, a light
+  switch's toggle — things that move as one object rather than as a joint in a skeleton. Drag a
+  reference prop in the viewport and it takes a lane on the timeline like any bone: same
+  keyframes, same easing modes, same dragging, marquee select, copy/paste, undo. Press `K` with a
+  prop selected to hold it in place across a span. Part lanes are marked green in the gutter so
+  they are not mistaken for a bone gone missing from the skeleton.
+- **Parts play back in game.** `RigAnimPlayerComponent` has a **Parts** list — part name on the
+  left, the GameObject it drives on the right — so the hand and the thing it is opening run off
+  one clip and one clock. Leave it empty for a bones-only clip; an unwired part is simply not
+  driven, so a clip still plays in a scene that only hooked up some of them. A .vmdl export is
+  bone channels only and says so plainly if you try to export a parts-only clip.
+  `RigAnimDocument`, `RigAnimPlayerComponent`, `RigViewport`
+- **A clip can animate several objects at once, each with its own skeleton.** A reference prop that
+  is a rigged model now draws bone handles like the main model does, so the hand, the weapon in it
+  and that weapon's bolt are all posed in one clip on one playhead — rather than three clips that
+  have to be kept in step by hand. Handle sizes come from each object's own bounds, so a magazine
+  does not get the dots of the character holding it.
+- **Tracks are named `object/bone`,** so two objects are each allowed a bone called `root`. The main
+  model's bones keep their bare names, which is what every clip you have already made contains —
+  those read back exactly as before. `RigTrackName`
+- **A clip holds objects, and an object has parts.** A door, a weapon, a fridge — the things an
+  animation is about besides the character. Move the object and everything in it goes with it; move
+  a part and it moves within the object. Both record to the timeline exactly as a bone does: drag
+  one and there is a key at the playhead.
+- **An Objects tree, under the bone tree.** Each object is one row with its parts folded up
+  underneath it, so a forty-part import does not bury the arm you are posing. Clicking a row
+  selects that thing in the viewport, and picking it in the viewport marks its row and its timeline
+  lane — one selection, wherever you touch it. `RigObjectsPanel`
+- **A part can follow another part.** The eyes follow the head: move the head and they come along,
+  and they can still be moved on their own. Right-click a part → Follow → Pick in Viewport, then
+  click the head. The tree nests followers under what they follow. Nothing jumps when you set it,
+  and it plays the same in game. `RigObjectPart.ParentPart`
+- **Marionette imports OBJ files, split into their parts.** File → Import OBJ. One object, with one
+  part per `o`/`g` group in the file, so a door exported with its handle and hinge kept separate
+  arrives as one door you place and three pieces you animate — rather than one welded lump that can
+  only move as one. Nothing has to be compiled into a `.vmdl` first, which was previously the price
+  of posing against a mesh at all.
+- **An imported mesh is copied beside the clip,** into a `.meshes` folder named after it, so the
+  clip still works when the original file is moved or the project is copied to another machine.
+  Import before saving the clip and it points at the file where it is, and says so.
+  `RigObjMeshes`, `ReferenceProp.ObjSource`
 
 ## v379213 — 2026-09-09
 
@@ -61,14 +216,6 @@ Nothing yet.
   (Make a bone from this part, Assign to the selected bone).
 
 ### Added
-- **Subdivide is on the Rig bar now, under Mesh.** A mesh too coarse to bend is a rigging problem
-  and it is found while rigging — you drag the arm and the elbow creases into a hinge. The fix was
-  only reachable through the Sculpt workspace, which reads as "you are about to sculpt" when you
-  are not. Select a part, press Subdivide, and it adds loops. It arrives set to All Faces, which
-  adds density and leaves every vertex exactly where it is, rather than the whole-body smoothing
-  the Sculpt bar defaults to — you have already bound bones to that silhouette and do not want it
-  moving. Same feature, same tree row, same undo; pick faces instead of a part to densify just the
-  joint.
 - **Import splits a file into its parts.** An OBJ that kept its objects separate — brows, lids,
   hair, a visor — now arrives as one part per object instead of one welded lump, named after
   whatever the exporter called it. That is the difference between a feature tree you can hide,

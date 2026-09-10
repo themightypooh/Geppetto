@@ -40,12 +40,22 @@ public sealed class ImportFeature : Feature
 	// still have to land on a body.
 	byte[] _pending;
 
-	// Last successfully parsed pieces, kept so a rebuild that is not re-reading the source does not
-	// have to parse again. Cloned on the way out — downstream features must not mutate the cache.
+	// Last successfully parsed pieces, deleted ones included, so a rebuild whose source has not
+	// changed does not parse again. Cloned on the way out — downstream features must not mutate
+	// the cache.
 	List<ObjReader.ObjPiece> _pieces;
+
+	// The source file _pieces was read from, as path, size and write time; null when they came from
+	// side-car bytes. See the note in Execute.
+	string _piecesStamp;
 
 	// The OBJ bytes that produced _mesh, so a save can write the original rather than a re-export.
 	byte[] _objBytes;
+
+	// Piece indices the user has deleted. The source OBJ keeps every piece — deleting one must
+	// not rewrite the file — so this records which of the parsed pieces Publish should skip.
+	// Public so StudioDocument saves it (see StateFields); cleared when a new source is bound.
+	public readonly List<int> RemovedPieces = new();
 
 	/// <summary>True when a side-car has handed this feature bytes that have not been built yet.</summary>
 	public bool HasPendingMesh => _pending is not null;
@@ -56,6 +66,67 @@ public sealed class ImportFeature : Feature
 	/// <summary>How many bodies this import produces — one per <c>o</c>/<c>g</c> lump in the file.
 	/// Zero until it has been built once.</summary>
 	public int PieceCount => _pieces?.Count ?? 0;
+
+	/// <summary>The piece index a body id names, or -1 when the id is not one of this import's
+	/// pieces. Body ids are <c>{featureId}b{N}</c>, where N is the position in the parsed file.</summary>
+	public int PieceIndexFor( string bodyId )
+	{
+		if ( _pieces is null || string.IsNullOrWhiteSpace( bodyId ) )
+			return -1;
+
+		var prefix = Id + "b";
+
+		if ( !bodyId.StartsWith( prefix, StringComparison.Ordinal ) )
+			return -1;
+
+		if ( !int.TryParse( bodyId[prefix.Length..], out var index ) )
+			return -1;
+
+		return index >= 0 && index < _pieces.Count ? index : -1;
+	}
+
+	/// <summary>How many pieces still publish, after the deleted ones are skipped.</summary>
+	public int RemainingPieceCount()
+	{
+		if ( _pieces is null )
+			return 0;
+
+		var remaining = _pieces.Count;
+
+		foreach ( var removed in RemovedPieces )
+		{
+			if ( removed >= 0 && removed < _pieces.Count )
+				remaining--;
+		}
+
+		return remaining;
+	}
+
+	/// <summary>
+	/// Whether deleting this body removes just its own piece. False for a single-piece import —
+	/// removing the last piece would leave an empty import, so the caller removes the whole
+	/// feature instead.
+	/// </summary>
+	public bool CanRemovePiece( string bodyId ) =>
+		PieceIndexFor( bodyId ) >= 0 && RemainingPieceCount() > 1;
+
+	/// <summary>
+	/// Mark one piece as deleted. The source OBJ keeps every piece — deleting one must not rewrite
+	/// the file — and <see cref="Publish"/> skips it from here on. The caller marks the studio dirty
+	/// and rebuilds.
+	/// </summary>
+	public bool RemovePiece( string bodyId )
+	{
+		var index = PieceIndexFor( bodyId );
+
+		if ( index < 0 )
+			return false;
+
+		if ( !RemovedPieces.Contains( index ) )
+			RemovedPieces.Add( index );
+
+		return true;
+	}
 
 	/// <summary>
 	/// Whether the cached result is out of date even though nobody called MarkDirty.
@@ -85,6 +156,7 @@ public sealed class ImportFeature : Feature
 	{
 		Source.Value = path ?? "";
 		_pieces = null;
+		RemovedPieces.Clear();
 
 		if ( !string.IsNullOrWhiteSpace( path ) && File.Exists( path ) )
 			LoadMesh( File.ReadAllBytes( path ) );
@@ -97,10 +169,27 @@ public sealed class ImportFeature : Feature
 		var path = Source.Value?.Trim() ?? "";
 		byte[] bytes = null;
 		string from = null;
+		string stamp = null;
 
 		if ( path.Length > 0 && File.Exists( path ) )
 		{
 			RefuseIfNotObj( path );
+
+			// THE FILE IS ONLY PARSED AGAIN WHEN IT HAS CHANGED. Deleting a piece, undo and a variable
+			// edit all re-run this feature, and re-reading the source each time made every one of them
+			// cost the whole file however little of it was left: ten deletes that took a 900k-face
+			// Meshy import down to 20k faces still cost 1.3s apiece, where a file holding only the
+			// survivors rebuilds in 40ms. Size and write time are the key, so exporting over the same
+			// path is still picked up on the next rebuild.
+			var info = new FileInfo( path );
+			stamp = $"{path}|{info.Length}|{info.LastWriteTimeUtc.Ticks}";
+
+			if ( _pieces is not null && stamp == _piecesStamp )
+			{
+				Publish( ctx, _pieces );
+				return;
+			}
+
 			bytes = File.ReadAllBytes( path );
 			from = path;
 		}
@@ -166,6 +255,7 @@ public sealed class ImportFeature : Feature
 		_objBytes = bytes;
 		_pending = null;
 		_pieces = pieces;
+		_piecesStamp = stamp;
 
 		Publish( ctx, pieces );
 	}
@@ -186,10 +276,31 @@ public sealed class ImportFeature : Feature
 	void Publish( FeatureContext ctx, List<ObjReader.ObjPiece> pieces )
 	{
 		var slot = Material.Clamped;
-		var single = pieces.Count == 1;
 
-		foreach ( var piece in pieces )
+		// How many pieces will actually publish, after the deleted ones are skipped. A single
+		// SURVIVOR keeps the feature's own name, the same way a single-piece file does.
+		var remaining = pieces.Count;
+
+		foreach ( var removed in RemovedPieces )
 		{
+			if ( removed >= 0 && removed < pieces.Count )
+				remaining--;
+		}
+
+		var single = remaining == 1;
+
+		for ( var i = 0; i < pieces.Count; i++ )
+		{
+			var piece = pieces[i];
+
+			// The id is claimed for a removed piece too, so deleting one never renumbers the
+			// survivors — BodyNames, rig bindings and downstream body selections all key on
+			// {featureId}b{N} and must keep meaning the same piece.
+			var id = ctx.NewBodyId();
+
+			if ( RemovedPieces.Contains( i ) )
+				continue;
+
 			var mesh = piece.Mesh.Clone();
 
 			if ( slot != 0 )
@@ -202,7 +313,7 @@ public sealed class ImportFeature : Feature
 				? Name
 				: $"{Name} / {piece.Name}";
 
-			ctx.Bodies.Add( new Body( ctx.NewBodyId(), label, mesh ) );
+			ctx.Bodies.Add( new Body( id, label, mesh ) );
 		}
 	}
 

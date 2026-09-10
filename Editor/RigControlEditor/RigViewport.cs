@@ -4,6 +4,7 @@ using Marionette;
 using Sandbox;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 
 namespace Marionette.Tools;
@@ -686,7 +687,9 @@ internal sealed class RigViewport : Widget
 	/// </summary>
 	private Vector3 EyePosition()
 	{
-		if ( FindBoneData( "camera" ) is { } eye && _renderer.TryGetBoneTransform( eye, out var eyeWorld ) )
+		// The MAIN model's camera bone - a prop that happens to carry one of its own is not where
+		// the player's eye is.
+		if ( FindBone( "camera" ) is { Subject: RigTrackName.RootSubject } eye && eye.TryGetWorld( out var eyeWorld ) )
 			return eyeWorld.Position;
 
 		return _modelObject.IsValid() ? _modelObject.WorldPosition : Vector3.Zero;
@@ -744,6 +747,17 @@ internal sealed class RigViewport : Widget
 		_renderer.UseAnimGraph = false;
 		_renderer.Enabled = true;
 
+		// A rigged Effigy model carries one convex hull per bone. Model Physics turns those into a
+		// body per bone that follows the skeleton as it is posed - the exact thing Model Collider
+		// cannot do. MotionEnabled false drives physics FROM the renderer, and Renderer wired is what
+		// lets a dragged bone pull its body along. Added disabled and configured first, so the
+		// physics is created with the model and renderer already in place.
+		var physics = _modelObject.GetOrAddComponent<ModelPhysics>( false );
+		physics.Model = model;
+		physics.Renderer = _renderer;
+		physics.MotionEnabled = false;
+		physics.Enabled = true;
+
 		_boneHandleRadius = (model.Bounds.Size.Length * 0.012f).Clamp( 0.15f, 3f );
 
 		// THE ARM SHADER IS FOR ARMS. It used to default on for every model, which meant loading
@@ -774,6 +788,135 @@ internal sealed class RigViewport : Widget
 			|| path.Contains( "viewmodel", StringComparison.OrdinalIgnoreCase ));
 
 	public SkinnedModelRenderer Renderer => _renderer;
+
+	/// <summary>
+	/// One bone, and the object it belongs to.
+	///
+	/// EVERY BONE LOOKUP NEEDS A RENDERER NOW. A clip can animate several models at once - the
+	/// arms, the weapon, the door - and each carries its own skeleton, in which "root" is a
+	/// perfectly ordinary name to find twice. A BoneCollection.Bone on its own no longer says
+	/// which model it came from, so it is never passed around alone: this carries the renderer
+	/// that owns it and the qualified name its track is stored under, together, and every posing
+	/// path takes one of these instead.
+	/// </summary>
+	private sealed class RigBone
+	{
+		public string Subject;
+		public SkinnedModelRenderer Renderer;
+		public BoneCollection.Bone Bone;
+
+		/// <summary>How big this object's handles are - derived from its own bounds, so a magazine
+		/// doesn't get the dots of the character holding it.</summary>
+		public float Radius;
+
+		/// <summary>The name the clip stores this bone's track under. See RigTrackName.</summary>
+		public string Key => RigTrackName.Qualify( Subject, Bone.Name );
+
+		public string Name => Bone.Name;
+		public int Index => Bone.Index;
+
+		public RigBone Parent => Bone.Parent is { } parent
+			? new RigBone { Subject = Subject, Renderer = Renderer, Bone = parent, Radius = Radius }
+			: null;
+
+		public bool TryGetWorld( out Transform world )
+		{
+			world = default;
+			return Renderer.IsValid() && Renderer.TryGetBoneTransform( Bone, out world );
+		}
+	}
+
+	/// <summary>An animated object in this clip: the main model, or anything in the viewport that
+	/// turned out to carry a skeleton. Named the way its tracks are qualified - empty for the main
+	/// model, "door" for an object, "door/handle" for one of its parts.</summary>
+	private readonly record struct RigSubject( string Name, SkinnedModelRenderer Renderer, float Radius );
+
+	/// <summary>
+	/// Every object whose bones this clip can pose.
+	///
+	/// The main model first, then everything in the viewport that has a skeleton and is actually
+	/// drawn - a hidden thing is left out, because its handles would float over a model that is not
+	/// there.
+	/// </summary>
+	private IEnumerable<RigSubject> Subjects()
+	{
+		if ( _renderer.IsValid() )
+			yield return new RigSubject( RigTrackName.RootSubject, _renderer, _boneHandleRadius );
+
+		foreach ( var movable in _movables )
+		{
+			if ( !movable.Skinned.IsValid() || !movable.Object.IsValid() || !movable.Object.Enabled )
+				continue;
+
+			yield return new RigSubject( movable.Key, movable.Skinned, RadiusFor( movable.Skinned.Model ) );
+		}
+	}
+
+	/// <summary>Handle size from a model's own bounds - the same rule SetModel uses for the main
+	/// one, applied per object so a small prop's bones stay grabbable without swamping it.</summary>
+	private static float RadiusFor( Model model ) =>
+		model is null ? 1f : (model.Bounds.Size.Length * 0.012f).Clamp( 0.15f, 3f );
+
+	/// <summary>Resolve a track name - "hand_R", or "magazine/latch" - to the bone it means.
+	/// Null when the object isn't loaded or the bone isn't in its skeleton, which is the ordinary
+	/// answer for a clip opened against a different model.</summary>
+	private RigBone FindBone( string key )
+	{
+		if ( string.IsNullOrEmpty( key ) )
+			return null;
+
+		// THE LONGEST OBJECT NAME THE KEY STARTS WITH WINS, rather than splitting at the first
+		// slash and hoping. An object's parts are named "door/handle", so a bone inside one is
+		// "door/handle/spine" - split naively that reads as an object called "door" with a bone
+		// called "handle/spine", which exists nowhere. Matching against the objects that are
+		// actually loaded cannot make that mistake, at whatever depth.
+		//
+		// It also means a bone whose OWN name contains a slash still resolves: no object claims a
+		// prefix of it, so it falls through to the main model with its name intact. Rare rather
+		// than impossible, and a clip that names one must not quietly stop animating.
+		RigSubject? best = null;
+		string boneName = null;
+
+		foreach ( var candidate in Subjects() )
+		{
+			string bone;
+
+			if ( candidate.Name.Length == 0 )
+			{
+				bone = key;
+			}
+			else if ( key.Length > candidate.Name.Length
+				&& key[candidate.Name.Length] == RigTrackName.Separator
+				&& key.StartsWith( candidate.Name, StringComparison.Ordinal ) )
+			{
+				bone = key[(candidate.Name.Length + 1)..];
+			}
+			else
+			{
+				continue;
+			}
+
+			if ( candidate.Renderer.Model?.Bones?.GetBone( bone ) is null )
+				continue;
+
+			if ( best is { } current && current.Name.Length >= candidate.Name.Length )
+				continue;
+
+			best = candidate;
+			boneName = bone;
+		}
+
+		if ( best is not { } subject )
+			return null;
+
+		return new RigBone
+		{
+			Subject = subject.Name,
+			Renderer = subject.Renderer,
+			Bone = subject.Renderer.Model.Bones.GetBone( boneName ),
+			Radius = subject.Radius
+		};
+	}
 
 	/// <summary>Every selected bone. A plain replace leaves just <paramref name="bone"/>; an
 	/// additive select toggles it in or out, which is how Shift-click builds up a finger-full of
@@ -808,7 +951,7 @@ internal sealed class RigViewport : Widget
 		// screen competing for the same drag. Guarded on null so clearing the bone selection -
 		// which is what selecting a PROP does - can't immediately clear the prop again.
 		if ( bone is not null )
-			SelectedReferenceProp = -1;
+			_selectedMovable = null;
 
 		if ( bone is not null && _selectedBones.Contains( bone ) )
 			_primaryBone = bone;
@@ -841,39 +984,52 @@ internal sealed class RigViewport : Widget
 	/// <summary>Every bone in the model's own skeleton, with its current world transform - read
 	/// via TryGetBoneTransform, not a GameObject. No GameObject proxy is involved anywhere in this
 	/// file anymore; posing writes go straight through MovieBoneAnimatorSystem instead.</summary>
-	private IEnumerable<(BoneCollection.Bone Bone, Transform World)> LiveBones()
+	private IEnumerable<(RigBone Bone, Transform World)> LiveBones()
 	{
-		if ( !_renderer.IsValid() || _renderer.Model?.Bones is not { } bones )
-			yield break;
-
-		foreach ( var bone in bones.AllBones )
+		foreach ( var subject in Subjects() )
 		{
-			if ( _renderer.TryGetBoneTransform( bone, out var world ) )
-				yield return (bone, world);
+			if ( subject.Renderer.Model?.Bones is not { } bones )
+				continue;
+
+			foreach ( var bone in bones.AllBones )
+			{
+				if ( !subject.Renderer.TryGetBoneTransform( bone, out var world ) )
+					continue;
+
+				yield return (new RigBone
+				{
+					Subject = subject.Name,
+					Renderer = subject.Renderer,
+					Bone = bone,
+					Radius = subject.Radius
+				}, world);
+			}
 		}
 	}
 
-	public IEnumerable<string> BoneNames() => LiveBones().Select( x => x.Bone.Name );
+	public IEnumerable<string> BoneNames() => LiveBones().Select( x => x.Bone.Key );
 
 	/// <summary>Bones with no parent in the skeleton itself - the citizen_human rig has more than
-	/// one of these (pelvis, and a separate root_IK utility chain), so this is a list.</summary>
+	/// one of these (pelvis, and a separate root_IK utility chain), so this is a list. With several
+	/// objects loaded it is every object's roots, qualified, which is what makes the bone tree show
+	/// the weapon's skeleton under the weapon rather than mixed in with the hand's.</summary>
 	public IEnumerable<string> RootBoneNames() =>
-		LiveBones().Where( x => x.Bone.Parent is null ).Select( x => x.Bone.Name );
+		LiveBones().Where( x => x.Bone.Bone.Parent is null ).Select( x => x.Bone.Key );
 
-	public IEnumerable<string> ChildBoneNames( string parentName ) =>
-		LiveBones().Where( x => x.Bone.Parent?.Name == parentName ).Select( x => x.Bone.Name );
+	public IEnumerable<string> ChildBoneNames( string parentName )
+	{
+		var (subject, bone) = RigTrackName.Split( parentName );
 
-	private BoneCollection.Bone FindBoneData( string name ) =>
-		_renderer.IsValid() && _renderer.Model?.Bones is { } bones ? bones.GetBone( name ) : null;
+		return LiveBones()
+			.Where( x => x.Bone.Subject == subject && x.Bone.Bone.Parent?.Name == bone )
+			.Select( x => x.Bone.Key );
+	}
 
 	public bool TryGetWorldTransform( string name, out Transform world )
 	{
 		world = default;
 
-		if ( !_renderer.IsValid() || FindBoneData( name ) is not { } bone )
-			return false;
-
-		return _renderer.TryGetBoneTransform( bone, out world );
+		return FindBone( name ) is { } bone && bone.TryGetWorld( out world );
 	}
 
 	/// <summary>A bone's current pose in parent space - the form keyframes are stored in. This is
@@ -882,10 +1038,7 @@ internal sealed class RigViewport : Widget
 	{
 		local = default;
 
-		if ( !_renderer.IsValid() || FindBoneData( name ) is not { } bone )
-			return false;
-
-		if ( !_renderer.TryGetBoneTransform( bone, out var world ) )
+		if ( FindBone( name ) is not { } bone || !bone.TryGetWorld( out var world ) )
 			return false;
 
 		local = ParentWorld( bone ).ToLocal( world );
@@ -904,7 +1057,7 @@ internal sealed class RigViewport : Widget
 	/// </summary>
 	public void SetLocalTransform( string name, Transform local )
 	{
-		if ( !_renderer.IsValid() || FindBoneData( name ) is not { } bone )
+		if ( FindBone( name ) is not { } bone )
 			return;
 
 		var world = ApplyLimits( bone, ParentWorld( bone ).ToWorld( local ) );
@@ -926,9 +1079,9 @@ internal sealed class RigViewport : Widget
 	/// SceneModel.SetBoneWorldTransform is the trap to avoid - it's the one that reads back
 	/// instantly, which makes it look correct, but it sets no override and the very next tick
 	/// stomps it back to the bind pose.</summary>
-	private void ApplyWorldTransform( BoneCollection.Bone bone, Transform world )
+	private void ApplyWorldTransform( RigBone bone, Transform world )
 	{
-		_renderer.SetBoneTransform( bone, world );
+		bone.Renderer.SetBoneTransform( bone.Bone, world );
 	}
 
 	/// <summary>
@@ -959,27 +1112,31 @@ internal sealed class RigViewport : Widget
 	/// The property name was found by reflection-dumping the type, which confirms a name exists
 	/// and says nothing about what space it's in. That gap is what this cost.
 	/// </summary>
-	private static Transform BindPoseFor( BoneCollection.Bone bone ) =>
-		bone.Parent is { } parent
-			? parent.LocalTransform.ToLocal( bone.LocalTransform )
-			: bone.LocalTransform;
+	private static Transform BindPoseFor( RigBone bone ) =>
+		bone.Bone.Parent is { } parent
+			? parent.LocalTransform.ToLocal( bone.Bone.LocalTransform )
+			: bone.Bone.LocalTransform;
 
 	/// <summary>A bone's parent's world transform, falling back to the model's own for roots.</summary>
-	private Transform ParentWorld( BoneCollection.Bone bone ) =>
-		bone.Parent is { } parent && _renderer.TryGetBoneTransform( parent, out var parentTx )
+	private static Transform ParentWorld( RigBone bone ) =>
+		bone.Parent is { } parent && parent.TryGetWorld( out var parentTx )
 			? parentTx
-			: _renderer.WorldTransform;
+			: bone.Renderer.WorldTransform;
 
 	/// <summary>Run a world-space pose through any Limit constraints on that bone. Limits are
 	/// authored in parent space (that's the only space a joint angle means anything in), so this
 	/// converts down, clamps, and converts back.</summary>
-	private Transform ApplyLimits( BoneCollection.Bone bone, Transform world )
+	private Transform ApplyLimits( RigBone bone, Transform world )
 	{
 		if ( Rig is null )
 			return world;
 
 		var parentWorld = ParentWorld( bone );
-		var local = RigConstraintSolver.ClampToLimits( Rig, bone.Name, parentWorld.ToLocal( world ) );
+
+		// The qualified name, so a limit can be authored on a prop's bone as readily as on the
+		// main model's - and so the main model's own limits, which are stored under bare bone
+		// names, keep matching exactly as they did.
+		var local = RigConstraintSolver.ClampToLimits( Rig, bone.Key, parentWorld.ToLocal( world ) );
 
 		return parentWorld.ToWorld( local );
 	}
@@ -991,49 +1148,201 @@ internal sealed class RigViewport : Widget
 	/// RigControlWindow.OnScrub, outside any active Gizmo context, and Gizmo.IsLeftMouseDown
 	/// throws a NullReferenceException unconditionally when read from there. That exception fired
 	/// on every single scrub and every playback tick, silently, the entire time.</summary>
-	private readonly List<GameObject> _referenceObjects = new();
+	/// <summary>
+	/// One thing in the viewport that is not a bone: an object, one part of an object, or a
+	/// reference prop.
+	///
+	/// THEY ARE ALL THE SAME THING TO POSE. Each is a named transform with a model hanging off it,
+	/// dragged by a gizmo and keyed to a track under its name. Objects arrived after reference
+	/// props and the two were briefly separate code paths, which meant every fix to dragging,
+	/// selection or keying had to be made twice - and was, wrongly, at least once. One list, one
+	/// draw, one drag.
+	///
+	/// The read/write pair is what keeps this honest: a movable does not own its numbers, it knows
+	/// how to fetch and store them on whatever it came from.
+	/// </summary>
+	private sealed class RigMovable
+	{
+		/// <summary>The name its track is stored under - "door" for an object, "door/handle" for
+		/// one of its parts. See RigTrackName.</summary>
+		public string Key;
+
+		/// <summary>What to show a person, without the object's name repeated on every part.</summary>
+		public string Label;
+
+		public GameObject Object;
+
+		/// <summary>The part's parent object, or null for something placed in the world. A part is
+		/// posed INSIDE its object, so its transform is read and written in the object's space.</summary>
+		public RigMovable Owner;
+
+		public Func<Transform> Read;
+		public Action<Transform> Write;
+		public Func<bool> Visible;
+
+		/// <summary>A bone of the main model this follows, if any. Empty for most things.</summary>
+		public Func<string> FollowBone = () => "";
+
+		/// <summary>Its skeleton, when the model it draws has one - that is what makes the object's
+		/// own bones poseable alongside the main model's. Null for a plain mesh.</summary>
+		public SkinnedModelRenderer Skinned;
+
+		/// <summary>The model used for the click target. Read from what was actually spawned, so a
+		/// mesh built from an OBJ is as grabbable as a compiled one.</summary>
+		public Model Model;
+	}
+
+	private readonly List<RigMovable> _movables = new();
 	private List<ReferenceProp> _referenceProps;
+	private List<RigObject> _objects;
 
 	/// <summary>
-	/// Rebuilds the static reference models - the switch, the weapon, whatever the hands are
-	/// working against.
+	/// The folder the open .riganim lives in, so a part that names an OBJ beside it can be found.
 	///
-	/// Rebuilt wholesale when the list changes and only transform-updated otherwise, because
-	/// destroying and respawning a model every frame would thrash the scene for no reason. A prop
-	/// following a bone is re-read every frame, since the bone moves.
+	/// Set by the window on load and on save. Empty for a clip that has never been saved, in which
+	/// case only absolute paths resolve - see RigObjMeshes.Resolve.
 	/// </summary>
+	public string DocumentFolder { get; set; }
+
 	public void SetReferenceProps( List<ReferenceProp> props )
 	{
 		_referenceProps = props;
+		RebuildMovables();
+	}
 
-		// Deleting a prop must not leave the gizmo pointing at an index that no longer exists, or
-		// at whatever prop happens to have shifted into that slot.
-		if ( SelectedReferenceProp >= (props?.Count ?? 0) )
-			SelectedReferenceProp = -1;
+	/// <summary>The clip's objects - the things with parts, which are animation rather than
+	/// scenery. See RigAnimDocument.Objects.</summary>
+	public void SetObjects( List<RigObject> objects )
+	{
+		_objects = objects;
+		RebuildMovables();
+	}
 
-		_propDragIndex = -1;
+	/// <summary>
+	/// Rebuilds every non-bone thing in the viewport from the document.
+	///
+	/// Wholesale, when the lists change, and only transform-updated otherwise - destroying and
+	/// respawning models every frame would thrash the scene for no reason.
+	/// </summary>
+	private void RebuildMovables()
+	{
+		// A selection is a name, so it survives a rebuild: adding a part must not deselect the one
+		// you were working on just because the list it lives in was rebuilt under it.
+		_propDragKey = null;
 
 		using var scope = _canvas.Scene.Push();
 
-		foreach ( var existing in _referenceObjects )
-			existing?.Destroy();
+		foreach ( var existing in _movables )
+			existing.Object?.Destroy();
 
-		_referenceObjects.Clear();
+		_movables.Clear();
 
-		if ( props is null )
+		BuildObjects();
+		BuildReferenceProps();
+
+		// A name that no longer exists cannot stay selected - the gizmo would be floating over
+		// something that has been deleted.
+		if ( _selectedMovable is not null && Find( _selectedMovable ) is null )
+			_selectedMovable = null;
+	}
+
+	private void BuildObjects()
+	{
+		if ( _objects is null )
 			return;
 
-		foreach ( var prop in props )
+		foreach ( var owner in _objects )
 		{
-			var models = prop?.AllModels.ToList();
-
-			if ( models is null || models.Count == 0 )
-			{
-				// A placeholder keeps indices lined up with the list, so the transform pass can
-				// pair them up without re-searching.
-				_referenceObjects.Add( null );
+			if ( owner is null || string.IsNullOrWhiteSpace( owner.Name ) )
 				continue;
+
+			// The object itself is an empty parent carrying the placement; every part is a child
+			// with its own transform and its own model. That is what makes "move the door" and
+			// "open the handle" two different drags on the same thing.
+			var root = new GameObject( true, owner.Name );
+
+			var movable = new RigMovable
+			{
+				Key = owner.Name,
+				Label = owner.Name,
+				Object = root,
+				Read = () => owner.LocalTransform,
+				Write = t =>
+				{
+					owner.Position = t.Position;
+					owner.Rotation = t.Rotation.Angles();
+					owner.Scale = t.Scale.x;
+				},
+				Visible = () => owner.Visible,
+				FollowBone = () => owner.FollowBone,
+			};
+
+			_movables.Add( movable );
+
+			if ( owner.Parts is null )
+				continue;
+
+			var partMovables = new Dictionary<RigObjectPart, RigMovable>();
+
+			foreach ( var part in owner.Parts )
+			{
+				if ( part is null || string.IsNullOrWhiteSpace( part.Name ) )
+					continue;
+
+				var partObject = new GameObject( true, part.Name );
+				partObject.Parent = root;
+
+				var model = ModelForPart( owner, part );
+
+				_movables.Add( partMovables[part] = new RigMovable
+				{
+					Key = RigTrackName.Qualify( owner.Name, part.Name ),
+					Label = part.Name,
+					Object = partObject,
+					Owner = movable,
+					Read = () => part.LocalTransform,
+					Write = t =>
+					{
+						part.Position = t.Position;
+						part.Rotation = t.Rotation.Angles();
+						part.Scale = t.Scale.x;
+					},
+					Visible = () => part.Visible,
+					Skinned = Draw( partObject, model ),
+					Model = model,
+				} );
 			}
+
+			// A PART THAT FOLLOWS ANOTHER HANGS UNDER IT - the eyes under the head. Done as a second
+			// pass because a part can follow one listed after it. Its numbers are already stored
+			// relative to what it follows, so parenting the objects is all following takes: every
+			// place that treats Owner as "the space this is posed in" - placing, dragging, keying -
+			// is now simply the head's space instead of the object's.
+			foreach ( var (part, follower) in partMovables )
+			{
+				if ( owner.ParentOf( part ) is not { } leaderPart || !partMovables.TryGetValue( leaderPart, out var leader ) )
+					continue;
+
+				follower.Object.Parent = leader.Object;
+				follower.Owner = leader;
+			}
+		}
+	}
+
+	private void BuildReferenceProps()
+	{
+		if ( _referenceProps is null )
+			return;
+
+		foreach ( var prop in _referenceProps )
+		{
+			if ( prop is null )
+				continue;
+
+			var models = prop.AllModels.ToList();
+
+			if ( models.Count == 0 )
+				continue;
 
 			var go = new GameObject( true, string.IsNullOrWhiteSpace( prop.Name ) ? "reference" : prop.Name );
 
@@ -1041,67 +1350,165 @@ internal sealed class RigViewport : Widget
 			// parent carries the placement and the children carry the meshes, so a prop made of
 			// three models is dragged, followed and hidden as one thing - which is the whole
 			// reason for a prop holding more than one model.
+			SkinnedModelRenderer skinned = null;
+
 			foreach ( var model in models )
 			{
 				var part = new GameObject( true, model.ResourceName ?? "part" );
 				part.Parent = go;
 
-				var renderer = part.GetOrAddComponent<ModelRenderer>( false );
-
-				renderer.Model = model;
-				renderer.Enabled = true;
+				skinned ??= Draw( part, model );
 			}
 
-			_referenceObjects.Add( go );
-		}
-	}
-
-	/// <summary>Placement, every frame, so dragging a number in the panel moves the prop while
-	/// you watch rather than on some later refresh.</summary>
-	private void ApplyReferenceProps()
-	{
-		if ( _referenceProps is null )
-			return;
-
-		for ( var i = 0; i < _referenceProps.Count && i < _referenceObjects.Count; i++ )
-		{
-			var prop = _referenceProps[i];
-			var go = _referenceObjects[i];
-
-			if ( prop is null || !go.IsValid() )
-				continue;
-
-			go.Enabled = prop.Visible;
-
-			if ( !prop.Visible )
-				continue;
-
-			var local = prop.LocalTransform;
-
-			// Following a bone puts the prop in the hand and keeps it there while the hand moves,
-			// which is what you want for a weapon that's already held.
-			if ( !string.IsNullOrWhiteSpace( prop.FollowBone ) && TryGetWorldTransform( prop.FollowBone, out var boneWorld ) )
+			_movables.Add( new RigMovable
 			{
-				var followed = boneWorld.ToWorld( local );
-
-				go.WorldPosition = followed.Position;
-				go.WorldRotation = followed.Rotation;
-				go.WorldScale = followed.Scale;
-				continue;
-			}
-
-			go.WorldPosition = local.Position;
-			go.WorldRotation = local.Rotation;
-			go.WorldScale = local.Scale;
+				Key = prop.Name,
+				Label = prop.Name,
+				Object = go,
+				Read = () => prop.LocalTransform,
+				Write = t =>
+				{
+					prop.Position = t.Position;
+					prop.Rotation = t.Rotation.Angles();
+					prop.Scale = t.Scale.x;
+				},
+				Visible = () => prop.Visible,
+				FollowBone = () => prop.FollowBone,
+				Skinned = skinned,
+				Model = models[0],
+			} );
 		}
 	}
 
-	/// <summary>Which reference prop has the gizmo, as an index into the prop list. -1 for none.
-	/// An index rather than the object, because the list is rebuilt from the document whenever it
-	/// changes and holding a stale instance would keep a deleted prop selected.</summary>
-	public int SelectedReferenceProp { get; private set; } = -1;
+	/// <summary>
+	/// Puts a model on an object, skinned when it brings a skeleton worth posing.
+	///
+	/// SKINNED ONLY WHEN THERE IS SOMETHING TO SKIN. A SkinnedModelRenderer on a static mesh costs
+	/// a bone update per frame for a skeleton of one, and would put a lone handle on every crate in
+	/// the viewport. Returns the skinned renderer, or null - that return is what registers the
+	/// thing as an object whose bones can be posed.
+	/// </summary>
+	private static SkinnedModelRenderer Draw( GameObject on, Model model )
+	{
+		if ( model is null )
+			return null;
 
-	/// <summary>Fired every frame a prop is dragged, and once each side of the drag - the same
+		if ( HasSkeleton( model ) )
+		{
+			var boned = on.GetOrAddComponent<SkinnedModelRenderer>( false );
+
+			boned.Model = model;
+
+			// Nothing generates a pose for these but us. Left on, the graph would drive the bones
+			// every frame and fight every override posing writes.
+			boned.UseAnimGraph = false;
+			boned.Enabled = true;
+
+			return boned;
+		}
+
+		var renderer = on.GetOrAddComponent<ModelRenderer>( false );
+
+		renderer.Model = model;
+		renderer.Enabled = true;
+
+		return null;
+	}
+
+	/// <summary>
+	/// The model a part draws: its own compiled model, or a lump of the object's OBJ.
+	///
+	/// A missing file is reported once, here, rather than by drawing nothing and leaving you to
+	/// work out whether the part is broken or just invisible. The part stays either way - its
+	/// keyframes are animation, and a file that has moved must not cost you those.
+	/// </summary>
+	private Model ModelForPart( RigObject owner, RigObjectPart part )
+	{
+		if ( part.Model is not null )
+			return part.Model;
+
+		if ( string.IsNullOrWhiteSpace( owner.ObjSource ) )
+			return null;
+
+		var path = RigObjMeshes.Resolve( owner.ObjSource, DocumentFolder );
+
+		if ( path is null )
+		{
+			Log.Warning( $"[Marionette] \"{owner.Name}\" cannot find its mesh file: {owner.ObjSource}" );
+			return null;
+		}
+
+		var model = RigObjMeshes.Load( path, part.ObjPart );
+
+		if ( model is null )
+			Log.Warning( $"[Marionette] \"{owner.Name}/{part.Name}\" - {Path.GetFileName( path )} has no part called \"{part.ObjPart}\"" );
+
+		return model;
+	}
+
+	/// <summary>Whether a model brings a skeleton worth posing. More than one bone, because a
+	/// static model still compiles with a single root - treating that as a rig would put a handle
+	/// on the middle of every crate.</summary>
+	private static bool HasSkeleton( Model model ) => (model?.Bones?.AllBones?.Count ?? 0) > 1;
+
+	private RigMovable Find( string key ) =>
+		string.IsNullOrEmpty( key ) ? null : _movables.FirstOrDefault( m => m.Key == key );
+
+	/// <summary>Placement, every frame, so dragging a number in the panel moves things while you
+	/// watch rather than on some later refresh.</summary>
+	private void ApplyMovables()
+	{
+		foreach ( var movable in _movables )
+		{
+			if ( !movable.Object.IsValid() )
+				continue;
+
+			// Everything above it has to be showing too - hiding the head hides the eyes.
+			var visible = movable.Visible();
+
+			for ( var up = movable.Owner; visible && up is not null; up = up.Owner )
+				visible = up.Visible();
+
+			movable.Object.Enabled = visible;
+
+			if ( !visible )
+				continue;
+
+			var local = movable.Read();
+
+			// A PART IS PLACED INSIDE ITS OBJECT. Writing a part in world space would tear it off
+			// the thing it belongs to the moment the object moved - which is the one thing an
+			// object made of parts must never do.
+			if ( movable.Owner is not null )
+			{
+				movable.Object.LocalPosition = local.Position;
+				movable.Object.LocalRotation = local.Rotation;
+				movable.Object.LocalScale = local.Scale;
+				continue;
+			}
+
+			// Following a bone puts the thing in the hand and keeps it there while the hand moves,
+			// which is what you want for a weapon that is already held.
+			if ( !string.IsNullOrWhiteSpace( movable.FollowBone() )
+				&& TryGetWorldTransform( movable.FollowBone(), out var boneWorld ) )
+			{
+				local = boneWorld.ToWorld( local );
+			}
+
+			movable.Object.WorldPosition = local.Position;
+			movable.Object.WorldRotation = local.Rotation;
+			movable.Object.WorldScale = local.Scale;
+		}
+	}
+
+	/// <summary>Which object, part or prop has the gizmo, by name. A name rather than an index,
+	/// because the lists are rebuilt from the document whenever they change and an index would
+	/// quietly come to mean whatever shifted into that slot.</summary>
+	private string _selectedMovable;
+
+	public string SelectedReferencePropName => _selectedMovable;
+
+	/// <summary>Fired every frame something is dragged, and once each side of the drag - the same
 	/// three-signal shape bone dragging uses, so undo can record one step per drag rather than one
 	/// per frame.</summary>
 	public Action ReferencePropMoved { get; set; }
@@ -1110,95 +1517,200 @@ internal sealed class RigViewport : Widget
 
 	public Action ReferencePropDragEnded { get; set; }
 
-	private int _propDragIndex = -1;
+	/// <summary>
+	/// Fired with the thing's name and its new local transform every frame it is dragged - the
+	/// exact counterpart of BonePosed, so the timeline records a part exactly as it records a bone.
+	/// </summary>
+	public Action<string, Transform> ReferencePropPosed { get; set; }
+
+	/// <summary>Fired with the selected name, or null when nothing is. Selection is one shared idea
+	/// across the window: picking something in the viewport marks its timeline lane and its row in
+	/// the objects tree, and clicking either of those selects it here.</summary>
+	public Action<string> ReferencePropSelected { get; set; }
+
+	/// <summary>Selects an object, part or prop by name - how a click on its timeline lane or its
+	/// tree row gets back here. Clears the bone selection, since one gizmo on screen at a time is
+	/// the same rule a click in the viewport follows.</summary>
+	public bool SelectReferenceProp( string name )
+	{
+		if ( Find( name ) is null )
+			return false;
+
+		_selectedMovable = name;
+		Select( null );
+		ReferencePropSelected?.Invoke( name );
+
+		return true;
+	}
+
+	/// <summary>
+	/// Places everything the clip has an answer for at this frame, the way EvaluatePose places
+	/// every bone.
+	///
+	/// Only names the lookup answers for are touched. Something with no keyframes keeps the
+	/// placement it was given by hand - scrubbing is not allowed to quietly move the workbench you
+	/// are posing against.
+	/// </summary>
+	public void ApplyPartPose( Func<string, Transform?> poseForPart )
+	{
+		if ( poseForPart is null )
+			return;
+
+		foreach ( var movable in _movables )
+		{
+			// The thing being dragged is already where the mouse says it is; overwriting it from
+			// the clip mid-drag is the same flicker EvaluatePose avoids for the dragged bone.
+			if ( movable.Key == _propDragKey )
+				continue;
+
+			if ( poseForPart( movable.Key ) is not { } local )
+				continue;
+
+			movable.Write( local );
+		}
+
+		// PLACED NOW, NOT NEXT FRAME. An object's bones are posed in WORLD space, converted against
+		// the object's transform - so if the object were left to move on the next frame, every bone
+		// in it would be placed against where it used to be. On a scrub that reads as a rigged prop
+		// coming apart.
+		ApplyMovables();
+	}
+
+	private string _propDragKey;
 	private Transform _propDragStart;
 	private Vector3 _propMoveDelta;
 
 	/// <summary>
-	/// Click a prop to select it, then drag its gizmo - move by default, hold E to rotate, the
+	/// Click something to select it, then drag its gizmo - move by default, hold E to rotate, the
 	/// same contract as a bone.
 	///
-	/// Props were placeable only by typing numbers into the panel, which is a poor way to answer
-	/// "is the switch within reach", since that question is about where the hand ends up and is
-	/// only answerable by looking.
+	/// A PART IS CLICKED BEFORE ITS OBJECT. Parts are drawn after their parents and win ties, so
+	/// clicking the handle grabs the handle; the object itself is grabbed by its dot, or from the
+	/// objects tree. Without that rule the door leaf, being the bigger target, would swallow every
+	/// click meant for anything mounted on it.
 	/// </summary>
-	private void DrawReferenceProps()
+	private void DrawMovables()
 	{
-		if ( _referenceProps is null || MoveWholeModel || !ShowBoneHandles )
+		if ( MoveWholeModel || !ShowBoneHandles )
 			return;
 
-		// The selected prop's control runs AFTER the loop, outside every per-prop scope. Inside
-		// one, the scope carries the prop's own rotation, so the control's world-aligned basis
-		// wouldn't be world-aligned and its delta would come back in rotated space to be added to
-		// a world position - the same mismatch that had bone drags travelling up Z whichever
-		// arrow was grabbed.
-		(int Index, ReferenceProp Prop, Transform World)? selected = null;
+		// The selected thing's control runs AFTER the loop, outside every per-item scope. Inside
+		// one, the scope carries that item's own rotation, so the control's world-aligned basis
+		// would not be world-aligned and its delta would come back in rotated space to be added to
+		// a world position - the same mismatch that had bone drags travelling up Z whichever arrow
+		// was grabbed.
+		(RigMovable Movable, Transform World)? selected = null;
 
-		for ( var i = 0; i < _referenceProps.Count && i < _referenceObjects.Count; i++ )
+		// Answered AFTER the loop. Whoever asked will change the document, which rebuilds this
+		// list - doing that from inside the foreach would pull the list out from under it.
+		string picked = null;
+
+		foreach ( var movable in _movables )
 		{
-			var prop = _referenceProps[i];
-			var go = _referenceObjects[i];
-
-			if ( prop is null || !go.IsValid() || !prop.Visible )
+			if ( !movable.Object.IsValid() || !movable.Object.Enabled )
 				continue;
 
-			var isSelected = i == SelectedReferenceProp;
-			var world = new Transform( go.WorldPosition, go.WorldRotation );
+			var isSelected = movable.Key == _selectedMovable;
+			var world = new Transform( movable.Object.WorldPosition, movable.Object.WorldRotation );
 
-			using var scope = Gizmo.Scope( $"RefProp{i}", world );
+			using var scope = Gizmo.Scope( $"Movable{movable.Key}", world );
 
+			// A part reads green like its object but smaller - it is a piece of something, not a
+			// peer of it, and size is what carries that when the dots are close together.
 			Gizmo.Draw.IgnoreDepth = true;
-			Gizmo.Draw.Color = isSelected ? Theme.Yellow : Theme.Green.WithAlpha( 0.7f );
-			Gizmo.Draw.SolidSphere( 0f, HandleRadius * (isSelected ? 0.6f : 0.45f), 8, 8 );
+			Gizmo.Draw.Color = isSelected ? Theme.Yellow : Theme.Green.WithAlpha( movable.Owner is null ? 0.7f : 0.5f );
+			Gizmo.Draw.SolidSphere( 0f, HandleRadius * (isSelected ? 0.6f : movable.Owner is null ? 0.45f : 0.3f), 8, 8 );
 			Gizmo.Draw.IgnoreDepth = false;
 
 			if ( isSelected )
 			{
-				selected = (i, prop, world);
+				selected = (movable, world);
 				continue;
 			}
 
-			// THE WHOLE PROP IS THE TARGET, not a dot beside it. Clicking the switch to grab the
-			// switch is the obvious behaviour, and the dot alone was close to unclickable anyway:
-			// _boneHandleRadius is derived from the ARMS model's bounds, so on a first-person rig
-			// it's a fraction of a unit - a handle you have to hunt for.
+			// THE WHOLE MESH IS THE TARGET, not a dot beside it. Clicking the switch to grab the
+			// switch is the obvious behaviour, and the dot alone is close to unclickable on a
+			// first-person rig, where the handle radius is a fraction of a unit.
 			//
 			// Same rule as bones about the selected one: no hitbox of ours on it, or it wins the
 			// hover test against the control's own handles and the drag never starts.
 			Gizmo.Hitbox.DepthBias = 0.01f;
 
-			if ( prop.Model is { } propModel )
-				Gizmo.Hitbox.BBox( propModel.Bounds.Grow( 0.5f ) );
+			// A rigged mesh gets the dot only, and only while its bone handles are on screen: its
+			// bones sit inside these bounds, and a body-sized box in front of them wins every
+			// hover, so they would be visible and unclickable.
+			if ( movable.Model is { } model && !(movable.Skinned.IsValid() && ShowBoneHandles) )
+				Gizmo.Hitbox.BBox( model.Bounds.Grow( 0.5f ) );
 			else
 				Gizmo.Hitbox.Sphere( new Sphere( 0f, HandleRadius ) );
 
 			if ( !Gizmo.IsHovered )
 				continue;
 
-			RigStatusBar.Show( $"{prop.Name}  -  click to select, then drag to move. Hold E to rotate." );
+			RigStatusBar.Show( _pickMovable is not null
+				? $"{_pickPrompt}  -  {RigTrackName.Display( movable.Key )}"
+				: $"{RigTrackName.Display( movable.Key )}  -  click to select, then drag to move. Hold E to rotate." );
+
+			if ( Gizmo.WasLeftMousePressed && _pickMovable is not null )
+			{
+				picked = movable.Key;
+				continue;
+			}
 
 			if ( Gizmo.WasLeftMousePressed )
 			{
-				SelectedReferenceProp = i;
+				_selectedMovable = movable.Key;
 
-				// One gizmo on screen at a time - a bone and a prop both showing handles is two
+				// One gizmo on screen at a time - a bone and an object both showing handles is two
 				// things claiming the same drag.
 				Select( null );
+				ReferencePropSelected?.Invoke( movable.Key );
 			}
 		}
 
+		if ( picked is not null && _pickMovable is { } answer )
+		{
+			_pickMovable = null;
+			answer( picked );
+
+			// The answer may have rebuilt every movable, including the selected one - its control
+			// comes back next frame from the new list.
+			return;
+		}
+
 		if ( selected is { } sel )
-			DragReferenceProp( sel.Index, sel.Prop, sel.World );
+			DragMovable( sel.Movable, sel.World );
 	}
 
-	private void DragReferenceProp( int index, ReferenceProp prop, Transform world )
+	/// <summary>Set while the next click on an object, part or prop answers a question - "which
+	/// part should this follow?" - instead of selecting it.</summary>
+	private Action<string> _pickMovable;
+	private string _pickPrompt;
+
+	/// <summary>
+	/// Asks for the next object, part or prop clicked in the viewport, rather than selecting it.
+	///
+	/// PICKED IN THE VIEWPORT, NOT FROM A LIST, because the thing you want is the thing you can see.
+	/// An import names its parts mesh_6 and mesh_13; nobody knows which of those is the head, but
+	/// everybody can click it. Clicking empty space cancels.
+	/// </summary>
+	public void PickMovable( string prompt, Action<string> picked )
 	{
-		var dragging = _propDragIndex == index;
+		_pickMovable = picked;
+		_pickPrompt = prompt;
+
+		RigStatusBar.Show( prompt );
+	}
+
+	private void DragMovable( RigMovable movable, Transform world )
+	{
+		var dragging = _propDragKey == movable.Key;
 		var start = dragging ? _propDragStart : world;
 
-		// Positioned at the prop but NOT rotated with it, so the arrows stay world-aligned like the
-		// scene editor's in global space, and the delta comes back in the space it's applied in.
-		using var scope = Gizmo.Scope( $"RefPropControl{index}", new Transform( start.Position ) );
+		// Positioned at the thing but NOT rotated with it, so the arrows stay world-aligned like
+		// the scene editor's in global space, and the delta comes back in the space it is applied
+		// in.
+		using var scope = Gizmo.Scope( $"MovableControl{movable.Key}", new Transform( start.Position ) );
 
 		Gizmo.Hitbox.DepthBias = 0.01f;
 
@@ -1212,7 +1724,7 @@ internal sealed class RigViewport : Widget
 				return;
 			}
 
-			BeginPropDrag( index, world, ref start );
+			BeginPropDrag( movable, world, ref start );
 			moved = new Transform( start.Position, rotation * start.Rotation, start.Scale );
 		}
 		else
@@ -1223,32 +1735,38 @@ internal sealed class RigViewport : Widget
 				return;
 			}
 
-			BeginPropDrag( index, world, ref start );
+			BeginPropDrag( movable, world, ref start );
 			_propMoveDelta += delta;
 
 			moved = new Transform( start.Position + _propMoveDelta, start.Rotation, start.Scale );
 		}
 
-		// A prop that follows a bone stores its placement RELATIVE TO THAT BONE - that's what
-		// makes it stay in the hand. Writing the world transform into it would put it in the hand
-		// exactly once, then send it flying the moment the hand moved.
-		if ( !string.IsNullOrWhiteSpace( prop.FollowBone ) && TryGetWorldTransform( prop.FollowBone, out var boneWorld ) )
+		// EVERYTHING IS STORED IN THE SPACE IT IS POSED IN. A part is stored inside its object and
+		// a follower inside the bone it follows - writing a world transform into either would put
+		// it in place exactly once, then send it flying the moment the thing it belongs to moved.
+		if ( movable.Owner is { Object: { } ownerObject } && ownerObject.IsValid() )
+			moved = ownerObject.WorldTransform.ToLocal( moved );
+		else if ( !string.IsNullOrWhiteSpace( movable.FollowBone() )
+			&& TryGetWorldTransform( movable.FollowBone(), out var boneWorld ) )
 			moved = boneWorld.ToLocal( moved );
 
-		prop.Position = moved.Position;
-		prop.Rotation = moved.Rotation.Angles();
+		movable.Write( moved );
 
 		ReferencePropMoved?.Invoke();
+
+		// Same gate as a bone: with Link off, dragging poses live and writes nothing.
+		if ( AutoKeyEnabled )
+			ReferencePropPosed?.Invoke( movable.Key, moved );
 	}
 
-	private void BeginPropDrag( int index, Transform world, ref Transform start )
+	private void BeginPropDrag( RigMovable movable, Transform world, ref Transform start )
 	{
-		if ( _propDragIndex == index )
+		if ( _propDragKey == movable.Key )
 			return;
 
 		ReferencePropDragStarted?.Invoke();
 
-		_propDragIndex = index;
+		_propDragKey = movable.Key;
 		_propDragStart = world;
 		_propMoveDelta = Vector3.Zero;
 
@@ -1259,10 +1777,10 @@ internal sealed class RigViewport : Widget
 	/// frame its value didn't change, including frames where the button is still held.</summary>
 	private void EndPropDragIfReleased()
 	{
-		if ( Gizmo.IsLeftMouseDown || _propDragIndex < 0 )
+		if ( Gizmo.IsLeftMouseDown || _propDragKey is null )
 			return;
 
-		_propDragIndex = -1;
+		_propDragKey = null;
 		ReferencePropDragEnded?.Invoke();
 	}
 
@@ -1283,26 +1801,28 @@ internal sealed class RigViewport : Widget
 	/// internal, so world space is the only way in - and the cost of that is having to carry the
 	/// hierarchy ourselves, here.
 	/// </summary>
-	private void PropagateToDescendants( BoneCollection.Bone root, Transform rootWorld )
+	private void PropagateToDescendants( RigBone root, Transform rootWorld )
 	{
-		if ( !_renderer.IsValid() )
-			return;
-
-		var resolved = new Dictionary<string, Transform> { [root.Name] = rootWorld };
+		var resolved = new Dictionary<string, Transform> { [root.Key] = rootWorld };
 
 		foreach ( var (bone, world) in LiveBones() )
 		{
-			if ( bone.Parent is not { } parent || !resolved.TryGetValue( parent.Name, out var parentWorld ) )
+			// Only the dragged bone's own object - another model's skeleton has its own hierarchy
+			// and nothing under this bone.
+			if ( bone.Subject != root.Subject )
+				continue;
+
+			if ( bone.Parent is not { } parent || !resolved.TryGetValue( parent.Key, out var parentWorld ) )
 				continue;
 
 			// Its own pose is unchanged - only where its parent is has moved. There's always an
 			// answer now: a keyframe if the clip has one, the model's bind pose if it doesn't.
-			var local = _poseLookup?.Invoke( bone.Name ) ?? BindPoseFor( bone );
+			var local = _poseLookup?.Invoke( bone.Key ) ?? BindPoseFor( bone );
 
-			var clamped = RigConstraintSolver.ClampToLimits( Rig, bone.Name, local );
+			var clamped = RigConstraintSolver.ClampToLimits( Rig, bone.Key, local );
 			var worldPose = parentWorld.ToWorld( clamped );
 
-			resolved[bone.Name] = worldPose;
+			resolved[bone.Key] = worldPose;
 			ApplyWorldTransform( bone, worldPose );
 		}
 	}
@@ -1350,28 +1870,29 @@ internal sealed class RigViewport : Widget
 			{
 				// Dragged bones keep their live transform, and must still be resolvable as a
 				// parent for anything under them.
-				if ( _draggingBone && _selectedBones.Contains( bone.Name ) )
+				if ( _draggingBone && _selectedBones.Contains( bone.Key ) )
 				{
-					resolved[bone.Name] = world;
+					resolved[bone.Key] = world;
 					continue;
 				}
 
 				// Keyframe if the clip has one, the model's bind pose if it doesn't. Never
 				// undefined, so nothing is left holding a stale override.
-				var local = poseForBone( bone.Name ) ?? BindPoseFor( bone );
+				var local = poseForBone( bone.Key ) ?? BindPoseFor( bone );
 
-				var clamped = RigConstraintSolver.ClampToLimits( Rig, bone.Name, local );
+				var clamped = RigConstraintSolver.ClampToLimits( Rig, bone.Key, local );
 
 				// Skeletons list parents before children, so the parent is normally already
 				// resolved. The readback fallback only covers a rig that doesn't, where a stale
-				// parent is still better than none.
+				// parent is still better than none. Keyed by the qualified name, so two objects
+				// that both call a bone "root" cannot resolve against each other.
 				var parentWorld = bone.Parent is { } parent
-					? (resolved.TryGetValue( parent.Name, out var computed ) ? computed : ParentWorld( bone ))
-					: _renderer.WorldTransform;
+					? (resolved.TryGetValue( parent.Key, out var computed ) ? computed : ParentWorld( bone ))
+					: bone.Renderer.WorldTransform;
 
 				var worldPose = parentWorld.ToWorld( clamped );
 
-				resolved[bone.Name] = worldPose;
+				resolved[bone.Key] = worldPose;
 				ApplyWorldTransform( bone, worldPose );
 			}
 		}
@@ -1453,7 +1974,7 @@ internal sealed class RigViewport : Widget
 		UpdatePlayerReference();
 		ApplyPixelStyle();
 		ApplyViewmodelFraming();
-		ApplyReferenceProps();
+		ApplyMovables();
 
 		_gizmoInstance.Input.IsHovered = IsActiveWindow && _canvas.IsUnderMouse;
 
@@ -1481,7 +2002,7 @@ internal sealed class RigViewport : Widget
 
 		DrawPlayerReference();
 		DrawBoneHandles();
-		DrawReferenceProps();
+		DrawMovables();
 		DrawSelectedBoneReadout();
 
 		Cursor = Gizmo.HasHovered ? CursorShape.Finger : CursorShape.Arrow;
@@ -1498,10 +2019,12 @@ internal sealed class RigViewport : Widget
 		if ( !TryGetWorldTransform( SelectedBone, out var world ) )
 			return;
 
-		var bone = FindBoneData( SelectedBone );
-		var parentWorld = bone?.Parent is { } parent && _renderer.TryGetBoneTransform( parent, out var parentTx )
-			? parentTx
-			: _renderer.WorldTransform;
+		var bone = FindBone( SelectedBone );
+
+		if ( bone is null )
+			return;
+
+		var parentWorld = ParentWorld( bone );
 
 		var local = parentWorld.ToLocal( world );
 
@@ -1516,7 +2039,7 @@ internal sealed class RigViewport : Widget
 			: $"\nscl  {local.Scale.x:0.#}  {local.Scale.y:0.#}  {local.Scale.z:0.#}";
 
 		Gizmo.Draw.Color = Color.White.WithAlpha( 0.85f );
-		Gizmo.Draw.ScreenText( SelectedBone, new Vector2( 12, 12 ), size: 13, flags: TextFlag.LeftTop );
+		Gizmo.Draw.ScreenText( RigTrackName.Display( SelectedBone ), new Vector2( 12, 12 ), size: 13, flags: TextFlag.LeftTop );
 
 		Gizmo.Draw.Color = Color.White.WithAlpha( 0.4f );
 		Gizmo.Draw.ScreenText(
@@ -1537,7 +2060,7 @@ internal sealed class RigViewport : Widget
 	{
 		// Selected bones are collected through the loop, then the control is run after it in its
 		// own top-level scope, so it isn't nested inside a bone's rotated drawing scope.
-		var selectedBones = new List<(BoneCollection.Bone Bone, Transform World)>();
+		var selectedBones = new List<(RigBone Bone, Transform World)>();
 		string hovered = null;
 
 		// Placing the whole model is its own mode with its own single handle. Bone dots are
@@ -1559,7 +2082,7 @@ internal sealed class RigViewport : Widget
 			// dots off would silently take away the ability to pose.
 			foreach ( var name in _selectedBones )
 			{
-				if ( FindBoneData( name ) is { } bone && _renderer.TryGetBoneTransform( bone, out var world ) )
+				if ( FindBone( name ) is { } bone && bone.TryGetWorld( out var world ) )
 					selectedBones.Add( (bone, world) );
 			}
 
@@ -1581,10 +2104,13 @@ internal sealed class RigViewport : Widget
 			// Hidden bones are skipped HERE and nowhere else - EvaluatePose still drives them and
 			// their keyframes still play. This is the only place hiding is allowed to mean
 			// anything, so it can never cost you animation.
-			if ( IsHidden( bone.Name ) && !ShowHiddenBones )
+			if ( IsHidden( bone.Key ) && !ShowHiddenBones )
 				continue;
 
-			var isSelected = _selectedBones.Contains( bone.Name );
+			var isSelected = _selectedBones.Contains( bone.Key );
+
+			// Twist is a property of the bone's own name inside its skeleton, not of the qualified
+			// track name - a prop's twist bone is as much a twist bone as the arms'.
 			var isTwist = IsTwistBone( bone.Name );
 
 			// A twist bone that's actually selected keeps its handle regardless - selecting one
@@ -1596,11 +2122,14 @@ internal sealed class RigViewport : Widget
 			if ( isSelected )
 				selectedBones.Add( (bone, world) );
 
-			using var boneScope = Gizmo.Scope( $"Bone{bone.Index}", world );
+			// The subject is in the scope id: two objects can hold a bone at the same index, and
+			// two gizmo scopes sharing an id are one scope as far as hit testing is concerned.
+			using var boneScope = Gizmo.Scope( $"Bone{bone.Subject}:{bone.Index}", world );
 
-			var radius = HandleRadius;
+			// This object's own handle size, not the main model's - see RigBone.Radius.
+			var radius = bone.Radius * BoneHandleScale;
 
-			if ( bone.Parent is { } parentBone && _renderer.TryGetBoneTransform( parentBone, out var parentWorld ) )
+			if ( bone.Parent is { } parentBone && parentBone.TryGetWorld( out var parentWorld ) )
 			{
 				Gizmo.Draw.Color = Theme.Blue.WithAlpha( 0.8f );
 				Gizmo.Draw.Line( 0f, world.PointToLocal( parentWorld.Position ) );
@@ -1642,10 +2171,10 @@ internal sealed class RigViewport : Widget
 
 			if ( Gizmo.IsHovered )
 			{
-				hovered = bone.Name;
+				hovered = bone.Key;
 
 				if ( Gizmo.WasLeftMousePressed )
-					Select( bone.Name, Editor.Application.KeyboardModifiers.HasFlag( KeyboardModifiers.Shift ) );
+					Select( bone.Key, Editor.Application.KeyboardModifiers.HasFlag( KeyboardModifiers.Shift ) );
 			}
 		}
 
@@ -1655,7 +2184,7 @@ internal sealed class RigViewport : Widget
 		// Named after the loop so the hint reflects this frame, not last frame's hover.
 		if ( hovered is not null )
 		{
-			RigStatusBar.Show( DragHint( hovered ) );
+			RigStatusBar.Show( DragHint( RigTrackName.Display( hovered ) ) );
 		}
 		else if ( _selectedBones.Count > 1 )
 		{
@@ -1663,7 +2192,7 @@ internal sealed class RigViewport : Widget
 		}
 		else if ( SelectedBone is not null )
 		{
-			RigStatusBar.Show( $"{SelectedBone} selected  -  drag the gizmo to pose it" );
+			RigStatusBar.Show( $"{RigTrackName.Display( SelectedBone )} selected  -  drag the gizmo to pose it" );
 		}
 		else
 		{
@@ -1712,11 +2241,20 @@ internal sealed class RigViewport : Widget
 		if ( MoveWholeModel )
 			return;
 
-		if ( SelectedBone is null && SelectedReferenceProp < 0 )
+		// Mid-pick, a click on nothing means "never mind", not "deselect" - the thing being asked
+		// about stays selected so it can be asked about again.
+		if ( _pickMovable is not null && Gizmo.WasLeftMousePressed && hovered is null && !Gizmo.HasHovered )
+		{
+			_pickMovable = null;
+			RigStatusBar.Show( "Cancelled" );
+			return;
+		}
+
+		if ( SelectedBone is null && _selectedMovable is null )
 			return;
 
 		// A drag that happens to finish over empty space is still a drag, not a click on nothing.
-		if ( _draggingBone || _dragBoneName is not null || _groupDragTargets is not null || _propDragIndex >= 0 )
+		if ( _draggingBone || _dragBoneName is not null || _groupDragTargets is not null || _propDragKey is not null )
 			return;
 
 		if ( hovered is not null || Gizmo.HasHovered )
@@ -1725,8 +2263,9 @@ internal sealed class RigViewport : Widget
 		if ( !Gizmo.WasLeftMousePressed )
 			return;
 
-		SelectedReferenceProp = -1;
+		_selectedMovable = null;
 		Select( null );
+		ReferencePropSelected?.Invoke( null );
 	}
 
 	private bool _draggingModel;
@@ -1841,22 +2380,22 @@ internal sealed class RigViewport : Widget
 	// Group drag state. _groupDragTargets holds the top-most selected bones (a selected bone with
 	// a selected ancestor is carried by that ancestor, not transformed directly), captured with
 	// their start transforms; _groupPivot is the centroid the gizmo and the transform act around.
-	private List<(BoneCollection.Bone Bone, Transform Start)> _groupDragTargets;
+	private List<(RigBone Bone, Transform Start)> _groupDragTargets;
 	private Vector3 _groupPivot;
 	private Vector3 _groupMoveDelta;
 
 	/// <summary>Latches the drag's starting pose on its first frame. Called only after a control
 	/// has reported movement, so a hover never counts as a drag.</summary>
-	private void BeginDrag( BoneCollection.Bone bone, Transform world, ref Transform start )
+	private void BeginDrag( RigBone bone, Transform world, ref Transform start )
 	{
-		if ( _dragBoneName == bone.Name )
+		if ( _dragBoneName == bone.Key )
 			return;
 
 		// Announced before the first write lands, so whatever is listening can record the
 		// pre-drag pose.
-		BoneDragStarted?.Invoke( bone.Name );
+		BoneDragStarted?.Invoke( bone.Key );
 
-		_dragBoneName = bone.Name;
+		_dragBoneName = bone.Key;
 		_dragStart = world;
 		_moveDelta = Vector3.Zero;
 
@@ -1923,9 +2462,9 @@ internal sealed class RigViewport : Widget
 	/// There is no frozen anchor any more: absolute-out feeds from the live value, and delta-out
 	/// accumulates onto it. That is what the engine does, and it is self-correcting rather than
 	/// dependent on state we maintain.</summary>
-	private void DragSelectedBone( BoneCollection.Bone bone, Transform world )
+	private void DragSelectedBone( RigBone bone, Transform world )
 	{
-		var dragging = _dragBoneName == bone.Name;
+		var dragging = _dragBoneName == bone.Key;
 
 		// The start pose is captured on the first frame of the drag and everything is applied to
 		// THAT, exactly as PositionEditorTool applies its accumulated delta to startPoints. The
@@ -1937,7 +2476,7 @@ internal sealed class RigViewport : Widget
 		// fourth argument and leaving it out is what made every axis drag along the same one.
 		var handleRotation = Rotation.Identity;
 
-		using var scope = Gizmo.Scope( $"BoneControl{bone.Index}", new Transform( start.Position ) );
+		using var scope = Gizmo.Scope( $"BoneControl{bone.Subject}:{bone.Index}", new Transform( start.Position ) );
 
 		Gizmo.Hitbox.DepthBias = 0.01f;
 
@@ -2020,15 +2559,15 @@ internal sealed class RigViewport : Widget
 		// overwriting it every frame.
 		if ( DebugDrag )
 		{
-			Log.Info( $"[rigdrag] {bone.Name} mode={mode} " +
+			Log.Info( $"[rigdrag] {bone.Key} mode={mode} " +
 				$"readback={world.Position} wrote={newWorld.Position} " +
 				$"viewmodel={ViewmodelMode} locked={LockCameraToView}" );
 		}
 
 		// IK first: if this bone is an enabled IK target, dragging it should bend the chain
 		// behind it rather than tear the effector off its parent.
-		if ( RigConstraintSolver.FindIkFor( Rig, bone.Name ) is { } ik
-			&& RigConstraintSolver.TrySolveTwoBone( _renderer, bone, newWorld.Position, ik.PoleDirection, out var chain ) )
+		if ( RigConstraintSolver.FindIkFor( Rig, bone.Key ) is { } ik
+			&& RigConstraintSolver.TrySolveTwoBone( bone.Renderer, bone.Bone, newWorld.Position, ik.PoleDirection, out var chain ) )
 		{
 			var weight = ik.Weight.Clamp( 0f, 1f );
 
@@ -2041,18 +2580,28 @@ internal sealed class RigViewport : Widget
 			// back mangled the next time the clip is evaluated.
 			var solved = new Dictionary<string, Transform>();
 
-			foreach ( var (chainBone, chainWorld) in chain )
+			foreach ( var (chainBoneData, chainWorld) in chain )
 			{
+				// The solver works in one skeleton and hands back its raw bones, so each one is
+				// re-attached to the object the drag started in.
+				var chainBone = new RigBone
+				{
+					Subject = bone.Subject,
+					Renderer = bone.Renderer,
+					Bone = chainBoneData,
+					Radius = bone.Radius
+				};
+
 				var blended = chainWorld;
 
 				// Weight blends the solve against where the bone already was, so an IK constraint
 				// can be dialled in rather than being all-or-nothing.
-				if ( weight < 1f && _renderer.TryGetBoneTransform( chainBone, out var currentWorld ) )
+				if ( weight < 1f && chainBone.TryGetWorld( out var currentWorld ) )
 					blended = Transform.Lerp( currentWorld, chainWorld, weight, true );
 
 				// Recorded before the notify below reads it - the solver hands the chain back
 				// root-first, so a bone's parent is already in here by the time it's needed.
-				solved[chainBone.Name] = blended;
+				solved[chainBone.Key] = blended;
 
 				ApplyWorldTransform( chainBone, blended );
 
@@ -2061,7 +2610,7 @@ internal sealed class RigViewport : Widget
 				PropagateToDescendants( chainBone, blended );
 
 				NotifyPosed( chainBone, blended,
-					chainBone.Parent is { } chainParent && solved.TryGetValue( chainParent.Name, out var solvedParent )
+					chainBone.Parent is { } chainParent && solved.TryGetValue( chainParent.Key, out var solvedParent )
 						? solvedParent
 						: null );
 			}
@@ -2106,7 +2655,7 @@ internal sealed class RigViewport : Widget
 	///
 	/// IK is deliberately not run here - it's a single-bone solve, and a group drag is plain FK.
 	/// </summary>
-	private void DragSelectedBones( List<(BoneCollection.Bone Bone, Transform World)> targets )
+	private void DragSelectedBones( List<(RigBone Bone, Transform World)> targets )
 	{
 		var pivot = _groupDragTargets is not null ? _groupPivot : Centroid( targets );
 
@@ -2178,7 +2727,7 @@ internal sealed class RigViewport : Widget
 	/// <summary>Latches the group drag's targets and centroid on its first frame of movement.
 	/// Captured as the TOP-MOST bones only, so a parent and its selected children are transformed
 	/// once, not once each.</summary>
-	private void BeginGroupDrag( List<(BoneCollection.Bone Bone, Transform World)> targets )
+	private void BeginGroupDrag( List<(RigBone Bone, Transform World)> targets )
 	{
 		if ( _groupDragTargets is not null )
 			return;
@@ -2189,7 +2738,7 @@ internal sealed class RigViewport : Widget
 		_groupPivot = Centroid( tops );
 		_groupMoveDelta = Vector3.Zero;
 
-		BoneDragStarted?.Invoke( SelectedBone ?? (tops.Count > 0 ? tops[0].Bone.Name : null) );
+		BoneDragStarted?.Invoke( SelectedBone ?? (tops.Count > 0 ? tops[0].Bone.Key : null) );
 	}
 
 	/// <summary>
@@ -2203,24 +2752,29 @@ internal sealed class RigViewport : Widget
 	/// immediate parent, which is what this did before, double-transformed a bone whenever the
 	/// selection skipped a generation.
 	/// </summary>
-	private static List<(BoneCollection.Bone Bone, Transform World)> TopMost( List<(BoneCollection.Bone Bone, Transform World)> bones )
+	private static List<(RigBone Bone, Transform World)> TopMost( List<(RigBone Bone, Transform World)> bones )
 	{
+		// Qualified names throughout, so a bone in one object is never taken for the ancestor of a
+		// bone in another - selecting the hand and the weapon's own root has to transform both.
 		var parents = new Dictionary<string, string>();
 
 		foreach ( var (bone, _) in bones )
 		{
-			for ( var b = bone; b is not null; b = b.Parent )
-				parents[b.Name] = b.Parent?.Name;
+			for ( var b = bone.Bone; b is not null; b = b.Parent )
+			{
+				parents[RigTrackName.Qualify( bone.Subject, b.Name )] =
+					b.Parent is { } parent ? RigTrackName.Qualify( bone.Subject, parent.Name ) : null;
+			}
 		}
 
 		var tops = new HashSet<string>( BoneSelection.TopMost(
-			bones.Select( t => t.Bone.Name ),
+			bones.Select( t => t.Bone.Key ),
 			name => parents.TryGetValue( name, out var parent ) ? parent : null ) );
 
-		return bones.Where( t => tops.Contains( t.Bone.Name ) ).ToList();
+		return bones.Where( t => tops.Contains( t.Bone.Key ) ).ToList();
 	}
 
-	private static Vector3 Centroid( List<(BoneCollection.Bone Bone, Transform World)> bones )
+	private static Vector3 Centroid( List<(RigBone Bone, Transform World)> bones )
 	{
 		if ( bones.Count == 0 )
 			return Vector3.Zero;
@@ -2257,12 +2811,12 @@ internal sealed class RigViewport : Widget
 	/// IK solve, where the whole chain moves at once and each bone would be keyed against a stale
 	/// parent.
 	/// </summary>
-	private void NotifyPosed( BoneCollection.Bone bone, Transform newWorld, Transform? parentWorld = null )
+	private void NotifyPosed( RigBone bone, Transform newWorld, Transform? parentWorld = null )
 	{
 		if ( _suppressAutoKey || !AutoKeyEnabled )
 			return;
 
-		BonePosed?.Invoke( bone.Name, (parentWorld ?? ParentWorld( bone )).ToLocal( newWorld ) );
+		BonePosed?.Invoke( bone.Key, (parentWorld ?? ParentWorld( bone )).ToLocal( newWorld ) );
 	}
 
 	public override void OnDestroyed()

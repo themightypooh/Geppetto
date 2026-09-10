@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -22,7 +22,25 @@ public readonly struct EdgeKey : IEquatable<EdgeKey>
 
 	public bool Equals( EdgeKey o ) => A == o.A && B == o.B;
 	public override bool Equals( object obj ) => obj is EdgeKey e && Equals( e );
-	public override int GetHashCode() => HashCode.Combine( A, B );
+	/// <summary>
+	/// The two endpoints packed into a long and mixed by Fibonacci hashing.
+	///
+	/// This was HashCode.Combine, which is a general-purpose hash doing several rounds of xxHash
+	/// over a randomised seed. It is a good hash and it is not cheap, and an edge key is hashed
+	/// once per corner of the mesh by every routine that builds edge adjacency - about eight
+	/// million times over one SurfaceIndex build on a dense import.
+	///
+	/// A and B are vertex indices, so they are small non-negative ints with no structure worth
+	/// defending against; packing them into the two halves of a long and multiplying by the
+	/// golden-ratio constant spreads them across the whole word, which is all a Dictionary bucket
+	/// index needs. Taking the HIGH bits is the point of the multiply - the low bits of a product
+	/// are barely mixed at all.
+	/// </summary>
+	public override int GetHashCode()
+	{
+		var packed = ((ulong)(uint)A << 32) | (uint)B;
+		return (int)((packed * 11400714819323198485UL) >> 33);
+	}
 	public override string ToString() => $"[{A}-{B}]";
 }
 
@@ -152,18 +170,27 @@ public sealed class PolyMesh
 	/// exactly two faces per edge; a boundary edge has one; anything else is non-manifold.</summary>
 	public Dictionary<EdgeKey, List<int>> BuildEdgeFaces()
 	{
-		var map = new Dictionary<EdgeKey, List<int>>();
+		// Presized on Euler's relation: a closed quad mesh has about twice as many edges as faces,
+		// a triangle mesh about one and a half times. Guessing high costs one oversized bucket
+		// array; guessing low costs a rehash of every entry at each doubling, which on a dense
+		// mesh is most of this function's time and all of its garbage.
+		var map = new Dictionary<EdgeKey, List<int>>( Faces.Count * 2 );
 
 		for ( var fi = 0; fi < Faces.Count; fi++ )
 		{
-			var f = Faces[fi];
+			var indices = Faces[fi].Indices;
+			var n = indices.Length;
 
-			for ( var i = 0; i < f.Count; i++ )
+			for ( var i = 0; i < n; i++ )
 			{
-				var key = new EdgeKey( f.Indices[i], f.Indices[(i + 1) % f.Count] );
+				// i + 1 == n rather than a modulo: this runs once per corner of the mesh, and a
+				// division is not free at that count.
+				var key = new EdgeKey( indices[i], indices[i + 1 == n ? 0 : i + 1] );
 
 				if ( !map.TryGetValue( key, out var list ) )
-					map[key] = list = new List<int>();
+					// Capacity two, because a manifold edge has exactly two faces. The default
+					// List starts at four on first Add, so this halves the backing arrays.
+					map[key] = list = new List<int>( 2 );
 
 				list.Add( fi );
 			}
@@ -175,17 +202,25 @@ public sealed class PolyMesh
 	/// <summary>Faces touching each vertex, indexed by vertex.</summary>
 	public List<int>[] BuildVertexFaces()
 	{
+		// Built through the CSR map rather than directly, so the counting happens once and every
+		// list here is allocated at exactly its final size. The direct version grew each list from
+		// empty - four, eight, sixteen - and threw away every intermediate array, which on a dense
+		// mesh was some ninety megabytes of garbage to produce four megabytes of answer. It also
+		// spent a LINQ Distinct() per face on the repeated-vertex guard; VertexFaces.Build does
+		// that with a scan of the three or four corners instead.
+		var csr = VertexFaces.Build( this );
 		var map = new List<int>[Positions.Count];
 
-		for ( var i = 0; i < map.Length; i++ )
-			map[i] = new List<int>();
-
-		for ( var fi = 0; fi < Faces.Count; fi++ )
+		for ( var v = 0; v < map.Length; v++ )
 		{
-			// Distinct guards against a malformed face listing the same vertex twice, which would
-			// otherwise inflate the valence and skew the Catmull-Clark vertex rule.
-			foreach ( var vi in Faces[fi].Indices.Distinct() )
-				map[vi].Add( fi );
+			var start = csr.Offsets[v];
+			var count = csr.Offsets[v + 1] - start;
+			var list = new List<int>( count );
+
+			for ( var i = 0; i < count; i++ )
+				list.Add( csr.Items[start + i] );
+
+			map[v] = list;
 		}
 
 		return map;
@@ -194,27 +229,49 @@ public sealed class PolyMesh
 	/// <summary>Edges touching each vertex, indexed by vertex.</summary>
 	public List<EdgeKey>[] BuildVertexEdges()
 	{
+		// DEDUPED PER VERTEX, NOT GLOBALLY.
+		//
+		// This used to hold one HashSet<(int, EdgeKey)> across the whole mesh and hash a 12-byte
+		// tuple twice per corner - some two million hashes on a dense body, into a set that grew
+		// to two million entries. The duplicate an edge arrives as is always the SECOND face
+		// sharing it, so the only list it can already be in is the one being appended to, and that
+		// list is the vertex's valence long: four entries, scanned linearly, no hashing anywhere.
+		//
+		// Quadratic in valence, which is the right trade - valence is four on a quad mesh and a
+		// pole with fifty edges is still fifty times fifty against a hash of every corner.
 		var map = new List<EdgeKey>[Positions.Count];
 
 		for ( var i = 0; i < map.Length; i++ )
-			map[i] = new List<EdgeKey>();
-
-		var seen = new HashSet<(int, EdgeKey)>();
+			map[i] = new List<EdgeKey>( 4 );
 
 		foreach ( var f in Faces )
 		{
-			for ( var i = 0; i < f.Count; i++ )
+			var indices = f.Indices;
+			var n = indices.Length;
+
+			for ( var i = 0; i < n; i++ )
 			{
-				var a = f.Indices[i];
-				var b = f.Indices[(i + 1) % f.Count];
+				var a = indices[i];
+				var b = indices[i + 1 == n ? 0 : i + 1];
 				var key = new EdgeKey( a, b );
 
-				if ( seen.Add( (a, key) ) ) map[a].Add( key );
-				if ( seen.Add( (b, key) ) ) map[b].Add( key );
+				AddOnce( map[a], key );
+				AddOnce( map[b], key );
 			}
 		}
 
 		return map;
+
+		static void AddOnce( List<EdgeKey> list, EdgeKey key )
+		{
+			for ( var i = 0; i < list.Count; i++ )
+			{
+				if ( list[i].Equals( key ) )
+					return;
+			}
+
+			list.Add( key );
+		}
 	}
 
 	/// <summary>Centroid of a face's corners.</summary>
@@ -285,10 +342,19 @@ public sealed class PolyMesh
 	/// projected onto the Newell normal, which is the honest generalisation and is what the
 	/// area-weighted vertex normals wanted from it anyway.
 	/// </summary>
-	public float FaceArea( Face f )
+	public float FaceArea( Face f ) => FaceArea( f, FaceNormal( f ) );
+
+	/// <summary>
+	/// <see cref="FaceArea(Face)"/> for a caller that already has the face's Newell normal.
+	///
+	/// Every caller that wants a face's area wants its normal too - the area is only meaningful as
+	/// the area projected onto that normal - so the one-argument form recomputed a normal the
+	/// caller was holding. Area-weighted normals over a dense mesh did that once per face and it
+	/// was the single biggest cost in the viewport's rebuild.
+	/// </summary>
+	public float FaceArea( Face f, Vec3 normal )
 	{
 		var c = FaceCentroid( f );
-		var normal = FaceNormal( f );
 		var area = 0f;
 
 		for ( var i = 0; i < f.Count; i++ )
@@ -403,7 +469,10 @@ public static class MeshValidator
 					r.Errors.Add( $"face {fi} references vertex {i}, out of range" );
 			}
 
-			if ( f.Indices.Distinct().Count() != f.Count )
+			// A scan rather than Distinct().Count(): this runs over every face of the mesh, and
+			// the LINQ form allocates an enumerator and a set per face to compare three or four
+			// integers.
+			if ( RepeatsAVertex( f.Indices ) )
 				r.Errors.Add( $"face {fi} repeats a vertex" );
 		}
 
@@ -418,6 +487,20 @@ public static class MeshValidator
 		}
 
 		return r;
+	}
+
+	static bool RepeatsAVertex( int[] indices )
+	{
+		for ( var i = 1; i < indices.Length; i++ )
+		{
+			for ( var j = 0; j < i; j++ )
+			{
+				if ( indices[i] == indices[j] )
+					return true;
+			}
+		}
+
+		return false;
 	}
 
 	/// <summary>V - E + F. Equals 2 for a closed genus-0 surface, and is the cheapest single check

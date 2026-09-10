@@ -32,6 +32,24 @@ namespace Effigy;
 ///
 /// Base keys `parent_bone`, `surface_prop` and `collision_tags` come off the same citizen prefab.
 ///
+/// `parent_bone` WAS MEASURED THE SAME WAY, AND THE TWO SHAPE FAMILIES DO NOT AGREE. Two probes
+/// against a model whose eighth bone binds a long way down -x, each compiled and then traced against
+/// in the editor:
+///
+/// - A `PhysicsShapeBox` with `origin = [ 0, 0, 0 ]` and `parent_bone = "bone_8"` compiled to a box
+///   AT BONE_8'S BIND TRANSFORM — off at the far end of the chain, and turned with it, the trace
+///   normal coming back at (0.769, 0, 0.640) rather than on an axis. A primitive's placement keys
+///   are read in the PARENT BONE'S LOCAL SPACE, rotation included.
+/// - A `PhysicsShapeHull` of a 4-unit cube at the origin, same `parent_bone`, compiled to a cube AT
+///   THE MODEL ORIGIN, square on. Hull vertices stay MODEL SPACE and the compiler does the
+///   conversion into the bone itself.
+///
+/// THAT IS WHY ONLY A HULL MAY CARRY A BONE HERE. A CollisionShape has a position and a size and no
+/// orientation (see CollisionBuilder), so it has nothing to say about the bind rotation a primitive
+/// would be read through, and writing one against a bone puts it somewhere nobody asked for. A hull
+/// needs no orientation because it is already points, in the space this already writes them in — so
+/// a bone-parented primitive is converted to its corner hull below rather than trusted.
+///
 /// WHY THE KERNEL AND NOT THE EDITOR. It is text, it has no engine types in it, and it is the half
 /// that can be checked without s&amp;box — which is the half that was worth testing. The editor's job is
 /// reduced to splicing the node into the document it already builds.
@@ -111,6 +129,15 @@ public static class VmdlPhysics
 		if ( shape is null )
 			return null;
 
+		// A bone-parented primitive would be read in that bone's space and land somewhere else
+		// entirely. Its corners are points, and points are model space on every shape class, so the
+		// hull says the same thing in the one space both families agree on. Exact for a box; for the
+		// round shapes it is the box around them, never smaller than what it replaces, and nothing
+		// currently reaches it — CollisionBuilder.HullsPerBody feeds the bone-parented path and it
+		// makes hulls and the odd degenerate box, nothing round.
+		if ( !string.IsNullOrEmpty( shape.Bone ) && shape.Kind != CollisionKind.Hull )
+			shape = CornerHull( shape );
+
 		var sb = new StringBuilder();
 
 		switch ( shape.Kind )
@@ -166,13 +193,49 @@ public static class VmdlPhysics
 		{
 			into.Append( "\t\t\t\t\t{\n" );
 			into.Append( $"\t\t\t\t\t\t_class = \"{cls}\"\n" );
-			into.Append( "\t\t\t\t\t\tparent_bone = \"\"\n" );
+			into.Append( $"\t\t\t\t\t\tparent_bone = \"{shape.Bone}\"\n" );
 			into.Append( $"\t\t\t\t\t\tsurface_prop = \"{surfaceProp}\"\n" );
 			into.Append( $"\t\t\t\t\t\tcollision_tags = \"{collisionTags}\"\n" );
 		}
 
 		static void Line( StringBuilder into, string key, string value ) =>
 			into.Append( $"\t\t\t\t\t\t{key} = {value}\n" );
+	}
+
+	/// <summary>
+	/// The same shape as a hull of its bounding box's eight corners, keeping its bone.
+	///
+	/// Size means half-extents for a box and a radius for the round shapes, which is why a sphere's
+	/// zeroed y and z have to be filled back in from its radius before the corners are taken — the
+	/// box around a sphere is r on every axis, not r by nothing by nothing.
+	/// </summary>
+	static CollisionShape CornerHull( CollisionShape shape )
+	{
+		var half = shape.Kind switch
+		{
+			CollisionKind.Sphere => new Vec3( shape.Size.x, shape.Size.x, shape.Size.x ),
+			CollisionKind.Cylinder => new Vec3( shape.Size.x, shape.Size.x, shape.Size.z ),
+			_ => shape.Size,
+		};
+
+		var points = new List<Vec3>( 8 );
+
+		for ( var i = 0; i < 8; i++ )
+		{
+			points.Add( shape.Position + new Vec3(
+				(i & 1) == 0 ? -half.x : half.x,
+				(i & 2) == 0 ? -half.y : half.y,
+				(i & 4) == 0 ? -half.z : half.z ) );
+		}
+
+		return new CollisionShape
+		{
+			Kind = CollisionKind.Hull,
+			Position = Vec3.Zero,
+			Points = points,
+			BodyId = shape.BodyId,
+			Bone = shape.Bone,
+		};
 	}
 
 	static string Vector( Vec3 v ) => $"[ {Number( v.x )}, {Number( v.y )}, {Number( v.z )} ]";

@@ -21,6 +21,11 @@ internal sealed class RigBonesPanel : Widget
 
 	public Action Edited { get; set; }
 
+	private RigObjectsPanel _objects;
+
+	/// <summary>The objects tree under the bones. The window wires its import and its edits.</summary>
+	public RigObjectsPanel ObjectsPanel => _objects;
+
 	private RigAnimDocument _anim;
 	private Asset _asset;
 
@@ -70,6 +75,12 @@ internal sealed class RigBonesPanel : Widget
 					"to select it, same as clicking its dot in the viewport - either way brings up " +
 					"its rotate ring so you can pose it." ),
 
+				RigHelpBox.S( "Objects",
+					"Under the bones: everything else in the clip. Import OBJ brings in a file as one " +
+					"object with a part per o/g group; Add Model brings in a compiled model. Click a " +
+					"row to select it, right-click to rename, hide, duplicate or delete it, and set " +
+					"its numbers in the Inspector. Each object and part keys with K like a bone." ),
+
 				RigHelpBox.S( "Playing in game",
 					"For an interaction (open a fridge, pull a lever): save the .riganim, add " +
 					"RigAnimPlayerComponent next to the SkinnedModelRenderer, assign the clip, " +
@@ -100,6 +111,12 @@ internal sealed class RigBonesPanel : Widget
 		};
 		Layout.Add( _tree, 1 );
 
+		// THE OBJECTS GO BELOW THE BONES, in their own tree. See RigObjectsPanel for why they are
+		// not extra rows in the bone tree: an imported door with forty parts would bury the arm you
+		// are posing, and two trees can be collapsed independently.
+		_objects = new RigObjectsPanel( this, _viewport );
+		Layout.Add( _objects, 1 );
+
 		Rebuild();
 	}
 
@@ -107,6 +124,7 @@ internal sealed class RigBonesPanel : Widget
 	{
 		_asset = asset;
 		_anim = anim;
+		_objects?.SetDocument( anim );
 		RebuildHeader();
 		Rebuild();
 	}
@@ -148,10 +166,16 @@ internal sealed class RigBonesPanel : Widget
 		// in its own tab because it answers the same question: what is in this viewport.
 		if ( serialized.TryGetProperty( nameof( RigAnimDocument.ReferenceProps ), out var props ) )
 			_header.AddRow( props );
+
+		// NO ROW FOR OBJECTS. There was one, and it opened the engine's generic list editor as a
+		// floating panel over the viewport and the timeline - a second, worse place to edit the
+		// same things the objects tree below already manages. RigObjectsPanel is the only surface.
 	}
 
 	public void Rebuild()
 	{
+		_objects?.Rebuild();
+
 		_tree.Clear();
 
 		foreach ( var root in _viewport.RootBoneNames() )
@@ -177,8 +201,11 @@ internal sealed class RigBonesPanel : Widget
 			Paint.SetPen( Theme.Blue );
 			Paint.DrawIcon( item.Rect, "fiber_manual_record", 12, TextFlag.LeftCenter );
 
+			// The bone, with the object it belongs to after it - the raw value is the qualified
+			// track name, and a tree of "magazine/follower" reads as a file path rather than as a
+			// skeleton.
 			Paint.SetPen( Theme.Text );
-			Paint.DrawText( item.Rect.Shrink( 20, 0, 0, 0 ), Value, TextFlag.LeftCenter );
+			Paint.DrawText( item.Rect.Shrink( 20, 0, 0, 0 ), RigTrackName.Display( Value ), TextFlag.LeftCenter );
 		}
 
 		protected override void BuildChildren()

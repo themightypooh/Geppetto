@@ -2,6 +2,8 @@ using Editor;
 using Marionette;
 using Sandbox;
 using System;
+using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 
 namespace Marionette.Tools;
@@ -185,6 +187,9 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		file.AddSeparator();
 		_saveOption = file.AddOption( "Save", "common/save.png", Save, "editor.save" );
 		file.AddSeparator();
+		file.AddOption( "Import OBJ...", "file_upload", ImportObj )
+			.StatusTip = "Load a Wavefront OBJ into the viewport, one object per o/g group in the file - each one placeable, poseable and keyable on its own";
+		file.AddSeparator();
 		file.AddOption( "Export Animation...", "file_download", OpenExport )
 			.StatusTip = "Compile this clip into a .vmdl you can drop on a SkinnedModelRenderer and play by name";
 		file.AddSeparator();
@@ -212,18 +217,23 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		edit.AddOption( "Delete Selected Keyframe", "delete", () => _timeline.DeleteSelectedKeyframe() )
 			.StatusTip = "Same as pressing Delete with a keyframe selected on the Timeline";
 		edit.AddSeparator();
-		edit.AddOption( "Clear Keyframes on Selected Bone", "clear_all", ClearSelectedBoneKeyframes )
-			.StatusTip = "Remove every keyframe from whichever bone is selected in the viewport, so it can be re-posed from scratch";
+		edit.AddOption( "Clear Keyframes on Selection", "clear_all", ClearSelectedBoneKeyframes )
+			.StatusTip = "Remove every keyframe from whichever bone or part is selected in the viewport, so it can be re-posed from scratch";
 	}
 
 	/// <summary>Wipes one bone's whole track - the fast way to redo a bone that was posed wrong
 	/// throughout, instead of hunting down and deleting each of its keyframes by hand.</summary>
 	private void ClearSelectedBoneKeyframes()
 	{
-		if ( _anim is null || _viewport.SelectedBone is not { } bone )
+		if ( _anim is null )
 			return;
 
-		var track = _anim.FindTrack( bone );
+		var bone = _viewport.SelectedBone ?? _viewport.SelectedReferencePropName;
+
+		if ( bone is null )
+			return;
+
+		var track = _viewport.SelectedBone is not null ? _anim.FindTrack( bone ) : _anim.FindPartTrack( bone );
 		if ( track is null || track.Keyframes.Count == 0 )
 			return;
 
@@ -384,7 +394,10 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 
 		if ( _viewport.SelectedBone is not { } bone )
 		{
-			RigStatusBar.Show( "Select a bone in the viewport first - there's nothing to key yet" );
+			if ( KeySelectedPart() )
+				return;
+
+			RigStatusBar.Show( "Select a bone or a part in the viewport first - there's nothing to key yet" );
 			return;
 		}
 
@@ -399,6 +412,156 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		MarkDirty( $"Key {bone}" );
 
 		RigStatusBar.Show( $"Keyed {bone} at frame {frame}" );
+	}
+
+	/// <summary>Keys the selected object, part or prop where it stands. Holding something still
+	/// across a span is the same one-keypress job as holding a bone still.</summary>
+	private bool KeySelectedPart()
+	{
+		if ( _viewport.SelectedReferencePropName is not { } key || string.IsNullOrWhiteSpace( key ) )
+			return false;
+
+		if ( LocalTransformOf( key ) is not { } local )
+			return false;
+
+		var frame = (int)MathF.Round( _timeline.Playhead );
+
+		_anim.GetOrAddPartTrack( key ).SetKeyframe( frame, local );
+
+		_timeline.Refresh();
+		MarkDirty( $"Key {RigTrackName.Display( key )}" );
+
+		RigStatusBar.Show( $"Keyed {RigTrackName.Display( key )} at frame {frame}" );
+		return true;
+	}
+
+	/// <summary>Where a named object, part or prop is right now, in the space its keyframes are
+	/// stored in - a part inside its object, everything else in the world.</summary>
+	private Transform? LocalTransformOf( string key )
+	{
+		var (owner, part) = _anim.FindPartTarget( key );
+
+		if ( part is not null )
+			return part.LocalTransform;
+
+		// Exact name only - FindPartTarget hands back the owner for "door/nonsense" as well, and
+		// that must not read as the door.
+		if ( owner is not null && owner.Name == key )
+			return owner.LocalTransform;
+
+		if ( _anim.ReferenceProps?.FirstOrDefault( p => p?.Name == key ) is { } prop )
+			return prop.LocalTransform;
+
+		return null;
+	}
+
+	/// <summary>The other half of LocalTransformOf: stores a transform on a named object, part or
+	/// prop, in the same space.</summary>
+	private void SetLocalTransformOf( string key, Transform local )
+	{
+		var (owner, part) = _anim.FindPartTarget( key );
+
+		if ( part is not null )
+		{
+			part.Position = local.Position;
+			part.Rotation = local.Rotation.Angles();
+			part.Scale = local.Scale.x;
+			return;
+		}
+
+		if ( owner is not null && owner.Name == key )
+		{
+			owner.Position = local.Position;
+			owner.Rotation = local.Rotation.Angles();
+			owner.Scale = local.Scale.x;
+			return;
+		}
+
+		if ( _anim.ReferenceProps?.FirstOrDefault( p => p?.Name == key ) is { } prop )
+		{
+			prop.Position = local.Position;
+			prop.Rotation = local.Rotation.Angles();
+			prop.Scale = local.Scale.x;
+		}
+	}
+
+	/// <summary>
+	/// The Inspector's view of a selected object, part or prop.
+	///
+	/// Every delegate looks the thing up by name when it runs, rather than closing over the object
+	/// found now - undo swaps the document's objects for copies, and a sheet bound to the old one
+	/// would go on editing something nothing draws.
+	/// </summary>
+	private MovableTransform MovableFor( string key )
+	{
+		if ( _anim is null )
+			return null;
+
+		var (owner, part) = _anim.FindPartTarget( key );
+		var isObject = part is null && owner is not null && owner.Name == key;
+		var isProp = part is null && !isObject && _anim.ReferenceProps?.Any( p => p?.Name == key ) == true;
+
+		if ( part is null && !isObject && !isProp )
+			return null;
+
+		ReferenceProp PropNamed() => _anim.ReferenceProps?.FirstOrDefault( p => p?.Name == key );
+
+		return new MovableTransform
+		{
+			Kind = part is not null ? "Part" : isObject ? "Object" : "Prop",
+
+			ReadLocal = () => LocalTransformOf( key ),
+
+			WriteLocal = local =>
+			{
+				SetLocalTransformOf( key, local );
+
+				// Same gate as a drag: with Link on, typing a number keys it at the playhead; off,
+				// it only poses.
+				if ( _viewport.AutoKeyEnabled )
+					OnPartPosed( key, local );
+			},
+
+			GetFollowBone = part is not null ? null : () => _anim.FindObject( key )?.FollowBone ?? PropNamed()?.FollowBone ?? "",
+
+			SetFollowBone = part is not null ? null : bone =>
+			{
+				if ( _anim.FindObject( key ) is { } o )
+					o.FollowBone = bone;
+				else if ( PropNamed() is { } p )
+					p.FollowBone = bone;
+			},
+		};
+	}
+
+	/// <summary>
+	/// The objects panel has changed the document - added, renamed, hidden, duplicated or deleted
+	/// something - and everything that shows objects has to catch up before the undo step lands.
+	/// </summary>
+	private void OnObjectsChanged( string label )
+	{
+		if ( _anim is null )
+			return;
+
+		UpdateDocumentFolder();
+
+		// Rebuilt, not re-placed: the list itself changed.
+		_viewport.SetReferenceProps( _anim.ReferenceProps );
+		_viewport.SetObjects( _anim.Objects );
+
+		_bones?.Rebuild();
+
+		// A rename or a delete moves or removes tracks, and the timeline draws tracks.
+		if ( _viewport.SelectedBone is null && _viewport.SelectedReferencePropName is null )
+			_timeline.SelectedBone = null;
+
+		_timeline.Refresh();
+
+		// The rebuilt objects are placed from their stored fields; anything keyed goes back to
+		// where this frame says it is.
+		OnScrub( _timeline.Playhead );
+
+		MarkDirty( label );
 	}
 
 	[Shortcut( "rig.copykeys", "CTRL+C", ShortcutType.Window )]
@@ -580,14 +743,32 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 			UpdateUndoOptions();
 		};
 
-		_viewport.ReferencePropMoved += () =>
+		// NOT a panel rebuild - this fires every frame of a drag, and rebuilding a tree view that
+		// often both costs more than the drag does and clears the selection out from under it. The
+		// panel catches up when the drag ends.
+		_viewport.ReferencePropMoved += MarkDirtyOnly;
+
+		_viewport.ReferencePropDragEnded += () =>
 		{
-			// The panel shows the same numbers the gizmo is changing, so it has to follow.
 			_bones?.Rebuild();
-			MarkDirtyOnly();
+			ResetBaseline();
 		};
 
-		_viewport.ReferencePropDragEnded += ResetBaseline;
+		_viewport.ReferencePropPosed += OnPartPosed;
+
+		_viewport.ReferencePropSelected += part =>
+		{
+			if ( _timeline is not null )
+			{
+				_timeline.SelectedBone = part;
+				_timeline.Refresh();
+			}
+
+			// Back the other way too: picking something in the 3D view marks its row in the
+			// objects tree and puts its numbers in the Inspector, the same as picking a bone does.
+			_bones?.ObjectsPanel?.ShowSelection( part );
+			_inspector?.Refresh();
+		};
 
 		// Hiding edits the .ctrlrig, so it's a real document change - dirty, saved, and undoable
 		// like any other. The bones panel rebuilds so its tree can show what's hidden.
@@ -604,7 +785,7 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 			Scrubbed = OnScrub,
 			Edited = () => MarkDirty( "Timeline Edit" ),
 			KeyRequested = KeySelectedBone,
-			BoneRowSelected = bone => _viewport.Select( bone ),
+			BoneRowSelected = SelectTrackTarget,
 		};
 
 		_events = new RigEventProperties( this )
@@ -625,6 +806,9 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 			},
 		};
 
+		_bones.ObjectsPanel.ImportRequested = ImportObj;
+		_bones.ObjectsPanel.Changed = OnObjectsChanged;
+
 		_constraints = new RigConstraintsPanel( this )
 		{
 			Edited = () => MarkDirty( "Edit Constraint" ),
@@ -635,7 +819,8 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		// field edit, unlike a drag, which is one per drag.
 		_inspector = new RigInspectorPanel( this, _viewport )
 		{
-			Edited = () => MarkDirty( "Edit Bone Transform" ),
+			Edited = () => MarkDirty( "Edit Transform" ),
+			MovableFor = MovableFor,
 		};
 
 		_tutorialPanel = new RigTutorialPanel( this )
@@ -751,7 +936,13 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 	{
 		_constraints.SetRig( _rig );
 		_viewport.Rig = _rig;
+
+		// Before the props are built - a prop drawn from an OBJ beside the clip cannot be found
+		// without knowing where the clip is.
+		UpdateDocumentFolder();
+
 		_viewport.SetReferenceProps( _anim?.ReferenceProps );
+		_viewport.SetObjects( _anim?.Objects );
 
 		// SourceModel on the clip itself wins; the rig's own model is only a fallback for a clip
 		// that hasn't set one yet. Previously this only ever updated the viewport in the fallback
@@ -801,10 +992,48 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		MarkDirtyOnly();
 	}
 
+	/// <summary>A dragged part is keyed exactly like a dragged bone - same frame, same track shape,
+	/// same one-undo-step-per-drag rule.</summary>
+	private void OnPartPosed( string part, Transform local )
+	{
+		if ( _anim is null )
+			return;
+
+		_anim.GetOrAddPartTrack( part ).SetKeyframe( (int)MathF.Round( _timeline.Playhead ), local );
+
+		_timeline.Refresh();
+		_inspector?.Refresh();
+
+		MarkDirtyOnly();
+	}
+
+	/// <summary>A timeline row is a bone or a part, and clicking it has to select the right kind of
+	/// thing - a part row that selected a bone of the same name would silently hand the gizmo to
+	/// something else.</summary>
+	private void SelectTrackTarget( string name )
+	{
+		if ( _anim?.FindPartTrack( name ) is not null && _viewport.SelectReferenceProp( name ) )
+		{
+			_inspector?.Refresh();
+			return;
+		}
+
+		_viewport.Select( name );
+	}
+
 	private void OnScrub( float frame )
 	{
 		if ( _anim is null )
 			return;
+
+		// PARTS FIRST, THEN BONES. A part's bones are posed in world space, converted against the
+		// object's own transform - so the object has to be where this frame says it is before its
+		// skeleton is placed against it. The other order lags a rigged prop's bones one frame
+		// behind the prop, which on a scrub looks like the weapon coming apart.
+		//
+		// Parts are on the same playhead as the bones - a door has to be open at the frame the
+		// hand that opened it is on, or the clip is only half scrubbed.
+		_viewport.ApplyPartPose( part => _anim.FindPartTrack( part ) is { } track && track.Keyframes.Count > 0 ? track.Evaluate( frame ) : null );
 
 		_viewport.EvaluatePose( bone => _anim.FindTrack( bone ) is { } track && track.Keyframes.Count > 0 ? track.Evaluate( frame ) : null );
 
@@ -878,8 +1107,14 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		// The document changed underneath every panel, so all of them are stale.
 		_timeline.Refresh();
 		_events.SetAsset( _anim );
+		_bones.SetAsset( _asset, _anim );
 		_bones.Rebuild();
 		_constraints.Rebuild();
+
+		// Undo can add or remove whole objects - an import, a delete - so the viewport's copies
+		// have to be rebuilt from the restored lists, not just re-placed.
+		_viewport.SetReferenceProps( _anim?.ReferenceProps );
+		_viewport.SetObjects( _anim?.Objects );
 
 		// And the viewport is still showing the pose from before the undo.
 		OnScrub( _timeline.Playhead );
@@ -980,6 +1215,193 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		new RigAnimExportDialog( this, _anim, _asset, _timeline?.Looping ?? true ).Show();
 	}
 
+	/// <summary>
+	/// Bring in a Wavefront OBJ as one object, with one part per lump of the file.
+	///
+	/// SPLIT, NOT WELDED. An exporter that kept a door, its handle and its hinge as separate
+	/// objects wrote that structure into the file as o/g markers, and it is the only thing that
+	/// makes them animatable separately - fused into one mesh they are one object that can only
+	/// move as one. Effigy's reader already splits on those markers; this is that reader pointed
+	/// at Marionette's prop list.
+	/// </summary>
+	private void ImportObj()
+	{
+		if ( _anim is null )
+			return;
+
+		var dialog = new FileDialog( null )
+		{
+			Title = "Import OBJ",
+			DefaultSuffix = ".obj",
+			Directory = Project.Current?.GetAssetsPath() ?? "",
+		};
+
+		dialog.SetFindFile();
+		dialog.SetModeOpen();
+		dialog.SetNameFilter( "Wavefront OBJ (*.obj)" );
+
+		if ( !dialog.Execute() )
+			return;
+
+		ImportObjFile( dialog.SelectedFile );
+	}
+
+	/// <summary>Where the clip lives, for resolving a prop's mesh file. Re-read rather than cached
+	/// once, because the first save of a blank document gives the clip a home it did not have when
+	/// the window opened.</summary>
+	private void UpdateDocumentFolder()
+	{
+		_viewport.DocumentFolder = _asset?.AbsolutePath is { } clipPath
+			? Path.GetDirectoryName( clipPath )
+			: null;
+	}
+
+	private void ImportObjFile( string path )
+	{
+		if ( string.IsNullOrWhiteSpace( path ) || !File.Exists( path ) )
+		{
+			RigStatusBar.Show( "That file is not there any more" );
+			return;
+		}
+
+		// Re-read rather than trust this session's cache: importing a file you have just
+		// re-exported from Blender has to show the new mesh, not the one we happened to read first.
+		RigObjMeshes.Forget( path );
+
+		var pieces = RigObjMeshes.Pieces( path );
+
+		if ( pieces.Count == 0 )
+		{
+			RigStatusBar.Show( $"{Path.GetFileName( path )} has no geometry in it - see the console for why" );
+			return;
+		}
+
+		var stored = CopyBesideClip( path ) ?? path;
+		var stem = Path.GetFileNameWithoutExtension( path );
+
+		_anim.Objects ??= new List<RigObject>();
+
+		// ONE OBJECT, ONE PART PER LUMP. The file is the thing - a door - and its o/g markers are
+		// the pieces of that thing. Importing them as separate top-level objects would throw away
+		// the one piece of structure the exporter took the trouble to record: that they belong
+		// together and are placed together.
+		var owner = new RigObject
+		{
+			Name = RigObjectsPanel.UniqueObjectName( _anim, stem ),
+			ObjSource = stored,
+			Visible = true,
+		};
+
+		var taken = new HashSet<string>();
+
+		foreach ( var piece in pieces )
+		{
+			if ( piece.Mesh is null || piece.Mesh.FaceCount == 0 )
+				continue;
+
+			// A file with no markers comes back as one unnamed piece - it is the file, so it is
+			// named after the file. Names are how a track finds its part, so they are made unique
+			// here rather than being allowed to collide silently.
+			// The separator is taken out of the part's NAME (ObjPart keeps the file's own), since a
+			// slash there would read as an object and a part and the track would be filed wrong.
+			var wanted = string.IsNullOrWhiteSpace( piece.Name ) ? stem : piece.Name.Replace( RigTrackName.Separator, '_' );
+			var name = RigObjectsPanel.Unique( wanted, taken );
+
+			owner.Parts.Add( new RigObjectPart
+			{
+				Name = name,
+				ObjPart = piece.Name,
+				Visible = true,
+			} );
+		}
+
+		if ( owner.Parts.Count == 0 )
+		{
+			RigStatusBar.Show( $"{Path.GetFileName( path )} has no faces to import" );
+			return;
+		}
+
+		_anim.Objects.Add( owner );
+
+		UpdateDocumentFolder();
+
+		_viewport.SetObjects( _anim.Objects );
+		_bones?.SetAsset( _asset, _anim );
+		_bones?.Rebuild();
+
+		MarkDirty( $"Import {Path.GetFileName( path )}" );
+
+		// Selected on arrival, so its row is marked, its numbers are in the Inspector and the
+		// gizmo is on it - the next thing anybody does with a fresh import is put it somewhere.
+		_viewport.SelectReferenceProp( owner.Name );
+
+		RigStatusBar.Show( owner.Parts.Count == 1
+			? $"Imported {owner.Name} - drag it in the viewport, then press K to key it"
+			: $"Imported {owner.Name} with {owner.Parts.Count} parts - each one moves and keys on its own" );
+	}
+
+	/// <summary>
+	/// A copy of the OBJ beside the .riganim, so the clip does not depend on where the file
+	/// happened to be the day it was imported.
+	///
+	/// The same reasoning as Effigy's ImportSidecar, and the same shape: one folder named after the
+	/// document. Returns the path to store - relative to the clip - or null when there is nowhere
+	/// to put it yet, in which case the caller falls back to the absolute path and the clip works
+	/// on this machine until it is saved and re-imported.
+	/// </summary>
+	private string CopyBesideClip( string source )
+	{
+		var clip = _asset?.AbsolutePath;
+
+		if ( string.IsNullOrWhiteSpace( clip ) )
+		{
+			RigStatusBar.Show( "Save the clip to keep its meshes beside it - until then it points at the file where it is" );
+			return null;
+		}
+
+		try
+		{
+			var folder = Path.GetFileNameWithoutExtension( clip ) + ".meshes";
+			var absoluteFolder = Path.Combine( Path.GetDirectoryName( clip ) ?? "", folder );
+
+			Directory.CreateDirectory( absoluteFolder );
+
+			var name = Path.GetFileName( source );
+			var target = Path.Combine( absoluteFolder, name );
+
+			// A second, different file of the same name must not overwrite the first - some other
+			// prop is already drawing from it, and it would silently become a different mesh.
+			for ( var n = 2; File.Exists( target ) && !SameFile( source, target ); n++ )
+			{
+				name = $"{Path.GetFileNameWithoutExtension( source )}_{n}{Path.GetExtension( source )}";
+				target = Path.Combine( absoluteFolder, name );
+			}
+
+			if ( !SameFile( source, target ) )
+				File.Copy( source, target, true );
+
+			return $"{folder}/{name}";
+		}
+		catch ( Exception e )
+		{
+			// Not fatal: the import still works off the original path. Worth saying, because the
+			// clip is now less portable than it looks.
+			Log.Warning( $"[Marionette] could not copy {source} beside the clip: {e.Message}" );
+			return null;
+		}
+	}
+
+	private static bool SameFile( string source, string target )
+	{
+		if ( !File.Exists( target ) )
+			return false;
+
+		var a = new FileInfo( source );
+		var b = new FileInfo( target );
+
+		return a.Length == b.Length && a.LastWriteTimeUtc == b.LastWriteTimeUtc;
+	}
+
 	[Shortcut( "editor.save", "CTRL+S", ShortcutType.Window )]
 	private void Save()
 	{
@@ -993,6 +1415,10 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 			return;
 
 		_asset.SaveToDisk( _anim );
+
+		// A first save gives the clip a folder, which is what a prop's relative mesh path is
+		// relative to.
+		UpdateDocumentFolder();
 
 		if ( _rig is not null )
 		{

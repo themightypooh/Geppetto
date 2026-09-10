@@ -282,6 +282,37 @@ public static class SkinBinder
 		return result;
 	}
 
+	/// <summary>
+	/// The bone whose segment passes closest to a point.
+	///
+	/// This is <see cref="BindRigid"/>'s inner loop, lifted out because collision needs the same
+	/// answer for a whole body that weighting needs for a vertex: an unassigned body has to end up
+	/// on SOME bone, and the nearest one is the one its vertices were already going to be weighted
+	/// to. Leaving it on the root instead would be the original bug in miniature — a mesh that bends
+	/// away from collision that does not.
+	/// </summary>
+	public static int NearestBone( Vec3 point, Skeleton skeleton )
+	{
+		RequireBones( skeleton );
+
+		var segments = Segments( skeleton );
+		var best = 0;
+		var bestDist = float.MaxValue;
+
+		for ( var b = 0; b < segments.Length; b++ )
+		{
+			var d = DistanceToSegment( point, segments[b].Head, segments[b].Tail );
+
+			if ( d >= bestDist )
+				continue;
+
+			bestDist = d;
+			best = b;
+		}
+
+		return best;
+	}
+
 	// --- helpers -----------------------------------------------------------------------------
 
 	static void RequireBones( Skeleton skeleton )

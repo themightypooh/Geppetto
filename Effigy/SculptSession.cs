@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace Effigy;
@@ -98,6 +98,11 @@ public sealed class SculptSession
 	PolyMesh _working;
 	SculptFrames _frames;
 	MeshBVH _bvh;
+
+	/// <summary>Vertex adjacency for the working mesh, cached on exactly the same terms as
+	/// <see cref="_bvh"/>: sculpting never changes topology, so both stay valid for the life of
+	/// the working mesh and both are dropped together when it is replaced.</summary>
+	List<EdgeKey>[] _neighbors;
 	BrushUndo _undo;
 	Vec3 _lastSample;
 
@@ -345,6 +350,7 @@ public sealed class SculptSession
 
 		_working = _sculpt.Evaluate( Level );
 		_bvh = MeshBVH.Build( _working );
+		_neighbors = _working.BuildVertexEdges();
 		_undo = new BrushUndo();
 
 		// Frames are built once, from the surface as the stroke found it, and not rebuilt per sample.
@@ -421,6 +427,7 @@ public sealed class SculptSession
 		_working = null;
 		_frames = null;
 		_bvh = null;
+		_neighbors = null;
 		_undo = null;
 		_maskBefore = null;
 
@@ -489,6 +496,7 @@ public sealed class SculptSession
 		_working = null;
 		_frames = null;
 		_bvh = null;
+		_neighbors = null;
 		_undo = null;
 		_maskBefore = null;
 	}
@@ -575,7 +583,7 @@ public sealed class SculptSession
 		// The mask is passed EVERY stroke, not applied afterwards. Brush.Apply folds it into the
 		// per-vertex weight, so a half-masked vertex moves half as far; masking after the fact would
 		// mean snapping protected vertices back, which leaves a hard edge where the mask fades.
-		var undo = Effigy.Brush.Apply( _working, stroke, _frames, ActiveMask?.Values, _bvh );
+		var undo = Effigy.Brush.Apply( _working, stroke, _frames, ActiveMask?.Values, _bvh, _neighbors );
 		_undo.Absorb( undo );
 	}
 }

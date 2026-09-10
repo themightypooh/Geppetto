@@ -393,55 +393,11 @@ public static class TreeGen
 			Console.WriteLine( $"  report {id}: {msg}" );
 	}
 
+	// The template lives in VmdlDocument now. This used to be a hand-copied duplicate of
+	// EffigyWindow.BuildSkinnedVmdl, and copies are how the OBJ import_rotation correction
+	// went missing everywhere except the one place it was written.
 	static string SkinnedVmdl( string meshFilename, Skeleton skeleton, PartStudio studio, PolyMesh mesh ) =>
-		"<!-- kv3 encoding:text:version{e21c7f3c-8a33-41c5-9977-a76d3a32aa0d} format:modeldoc29:version{3cec427c-1b0e-4d48-a90a-0436f33a6041} -->\n"
-		+ "{\n"
-		+ "\trootNode = \n"
-		+ "\t{\n"
-		+ "\t\t_class = \"RootNode\"\n"
-		+ "\t\tchildren = \n"
-		+ "\t\t[\n"
-		+ VmdlMaterials.GroupList( studio, mesh )
-		+ "\t\t\t{\n"
-		+ "\t\t\t\t_class = \"RenderMeshList\"\n"
-		+ "\t\t\t\tchildren = \n"
-		+ "\t\t\t\t[\n"
-		+ "\t\t\t\t\t{\n"
-		+ "\t\t\t\t\t\t_class = \"RenderMeshFile\"\n"
-		+ "\t\t\t\t\t\tname = \"Body_LOD0\"\n"
-		+ "\t\t\t\t\t\tchildren = \n"
-		+ "\t\t\t\t\t\t[\n"
-		+ "\t\t\t\t\t\t]\n"
-		+ $"\t\t\t\t\t\tfilename = \"{meshFilename}\"\n"
-		+ "\t\t\t\t\t\timport_translation = [ 0.0, 0.0, 0.0 ]\n"
-		+ "\t\t\t\t\t\timport_rotation = [ 0.0, 0.0, 0.0 ]\n"
-		+ "\t\t\t\t\t\timport_scale = 1.0\n"
-		+ "\t\t\t\t\t\talign_origin_x_type = \"None\"\n"
-		+ "\t\t\t\t\t\talign_origin_y_type = \"None\"\n"
-		+ "\t\t\t\t\t\talign_origin_z_type = \"None\"\n"
-		+ "\t\t\t\t\t\tparent_bone = \"\"\n"
-		+ "\t\t\t\t\t},\n"
-		+ "\t\t\t\t]\n"
-		+ "\t\t\t},\n"
-		+ VmdlAnimation.BoneMarkupList( skeleton )
-		+ VmdlAnimation.BindPoseList()
-		+ "\t\t\t{\n"
-		+ "\t\t\t\t_class = \"PhysicsShapeList\"\n"
-		+ "\t\t\t\tchildren = \n"
-		+ "\t\t\t\t[\n"
-		+ "\t\t\t\t\t{\n"
-		+ "\t\t\t\t\t\t_class = \"PhysicsMeshFromRender\"\n"
-		+ "\t\t\t\t\t\tparent_bone = \"\"\n"
-		+ "\t\t\t\t\t\tsurface_prop = \"wood\"\n"
-		+ "\t\t\t\t\t\tcollision_tags = \"solid\"\n"
-		+ "\t\t\t\t\t},\n"
-		+ "\t\t\t\t]\n"
-		+ "\t\t\t},\n"
-		+ "\t\t]\n"
-		+ "\t\tmodel_archetype = \"\"\n"
-		+ "\t\tprimary_associated_entity = \"\"\n"
-		+ "\t\tanim_graph_name = \"\"\n"
-		+ "\t\tbase_model_name = \"\"\n"
-		+ "\t}\n"
-		+ "}\n";
+		VmdlDocument.Skinned( meshFilename, skeleton,
+			VmdlPhysics.MeshFromRender( "wood" ),
+			VmdlMaterials.GroupList( studio, mesh ) );
 }

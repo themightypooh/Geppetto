@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace Effigy;
@@ -57,26 +57,54 @@ public sealed class MeshBVH
 		var faces = new int[mesh.FaceCount];
 		var centroids = new Vec3[mesh.FaceCount];
 
+		// PER-FACE BOXES, COMPUTED ONCE.
+		//
+		// Every node needs the bounds of its range, and the range at the root is every face. Asking
+		// the mesh for them walks each face's vertices again at each of the ~log n levels, so a
+		// vertex is read log n times over a build. Boxing each face up front makes a node's bounds
+		// a union of count boxes instead - the same total number of unions, but over 6 floats
+		// already in a flat array rather than an indirection through Faces[i].Indices into
+		// Positions.
+		var faceMin = new Vec3[mesh.FaceCount];
+		var faceMax = new Vec3[mesh.FaceCount];
+
 		for ( var i = 0; i < mesh.FaceCount; i++ )
 		{
 			faces[i] = i;
-			centroids[i] = mesh.FaceCentroid( mesh.Faces[i] );
+
+			var f = mesh.Faces[i];
+			var sum = Vec3.Zero;
+			var lo = new Vec3( float.MaxValue, float.MaxValue, float.MaxValue );
+			var hi = new Vec3( float.MinValue, float.MinValue, float.MinValue );
+
+			foreach ( var vi in f.Indices )
+			{
+				var p = mesh.Positions[vi];
+				sum += p;
+				lo = CMin( lo, p );
+				hi = CMax( hi, p );
+			}
+
+			centroids[i] = sum / f.Count;
+			faceMin[i] = lo;
+			faceMax[i] = hi;
 		}
 
 		var nodes = new List<Node>( mesh.FaceCount * 2 );
-		BuildNode( mesh, faces, centroids, 0, mesh.FaceCount, nodes );
+		BuildNode( faces, centroids, faceMin, faceMax, 0, mesh.FaceCount, nodes );
 		return new MeshBVH( nodes.ToArray(), faces, mesh.FaceCount, mesh.VertexCount );
 	}
 
-	static int BuildNode( PolyMesh mesh, int[] faces, Vec3[] centroids, int start, int count, List<Node> nodes )
+	static int BuildNode( int[] faces, Vec3[] centroids, Vec3[] faceMin, Vec3[] faceMax, int start, int count, List<Node> nodes )
 	{
 		var index = nodes.Count;
 		nodes.Add( default );
 
-		BoundsOfFaces( mesh, faces, start, count, out var min, out var max );
+		BoundsOfBoxes( faces, faceMin, faceMax, start, count, out var min, out var max );
 
 		if ( count <= LeafSize || AllCentroidsEqual( centroids, faces, start, count ) )
 		{
+			SortLeaf( faces, start, count );
 			nodes[index] = new Node
 			{
 				Min = min, Max = max,
@@ -87,18 +115,31 @@ public sealed class MeshBVH
 		}
 
 		var axis = LongestAxis( min, max );
-		Array.Sort( faces, start, count, Comparer<int>.Create( ( a, b ) =>
-		{
-			var ca = Component( centroids[a], axis );
-			var cb = Component( centroids[b], axis );
-			var cmp = ca.CompareTo( cb );
-			return cmp != 0 ? cmp : a.CompareTo( b );
-		} ) );
-
 		var mid = count / 2;
+
+		// PARTITION AROUND THE MEDIAN, DO NOT SORT.
+		//
+		// This used to be Array.Sort over the range with a Comparer<int>.Create closure, which is
+		// the obvious way to write "split at the median" and is quietly the most expensive line in
+		// the kernel. Two separate costs, both paid at EVERY node:
+		//
+		//   - Sorting is O(k log k) where selecting the median is O(k). Summed over a whole tree
+		//     that is the difference between O(n log n) and O(n log^2 n).
+		//   - Comparer<int>.Create allocates a comparer per node (~2n of them) and turns every
+		//     comparison into an interface call through a delegate, which does not inline.
+		//
+		// Nothing downstream wants the range sorted - BuildNode only ever asks which half a face
+		// falls in. Select is the operation that was actually meant.
+		//
+		// The ordering is the same total order the comparer used, centroid along the split axis
+		// with the face index breaking ties, so each child gets exactly the same SET of faces the
+		// sorting version gave it and the tree shape is unchanged. Only the order within a range
+		// differs, and the leaf sort below puts that back for the ranges anyone can observe.
+		SelectNth( faces, centroids, axis, start, count, mid );
 
 		if ( mid == 0 || mid == count )
 		{
+			SortLeaf( faces, start, count );
 			nodes[index] = new Node
 			{
 				Min = min, Max = max,
@@ -108,8 +149,8 @@ public sealed class MeshBVH
 			return index;
 		}
 
-		var left = BuildNode( mesh, faces, centroids, start, mid, nodes );
-		var right = BuildNode( mesh, faces, centroids, start + mid, count - mid, nodes );
+		var left = BuildNode( faces, centroids, faceMin, faceMax, start, mid, nodes );
+		var right = BuildNode( faces, centroids, faceMin, faceMax, start + mid, count - mid, nodes );
 		nodes[index] = new Node
 		{
 			Min = min, Max = max,
@@ -135,23 +176,97 @@ public sealed class MeshBVH
 		if ( _nodes.Length == 0 )
 			return;
 
-		RefitNode( mesh, 0 );
+		// FLAT AND BACKWARDS, NOT RECURSIVE.
+		//
+		// BuildNode appends a node before recursing into its children, so a parent's index is
+		// always lower than either child's. Walking the array from the end therefore visits every
+		// child before its parent, which is exactly the order a refit needs - and it does so as a
+		// straight sequential pass over the node array instead of two million nested calls, each
+		// touching the array at an index the prefetcher cannot guess.
+		for ( var i = _nodes.Length - 1; i >= 0; i-- )
+		{
+			ref var node = ref _nodes[i];
+
+			if ( node.Left < 0 )
+			{
+				BoundsOfFaces( mesh, _faces, node.FaceStart, node.FaceCount, out node.Min, out node.Max );
+				continue;
+			}
+
+			node.Min = CMin( _nodes[node.Left].Min, _nodes[node.Right].Min );
+			node.Max = CMax( _nodes[node.Left].Max, _nodes[node.Right].Max );
+		}
 	}
 
-	void RefitNode( PolyMesh mesh, int index )
+	/// <summary>
+	/// Refit only the part of the tree a brush could have touched: the sphere at
+	/// <paramref name="center"/> of <paramref name="radius"/>, the region the caller just moved
+	/// vertices inside.
+	///
+	/// WHY THIS IS SOUND. A node's current box was computed from where its vertices were BEFORE
+	/// the edit, and every vertex that moved was inside the sphere at that point. So a node whose
+	/// box misses the sphere cannot contain a moved vertex, and its bounds - and those of
+	/// everything below it - are still correct. Descending only into nodes that DO intersect
+	/// visits the handful of leaves under the brush plus their ancestors, and skips the rest.
+	///
+	/// A vertex is free to land outside the sphere; the leaf holding it is recomputed from its new
+	/// position and the boxes grow on the way back up. What must not happen is MISSING a node that
+	/// needed recomputing, and the argument above is about the old positions, which is the side
+	/// that decides that.
+	///
+	/// The full <see cref="Refit"/> is for when the whole mesh moved - a transform, a pose, an
+	/// undo. This is the interactive case, where a stroke touches a thousand vertices of a million
+	/// and rebuilding every box costs the frame.
+	/// </summary>
+	public void RefitRegion( PolyMesh mesh, Vec3 center, float radius )
+	{
+		if ( mesh is null )
+			throw new ArgumentNullException( nameof( mesh ) );
+
+		if ( mesh.FaceCount != _faceCount )
+			throw new ArgumentException(
+				$"RefitRegion needs the same topology (built on {_faceCount} faces, mesh has {mesh.FaceCount})" );
+
+		if ( _nodes.Length == 0 || radius <= 0f )
+			return;
+
+		RefitRegionNode( mesh, 0, center, radius );
+	}
+
+	/// <summary>Returns whether anything under this node was touched, so a parent only recombines
+	/// when a child below it actually changed.</summary>
+	bool RefitRegionNode( PolyMesh mesh, int index, Vec3 center, float radius )
 	{
 		ref var node = ref _nodes[index];
+
+		if ( !SphereHitsBox( node.Min, node.Max, center, radius ) )
+			return false;
 
 		if ( node.Left < 0 )
 		{
 			BoundsOfFaces( mesh, _faces, node.FaceStart, node.FaceCount, out node.Min, out node.Max );
-			return;
+			return true;
 		}
 
-		RefitNode( mesh, node.Left );
-		RefitNode( mesh, node.Right );
+		// Both sides, deliberately not short-circuited - a stroke straddling the split touches each.
+		var left = RefitRegionNode( mesh, node.Left, center, radius );
+		var right = RefitRegionNode( mesh, node.Right, center, radius );
+
+		if ( !left && !right )
+			return false;
+
 		node.Min = CMin( _nodes[node.Left].Min, _nodes[node.Right].Min );
 		node.Max = CMax( _nodes[node.Left].Max, _nodes[node.Right].Max );
+		return true;
+	}
+
+	static bool SphereHitsBox( Vec3 min, Vec3 max, Vec3 center, float radius )
+	{
+		var dx = center.x < min.x ? min.x - center.x : center.x > max.x ? center.x - max.x : 0f;
+		var dy = center.y < min.y ? min.y - center.y : center.y > max.y ? center.y - max.y : 0f;
+		var dz = center.z < min.z ? min.z - center.z : center.z > max.z ? center.z - max.z : 0f;
+
+		return dx * dx + dy * dy + dz * dz <= radius * radius;
 	}
 
 	/// <summary>
@@ -398,6 +513,113 @@ public sealed class MeshBVH
 		return (a + ab * (vb * denom) + ac * (vc * denom) - p).LengthSquared <= r2;
 	}
 
+	/// <summary>
+	/// Reorder faces[start..start+count) so the element that would land at <paramref name="n"/>
+	/// under a full sort is at n, everything ordered before it is left of it, and everything
+	/// ordered after it is right of it. Quickselect - average O(count), no allocation.
+	///
+	/// The order is (centroid along axis, then face index), which is a strict total order because
+	/// face indices are distinct. That matters: it means the split never depends on which equal
+	/// element the partition happened to land on, so a build is reproducible.
+	/// </summary>
+	static void SelectNth( int[] faces, Vec3[] centroids, int axis, int start, int count, int n )
+	{
+		var lo = start;
+		var hi = start + count - 1;
+		var target = start + n;
+
+		while ( lo < hi )
+		{
+			// Median of three, so the already-sorted runs a mesh generator produces constantly do
+			// not hit quickselect's quadratic case.
+			var mid = lo + ((hi - lo) >> 1);
+
+			if ( Before( faces[mid], faces[lo], centroids, axis ) ) Swap( faces, lo, mid );
+			if ( Before( faces[hi], faces[lo], centroids, axis ) ) Swap( faces, lo, hi );
+			if ( Before( faces[hi], faces[mid], centroids, axis ) ) Swap( faces, mid, hi );
+
+			// The median of the three is now at mid; park it at hi as the pivot.
+			Swap( faces, mid, hi );
+			var pivot = faces[hi];
+			var store = lo;
+
+			for ( var i = lo; i < hi; i++ )
+			{
+				if ( Before( faces[i], pivot, centroids, axis ) )
+				{
+					Swap( faces, i, store );
+					store++;
+				}
+			}
+
+			Swap( faces, store, hi );
+
+			// Before is a STRICT TOTAL order - the face index breaks every centroid tie - so no
+			// two elements compare equal and the pivot always lands strictly between the two
+			// halves. That is what rules out the all-equal input that makes Lomuto quadratic.
+			if ( store == target ) return;
+			if ( store < target ) lo = store + 1;
+			else hi = store - 1;
+		}
+	}
+
+	/// <summary>
+	/// Leaves are at most <see cref="LeafSize"/> faces, so an insertion sort by face index is
+	/// nothing. It exists for determinism rather than speed: a radius query returns faces in leaf
+	/// order, and without this that order would depend on how quickselect happened to partition.
+	/// </summary>
+	static void SortLeaf( int[] faces, int start, int count )
+	{
+		for ( var i = start + 1; i < start + count; i++ )
+		{
+			var v = faces[i];
+			var j = i - 1;
+
+			while ( j >= start && faces[j] > v )
+			{
+				faces[j + 1] = faces[j];
+				j--;
+			}
+
+			faces[j + 1] = v;
+		}
+	}
+
+	static bool Before( int a, int b, Vec3[] centroids, int axis )
+	{
+		var ca = Component( centroids[a], axis );
+		var cb = Component( centroids[b], axis );
+		return ca != cb ? ca < cb : a < b;
+	}
+
+	static void Swap( int[] a, int i, int j )
+	{
+		(a[i], a[j]) = (a[j], a[i]);
+	}
+
+	/// <summary>
+	/// Union of precomputed per-face boxes over a range. The build's version of
+	/// <see cref="BoundsOfFaces"/>; the padding matches, because the minimum of (v - Pad) over a
+	/// set is the same as (minimum of v) - Pad.
+	/// </summary>
+	static void BoundsOfBoxes( int[] faces, Vec3[] faceMin, Vec3[] faceMax, int start, int count, out Vec3 min, out Vec3 max )
+	{
+		min = new Vec3( float.MaxValue, float.MaxValue, float.MaxValue );
+		max = new Vec3( float.MinValue, float.MinValue, float.MinValue );
+
+		for ( var i = 0; i < count; i++ )
+		{
+			var f = faces[start + i];
+			min = CMin( min, faceMin[f] );
+			max = CMax( max, faceMax[f] );
+		}
+
+		min = new Vec3( min.x - Pad, min.y - Pad, min.z - Pad );
+		max = new Vec3( max.x + Pad, max.y + Pad, max.z + Pad );
+	}
+
+	/// <summary>Bounds straight from the mesh. Refit's version - positions have moved, so the
+	/// boxes the build cached are stale and the vertices are the only truth.</summary>
 	static void BoundsOfFaces( PolyMesh mesh, int[] faces, int start, int count, out Vec3 min, out Vec3 max )
 	{
 		min = new Vec3( float.MaxValue, float.MaxValue, float.MaxValue );

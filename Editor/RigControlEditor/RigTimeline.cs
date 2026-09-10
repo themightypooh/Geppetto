@@ -1028,7 +1028,7 @@ internal sealed class RigTimelineLanes : Widget
 		if ( tracks is null || tracks.Count == 0 )
 		{
 			Paint.SetPen( Theme.TextControl.WithAlpha( 0.4f ) );
-			Paint.DrawText( LocalRect, "No bones keyed yet - pose one in the viewport to start", TextFlag.Center );
+			Paint.DrawText( LocalRect, "Nothing keyed yet - pose a bone or drag a part in the viewport to start", TextFlag.Center );
 			return;
 		}
 
@@ -1118,9 +1118,12 @@ internal sealed class RigTimelineLanes : Widget
 	{
 		var menu = new Menu( this );
 
-		menu.AddHeading( track.BoneName );
+		var isPart = track.Target == TrackTarget.Part;
 
-		menu.AddOption( "Select This Bone", "my_location", () => BoneRowSelected?.Invoke( track.BoneName ) )
+		menu.AddHeading( track.DisplayName );
+
+		menu.AddOption( isPart ? "Select This Part" : "Select This Bone", "my_location",
+				() => BoneRowSelected?.Invoke( track.BoneName ) )
 			.StatusTip = "Select it in the viewport so it can be posed";
 
 		menu.AddSeparator();
@@ -1157,14 +1160,16 @@ internal sealed class RigTimelineLanes : Widget
 		} );
 
 		clear.Enabled = track.Keyframes.Count > 0;
-		clear.StatusTip = "Remove every keyframe on this bone, leaving the track in place";
+		clear.StatusTip = isPart
+			? "Remove every keyframe on this part, leaving the track in place"
+			: "Remove every keyframe on this bone, leaving the track in place";
 
 		menu.AddOption( "Delete Track", "delete", () =>
 		{
 			Anim?.BoneTracks.Remove( track );
 			Update();
 			Edited?.Invoke();
-		} ).StatusTip = "Remove the bone from the timeline entirely";
+		} ).StatusTip = isPart ? "Remove the part from the timeline entirely" : "Remove the bone from the timeline entirely";
 
 		menu.OpenAtCursor();
 	}
@@ -1533,6 +1538,12 @@ internal sealed class RigTimelineLanes : Widget
 	private sealed class CopiedKeyframe
 	{
 		public string BoneName;
+
+		/// <summary>Bone or part - carried across the copy so a part's keys paste back onto a part
+		/// track. Without it, pasting a door's animation would create a BONE track named after the
+		/// door, which nothing plays and which reads on the timeline as a bone that has gone
+		/// missing from the skeleton.</summary>
+		public TrackTarget Target;
 		public int FrameOffset;
 		public Transform Local;
 		public KeyInterpolation Interpolation;
@@ -1764,6 +1775,7 @@ internal sealed class RigTimelineLanes : Widget
 			_clipboard.Add( new CopiedKeyframe
 			{
 				BoneName = entry.Track.BoneName,
+				Target = entry.Track.Target,
 				FrameOffset = entry.Key.Frame - origin,
 				Local = entry.Key.Local,
 				Interpolation = entry.Key.Interpolation
@@ -1800,6 +1812,7 @@ internal sealed class RigTimelineLanes : Widget
 			_clipboard.Add( new CopiedKeyframe
 			{
 				BoneName = track.BoneName,
+				Target = track.Target,
 				FrameOffset = 0,
 				Local = exact?.Local ?? track.Evaluate( frame ),
 				Interpolation = exact?.Interpolation ?? KeyInterpolation.Smooth
@@ -1837,7 +1850,9 @@ internal sealed class RigTimelineLanes : Widget
 		foreach ( var item in _clipboard )
 		{
 			var frame = Math.Max( origin + item.FrameOffset, 0 );
-			var track = Anim.GetOrAddTrack( item.BoneName );
+			var track = item.Target == TrackTarget.Part
+				? Anim.GetOrAddPartTrack( item.BoneName )
+				: Anim.GetOrAddTrack( item.BoneName );
 
 			track.SetKeyframe( frame, item.Local );
 

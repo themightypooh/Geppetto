@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -284,7 +284,11 @@ public static class DmxWriter
 			// baseStates: the bind pose, as its own copy of every bone transform. It has to agree
 			// with the dag hierarchy above; both are written from Bone.Local, once each.
 			w.OpenArray( "baseStates", "element_array" );
-			w.OpenArrayElement( "DmeTransformList", w.NextId(), "bind pose" );
+			// NAMED "bind", NOT "bind pose". fbx2dmx's own output calls it "bind", and the compiler
+			// finds the bind pose by that name - miss it and the model still compiles, still
+			// reports every bone in the right place, and skins against nothing, so it stands
+			// perfectly in its reference pose and explodes the moment anything animates it.
+			w.OpenArrayElement( "DmeTransformList", w.NextId(), "bind" );
 			w.OpenArray( "transforms", "element_array" );
 
 			for ( var i = 0; i < skeleton.Count; i++ )
@@ -339,11 +343,15 @@ public static class DmxWriter
 		{
 			w.Attribute( "visible", "bool", "1" );
 
-			WriteVertexData( w, vertexDataId, mesh, skin, skeleton, cornerNormals, normals );
+			// bindState IS EMPTY, AND THAT IS NOT AN OVERSIGHT. fbx2dmx's own output leaves it
+			// empty and hangs the vertex data off currentState instead, with baseStates pointing
+			// at the same element. Writing the data under bindState instead reads back as a mesh
+			// whose skin the compiler will not use: it builds, it renders correctly in a static
+			// model and in any rest pose, and it explodes the instant an animation graph poses it.
+			// Nothing in the log says a word.
+			w.Attribute( "bindState", "element", "" );
 
-			// currentState and baseStates point AT the bind state rather than duplicating it. A
-			// second copy is a second thing to keep in step, for nothing: this mesh is not posed.
-			w.Attribute( "currentState", "element", vertexDataId );
+			WriteVertexData( w, "currentState", vertexDataId, mesh, skin, skeleton, cornerNormals, normals );
 
 			w.OpenArray( "baseStates", "element_array" );
 			w.ArrayReference( vertexDataId );
@@ -385,10 +393,10 @@ public static class DmxWriter
 	/// they are jointCount entries per position, indexed by the position index. fp_arms confirms the
 	/// shape — 260 positions, 260 blendweights at jointCount 1, against 944 face corners.
 	/// </summary>
-	static void WriteVertexData( DmxText w, string id, PolyMesh mesh, SkinWeights skin, Skeleton skeleton,
-		int[][] cornerNormals, List<Vec3> normals )
+	static void WriteVertexData( DmxText w, string attribute, string id, PolyMesh mesh, SkinWeights skin,
+		Skeleton skeleton, int[][] cornerNormals, List<Vec3> normals )
 	{
-		w.OpenAttributeElement( "bindState", "DmeVertexData", id, "bind" );
+		w.OpenAttributeElement( attribute, "DmeVertexData", id, "bind" );
 
 		w.Attribute( "flipVCoordinates", "bool", "0" );
 		w.Attribute( "jointCount", "int", MaxInfluences.ToString( CultureInfo.InvariantCulture ) );
@@ -464,7 +472,7 @@ public static class DmxWriter
 			for ( var v = 0; v < mesh.VertexCount; v++ )
 			{
 				var tint = mesh.VertexColors[v].Tint();
-				w.ArrayValue( DmxText.Vector4( tint.x, tint.y, tint.z, 1f ) );
+				w.ArrayValue( DmxText.Color( tint.x, tint.y, tint.z, 1f ) );
 			}
 
 			w.CloseArray();
@@ -480,19 +488,25 @@ public static class DmxWriter
 			var influences = v < skin.Count ? skin[v] : Array.Empty<BoneWeight>();
 			var kept = Prune( influences, skeleton.Count );
 
-			for ( var i = 0; i < MaxInfluences; i++ )
-			{
-				if ( i < kept.Count )
-				{
-					joints.Add( kept[i].Bone );
-					weights.Add( kept[i].Weight );
-					continue;
-				}
+			// PADDED WITH -1 AT THE FRONT, REAL INFLUENCES LAST. Both halves of that matter and
+			// neither is guessable - it is what fbx2dmx emits, checked against its own output.
+			//
+			// Bone 0 is a real bone (pelvis), so padding with it at zero weight is not the
+			// harmless no-op it looks like; -1 is how this format says "no influence". Getting it
+			// wrong costs nothing a static model would show and tears a skinned one apart under
+			// an animation graph, silently.
+			var pad = MaxInfluences - kept.Count;
 
-				// Padding rides on bone 0 at zero weight: a real index the compiler can look up,
-				// contributing nothing.
-				joints.Add( 0 );
+			for ( var i = 0; i < pad; i++ )
+			{
+				joints.Add( -1 );
 				weights.Add( 0f );
+			}
+
+			foreach ( var influence in kept )
+			{
+				joints.Add( influence.Bone );
+				weights.Add( influence.Weight );
 			}
 		}
 
@@ -750,6 +764,26 @@ internal sealed class DmxText
 
 	public static string Vector4( float x, float y, float z, float w ) =>
 		$"{Number( x )} {Number( y )} {Number( z )} {Number( w )}";
+
+	/// <summary>
+	/// A DMX "color", which is FOUR BYTES 0-255 AND NOT A VECTOR4.
+	///
+	/// This is the difference between a model that compiles and one that does not. A color_array
+	/// written as normalized floats fails the DMX parser outright — "Error reading in array
+	/// attribute color$0 element 0" from dmxconvert, and from the compiler nothing but
+	/// "Couldn't load DMX file" followed by "Node 'Body_LOD0' resolve failure", which names
+	/// neither the attribute nor the line.
+	///
+	/// IT ONLY BITES ON MESHES THAT HAVE VERTEX COLOUR, which is why it survived so long: an
+	/// Effigy part that nobody painted has no VertexColors, so no color$0 array is written at all
+	/// and the file loads. Import an OBJ with vertex colour on it - which a Meshy or a scan export
+	/// has - rig it, and every rigged compile fails from then on.
+	/// </summary>
+	public static string Color( float r, float g, float b, float a ) =>
+		$"{Byte255( r )} {Byte255( g )} {Byte255( b )} {Byte255( a )}";
+
+	static int Byte255( float v ) =>
+		v <= 0f ? 0 : v >= 1f ? 255 : (int)MathF.Round( v * 255f );
 
 	/// <summary>
 	/// The rotation part of an Xform as a quaternion, x y z w.

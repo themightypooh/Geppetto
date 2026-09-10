@@ -146,6 +146,11 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	/// camera framing in RebuildStudio.</summary>
 	private bool _hasPreview;
 
+	/// <summary>The last preview built for the plain material-slot path, kept so a move can rewrite
+	/// its vertex buffers instead of building a fresh Model every frame. Invalidated (null) whenever
+	/// the preview takes the paint, checker or section path.</summary>
+	private EffigyPreview.LivePreview _livePreview;
+
 	private EffigyFeatureTreePanel _featureTree;
 	private EffigyFeatureDialog _dialog;
 	private EffigyPartsPanel _partsPanel;
@@ -350,12 +355,15 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		file.Clear();
 		file.AddOption( "New Studio", "common/new.png", NewStudio );
 		file.AddOption( "Open...", "folder_open", Open );
+		file.AddOption( "Import OBJ...", "file_open", ImportObj );
 		file.AddSeparator();
 		file.AddOption( "Save", "common/save.png", Save, "editor.save" );
 		file.AddOption( "Save As...", "save_alt", SaveAs );
 		file.AddSeparator();
 		file.AddOption( "Export OBJ", "file_download", ExportObj );
 		file.AddOption( "Compile .vmdl", "build", CompileVmdl );
+		file.AddOption( "Compile Playermodel", "directions_walk", CompilePlayermodel );
+		file.AddOption( "Make Player", "sports_esports", MakePlayer );
 		file.AddOption( "Animation Clips...", "movie", OpenAnimClips );
 		file.AddOption( "Collision Report", "fitness_center", ReportCollision );
 		file.AddSeparator();
@@ -399,6 +407,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		help.AddOption( "Start House Tutorial", "school", StartTutorial );
 		help.AddOption( "Start Rigging Tutorial", "accessibility", StartRigTutorial );
 		help.AddOption( "Start Hand Tutorial", "back_hand", StartHandTutorial );
+		help.AddOption( "Start Playermodel Tutorial", "directions_walk", StartPlayermodelTutorial );
 
 		var view = MenuBar.FindOrCreateMenu( "View" );
 		view.Clear();
@@ -1361,6 +1370,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 	private readonly List<(EffigyStageTool Tool, BrushKind Kind)> _brushTools = new();
 	private EffigyStageTool _maskTool;
+	private EffigyStageTool _remeshHomeTool;
 	private EffigyStageTool _symmetryTool;
 
 	/// <summary>
@@ -1383,6 +1393,20 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		};
 
 		stage.Add( _subdivideHomeTool );
+
+		// BESIDE SUBDIVIDE, because it is the same question with the answer the other way round.
+		// The reason it is on the sculpt bar rather than the CAD strip is the reason Subdivide is:
+		// triangle budgets are not a CAD concern, and the person who needs one has an imported mesh
+		// open and is trying to work on it.
+		_remeshHomeTool = new EffigyStageTool
+		{
+			Icon = EffigyIcon.Remesh,
+			Label = "Remesh",
+			Tip = "Add a Remesh — reduce a dense part to a triangle budget, keeping its shape",
+			Clicked = () => AddFeature( NewFeature( ToolKind.Remesh, -1 ) ),
+		};
+
+		stage.Add( _remeshHomeTool );
 
 		_sculptHomeTool = new EffigyStageTool
 		{
@@ -2784,6 +2808,15 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		if ( _dialog?.Feature is { } feature )
 			_studio.MarkDirty( feature );
 
+		// A body drag reports an edit every frame, but only positions change — the tree, the parts
+		// list and every panel are exactly as they were. It gets the light rebuild below and the
+		// full RebuildStudio runs once when the button comes up (see OnBodyDragEnded).
+		if ( _viewport?.IsDraggingBody == true )
+		{
+			RebuildPreviewLight();
+			return;
+		}
+
 		// The dropdown and the strip are two views of one ChoiceParam, so an edit through either
 		// has to refresh the other or they disagree about what is armed - which is the exact
 		// confusion the strip exists to end.
@@ -2791,6 +2824,30 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		RebuildStudio();
 	}
+
+	/// <summary>
+	/// The per-frame rebuild for a Transform drag: re-run the history so downstream geometry stays
+	/// correct, update the preview in place, and keep the dialog's numbers counting — but skip the
+	/// feature tree, parts list, notes and tutorial, none of which can change while positions do.
+	/// </summary>
+	private void RebuildPreviewLight()
+	{
+		if ( !_dirty )
+		{
+			_dirty = true;
+			UpdateTitle();
+		}
+
+		_studio.Rebuild();
+		RefreshPreview();
+		_viewport?.SetDisplayBodies( _studio.Bodies );
+		_dialog?.RefreshValues();
+	}
+
+	/// <summary>The Transform handle's button came up. The drag frames kept everything light; this
+	/// is the one full pass that refreshes the tree, panels, notes and tutorial against the final
+	/// position, and re-arms the normal (non-drag) rebuild path.</summary>
+	private void OnBodyDragEnded() => RebuildStudio();
 
 	/// <summary>
 	/// A click on the ADD/REMOVE strip. The parameter is already set by the time this runs; what
@@ -2871,6 +2928,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	private enum ToolKind
 	{
 		Sketch, Plane, Primitive, Import, Extrude, Revolve, Sweep, Loft, Chamfer, Fillet, Shell, Subdivide,
+		Remesh,
 		Draft, Hole, Sculpt, Mirror, LinearPattern, CircularPattern, Transform, UVProject, FaceMaterial,
 		MoveFace, Paint, Boolean,
 	}
@@ -2890,6 +2948,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		ToolKind.Fillet => new FilletFeature(),
 		ToolKind.Shell => new ShellFeature(),
 		ToolKind.Subdivide => new SubdivideFeature(),
+		ToolKind.Remesh => new RemeshFeature(),
 		ToolKind.Draft => new DraftFeature(),
 		ToolKind.Hole => new HoleFeature(),
 		ToolKind.Sculpt => new SculptFeature(),
@@ -3290,22 +3349,41 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			return;
 		}
 
-		// SUBDIVIDE ASKS WHICH PART FIRST. An empty Bodies list means "the whole studio" to the
-		// feature, so a click with nothing selected quietly quadrupled the triangle count of every
-		// part in the document - including the ones you were not looking at, and on a cage you were
-		// about to sculpt that is the difference between a usable model and a dense one.
+		// SUBDIVIDE AND REMESH ASK WHICH PART FIRST. An empty Bodies list means "the whole studio"
+		// to either feature, so a click with nothing selected quietly quadrupled the triangle count
+		// of every part in the document under a Subdivide — or decimated every part of it under a
+		// Remesh, which is the same trap pointed the other way: the parts you were not looking at,
+		// on a cage you were about to sculpt, are the ones you can least afford to lose to a target
+		// typed for one.
 		//
-		// The whole-body form is not removed, because it is the one that actually smooths and is
-		// usually what you want: this only refuses to GUESS which body. Click a part in the Parts
-		// list and you get that part entire; pick faces in the viewport and you get those, since a
-		// face selection already names its own body.
-		if ( feature is SubdivideFeature
+		// The whole-body form is not removed, because it is the one that actually smooths — or the
+		// one that reduces a whole import at once — and is usually what you want: this only refuses
+		// to GUESS which body. Click a part in the Parts list and you get that part entire; pick
+		// faces in the viewport and you get those, since a face selection already names its own body
+		// (and ApplyGeometrySelection copies that body's id onto the Bodies param).
+		if ( feature is SubdivideFeature or RemeshFeature
 			&& _viewport is not null
 			&& _viewport.IdleFaces.Count == 0
 			&& _viewport.IdleBodyIds.Count == 0 )
 		{
-			SetPrompt( "Subdivide needs to know which part - click one in the Parts list on the "
-				+ "left, or pick faces in the viewport, then press Subdivide again." );
+			if ( feature is RemeshFeature )
+			{
+				SetPrompt( "Remesh needs to know which part - click one in the Parts list on the "
+					+ "left, or click the solid in the viewport, then press Remesh again." );
+			}
+			else
+			{
+				SetPrompt( "Subdivide needs to know which part - click one in the Parts list on the "
+					+ "left, or pick faces in the viewport, then press Subdivide again." );
+			}
+
+			// SAID TWICE, ON PURPOSE. The prompt lives in the status bar at the very bottom of the
+			// window, under whatever docks are open, and a refusal delivered there is a refusal
+			// nobody sees: pressing Remesh on a dense import and having the button do nothing at all
+			// is exactly what this looked like from the outside. The console line is the copy that
+			// survives not looking at the right strip of pixels.
+			Log.Info( $"[Effigy] {feature.TypeName} needs a part selected - nothing was added." );
+
 			return;
 		}
 
@@ -3351,6 +3429,10 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	{
 		_viewport = new EffigyViewport( this );
 
+		// The Transform handle's drag end: where the light per-frame path hands back to the full
+		// rebuild (tree, panels, notes, tutorial) exactly once.
+		_viewport.BodyDragEnded = OnBodyDragEnded;
+
 		_featureTree = new EffigyFeatureTreePanel( this, _studio )
 		{
 			FeatureSelected = OnFeatureSelected,
@@ -3385,6 +3467,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		{
 			VisibilityToggled = OnPartVisibilityToggled,
 			CommandRequested = OnPartCommand,
+			DeleteRequested = DeleteParts,
 			RenameCommitted = OnPartRenamed,
 			SelectionChanged = OnPartTreeSelectionChanged,
 			BoneAssigned = OnBodyBoneAssigned,
@@ -3407,6 +3490,12 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		_rigPanel = new EffigyRigPanel( this, _studio, _viewport );
 
+		// Close the Rig dock and the bones go with it. The panel is the rig's presence in the tool;
+		// the viewport asks it, every frame, rather than being told — a dock can be closed from its
+		// own X, from the View menu or by a layout reset, and only one of those routes runs code
+		// here.
+		_viewport.RigVisible = () => _rigPanel?.Visible ?? false;
+
 		_variablesPanel = new EffigyVariablesPanel( this, _studio )
 		{
 			Changing = RecordUndo,
@@ -3426,6 +3515,11 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			RevealPanel = RevealDock,
 			HighlightTool = HighlightTool,
 			SwitchWorkspace = SetWorkspace,
+
+			// Only the playermodel lesson offers this, and only on its start screen. The panel raises
+			// it instead of building the sample itself because replacing the document is the window's
+			// business - there is a confirm-discard and an undo step to get right.
+			LoadExample = LoadPlayermodelExample,
 
 			// Restart and Dismiss both change what the strip should be showing, and the panel
 			// itself has no idea a toolbar exists. Re-evaluating here also means a Restart drops
@@ -3815,11 +3909,6 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 					EditFeature( feature );
 				break;
 
-			case EffigyPartCommand.Delete:
-				if ( FeatureForBody( bodyId ) is { } toDelete )
-					OnFeatureCommand( toDelete, EffigyFeatureCommand.Delete );
-				break;
-
 			case EffigyPartCommand.Isolate:
 				RecordUndo();
 
@@ -3845,6 +3934,82 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 					MakeBonesFromBodies( new[] { part } );
 				break;
 		}
+	}
+
+	/// <summary>
+	/// Delete a set of parts in one undo step. This is the Parts list's Delete, and the single
+	/// body it hands over when there is no multi-select.
+	///
+	/// An import's pieces are marked removed rather than taken out of the file; every other part
+	/// IS its feature, so deleting it removes the whole feature (and every other part that feature
+	/// made) exactly the way the feature tree does. Batched so selecting several parts and
+	/// deleting them is one Ctrl+Z rather than one per part.
+	/// </summary>
+	private void DeleteParts( IReadOnlyList<string> bodyIds )
+	{
+		if ( _studio is null || bodyIds is null || bodyIds.Count == 0 )
+			return;
+
+		var features = new HashSet<Feature>();
+		var piecesByImport = new Dictionary<ImportFeature, List<string>>();
+
+		foreach ( var id in bodyIds )
+		{
+			if ( string.IsNullOrEmpty( id ) || FeatureForBody( id ) is not { } feature )
+				continue;
+
+			if ( feature is ImportFeature import && import.PieceIndexFor( id ) >= 0 )
+			{
+				if ( !piecesByImport.TryGetValue( import, out var list ) )
+					piecesByImport[import] = list = new List<string>();
+
+				if ( !list.Contains( id ) )
+					list.Add( id );
+			}
+			else
+			{
+				features.Add( feature );
+			}
+		}
+
+		// Deleting every remaining piece of an import IS deleting the import, and must go through
+		// the same whole-feature removal as the feature tree — otherwise an import left with no
+		// pieces would sit in the tree as an empty row. The single-part delete already had this
+		// rule for its last piece; batch removal extends it to "all of them at once".
+		foreach ( var (import, ids) in piecesByImport )
+		{
+			if ( ids.Count >= import.RemainingPieceCount() )
+				features.Add( import );
+		}
+
+		if ( features.Count == 0 && piecesByImport.Count == 0 )
+			return;
+
+		RecordUndo();
+
+		foreach ( var feature in features )
+		{
+			if ( _dialog?.Feature == feature )
+			{
+				_dialog.Close();
+				RestoreRollbackAfterEdit();
+			}
+
+			_studio.Remove( feature );
+		}
+
+		foreach ( var (import, ids) in piecesByImport )
+		{
+			if ( features.Contains( import ) )
+				continue;
+
+			foreach ( var id in ids )
+				import.RemovePiece( id );
+
+			_studio.MarkDirty( import );
+		}
+
+		RebuildStudio();
 	}
 
 	private void OnPartRenamed( string bodyId, string name )
@@ -4393,13 +4558,37 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	private void RefreshPreview()
 	{
 		var visible = _studio.ToVisibleMesh();
-		var preview = BuildPreview( visible );
+		var special = _showUVChecker || (_viewport is { SectionEnabled: true }) || visible.HasPaint;
+
+		// Plain material-slot path: keep a LivePreview and rewrite its vertex buffers when only
+		// positions change — the Transform handle, or typing into its fields. Rebuilding the Model
+		// and its GameObject every frame is what made dragging a dense part sluggish.
+		if ( !special )
+		{
+			if ( _livePreview is null
+				|| _viewport?.CurrentModel != _livePreview.Model
+				|| !_livePreview.TryUpdate( visible, SlotMaterial, MeshNormals.DefaultSmoothingAngleDegrees ) )
+			{
+				_livePreview = EffigyPreview.LivePreview.Build( visible, SlotMaterial,
+					MeshNormals.DefaultSmoothingAngleDegrees );
+
+				var preview = _livePreview.Model;
+				_viewport?.SetModel( preview, frameCamera: preview is not null && !_hasPreview );
+				_hasPreview = preview is not null;
+			}
+
+			return;
+		}
+
+		// Paint, checker and section cut are rare paths and rebuild fully each time.
+		_livePreview = null;
+		var specialPreview = BuildPreview( visible );
 
 		// Frame only when geometry first appears. Every later rebuild leaves the camera alone,
 		// because rebuilds also happen on every parameter tick and the view must hold still
 		// while you drag.
-		_viewport?.SetModel( preview, frameCamera: preview is not null && !_hasPreview );
-		_hasPreview = preview is not null;
+		_viewport?.SetModel( specialPreview, frameCamera: specialPreview is not null && !_hasPreview );
+		_hasPreview = specialPreview is not null;
 	}
 
 	/// <summary>
@@ -4479,6 +4668,16 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		SyncDockChecks();
 
 		_tutorial?.Restart( EffigyLesson.Hand );
+		RefreshTutorial();
+	}
+
+	private void StartPlayermodelTutorial()
+	{
+		DockManager.SetDockState( "Tutorial", true );
+		DockManager.RaiseDock( "Tutorial" );
+		SyncDockChecks();
+
+		_tutorial?.Restart( EffigyLesson.Playermodel );
 		RefreshTutorial();
 	}
 
@@ -4778,6 +4977,40 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		_documentPath = null;
 		MarkClean();
+	} );
+
+	/// <summary>
+	/// Replace the document with the sample humanoid, for the playermodel tutorial's "Use the
+	/// example robot" button.
+	///
+	/// NewStudio with one line changed, and for the same reasons: the discard confirmation so an
+	/// unsaved model is not thrown away by a button on a tutorial panel, the undo step so the
+	/// replacement is reversible, and the panel resets so nothing is still pointing at a feature
+	/// that no longer exists.
+	/// </summary>
+	private void LoadPlayermodelExample() => ConfirmDiscard( () =>
+	{
+		RecordUndo();
+		_studio = HumanoidSample.Build();
+		_featureTree?.SetStudio( _studio );
+		_partsPanel?.SetStudio( _studio );
+		_materialsPanel?.SetStudio( _studio );
+		_variablesPanel?.Bind( _studio );
+		_rigPanel?.SetStudio( _studio );
+		_dialog?.Close();
+
+		SyncOriginFromStudio();
+		RebuildStudio();
+
+		// NO document path. The sample is a starting point, not a file somebody opened, and leaving
+		// the previous path in place would let Save overwrite whatever was open before.
+		_documentPath = null;
+		MarkClean();
+
+		_viewport?.FrameCamera();
+
+		Log.Info( $"[Effigy] loaded the example humanoid - {_studio.Bodies.Count} parts, "
+			+ "each named after the bone it becomes" );
 	} );
 
 	private void DeleteSelectedFeature()
@@ -5112,6 +5345,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		return !string.IsNullOrWhiteSpace( path );
 	}
 
+	/// <summary>Import a mesh as a body into the current studio, same as the Import tool button.</summary>
+	private void ImportObj() => AddFeature( new ImportFeature() );
+
 	private void Open()
 	{
 		// The unsaved work belongs to the studio being replaced, so the question comes first.
@@ -5265,13 +5501,24 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	/// now: every key VmdlPhysics writes was put into a probe .vmdl, compiled, and read back off the
 	/// compiled model's own physics bounds. See that file for what each probe answered.
 	///
-	/// A RIGGED PART FALLS BACK TO THE RENDER MESH, and that is the one judgement call here. Every
-	/// shape CollisionBuilder produces is in MODEL space, with no bone to hang off - a shape list on
-	/// a skinned model wants parent_bone set per shape, and the mapping from a body to the bone that
-	/// drives it is exactly the thing the rig panel exists to let somebody decide. Writing them all
-	/// against the root would put a static collision hull on an animating character, which is the
-	/// wrong kind of wrong: it looks right until something moves. PhysicsMeshFromRender is honest,
-	/// costs nothing, and is what every hand-authored model in this project already uses.
+	/// A RIGGED PART USED TO FALL BACK TO THE RENDER MESH, and that was wrong in exactly the way it
+	/// was trying to avoid. The reasoning was that CollisionBuilder's shapes have no bone to hang
+	/// off, so writing them against the root "would put a static collision hull on an animating
+	/// character - the wrong kind of wrong: it looks right until something moves". True. But
+	/// PhysicsMeshFromRender writes `parent_bone = ""` too. It is the same static hull on the same
+	/// animating character, arrived at by a different route: pose a bone and the mesh swings away
+	/// from a collision box lying where the model used to be.
+	///
+	/// SO IT WRITES THE BONE NOW. The map from a body to the bone that drives it is what the rig
+	/// panel exists to let somebody decide, and it is right there in BodyBoneMap - the same map the
+	/// weights are bound through, so collision and mesh agree by construction rather than by
+	/// coincidence. A body nobody assigned goes to the bone nearest its centre, which is where
+	/// SkinBinder was going to weight it anyway.
+	///
+	/// ONE HULL PER BODY, not the history decomposition. Bones are assigned to bodies, and a
+	/// decomposition's boxes have no body to be assigned through - see CollisionBuilder.HullsPerBody.
+	/// A rigged part therefore gets the coarser representation on purpose, and the rig is what pays
+	/// for it: a hull per body that MOVES beats an exact union of boxes that does not.
 	/// </summary>
 	private string BuildPhysics( bool rigged )
 	{
@@ -5279,7 +5526,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			return "";
 
 		if ( rigged )
-			return VmdlPhysics.MeshFromRender();
+			return BuildRiggedPhysics();
 
 		try
 		{
@@ -5305,16 +5552,116 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	}
 
 	/// <summary>
+	/// A rigged part's PhysicsShapeList: one hull per body, each naming the bone that drives it.
+	///
+	/// THE PIVOT IS APPLIED HERE AND THE SKELETON IS NOT PIVOTED YET, and those two facts have to
+	/// stay in step. Hull vertices are MODEL space even on a bone-parented shape (VmdlPhysics has
+	/// the probe that says so), so they belong in the same coordinates as the .dmx - which is the
+	/// pivoted mesh. CompileVmdl shifts mesh and skeleton by the same offset, so a hull shifted with
+	/// the mesh lands correctly against the shifted bone; a hull left unshifted would not.
+	///
+	/// FALLING BACK TO THE RENDER MESH IS STILL THE ANSWER WHEN THERE IS NOTHING BETTER - a part
+	/// whose bodies produced no hull at all, or a rig that has lost its skeleton between the caller's
+	/// check and this one. It is static collision, which is wrong for an animated model, but a model
+	/// with wrong collision beats a model with none while somebody works out why.
+	/// </summary>
+	private string BuildRiggedPhysics()
+	{
+		if ( _rigPanel is not { HasBones: true } rig )
+			return VmdlPhysics.MeshFromRender();
+
+		try
+		{
+			var skeleton = rig.Skeleton;
+			var map = rig.BodyBoneMap;
+			var shapes = CollisionBuilder.HullsPerBody( _studio );
+
+			foreach ( var shape in shapes )
+			{
+				// An assignment the rig panel made, when there is one. A name it no longer holds -
+				// a bone deleted after the assignment was made - is treated as no assignment rather
+				// than written through, because parent_bone naming a bone the skeleton does not have
+				// is a compile error and a silent fallback is not.
+				if ( shape.BodyId is not null && map.TryGetValue( shape.BodyId, out var named )
+					&& skeleton.IndexOf( named ) >= 0 )
+				{
+					shape.Bone = named;
+					continue;
+				}
+
+				shape.Bone = skeleton.Bones[SkinBinder.NearestBone( Centre( shape ), skeleton )].Name;
+			}
+
+			ApplyPivot( shapes );
+
+			var node = VmdlPhysics.ShapeList( shapes );
+
+			if ( node.Length == 0 )
+				return VmdlPhysics.MeshFromRender();
+
+			Log.Info( $"[Effigy] collision into the .vmdl: {shapes.Count} hull(s) on "
+				+ $"{shapes.Select( s => s.Bone ).Distinct().Count()} bone(s)" );
+
+			return node;
+		}
+		catch ( Exception e )
+		{
+			Log.Warning( $"[Effigy] bone-parented collision could not be built ({e.Message}) "
+				+ "- falling back to the render mesh" );
+			return VmdlPhysics.MeshFromRender();
+		}
+	}
+
+	/// <summary>
+	/// The middle of a shape, for asking which bone it is nearest.
+	///
+	/// The average of a hull's points rather than the centre of its bounds: it costs the same and it
+	/// leans toward where the geometry actually is, which is the better question to ask of a limb
+	/// that tapers. Non-hulls carry their centre in Position already.
+	/// </summary>
+	private static Vec3 Centre( CollisionShape shape )
+	{
+		if ( shape.Points is not { Count: > 0 } points )
+			return shape.Position;
+
+		var sum = Vec3.Zero;
+
+		foreach ( var p in points )
+			sum += p;
+
+		return sum / points.Count;
+	}
+
+	/// <summary>
 	/// What this part's physics representation is, listed where a person can read it.
 	///
 	/// Still worth having now that the shapes reach the .vmdl: this is where you find out WHY a part
 	/// came out as one hull per body instead of as the boxes it was drawn from - CollisionReport
 	/// names the feature that spoiled the decomposition, and nothing in the compiled model does.
+	///
+	/// A RIGGED PART IS ASKED THE QUESTION IT WILL ACTUALLY BE EXPORTED UNDER. Its collision is one
+	/// hull per body on the bone that drives it, whatever the history says, so reporting the
+	/// decomposition here would describe boxes the .vmdl is never going to carry - and the point of
+	/// this button is to answer "what collision am I about to ship".
 	/// </summary>
 	private void ReportCollision()
 	{
 		if ( _studio is null )
 			return;
+
+		if ( _rigPanel is { HasBones: true } )
+		{
+			var hulls = CollisionBuilder.HullsPerBody( _studio );
+
+			Log.Info( $"[Effigy] collision: {hulls.Count} hull(s), one per body, bone-parented" );
+
+			foreach ( var hull in hulls )
+				Log.Info( $"[Effigy]   {hull} for body {hull.BodyId}" );
+
+			SetPrompt( $"Collision: {hulls.Count} hull(s), one per body and parented to the bone "
+				+ "that drives it — see the console." );
+			return;
+		}
 
 		var report = CollisionBuilder.Build( _studio );
 
@@ -5711,142 +6058,116 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	}
 
 	/// <summary>
-	/// Same one-node RenderMeshFile shape as EffigyTool.BuildVmdl, plus whatever PhysicsShapeList
-	/// VmdlPhysics built and the MaterialGroupList VmdlMaterials built.
+	/// File → Compile Playermodel. Writes the model that carries citizen's skeleton and names
+	/// citizen's animation graph, so citizen's animations drive it.
 	///
-	/// MATERIALS USED TO GO NOWHERE, the same way collision did. The mesh writers named each slot
-	/// and the .vmdl had no MaterialGroupList, so ModelDoc filled one in with
-	/// use_global_default = true and materials/default.vmat — a part that rendered in the viewport
-	/// with the materials that were dropped on it compiled as a blank grey prop. The node is always
-	/// present: an omitted list is what gets replaced, an empty one with the global default off
-	/// leaves the mesh names in place.
+	/// A SEPARATE MENU ITEM RATHER THAN A FLAG ON Compile .vmdl, because the two produce different
+	/// things for different purposes and the difference is not a detail. Compile .vmdl writes YOUR
+	/// skeleton with your bones and your clips - the right answer for a prop, a weapon or a creature
+	/// with its own animation. This writes citizen's 95 bones fitted into your mesh, which only makes
+	/// sense for something that is going to be a player.
 	///
-	/// THE -90 PITCH AND -90 YAW ARE NOT DECORATION. ModelDoc's OBJ importer does not land the mesh
-	/// in the coordinates the file gives it. It reads the file as Y-up (the OBJ convention) and then
-	/// turns it another quarter turn, so the whole thing arrives cyclically permuted:
-	///
-	///     engine.x = obj.z    engine.y = obj.x    engine.z = obj.y
-	///
-	/// The kernel is Z-up - its sketch planes are named "Top (XY)", "Front (XZ)", "Right (YZ)" - so
-	/// this is TWO errors stacked, and only one of them used to be corrected here. A bare -90 yaw
-	/// undoes the extra turn and leaves the Y-up reading in place, landing the mesh at
-	/// (obj.x, -obj.z, obj.y): a part drawn lying flat comes out standing on its side. [-90, -90, 0]
-	/// is the full inverse of the permutation above and puts the mesh back in the coordinates the
-	/// file was written in.
-	///
-	/// MEASURED. A two-box part whose OBJ bounds are 155 x 159 x 84 compiled to 84 x 155 x 159 at
-	/// rotation zero - the permutation, read straight off the numbers - and to 155 x 159 x 84 at
-	/// [-90, -90, 0], with the bar still pointing along +x and the raised lip still on top, so this
-	/// is the identity and not some other transform that happens to share its bounds.
-	///
-	/// The old measurement was not wrong, it was too narrow: it unioned a bar along x = 0..10 with a
-	/// matching PhysicsShapeBox and checked only that ONE axis came back 10 wide. A -90 yaw does
-	/// hold x still, which is why it passed while y and z stayed swapped.
-	///
-	/// This matters most for collision. The shapes BuildPhysics emits come from CollisionBuilder
-	/// over the studio, i.e. in kernel coordinates, and import_rotation does not touch them - so the
-	/// mesh has to arrive in kernel coordinates too, or the collision sits at an angle to the model
-	/// it belongs to.
-	///
-	/// The DMX path does not get this and must not: it is only the OBJ importer that turns the mesh,
-	/// and the rigged export uses PhysicsMeshFromRender anyway, so its physics follows its mesh
-	/// wherever the importer puts it.
+	/// THE NAME GETS `_citizen` ON THE END, so the two can sit in the same folder. A playermodel and
+	/// an ordinary compile of the same document are both legitimate things to want at once.
 	/// </summary>
-	static string BuildVmdl( string meshFilename, string physics = "", string materials = "" ) =>
-		"<!-- kv3 encoding:text:version{e21c7f3c-8a33-41c5-9977-a76d3a32aa0d} format:modeldoc29:version{3cec427c-1b0e-4d48-a90a-0436f33a6041} -->\n" +
-		"{\n" +
-		"\trootNode = \n" +
-		"\t{\n" +
-		"\t\t_class = \"RootNode\"\n" +
-		"\t\tchildren = \n" +
-		"\t\t[\n" +
-		materials +
-		"\t\t\t{\n" +
-		"\t\t\t\t_class = \"RenderMeshList\"\n" +
-		"\t\t\t\tchildren = \n" +
-		"\t\t\t\t[\n" +
-		"\t\t\t\t\t{\n" +
-		"\t\t\t\t\t\t_class = \"RenderMeshFile\"\n" +
-		"\t\t\t\t\t\tname = \"Body_LOD0\"\n" +
-		"\t\t\t\t\t\tchildren = \n" +
-		"\t\t\t\t\t\t[\n" +
-		"\t\t\t\t\t\t]\n" +
-		$"\t\t\t\t\t\tfilename = \"{meshFilename}\"\n" +
-		"\t\t\t\t\t\timport_translation = [ 0.0, 0.0, 0.0 ]\n" +
-		"\t\t\t\t\t\timport_rotation = [ -90.0, -90.0, 0.0 ]\n" +
-		"\t\t\t\t\t\timport_scale = 1.0\n" +
-		"\t\t\t\t\t\talign_origin_x_type = \"None\"\n" +
-		"\t\t\t\t\t\talign_origin_y_type = \"None\"\n" +
-		"\t\t\t\t\t\talign_origin_z_type = \"None\"\n" +
-		"\t\t\t\t\t\tparent_bone = \"\"\n" +
-		"\t\t\t\t\t},\n" +
-		"\t\t\t\t]\n" +
-		"\t\t\t},\n" +
-		physics +
-		"\t\t]\n" +
-		"\t\tmodel_archetype = \"\"\n" +
-		"\t\tprimary_associated_entity = \"\"\n" +
-		"\t\tanim_graph_name = \"\"\n" +
-		"\t\tbase_model_name = \"\"\n" +
-		"\t}\n" +
-		"}\n";
+	private void CompilePlayermodel()
+	{
+		var report = RebuildForExport( "playermodel compile" );
+
+		if ( report.HasErrors || _studio.Bodies.Count == 0 )
+		{
+			Log.Warning( "[Effigy] cannot compile - studio has errors or no bodies" );
+			return;
+		}
+
+		// WARNED, NOT BLOCKED. Somebody who has modelled a humanoid and not yet rigged it gets a
+		// model out of this - a rigid statue that slides rather than walks - and being told why is
+		// more use than being refused. The export says the same thing again from its own side.
+		if ( _rigPanel is not { HasBones: true } )
+			Log.Warning( "[Effigy] this model has no bones, so there is nothing for citizen's "
+				+ "animations to drive. Switch to Rig and make a bone per part first - Help → Start "
+				+ "Playermodel Tutorial walks through it." );
+
+		var name = ExportBaseName();
+
+		if ( name is null )
+			return;
+
+		// NO ApplyPivot, unlike CompileVmdl. A playermodel's origin has to be between its feet
+		// because that is where the engine stands a player; honouring a pivot the modeller set for
+		// some other export would sink or float the whole character. See EffigyPlayermodelExport.
+		EffigyPlayermodelExport.Export( _studio, $"{name}_citizen" );
+	}
 
 	/// <summary>
-	/// A skinned .vmdl: the RenderMeshFile points at an SMD (which carries the bone hierarchy,
-	/// bind pose, and per-vertex weights). ModelDoc imports the skeleton from the SMD and bakes
-	/// everything into the compiled model.
+	/// File → Make Player. Compile the playermodel, then write a scene with a floor, a light and a
+	/// player wearing it, so the thing can be walked around in.
+	///
+	/// IT DOES NOT OPEN THE SCENE AND IT DOES NOT PRESS PLAY, and both of those are on purpose.
+	/// Opening a scene replaces whatever is open in the editor, which could be an hour of unsaved
+	/// work that this menu item has no business discarding; entering play mode on a scene somebody
+	/// is mid-edit in has cost this project a whole prefab before now. So it writes the file, logs
+	/// the path, and leaves both decisions to the person who can see their own editor.
 	/// </summary>
+	private void MakePlayer()
+	{
+		var report = RebuildForExport( "Make Player" );
+
+		if ( report.HasErrors || _studio.Bodies.Count == 0 )
+		{
+			Log.Warning( "[Effigy] cannot make a player - studio has errors or no bodies" );
+			return;
+		}
+
+		if ( _rigPanel is not { HasBones: true } )
+			Log.Warning( "[Effigy] this model has no bones, so the player will be a rigid statue. "
+				+ "Switch to Rig and make a bone per part first." );
+
+		var name = ExportBaseName();
+
+		if ( name is null )
+			return;
+
+		var model = EffigyPlayermodelExport.Export( _studio, $"{name}_citizen" );
+
+		if ( model is null )
+		{
+			// The export has already said what went wrong in its own words. Adding "and therefore no
+			// scene" is the part it cannot know.
+			Log.Warning( "[Effigy] the playermodel did not compile, so no scene was written" );
+			return;
+		}
+
+		var scene = EffigyPlayerScene.Write( model, name );
+
+		if ( scene is null )
+		{
+			Log.Warning( $"[Effigy] {model} compiled but the scene could not be written - "
+				+ "Assets/scenes could not be resolved" );
+			return;
+		}
+
+		Log.Info( $"[Effigy] wrote {scene} - open it from the asset browser and press Play to walk "
+			+ "your model around. It is not opened for you: that would close whatever scene you "
+			+ "have open, unsaved changes included." );
+	}
+
 	/// <summary>
-	/// <paramref name="animations"/> is the AnimationList node. Empty means the bind pose alone,
-	/// which is what this always wrote — `VmdlAnimation.AnimationList()` with no clips is
-	/// byte-identical to `BindPoseList()`, and a test holds that, so the no-clips path is
-	/// unchanged rather than merely equivalent.
+	/// The .vmdl for a static export. The template, and the measured import_rotation the OBJ
+	/// importer needs, live in <see cref="VmdlDocument"/> — there were four hand-copied copies of
+	/// this string and only this one had the correction, so it is one place now.
+	/// </summary>
+	static string BuildVmdl( string meshFilename, string physics = "", string materials = "" ) =>
+		VmdlDocument.Static( meshFilename, physics, materials );
+
+	/// <summary>
+	/// The .vmdl for a rigged export: the .dmx carries the bone hierarchy, bind pose and
+	/// per-vertex weights, and <paramref name="animations"/> is the AnimationList node — empty
+	/// means the bind pose alone, which is what this always wrote.
 	/// </summary>
 	static string BuildSkinnedVmdl( string meshFilename, Skeleton skeleton, string physics = "",
 		string materials = "", string animations = null ) =>
-		"<!-- kv3 encoding:text:version{e21c7f3c-8a33-41c5-9977-a76d3a32aa0d} format:modeldoc29:version{3cec427c-1b0e-4d48-a90a-0436f33a6041} -->\n" +
-		"{\n" +
-		"\trootNode = \n" +
-		"\t{\n" +
-		"\t\t_class = \"RootNode\"\n" +
-		"\t\tchildren = \n" +
-		"\t\t[\n" +
-		materials +
-		"\t\t\t{\n" +
-		"\t\t\t\t_class = \"RenderMeshList\"\n" +
-		"\t\t\t\tchildren = \n" +
-		"\t\t\t\t[\n" +
-		"\t\t\t\t\t{\n" +
-		"\t\t\t\t\t\t_class = \"RenderMeshFile\"\n" +
-		"\t\t\t\t\t\tname = \"Body_LOD0\"\n" +
-		"\t\t\t\t\t\tchildren = \n" +
-		"\t\t\t\t\t\t[\n" +
-		"\t\t\t\t\t\t]\n" +
-		$"\t\t\t\t\t\tfilename = \"{meshFilename}\"\n" +
-		"\t\t\t\t\t\timport_translation = [ 0.0, 0.0, 0.0 ]\n" +
-		"\t\t\t\t\t\timport_rotation = [ 0.0, 0.0, 0.0 ]\n" +
-		"\t\t\t\t\t\timport_scale = 1.0\n" +
-		"\t\t\t\t\t\talign_origin_x_type = \"None\"\n" +
-		"\t\t\t\t\t\talign_origin_y_type = \"None\"\n" +
-		"\t\t\t\t\t\talign_origin_z_type = \"None\"\n" +
-		"\t\t\t\t\t\tparent_bone = \"\"\n" +
-		"\t\t\t\t\t},\n" +
-		"\t\t\t\t]\n" +
-		"\t\t\t},\n" +
-		VmdlAnimation.BoneMarkupList( skeleton ) +
-		// THE BIND POSE, which a non-static model is documented as needing or morph targets and IK
-		// data break quietly. It was absent until the node's real shape could be read off a shipping
-		// file rather than guessed - see VmdlAnimation. Clips join it in the same node rather than
-		// replacing it.
-		(string.IsNullOrEmpty( animations ) ? VmdlAnimation.BindPoseList() : animations) +
-		physics +
-		"\t\t]\n" +
-		"\t\tmodel_archetype = \"\"\n" +
-		"\t\tprimary_associated_entity = \"\"\n" +
-		"\t\tanim_graph_name = \"\"\n" +
-		"\t\tbase_model_name = \"\"\n" +
-		"\t}\n" +
-		"}\n";
+		VmdlDocument.Skinned( meshFilename, skeleton, physics, materials, animations );
 
 	// --- undo / redo -------------------------------------------------------------------------
 
@@ -5898,6 +6219,11 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		/// immutable once painted — so the snapshot shares the stroke objects and only the list is new.
 		/// </summary>
 		public Dictionary<PaintFeature, List<PaintStroke>> PaintStrokes;
+
+		/// <summary>Deleted import pieces, for the same reason PaintStrokes is captured: a public
+		/// field, not a parameter, so the parameter sweep would miss it and Ctrl+Z after deleting a
+		/// piece would bring the whole import back or none of it.</summary>
+		public Dictionary<ImportFeature, List<int>> RemovedPieces;
 
 		/// <summary>Slot names, renamed from the same menu.</summary>
 		public Dictionary<int, string> MaterialNames;
@@ -5954,6 +6280,11 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		foreach ( var feature in _studio.Features.OfType<PaintFeature>() )
 			paintStrokes[feature] = feature.Strokes is null ? null : new List<PaintStroke>( feature.Strokes );
 
+		var removedPieces = new Dictionary<ImportFeature, List<int>>();
+
+		foreach ( var feature in _studio.Features.OfType<ImportFeature>() )
+			removedPieces[feature] = new List<int>( feature.RemovedPieces );
+
 		return new StudioSnapshot
 		{
 			Features = _studio.Features.ToList(),
@@ -5961,6 +6292,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			Sketches = sketches,
 			FaceSets = faceSets,
 			PaintStrokes = paintStrokes,
+			RemovedPieces = removedPieces,
 			MaterialNames = new Dictionary<int, string>( _studio.MaterialNames ),
 			BodyNames = new Dictionary<string, string>( _studio.BodyNames ),
 			HiddenBodyIds = new HashSet<string>( _studio.HiddenBodyIds ),
@@ -6022,6 +6354,12 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		foreach ( var (feature, strokes) in snapshot.PaintStrokes )
 			feature.ReplaceStrokes( strokes );
+
+		foreach ( var (feature, pieces) in snapshot.RemovedPieces )
+		{
+			feature.RemovedPieces.Clear();
+			feature.RemovedPieces.AddRange( pieces );
+		}
 
 		_studio.MaterialNames.Clear();
 
@@ -6152,6 +6490,17 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		foreach ( var (feature, strokes) in a.PaintStrokes )
 		{
 			if ( !b.PaintStrokes.TryGetValue( feature, out var others ) || !SameStrokes( strokes, others ) )
+				return false;
+		}
+
+		if ( a.RemovedPieces.Count != b.RemovedPieces.Count )
+			return false;
+
+		foreach ( var (feature, pieces) in a.RemovedPieces )
+		{
+			if ( !b.RemovedPieces.TryGetValue( feature, out var others )
+				|| pieces.Count != others.Count
+				|| !pieces.SequenceEqual( others ) )
 				return false;
 		}
 
@@ -6477,14 +6826,28 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		_viewport.Update();
 	}
 
+	// W/E/R drive whichever handle is up — the selected bone's and an open Transform's. Each setter
+	// no-ops when its handle is not there, so one convention serves both rather than two keymaps.
 	[Shortcut( "effigy.bone.move", "W", typeof( EffigyViewport ) )]
-	private void ShortcutBoneMove() => _viewport?.SetBoneDragMode( EffigyViewport.BoneDragMode.Move );
+	private void ShortcutBoneMove()
+	{
+		_viewport?.SetBoneDragMode( EffigyViewport.BoneDragMode.Move );
+		_viewport?.SetBodyDragMode( EffigyViewport.BodyDragMode.Move );
+	}
 
 	[Shortcut( "effigy.bone.rotate", "E", typeof( EffigyViewport ) )]
-	private void ShortcutBoneRotate() => _viewport?.SetBoneDragMode( EffigyViewport.BoneDragMode.Rotate );
+	private void ShortcutBoneRotate()
+	{
+		_viewport?.SetBoneDragMode( EffigyViewport.BoneDragMode.Rotate );
+		_viewport?.SetBodyDragMode( EffigyViewport.BodyDragMode.Rotate );
+	}
 
 	[Shortcut( "effigy.bone.scale", "R", typeof( EffigyViewport ) )]
-	private void ShortcutBoneScale() => _viewport?.SetBoneDragMode( EffigyViewport.BoneDragMode.Scale );
+	private void ShortcutBoneScale()
+	{
+		_viewport?.SetBoneDragMode( EffigyViewport.BoneDragMode.Scale );
+		_viewport?.SetBodyDragMode( EffigyViewport.BodyDragMode.Scale );
+	}
 
 	/// <summary>The index is into <see cref="_brushTools"/>, so the keyboard order and the stage
 	/// bar's order are one list rather than two that can drift apart.</summary>
@@ -7477,7 +7840,6 @@ internal enum EffigyPartCommand
 	Rename,
 	ToggleVisibility,
 	Edit,
-	Delete,
 	Isolate,
 	ShowAll,
 	MakeBone,
@@ -7995,6 +8357,11 @@ internal sealed class EffigyPartsPanel : Widget
 	/// snapshot for undo BEFORE applying it.</summary>
 	public Action<string, string> RenameCommitted { get; set; }
 
+	/// <summary>Delete was chosen. Carries every body to remove — the whole selection when the
+	/// clicked row is part of a multi-select, just that row otherwise — so the window can remove
+	/// them all in one undo step.</summary>
+	public Action<IReadOnlyList<string>> DeleteRequested { get; set; }
+
 	/// <summary>The row highlight changed. Body ids of the selected parts, empty for none.</summary>
 	public Action<IReadOnlyList<string>> SelectionChanged { get; set; }
 
@@ -8032,16 +8399,53 @@ internal sealed class EffigyPartsPanel : Widget
 			if ( _restoringSelection )
 				return;
 
-			_selectedBodyIds.Clear();
+			var ids = new List<string>();
 
 			if ( objs is not null )
 			{
 				foreach ( var obj in objs )
 				{
-					if ( obj is PartNode node )
-						_selectedBodyIds.Add( node.Value.Id );
+					// BOTH SHAPES ACCEPTED. Whether a TreeView reports the node it holds or the value
+					// inside it is not worth being wrong about a fourth time: a row that cannot name
+					// its body is a Parts list that does not select, which is exactly the symptom.
+					var id = obj switch
+					{
+						PartNode node => node.Value?.Id,
+						Body body => body.Id,
+						TreeNode<Body> generic => generic.Value?.Id,
+						_ => null,
+					};
+
+					if ( !string.IsNullOrEmpty( id ) )
+						ids.Add( id );
 				}
 			}
+
+			// AN EMPTY REPORT FROM A TREE THAT STILL HAS THE ROWS IS A REBUILD, NOT A DESELECTION.
+			//
+			// This is the bug behind "clicking a part in the list highlights nothing in the
+			// viewport", which outlived several attempts at it. Refresh() rebuilds the rows, and
+			// TreeView.Clear drops its selection and says so — but it says so on a LATER frame, so
+			// the _restoringSelection flag above has already closed by the time the notification
+			// arrives and cannot catch it. With a feature dialog open the studio rebuilds on every
+			// parameter tick, this panel refreshes with it, and the click was being wiped about once
+			// a second: the highlight appeared and vanished faster than it read as having appeared.
+			//
+			// The panel is the authority on its own selection. Nothing in this list DESELECTS by
+			// reporting emptiness — a row click reports that row, and clearing the selection comes
+			// from the viewport (Select, below) or from the parts themselves going away (Refresh,
+			// which clears _selectedBodyIds outright when there is nothing left to select). So an
+			// empty report while we still believe in a selection that still exists is put back
+			// rather than forwarded.
+			if ( ids.Count == 0 && _selectedBodyIds.Count > 0
+				&& _selectedBodyIds.TrueForAll( id => _nodes.ContainsKey( id ) ) )
+			{
+				RestoreTreeSelection();
+				return;
+			}
+
+			_selectedBodyIds.Clear();
+			_selectedBodyIds.AddRange( ids );
 
 			SelectionChanged?.Invoke( _selectedBodyIds );
 		};
@@ -8057,31 +8461,74 @@ internal sealed class EffigyPartsPanel : Widget
 	public void SetStudio( PartStudio studio )
 	{
 		_studio = studio ?? new PartStudio();
+
+		// A different document's parts can sign identically to this one's — open two saves of the
+		// same model and they will — so the skip in Refresh has to be told outright that what it is
+		// looking at is not the same list any more.
+		_signature = null;
+
 		Refresh();
 	}
 
+	/// <summary>
+	/// Rebuild the rows from the studio's bodies.
+	///
+	/// THE WHOLE THING IS FENCED OFF FROM THE SELECTION CALLBACK, and that fence is the fix for the
+	/// oldest complaint against this panel: clicking a part highlighted nothing in the viewport.
+	/// TreeView.Clear drops its selection and reports that the way it reports any other selection
+	/// change — so the first line of this method told the window "nothing is selected now", the
+	/// window forwarded it to the viewport, and the highlight went out. It survived being reported
+	/// several times because it only bites while the list is being refreshed OFTEN, which is exactly
+	/// what happens with a feature dialog open: every parameter tick rebuilds the studio, every
+	/// rebuild refreshes this panel, and the click you just made is wiped before the next frame
+	/// draws. With no dialog open the same click looked like it worked.
+	///
+	/// _restoringSelection was already the flag for this — it just did not cover the clear.
+	/// </summary>
 	public void Refresh()
 	{
-		_tree.Clear();
-		_nodes.Clear();
+		// NOTHING CHANGED, SO NOTHING IS REBUILT. A feature dialog rebuilds the studio on every
+		// parameter tick and every rebuild lands here, where the answer is almost always the same
+		// fourteen rows saying the same fourteen things. Tearing the tree down to put it back
+		// identically costs a row of widgets a tick and, worse, makes the tree announce a lost
+		// selection each time — see the OnSelectionChanged note above for what that did.
+		var signature = Signature();
 
-		if ( _studio is null || _studio.Bodies.Count == 0 )
-		{
-			_selectedBodyIds.Clear();
-			_tree.AddItem( new EmptyPartsNode() );
+		if ( signature == _signature && _nodes.Count > 0 )
 			return;
-		}
 
-		_selectedBodyIds.RemoveAll( id => _studio.Bodies.All( b => b.Id != id ) );
+		_signature = signature;
 
-		foreach ( var body in _studio.Bodies )
+		var restoring = _restoringSelection;
+		_restoringSelection = true;
+
+		try
 		{
-			var node = new PartNode( this, body );
-			_nodes[body.Id] = node;
-			_tree.AddItem( node );
-		}
+			_tree.Clear();
+			_nodes.Clear();
 
-		RestoreTreeSelection();
+			if ( _studio is null || _studio.Bodies.Count == 0 )
+			{
+				_selectedBodyIds.Clear();
+				_tree.AddItem( new EmptyPartsNode() );
+				return;
+			}
+
+			_selectedBodyIds.RemoveAll( id => _studio.Bodies.All( b => b.Id != id ) );
+
+			foreach ( var body in _studio.Bodies )
+			{
+				var node = new PartNode( this, body );
+				_nodes[body.Id] = node;
+				_tree.AddItem( node );
+			}
+
+			RestoreTreeSelection();
+		}
+		finally
+		{
+			_restoringSelection = restoring;
+		}
 	}
 
 	/// <summary>Select these parts in the list. Used when the viewport picked a face so the row
@@ -8096,16 +8543,49 @@ internal sealed class EffigyPartsPanel : Widget
 		RestoreTreeSelection();
 	}
 
+	/// <summary>Everything the rows display, in one string. Anything a row SHOWS belongs in here —
+	/// the face count moves when a Remesh runs, the eye when a part is hidden, the bone when one is
+	/// assigned — or the list will sit there showing the old value.</summary>
+	private string Signature()
+	{
+		if ( _studio is null || _studio.Bodies.Count == 0 )
+			return "";
+
+		var builder = new StringBuilder();
+
+		foreach ( var body in _studio.Bodies )
+		{
+			builder.Append( body.Id ).Append( '/' )
+				.Append( body.Name?.Length ?? 0 ).Append( '/' ).Append( body.Name ).Append( '/' )
+				.Append( body.Mesh?.FaceCount ?? 0 ).Append( '/' )
+				.Append( body.Visible ? '1' : '0' ).Append( '/' )
+				.Append( BoneFor( body.Id ) ).Append( ';' );
+		}
+
+		return builder.ToString();
+	}
+
+	private string _signature;
+
+	/// <summary>Put the row highlight back on whatever is selected, without reporting it as a new
+	/// selection. Saves and restores the flag rather than clearing it outright, because Refresh
+	/// calls this from inside its own fence and a bare `false` here would open it early.</summary>
 	private void RestoreTreeSelection()
 	{
+		var restoring = _restoringSelection;
 		_restoringSelection = true;
 
-		if ( _selectedBodyIds.Count == 0 || !_nodes.TryGetValue( _selectedBodyIds[0], out var node ) )
-			_tree.ClearPartSelection();
-		else
-			_tree.SelectItem( node );
-
-		_restoringSelection = false;
+		try
+		{
+			if ( _selectedBodyIds.Count == 0 || !_nodes.TryGetValue( _selectedBodyIds[0], out var node ) )
+				_tree.ClearPartSelection();
+			else
+				_tree.SelectItem( node );
+		}
+		finally
+		{
+			_restoringSelection = restoring;
+		}
 	}
 
 	/// <summary>Rename in place: a one-field popup at the cursor, same as the feature tree.</summary>
@@ -8165,13 +8645,37 @@ internal sealed class EffigyPartsPanel : Widget
 
 		menu.AddSeparator();
 
-		var delete = menu.AddOption( "Delete", "delete",
-			() => CommandRequested?.Invoke( bodyId, EffigyPartCommand.Delete ) );
+		// Delete removes the whole selection when the clicked row is part of a multi-select — the
+		// same rule a file manager follows. A single selected row, or a right-click on a row
+		// outside the selection, deletes just that row.
+		var deleteSet = _selectedBodyIds.Count > 1 && _selectedBodyIds.Contains( bodyId )
+			? _selectedBodyIds.ToList()
+			: new List<string> { bodyId };
 
-		var siblings = _studio.Bodies.Count( b => b.FeatureId == body.FeatureId );
+		var delete = menu.AddOption(
+			deleteSet.Count > 1 ? $"Delete {deleteSet.Count} parts" : "Delete", "delete",
+			() => DeleteRequested?.Invoke( deleteSet ) );
 
-		if ( siblings > 1 )
-			delete.StatusTip = "Removes the feature that made this part, and every other part it made.";
+		if ( deleteSet.Count > 1 )
+		{
+			delete.StatusTip = $"Removes the {deleteSet.Count} selected parts. Ctrl+Z brings them back.";
+		}
+		else
+		{
+			var feature = _studio.Features.FirstOrDefault( f => f.Id == body.FeatureId );
+
+			if ( feature is ImportFeature import && import.CanRemovePiece( bodyId ) )
+			{
+				delete.StatusTip = "Removes just this part. Ctrl+Z brings it back.";
+			}
+			else
+			{
+				var siblings = _studio.Bodies.Count( b => b.FeatureId == body.FeatureId );
+
+				if ( siblings > 1 )
+					delete.StatusTip = "Removes the feature that made this part, and every other part it made.";
+			}
+		}
 
 		menu.AddSeparator();
 

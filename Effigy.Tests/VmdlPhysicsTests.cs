@@ -60,6 +60,11 @@ public static class VmdlPhysicsTests
 		TestCylinder();
 		TestHull();
 
+		Section( "vmdl physics: the bone a shape rides on" );
+		TestBoneOnAHull();
+		TestNoBoneIsTheRoot();
+		TestBonedPrimitiveBecomesAHull();
+
 		Section( "vmdl physics: the node, and what it does with nothing" );
 		TestNodeShape();
 		TestNothingIsNothing();
@@ -178,6 +183,84 @@ public static class VmdlPhysicsTests
 
 		Check( "and a hull of fewer than four points is dropped rather than written",
 			flat.Length == 0, flat );
+	}
+
+	/// <summary>
+	/// A hull's points do NOT move when it is given a bone.
+	///
+	/// This is the whole reason the bone-parented path emits hulls and nothing else. The probe
+	/// VmdlPhysics records found that hull_vertices stay MODEL space while a primitive's origin is
+	/// read in the bone's own space — so a hull can name a bone without its numbers changing, and
+	/// this pins that: same points, bone or no bone.
+	/// </summary>
+	static void TestBoneOnAHull()
+	{
+		var points = new List<Vec3>
+		{
+			new( 0, 0, 0 ), new( 4, 0, 0 ), new( 0, 4, 0 ), new( 0, 0, 4 ),
+		};
+
+		var free = VmdlPhysics.ShapeList( new[]
+		{
+			new CollisionShape { Kind = CollisionKind.Hull, Points = points }
+		} );
+
+		var boned = VmdlPhysics.ShapeList( new[]
+		{
+			new CollisionShape { Kind = CollisionKind.Hull, Points = points, Bone = "upper_arm_L" }
+		} );
+
+		Check( "a hull's bone reaches parent_bone",
+			boned.Contains( "parent_bone = \"upper_arm_L\"" ), Line( boned, "parent_bone" ) );
+
+		Check( "and its vertices are the same ones it had without a bone - model space either way",
+			free.Replace( "parent_bone = \"\"", "parent_bone = \"upper_arm_L\"" ) == boned );
+	}
+
+	/// <summary>
+	/// No bone still means the root, which is what a static part wants and what every earlier test
+	/// in this file was written against.
+	/// </summary>
+	static void TestNoBoneIsTheRoot()
+	{
+		var text = VmdlPhysics.ShapeList( new[]
+		{
+			new CollisionShape { Kind = CollisionKind.Box, Size = new Vec3( 1, 1, 1 ) }
+		} );
+
+		Check( "a shape with no bone is parented to the root",
+			text.Contains( "parent_bone = \"\"" ), Line( text, "parent_bone" ) );
+	}
+
+	/// <summary>
+	/// A primitive that is given a bone comes out as a hull of its corners.
+	///
+	/// NOT PEDANTRY. A PhysicsShapeBox's `origin` is read in the parent bone's LOCAL space, rotation
+	/// included, and a CollisionShape has no rotation to describe that with — so a box written
+	/// against a bone lands wherever that bone's bind pose happens to put it. The corners are points
+	/// and points are model space, so the hull says the same thing in a space both families agree on.
+	/// </summary>
+	static void TestBonedPrimitiveBecomesAHull()
+	{
+		var text = VmdlPhysics.ShapeList( new[]
+		{
+			new CollisionShape
+			{
+				Kind = CollisionKind.Box,
+				Position = new Vec3( 10, 0, 0 ),
+				Size = new Vec3( 2, 3, 4 ),
+				Bone = "spine",
+			}
+		} );
+
+		Check( "a bone-parented box is written as a hull, not a PhysicsShapeBox",
+			text.Contains( "_class = \"PhysicsShapeHull\"" ) && !text.Contains( "PhysicsShapeBox" ) );
+
+		Check( "still on its bone", text.Contains( "parent_bone = \"spine\"" ) );
+
+		// The eight corners of 10±2, 0±3, 0±4 - the same solid, said with points.
+		Check( "and the corners are the box's own, in model space",
+			text.Contains( "[ 8.0, -3.0, -4.0 ]" ) && text.Contains( "[ 12.0, 3.0, 4.0 ]" ), text );
 	}
 
 	static void TestNodeShape()

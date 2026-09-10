@@ -33,6 +33,7 @@ internal enum EffigyLesson
 	House,
 	Rigging,
 	Hand,
+	Playermodel,
 }
 
 /// <summary>
@@ -93,6 +94,76 @@ internal readonly struct EffigyTutorialState
 	/// curl a finger when the palm turns.</summary>
 	public int ChildBones =>
 		Studio?.Rig?.Bones.Count( b => b.Parent >= 0 ) ?? 0;
+
+	// --- the playermodel lesson's vocabulary ---------------------------------------------------
+	//
+	// NAMES, NOT COUNTS, which is the one place this lesson differs from every other. Elsewhere a
+	// step is done when there are enough bones; here a bone called `upperarm_L` hanging off one
+	// called `clavicle_L` is the entire point, and a count would tick off a rig that is correctly
+	// shaped and spelled in a way citizen's animations have never heard of.
+
+	public bool HasBone( string name ) => (Studio?.Rig?.IndexOf( name ) ?? -1) >= 0;
+
+	/// <summary>The name of a bone's parent, "" for a root, null when there is no such bone. Three
+	/// answers rather than two, because "it is a root" and "it does not exist yet" are different
+	/// states and the first step of the lesson turns on telling them apart.</summary>
+	public string ParentOf( string name )
+	{
+		var rig = Studio?.Rig;
+		var index = rig?.IndexOf( name ) ?? -1;
+
+		if ( index < 0 )
+			return null;
+
+		var parent = rig.Bones[index].Parent;
+
+		return parent < 0 ? "" : rig.Bones[parent].Name;
+	}
+
+	/// <summary>Every bone in the list exists, and each hangs off the one before it. The first name
+	/// is only required to exist - it is a bone an earlier step already made, and whether IT has a
+	/// parent is that step's business.</summary>
+	public bool Chain( params string[] names )
+	{
+		if ( names is null || names.Length == 0 )
+			return false;
+
+		if ( !HasBone( names[0] ) )
+			return false;
+
+		for ( var i = 1; i < names.Length; i++ )
+		{
+			if ( !string.Equals( ParentOf( names[i] ), names[i - 1], StringComparison.OrdinalIgnoreCase ) )
+				return false;
+		}
+
+		return true;
+	}
+
+	/// <summary>The lowest point of the model, for "is it standing on the floor". float.MaxValue
+	/// when there is no geometry at all, so a check reading this never mistakes an empty document
+	/// for a model resting at zero.</summary>
+	public float LowestPoint
+	{
+		get
+		{
+			var lowest = float.MaxValue;
+
+			if ( Studio is null )
+				return lowest;
+
+			foreach ( var body in Studio.Bodies )
+			{
+				foreach ( var p in body.Mesh.Positions )
+				{
+					if ( p.z < lowest )
+						lowest = p.z;
+				}
+			}
+
+			return lowest;
+		}
+	}
 }
 
 /// <summary>
@@ -155,6 +226,7 @@ internal sealed class EffigyTutorial
 		Pose,
 		Sculpt,
 		Paint,
+		Walk,
 	}
 
 	public sealed class Step
@@ -188,6 +260,7 @@ internal sealed class EffigyTutorial
 	private readonly List<Step> _house;
 	private readonly List<Step> _rigging;
 	private readonly List<Step> _hand;
+	private readonly List<Step> _playermodel;
 	private List<Step> _steps;
 
 	public EffigyLesson Lesson { get; private set; } = EffigyLesson.House;
@@ -196,6 +269,7 @@ internal sealed class EffigyTutorial
 	{
 		EffigyLesson.Rigging => "Rig a Signpost",
 		EffigyLesson.Hand => "Make a Hand",
+		EffigyLesson.Playermodel => "Make a Playermodel",
 		_ => "Build a House",
 	};
 
@@ -204,6 +278,7 @@ internal sealed class EffigyTutorial
 		_house = HouseSteps();
 		_rigging = RiggingSteps();
 		_hand = HandSteps();
+		_playermodel = PlayermodelSteps();
 		_steps = _house;
 	}
 
@@ -696,6 +771,224 @@ internal sealed class EffigyTutorial
 		};
 
 	/// <summary>
+	/// The playermodel lesson: a humanoid already modelled, turned into something citizen's
+	/// animations will drive.
+	///
+	/// THE ONLY LESSON THAT IS ABOUT NAMES. Every other tutorial here teaches a tool - put a solid
+	/// down, cut a hole, brush a surface. This one teaches a CONVENTION, and the tool work in it is
+	/// two buttons pressed twenty times. So the checks test names and parents rather than counts
+	/// (see EffigyTutorialState's playermodel helpers), and the Detail on every step spends its
+	/// words on why the name matters rather than on where the button is.
+	///
+	/// NO JARGON, ANYWHERE IN IT. "Retarget", "bind pose", "bone markup" and "ignore translation"
+	/// are all real things happening underneath, and a reader who has just modelled their first
+	/// robot needs none of them to finish this. What they need is: your model keeps its own shape,
+	/// the animations only bend joints, and the names have to match. That is the whole of it.
+	///
+	/// "THE BUILT-IN CHARACTER" RATHER THAN "CITIZEN", in every line the reader sees. Citizen is
+	/// what the model is called in the engine and in every comment in this codebase, and it means
+	/// nothing at all to somebody who has used s&box for a week.
+	/// </summary>
+	static List<Step> PlayermodelSteps() => new()
+		{
+			// ---------------------------------------------------------------------------------
+			//  PHASE 1 - HOW IT STANDS
+			//
+			//  Nothing here makes geometry. The model already exists, and the only thing that can
+			//  go wrong before a single bone is made is that it is standing in the wrong place -
+			//  which is invisible in the viewport and obvious the moment it walks.
+			// ---------------------------------------------------------------------------------
+
+			new()
+			{
+				Instruction = "Stand it the way the built-in character stands",
+				Bullets = new[]
+				{
+					"Feet flat on the floor - the lowest point of the model at zero",
+					"Facing forward, along the red arrow",
+					"Arms out to the sides, legs straight down",
+					"Hips about 31 units off the floor",
+				},
+				Detail = "Your model keeps its own shape. Effigy slides the built-in character's "
+					+ "skeleton inside your model rather than squashing your model into its body, so "
+					+ "the animations only ever say how far each joint bends - never how long your "
+					+ "arms are. What they DO decide is how high the hips ride, because that is part "
+					+ "of the walk. A model much taller or shorter than 31 units at the hips will "
+					+ "float or sink, and legs a little shorter than the built-in character's leave "
+					+ "the knees looking slightly straight. Seen from behind, its left hand should "
+					+ "be on your left.",
+				Art = StepArt.Solid,
+
+				// Geometry AND height. An empty document has no lowest point - LowestPoint returns
+				// float.MaxValue there rather than zero - so nothing can tick this off by default.
+				IsDone = s => s.SolidCount >= 1 && MathF.Abs( s.LowestPoint ) <= 1f
+			},
+
+			new()
+			{
+				Instruction = "Switch to Rig",
+				Bullets = new[]
+				{
+					"Click Rig on the bar above the tools",
+				},
+				Detail = "CAD is where parts are made; Rig is where they get a skeleton. Nothing you "
+					+ "do from here on changes the shape of the model.",
+				Art = StepArt.Bone,
+				Points = PointAt.Workspace,
+				Workspace = EffigyWorkspace.Rig,
+				IsDone = s => s.Workspace == EffigyWorkspace.Rig
+			},
+
+			// ---------------------------------------------------------------------------------
+			//  PHASE 2 - THE SKELETON
+			//
+			//  Built root-first, because Bone from Part hangs the new bone off whichever bone is
+			//  selected - so the order the bones are made in IS the hierarchy.
+			// ---------------------------------------------------------------------------------
+
+			new()
+			{
+				Instruction = "The hips come first",
+				Bullets = new[]
+				{
+					"Make sure no bone is selected in the Rig tree",
+					"Click the hip part, then press Bone from Part",
+					"If it is not already called pelvis, right-click it in the Rig tree and rename it",
+				},
+				Detail = "Everything else hangs off this one, so it is made first and on its own. The "
+					+ "name has to be exactly pelvis - that is the name the animations look for, and "
+					+ "a bone spelled any other way is a bone they cannot find. Spelling is the one "
+					+ "thing in this lesson that has to be right to the letter.",
+				Art = StepArt.Bone,
+				Points = PointAt.Tool,
+				Tool = EffigyToolTarget.BoneFromPart,
+				IsDone = s => s.ParentOf( "pelvis" ) == ""
+			},
+
+			new()
+			{
+				Instruction = "Up the back",
+				Bullets = new[]
+				{
+					"Select the pelvis bone, then Bone from Part on the lower back: spine_01",
+					"Select spine_01, then Bone from Part on the next one up: spine_02",
+					"Select spine_02, then Bone from Part on the ribcage: chest",
+				},
+				Detail = "A selected bone becomes the parent of the next one, so the order you make "
+					+ "them in is the order they hang in. That is what makes the whole upper body "
+					+ "follow the hips when the hips turn. Three back bones is what the animations "
+					+ "expect; a model with fewer is fine, the missing ones simply stay put.",
+				Art = StepArt.Bone,
+				Points = PointAt.Tool,
+				Tool = EffigyToolTarget.BoneFromPart,
+				IsDone = s => s.Chain( "pelvis", "spine_01", "spine_02", "chest" )
+			},
+
+			new()
+			{
+				Instruction = "Neck and head",
+				Bullets = new[]
+				{
+					"Select chest, then Bone from Part on the neck: neck",
+					"Select neck, then Bone from Part on the head: head",
+				},
+				Detail = "The head hangs off the neck, the neck off the ribcage. Get that wrong - a "
+					+ "head parented straight to the hips, say - and it still compiles and still "
+					+ "loads, and then stays perfectly level while the body leans.",
+				Art = StepArt.Bone,
+				Points = PointAt.Tool,
+				Tool = EffigyToolTarget.BoneFromPart,
+				IsDone = s => s.Chain( "chest", "neck", "head" )
+			},
+
+			new()
+			{
+				Instruction = "Both arms",
+				Bullets = new[]
+				{
+					"Select chest, then Bone from Part on BOTH shoulder parts at once",
+					"Then each side in turn: upperarm, forearm, hand",
+					"Left side ends in _L, right side in _R - the model's own left and right",
+				},
+				Detail = "You can select two parts and press Bone from Part once; both new bones hang "
+					+ "off whatever was selected. The chain that matters is hand off forearm, off "
+					+ "upper arm, off shoulder, off ribcage. Get those five right and an arm swings "
+					+ "from the shoulder instead of from the waist. _L is the side on YOUR left when "
+					+ "you stand behind the model, which is the side the animations mean by left.",
+				Art = StepArt.Bone,
+				Points = PointAt.Tool,
+				Tool = EffigyToolTarget.BoneFromPart,
+				IsDone = s => s.Chain( "chest", "clavicle_L", "upperarm_L", "forearm_L", "hand_L" )
+					&& s.Chain( "chest", "clavicle_R", "upperarm_R", "forearm_R", "hand_R" )
+			},
+
+			new()
+			{
+				Instruction = "Both legs",
+				Bullets = new[]
+				{
+					"Select pelvis, then Bone from Part on BOTH thigh parts at once",
+					"Then each side: calf, then foot",
+					"A toe is optional - call it toe_L and toe_R if you have one",
+				},
+				Detail = "Legs hang off the hips, not off the back. The feet are the part the walk "
+					+ "cares about most: the animations plant them on the floor, so a foot bone "
+					+ "pointing the wrong way along the leg is the one mistake you will see "
+					+ "immediately.",
+				Art = StepArt.Bone,
+				Points = PointAt.Tool,
+				Tool = EffigyToolTarget.BoneFromPart,
+				IsDone = s => s.Chain( "pelvis", "thigh_L", "calf_L", "foot_L" )
+					&& s.Chain( "pelvis", "thigh_R", "calf_R", "foot_R" )
+			},
+
+			// ---------------------------------------------------------------------------------
+			//  PHASE 3 - PROVE IT
+			//
+			//  Two checks, in increasing cost. Dragging an arm catches a wrong parent in a second;
+			//  walking it catches everything else.
+			// ---------------------------------------------------------------------------------
+
+			new()
+			{
+				Instruction = "Wiggle it before you build it",
+				Bullets = new[]
+				{
+					"Press Pose in the Rig panel",
+					"Drag an upper arm, then drag the hips",
+				},
+				Detail = "The arm should swing from the shoulder and take the forearm and hand with "
+					+ "it, while the rest of the model stands still. The hips should carry "
+					+ "everything. If a limb stays behind, it is hanging off the wrong bone - "
+					+ "right-click it in the Rig tree and Parent to the one it should follow. Pose is "
+					+ "a scratchpad; turning it off puts the model back.",
+				Art = StepArt.Pose,
+				Points = PointAt.Panel,
+				Panel = "Rig",
+				IsDone = s => s.Posing
+			},
+
+			new()
+			{
+				Instruction = "Walk around in it",
+				Bullets = new[]
+				{
+					"File -> Make Player",
+					"Open the scene it names in the console, and press Play",
+				},
+				Detail = "That builds your model with the built-in character's skeleton inside it and "
+					+ "writes a small scene - a floor, a light, and a player wearing your model. The "
+					+ "console names any bone whose spelling the animations did not recognise, which "
+					+ "is worth reading even when it works: an unrecognised bone is not an error, it "
+					+ "just holds still. Use File -> Compile Playermodel on its own once you have a "
+					+ "scene of your own to drop the model into.",
+				Art = StepArt.Walk,
+				Points = PointAt.Menu,
+				IsDone = _ => false
+			},
+		};
+
+	/// <summary>
 	/// Whether the tutorial dock opens itself when Effigy starts.
 	///
 	/// EditorCookie, so it survives restarts and belongs to the person rather than the document -
@@ -724,6 +1017,7 @@ internal sealed class EffigyTutorial
 		{
 			EffigyLesson.Rigging => _rigging,
 			EffigyLesson.Hand => _hand,
+			EffigyLesson.Playermodel => _playermodel,
 			_ => _house,
 		};
 		Active = true;

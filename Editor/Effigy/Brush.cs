@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace Effigy;
@@ -113,7 +113,16 @@ public sealed class BrushUndo
 /// </summary>
 public static class Brush
 {
-	public static BrushUndo Apply( PolyMesh mesh, BrushStroke stroke, SculptFrames frames, float[] mask = null, MeshBVH bvh = null )
+	/// <param name="neighbors">
+	/// Vertex adjacency, if the caller already has it. Optional, and worth passing whenever this
+	/// is called more than once on the same mesh: building it walks every face, so an interactive
+	/// sculpt that calls Apply per mouse sample rebuilt the whole mesh's adjacency for every dab -
+	/// on a dense body that is most of the frame and tens of megabytes of garbage, thrown away and
+	/// recomputed identically a few milliseconds later. Topology does not change under a stroke,
+	/// which is exactly what makes it cacheable; see SculptSession, which holds it beside the BVH
+	/// and drops both together.
+	/// </param>
+	public static BrushUndo Apply( PolyMesh mesh, BrushStroke stroke, SculptFrames frames, float[] mask = null, MeshBVH bvh = null, List<EdgeKey>[] neighbors = null )
 	{
 		if ( mesh is null )
 			throw new ArgumentNullException( nameof( mesh ) );
@@ -132,7 +141,7 @@ public static class Brush
 
 		bvh ??= MeshBVH.Build( mesh );
 
-		var neighbors = mesh.BuildVertexEdges();
+		neighbors ??= mesh.BuildVertexEdges();
 		var found = new List<int>();
 		var undo = new BrushUndo();
 
@@ -228,7 +237,11 @@ public static class Brush
 			mesh.Positions[vi] = next;
 		}
 
-		bvh.Refit( mesh );
+		// ONLY WHERE THE BRUSH WAS. A full refit rebuilds every box in the tree, which on a dense
+		// sculpt is most of the frame spent on the 99% of the mesh the sample could not reach.
+		// The vertices that moved are the ones VerticesInRadius returned, so the sphere that found
+		// them is exactly the region that can need new bounds.
+		bvh.RefitRegion( mesh, sample.Position, sample.Radius );
 	}
 
 	public static float Falloff( float t, BrushFalloff kind )

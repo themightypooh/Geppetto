@@ -40,6 +40,177 @@ public static class ImportFeatureTests
 		TestSplitRenumbersEachPiece();
 		TestOneObjectKeepsTheFeatureName();
 		TestFusedReadIsUnchanged();
+		TestPiecesSurviveAWrite();
+
+		Report.Section( "import: deleting a part takes one piece, not the whole file" );
+		TestDeletingOnePieceKeepsTheRest();
+		TestRemovedPieceSurvivesASave();
+		TestAnUnchangedSourceIsNotReadAgain();
+	}
+
+	/// <summary>
+	/// Several parts in, the same several parts out.
+	///
+	/// The failure this pins down had nothing to do with the reader: RemeshGen decimated fourteen
+	/// segmented parts perfectly and then merged them into one mesh to write the file, so what came
+	/// back was one lump and the segmentation — the reason for using that export at all — was gone.
+	/// OBJ numbers v/vt/vn across the whole FILE rather than per object, so a multi-object write is
+	/// exactly where offsets go wrong, and an off-by-one there reads back as parts wearing each
+	/// other's geometry rather than as a parse error.
+	/// </summary>
+	static void TestPiecesSurviveAWrite()
+	{
+		var pieces = ObjReader.ReadPieces( ThreeObjects );
+		var round = ObjReader.ReadPieces( ObjWriter.Write( pieces ) );
+
+		Report.Check( "a multi-object write comes back as the same number of parts",
+			round.Count == pieces.Count, $"{pieces.Count} in, {round.Count} out" );
+
+		for ( var i = 0; i < Math.Min( pieces.Count, round.Count ); i++ )
+		{
+			Report.Check( $"part {i} keeps its name",
+				round[i].Name == pieces[i].Name, $"'{pieces[i].Name}' -> '{round[i].Name}'" );
+
+			Report.Check( $"part {i} keeps its geometry",
+				round[i].Mesh.VertexCount == pieces[i].Mesh.VertexCount
+				&& round[i].Mesh.FaceCount == pieces[i].Mesh.FaceCount,
+				$"{pieces[i].Mesh.VertexCount}v/{pieces[i].Mesh.FaceCount}f -> "
+					+ $"{round[i].Mesh.VertexCount}v/{round[i].Mesh.FaceCount}f" );
+
+			// The positions themselves, not just the counts. Two parts of the same size are what a
+			// bad offset swaps, and counts alone would call that a pass.
+			var moved = 0;
+
+			for ( var v = 0; v < Math.Min( round[i].Mesh.VertexCount, pieces[i].Mesh.VertexCount ); v++ )
+			{
+				if ( (round[i].Mesh.Positions[v] - pieces[i].Mesh.Positions[v]).Length > 1e-4f )
+					moved++;
+			}
+
+			Report.Check( $"part {i} is where it was", moved == 0, $"{moved} vertices moved" );
+		}
+	}
+
+	/// <summary>Deleting one part of a multi-object import removes that piece and leaves the rest,
+	/// instead of the whole import going. The point of the whole split: an imported character's
+	/// brows are separate precisely so they can be thrown away one at a time.</summary>
+	static void TestDeletingOnePieceKeepsTheRest()
+	{
+		var studio = StudioFromObj( ThreeObjects, out var import );
+		studio.Rebuild();
+
+		Report.Check( "every piece of a three-piece import can be removed as a piece",
+			import.CanRemovePiece( studio.Bodies[0].Id )
+			&& import.CanRemovePiece( studio.Bodies[1].Id )
+			&& import.CanRemovePiece( studio.Bodies[2].Id ) );
+
+		import.RemovePiece( studio.Bodies[0].Id );
+		studio.MarkDirty( import );
+		studio.Rebuild();
+
+		Report.Check( "removing one piece leaves the other two",
+			studio.Bodies.Count == 2, $"{studio.Bodies.Count} bodies" );
+		Report.Check( "and the survivors keep their ids rather than shifting",
+			studio.Bodies[0].Id == import.Id + "b1" && studio.Bodies[1].Id == import.Id + "b2",
+			string.Join( " | ", studio.Bodies.Select( b => b.Id ) ) );
+
+		import.RemovePiece( studio.Bodies[0].Id );
+		studio.MarkDirty( import );
+		studio.Rebuild();
+
+		Report.Check( "the last remaining piece is no longer removable as a piece",
+			studio.Bodies.Count == 1 && !import.CanRemovePiece( studio.Bodies[0].Id ),
+			$"{studio.Bodies.Count} bodies" );
+	}
+
+	/// <summary>A deleted piece has to survive a save and load, or the part comes back the next
+	/// time the document is opened. The removal lives in the document; the OBJ sidecar keeps every
+	/// piece, so the deleted one is skipped on the way back in.</summary>
+	static void TestRemovedPieceSurvivesASave()
+	{
+		var dir = Path.Combine( Path.GetTempPath(), $"effigy-import-{Guid.NewGuid():N}" );
+		Directory.CreateDirectory( dir );
+
+		try
+		{
+			var path = Path.Combine( dir, "model" + StudioDocument.Extension );
+			var studio = StudioFromObj( ThreeObjects, out var import );
+			studio.Rebuild();
+
+			import.RemovePiece( studio.Bodies[1].Id );
+			studio.MarkDirty( import );
+			studio.Rebuild();
+
+			StudioDocument.WriteFile( studio, path );
+			ImportSidecar.Save( studio, path );
+
+			var back = StudioDocument.ReadFile( path );
+			ImportSidecar.Load( back, path );
+			back.Rebuild();
+
+			var reloaded = back.Features.OfType<ImportFeature>().Single();
+
+			Report.Check( "the removed piece is recorded in the document",
+				reloaded.RemovedPieces.Count == 1 && reloaded.RemovedPieces[0] == 1,
+				string.Join( ",", reloaded.RemovedPieces ) );
+			Report.Check( "and it stays gone after a save and load",
+				back.Bodies.Count == 2, $"{back.Bodies.Count} bodies" );
+		}
+		finally
+		{
+			Directory.Delete( dir, recursive: true );
+		}
+	}
+
+	/// <summary>Deleting a piece re-runs the import, and that must not read the file again. It used
+	/// to: every rebuild parsed the whole source, so trimming a 900k-face import cost 1.3s per delete
+	/// however little of it was left. Proven without a stopwatch — the file is swapped for a comment
+	/// of the same size and write time, which only a re-read could notice.</summary>
+	static void TestAnUnchangedSourceIsNotReadAgain()
+	{
+		var dir = Path.Combine( Path.GetTempPath(), $"effigy-import-{Guid.NewGuid():N}" );
+		Directory.CreateDirectory( dir );
+
+		try
+		{
+			var path = Path.Combine( dir, "model.obj" );
+			File.WriteAllText( path, ThreeObjects );
+
+			var studio = new PartStudio();
+			var import = studio.Add( new ImportFeature() );
+			import.BindSource( path );
+			studio.Rebuild();
+
+			var size = (int)new FileInfo( path ).Length;
+			var written = File.GetLastWriteTimeUtc( path );
+			File.WriteAllBytes( path, Enumerable.Repeat( (byte)'#', size ).ToArray() );
+			File.SetLastWriteTimeUtc( path, written );
+
+			import.RemovePiece( studio.Bodies[0].Id );
+			studio.MarkDirty( import );
+			var report = studio.Rebuild();
+
+			Report.Check( "deleting a piece publishes the pieces already parsed, not the file again",
+				!report.HasErrors && studio.Bodies.Count == 2, $"{studio.Bodies.Count} bodies; {report}" );
+
+			// Exporting over the same path changes its size and write time, and has to be picked up.
+			var box = Primitives.Box( 1f, 1f, 1f );
+			File.WriteAllText( path, ObjWriter.Write( new[]
+			{
+				new ObjReader.ObjPiece( "a", box ), new ObjReader.ObjPiece( "b", box ),
+				new ObjReader.ObjPiece( "c", box ), new ObjReader.ObjPiece( "d", box ),
+			} ) );
+
+			studio.MarkDirty( import );
+			report = studio.Rebuild();
+
+			Report.Check( "a source exported over the same path is read again",
+				!report.HasErrors && studio.Bodies.Count == 3, $"{studio.Bodies.Count} bodies; {report}" );
+		}
+		finally
+		{
+			Directory.Delete( dir, recursive: true );
+		}
 	}
 
 	/// <summary>Three objects in the file, three rows in the Parts list. The point of the whole

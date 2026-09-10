@@ -94,10 +94,16 @@ internal sealed class RigBoneColumn : Widget
 			Paint.DrawRect( new Rect( 0f, top, 2f, RigTimelineLayout.RowHeight ) );
 		}
 
+		// Parts read green, the same colour they are drawn in the viewport, so a row driving a
+		// whole object is distinguishable from a bone at a glance rather than only by its label.
+		var isPart = track.Target == TrackTarget.Part;
+
 		Paint.SetDefaultFont( 7, isSelected ? 600 : 400 );
-		Paint.SetPen( isSelected ? Theme.Yellow : Theme.TextControl.WithAlpha( 0.9f ) );
+		Paint.SetPen( isSelected ? Theme.Yellow
+			: isPart ? Theme.Green.WithAlpha( 0.9f )
+			: Theme.TextControl.WithAlpha( 0.9f ) );
 		Paint.DrawText( new Rect( 8f, top, Width - 16f, RigTimelineLayout.RowHeight ),
-			track.BoneName, TextFlag.LeftCenter );
+			track.DisplayName, TextFlag.LeftCenter );
 	}
 
 	private BoneTrack TrackAt( Vector2 position )

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace Effigy;
@@ -142,9 +142,26 @@ public sealed class FaceSurface
 	/// every caller here is a draw call, and "no surface" has to mean "draw the one face" rather
 	/// than "draw nothing on the thing under the cursor".
 	/// </summary>
-	public static FaceSurface FromFace( PolyMesh mesh, int faceIndex )
+	public static FaceSurface FromFace( PolyMesh mesh, int faceIndex ) =>
+		mesh is null
+			? new FaceSurface( null, -1, new Vec3( 0, 0, 1 ), Vec3.Zero )
+			: FromFace( SurfaceIndex.Build( mesh ), faceIndex );
+
+	/// <summary>
+	/// <see cref="FromFace(PolyMesh, int)"/> against groundwork that has already been done.
+	///
+	/// THIS IS THE OVERLOAD HOVER SHOULD CALL. The other one builds a <see cref="SurfaceIndex"/>
+	/// and throws it away, which is three passes over the whole mesh for an answer about one face
+	/// - fine for a one-off, ruinous at the frame rate. See SurfaceIndex's header.
+	/// </summary>
+	public static FaceSurface FromFace( SurfaceIndex index, int faceIndex )
 	{
-		if ( mesh is null || faceIndex < 0 || faceIndex >= mesh.Faces.Count )
+		if ( index is null )
+			throw new ArgumentNullException( nameof( index ) );
+
+		var mesh = index.Mesh;
+
+		if ( faceIndex < 0 || faceIndex >= mesh.Faces.Count )
 			return new FaceSurface( mesh, -1, new Vec3( 0, 0, 1 ), Vec3.Zero );
 
 		var seed = mesh.Faces[faceIndex];
@@ -155,35 +172,7 @@ public sealed class FaceSurface
 		var normal = mesh.FaceNormal( seed );
 		var origin = mesh.FaceCentroid( seed );
 		var surface = new FaceSurface( mesh, faceIndex, normal, origin );
-
-		// Scaled to the part, for the reason every other tolerance in the sketcher is: a constant
-		// generous on a 100-unit block silently welds every vertex of a 0.1-unit one.
-		var tolerance = MathF.Max( mesh.BoundsDiagonal * 1e-4f, 1e-5f );
-
-		// WELDED, NOT INDEXED. A boolean leaves coincident vertices behind routinely, and two
-		// fragments meeting along a seam described by two different index pairs each count their
-		// half of it once — so the seam survives into the outline as a pair of lines drawn on top
-		// of each other, and the flood fill never crosses it. Position is what they agree about.
-		var weld = Weld( mesh, tolerance );
-		var edgeFaces = new Dictionary<EdgeKey, List<int>>();
-
-		for ( var i = 0; i < mesh.Faces.Count; i++ )
-		{
-			var face = mesh.Faces[i];
-
-			if ( face.Count < 3 )
-				continue;
-
-			for ( var c = 0; c < face.Count; c++ )
-			{
-				var key = WeldedEdge( weld, face, c );
-
-				if ( !edgeFaces.TryGetValue( key, out var list ) )
-					edgeFaces[key] = list = new List<int>();
-
-				list.Add( i );
-			}
-		}
+		var tolerance = index.Tolerance;
 
 		var members = new HashSet<int> { faceIndex };
 		var queue = new Queue<int>();
@@ -196,11 +185,12 @@ public sealed class FaceSurface
 
 			for ( var c = 0; c < current.Count; c++ )
 			{
-				if ( !edgeFaces.TryGetValue( WeldedEdge( weld, current, c ), out var touching ) )
-					continue;
+				var touching = index.FacesOn( index.EdgeAt( current, c ) );
 
-				foreach ( var candidate in touching )
+				for ( var t = 0; t < touching.Length; t++ )
 				{
+					var candidate = touching[t];
+
 					if ( members.Contains( candidate ) )
 						continue;
 
@@ -217,7 +207,7 @@ public sealed class FaceSurface
 			surface.Faces.Add( member );
 
 		surface.Faces.Sort();
-		surface.BuildBoundary( weld );
+		surface.BuildBoundary( index );
 
 		return surface;
 	}
@@ -253,7 +243,7 @@ public sealed class FaceSurface
 	/// an outline whose edges renumber between two identical calls makes every index a caller is
 	/// holding meaningless.
 	/// </summary>
-	void BuildBoundary( int[] weld )
+	void BuildBoundary( SurfaceIndex adjacency )
 	{
 		var uses = new Dictionary<EdgeKey, int>();
 		var first = new Dictionary<EdgeKey, (int A, int B)>();
@@ -264,7 +254,7 @@ public sealed class FaceSurface
 
 			for ( var c = 0; c < face.Count; c++ )
 			{
-				var key = WeldedEdge( weld, face, c );
+				var key = adjacency.EdgeAt( face, c );
 
 				uses[key] = uses.TryGetValue( key, out var n ) ? n + 1 : 1;
 
@@ -281,7 +271,7 @@ public sealed class FaceSurface
 
 			for ( var c = 0; c < face.Count; c++ )
 			{
-				var key = WeldedEdge( weld, face, c );
+				var key = adjacency.EdgeAt( face, c );
 
 				if ( uses[key] != 1 || !taken.Add( key ) )
 					continue;
@@ -292,68 +282,5 @@ public sealed class FaceSurface
 					Boundary.Add( (a, b) );
 			}
 		}
-	}
-
-	static EdgeKey WeldedEdge( int[] weld, Face face, int corner ) => new(
-		weld[face.Indices[corner]],
-		weld[face.Indices[(corner + 1) % face.Count]] );
-
-	/// <summary>
-	/// Vertex index to the index of the first vertex sharing its position, within
-	/// <paramref name="tolerance"/>.
-	///
-	/// Hashed on a grid one tolerance across rather than compared against everything, because this
-	/// runs for the face under the cursor and a quadratic pass over a subdivided mesh is a frame.
-	/// Neighbouring cells are checked too, so a pair straddling a cell boundary still welds.
-	/// </summary>
-	static int[] Weld( PolyMesh mesh, float tolerance )
-	{
-		var weld = new int[mesh.Positions.Count];
-		var cells = new Dictionary<(int X, int Y, int Z), List<int>>();
-		var cell = MathF.Max( tolerance, 1e-6f );
-
-		for ( var i = 0; i < mesh.Positions.Count; i++ )
-		{
-			var p = mesh.Positions[i];
-			var key = ((int)MathF.Floor( p.x / cell ), (int)MathF.Floor( p.y / cell ),
-				(int)MathF.Floor( p.z / cell ));
-
-			weld[i] = i;
-
-			var matched = false;
-
-			for ( var dx = -1; dx <= 1 && !matched; dx++ )
-			{
-				for ( var dy = -1; dy <= 1 && !matched; dy++ )
-				{
-					for ( var dz = -1; dz <= 1 && !matched; dz++ )
-					{
-						if ( !cells.TryGetValue( (key.Item1 + dx, key.Item2 + dy, key.Item3 + dz),
-							out var bucket ) )
-							continue;
-
-						foreach ( var other in bucket )
-						{
-							if ( (mesh.Positions[other] - p).LengthSquared > tolerance * tolerance )
-								continue;
-
-							weld[i] = weld[other];
-							matched = true;
-							break;
-						}
-					}
-				}
-			}
-
-			if ( matched )
-				continue;
-
-			if ( !cells.TryGetValue( key, out var list ) )
-				cells[key] = list = new List<int>();
-
-			list.Add( i );
-		}
-
-		return weld;
 	}
 }

@@ -25,6 +25,8 @@ internal sealed class RigSnapshot
 	private int _frameCount;
 	private int _animationSpeed;
 
+	private List<RigObject> _objects;
+
 	private List<IkConstraint> _ik;
 	private List<LimitConstraint> _limits;
 	private List<string> _hiddenBones;
@@ -40,6 +42,11 @@ internal sealed class RigSnapshot
 			snap._events = anim.Events.Select( Clone ).ToList();
 			snap._morphs = anim.MorphEvents.Select( Clone ).ToList();
 			snap._references = anim.ReferenceProps.Select( Clone ).ToList();
+
+			// Objects are a document edit like any other - importing one, moving a part, renaming
+			// it. Left out of the snapshot, undo would restore the keyframes of parts that no
+			// longer existed.
+			snap._objects = (anim.Objects ?? new List<RigObject>()).Select( Clone ).ToList();
 			snap._frameCount = anim.FrameCount;
 			snap._animationSpeed = anim.AnimationSpeed;
 		}
@@ -72,6 +79,7 @@ internal sealed class RigSnapshot
 			anim.Events = _events.Select( Clone ).ToList();
 			anim.MorphEvents = _morphs.Select( Clone ).ToList();
 			anim.ReferenceProps = _references.Select( Clone ).ToList();
+			anim.Objects = (_objects ?? new List<RigObject>()).Select( Clone ).ToList();
 			anim.FrameCount = _frameCount;
 			anim.AnimationSpeed = _animationSpeed;
 		}
@@ -89,12 +97,39 @@ internal sealed class RigSnapshot
 	private static BoneTrack Clone( BoneTrack t ) => new()
 	{
 		BoneName = t.BoneName,
+		Target = t.Target,
 		Keyframes = t.Keyframes.Select( k => new BoneKeyframe
 		{
 			Frame = k.Frame,
 			Local = k.Local,
 			Interpolation = k.Interpolation
 		} ).ToList()
+	};
+
+	/// <summary>Internal rather than private so the objects panel's Duplicate copies exactly what
+	/// undo copies - one definition of "all of an object".</summary>
+	internal static RigObject Clone( RigObject o ) => new()
+	{
+		Name = o.Name,
+		Visible = o.Visible,
+		ObjSource = o.ObjSource,
+		Position = o.Position,
+		Rotation = o.Rotation,
+		Scale = o.Scale,
+		FollowBone = o.FollowBone,
+		Parts = (o.Parts ?? new List<RigObjectPart>()).Select( Clone ).ToList(),
+	};
+
+	internal static RigObjectPart Clone( RigObjectPart p ) => new()
+	{
+		Name = p.Name,
+		Visible = p.Visible,
+		ObjPart = p.ObjPart,
+		Model = p.Model,
+		ParentPart = p.ParentPart,
+		Position = p.Position,
+		Rotation = p.Rotation,
+		Scale = p.Scale,
 	};
 
 	private static RigEvent Clone( RigEvent e ) => new()
@@ -111,10 +146,14 @@ internal sealed class RigSnapshot
 		ScaleOffset = e.ScaleOffset
 	};
 
-	private static ReferenceProp Clone( ReferenceProp p ) => new()
+	internal static ReferenceProp Clone( ReferenceProp p ) => new()
 	{
 		Name = p.Name,
 		Model = p.Model,
+
+		// Missing until now, so any undo at all - of anything - quietly stripped every prop back to
+		// its first model.
+		ExtraModels = new List<Model>( p.ExtraModels ?? new List<Model>() ),
 		Visible = p.Visible,
 		Position = p.Position,
 		Rotation = p.Rotation,

@@ -19,6 +19,14 @@
   <ItemGroup>
     <Compile Include="../Effigy/**/*.cs" />
     <Compile Include="*.cs" />
+
+    <!--
+      One file out of Marionette, on the same terms as the kernel: RigTrackName is plain C# with
+      no engine types in it, and it decides whether every .riganim already on disk still finds its
+      bones. Compiling it here is what lets that be tested at all - the rest of Marionette needs
+      Sandbox and cannot be.
+    -->
+    <Compile Include="../Code/RigControl/RigTrackName.cs" />
   </ItemGroup>
 
 </Project>

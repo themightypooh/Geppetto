@@ -226,6 +226,45 @@ public sealed class Skeleton
 		}
 	}
 
+	/// <summary>
+	/// The direction a bone points, head to the child that continues its chain — the world vector
+	/// from this bone's head to the head of its furthest child, normalised.
+	///
+	/// FRAME-AGNOSTIC, which is the point. <see cref="Bone"/>'s +Y is the tail direction only for a
+	/// skeleton built by Effigy's own placement; an imported rig — citizen's is +X-down-the-bone —
+	/// carries a local basis whose +Y is a cross-axis, and reading it as the bone direction then
+	/// measures every twist and swing along the wrong axis. The geometric head-to-child vector is
+	/// the direction regardless of which local axis happens to run along the bone.
+	///
+	/// Furthest child rather than first: a limb bone's first child is often a twist or helper bone
+	/// that sits partway down the bone, and the child at the far end is the one that actually
+	/// continues the chain. A leaf (or a bone whose children all sit at its own head) falls back to
+	/// its +Y, which is what a chain with no continuation has left to offer.
+	/// </summary>
+	public Vec3 BoneDirection( int index )
+	{
+		var origin = WorldBind( index ).Origin;
+		var best = default( Vec3 );
+		var bestLen = 0f;
+
+		foreach ( var c in Children( index ) )
+		{
+			var v = WorldBind( c ).Origin - origin;
+			var len = v.Length;
+
+			if ( len > bestLen )
+			{
+				bestLen = len;
+				best = v;
+			}
+		}
+
+		if ( bestLen > 1e-4f )
+			return best / bestLen;
+
+		return WorldBind( index ).Y.Normal;
+	}
+
 	public Skeleton Clone()
 	{
 		var s = new Skeleton();

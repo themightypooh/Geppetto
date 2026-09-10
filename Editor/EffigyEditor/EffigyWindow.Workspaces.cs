@@ -52,6 +52,7 @@ public sealed partial class EffigyWindow
 
 	private EffigyStageTool _boneTool, _boneFromPartTool, _boneAssignTool, _boneMirrorTool, _boneDeleteTool;
 	private EffigyStageTool _boneSoftTool, _softPreviewTool, _softRestTool;
+	private EffigyStageTool _rigSubdivideTool, _rigRemeshTool;
 
 	/// <summary>Which part-studio stage was last looked at in the Rig workspace, so leaving and
 	/// coming back lands where you were — same courtesy _partStage does for CAD.</summary>
@@ -534,7 +535,111 @@ public sealed partial class EffigyWindow
 			Clicked = ToggleWeightPaint,
 		} );
 
-		return new List<EffigyStage> { bones, bind, soft, weights };
+		// --- Mesh ---
+		//
+		// Subdivide, on the rig bar, because the mesh being too coarse to bend is a RIGGING
+		// problem and it is discovered here — you paint a shoulder, drag the arm, and watch the
+		// elbow crease into a hinge instead of a bend. The fix for that is more loops across the
+		// joint, and until now the only door to one was the Sculpt workspace: a detour that reads
+		// as "you are about to sculpt" when you are not, and that rolls the model back to a sculpt
+		// feature on the way.
+		//
+		// SAME FEATURE, DIFFERENT DEFAULT. This adds the same SubdivideFeature the Sculpt bar
+		// adds — one implementation, one tree row, undoable and editable like any other — but with
+		// All Faces ticked, which is the linear form that adds density and leaves every vertex
+		// where it is. The whole-body Catmull-Clark the sculpt bar defaults to SMOOTHS, pulling
+		// the cage onto its limit surface: exactly right when you are about to sculpt the
+		// silhouette, and exactly wrong when you have already bound bones to that silhouette and
+		// only want it to bend. The tick is in the dialog either way, so the default is a starting
+		// point rather than a decision taken away.
+		var mesh = new EffigyStage { Name = "Mesh" };
+
+		_rigSubdivideTool = new EffigyStageTool
+		{
+			Icon = EffigyIcon.Subdivide,
+			Label = "Subdivide",
+			Tip = "Add loops to the selected part so it bends instead of creasing. "
+				+ "Adds a Subdivide set to All Faces — density without moving the shape.",
+			Clicked = AddRigSubdivide,
+		};
+
+		mesh.Add( _rigSubdivideTool );
+
+		// AND ITS OPPOSITE, on the same bar, because the rig workspace is where BOTH halves of "this
+		// mesh is the wrong density" are discovered. Too coarse creases at the elbow; too dense and
+		// the weight brush is a slideshow, auto-skin takes a minute, and the compile writes a model
+		// nothing wants. The second is what an imported part is, every time.
+		_rigRemeshTool = new EffigyStageTool
+		{
+			Icon = EffigyIcon.Remesh,
+			Label = "Remesh",
+			Tip = "Reduce the selected part to a triangle budget so it can be weighted and posed. "
+				+ "Keeps the shape; returns triangles.",
+			Clicked = AddRigRemesh,
+		};
+
+		mesh.Add( _rigRemeshTool );
+
+		return new List<EffigyStage> { bones, bind, soft, weights, mesh };
+	}
+
+	/// <summary>
+	/// The Rig bar's Subdivide — a SubdivideFeature over the selected part, defaulted to density
+	/// rather than smoothing. See the Mesh stage above for why the default differs from Sculpt's.
+	///
+	/// GOES THROUGH AddFeature like every other creation button, so the undo step, the rollback
+	/// placement and the dialog are the ones the rest of the editor already agreed on. What it
+	/// does NOT do is leave the rig workspace: the feature lands in the tree, the studio rebuilds
+	/// under the skeleton, and the bones stay put because Subdivide replaces a body's mesh in
+	/// place and never its id — which is the id the bone assignments are keyed on.
+	/// </summary>
+	private void AddRigSubdivide()
+	{
+		// AddFeature refuses a Subdivide with nothing picked rather than quietly densifying every
+		// part in the document, and says so in the prompt. The bar can do better than a prompt
+		// after the fact: the tool is locked until something is selected, the same way Bone from
+		// Part is, so the refusal is visible before the click. Kept as a guard anyway — a stale
+		// check is how a locked button gets clicked.
+		if ( _viewport is null || _viewport.IdleFaces.Count == 0 && _viewport.IdleBodyIds.Count == 0 )
+		{
+			SetPrompt( "Subdivide needs to know which part — click one in the Parts list on the left, "
+				+ "or pick faces in the viewport, then press Subdivide again." );
+			return;
+		}
+
+		var feature = (SubdivideFeature)NewFeature( ToolKind.Subdivide, -1 );
+
+		// Only when the selection is a whole part. A face pick is already the local, linear form —
+		// AllFaces is not even read then — and ticking it would be writing a setting the feature
+		// will ignore, which is worse than leaving it alone because the dialog would still show it.
+		if ( _viewport.IdleFaces.Count == 0 )
+			feature.AllFaces.Value = true;
+
+		AddFeature( feature );
+	}
+
+	/// <summary>
+	/// The Rig bar's Remesh — a RemeshFeature over the selected part.
+	///
+	/// SAME SHAPE AS <see cref="AddRigSubdivide"/> and for the same reasons: through AddFeature so
+	/// the undo step and the dialog are the shared ones, locked behind a selection so the refusal
+	/// is visible before the click rather than as a prompt after it, and it does not leave the
+	/// workspace, because Remesh replaces a body's mesh and never its id.
+	///
+	/// WHAT IT DOES NOT DO is pick a budget for you. A part with no bones on it yet has no obvious
+	/// right answer and the dialog opens on the question — see RemeshFeature.Target for why the
+	/// default is a percentage rather than a count.
+	/// </summary>
+	private void AddRigRemesh()
+	{
+		if ( _viewport is null || _viewport.IdleBodyIds.Count == 0 )
+		{
+			SetPrompt( "Remesh needs to know which part — click one in the Parts list on the left, "
+				+ "or click the solid in the viewport, then press Remesh again." );
+			return;
+		}
+
+		AddFeature( NewFeature( ToolKind.Remesh, -1 ) );
 	}
 
 	/// <summary>
@@ -657,6 +762,31 @@ public sealed partial class EffigyWindow
 			_boneFromPartTool.DisabledReason = hasParts
 				? null
 				: "Select a part first — in the Parts list or the viewport";
+		}
+
+		// A face pick counts here where it does not for Bone from Part: Subdivide takes faces as
+		// well as bodies, and picking the four faces across an elbow is the precise version of what
+		// this button is for. Measuring a bone out of a face selection is not a thing.
+		var hasGeometry = hasParts || _viewport is { IdleFaces.Count: > 0 };
+
+		if ( _rigSubdivideTool is not null )
+		{
+			_rigSubdivideTool.Enabled = hasGeometry;
+			_rigSubdivideTool.DisabledReason = hasGeometry
+				? null
+				: "Select a part first — in the Parts list, or pick faces in the viewport";
+		}
+
+		// Remesh keys off hasParts, not hasGeometry. A face pick names its body and Subdivide takes
+		// that as a valid target, but there is no per-face Remesh — the quadrics are summed over the
+		// whole surface and a boundary drawn through a face selection would be preserved as a border,
+		// which is the opposite of what picking a region would mean.
+		if ( _rigRemeshTool is not null )
+		{
+			_rigRemeshTool.Enabled = hasParts;
+			_rigRemeshTool.DisabledReason = hasParts
+				? null
+				: "Select a part first — in the Parts list, or click the solid in the viewport";
 		}
 
 		if ( _boneAssignTool is not null )
