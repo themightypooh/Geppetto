@@ -26,6 +26,7 @@
 #   tools/ship.sh                 ship what is already committed
 #   tools/ship.sh --no-test       skip the suite (use when you have just run it)
 #   tools/ship.sh --no-publish    git only, leave the package alone
+#   tools/ship.sh --force-publish publish even with stray content under Assets/
 #
 # ONE STEP IS STILL YOURS, and it is not an oversight in this script. The engine's package API can
 # READ changelists and has no method that writes one, so nothing running outside a browser can post
@@ -41,12 +42,17 @@ cd "$root"
 message=""
 run_tests=1
 publish=1
+publish_force=
 
 while [ $# -gt 0 ]; do
 	case "$1" in
 		-m) shift; message=${1:-}; [ -n "$message" ] || { echo "-m needs a message" >&2; exit 1; } ;;
 		--no-test) run_tests=0 ;;
 		--no-publish) publish=0 ;;
+		# Passed straight through to publish.sh. See the guard there: it refuses when the manifest
+		# carries files under Assets/ that are not the package's own content, and this says you
+		# have read the list and meant it.
+		--force-publish) publish_force=--force ;;
 		# Comment lines only, from the header's first line until the code starts, so adding a
 		# paragraph above never drags `set -eu` into the help text.
 		-h|--help) awk 'NR>2 && /^#/ { sub(/^# ?/, ""); print; next } NR>2 { exit }' "$0"; exit 0 ;;
@@ -117,7 +123,7 @@ trap 'rm -f "$log" "$status"' EXIT
 # always 0, so a refused upload read here as a clean run that merely forgot to name a revision.
 # Writing $? into a file inside the group is the POSIX way to keep both the streaming and the
 # answer - and the streaming is most of the reassurance that anything is happening.
-{ tools/publish.sh --commit; echo $? > "$status"; } | tee "$log"
+{ tools/publish.sh --commit $publish_force; echo $? > "$status"; } | tee "$log"
 
 out=$( cat "$log" )
 

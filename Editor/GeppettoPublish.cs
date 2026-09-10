@@ -3,6 +3,7 @@ using Sandbox;
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -31,6 +32,15 @@ namespace Toolshed.Publishing;
 ///
 ///     geppetto_publish              what would be published, uploads nothing
 ///     geppetto_publish commit       publish it, notes taken from the last commit
+///     geppetto_publish commit force ... even with stray content in Assets/
+///
+/// IT PRINTS WHAT IS IN THE BOX, AND REFUSES ON STRAYS. A publish ships whatever sits in the
+/// project directory - .gitignore does not reach it, and neither does the .sbproj's `Resources`
+/// line - and until this printed a breakdown, nothing in the process ever named a file. On
+/// 2026-09-10 a dry run reported "687 total, 231 to upload (459181kb)": 434MB of modelling scratch
+/// under Assets/ that had been going out to everyone who installed the package for revisions,
+/// alongside a folder of private dev notes. Both were invisible because the only number anybody
+/// ever saw was a count. See Breakdown and IsStray below.
 ///
 /// INTERNAL API, SO IT CAN BREAK. These are editor types, not a documented contract, and an engine
 /// update may move them. The failure is loud - a missing method throws here rather than publishing
@@ -39,14 +49,15 @@ namespace Toolshed.Publishing;
 public static class GeppettoPublish
 {
 	[ConCmd( "geppetto_publish" )]
-	public static void Run( string mode = "" )
+	public static void Run( string mode = "", string flag = "" )
 	{
 		var commit = string.Equals( mode, "commit", StringComparison.OrdinalIgnoreCase );
+		var force = string.Equals( flag, "force", StringComparison.OrdinalIgnoreCase );
 
-		_ = PublishAsync( commit );
+		_ = PublishAsync( commit, force );
 	}
 
-	static async Task PublishAsync( bool commit )
+	static async Task PublishAsync( bool commit, bool force )
 	{
 		try
 		{
@@ -119,6 +130,8 @@ public static class GeppettoPublish
 			if ( !string.IsNullOrWhiteSpace( detail ) )
 				Log.Info( $"[publish] detail    {detail.Replace( "\n", " / " )}" );
 
+			var strays = Breakdown( publisher );
+
 			var before = await VersionOf( publisher.TargetPackageIdent );
 
 			Log.Info( $"[publish] live now  {Describe( before )}" );
@@ -126,6 +139,16 @@ public static class GeppettoPublish
 			if ( !commit )
 			{
 				Log.Info( "[publish] DRY RUN - nothing uploaded. `geppetto_publish commit` to send it." );
+				return;
+			}
+
+			// THE GUARD. Everything above is a report; this is the one that stops.
+			if ( strays > 0 && !force )
+			{
+				Log.Error( $"[publish] REFUSING - {strays} file(s) under Assets/ that are not the "
+					+ "package's own content. They are listed above as STRAY." );
+				Log.Error( "[publish] Move them out of the project directory, or run "
+					+ "`geppetto_publish commit force` if you meant to ship them." );
 				return;
 			}
 
@@ -258,6 +281,132 @@ public static class GeppettoPublish
 
 	static string Describe( Package.IRevision revision ) =>
 		revision is null ? "unknown" : $"v{revision.VersionId} ({revision.FileCount} files, {revision.Created:yyyy-MM-dd HH:mm})";
+
+	/// <summary>
+	/// What is actually in the manifest, biggest folder first.
+	///
+	/// WHY THIS IS NOT OPTIONAL DETAIL. A publish ships what is ON DISK, not what git tracks, and
+	/// nothing before this said which files those were - only how many. On 2026-09-10 a dry run
+	/// reported "687 total, 231 to upload (459181kb)" and the only clue that 459MB was wrong was
+	/// that somebody happened to look at the number. Modelling scratch had been shipping to
+	/// everyone who installed the package for revisions, gun models included, and no step in the
+	/// process was ever going to mention it: .gitignore does not reach the publisher, and the
+	/// publisher does not print names.
+	///
+	/// FOLDERS, NOT FILES. Four hundred file names is not something anybody reads, and the mistake
+	/// this catches is always a whole directory rather than a stray file - a scratch folder inside
+	/// Assets, a cache somebody's tool wrote. One line per folder fits on a screen, and the wrong
+	/// one stands out by its size.
+	///
+	/// REFLECTION, DELIBERATELY. ProjectFile is an internal shape on an editor type with no
+	/// documented contract, and this is a diagnostic - if a future engine renames its fields, the
+	/// right outcome is a breakdown that says "unknown" while the publish still works, not a
+	/// publish that will not compile.
+	/// </summary>
+	static int Breakdown( ProjectPublisher publisher )
+	{
+		var strays = 0;
+
+		try
+		{
+			var byFolder = new System.Collections.Generic.Dictionary<string, (int Count, long Bytes)>();
+			var strayBytes = 0L;
+
+			foreach ( var file in publisher.Files )
+			{
+				var type = file.GetType();
+
+				var path = type.GetProperty( "Name" )?.GetValue( file ) as string
+					?? type.GetProperty( "Path" )?.GetValue( file ) as string
+					?? type.GetProperty( "RelativePath" )?.GetValue( file ) as string
+					?? "unknown";
+
+				long bytes = 0;
+
+				foreach ( var name in new[] { "Size", "Length", "FileSize" } )
+				{
+					if ( type.GetProperty( name )?.GetValue( file ) is { } value )
+					{
+						bytes = Convert.ToInt64( value );
+						break;
+					}
+				}
+
+				// The first two segments, so `assets/models/effigy/x.vmdl` groups under
+				// `assets/models` rather than under `assets` with everything else in the project.
+				var parts = path.Replace( '\\', '/' ).Split( '/' );
+				var folder = parts.Length switch
+				{
+					<= 1 => "(root)",
+					2 => parts[0],
+					_ => $"{parts[0]}/{parts[1]}",
+				};
+
+				var current = byFolder.TryGetValue( folder, out var had ) ? had : (Count: 0, Bytes: 0L);
+
+				byFolder[folder] = (current.Count + 1, current.Bytes + bytes);
+
+				if ( IsStray( path ) )
+				{
+					strays++;
+					strayBytes += bytes;
+				}
+			}
+
+			Log.Info( "[publish] contents  (biggest first)" );
+
+			foreach ( var entry in byFolder.OrderByDescending( e => e.Value.Bytes ).Take( 15 ) )
+			{
+				Log.Info( $"[publish]   {entry.Value.Bytes / 1024,10:n0} kb  "
+					+ $"{entry.Value.Count,5} files  {entry.Key}"
+					+ (IsStray( entry.Key + "/" ) ? "   <-- STRAY" : "") );
+			}
+
+			if ( strays > 0 )
+			{
+				Log.Warning( $"[publish] STRAY     {strays} file(s), {strayBytes / 1024:n0} kb under "
+					+ "Assets/ that are not this package's content - modelling scratch, test exports, "
+					+ "whatever the editor last saved. Move them out of the project directory." );
+			}
+		}
+		catch ( Exception e )
+		{
+			// Never take the publish down over a diagnostic - but a breakdown that failed has said
+			// nothing about strays either, so it must not report zero of them and wave a publish
+			// through on that.
+			Log.Warning( $"[publish] contents  could not be listed ({e.Message})" );
+			return 0;
+		}
+
+		return strays;
+	}
+
+	/// <summary>
+	/// Whether a manifest path is content this package has no business shipping.
+	///
+	/// ASSETS ONLY, AND ONE EXCEPTION. The manifest also carries the source tree - `Effigy/`,
+	/// `Editor/`, `Effigy.Tests/` - and for a LIBRARY package that source IS the deliverable, so
+	/// none of it is stray however untidy it looks. What is never the deliverable is a part studio
+	/// somebody saved while testing, a 300MB folder of compiled model experiments, or the scene the
+	/// editor last wrote. All of those land under `Assets/`.
+	///
+	/// The exception is `Assets/editor/`, which holds the tool's own icon and is what the .sbproj's
+	/// `Resources` line means to ship.
+	///
+	/// WHY A PATH RULE AND NOT A SIZE LIMIT. A size limit needs a number, and any number is either
+	/// so high it passes the thing it exists to catch or so low it fires on a legitimate asset
+	/// somebody adds next year. Whether a file belongs in the package does not depend on how big it
+	/// is - 460MB of model exports and one stray `untitled.effigy` are the same mistake.
+	/// </summary>
+	static bool IsStray( string path )
+	{
+		var p = path.Replace( '\\', '/' );
+
+		if ( !p.StartsWith( "assets/", StringComparison.OrdinalIgnoreCase ) )
+			return false;
+
+		return !p.StartsWith( "assets/editor/", StringComparison.OrdinalIgnoreCase );
+	}
 
 	/// <summary>
 	/// The last commit's subject and body, which is what the change notes should say.

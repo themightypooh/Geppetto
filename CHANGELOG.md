@@ -61,6 +61,16 @@ forgotten.
   frame, so dragging a dense part keeps up. `Editor/EffigyEditor/EffigyPreview.cs`
 
 ### Fixed
+- **The package was shipping 434MB of somebody else's modelling scratch.** Every revision carried
+  the test models, imported meshes and half-finished part studios that happened to be sitting in
+  the project folder — gun models among them — because an s&box publish ships what is in the
+  project directory and no setting or ignore file reaches it. This revision is 10MB. If you have
+  Geppetto installed, updating reclaims most of that.
+- **Publishing now says what is in the box.** The publish step lists the manifest by folder,
+  biggest first, and refuses outright if anything under `Assets/` is not the package's own
+  content. It was previously possible to see only a file count, which is how 459MB went out
+  several times without anyone noticing. `GeppettoPublish`
+
 - **Deleting parts of an imported mesh makes it faster.** Every delete, undo and redo on an import
   re-read the whole OBJ, parts you had already deleted included — so taking a 900k-face Meshy
   import down to 20k faces still cost 1.3 seconds per delete, and an undo cost the same. The file is

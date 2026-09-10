@@ -29,7 +29,10 @@ Rig Control is usable — open it and run the tutorial. Effigy's kernel is
 covered by a headless test suite. Issues and PRs welcome; see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
-For how to work in this repo, see [docs/dev/HANDOFF.md](docs/dev/HANDOFF.md).
+For how to work in this repo, see `HANDOFF.md` in the dev notes, which live in a
+`geppetto-docs/dev/` folder beside this checkout rather than inside it — an s&box
+package ships whatever sits in the project directory, so private notes kept here
+went out to everyone who installed it.
 
 ---
 

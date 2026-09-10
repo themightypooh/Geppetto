@@ -17,6 +17,8 @@
 #
 #   tools/publish.sh              what would be published, uploads nothing
 #   tools/publish.sh --commit     send it, notes taken from the last commit
+#   tools/publish.sh --commit --force
+#                                 ... even with stray content under Assets/
 #
 set -eu
 
@@ -26,10 +28,16 @@ cd "$root"
 bridge=${SBOX_MCP_URL:-http://127.0.0.1:7269/mcp}
 project=geppetto
 commit=0
+force=0
 
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--commit) commit=1 ;;
+		# Ship anyway when the manifest carries stray content under Assets/. NOT the default and
+		# not a convenience: the guard exists because 434MB of modelling scratch shipped to
+		# everyone who installed the package without one line naming a file. Pass this only when
+		# you have read the STRAY list and meant every entry on it.
+		--force) force=1 ;;
 		-h|--help) awk 'NR>2 && /^#/ { sub(/^# ?/, ""); print; next } NR>2 { exit }' "$0"; exit 0 ;;
 		*) echo "unknown argument: $1" >&2; exit 1 ;;
 	esac
@@ -79,7 +87,11 @@ since=${since:-0}
 
 if [ "$commit" -eq 1 ]; then
 	echo "==> publishing (editor has $open open)"
-	call console_command '{"command":"geppetto_publish commit"}' >/dev/null
+	if [ "$force" -eq 1 ]; then
+		call console_command '{"command":"geppetto_publish commit force"}' >/dev/null
+	else
+		call console_command '{"command":"geppetto_publish commit"}' >/dev/null
+	fi
 else
 	echo "==> publish dry run (editor has $open open)"
 	call console_command '{"command":"geppetto_publish"}' >/dev/null
@@ -100,7 +112,7 @@ while [ "$i" -lt 90 ]; do
 	# ending this loop knows about - it would poll the full three minutes and then print a log whose
 	# result line never came.
 	case "$log" in
-		*"DRY RUN"*|*"[publish] version"*|*"version did not move"*|*"failed:"*|*"were rejected"*) break ;;
+		*"DRY RUN"*|*"[publish] version"*|*"version did not move"*|*"failed:"*|*"were rejected"*|*"REFUSING"*) break ;;
 	esac
 
 	i=$(( i + 1 ))
@@ -112,6 +124,11 @@ printf '%s\n' "$log" | sed -n 's/^[0-9:]* \[Generic\] [A-Za-z]*: //p'
 echo ""
 
 case "$log" in
+	*"REFUSING"*)
+		echo "the publish was refused: stray content under Assets/ - see the STRAY lines above." >&2
+		echo "Move those files out of the project directory, or re-run with --force if you meant" >&2
+		echo "to ship them. NOTHING was published." >&2
+		exit 1 ;;
 	*"failed:"*)
 		echo "the publish did not go through - see above." >&2
 		exit 1 ;;

@@ -97,9 +97,16 @@ Libraries/*/.sbox/
 Libraries/*/.vscode/
 Libraries/*/.version
 
-# Private dev notes and scratch scripts: this repo is public.
-docs/
+# Scratch scripts: this repo is public.
 tools/diner_tile_gen.py
+
+# The dev notes used to live in docs/ and this rule kept them out of the repo. It was not
+# enough. An s&box publish ships whatever sits in the PROJECT DIRECTORY - .gitignore does
+# not reach it - so every revision of the package carried them to everyone who installed
+# it. They live in `geppetto-docs/dev/` beside this checkout now. The rule stays so a
+# docs/ recreated by habit is still kept out of git; getting it out of the PACKAGE is
+# what geppetto_publish's stray guard does.
+docs/
 
 # Local scratch assets. Assets/ carries exactly one tracked file - the editor icon - and
 # everything else in here is a part studio or a material made while testing. They are not

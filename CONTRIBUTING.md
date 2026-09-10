@@ -63,4 +63,4 @@ revision already published, for the site's "Assign to a revision" list.
 ## Bugs and ideas
 
 Open a GitHub Issue. If you have the private working tree, start at
-[docs/dev/HANDOFF.md](docs/dev/HANDOFF.md).
+`HANDOFF.md`, in the `geppetto-docs/dev/` folder beside this checkout.
