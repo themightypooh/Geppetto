@@ -151,6 +151,15 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	/// the preview takes the paint, checker or section path.</summary>
 	private EffigyPreview.LivePreview _livePreview;
 
+	/// <summary>
+	/// The fast-path state for a Transform drag, or null when none is live. While the handle is
+	/// held the only thing that changes is a rigid-plus-scale transform over some bodies, so the
+	/// light rebuild moves a model on the GPU instead of re-running the history — which deep-clones
+	/// the whole mesh twice a frame and is what made dragging a dense import choppy. Captured when
+	/// the handle is grabbed, dropped when it is released.
+	/// </summary>
+	private TransformDrag _transformDrag;
+
 	private EffigyFeatureTreePanel _featureTree;
 	private EffigyFeatureDialog _dialog;
 	private EffigyPartsPanel _partsPanel;
@@ -437,6 +446,14 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		view.AddOption( "Section View", "content_cut", ToggleSectionView );
 		_consoleDockOption = AddDockOption( view, "Console", "terminal", "Console" );
 
+		// The whole panel arrangement as a first-class, saved thing. s&box remembers the last layout
+		// you happened to leave on its own, but "the layout I like" is a different object from "the
+		// layout I was last using" — one is something you set once and come back to, the other is
+		// wherever a drag left you. These two make the first one explicit and persistent.
+		view.AddSeparator();
+		view.AddOption( "Set Default Panel View", "bookmark_add", SetDefaultPanelView );
+		view.AddOption( "Reset Default Panel View", "settings_backup_restore", ResetDefaultPanelView );
+
 		// Named views, same list Onshape puts on the cube. The cube itself is gone — this camera
 		// flies rather than orbiting a locked-up model — but snapping to a plane is still useful.
 		view.AddSeparator();
@@ -508,6 +525,72 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	{
 		if ( option is not null )
 			option.Checked = DockManager.IsDockOpen( dockTitle );
+	}
+
+	// --- default panel view --------------------------------------------------------------------
+
+	/// <summary>The cookie the user's saved default panel arrangement lives under. Bump it when the
+	/// set of docks changes in a way that would make an old saved layout restore wrong, exactly the
+	/// way StateCookie is bumped for the same reason.</summary>
+	private const string DefaultPanelCookie = "effigy.panels.default";
+
+	/// <summary>Every dock the window can open, in the order the factory layout closes them.</summary>
+	private static readonly string[] PanelDockTitles =
+	{
+		"Features", "Rig", "Materials", "Variables", "Tutorial", "Console"
+	};
+
+	/// <summary>
+	/// Make the current panel arrangement the default, saved to disk.
+	///
+	/// The layout itself is DockManager.State - the same serialised dock tree s&box restores from,
+	/// positions, splitter proportions and open state all in. Storing it here rather than leaning on
+	/// s&box's own last-layout memory is what gives the Reset button something fixed to return to:
+	/// without a saved default, the window only ever knows where it was, never where you meant it
+	/// to be.
+	/// </summary>
+	private void SetDefaultPanelView()
+	{
+		if ( string.IsNullOrWhiteSpace( DockManager.State ) )
+		{
+			SetPrompt( "There is no panel layout to save yet." );
+			return;
+		}
+
+		EditorCookie.Set( DefaultPanelCookie, DockManager.State );
+
+		SetPrompt( "Default panel view saved - Reset Default Panel View will return here." );
+	}
+
+	/// <summary>
+	/// Put the panels back to the saved default, or to the factory layout when none has been set.
+	///
+	/// The factory case closes every dock and re-runs BuildDefaultLayout, which is the one place the
+	/// shipped arrangement lives - so "reset" always lands on a known-good layout, whether the user
+	/// has saved one of their own or not.
+	/// </summary>
+	private void ResetDefaultPanelView()
+	{
+		var saved = EditorCookie.Get<string>( DefaultPanelCookie, null );
+
+		if ( !string.IsNullOrWhiteSpace( saved ) )
+		{
+			DockManager.State = saved;
+			SyncDockChecks();
+			SetPrompt( "Panel view reset to your saved default." );
+			return;
+		}
+
+		foreach ( var title in PanelDockTitles )
+		{
+			if ( DockManager.IsDockOpen( title ) )
+				DockManager.SetDockState( title, false );
+		}
+
+		BuildDefaultLayout();
+		SyncDockChecks();
+
+		SetPrompt( "Panel view reset to the default layout." );
 	}
 
 	// --- the stage bar -------------------------------------------------------------------------
@@ -2808,10 +2891,13 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		if ( _dialog?.Feature is { } feature )
 			_studio.MarkDirty( feature );
 
-		// A body drag reports an edit every frame, but only positions change — the tree, the parts
-		// list and every panel are exactly as they were. It gets the light rebuild below and the
-		// full RebuildStudio runs once when the button comes up (see OnBodyDragEnded).
-		if ( _viewport?.IsDraggingBody == true )
+		// A drag reports an edit every frame, but only geometry the drag is driving changes — the
+		// tree, the parts list and every panel are exactly as they were. Drags get the light rebuild
+		// below and the full RebuildStudio runs once when the button comes up (see the drag-end
+		// handlers wired in BuildDocks).
+		if ( _viewport?.IsDraggingBody == true
+			|| _viewport?.IsDraggingFace == true
+			|| _viewport?.IsDraggingPlaneOffset == true )
 		{
 			RebuildPreviewLight();
 			return;
@@ -2826,9 +2912,15 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	}
 
 	/// <summary>
-	/// The per-frame rebuild for a Transform drag: re-run the history so downstream geometry stays
-	/// correct, update the preview in place, and keep the dialog's numbers counting — but skip the
-	/// feature tree, parts list, notes and tutorial, none of which can change while positions do.
+	/// The per-frame rebuild for any drag — Transform, face, plane offset: re-run the history so
+	/// downstream geometry stays correct, update the preview in place, and keep the dialog's numbers
+	/// counting — but skip the feature tree, parts list, notes and tutorial, none of which can change
+	/// while a handle is held. The full <see cref="RebuildStudio"/> runs once when the button comes up.
+	///
+	/// WHEN A TRANSFORM IS THE LAST FEATURE the history does not need to re-run at all: nothing
+	/// downstream reads the moved body, so the whole rebuild is two deep clones of the mesh and a
+	/// re-merge, every frame. That is what made dragging a dense import choppy. The fast path below
+	/// skips it and transforms the grabbed mesh's positions directly (see <see cref="TransformDrag"/>).
 	/// </summary>
 	private void RebuildPreviewLight()
 	{
@@ -2838,16 +2930,191 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			UpdateTitle();
 		}
 
+		if ( _transformDrag is { } drag && _dialog?.Feature is TransformFeature transform && TryDragTransform( drag, transform ) )
+		{
+			_dialog?.RefreshValues();
+			return;
+		}
+
 		_studio.Rebuild();
 		RefreshPreview();
 		_viewport?.SetDisplayBodies( _studio.Bodies );
 		_dialog?.RefreshValues();
 	}
 
-	/// <summary>The Transform handle's button came up. The drag frames kept everything light; this
-	/// is the one full pass that refreshes the tree, panels, notes and tutorial against the final
-	/// position, and re-arms the normal (non-drag) rebuild path.</summary>
-	private void OnBodyDragEnded() => RebuildStudio();
+	/// <summary>
+	/// The Transform handle was grabbed. Split the visible bodies into the ones the feature moves and
+	/// the ones it leaves, and hand them to the viewport as two models: the static ones stay in the
+	/// main preview, the moving ones become a drag model the GPU can transform each frame. Refused
+	/// (stays null) when the Transform is not the last feature — downstream geometry genuinely
+	/// changes as the body moves then — or when the preview is on the paint/checker/section path,
+	/// both of which fall back to the ordinary rebuild.
+	/// </summary>
+	private void OnBodyDragBegan()
+	{
+		_transformDrag = null;
+
+		if ( _dialog?.Feature is not TransformFeature transform )
+			return;
+
+		if ( _studio.Features.IndexOf( transform ) != _studio.EffectiveCount - 1 )
+			return;
+
+		if ( PreviewIsSpecial() )
+			return;
+
+		var visible = _studio.Bodies.Where( b => b.Visible ).ToList();
+
+		if ( visible.Count == 0 )
+			return;
+
+		var moved = visible.Where( b => transform.Bodies.Matches( b ) ).ToList();
+		var statics = visible.Where( b => !transform.Bodies.Matches( b ) ).ToList();
+
+		var moveAll = statics.Count == 0;
+
+		if ( !moveAll )
+		{
+			_viewport?.SetModel( BuildBodiesPreview( statics ), frameCamera: false );
+			_viewport?.BeginDragModel( BuildBodiesPreview( moved ) );
+		}
+
+		_transformDrag = new TransformDrag
+		{
+			MoveAll = moveAll,
+			BaseXform = TransformOf( transform ),
+		};
+	}
+
+	/// <summary>The Transform handle's button came up. The drag frames moved models around on the
+	/// GPU; this is the one full pass that puts the real geometry at the final position, restores the
+	/// real preview, and re-arms the normal (non-drag) rebuild path.</summary>
+	private void OnBodyDragEnded()
+	{
+		_transformDrag = null;
+		_viewport?.EndDragModel();
+		_viewport?.SetModelTransform( new Transform( Vector3.Zero, Rotation.Identity, 1f ) );
+		RebuildStudio();
+	}
+
+	/// <summary>A face or plane-offset handle's button came up. The drag frames kept everything
+	/// light; this is the one full pass that refreshes the tree, panels, notes and tutorial against
+	/// the final geometry.</summary>
+	private void OnFaceDragEnded() => RebuildStudio();
+
+	/// <summary>The full translate/rotate/scale a Transform carries, in the same composition order
+	/// <see cref="TransformFeature.Execute"/> applies it.</summary>
+	private static Xform TransformOf( TransformFeature transform ) =>
+		Xform.Translate( transform.Translate.Value )
+		* Xform.Rotate( transform.RotationAxis.Value, transform.RotationAngle.Value * MathF.PI / 180f )
+		* Xform.Scale( transform.Scale.Value );
+
+	/// <summary>
+	/// Move the drag preview to the feature's current transform, as the incremental transform from
+	/// the grabbed one. Returns false when it cannot (a singular transform), falling back to the
+	/// ordinary rebuild.
+	/// </summary>
+	private bool TryDragTransform( TransformDrag drag, TransformFeature transform )
+	{
+		var current = TransformOf( transform );
+
+		// A zero-scaled transform has no inverse; the dialog clamps the nub away from it, but a
+		// typed value can still be singular, and the ordinary rebuild path owns that error.
+		if ( MathF.Abs( current.Determinant ) < 1e-12f || MathF.Abs( drag.BaseXform.Determinant ) < 1e-12f )
+			return false;
+
+		var incremental = ToSandboxTransform( current * drag.BaseXform.Inverse );
+
+		if ( drag.MoveAll )
+			_viewport?.SetModelTransform( incremental );
+		else
+			_viewport?.SetDragModelTransform( incremental );
+
+		return true;
+	}
+
+	/// <summary>A preview model from a set of bodies, merged and material-resolved the way the
+	/// ordinary preview is. Null for no bodies.</summary>
+	private Model BuildBodiesPreview( List<Body> bodies )
+	{
+		if ( bodies is null || bodies.Count == 0 )
+			return null;
+
+		var merged = new PolyMesh();
+
+		foreach ( var body in bodies )
+			MeshTransform.Append( merged, body.Mesh );
+
+		return EffigyPreview.Build( merged, SlotMaterial );
+	}
+
+	/// <summary>Whether the preview is on a path the drag fast-path cannot express — paint, the UV
+	/// checker, or the section cut all rebuild the model every frame by their nature.</summary>
+	private bool PreviewIsSpecial() =>
+		_showUVChecker
+		|| (_viewport is { SectionEnabled: true })
+		|| _studio.Bodies.Any( b => b.Visible && b.Mesh.HasPaint );
+
+	/// <summary>An <see cref="Xform"/> as the engine's position/rotation/uniform-scale transform.
+	/// Only valid for a rigid-plus-uniform-scale Xform — which is exactly what a Transform drag
+	/// produces, however the feature was originally typed.</summary>
+	private static Transform ToSandboxTransform( Xform x )
+	{
+		var position = new Vector3( x.Origin.x, x.Origin.y, x.Origin.z );
+		var scale = x.X.Length;
+
+		return new Transform( position, RotationOfBasis( x.X / scale, x.Y / scale, x.Z / scale ), scale );
+	}
+
+	/// <summary>The rotation of an orthonormal basis, via axis-angle so no Euler convention is in
+	/// play. The 180-degree corner — where the axis vanishes from the skew part — recovers the axis
+	/// from the largest column of the basis plus identity.</summary>
+	private static Rotation RotationOfBasis( Vec3 rx, Vec3 ry, Vec3 rz )
+	{
+		var trace = rx.x + ry.y + rz.z;
+		var cos = Math.Clamp( (trace - 1f) * 0.5f, -1f, 1f );
+		var angle = MathF.Acos( cos );
+
+		var ax = ry.z - rz.y;
+		var ay = rz.x - rx.z;
+		var az = rx.y - ry.x;
+		var sin = MathF.Sqrt( ax * ax + ay * ay + az * az ) * 0.5f;
+
+		if ( sin < 1e-5f )
+		{
+			if ( cos > 0f )
+				return Rotation.Identity;
+
+			var col0 = new Vec3( rx.x + 1f, rx.y, rx.z );
+			var col1 = new Vec3( ry.x, ry.y + 1f, ry.z );
+			var col2 = new Vec3( rz.x, rz.y, rz.z + 1f );
+
+			var axis = col0;
+			if ( col1.LengthSquared > axis.LengthSquared ) axis = col1;
+			if ( col2.LengthSquared > axis.LengthSquared ) axis = col2;
+
+			if ( axis.LengthSquared < 1e-10f )
+				return Rotation.Identity;
+
+			return Rotation.FromAxis( new Vector3( axis.x, axis.y, axis.z ).Normal, 180f );
+		}
+
+		var a = new Vector3( ax, ay, az ) / (2f * sin);
+
+		return Rotation.FromAxis( a.Normal, angle.RadianToDegree() );
+	}
+
+	/// <summary>
+	/// The grabbed state a Transform drag redraws from. The drag is a GPU transform — either the
+	/// whole preview model (<see cref="MoveAll"/>) or the moving bodies' own drag model — so nothing
+	/// here carries geometry. Only the transform the feature held at grab time is needed, to turn
+	/// the feature's current absolute transform into the increment to apply.
+	/// </summary>
+	private sealed class TransformDrag
+	{
+		public bool MoveAll;
+		public Xform BaseXform;
+	}
 
 	/// <summary>
 	/// A click on the ADD/REMOVE strip. The parameter is already set by the time this runs; what
@@ -3429,9 +3696,12 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	{
 		_viewport = new EffigyViewport( this );
 
-		// The Transform handle's drag end: where the light per-frame path hands back to the full
-		// rebuild (tree, panels, notes, tutorial) exactly once.
+		// The drag handles' drag end: where the light per-frame path hands back to the full rebuild
+		// (tree, panels, notes, tutorial) exactly once. Body, face and plane-offset drags all get
+		// the same treatment.
 		_viewport.BodyDragEnded = OnBodyDragEnded;
+		_viewport.FaceDragEnded = OnFaceDragEnded;
+		_viewport.PlaneOffsetDragEnded = OnFaceDragEnded;
 
 		_featureTree = new EffigyFeatureTreePanel( this, _studio )
 		{
@@ -3446,6 +3716,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		{
 			VariableResolve = name => VariableResolver.Bind( _studio.Variables )( name ),
 			Edited = OnFeatureEdited,
+			BodyDragBegan = OnBodyDragBegan,
 			Renamed = () => _featureTree?.Rebuild(),
 			Accepted = OnDialogAccepted,
 			Cancelled = OnDialogCancelled,
@@ -4555,9 +4826,41 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	/// a full <see cref="RebuildStudio"/> — a view setting must not re-execute the history or mark
 	/// the document dirty.
 	/// </summary>
-	private void RefreshPreview()
+	private void RefreshPreview() => RefreshPreview( VisibleMeshForPreview() );
+
+	/// <summary>
+	/// The mesh the preview builds from. One visible body is the common case for a fresh import, and
+	/// it is handed over directly — the preview only reads, and <see cref="PartStudio.ToVisibleMesh"/>
+	/// would otherwise clone the whole dense mesh (positions plus a per-face index and UV array) for
+	/// nothing. Several bodies still merge.
+	/// </summary>
+	private PolyMesh VisibleMeshForPreview()
 	{
-		var visible = _studio.ToVisibleMesh();
+		PolyMesh single = null;
+		var count = 0;
+
+		foreach ( var body in _studio.Bodies )
+		{
+			if ( !body.Visible )
+				continue;
+
+			count++;
+
+			if ( count == 1 )
+			{
+				single = body.Mesh;
+			}
+			else
+			{
+				return _studio.ToVisibleMesh();
+			}
+		}
+
+		return count == 1 ? single : _studio.ToVisibleMesh();
+	}
+
+	private void RefreshPreview( PolyMesh visible )
+	{
 		var special = _showUVChecker || (_viewport is { SectionEnabled: true }) || visible.HasPaint;
 
 		// Plain material-slot path: keep a LivePreview and rewrite its vertex buffers when only
@@ -4677,7 +4980,10 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		DockManager.RaiseDock( "Tutorial" );
 		SyncDockChecks();
 
-		_tutorial?.Restart( EffigyLesson.Playermodel );
+		// OFFER, NOT RESTART. This lesson's start screen is where you choose between the example
+		// robot and your own model, and Restart sets Active - which makes the panel draw step one
+		// and skip that screen entirely. See EffigyTutorial.Offer.
+		_tutorial?.Offer( EffigyLesson.Playermodel );
 		RefreshTutorial();
 	}
 
@@ -5011,6 +5317,13 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		Log.Info( $"[Effigy] loaded the example humanoid - {_studio.Bodies.Count} parts, "
 			+ "each named after the bone it becomes" );
+
+		// AND ONLY NOW does the lesson begin. ConfirmDiscard above shows a popup and returns
+		// rather than blocking, so this is the first point at which the robot is definitely on
+		// screen - and pressing Cancel in that popup lands here never, which is right: the reader
+		// backed out, so they should still be looking at the start screen and their own model.
+		_tutorial?.Restart( EffigyLesson.Playermodel );
+		RefreshTutorial();
 	} );
 
 	private void DeleteSelectedFeature()

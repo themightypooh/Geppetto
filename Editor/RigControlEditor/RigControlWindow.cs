@@ -1,4 +1,4 @@
-using Editor;
+﻿using Editor;
 using Marionette;
 using Sandbox;
 using System;
@@ -35,6 +35,8 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 	private RigEventProperties _events;
 	private RigBonesPanel _bones;
 	private RigConstraintsPanel _constraints;
+	private RigLightsPanel _lights;
+	private RigCamerasPanel _cameras;
 	private RigInspectorPanel _inspector;
 	private DockWidget _centralDock;
 
@@ -814,6 +816,27 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 			Edited = () => MarkDirty( "Edit Constraint" ),
 		};
 
+		// The viewport is rebuilt from the list on every edit rather than the panel touching the
+		// scene itself - same split as the objects panel, and the reason a light can be undone
+		// like anything else.
+		_lights = new RigLightsPanel( this, _viewport )
+		{
+			Changed = label =>
+			{
+				_viewport.SetLights( _anim?.Lights );
+				MarkDirty( label );
+			},
+		};
+
+		_cameras = new RigCamerasPanel( this, _viewport )
+		{
+			Changed = label =>
+			{
+				_viewport.SetCameras( _anim?.Cameras );
+				MarkDirty( label );
+			},
+		};
+
 		// SetLocalTransform fires BonePosed on its way through, so the keyframe and the dirty flag
 		// are already handled by the time this runs. All that's left is the undo step - one per
 		// field edit, unlike a drag, which is one per drag.
@@ -841,6 +864,8 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		DockManager.RegisterDock( new() { Title = "BonesObject", Icon = "polyline", Area = DockArea.Hidden, CreateAction = () => _bones } );
 		DockManager.RegisterDock( new() { Title = "Constraints", Icon = "link", Area = DockArea.Hidden, CreateAction = () => _constraints } );
 		DockManager.RegisterDock( new() { Title = "Inspector", Icon = "tune", Area = DockArea.Hidden, CreateAction = () => _inspector } );
+		DockManager.RegisterDock( new() { Title = "Lights", Icon = "lightbulb", Area = DockArea.Hidden, CreateAction = () => _lights } );
+		DockManager.RegisterDock( new() { Title = "Cameras", Icon = "videocam", Area = DockArea.Hidden, CreateAction = () => _cameras } );
 
 		// THE EDITOR'S OWN CONSOLE, not one of ours.
 		//
@@ -943,6 +968,10 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 
 		_viewport.SetReferenceProps( _anim?.ReferenceProps );
 		_viewport.SetObjects( _anim?.Objects );
+		_viewport.SetLights( _anim?.Lights );
+		_lights?.SetAnim( _anim );
+		_viewport.SetCameras( _anim?.Cameras );
+		_cameras?.SetAnim( _anim );
 
 		// SourceModel on the clip itself wins; the rig's own model is only a fallback for a clip
 		// that hasn't set one yet. Previously this only ever updated the viewport in the fallback
@@ -1115,6 +1144,8 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		// have to be rebuilt from the restored lists, not just re-placed.
 		_viewport.SetReferenceProps( _anim?.ReferenceProps );
 		_viewport.SetObjects( _anim?.Objects );
+		_viewport.SetLights( _anim?.Lights );
+		_lights?.Rebuild();
 
 		// And the viewport is still showing the pose from before the undo.
 		OnScrub( _timeline.Playhead );

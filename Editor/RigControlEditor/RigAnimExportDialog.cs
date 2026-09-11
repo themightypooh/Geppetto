@@ -1,4 +1,4 @@
-using Editor;
+﻿using Editor;
 using Marionette;
 using Sandbox;
 using System;
@@ -127,6 +127,9 @@ internal sealed class RigAnimExportDialog : Window
 		RigStatusBar.Show( result.Compiled
 			? $"Exported {result.VmdlAssetPath} — Sequence \"{result.SequenceName}\""
 			: $"Wrote {result.VmdlAssetPath} but compile failed" );
+
+		if ( !string.IsNullOrEmpty( result.Note ) )
+			body += "\n\n" + result.Note;
 
 		new PopupWindow( "Export Complete", body, "OK",
 			new System.Collections.Generic.Dictionary<string, System.Action>

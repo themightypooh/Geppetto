@@ -294,14 +294,21 @@ internal sealed partial class EffigyViewport
 	/// <summary>Raised once when the offset handle is grabbed, before it has moved.</summary>
 	public Action PlaneOffsetDragBegan { get; set; }
 
-	/// <summary>
-	/// Raised every frame the offset handle moves, with how far it has been dragged SINCE it was
-	/// grabbed — the total, not the frame's delta.
+	/// <summary>Raised every frame the offset handle moves, with how far it has been dragged SINCE it
+	/// was grabbed — the total, not the frame's delta.
 	///
 	/// The same shape FaceDragMoved has and for the same reason: what reads this sets a parameter
 	/// from it, and a parameter is a value rather than something to integrate.
 	/// </summary>
 	public Action<float> PlaneOffsetDragged { get; set; }
+
+	/// <summary>Raised when the button comes up, so the window can run the one full rebuild the
+	/// light per-frame path deferred.</summary>
+	public Action PlaneOffsetDragEnded { get; set; }
+
+	/// <summary>True while the offset handle is being dragged, so the window can give the drag the
+	/// same light rebuild path the body and face drags get.</summary>
+	public bool IsDraggingPlaneOffset => _draggingPlaneOffset;
 
 	private bool _draggingPlaneOffset;
 	private Vector3 _planeOffsetAnchor;
@@ -422,5 +429,6 @@ internal sealed partial class EffigyViewport
 
 		_draggingPlaneOffset = false;
 		_planeOffsetDistance = 0f;
+		PlaneOffsetDragEnded?.Invoke();
 	}
 }

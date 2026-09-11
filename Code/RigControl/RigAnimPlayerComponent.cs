@@ -1,4 +1,4 @@
-using Sandbox;
+﻿using Sandbox;
 using System;
 using System.Collections.Generic;
 
@@ -52,6 +52,14 @@ public sealed class RigAnimPlayerComponent : Component
 	private bool _rigReady;
 	private bool _notifiedFinish;
 
+	/// <summary>The light objects this component put up, so it can take down its own and only
+	/// its own. See SpawnLights.</summary>
+	private readonly List<GameObject> _lights = new();
+
+	/// <summary>The camera objects this component put up, so it can take down its own and only
+	/// its own. See SpawnCameras.</summary>
+	private readonly List<GameObject> _cameras = new();
+
 	/// <summary>
 	/// Last keyed frame, not FrameCount.
 	///
@@ -92,8 +100,142 @@ public sealed class RigAnimPlayerComponent : Component
 		Target ??= GetComponent<SkinnedModelRenderer>();
 		_events ??= GetComponent<RigEventPlayerComponent>();
 
+		SpawnLights();
+		SpawnCameras();
+
 		if ( PlayOnStart )
 			Play();
+	}
+
+	protected override void OnDisabled()
+	{
+		DespawnLights();
+		DespawnCameras();
+	}
+
+	/// <summary>
+	/// Put up the clip's exported lights, as children of this object.
+	///
+	/// ONLY THE ONES TICKED FOR EXPORT. A clip's light list is mostly workspace lighting - what
+	/// the animator needed to see the pose by - and spawning that into a game would be a window
+	/// tool redecorating somebody's scene. See RigLight.Export.
+	///
+	/// CHILDREN, so they travel with the model. The positions were authored in the model's own
+	/// space against the pose they light, which is only meaningful relative to the model: a lamp
+	/// over his desk is over his desk, not at some world coordinate the clip could not have
+	/// known. That also means they inherit the object's rotation, which is what you want and
+	/// what makes a directional light in a clip a fill FOR THE CHARACTER rather than a sun.
+	/// </summary>
+	private void SpawnLights()
+	{
+		DespawnLights();
+
+		if ( Anim?.Lights is null )
+			return;
+
+		foreach ( var light in Anim.Lights )
+		{
+			if ( light is null || !light.Enabled || !light.Export )
+				continue;
+
+			var go = new GameObject( true, string.IsNullOrWhiteSpace( light.Name ) ? "light" : light.Name );
+			go.Parent = GameObject;
+			go.LocalPosition = light.Position;
+			go.LocalRotation = light.Rotation.ToRotation();
+
+			switch ( light.Kind )
+			{
+				case RigLightKind.Ambient:
+					var ambient = go.AddComponent<AmbientLight>();
+					ambient.Color = light.Tint();
+					break;
+
+				case RigLightKind.Point:
+					var point = go.AddComponent<PointLight>();
+					point.LightColor = light.Tint();
+					point.Radius = light.Range;
+					point.Shadows = light.Shadows;
+					break;
+
+				case RigLightKind.Spot:
+					var spot = go.AddComponent<SpotLight>();
+					spot.LightColor = light.Tint();
+					spot.Radius = light.Range;
+					spot.ConeInner = MathF.Min( light.ConeInner, light.ConeOuter );
+					spot.ConeOuter = MathF.Max( light.ConeInner, light.ConeOuter );
+					spot.Shadows = light.Shadows;
+					break;
+
+				default:
+					var sun = go.AddComponent<DirectionalLight>();
+					sun.LightColor = light.Tint();
+					sun.Shadows = light.Shadows;
+					break;
+			}
+
+			_lights.Add( go );
+		}
+	}
+
+	/// <summary>Take them down again. Tracked in a list rather than found by name on the way out:
+	/// a light this component did not create is somebody else's, and disabling a clip player must
+	/// not turn off the room.</summary>
+	private void DespawnLights()
+	{
+		foreach ( var light in _lights )
+			light?.Destroy();
+
+		_lights.Clear();
+	}
+
+	/// <summary>
+	/// Put up the clip's exported cameras, as children of this object.
+	///
+	/// ONLY THE ONES TICKED FOR EXPORT. A clip's camera list is mostly workspace framing - what the
+	/// animator needed to see the pose by - and spawning that into a game would be a window tool
+	/// redecorating somebody's scene. See RigCamera.Export.
+	///
+	/// CHILDREN, so they travel with the model, the same as the lights: the transform was authored
+	/// in the model's own space, which is only meaningful relative to the model.
+	///
+	/// The cameras are made available but NOT activated - which shot is live is the game's call,
+	/// not the clip's. Read them from Camera.GetComponent&lt;CameraComponent&gt;() and set
+	/// Active / WorldTransform when the shot should cut.
+	/// </summary>
+	private void SpawnCameras()
+	{
+		DespawnCameras();
+
+		if ( Anim?.Cameras is null )
+			return;
+
+		foreach ( var camera in Anim.Cameras )
+		{
+			if ( camera is null || !camera.Enabled || !camera.Export )
+				continue;
+
+			var go = new GameObject( true, string.IsNullOrWhiteSpace( camera.Name ) ? "camera" : camera.Name );
+			go.Parent = GameObject;
+			go.LocalPosition = camera.Position;
+			go.LocalRotation = camera.Rotation.ToRotation();
+
+			var cam = go.AddComponent<CameraComponent>();
+			cam.FieldOfView = camera.FieldOfView;
+			cam.ZNear = camera.ZNear;
+			cam.ZFar = camera.ZFar;
+
+			_cameras.Add( go );
+		}
+	}
+
+	/// <summary>Take them down again, only our own. A camera this component did not create is
+	/// somebody else's, and disabling a clip player must not pull the level's camera out.</summary>
+	private void DespawnCameras()
+	{
+		foreach ( var camera in _cameras )
+			camera?.Destroy();
+
+		_cameras.Clear();
 	}
 
 	protected override void OnUpdate()

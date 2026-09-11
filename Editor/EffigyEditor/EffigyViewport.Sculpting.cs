@@ -33,6 +33,12 @@ internal sealed partial class EffigyViewport
 	/// rebuild a model.</summary>
 	private bool _sculptPreviewStale;
 
+	/// <summary>The preview model for the sculpt surface, kept across dabs so a stroke re-uploads
+	/// vertex data in place instead of rebuilding the Model and its buffers every dab — the same
+	/// bargain the window's LivePreview makes for a Transform drag. Sculpting a dense mesh without
+	/// it allocates a fresh vertex buffer and Model several times a second, which the GC pays for.</summary>
+	private EffigyPreview.LivePreview _sculptPreview;
+
 	/// <summary>Where the brush ring is drawn this frame, or null when the cursor is off the
 	/// model.</summary>
 	private MeshHit? _sculptCursor;
@@ -59,6 +65,7 @@ internal sealed partial class EffigyViewport
 	{
 		SculptSession = session ?? throw new ArgumentNullException( nameof( session ) );
 		_sculptPreviewStale = true;
+		_sculptPreview = null;
 	}
 
 	public void EndSculpt()
@@ -70,6 +77,7 @@ internal sealed partial class EffigyViewport
 
 		SculptSession = null;
 		_sculptCursor = null;
+		_sculptPreview = null;
 	}
 
 	/// <summary>Push the sculpted surface into the viewport, replacing the model in place.</summary>
@@ -78,18 +86,36 @@ internal sealed partial class EffigyViewport
 		if ( SculptSession is null )
 			return;
 
-		var model = EffigyPreview.Build( SculptSession.DisplayMesh );
+		var mesh = SculptSession.DisplayMesh;
 
-		if ( model is null )
+		if ( mesh is null || mesh.FaceCount == 0 || mesh.VertexCount == 0 )
+			return;
+
+		// Only positions change while a stroke runs — a level change rebuilds, but within a level
+		// the face layout is stable — so the live preview can rewrite its vertex buffers in place.
+		// Mid-stroke it rewrites positions only and reuses the normals it already has, skipping the
+		// O(vertices) normal fan pass that would otherwise run every dab on a dense import.
+		var stroking = SculptSession.IsStroking;
+
+		if ( _sculptPreview is not null
+			&& _renderer?.Model == _sculptPreview.Model
+			&& (stroking
+				? _sculptPreview.TryUpdatePositions( mesh )
+				: _sculptPreview.TryUpdate( mesh, _ => null, MeshNormals.DefaultSmoothingAngleDegrees )) )
+			return;
+
+		_sculptPreview = EffigyPreview.LivePreview.Build( mesh, _ => null, MeshNormals.DefaultSmoothingAngleDegrees );
+
+		if ( _sculptPreview?.Model is null )
 			return;
 
 		// The renderer's model is swapped rather than SetModel called: SetModel destroys and rebuilds
 		// the GameObject, which is fine once per feature edit and not fine several times a second
 		// during a stroke.
 		if ( _renderer is not null )
-			_renderer.Model = model;
+			_renderer.Model = _sculptPreview.Model;
 		else
-			SetModel( model, frameCamera: false );
+			SetModel( _sculptPreview.Model, frameCamera: false );
 	}
 
 	private void SculptFrame()

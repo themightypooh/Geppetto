@@ -196,63 +196,55 @@ internal sealed class EffigyTutorialPanel : Widget
 		}
 		else if ( Tutorial.Lesson == EffigyLesson.Playermodel )
 		{
-			AddLine( "You will turn a humanoid model into a player - something you can walk around "
-				+ "in, using the animations s&box already ships. Start from the example robot, or "
-				+ "bring your own humanoid.",
-				15f, 0.95f );
+			// SHORT ON PURPOSE, and it was not the first time. The first version of this screen ran
+			// to five paragraphs explaining the fit, the hip height and the naming convention before
+			// the reader had pressed anything - po's word for it was "too much information up
+			// front". Every one of those facts is now in the Detail of the step that needs it, which
+			// is where somebody can act on it. A start screen only has to answer "what am I about to
+			// do, and how do I begin".
+			AddLine( "Turn a humanoid model into a player you can walk around in, using the "
+				+ "animations s&box already ships.", 15f, 0.95f );
 
 			_list.Layout.AddSpacingCell( 6f );
 
-			AddLine( "There are only two ideas in it:", 14f, 0.8f );
+			AddLine( "Three phases:", 14f, 0.8f );
 
 			_list.Layout.AddSpacingCell( 4f );
 
-			// THE WHOLE LESSON, ON THE SCREEN BEFORE IT STARTS. Someone who reads these two lines
-			// and closes the panel has got the point, and that is a success rather than a skip -
-			// the nine steps after it are the same two ideas with the buttons named.
-			AddPhase( "YOUR SHAPE", "your model keeps its own proportions - nothing gets squashed" );
-			AddPhase( "THEIR NAMES", "bones spelled the way the animations expect, in the right order" );
+			AddPhase( "NAME IT", "one bone per part, named and parented the way the animations expect" );
+			AddPhase( "WALK IT", "compile, then press Play in a scene it writes for you" );
+			AddPhase( "USE IT", "drop the model onto the player in your own scene" );
 
 			_list.Layout.AddSpacingCell( 6f );
 
-			AddLine( "Effigy slides the built-in character's skeleton inside your model, rather than "
-				+ "reshaping your model to match its body. So the animations only say how far each "
-				+ "joint bends - never how long your arms are, or how broad your shoulders. A stocky "
-				+ "robot stays stocky and still walks.", 14f, 0.8f );
-
-			_list.Layout.AddSpacingCell( 6f );
-
-			AddLine( "The one thing you have to match is the hips. The walk decides how high they "
-				+ "ride - about 31 units off the floor - so stand your model with its feet at zero "
-				+ "and its hips near that, or it will float or sink.", 14f, 0.8f );
-
-			_list.Layout.AddSpacingCell( 6f );
-
-			AddLine( "And the names. Each bone has to be called what the animations call it, hanging "
-				+ "off the right parent: a hand off a forearm, off an upper arm, off a shoulder, off "
-				+ "the ribcage. Get those right and everything else is automatic.", 14f, 0.8f );
+			AddLine( "Your model keeps its own shape - the animations only bend joints, so a stocky "
+				+ "robot stays stocky. The names are the part you have to get right, and the steps "
+				+ "give you each one as you need it.", 14f, 0.8f );
 		}
 		else
 		{
-			AddLine( "You will build a small house: a box for the walls, a wedge for a sloped roof, "
-				+ "and holes cut through the walls for windows and a door. It is the smallest model that "
-				+ "still needs everything a first session teaches.", 15f, 0.95f );
-
-			_list.Layout.AddSpacingCell( 6f );
-
-			AddLine( "It runs in two phases:", 14f, 0.8f );
+			// FOR SOMEONE WHO HAS NEVER USED CAD. What it is in plain words, what they will make, and a
+			// promise that every step says exactly what to click - that is all a first-timer needs.
+			AddLine( "Never used CAD before? Perfect - this one is for you.", 15f, 0.95f );
 
 			_list.Layout.AddSpacingCell( 4f );
 
-			AddPhase( "THE SHAPE", "two primitives - a box, then a wedge" );
-			AddPhase( "THE CUTS", "holes for the windows and the door" );
+			AddLine( "CAD (computer-aided design) is building with numbers. Instead of shaping things "
+				+ "by hand, you say \"a box, 8 wide\" and it appears exactly that size. Every step you "
+				+ "take is kept in a list, like a recipe, so you can go back and change any number "
+				+ "later.", 15f, 0.95f );
 
 			_list.Layout.AddSpacingCell( 6f );
 
-			AddLine( "The holes are the part worth noticing. You are not deleting wall to make a window - "
-				+ "you are telling the tool to subtract a cylinder, and it re-does that subtraction "
-				+ "whenever you resize the house. That is what parametric means, and it is the idea every "
-				+ "later tutorial builds on.", 14f, 0.8f );
+			AddLine( "In about ten minutes you'll build a little house with a sloped roof, two windows "
+				+ "and a door. Every step tells you exactly what to click:", 14f, 0.8f );
+
+			_list.Layout.AddSpacingCell( 4f );
+
+			AddPhase( "SAY HI", "learn to turn the camera" );
+			AddPhase( "THE SHAPE", "a box for the walls, a wedge for the roof" );
+			AddPhase( "THE CUTS", "drill two windows and a door" );
+			AddPhase( "TAKE IT", "save your house and export it" );
 		}
 
 		_list.Layout.AddSpacingCell( 6f );
@@ -278,16 +270,13 @@ internal sealed class EffigyTutorialPanel : Widget
 			buttons.Add( new Button.Primary( "Use the example robot", "smart_toy" )
 			{
 				ToolTip = "Replaces what is open with a blocky humanoid, already named for you",
-				Clicked = () =>
-				{
-					// LOADED FIRST, STARTED AFTER. The first step checks that the model is standing
-					// on the floor, and the example satisfies it - so loading first means the reader
-					// arrives on step two with step one already ticked, which is the honest picture.
-					LoadExample?.Invoke();
-					Tutorial.Restart();
-					Changed?.Invoke();
-					Rebuild();
-				}
+
+				// THE LESSON IS STARTED BY THE LOADER, NOT HERE, and that is the whole of this
+				// button's subtlety. Loading goes through the window's unsaved-changes prompt, which
+				// does NOT block - it shows a popup and returns - so starting the lesson on this line
+				// would start it before the model existed, and would start it anyway when the reader
+				// pressed Cancel. The window starts it once the studio has actually been replaced.
+				Clicked = () => LoadExample?.Invoke()
 			} );
 
 			buttons.Add( new Button( "I'll use my own model", "person" )
@@ -449,6 +438,20 @@ internal sealed class EffigyTutorialPanel : Widget
 
 		BuildPointer( step );
 
+		// A step with nothing to do gets a real Next. The chevron below says "skip ahead without
+		// doing this step", which is the wrong thing to press after reading one.
+		if ( step.Reading )
+		{
+			_list.Layout.AddSpacingCell( 8f );
+
+			var next = _list.Layout.AddRow();
+			next.Add( new Button.Primary( "Got it, next", "arrow_forward" )
+			{
+				Clicked = () => { Tutorial.Forward(); Rebuild(); }
+			} );
+			next.AddStretchCell();
+		}
+
 		_list.Layout.AddSpacingCell( 12f );
 
 		// NO stretch cell before this. Pinning navigation to the bottom is fine in a tall side
@@ -559,10 +562,10 @@ internal sealed class EffigyTutorialPanel : Widget
 				+ "again and Marionette poses the new shape. A production hand gives every finger three "
 				+ "joints and a bit of weight paint at the creases. This one already curls.",
 			_ =>
-				"That is a house, and it is still a recipe. Change the box and the roof follows; widen "
-				+ "the door and the wall re-cuts itself around it. Nothing you did was a one-way edit, "
-				+ "which is the whole point of modelling this way - and the next tutorial starts where "
-				+ "this one leaves off: drawing the shapes a primitive cannot make.",
+				"You built a house - nice work! And it's still a recipe: right-click any step in the "
+				+ "Features list, pick Edit, and change a number. Want taller walls? Make the Box's "
+				+ "Height 6, then set the Wedge's Z to 4 so the roof sits on top again. Next up: drawing "
+				+ "your own shapes, so that door can finally be square.",
 		} )
 		{ WordWrap = true, Color = Theme.Green };
 
@@ -686,6 +689,13 @@ internal sealed class EffigyStepGlyph : Widget
 				Paint.DrawLine( center + new Vector2( 0, 2 ), center + new Vector2( 7, 8 ) );
 				Paint.DrawLine( center + new Vector2( 0, -2 ), center + new Vector2( 7, -5 ) );
 				Paint.DrawLine( center + new Vector2( 0, -2 ), center + new Vector2( -6, 1 ) );
+				break;
+
+			// The window: a frame, the Features column down the left, the tool bar across the top.
+			case EffigyTutorial.StepArt.Screen:
+				Paint.DrawRect( new Rect( center.x - 11, center.y - 9, 22, 18 ), 2f );
+				Paint.DrawLine( center + new Vector2( -11, -4 ), center + new Vector2( 11, -4 ) );
+				Paint.DrawLine( center + new Vector2( -4, -4 ), center + new Vector2( -4, 9 ) );
 				break;
 
 			case EffigyTutorial.StepArt.Paint:

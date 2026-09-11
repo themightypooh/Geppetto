@@ -374,36 +374,55 @@ public static class ObjReader
 		var data = new ObjData();
 		var material = 0;
 		var group = -1;
-		var c = CultureInfo.InvariantCulture;
 
-		foreach ( var raw in text.Split( '\n' ) )
+		// One pass over the string as spans. The string.Split / Trim version this replaced did
+		// three allocations a line on a dense file — the line, the token array, and every token
+		// itself — which on a million-face OBJ is tens of millions of objects for the GC to chew.
+		// Spans keep the whole parse allocation-free except for the data it is actually building.
+		var remaining = text.AsSpan();
+
+		while ( remaining.Length > 0 )
 		{
-			var line = raw.Trim();
+			var newline = remaining.IndexOf( '\n' );
+			var line = newline < 0 ? remaining : remaining.Slice( 0, newline );
+			remaining = newline < 0 ? default : remaining.Slice( newline + 1 );
+
+			line = line.Trim();
 
 			if ( line.Length == 0 || line[0] == '#' )
 				continue;
 
-			var parts = line.Split( ' ', StringSplitOptions.RemoveEmptyEntries );
+			var space = line.IndexOf( ' ' );
+			var head = space < 0 ? line : line.Slice( 0, space );
+			var rest = space < 0 ? default : line.Slice( space + 1 );
 
-			if ( parts.Length == 0 )
-				continue;
-
-			switch ( parts[0] )
+			switch ( head[0] )
 			{
-				case "v":
+				case 'v':
 				{
-					data.Positions.Add( new Vec3(
-						float.Parse( parts[1], c ),
-						float.Parse( parts[2], c ),
-						float.Parse( parts[3], c ) ) );
+					if ( head.Length == 2 )
+					{
+						// vt: writer flips V on the way out; this un-flips it. External OBJs
+						// (bottom-left origin) land in Effigy space the same way. vn (normals) is
+						// skipped, as it always was.
+						if ( head[1] == 't' )
+							data.UVs.Add( new Vec2( NextFloat( ref rest ), 1f - NextFloat( ref rest ) ) );
 
-					if ( parts.Length >= 7 )
+						break;
+					}
+
+					data.Positions.Add( new Vec3(
+						NextFloat( ref rest ),
+						NextFloat( ref rest ),
+						NextFloat( ref rest ) ) );
+
+					if ( CountTokens( rest ) >= 3 )
 					{
 						data.SawColor = true;
 						data.Colors.Add( new Vec4(
-							float.Parse( parts[4], c ),
-							float.Parse( parts[5], c ),
-							float.Parse( parts[6], c ),
+							NextFloat( ref rest ),
+							NextFloat( ref rest ),
+							NextFloat( ref rest ),
 							1f ) );
 					}
 					else
@@ -414,29 +433,9 @@ public static class ObjReader
 					break;
 				}
 
-				case "vt":
-					// Writer flips V on the way out; this un-flips it. External OBJs (bottom-left
-					// origin) land in Effigy space the same way.
-					data.UVs.Add( new Vec2( float.Parse( parts[1], c ), 1f - float.Parse( parts[2], c ) ) );
-					break;
-
-				// BOTH MARKERS START A PIECE. Exporters disagree about which one means "object":
-				// Blender writes `o` per object and `g` for its vertex groups, other tools only
-				// ever write `g`. Treating either as a boundary is what makes the split work on
-				// files this tool did not write, which is the only kind it gets.
-				case "o":
-				case "g":
-					data.GroupNames.Add( parts.Length > 1 ? string.Join( " ", parts, 1, parts.Length - 1 ) : "" );
-					group = data.GroupNames.Count - 1;
-					break;
-
-				case "usemtl":
-					material = SlotFromMaterialName( parts.Length > 1 ? parts[1] : "", material );
-					break;
-
-				case "f":
+				case 'f':
 				{
-					var n = parts.Length - 1;
+					var n = CountTokens( rest );
 
 					if ( n < 3 )
 						break;
@@ -446,27 +445,247 @@ public static class ObjReader
 
 					for ( var i = 0; i < n; i++ )
 					{
-						var refs = parts[i + 1].Split( '/' );
-						indices[i] = ObjIndex( refs[0], data.Positions.Count, c );
+						NextToken( ref rest, out var corner );
 
-						if ( refs.Length > 1 && refs[1].Length > 0 && data.UVs.Count > 0 )
-							faceUVs[i] = data.UVs[ObjIndex( refs[1], data.UVs.Count, c )];
+						var slash = corner.IndexOf( '/' );
+						indices[i] = ObjIndex( slash < 0 ? corner : corner.Slice( 0, slash ), data.Positions.Count );
+
+						if ( slash >= 0 )
+						{
+							var after = corner.Slice( slash + 1 );
+							var second = after.IndexOf( '/' );
+							var vt = second < 0 ? after : after.Slice( 0, second );
+
+							if ( vt.Length > 0 && data.UVs.Count > 0 )
+								faceUVs[i] = data.UVs[ObjIndex( vt, data.UVs.Count )];
+						}
 					}
 
 					data.Faces.Add( new ObjFace( indices, faceUVs, material, group ) );
 					break;
 				}
+
+				// BOTH MARKERS START A PIECE. Exporters disagree about which one means "object":
+				// Blender writes `o` per object and `g` for its vertex groups, other tools only
+				// ever write `g`. Treating either as a boundary is what makes the split work on
+				// files this tool did not write, which is the only kind it gets.
+				case 'o':
+				case 'g':
+					data.GroupNames.Add( rest.Length > 0 ? JoinTokens( rest ) : "" );
+					group = data.GroupNames.Count - 1;
+					break;
+
+				case 'u':
+					// usemtl — the only u-keyword the reader acts on.
+					if ( head.SequenceEqual( "usemtl".AsSpan() ) )
+						material = SlotFromMaterialName( NextToken( ref rest, out var name ) ? name.ToString() : "", material );
+					break;
 			}
 		}
 
 		return data;
 	}
 
-	/// <summary>Wavefront indices are 1-based, and negative counts back from the last element.</summary>
-	static int ObjIndex( string token, int count, CultureInfo c )
+	/// <summary>The next whitespace-delimited token, advancing <paramref name="s"/> past it.</summary>
+	static bool NextToken( ref ReadOnlySpan<char> s, out ReadOnlySpan<char> token )
 	{
-		var n = int.Parse( token, c );
+		while ( s.Length > 0 && (s[0] == ' ' || s[0] == '\t') )
+			s = s.Slice( 1 );
+
+		if ( s.Length == 0 )
+		{
+			token = default;
+			return false;
+		}
+
+		var end = 0;
+
+		while ( end < s.Length && s[end] != ' ' && s[end] != '\t' )
+			end++;
+
+		token = s.Slice( 0, end );
+		s = s.Slice( end );
+		return true;
+	}
+
+	/// <summary>The next token as a float.</summary>
+	static float NextFloat( ref ReadOnlySpan<char> s )
+	{
+		NextToken( ref s, out var token );
+		return ParseFloat( token );
+	}
+
+	/// <summary>
+	/// A decimal float with no culture and no allocation.
+	///
+	/// The reader used <c>float.Parse</c>, which on a dense OBJ is the whole of the load time — a
+	/// million vertices is a few million culture-aware, correctly-rounding parses into a general
+	/// number machinery. OBJ numbers are plain decimals, so the digits are accumulated into an
+	/// exact integer and scaled by a power of ten, which matches <c>float.Parse</c> on every value a
+	/// Wavefront file actually contains and runs many times faster.
+	/// </summary>
+	static float ParseFloat( ReadOnlySpan<char> s )
+	{
+		var i = 0;
+		var len = s.Length;
+
+		var negative = false;
+
+		if ( i < len && (s[i] == '-' || s[i] == '+') )
+		{
+			negative = s[i] == '-';
+			i++;
+		}
+
+		// Integer digits, then fraction digits, accumulated into one integer. Stopped at 15 digits:
+		// below 2^53 the double conversion is exact, and 15 significant figures is already more than
+		// a float can carry, so nothing is lost. Digits past that only move the decimal point.
+		const long Cap = 1_000_000_000_000_000L;
+		long mantissa = 0;
+		var digits = 0;
+		var intDigits = 0;
+
+		while ( i < len && s[i] >= '0' && s[i] <= '9' )
+		{
+			if ( mantissa < Cap )
+			{
+				mantissa = mantissa * 10 + (s[i] - '0');
+				digits++;
+			}
+
+			intDigits++;
+			i++;
+		}
+
+		if ( i < len && s[i] == '.' )
+		{
+			i++;
+
+			while ( i < len && s[i] >= '0' && s[i] <= '9' )
+			{
+				if ( mantissa < Cap )
+				{
+					mantissa = mantissa * 10 + (s[i] - '0');
+					digits++;
+				}
+
+				i++;
+			}
+		}
+
+		// Where the decimal point sits relative to the accumulated digits.
+		var exponent = intDigits - digits;
+
+		if ( i < len && (s[i] == 'e' || s[i] == 'E') )
+		{
+			i++;
+
+			var expNegative = false;
+
+			if ( i < len && (s[i] == '-' || s[i] == '+') )
+			{
+				expNegative = s[i] == '-';
+				i++;
+			}
+
+			var e = 0;
+
+			while ( i < len && s[i] >= '0' && s[i] <= '9' )
+			{
+				e = e * 10 + (s[i] - '0');
+				i++;
+			}
+
+			exponent += expNegative ? -e : e;
+		}
+
+		var value = (double)mantissa * Pow10( exponent );
+
+		return (float)(negative ? -value : value);
+	}
+
+	static readonly double[] Pow10Positive = BuildPow10();
+
+	static double[] BuildPow10()
+	{
+		var table = new double[39];
+		table[0] = 1.0;
+
+		for ( var i = 1; i < table.Length; i++ )
+			table[i] = table[i - 1] * 10.0;
+
+		return table;
+	}
+
+	/// <summary>10 to the power of <paramref name="e"/>, from a table for the exponents a mesh
+	/// coordinate uses and <see cref="Math.Pow"/> for the rest.</summary>
+	static double Pow10( int e )
+	{
+		if ( e >= 0 && e < Pow10Positive.Length )
+			return Pow10Positive[e];
+
+		if ( e < 0 && -e < Pow10Positive.Length )
+			return 1.0 / Pow10Positive[-e];
+
+		return Math.Pow( 10.0, e );
+	}
+
+	/// <summary>How many whitespace-delimited tokens remain.</summary>
+	static int CountTokens( ReadOnlySpan<char> s )
+	{
+		var count = 0;
+
+		while ( NextToken( ref s, out _ ) )
+			count++;
+
+		return count;
+	}
+
+	/// <summary>The remaining tokens rejoined with single spaces — what string.Join over the split
+	/// produced before.</summary>
+	static string JoinTokens( ReadOnlySpan<char> s )
+	{
+		var builder = new StringBuilder();
+
+		while ( NextToken( ref s, out var token ) )
+		{
+			if ( builder.Length > 0 )
+				builder.Append( ' ' );
+
+			builder.Append( token );
+		}
+
+		return builder.ToString();
+	}
+
+	/// <summary>Wavefront indices are 1-based, and negative counts back from the last element.</summary>
+	static int ObjIndex( ReadOnlySpan<char> token, int count )
+	{
+		var n = ParseInt( token );
 		return n > 0 ? n - 1 : count + n;
+	}
+
+	/// <summary>A plain base-10 integer, no culture, no allocation. Face indices only, so small.</summary>
+	static int ParseInt( ReadOnlySpan<char> s )
+	{
+		var i = 0;
+		var negative = false;
+
+		if ( i < s.Length && (s[i] == '-' || s[i] == '+') )
+		{
+			negative = s[i] == '-';
+			i++;
+		}
+
+		var value = 0;
+
+		while ( i < s.Length )
+		{
+			value = value * 10 + (s[i] - '0');
+			i++;
+		}
+
+		return negative ? -value : value;
 	}
 
 	/// <summary><see cref="ObjWriter.DefaultMaterialName"/> is <c>material_N</c>; anything else

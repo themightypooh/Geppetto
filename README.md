@@ -117,7 +117,15 @@ poke around.
 - **Undo/redo** with labelled steps. One drag is one undo step.
 - **First person view** — frames the model off its own camera bone, so viewmodel
   arms are judged the way the player will actually see them.
-- **Reference props** — drop a model in the viewport and pose against it.
+- **Reference props** — drop a model in the viewport and pose against it. A
+  dragged bone stops at a prop's surface instead of clipping through it; untick
+  **Collide** when a pose needs to reach inside something.
+- **Lights and cameras, saved on the clip.** The **Lights** tab (View → Lights)
+  adds directional, point, spot and ambient lights, so a pose can be judged by
+  its shadows. The **Cameras** tab keeps the framing of a shot. Both stay in the
+  window unless you tick **Export With Clip**. A ticked one is spawned beside the
+  model by `RigAnimPlayerComponent` when the clip plays, and ticked cameras are
+  also written to a `.vdmx` next to the exported animation.
 - **Whole parts animate too.** Drag a reference prop and it gets its own timeline
   lane, keyed exactly like a bone — so a door, a lever or a magazine moves on the
   same playhead as the hand that works it, instead of being a static stand-in you
@@ -314,6 +322,20 @@ and press it once.
 scene next to it with a floor, a light and a player wearing your model. Open
 that scene and press Play. **File → Compile Playermodel** does just the model,
 for when you have a scene of your own.
+
+**To use it on a player in your own scene**, rather than in the test scene
+`Make Player` writes:
+
+1. Open your scene and select the object with a **Player Controller** on it.
+2. Open up its **Body** child and find the **Skinned Model Renderer**.
+3. Set that renderer's **Model** to your model, in `models/effigy/`.
+4. Leave **Use Anim Graph** ticked — that's what lets the animations drive it.
+
+If there's no Body child, the Player Controller has a **Create Body** button
+that makes one for you. Two things to check if it looks wrong: the Body child
+should sit at local `0,0,0`, so its feet are at the player's own origin, and the
+Player Controller's **Renderer** box should point at that Skinned Model
+Renderer.
 
 **Read the console afterwards.** It lists any bone whose name the animations
 didn't recognise. That isn't an error — the bone just holds still — but it's

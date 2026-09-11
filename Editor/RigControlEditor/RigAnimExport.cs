@@ -1,4 +1,4 @@
-using Editor;
+﻿using Editor;
 using Effigy;
 using Marionette.EditorTools;
 using Sandbox;
@@ -33,10 +33,17 @@ internal static class RigAnimExport
 		public string SequenceName;
 		public string VmdlAssetPath;
 		public string DmxAssetPath;
+		public string VdmxAssetPath;
 		public int Frames;
 		public int MatchedBones;
 		public int SkeletonBones;
+		public int Cameras;
 		public bool Compiled;
+
+		/// <summary>Something the export could not carry, said out loud. Not an error - the
+		/// export worked - but the difference between "it does not do that" and "it silently
+		/// dropped my work" is entirely whether anybody was told.</summary>
+		public string Note;
 	}
 
 	public static Result Export( RigAnimDocument doc, Asset riganim, string clipName, bool looping )
@@ -151,6 +158,28 @@ internal static class RigAnimExport
 			return Fail( $"Could not write the model: {e.Message}" );
 		}
 
+		// Cameras that leave the window, as a shot file beside the animation. See DmxCameraWriter
+		// for why this is the one piece of the export that is built rather than copied.
+		var exportedCameras = doc.Cameras?.Where( c => c is not null && c.Export && c.Enabled ).ToList()
+			?? new List<RigCamera>();
+
+		var vdmxFile = $"{fileStem}.vdmx";
+		var vdmxAbs = Path.Combine( folder, vdmxFile );
+		var vdmxAsset = string.IsNullOrEmpty( relativeFolder ) ? vdmxFile : $"{relativeFolder}/{vdmxFile}";
+
+		if ( exportedCameras.Count > 0 )
+		{
+			try
+			{
+				DmxCameraWriter.WriteFile( vdmxAbs, exportedCameras );
+				EffigyAssetFolder.Register( folder );
+			}
+			catch ( Exception e )
+			{
+				return Fail( $"Could not write the camera file: {e.Message}" );
+			}
+		}
+
 		if ( unmatched.Count > 0 )
 		{
 			Log.Warning( $"[Marionette] clip '{name}' poses {unmatched.Count} bone(s) this model does "
@@ -188,11 +217,61 @@ internal static class RigAnimExport
 			SequenceName = name,
 			VmdlAssetPath = vmdlAsset,
 			DmxAssetPath = dmxAsset,
+			VdmxAssetPath = exportedCameras.Count > 0 ? vdmxAsset : null,
 			Frames = clip.FrameCount,
 			MatchedBones = matched,
 			SkeletonBones = skeleton.Count,
+			Cameras = exportedCameras.Count,
 			Compiled = compiled,
+			Note = JoinNote( LightNote( doc ), CameraNote( doc, vdmxAsset ) ),
 		};
+	}
+
+	/// <summary>
+	/// What to say about a clip's lights, which a .vmdl animation cannot carry.
+	///
+	/// There is nowhere in the format for one - it is bone channels - so a light ticked for
+	/// export goes out through RigAnimPlayerComponent instead, which spawns it beside the model.
+	/// Saying nothing here would make that look like a bug the first time somebody exported a
+	/// lit clip and got an unlit one.
+	/// </summary>
+	static string LightNote( RigAnimDocument doc )
+	{
+		var exported = doc.Lights?.Count( l => l is not null && l.Export && l.Enabled ) ?? 0;
+
+		if ( exported == 0 )
+			return null;
+
+		return $"This clip has {exported} light(s) marked Export With Clip. A .vmdl animation is "
+			+ "bone channels and cannot carry a light, so they are not in this file. Play the "
+			+ "clip with a RigAnimPlayerComponent instead and it spawns them beside the model.";
+	}
+
+	/// <summary>
+	/// What to say about a clip's cameras, which ride in a separate .vdmx shot file rather than
+	/// the .vmdl animation.
+	/// </summary>
+	static string CameraNote( RigAnimDocument doc, string vdmxAsset )
+	{
+		var exported = doc.Cameras?.Count( c => c is not null && c.Export && c.Enabled ) ?? 0;
+
+		if ( exported == 0 )
+			return null;
+
+		return $"This clip has {exported} camera(s) marked Export With Clip. They are not in the "
+			+ ".vmdl - that file is bone channels - so they were written to "
+			+ $"{vdmxAsset} instead.";
+	}
+
+	static string JoinNote( string a, string b )
+	{
+		if ( string.IsNullOrEmpty( a ) )
+			return b;
+
+		if ( string.IsNullOrEmpty( b ) )
+			return a;
+
+		return a + "\n\n" + b;
 	}
 
 	static Result Fail( string error ) => new() { Ok = false, Error = error };

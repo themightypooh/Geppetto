@@ -285,30 +285,48 @@ public static class Decimate
 		public readonly double Cost;
 		public readonly int A, B;
 
-		public Candidate( double cost, int a, int b )
+		// The version of each endpoint when this cost was computed. A vertex bumps its version the
+		// moment it absorbs another, so an entry whose stored versions are behind is stale — its
+		// cost is no longer offered — and is dropped on pop rather than re-priced, because the fresh
+		// price has already been pushed by the collapse that bumped the version. This is the other
+		// half of the lazy-deletion trade: without it every stale pop is recomputed and re-pushed,
+		// which was growing the heap to several times the number of live edges.
+		public readonly int VersionA, VersionB;
+
+		public Candidate( double cost, int a, int b, int versionA, int versionB )
 		{
 			Cost = cost;
 			A = a;
 			B = b;
+			VersionA = versionA;
+			VersionB = versionB;
 		}
 	}
 
 	/// <summary>
-	/// A plain binary min-heap over candidate edges.
+	/// A 4-ary min-heap over candidate edges.
 	///
 	/// Rolled here rather than taken from <c>PriorityQueue</c> so the kernel keeps compiling as
 	/// loose .cs files in whatever runtime it is pasted into — see the note in Effigy.Tests.csproj
-	/// about the kernel having no dependencies. It is thirty lines and it is the same heap.
+	/// about the kernel having no dependencies.
+	///
+	/// FOUR-ARY, NOT BINARY, because this heap is the single hottest object in a decimation: a dense
+	/// import pushes and pops it tens of millions of times. A d-ary heap trades comparisons against
+	/// levels — four children halves the depth at the cost of two more comparisons a level — and the
+	/// expensive half of a sift is the swap, which moves the whole candidate. Halving the swaps is
+	/// worth the extra compares.
 	///
 	/// STALE ENTRIES ARE LEFT IN IT. A collapse changes the cost of every edge around the surviving
-	/// vertex, and finding and rewriting those entries needs a handle per edge and a decrease-key.
-	/// Pushing the new cost and re-checking on pop is the standard trade and the right one here:
-	/// the heap grows by a bounded multiple, and the check on pop is a recompute we would be doing
-	/// anyway to get the target position.
+	/// vertex, and rewriting those in place would need a handle per edge and a decrease-key. The
+	/// fresh price is simply pushed; the stale one is recognised on pop by its version stamp and
+	/// dropped (see Candidate.VersionA), so the heap grows by a bounded multiple rather than needing
+	/// a book-keeping structure of its own.
 	/// </summary>
 	sealed class Heap
 	{
-		readonly List<Candidate> _items = new();
+		readonly List<Candidate> _items;
+
+		public Heap( int capacity ) => _items = new List<Candidate>( capacity );
 
 		public int Count => _items.Count;
 
@@ -320,12 +338,12 @@ public static class Decimate
 
 			while ( i > 0 )
 			{
-				var parent = (i - 1) / 2;
+				var parent = (i - 1) >> 2;
 
 				if ( _items[parent].Cost <= _items[i].Cost )
 					break;
 
-				(_items[parent], _items[i]) = (_items[i], _items[parent]);
+				Swap( parent, i );
 				i = parent;
 			}
 		}
@@ -342,21 +360,35 @@ public static class Decimate
 
 			while ( true )
 			{
-				var l = 2 * i + 1;
-				var r = l + 1;
+				var first = (i << 2) + 1;
+
+				if ( first >= _items.Count )
+					break;
+
+				var end = first + 4 < _items.Count ? first + 4 : _items.Count;
 				var smallest = i;
 
-				if ( l < _items.Count && _items[l].Cost < _items[smallest].Cost ) smallest = l;
-				if ( r < _items.Count && _items[r].Cost < _items[smallest].Cost ) smallest = r;
+				for ( var c = first; c < end; c++ )
+				{
+					if ( _items[c].Cost < _items[smallest].Cost )
+						smallest = c;
+				}
 
 				if ( smallest == i )
 					break;
 
-				(_items[smallest], _items[i]) = (_items[i], _items[smallest]);
+				Swap( smallest, i );
 				i = smallest;
 			}
 
 			return top;
+		}
+
+		void Swap( int a, int b )
+		{
+			var t = _items[a];
+			_items[a] = _items[b];
+			_items[b] = t;
 		}
 	}
 
@@ -404,12 +436,46 @@ public static class Decimate
 		public int Welded;
 		public float WorstError;
 
+		// Allocation-free "set" membership over vertices: _mark[v] records the stamp of the most
+		// recent pass that touched v, and _stamp is bumped per logical set. The collapse loop asks
+		// "is v in this link / this opposite set / already seen this round" several million times,
+		// and the HashSet version of the same questions was the dominant cost on a dense import —
+		// tens of millions of small allocations for the GC to chew through.
+		readonly int[] _mark;
+		int _stamp;
+
+		// Bumped whenever a vertex absorbs another, so a heap candidate can tell "my price is still
+		// the one on offer" from "the surviving vertex moved on". See Candidate.VersionA.
+		readonly int[] _version;
+
+		// The (at most two) vertices opposite a shared edge, collected during the link condition.
+		readonly List<int> _opposite = new();
+
 		public Work( PolyMesh mesh, Options options )
 		{
 			_options = options;
 
 			Unpack( mesh );
 			BuildQuadrics();
+
+			_mark = new int[_pos.Count];
+			_version = new int[_pos.Count];
+		}
+
+		int NextStamp()
+		{
+			_stamp++;
+
+			// Practically unreachable — one run bumps this a handful of times per collapse — but a
+			// wrapped stamp would silently collide with a still-marked vertex and fail the link
+			// condition. Reset the whole board rather than let that happen.
+			if ( _stamp == int.MaxValue )
+			{
+				Array.Clear( _mark, 0, _mark.Length );
+				_stamp = 1;
+			}
+
+			return _stamp;
 		}
 
 		// --- unpacking ------------------------------------------------------------------------
@@ -663,12 +729,15 @@ public static class Decimate
 		/// <summary>Runs until the target is met or nothing legal is left. True if it got there.</summary>
 		public bool Collapse( int target )
 		{
-			var heap = new Heap();
+			// Upper bound on the number of edges in a closed triangle mesh: three corners a triangle
+			// shared between two — so 1.5x the triangle count. Pre-sizing keeps the heap's backing
+			// array from doubling and copying itself several times over a long run.
+			var heap = new Heap( LiveTriangles + LiveTriangles / 2 );
 
 			foreach ( var key in LiveEdges() )
 			{
 				if ( TryCost( key.A, key.B, out var cost, out _ ) )
-					heap.Push( new Candidate( cost, key.A, key.B ) );
+					heap.Push( new Candidate( cost, key.A, key.B, _version[key.A], _version[key.B] ) );
 			}
 
 			while ( LiveTriangles > target && heap.Count > 0 )
@@ -678,17 +747,15 @@ public static class Decimate
 				if ( !_alive[top.A] || !_alive[top.B] )
 					continue;
 
-				if ( !TryCost( top.A, top.B, out var cost, out var to ) )
+				// A stale entry: one of its endpoints has absorbed a vertex since this price was
+				// taken. Its fresh price is already in the heap — the collapse that bumped the
+				// version re-priced every edge touching the survivor — so the stale one is dropped
+				// rather than recomputed and re-pushed.
+				if ( _version[top.A] != top.VersionA || _version[top.B] != top.VersionB )
 					continue;
 
-				// The entry was written before something nearby moved and is now optimistic. Put it
-				// back at its real cost instead of acting on a price that is no longer offered —
-				// this is the lazy half of the lazy-deletion trade described on Heap.
-				if ( cost > top.Cost * 1.0001 + 1e-12 )
-				{
-					heap.Push( new Candidate( cost, top.A, top.B ) );
+				if ( !TryCost( top.A, top.B, out var cost, out var to ) )
 					continue;
-				}
 
 				if ( cost > _options.MaxError )
 					break;
@@ -699,10 +766,28 @@ public static class Decimate
 				if ( cost > WorstError )
 					WorstError = (float)cost;
 
-				foreach ( var n in Neighbours( top.A ) )
+				// Every edge now touching the surviving vertex has a fresh cost. Pushed without an
+				// allocation: a stamp marks which neighbours have already been pushed this round.
+				var stamp = NextStamp();
+				var versionA = _version[top.A];
+
+				foreach ( var t in _vertTris[top.A] )
 				{
-					if ( TryCost( top.A, n, out var updated, out _ ) )
-						heap.Push( new Candidate( updated, top.A, n ) );
+					if ( !_triAlive[t] )
+						continue;
+
+					for ( var i = 0; i < 3; i++ )
+					{
+						var n = _tri[3 * t + i];
+
+						if ( n == top.A || _mark[n] == stamp )
+							continue;
+
+						_mark[n] = stamp;
+
+						if ( TryCost( top.A, n, out var updated, out _ ) )
+							heap.Push( new Candidate( updated, top.A, n, versionA, _version[n] ) );
+					}
 				}
 			}
 
@@ -812,25 +897,6 @@ public static class Decimate
 		bool Uses( int t, int v ) =>
 			_tri[3 * t] == v || _tri[3 * t + 1] == v || _tri[3 * t + 2] == v;
 
-		IEnumerable<int> Neighbours( int v )
-		{
-			var seen = new HashSet<int>();
-
-			foreach ( var t in _vertTris[v] )
-			{
-				if ( !_triAlive[t] )
-					continue;
-
-				for ( var i = 0; i < 3; i++ )
-				{
-					var other = _tri[3 * t + i];
-
-					if ( other != v && seen.Add( other ) )
-						yield return other;
-				}
-			}
-		}
-
 		/// <summary>
 		/// The link condition: an edge is safe to collapse when the only vertices adjacent to BOTH
 		/// its endpoints are the ones opposite it in the triangles that share it.
@@ -842,10 +908,16 @@ public static class Decimate
 		/// on it later with nothing pointing back here. Dey, Edelsbrunner, Guha and Nekhayev proved
 		/// it necessary and sufficient for a simplicial complex; the cost is one small set
 		/// intersection per candidate.
+		///
+		/// The sets here are stamp arrays, not HashSets: this runs once per collapse and the HashSet
+		/// version of it — three allocations a call, tens of millions over a dense import — was the
+		/// single largest cost in the whole decimation.
 		/// </summary>
 		bool LinkConditionHolds( int a, int b )
 		{
-			var opposite = new HashSet<int>();
+			// The vertices opposite the edge in the triangles that share it — at most two on a
+			// manifold, so a small reused list rather than a set.
+			_opposite.Clear();
 
 			foreach ( var t in _vertTris[a] )
 			{
@@ -857,60 +929,85 @@ public static class Decimate
 					var v = _tri[3 * t + i];
 
 					if ( v != a && v != b )
-						opposite.Add( v );
+						_opposite.Add( v );
 				}
 			}
 
-			var linkA = new HashSet<int>( Neighbours( a ) );
+			// The link of a — every neighbour, opposite or not.
+			var linkA = NextStamp();
 
-			foreach ( var v in Neighbours( b ) )
+			foreach ( var t in _vertTris[a] )
 			{
-				if ( v == a || !linkA.Contains( v ) )
+				if ( !_triAlive[t] )
 					continue;
 
-				if ( !opposite.Contains( v ) )
-					return false;
+				for ( var i = 0; i < 3; i++ )
+				{
+					var v = _tri[3 * t + i];
+
+					if ( v != a )
+						_mark[v] = linkA;
+				}
+			}
+
+			// A neighbour of b that is in a's link but not opposite the edge closes a triangle
+			// around the collapse, and the link condition fails.
+			foreach ( var t in _vertTris[b] )
+			{
+				if ( !_triAlive[t] )
+					continue;
+
+				for ( var i = 0; i < 3; i++ )
+				{
+					var v = _tri[3 * t + i];
+
+					if ( v == a || v == b || _mark[v] != linkA )
+						continue;
+
+					if ( !_opposite.Contains( v ) )
+						return false;
+				}
 			}
 
 			return true;
 		}
 
 		/// <summary>Would any triangle that survives this collapse be turned inside out by it?</summary>
-		bool WouldFlip( int a, int b, Vec3 to )
+		bool WouldFlip( int a, int b, Vec3 to ) =>
+			Flips( a, b, to ) || Flips( b, a, to );
+
+		bool Flips( int v, int other, Vec3 to )
 		{
-			foreach ( var v in new[] { a, b } )
+			foreach ( var t in _vertTris[v] )
 			{
-				foreach ( var t in _vertTris[v] )
-				{
-					if ( !_triAlive[t] )
-						continue;
+				if ( !_triAlive[t] )
+					continue;
 
-					// A triangle using both ends is about to disappear, so its normal is nobody's
-					// business.
-					if ( Uses( t, a ) && Uses( t, b ) )
-						continue;
+				// A triangle using both ends is about to disappear, so its normal is nobody's
+				// business.
+				if ( Uses( t, v ) && Uses( t, other ) )
+					continue;
 
-					var p0 = _tri[3 * t] == v ? to : _pos[_tri[3 * t]];
-					var p1 = _tri[3 * t + 1] == v ? to : _pos[_tri[3 * t + 1]];
-					var p2 = _tri[3 * t + 2] == v ? to : _pos[_tri[3 * t + 2]];
+				var p0 = _tri[3 * t] == v ? to : _pos[_tri[3 * t]];
+				var p1 = _tri[3 * t + 1] == v ? to : _pos[_tri[3 * t + 1]];
+				var p2 = _tri[3 * t + 2] == v ? to : _pos[_tri[3 * t + 2]];
 
-					var before = Vec3.Cross(
-						_pos[_tri[3 * t + 1]] - _pos[_tri[3 * t]],
-						_pos[_tri[3 * t + 2]] - _pos[_tri[3 * t]] );
+				var before = Vec3.Cross(
+					_pos[_tri[3 * t + 1]] - _pos[_tri[3 * t]],
+					_pos[_tri[3 * t + 2]] - _pos[_tri[3 * t]] );
 
-					var after = Vec3.Cross( p1 - p0, p2 - p0 );
+				var after = Vec3.Cross( p1 - p0, p2 - p0 );
 
-					// Collapsed to nothing. Not a flip, but not a triangle either, and letting it
-					// through leaves a zero-area face for the next pass to divide by.
-					if ( after.LengthSquared < 1e-20f )
-						return true;
+				// Collapsed to nothing. Not a flip, but not a triangle either, and letting it
+				// through leaves a zero-area face for the next pass to divide by.
+				if ( after.LengthSquared < 1e-20f )
+					return true;
 
-					if ( before.LengthSquared < 1e-20f )
-						continue;
+				if ( before.LengthSquared < 1e-20f )
+					continue;
 
-					if ( Vec3.Dot( before.Normal, after.Normal ) < _options.FlipThreshold )
-						return true;
-				}
+				if ( Vec3.Dot( before.Normal, after.Normal ) < _options.FlipThreshold )
+					return true;
 			}
 
 			return false;
@@ -931,15 +1028,15 @@ public static class Decimate
 		/// real fix and is on by default; this is what makes turning it off honest rather than
 		/// destructive.
 		/// </summary>
-		bool WouldDelete( int a, int b )
+		bool WouldDelete( int a, int b ) =>
+			Deletes( a, b ) && Deletes( b, a );
+
+		bool Deletes( int v, int other )
 		{
-			foreach ( var v in new[] { a, b } )
+			foreach ( var t in _vertTris[v] )
 			{
-				foreach ( var t in _vertTris[v] )
-				{
-					if ( _triAlive[t] && !(Uses( t, a ) && Uses( t, b )) )
-						return false;
-				}
+				if ( _triAlive[t] && !(Uses( t, v ) && Uses( t, other )) )
+					return false;
 			}
 
 			return true;
@@ -983,6 +1080,7 @@ public static class Decimate
 			_pos[a] = to;
 			_alive[b] = false;
 			_locked[a] = _locked[a] || _locked[b];
+			_version[a]++;
 
 			var q = _quadric[a];
 			q.Add( _quadric[b] );
@@ -1006,6 +1104,12 @@ public static class Decimate
 			// vertex that has absorbed a thousand neighbours carries a thousand dead triangles and
 			// every neighbourhood walk over it costs a thousand steps. Compacted when the list is
 			// mostly rubbish rather than every time, so the amortised cost stays flat.
+			//
+			// The count pass and the write pass are separate on purpose: the write compacts in place,
+			// so running it and then NOT trimming (because the list was less than half dead) leaves
+			// the live entries duplicated at the front of a list that kept its old tail. That was
+			// inflating the survivor's list by up to 2x and making every later walk over it pay for
+			// the phantom triangles.
 			var live = _vertTris[a];
 
 			if ( live.Count > 16 )
@@ -1015,11 +1119,21 @@ public static class Decimate
 				for ( var i = 0; i < live.Count; i++ )
 				{
 					if ( _triAlive[live[i]] )
-						live[kept++] = live[i];
+						kept++;
 				}
 
 				if ( kept * 2 < live.Count )
-					live.RemoveRange( kept, live.Count - kept );
+				{
+					var w = 0;
+
+					for ( var i = 0; i < live.Count; i++ )
+					{
+						if ( _triAlive[live[i]] )
+							live[w++] = live[i];
+					}
+
+					live.RemoveRange( w, live.Count - w );
+				}
 			}
 
 			return true;

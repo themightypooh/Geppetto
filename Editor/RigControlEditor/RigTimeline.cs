@@ -830,6 +830,33 @@ internal sealed class RigTimelineLanes : Widget
 		Update();
 	}
 
+	/// <summary>Deletes every keyframe on every track in the clip - the whole animation at once.
+	/// "Select All" then Delete reaches the same place through the selection, but that needs the
+	/// selection to survive the menu closing; this one-step option doesn't.</summary>
+	public void DeleteAllKeyframes()
+	{
+		if ( Anim?.BoneTracks is not { } tracks )
+			return;
+
+		var removed = false;
+
+		foreach ( var track in tracks )
+		{
+			if ( track.Keyframes.Count == 0 )
+				continue;
+
+			track.Keyframes.Clear();
+			removed = true;
+		}
+
+		if ( !removed )
+			return;
+
+		_selection.Clear();
+		Update();
+		Edited?.Invoke();
+	}
+
 	private void BeginKeyframeDrag( RigTimelineLayout layout, Vector2 position, (BoneTrack Track, BoneKeyframe Key) key )
 	{
 		_grabbed = true;
@@ -1170,6 +1197,15 @@ internal sealed class RigTimelineLanes : Widget
 			Update();
 			Edited?.Invoke();
 		} ).StatusTip = isPart ? "Remove the part from the timeline entirely" : "Remove the bone from the timeline entirely";
+
+		menu.AddSeparator();
+
+		var selectAll = menu.AddOption( "Select All", "select_all", SelectAll );
+		selectAll.StatusTip = "Select every keyframe in the clip";
+
+		var deleteAll = menu.AddOption( "Delete All Keyframes", "delete", DeleteAllKeyframes );
+		deleteAll.Enabled = Anim?.BoneTracks?.Any( t => t.Keyframes.Count > 0 ) == true;
+		deleteAll.StatusTip = "Delete every keyframe in the clip, leaving the tracks in place";
 
 		menu.OpenAtCursor();
 	}

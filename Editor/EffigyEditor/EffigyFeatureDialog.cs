@@ -100,6 +100,11 @@ internal sealed class EffigyFeatureDialog : Widget
 	/// <summary>Any parameter edit — the studio rebuilds live, as Onshape does.</summary>
 	public Action Edited { get; set; }
 
+	/// <summary>The Transform handle was grabbed, before any parameter has moved. The window uses
+	/// this to snapshot the pre-drag geometry so the drag can rewrite it in place instead of
+	/// re-running the history every frame.</summary>
+	public Action BodyDragBegan { get; set; }
+
 	/// <summary>Resolve <c>#name</c> against the document variable table. The window sets this
 	/// so a field can evaluate <c>#thickness / 2</c> without the dialog knowing what a studio is.</summary>
 	public Func<string, float?> VariableResolve { get; set; }
@@ -238,6 +243,8 @@ internal sealed class EffigyFeatureDialog : Widget
 		_rotationAtDragStart = axis.LengthSquared < 1e-12f
 			? Rotation.Identity
 			: Rotation.FromAxis( ToVector3( axis.Normal ), move.RotationAngle.Value );
+
+		BodyDragBegan?.Invoke();
 	}
 
 	/// <summary>

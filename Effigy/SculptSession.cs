@@ -350,14 +350,18 @@ public sealed class SculptSession
 
 		_working = _sculpt.Evaluate( Level );
 		_bvh = MeshBVH.Build( _working );
-		_neighbors = _working.BuildVertexEdges();
+
+		// Frames and adjacency are built only when the brush actually reads them — frames by
+		// Inflate, adjacency by Smooth. On a dense import the other brushes (Draw, Grab, Flatten,
+		// Pinch) skip two full O(vertices) walks per stroke, which was most of the grab hitch.
+		_neighbors = Brush == BrushKind.Smooth ? _working.BuildVertexEdges() : null;
 		_undo = new BrushUndo();
 
 		// Frames are built once, from the surface as the stroke found it, and not rebuilt per sample.
 		// Rebuilding them on 128k vertices per dab is the obvious way to make the tool unusable, and
 		// a brush that re-reads its own output also feeds back — an Inflate would run away as it
 		// followed the normals it had just moved. A stroke works against the surface it started on.
-		_frames = SculptFrames.Build( _working );
+		_frames = Brush == BrushKind.Inflate ? SculptFrames.Build( _working ) : null;
 
 		_lastSample = hit.Value.Point;
 		_maskBefore = Masking ? (float[])MaskFor( Level ).Values.Clone() : null;

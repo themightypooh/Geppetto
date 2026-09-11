@@ -35,7 +35,68 @@ forgotten.
 
 ## Unreleased
 
-Nothing yet.
+### Added
+- **Light the Marionette viewport.** A pose reads by its shadows, and the viewport had one
+  fixed sun over the shoulder — under which an arm in front of a chest is a flat shape and a
+  hand turned over looks the same either way. There is now a **Lights** tab (View ▸ Lights):
+  add directional, point, spot and ambient lights, each with colour, brightness, range, cone
+  and shadows, saved on the clip so each shot keeps its own lighting. **Place At Camera** puts
+  the selected light where you are looking from, aimed where you are looking. A clip with no
+  lights still uses the built-in sun and ambient exactly as before, and Add ▸ Copy Default
+  Lighting drops those in as editable entries to start from.
+  `Code/RigControl/RigLight.cs`, `Editor/RigControlEditor/RigLightsPanel.cs`
+- **A light can travel with the clip, if you want it to.** Lights are workspace by default —
+  the window only, never in a game. Tick **Export With Clip** and `RigAnimPlayerComponent`
+  spawns that light beside the model when the clip plays, which is how a lamp authored with
+  the pose it lights gets to the game with it. An exported .vmdl still cannot carry a light —
+  the format is bone channels — and the export dialog now says so instead of dropping them
+  quietly. `Code/RigControl/RigAnimPlayerComponent.cs`
+- **Capture a pose the animation graph is already holding, straight into a clip.** The engine
+  knows how to sit, aim and carry; Marionette only ever knew how to pose bones by hand, so a
+  starting pose that already existed had to be rebuilt a bone at a time. `rig_capture_pose
+  <model> <output.riganim> [params] [props] [frame]` in the editor console runs the model's own
+  graph in a scratch scene, waits out the blend, and writes the pose it lands in as keyframes.
+  It captures into an existing clip rather than replacing it, so several poses can be laid down
+  at different frames, and it takes a list of reference props with offsets so the clip opens
+  with the furniture already placed. `Editor/RigControlEditor/RigPoseCapture.cs`
+- **Save a shot with a camera.** The framing you find by flying the viewport around is the
+  framing you want the final shot to have, and until now there was no way to get back to it.
+  There is now a **Cameras** tab (View ▸ Cameras): drop a camera where you are looking from,
+  with field of view and clip planes, saved on the clip. Like lights, cameras stay in the
+  window unless you tick **Export With Clip**. When you do, `RigAnimPlayerComponent` spawns them
+  next to the model when the clip plays (switched off, because the game decides which shot is
+  live), and the export writes them to a `.vdmx` shot file beside the animation.
+  `Code/RigControl/RigCamera.cs`, `Editor/RigControlEditor/RigCamerasPanel.cs`
+- **A posed bone stops at props instead of going through them.** Drag a hand onto a desk
+  and it rests on the surface. The **Collide** checkbox in the viewport strip turns it off for
+  poses that need to reach inside something, and it remembers your choice.
+  `Editor/RigControlEditor/RigViewport.cs`
+- **Select All and Delete All Keyframes** in the timeline's menu, for starting a clip over
+  without deleting its tracks. `Editor/RigControlEditor/RigTimeline.cs`
+- **Save your panel layout in Effigy.** View ▸ Set Default Panel View keeps the arrangement
+  you like, and Reset Default Panel View puts it back after a stray drag.
+  `Editor/EffigyEditor/EffigyWindow.cs`
+
+### Improved
+- **Dense imports load and simplify much faster.** The OBJ reader no longer spends its time
+  parsing numbers, and the decimator does far less work per step, so a million-vertex mesh
+  gets through import in a fraction of the time. `Editor/Effigy/ObjWriter.cs`,
+  `Editor/Effigy/Decimate.cs`
+- **Sculpting and moving a dense model is smooth.** A sculpt stroke updates the mesh in place
+  instead of rebuilding it every dab, and dragging a part with Transform moves it on the GPU
+  instead of recomputing the model every frame. `Editor/EffigyEditor/EffigyPreview.cs`,
+  `Editor/EffigyEditor/EffigyViewport.Sculpting.cs`, `Editor/Effigy/Brush.cs`
+- **The README shows how to put your playermodel on a player in your own scene**, not just the
+  test scene Make Player writes. `README.md`
+- **The house tutorial is written for your first time using CAD.** It explains what CAD is,
+  shows you how to turn the camera, then tells you exactly what to click and type at every
+  step, and what you just made. `Editor/EffigyEditor/EffigyTutorial.cs`,
+  `Editor/EffigyEditor/EffigyTutorialPanel.cs`
+
+### Fixed
+- **The house tutorial no longer skips the door.** The door step ticked itself off as soon
+  as the second window was drilled. It now waits for a third opening.
+  `Editor/EffigyEditor/EffigyTutorial.cs`
 
 ## v379386 — 2026-09-10
 

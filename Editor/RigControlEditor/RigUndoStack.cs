@@ -1,4 +1,4 @@
-using Marionette;
+﻿using Marionette;
 using Sandbox;
 using System.Collections.Generic;
 using System.Linq;
@@ -26,6 +26,8 @@ internal sealed class RigSnapshot
 	private int _animationSpeed;
 
 	private List<RigObject> _objects;
+	private List<RigLight> _lights;
+	private List<RigCamera> _cameras;
 
 	private List<IkConstraint> _ik;
 	private List<LimitConstraint> _limits;
@@ -47,6 +49,12 @@ internal sealed class RigSnapshot
 			// it. Left out of the snapshot, undo would restore the keyframes of parts that no
 			// longer existed.
 			snap._objects = (anim.Objects ?? new List<RigObject>()).Select( Clone ).ToList();
+
+			// Lighting is a document edit like any other. Left out, Ctrl+Z after deleting a
+			// light would restore the pose and leave the viewport dark - an undo that half
+			// works is harder to trust than one that does nothing.
+			snap._lights = (anim.Lights ?? new List<RigLight>()).Select( Clone ).ToList();
+			snap._cameras = (anim.Cameras ?? new List<RigCamera>()).Select( Clone ).ToList();
 			snap._frameCount = anim.FrameCount;
 			snap._animationSpeed = anim.AnimationSpeed;
 		}
@@ -80,6 +88,8 @@ internal sealed class RigSnapshot
 			anim.MorphEvents = _morphs.Select( Clone ).ToList();
 			anim.ReferenceProps = _references.Select( Clone ).ToList();
 			anim.Objects = (_objects ?? new List<RigObject>()).Select( Clone ).ToList();
+			anim.Lights = (_lights ?? new List<RigLight>()).Select( Clone ).ToList();
+			anim.Cameras = (_cameras ?? new List<RigCamera>()).Select( Clone ).ToList();
 			anim.FrameCount = _frameCount;
 			anim.AnimationSpeed = _animationSpeed;
 		}
@@ -93,6 +103,34 @@ internal sealed class RigSnapshot
 			rig.HiddenBones = new List<string>( _hiddenBones );
 		}
 	}
+
+	private static RigLight Clone( RigLight l ) => new()
+	{
+		Name = l.Name,
+		Kind = l.Kind,
+		Enabled = l.Enabled,
+		Export = l.Export,
+		Color = l.Color,
+		Brightness = l.Brightness,
+		Position = l.Position,
+		Rotation = l.Rotation,
+		Range = l.Range,
+		ConeInner = l.ConeInner,
+		ConeOuter = l.ConeOuter,
+		Shadows = l.Shadows,
+	};
+
+	private static RigCamera Clone( RigCamera c ) => new()
+	{
+		Name = c.Name,
+		Enabled = c.Enabled,
+		Export = c.Export,
+		Position = c.Position,
+		Rotation = c.Rotation,
+		FieldOfView = c.FieldOfView,
+		ZNear = c.ZNear,
+		ZFar = c.ZFar,
+	};
 
 	private static BoneTrack Clone( BoneTrack t ) => new()
 	{

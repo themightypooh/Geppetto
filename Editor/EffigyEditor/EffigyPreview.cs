@@ -142,6 +142,13 @@ internal static class EffigyPreview
 		private int[] _faceCorners;
 		private int _faceCount;
 
+		// The corner normals the vertex buffers were last built with. Kept so a position-only update
+		// (a sculpt stroke, which moves vertices without changing topology) can reuse them instead of
+		// re-running the O(vertices) fan pass every dab. The normals snap correct on the next full
+		// update.
+		private int[][] _cornerNormals;
+		private List<Vec3> _normals;
+
 		private LivePreview() { }
 
 		public static LivePreview Build( PolyMesh mesh, Func<int, string> materialForSlot,
@@ -190,6 +197,8 @@ internal static class EffigyPreview
 			}
 
 			var (cornerNormals, normals) = MeshNormals.ComputeCornerNormals( mesh, smoothingAngleDegrees );
+			_cornerNormals = cornerNormals;
+			_normals = normals;
 			var bounds = BoundsOf( mesh );
 
 			for ( var i = 0; i < _meshes.Count; i++ )
@@ -206,6 +215,48 @@ internal static class EffigyPreview
 			return true;
 		}
 
+		/// <summary>
+		/// Rewrite positions only, reusing the normals and UVs the buffers were last built with. A
+		/// sculpt stroke moves vertices without changing topology, and this skips the O(vertices)
+		/// corner-normal fan pass that a full update re-runs every dab — the normals snap correct on
+		/// the next full update (stroke end). Returns false when the face layout has changed, which
+		/// means a full rebuild instead.
+		/// </summary>
+		public bool TryUpdatePositions( PolyMesh mesh )
+		{
+			if ( Model is null || mesh.FaceCount != _faceCount || _cornerNormals is null )
+				return false;
+
+			var faceLists = new List<List<int>>( _meshes.Count );
+
+			for ( var i = 0; i < _meshes.Count; i++ )
+				faceLists.Add( new List<int>() );
+
+			for ( var fi = 0; fi < mesh.FaceCount; fi++ )
+			{
+				if ( mesh.Faces[fi].Count != _faceCorners[fi] )
+					return false;
+
+				if ( mesh.Faces[fi].Count < 3 )
+					continue;
+
+				faceLists[_faceMesh[fi]].Add( fi );
+			}
+
+			for ( var i = 0; i < _meshes.Count; i++ )
+			{
+				var vertices = BuildVertices( mesh, faceLists[i], _cornerNormals, _normals );
+
+				if ( vertices.Count != _vertices[i].Count )
+					return false;
+
+				_meshes[i].SetVertexBufferData( vertices, 0 );
+				_vertices[i] = vertices;
+			}
+
+			return true;
+		}
+
 		void Rebuild( PolyMesh mesh, Func<int, string> materialForSlot, float smoothingAngleDegrees )
 		{
 			_meshes.Clear();
@@ -213,6 +264,8 @@ internal static class EffigyPreview
 			_bucketIndex.Clear();
 
 			var (cornerNormals, normals) = MeshNormals.ComputeCornerNormals( mesh, smoothingAngleDegrees );
+			_cornerNormals = cornerNormals;
+			_normals = normals;
 			var bounds = BoundsOf( mesh );
 			var placeholder = Material.Load( PreviewMaterial );
 			var slotCache = new Dictionary<int, Material>();
@@ -345,7 +398,7 @@ internal static class EffigyPreview
 				var position = new Vector3( p.x, p.y, p.z );
 				var normal = new Vector3( n.x, n.y, n.z );
 
-				vertices.Add( new SimpleVertex( position, normal, TangentFor( normal ), new Vector2( uv.x, uv.y ) ) );
+				vertices.Add( new SimpleVertex( position, normal, Vector3.Forward, new Vector2( uv.x, uv.y ) ) );
 			}
 		}
 
@@ -357,6 +410,11 @@ internal static class EffigyPreview
 	/// kernel produces is convex. Extrude caps are not: they are whatever closed region was drawn,
 	/// and fanning a concave one fills its notches in — draw a dart and the solid came back as a
 	/// quadrilateral with the concave corner swallowed.
+	///
+	/// A TRIANGLE BYPASSES THE CLIPPER. An import is overwhelmingly triangles, and ear clipping a
+	/// 3-corner face is still a Newell normal, a flatten, a signed-area and several allocations per
+	/// face — millions of them on a dense import. A triangle is always itself, so it is emitted
+	/// straight through.
 	/// </summary>
 	private static List<int> TriangulateIndices( PolyMesh mesh, List<int> faceIndices )
 	{
@@ -366,36 +424,32 @@ internal static class EffigyPreview
 		foreach ( var fi in faceIndices )
 		{
 			var face = mesh.Faces[fi];
-			var polygon = new List<Vec3>( face.Count );
 
-			for ( var k = 0; k < face.Count; k++ )
-				polygon.Add( mesh.Positions[face.Indices[k]] );
-
-			foreach ( var (a, b, cc) in Triangulate.Face( polygon ) )
+			if ( face.Count == 3 )
 			{
-				indices.Add( first + a );
-				indices.Add( first + b );
-				indices.Add( first + cc );
+				indices.Add( first );
+				indices.Add( first + 1 );
+				indices.Add( first + 2 );
+			}
+			else
+			{
+				var polygon = new List<Vec3>( face.Count );
+
+				for ( var k = 0; k < face.Count; k++ )
+					polygon.Add( mesh.Positions[face.Indices[k]] );
+
+				foreach ( var (a, b, cc) in Triangulate.Face( polygon ) )
+				{
+					indices.Add( first + a );
+					indices.Add( first + b );
+					indices.Add( first + cc );
+				}
 			}
 
 			first += face.Count;
 		}
 
 		return indices;
-	}
-
-	/// <summary>
-	/// Any unit vector perpendicular to the normal will do. Effigy has no tangent basis of its own
-	/// - UVs come from box or planar projection, not from an unwrap - so there is nothing to
-	/// derive a real tangent from, and the preview material does not read one.
-	/// </summary>
-	private static Vector3 TangentFor( Vector3 normal )
-	{
-		// Cross with whichever axis the normal is least aligned to, so the result never collapses.
-		var axis = MathF.Abs( normal.z ) < 0.9f ? Vector3.Up : Vector3.Forward;
-		var tangent = Vector3.Cross( normal, axis );
-
-		return tangent.IsNearZeroLength ? Vector3.Forward : tangent.Normal;
 	}
 
 	private static BBox BoundsOf( PolyMesh mesh )

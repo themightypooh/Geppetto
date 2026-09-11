@@ -122,7 +122,7 @@ public static class Brush
 	/// which is exactly what makes it cacheable; see SculptSession, which holds it beside the BVH
 	/// and drops both together.
 	/// </param>
-	public static BrushUndo Apply( PolyMesh mesh, BrushStroke stroke, SculptFrames frames, float[] mask = null, MeshBVH bvh = null, List<EdgeKey>[] neighbors = null )
+	public static BrushUndo Apply( PolyMesh mesh, BrushStroke stroke, SculptFrames frames = null, float[] mask = null, MeshBVH bvh = null, List<EdgeKey>[] neighbors = null )
 	{
 		if ( mesh is null )
 			throw new ArgumentNullException( nameof( mesh ) );
@@ -130,10 +130,7 @@ public static class Brush
 		if ( stroke is null )
 			throw new ArgumentNullException( nameof( stroke ) );
 
-		if ( frames is null )
-			throw new ArgumentNullException( nameof( frames ) );
-
-		if ( frames.Count != mesh.VertexCount )
+		if ( frames is not null && frames.Count != mesh.VertexCount )
 			throw new ArgumentException( $"frames ({frames.Count}) and mesh ({mesh.VertexCount}) disagree" );
 
 		if ( mask is not null && mask.Length != mesh.VertexCount )
@@ -141,7 +138,17 @@ public static class Brush
 
 		bvh ??= MeshBVH.Build( mesh );
 
-		neighbors ??= mesh.BuildVertexEdges();
+		// Frames and adjacency are each O(vertices) to build and each is read by exactly one brush —
+		// frames by Inflate, adjacency by Smooth. Every other brush leaves them null, so a caller
+		// that does not need them (a Flatten stroke on a dense import) skips two full walks of the
+		// mesh per stroke. Built here when absent rather than silently dropped, so a bare call still
+		// works.
+		if ( frames is null && stroke.Kind == BrushKind.Inflate )
+			frames = SculptFrames.Build( mesh );
+
+		if ( neighbors is null && stroke.Kind == BrushKind.Smooth )
+			neighbors = mesh.BuildVertexEdges();
+
 		var found = new List<int>();
 		var undo = new BrushUndo();
 

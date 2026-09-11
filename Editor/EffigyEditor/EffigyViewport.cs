@@ -31,6 +31,12 @@ internal sealed partial class EffigyViewport : Widget
 	private GameObject _modelObject;
 	private ModelRenderer _renderer;
 
+	/// <summary>A second, temporary model rendered while a Transform drags a SUBSET of the bodies.
+	/// The main model keeps the static bodies; this holds the moving ones and its transform is
+	/// rewritten each frame, so the drag is a pure GPU transform instead of a per-frame upload.</summary>
+	private GameObject _dragObject;
+	private ModelRenderer _dragRenderer;
+
 	/// <summary>The Model the renderer is currently drawing, or null. The window's preview keeps an
 	/// in-place-updateable copy (see EffigyPreview.LivePreview) and checks this before rewriting it —
 	/// a pose preview, a compiled export or a sculpt/paint session can swap the renderer to a
@@ -447,6 +453,51 @@ internal sealed partial class EffigyViewport : Widget
 
 		if ( frameCamera )
 			FrameCamera();
+	}
+
+	/// <summary>
+	/// Show a second model — the bodies a Transform is dragging — alongside the main preview. Null
+	/// just clears the drag model. The main model is expected to hold the static bodies for the
+	/// duration of the drag.
+	/// </summary>
+	public void BeginDragModel( Model model )
+	{
+		EndDragModel();
+
+		if ( model is null )
+			return;
+
+		using var scope = _canvas.Scene.Push();
+
+		_dragObject = new GameObject( true, "effigy_drag" );
+		_dragRenderer = _dragObject.GetOrAddComponent<ModelRenderer>( false );
+		_dragRenderer.Model = model;
+		_dragRenderer.Enabled = true;
+	}
+
+	/// <summary>Move the drag model by a rigid-plus-uniform-scale transform, in world space. One
+	/// transform write a frame — the mesh is never touched.</summary>
+	public void SetDragModelTransform( Transform transform )
+	{
+		if ( _dragObject is not null && _dragObject.IsValid() )
+			_dragObject.LocalTransform = transform;
+	}
+
+	/// <summary>Drop the drag model and the object holding it.</summary>
+	public void EndDragModel()
+	{
+		_dragObject?.Destroy();
+		_dragObject = null;
+		_dragRenderer = null;
+	}
+
+	/// <summary>Move the main preview model by a transform, without touching its vertex data. The
+	/// "move everything" Transform drag uses this: the GPU applies the transform, so dragging a dense
+	/// part costs one write a frame no matter how many vertices it has.</summary>
+	public void SetModelTransform( Transform transform )
+	{
+		if ( _modelObject is not null && _modelObject.IsValid() )
+			_modelObject.LocalTransform = transform;
 	}
 
 	/// <summary>

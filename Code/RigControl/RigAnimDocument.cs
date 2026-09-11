@@ -59,6 +59,46 @@ public sealed class RigAnimDocument : GameResource
 	/// </summary>
 	[Property, Group( "Objects" )] public List<RigObject> Objects { get; set; } = new();
 
+	/// <summary>
+	/// Lights for the Marionette viewport to render this clip under.
+	///
+	/// A LIGHT IS WORKSPACE UNTIL YOU SAY OTHERWISE. Every one of these starts as viewport-only:
+	/// lighting is mostly how you SEE what you are posing, and a light added to make out an
+	/// elbow has no business turning up in somebody's game. Tick a light's Export With Clip and
+	/// it becomes part of the shot instead, spawned beside the model by
+	/// RigAnimPlayerComponent when the clip plays - a desk lamp authored with the pose it lights.
+	///
+	/// Either way it stays out of an exported .vmdl, because a .vmdl animation is bone channels
+	/// and there is nowhere in the format for a light (see RigAnimExport, which says so rather
+	/// than dropping them quietly).
+	///
+	/// It is stored on the clip rather than in an editor cookie because the useful lighting is
+	/// per-shot, not per-person: a clip of him at the desk wants the desk's key light, and the
+	/// next clip wants something else. Kept as a preference it would follow you between clips and
+	/// be wrong for most of them.
+	///
+	/// EMPTY MEANS THE DEFAULT LIGHTING, not darkness. Every clip authored before this existed
+	/// has an empty list and has to keep looking exactly as it did - so the viewport's built-in
+	/// sun and ambient stay on until this list says otherwise, at which point these replace them
+	/// wholesale. See RigViewport.BuildLights.
+	/// </summary>
+	[Property, Group( "Lighting" )] public List<RigLight> Lights { get; set; } = new();
+
+	/// <summary>
+	/// Camera shots for this clip - where you looked from when a moment read right.
+	///
+	/// LIKE LIGHTS, A CAMERA IS WORKSPACE UNTIL TICKED OTHERWISE. Every one of these starts as
+	/// viewport-only: framing is how you SEE what you are posing, and a camera dropped to look at
+	/// an elbow has no business turning up in somebody's game. Tick a camera's Export With Clip and
+	/// it becomes part of the shot instead - spawned by RigAnimPlayerComponent when the clip plays,
+	/// and baked out by the export.
+	///
+	/// It is stored on the clip rather than in an editor cookie because the useful framing is
+	/// per-shot, not per-person: a clip of him at the desk wants the shot over the desk's shoulder,
+	/// and the next clip wants something else.
+	/// </summary>
+	[Property, Group( "Cameras" )] public List<RigCamera> Cameras { get; set; } = new();
+
 	[Property] public List<BoneTrack> BoneTracks { get; set; } = new();
 	[Property] public List<RigEvent> Events { get; set; } = new();
 	[Property] public List<MorphEvent> MorphEvents { get; set; } = new();

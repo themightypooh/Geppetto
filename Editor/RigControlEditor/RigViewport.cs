@@ -1,4 +1,4 @@
-using Editor;
+﻿using Editor;
 using Effigy;
 using Marionette;
 using Sandbox;
@@ -65,6 +65,28 @@ internal sealed class RigViewport : Widget
 
 	/// <summary>The per-bone dot and hitbox radius, scaled by the user's handle-size setting.</summary>
 	private float HandleRadius => _boneHandleRadius * BoneHandleScale;
+
+	/// <summary>
+	/// When posing, stop the dragged bone at the surface of reference props and objects instead of
+	/// letting it clip through them. On by default; the toolbar's Collide option turns it off.
+	/// Persisted like the handle size - which is a property of you and your workflow, not of the
+	/// clip you have open.
+	/// </summary>
+	public bool CollideWithProps
+	{
+		get => _collideWithProps;
+		set
+		{
+			_collideWithProps = value;
+			EditorCookie.Set( "marionette.collide", value );
+		}
+	}
+
+	private bool _collideWithProps = true;
+
+	/// <summary>How far the dragged point stays from a surface it runs into - the bone's own handle
+	/// radius, so a hand-sized handle rests against a prop rather than sinking to its centre line.</summary>
+	private float CollisionRadius => MathF.Max( HandleRadius, 0.25f );
 
 	/// <summary>The control rig whose constraints apply while posing. Null poses plain FK.</summary>
 	public RigDocument Rig { get; set; }
@@ -441,6 +463,7 @@ internal sealed class RigViewport : Widget
 	public RigViewport( Widget parent ) : base( parent )
 	{
 		_boneHandleScale = EditorCookie.Get( "marionette.bonehandle.scale", 1f );
+		_collideWithProps = EditorCookie.Get( "marionette.collide", true );
 		_showPlayerController = EditorCookie.Get( PlayerControllerCookie, false );
 
 		MinimumSize = 200;
@@ -460,17 +483,12 @@ internal sealed class RigViewport : Widget
 			_camera.ZFar = 4096;
 			_camera.Enabled = true;
 
-			var sun = new GameObject( true, "sun" ).GetOrAddComponent<DirectionalLight>( false );
-			sun.WorldRotation = Rotation.From( 45, 45, 0 );
-			sun.LightColor = Color.White;
-			sun.Enabled = true;
-
-			var ambient = new GameObject( true, "ambient" ).GetOrAddComponent<AmbientLight>( false );
-			ambient.Color = Theme.ControlBackground * 0.6f;
-			ambient.Enabled = true;
-
 			_canvas.Camera = _camera;
 		}
+
+		// The clip has not been loaded yet, so this puts up the default sun and ambient. A clip
+		// with lights of its own replaces them the moment the window calls SetLights.
+		BuildLights();
 
 		_gizmoInstance = _canvas.GizmoInstance;
 
@@ -483,6 +501,7 @@ internal sealed class RigViewport : Widget
 	private Checkbox _showBonesToggle;
 	private Checkbox _showTwistToggle;
 	private Checkbox _armShaderToggle;
+	private Checkbox _collideToggle;
 
 	/// <summary>
 	/// A permanently visible strip of checkboxes above the viewport.
@@ -552,6 +571,18 @@ internal sealed class RigViewport : Widget
 		};
 		_showTwistToggle.Toggled = () => SetViewMode( () => ShowTwistBones = _showTwistToggle.Value );
 		bar.Add( _showTwistToggle );
+
+		bar.AddSpacingCell( 12 );
+
+		// Collision while posing. It changes how a bone behaves when you drag it (stop at a surface
+		// vs clip through), which is exactly the kind of hidden state this strip exists to make
+		// visible - so it lives here as a labelled checkbox rather than as an icon in the toolbar.
+		_collideToggle = new Checkbox( "Collide" )
+		{
+			ToolTip = "Stop a posed bone at reference props and objects instead of clipping through them. Turn off for poses that need to reach inside something."
+		};
+		_collideToggle.Toggled = () => CollideWithProps = _collideToggle.Value;
+		bar.Add( _collideToggle );
 
 		bar.AddSpacingCell( 12 );
 
@@ -639,6 +670,8 @@ internal sealed class RigViewport : Widget
 			_showTwistToggle.Enabled = _showBoneHandles && !_moveWholeModel;
 
 			_armShaderToggle.Value = PixelStyle;
+
+			_collideToggle.Value = CollideWithProps;
 
 			// Says why the dots are gone at the moment they go, rather than leaving you to work
 			// out which of the two toggles did it.
@@ -1197,6 +1230,21 @@ internal sealed class RigViewport : Widget
 	private List<RigObject> _objects;
 
 	/// <summary>
+	/// One solid surface a dragged bone must not pass through - a reference prop or one part of an
+	/// object, in the local space of its mesh, placed by a live GameObject. The mesh is static; the
+	/// GameObject's transform is where it is right now, so a prop dragged elsewhere collides where
+	/// it is drawn, not where it used to be.
+	/// </summary>
+	private sealed class Collider
+	{
+		public PolyMesh Mesh;
+		public MeshBVH Bvh;
+		public GameObject Object;
+	}
+
+	private readonly List<Collider> _colliders = new();
+
+	/// <summary>
 	/// The folder the open .riganim lives in, so a part that names an OBJ beside it can be found.
 	///
 	/// Set by the window on load and on save. Empty for a clip that has never been saved, in which
@@ -1208,6 +1256,158 @@ internal sealed class RigViewport : Widget
 	{
 		_referenceProps = props;
 		RebuildMovables();
+	}
+
+	/// <summary>The view camera, for anything that wants to place something where you are
+	/// looking from. Zero before the canvas has built its camera.</summary>
+	public Transform ViewCamera => _camera.IsValid() ? _camera.WorldTransform : Transform.Zero;
+
+	/// <summary>The viewport's vertical field of view, so a camera placed "at the camera" can
+	/// adopt the lens it was framed with.</summary>
+	public float ViewFov => _camera.IsValid() ? _camera.FieldOfView : 80f;
+
+	/// <summary>The clip's lights. See RigAnimDocument.Lights - null or empty puts the default
+	/// sun and ambient back.</summary>
+	public void SetLights( List<RigLight> lights )
+	{
+		_lights = lights;
+		BuildLights();
+	}
+
+	/// <summary>The clip's cameras. See RigAnimDocument.Cameras - drawn as frustums, not as
+	/// scene objects, so they never block or light anything.</summary>
+	public void SetCameras( List<RigCamera> cameras )
+	{
+		_cameras = cameras;
+	}
+
+	private List<RigLight> _lights;
+	private List<RigCamera> _cameras;
+	private readonly List<GameObject> _lightObjects = new();
+
+	/// <summary>
+	/// Rebuilds the viewport's lighting from the clip.
+	///
+	/// WHOLESALE, AND EVERY TIME. Lights are a handful of objects with no state worth preserving
+	/// across an edit - unlike the movables, where a rebuild costs a model respawn and loses a
+	/// drag in progress. Destroying and rebuilding four lights when a colour swatch changes is
+	/// cheaper than the bookkeeping to update them in place, and it cannot drift out of step
+	/// with the list.
+	///
+	/// AN EMPTY LIST IS THE DEFAULT LIGHTING, NOT DARKNESS. Every clip written before lights
+	/// existed has one, and opening one has to look exactly as it did before. Only a clip that
+	/// says something about lighting gets to turn the defaults off - and then it replaces them
+	/// entirely rather than adding to them, because a key light you cannot see the effect of
+	/// past a sun you did not ask for is not a key light.
+	/// </summary>
+	private void BuildLights()
+	{
+		if ( !_canvas.IsValid() || _canvas.Scene is null )
+			return;
+
+		using var scope = _canvas.Scene.Push();
+
+		foreach ( var existing in _lightObjects )
+			existing?.Destroy();
+
+		_lightObjects.Clear();
+
+		var wanted = _lights?.Where( l => l is not null && l.Enabled ).ToList() ?? new List<RigLight>();
+
+		if ( wanted.Count == 0 )
+		{
+			DefaultLighting();
+			return;
+		}
+
+		foreach ( var light in wanted )
+			Build( light );
+	}
+
+	/// <summary>
+	/// The lighting this viewport has always had: one white sun over the shoulder and a flat
+	/// ambient tinted to the editor theme.
+	///
+	/// Kept as code rather than as a seeded list on every new clip, because a default that is
+	/// written into the document is a default nobody can change later - improve it here and
+	/// every clip that never touched its lighting picks the improvement up. The Lights panel can
+	/// still copy it into a clip as editable entries, which is the right way to start from it
+	/// and then adjust; see RigLightsPanel.
+	/// </summary>
+	private void DefaultLighting()
+	{
+		var sun = new GameObject( true, "sun" );
+		var directional = sun.GetOrAddComponent<DirectionalLight>( false );
+		directional.WorldRotation = Rotation.From( 45, 45, 0 );
+		directional.LightColor = Color.White;
+		directional.Enabled = true;
+		_lightObjects.Add( sun );
+
+		var ambient = new GameObject( true, "ambient" );
+		var fill = ambient.GetOrAddComponent<AmbientLight>( false );
+		fill.Color = Theme.ControlBackground * 0.6f;
+		fill.Enabled = true;
+		_lightObjects.Add( ambient );
+	}
+
+	/// <summary>One light from the clip, as the engine component its kind maps to.</summary>
+	private void Build( RigLight light )
+	{
+		var go = new GameObject( true, string.IsNullOrWhiteSpace( light.Name ) ? "light" : light.Name );
+		_lightObjects.Add( go );
+
+		switch ( light.Kind )
+		{
+			case RigLightKind.Ambient:
+			{
+				var ambient = go.GetOrAddComponent<AmbientLight>( false );
+				ambient.Color = light.Tint();
+				ambient.Enabled = true;
+				return;
+			}
+
+			case RigLightKind.Point:
+			{
+				go.WorldPosition = light.Position;
+
+				var point = go.GetOrAddComponent<PointLight>( false );
+				point.LightColor = light.Tint();
+				point.Radius = light.Range;
+				point.Shadows = light.Shadows;
+				point.Enabled = true;
+				return;
+			}
+
+			case RigLightKind.Spot:
+			{
+				go.WorldPosition = light.Position;
+				go.WorldRotation = light.Rotation.ToRotation();
+
+				var spot = go.GetOrAddComponent<SpotLight>( false );
+				spot.LightColor = light.Tint();
+				spot.Radius = light.Range;
+
+				// Clamped rather than trusted: an outer cone inside the inner one is a spot with
+				// a hard edge and no core, which reads as the light being broken rather than as
+				// two numbers being the wrong way round.
+				spot.ConeInner = MathF.Min( light.ConeInner, light.ConeOuter );
+				spot.ConeOuter = MathF.Max( light.ConeInner, light.ConeOuter );
+				spot.Shadows = light.Shadows;
+				spot.Enabled = true;
+				return;
+			}
+
+			default:
+			{
+				go.WorldRotation = light.Rotation.ToRotation();
+
+				var sun = go.GetOrAddComponent<DirectionalLight>( false );
+				sun.LightColor = light.Tint();
+				sun.Shadows = light.Shadows;
+				sun.Enabled = true;
+				return;
+			}
+		}
 	}
 
 	/// <summary>The clip's objects - the things with parts, which are animation rather than
@@ -1236,6 +1436,7 @@ internal sealed class RigViewport : Widget
 			existing.Object?.Destroy();
 
 		_movables.Clear();
+		_colliders.Clear();
 
 		BuildObjects();
 		BuildReferenceProps();
@@ -1311,6 +1512,8 @@ internal sealed class RigViewport : Widget
 					Skinned = Draw( partObject, model ),
 					Model = model,
 				} );
+
+				AddCollider( partObject, CollisionMeshForPart( owner, part ) );
 			}
 
 			// A PART THAT FOLLOWS ANOTHER HANGS UNDER IT - the eyes under the head. Done as a second
@@ -1358,6 +1561,8 @@ internal sealed class RigViewport : Widget
 				part.Parent = go;
 
 				skinned ??= Draw( part, model );
+
+				AddCollider( part, CollisionMeshFromModel( model ) );
 			}
 
 			_movables.Add( new RigMovable
@@ -1378,6 +1583,275 @@ internal sealed class RigViewport : Widget
 				Model = models[0],
 			} );
 		}
+	}
+
+	/// <summary>Register one solid surface a dragged bone must stop at. The mesh stays in its own
+	/// local space; the GameObject carries where it is now, and a hidden prop's object is disabled
+	/// so it stops colliding the moment it is got out of the way.</summary>
+	private void AddCollider( GameObject go, PolyMesh mesh )
+	{
+		if ( mesh is null || mesh.FaceCount == 0 || !go.IsValid() )
+			return;
+
+		_colliders.Add( new Collider
+		{
+			Mesh = mesh,
+			Bvh = MeshBVH.Build( mesh ),
+			Object = go
+		} );
+	}
+
+	/// <summary>
+	/// A compiled model's collision mesh: its physics triangle meshes when it ships any, otherwise
+	/// its bounding box.
+	///
+	/// THE SAME GEOMETRY THE GAME COLLIDES WITH where possible - a prop's physics shapes are exactly
+	/// what a character in game can and cannot pass through, so posing against them keeps the
+	/// viewport honest. Hulls are deliberately skipped: they carry edges, not triangles. A model with
+	/// no physics at all falls back to its bounding box, so a hull-less prop still stops a hand
+	/// instead of letting it sink through - coarse, but never nothing.
+	/// </summary>
+	private static PolyMesh CollisionMeshFromModel( Model model )
+	{
+		if ( model is null )
+			return null;
+
+		var physics = PhysicsMeshFromModel( model );
+
+		return physics ?? BoundsBox( model );
+	}
+
+	/// <summary>The model's physics triangle meshes as one PolyMesh, or null when it ships none.</summary>
+	private static PolyMesh PhysicsMeshFromModel( Model model )
+	{
+		if ( model?.Physics?.Parts is not { } parts )
+			return null;
+
+		var mesh = new PolyMesh();
+
+		foreach ( var part in parts )
+		{
+			if ( part?.Meshes is null )
+				continue;
+
+			var partTransform = part.Transform;
+
+			foreach ( var physicsMesh in part.Meshes )
+			{
+				var vertices = physicsMesh.GetVertices();
+				var indices = physicsMesh.GetIndices();
+
+				if ( vertices is null || indices is null || indices.Length < 3 )
+					continue;
+
+				var first = mesh.VertexCount;
+
+				foreach ( var v in vertices )
+				{
+					var p = partTransform.PointToWorld( v );
+					mesh.AddVertex( new Vec3( p.x, p.y, p.z ) );
+				}
+
+				for ( var i = 0; i + 2 < indices.Length; i += 3 )
+					mesh.AddFace( new[] { first + indices[i], first + indices[i + 1], first + indices[i + 2] } );
+			}
+		}
+
+		return mesh.FaceCount > 0 ? mesh : null;
+	}
+
+	/// <summary>A box around the model's bounds, in the model's own space, for a prop with no physics.</summary>
+	private static PolyMesh BoundsBox( Model model )
+	{
+		var size = model.Bounds.Size;
+
+		if ( size.x <= 0f || size.y <= 0f || size.z <= 0f )
+			return null;
+
+		var center = model.Bounds.Center;
+
+		return MeshTransform.Transformed(
+			Primitives.Box( size.x, size.y, size.z ),
+			Xform.Translate( new Vec3( center.x, center.y, center.z ) ) );
+	}
+
+	/// <summary>The collision mesh for one part of an object: its own compiled model if it has one,
+	/// otherwise the lump of the object's OBJ it draws.</summary>
+	private PolyMesh CollisionMeshForPart( RigObject owner, RigObjectPart part )
+	{
+		if ( part.Model is not null )
+			return CollisionMeshFromModel( part.Model );
+
+		if ( string.IsNullOrWhiteSpace( owner.ObjSource ) )
+			return null;
+
+		var path = RigObjMeshes.Resolve( owner.ObjSource, DocumentFolder );
+
+		if ( path is null )
+			return null;
+
+		foreach ( var piece in RigObjMeshes.Pieces( path ) )
+		{
+			if ( !string.IsNullOrEmpty( part.ObjPart ) && piece.Name != part.ObjPart )
+				continue;
+
+			return piece.Mesh;
+		}
+
+		return null;
+	}
+
+	/// <summary>
+	/// Stop the dragged point at the nearest prop/object surface it would cross, rather than
+	/// letting it clip through.
+	///
+	/// The segment is cast from where the drag grabbed to where it asks to go now, and the answer
+	/// is the closest entry point pushed out along that face's normal by the bone's radius - so a
+	/// hand slides across a desk rather than stopping short of it. Casting from the grab point
+	/// rather than from last frame means a quick drag through a prop still lands on the near side
+	/// instead of tunnelling out the far one.
+	/// </summary>
+	private Vector3 ClampToProps( Vector3 from, Vector3 to )
+	{
+		if ( !CollideWithProps || _colliders.Count == 0 )
+			return to;
+
+		var delta = to - from;
+		var length = delta.Length;
+
+		if ( length < 0.0001f )
+			return to;
+
+		var bestT = float.MaxValue;
+		var bestPoint = to;
+
+		foreach ( var collider in _colliders )
+		{
+			// Active, not Enabled - a hidden prop disables its PARENT object, so a child mesh's own
+			// flag still reads true while the prop is got out of the way.
+			if ( collider.Object is not { } go || !go.IsValid() || !go.Active )
+				continue;
+
+			var world = go.WorldTransform;
+
+			var localFrom = world.PointToLocal( from );
+			var localTo = world.PointToLocal( to );
+			var localDir = localTo - localFrom;
+			var localLength = localDir.Length;
+
+			if ( localLength < 0.0001f )
+				continue;
+
+			var hit = collider.Bvh.Raycast(
+				collider.Mesh,
+				new Vec3( localFrom.x, localFrom.y, localFrom.z ),
+				new Vec3( localDir.x / localLength, localDir.y / localLength, localDir.z / localLength ) );
+
+			if ( hit is not { } h || h.Distance > localLength )
+				continue;
+
+			var t = h.Distance / localLength;
+
+			if ( t >= bestT )
+				continue;
+
+			var worldPoint = world.PointToWorld( new Vector3( h.Point.x, h.Point.y, h.Point.z ) );
+			var normal = (world.Rotation * new Vector3( h.Normal.x, h.Normal.y, h.Normal.z )).Normal;
+
+			bestT = t;
+			bestPoint = worldPoint + normal * CollisionRadius;
+		}
+
+		return bestT <= 1f ? bestPoint : to;
+	}
+
+	/// <summary>
+	/// The world position of the deepest descendant of <paramref name="bone"/> under the given bone
+	/// world transform - the point that sweeps the largest arc when the bone rotates, and therefore
+	/// the one that reaches a prop first.
+	///
+	/// Computed from local poses the same way <see cref="PropagateToDescendants"/> poses them, so it
+	/// agrees with what a drag actually writes rather than with the renderer's one-frame-stale
+	/// readback.
+	/// </summary>
+	private Vector3 DescendantTip( RigBone bone, Transform boneWorld )
+	{
+		var resolved = new Dictionary<string, Transform> { [bone.Key] = boneWorld };
+		var tip = boneWorld.Position;
+		var tipDistance = 0f;
+
+		foreach ( var (candidate, _) in LiveBones() )
+		{
+			if ( candidate.Subject != bone.Subject )
+				continue;
+
+			if ( candidate.Parent is not { } parent || !resolved.TryGetValue( parent.Key, out var parentWorld ) )
+				continue;
+
+			var local = _poseLookup?.Invoke( candidate.Key ) ?? BindPoseFor( candidate );
+			var world = parentWorld.ToWorld( local );
+			resolved[candidate.Key] = world;
+
+			var distance = (world.Position - boneWorld.Position).Length;
+
+			if ( distance > tipDistance )
+			{
+				tipDistance = distance;
+				tip = world.Position;
+			}
+		}
+
+		return tip;
+	}
+
+	/// <summary>Whether the tip's straight path from <paramref name="from"/> to <paramref name="to"/>
+	/// crosses a prop surface - the same clamp the move drag uses, asked as a yes/no.</summary>
+	private bool Penetrates( Vector3 from, Vector3 to )
+	{
+		var clamped = ClampToProps( from, to );
+		return (clamped - to).Length > 0.001f;
+	}
+
+	/// <summary>
+	/// Reduce a proposed rotation so its descendant tip stops at the first prop surface it would
+	/// cross, rather than sweeping through it.
+	///
+	/// The tip sweeps an arc but only its endpoints are known, so the straight chord between the
+	/// grab-pose tip and the proposed tip is used as the approximation - exact enough for the
+	/// per-frame rotation increments a drag produces. When the chord crosses a surface the rotation
+	/// is scaled back with a binary search to the largest amount that doesn't, which leaves the tip
+	/// resting just off the surface.
+	/// </summary>
+	private Rotation ClampRotation( RigBone bone, Transform start, Rotation applied )
+	{
+		if ( !CollideWithProps || _colliders.Count == 0 )
+			return applied;
+
+		var tipStart = DescendantTip( bone, start );
+
+		var full = new Transform( start.Position, applied * start.Rotation, start.Scale );
+		var tipFull = DescendantTip( bone, full );
+
+		if ( !Penetrates( tipStart, tipFull ) )
+			return applied;
+
+		var lo = 0f;
+		var hi = 1f;
+
+		for ( var i = 0; i < 8; i++ )
+		{
+			var mid = (lo + hi) * 0.5f;
+			var limited = Rotation.Slerp( Rotation.Identity, applied, mid );
+			var worldMid = new Transform( start.Position, limited * start.Rotation, start.Scale );
+			var tipMid = DescendantTip( bone, worldMid );
+
+			if ( Penetrates( tipStart, tipMid ) )
+				hi = mid;
+			else
+				lo = mid;
+		}
+
+		return Rotation.Slerp( Rotation.Identity, applied, lo );
 	}
 
 	/// <summary>
@@ -1680,6 +2154,75 @@ internal sealed class RigViewport : Widget
 
 		if ( selected is { } sel )
 			DragMovable( sel.Movable, sel.World );
+	}
+
+	/// <summary>
+	/// The clip's cameras, each drawn as a small body and a wire frustum showing its lens.
+	///
+	/// DRAWN, NOT SPAWNED. A camera has no business being a scene object - it neither lights nor
+	/// blocks anything - so these are pure gizmo lines. IgnoreDepth keeps them readable through the
+	/// mesh, the same way the bone skeleton is, and they sit behind everything else so a frustum
+	/// never swallows a click meant for a bone or a part.
+	/// </summary>
+	private void DrawCameras()
+	{
+		if ( _cameras is null || _cameras.Count == 0 )
+			return;
+
+		Gizmo.Draw.IgnoreDepth = true;
+
+		foreach ( var camera in _cameras )
+		{
+			if ( camera is null || !camera.Enabled )
+				continue;
+
+			var rot = camera.Rotation.ToRotation();
+			var forward = rot.Forward;
+			var right = rot.Right;
+			var up = rot.Up;
+
+			var fov = camera.FieldOfView.Clamp( 1f, 179f );
+			var far = MathF.Max( camera.ZFar, camera.ZNear + 1f );
+			var aspect = 16f / 9f;
+
+			// A frustum corner at distance d: the centre plus the half-width and half-height the
+			// vertical FOV opens up at that distance, with sx/sy carrying the corner's sign.
+			var tan = MathF.Tan( fov * 0.5f * MathF.PI / 180f );
+
+			Vector3 Corner( float d, float sx, float sy ) =>
+				camera.Position + forward * d
+				+ right * (sx * d * tan * aspect)
+				+ up * (sy * d * tan);
+
+			// Near and far plane corners, in the same order so the two rectangles can be joined.
+			Vector3[] Near = { Corner( camera.ZNear, -1f, -1f ), Corner( camera.ZNear, 1f, -1f ), Corner( camera.ZNear, 1f, 1f ), Corner( camera.ZNear, -1f, 1f ) };
+			Vector3[] Far = { Corner( far, -1f, -1f ), Corner( far, 1f, -1f ), Corner( far, 1f, 1f ), Corner( far, -1f, 1f ) };
+
+			Gizmo.Draw.Color = Theme.Blue.WithAlpha( 0.9f );
+
+			// The four rays from the camera to the far corners - the shape of the shot.
+			for ( var i = 0; i < 4; i++ )
+			{
+				Gizmo.Draw.Line( camera.Position, Far[i] );
+				Gizmo.Draw.Line( Near[i], Far[i] );
+			}
+
+			// The near and far rectangles, so the lens's extent reads even at a glance.
+			for ( var i = 0; i < 4; i++ )
+			{
+				var j = (i + 1) % 4;
+				Gizmo.Draw.Line( Near[i], Near[j] );
+				Gizmo.Draw.Line( Far[i], Far[j] );
+			}
+
+			// The camera itself: a dot where it sits, and a short spine into the shot.
+			Gizmo.Draw.Color = Color.White;
+			Gizmo.Draw.SolidSphere( camera.Position, HandleRadius * 0.5f, 8, 8 );
+			Gizmo.Draw.Color = Theme.Blue.WithAlpha( 0.9f );
+			Gizmo.Draw.Line( camera.Position, camera.Position + forward * 8f );
+		}
+
+		Gizmo.Draw.IgnoreDepth = false;
 	}
 
 	/// <summary>Set while the next click on an object, part or prop answers a question - "which
@@ -2003,6 +2546,7 @@ internal sealed class RigViewport : Widget
 		DrawPlayerReference();
 		DrawBoneHandles();
 		DrawMovables();
+		DrawCameras();
 		DrawSelectedBoneReadout();
 
 		Cursor = Gizmo.HasHovered ? CursorShape.Finger : CursorShape.Arrow;
@@ -2131,8 +2675,19 @@ internal sealed class RigViewport : Widget
 
 			if ( bone.Parent is { } parentBone && parentBone.TryGetWorld( out var parentWorld ) )
 			{
-				Gizmo.Draw.Color = Theme.Blue.WithAlpha( 0.8f );
-				Gizmo.Draw.Line( 0f, world.PointToLocal( parentWorld.Position ) );
+				var parentLocal = world.PointToLocal( parentWorld.Position );
+
+				// A dark ribbon behind the blue one so the skeleton reads against any mesh -
+				// light or dark - without the line itself getting thicker on screen.
+				Gizmo.Draw.Color = Color.Black.WithAlpha( 0.45f );
+				Gizmo.Draw.LineThickness = 2.5f;
+				Gizmo.Draw.Line( 0f, parentLocal );
+
+				Gizmo.Draw.Color = Theme.Blue;
+				Gizmo.Draw.LineThickness = 1.5f;
+				Gizmo.Draw.Line( 0f, parentLocal );
+
+				Gizmo.Draw.LineThickness = 1f;
 			}
 
 			// Solid dot, not a hollow ring - the reference draws bones as filled white dots.
@@ -2143,12 +2698,23 @@ internal sealed class RigViewport : Widget
 			// joint rather than as a peer of it. Size carries this rather than colour alone,
 			// because the two dots are at the same point - a colour difference between two
 			// coincident dots of equal size is invisible, since one simply covers the other.
+			var dotRadius = radius * (isSelected ? 0.5f : isTwist ? 0.16f : 0.35f);
+
+			// A thin dark halo behind the plain dot so a white handle doesn't vanish against a
+			// pale mesh. Drawn slightly larger, then the dot itself covers the middle - selected
+			// and twist dots are already high-contrast and don't need it.
+			if ( !isSelected && !isTwist )
+			{
+				Gizmo.Draw.Color = Color.Black.WithAlpha( 0.5f );
+				Gizmo.Draw.SolidSphere( 0f, dotRadius * 1.4f, 8, 8 );
+			}
+
 			Gizmo.Draw.Color = isSelected ? Theme.Yellow
 				: Gizmo.IsHovered ? Theme.Green
 				: isTwist ? Theme.Blue.WithAlpha( 0.55f )
 				: Color.White;
 
-			Gizmo.Draw.SolidSphere( 0f, radius * (isSelected ? 0.5f : isTwist ? 0.16f : 0.35f), 8, 8 );
+			Gizmo.Draw.SolidSphere( 0f, dotRadius, 8, 8 );
 
 			// No hitbox of our own on a single selected bone. Gizmo.Control registers its own
 			// hitboxes for its handles, and a sphere sitting at the same scope origin - depth-biased
@@ -2505,6 +3071,11 @@ internal sealed class RigViewport : Widget
 				var basis = handleRotation;
 				var applied = basis * rotation * basis.Inverse;
 
+				// Collision: rotating a bone swings its descendants - a hand, say - through an arc,
+				// and this stops that arc at the first prop surface it would cross instead of letting
+				// it sweep straight through.
+				applied = ClampRotation( bone, start, applied );
+
 				newWorld = new Transform( start.Position, applied * start.Rotation, start.Scale );
 				break;
 			}
@@ -2550,6 +3121,12 @@ internal sealed class RigViewport : Widget
 		}
 
 		_draggingBone = true;
+
+		// Collision for a move: stop the dragged point at the surface of a prop or object instead of
+		// clipping through it. Rotate is handled inside the rotate case (ClampRotation), and scale
+		// leaves the point at the grab spot so it has nothing to clamp. This runs before the IK
+		// solve, so a hand reaching for a surface rests on it rather than punching through.
+		newWorld = new Transform( ClampToProps( start.Position, newWorld.Position ), newWorld.Rotation, newWorld.Scale );
 
 		// rig_debug_drag 1. Answers the one question staring at the code can't: does the write
 		// land and stay, or is something else putting the bone back? "wrote" is what this frame
@@ -2711,6 +3288,11 @@ internal sealed class RigViewport : Widget
 		foreach ( var (bone, start) in _groupDragTargets )
 		{
 			var newWorld = TransformGroup( start, _groupPivot, rotation, _groupMoveDelta, scale, mode );
+
+			// Collision only for a translation - a rotation or scale has no single direction to
+			// clamp against, and a group rotate into a prop is a pose to fix by eye, not a clip.
+			if ( mode == BoneDragMode.Move )
+				newWorld = new Transform( ClampToProps( start.Position, newWorld.Position ), newWorld.Rotation, newWorld.Scale );
 
 			newWorld = ApplyLimits( bone, newWorld );
 

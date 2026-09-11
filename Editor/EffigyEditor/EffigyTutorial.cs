@@ -167,13 +167,18 @@ internal readonly struct EffigyTutorialState
 }
 
 /// <summary>
-/// The house tutorial: five steps from an empty studio to a small house you can export.
+/// The house tutorial: from never having used CAD to a small house you can export.
 ///
 /// A HOUSE AND NOTHING MORE, which is the point of the first tutorial in a series. It teaches the
 /// one loop every later lesson builds on - put a solid on screen, put a second solid against it,
 /// cut openings through them - without touching sketching, subdivision or the rig. Those are each
 /// their own later tutorial; this one is meant to be finished in minutes and to leave the reader
 /// holding something.
+///
+/// WRITTEN FOR SOMEONE WHO HAS NEVER TOUCHED CAD. Every bullet is one exact action - what to click,
+/// where it is, what to type - and every Detail says what just happened, in a friendly voice. No
+/// tours of the toolset: a first-timer needs the next click, not the map. One Reading step for the
+/// camera comes first, because nothing else works until you can look at the model.
 ///
 /// The shape of this class is RigTutorial's, deliberately, down to the auto-advance latch - see
 /// Evaluate. What is new is Points: a step can name something on screen for the panel to
@@ -227,11 +232,22 @@ internal sealed class EffigyTutorial
 		Sculpt,
 		Paint,
 		Walk,
+
+		/// <summary>The window itself - a frame with a side column and a bar. For the steps that
+		/// teach the tool rather than the model.</summary>
+		Screen,
 	}
 
 	public sealed class Step
 	{
 		public string Instruction { get; init; }
+
+		/// <summary>
+		/// A step to read rather than do - where things are, how the camera moves. The panel gives it
+		/// a Next button, because there is nothing for IsDone to notice and the chevron alone reads as
+		/// "skip", which is the wrong word for having read it.
+		/// </summary>
+		public bool Reading { get; init; }
 
 		/// <summary>What you DO, one per bullet, scannable without reading a sentence.</summary>
 		public string[] Bullets { get; init; }
@@ -285,23 +301,50 @@ internal sealed class EffigyTutorial
 	static List<Step> HouseSteps() => new()
 		{
 			// ---------------------------------------------------------------------------------
-			//  PHASE 1 - THE SHAPE
+			//  PHASE 1 - SAY HI
 			//
-			//  The whole lesson is "a solid, then another solid, then a cut", so the first
-			//  minutes put two primitives on screen and the rest is openings.
+			//  ONE reading step, about the camera and nothing else. An earlier draft opened with a
+			//  tour of every tab and workspace, and po's answer was that a first-timer does not
+			//  want the whole toolset - they want the next click. So every step below names
+			//  exactly what to click, where it is, what to type, and what just happened.
 			// ---------------------------------------------------------------------------------
 
 			new()
 			{
-				Instruction = "The walls are one box",
+				Instruction = "Take a look around",
 				Bullets = new[]
 				{
-					"Click Primitive and pick Box from its chevron",
-					"Set Width 8, Depth 6 and Height 4",
+					"The big space in the middle is where your house will appear",
+					"Hold the right mouse button down and move the mouse - the view turns",
+					"Still holding it, tap S to back away a little, or W to move closer",
+					"Lost? Click View in the menu at the very top, then Isometric",
 				},
-				Detail = "A box is a primitive - a whole solid made from numbers rather than drawn. "
-					+ "Starting from one is the fast route when the shape is already a cube; sketching "
-					+ "is for the shapes that are not.",
+				Detail = "That's all the camera you need today! The red, green and blue lines crossing "
+					+ "in the middle are the three directions every size gets measured along - you'll "
+					+ "meet them in the very next step.",
+				Art = StepArt.Screen,
+				Reading = true,
+				IsDone = _ => false
+			},
+
+			// ---------------------------------------------------------------------------------
+			//  PHASE 2 - THE SHAPE
+			// ---------------------------------------------------------------------------------
+
+			new()
+			{
+				Instruction = "Make the walls",
+				Bullets = new[]
+				{
+					"Click Primitive - it's glowing yellow in the bar above the 3D view",
+					"A little menu drops down. Click Box",
+					"A settings box opens on the left. Type 8 into Width, 6 into Depth and 4 into Height",
+					"Click the ✓ at the top of the settings box",
+				},
+				Detail = "Ta-da, walls! A primitive is a ready-made shape you describe with numbers "
+					+ "instead of drawing. Width runs along the red line, Depth along the green, Height "
+					+ "up the blue. See \"Box\" in the Features list on the left? That's line one of "
+					+ "your recipe.",
 				Art = StepArt.Solid,
 				Points = PointAt.Tool,
 				Tool = EffigyToolTarget.Primitive,
@@ -314,17 +357,18 @@ internal sealed class EffigyTutorial
 
 			new()
 			{
-				Instruction = "A wedge for the sloped roof",
+				Instruction = "Put a roof on it",
 				Bullets = new[]
 				{
-					"Click Primitive again and pick Wedge",
-					"Match the house - Width 8, Depth 6, Height 2",
-					"Lift it onto the roof line: set Position's Z to 3",
+					"Click Primitive again, and this time pick Wedge",
+					"Type 8 into Width, 6 into Depth and 2 into Height",
+					"Find Position - it has three boxes, X, Y and Z. Type 3 into Z",
+					"Click the ✓",
 				},
-				Detail = "The wedge is a ramp, and its two ends are triangles - the sloped roof in "
-					+ "cross-section. Primitives cannot rotate, so the slope always runs along X. The "
-					+ "classic peaked roof is two wedges back to back, and that is a later lesson "
-					+ "about Mirror.",
+				Detail = "Why 3? Every shape is built around its own middle. Your walls are 4 tall with "
+					+ "their middle at 0, so their top is at 2. The roof is 2 tall, so its middle goes at "
+					+ "3 - and its bottom lands exactly on top of the walls. A wedge is a ramp, so you get "
+					+ "a roof that slopes one way, like a cosy shed.",
 				Art = StepArt.Solid,
 				Points = PointAt.Tool,
 				Tool = EffigyToolTarget.Primitive,
@@ -332,7 +376,7 @@ internal sealed class EffigyTutorial
 			},
 
 			// ---------------------------------------------------------------------------------
-			//  PHASE 2 - THE OPENINGS
+			//  PHASE 3 - THE OPENINGS
 			//
 			//  The holes are the part worth noticing: they are not deletions, they are subtractions
 			//  the tool re-runs whenever the house changes.
@@ -340,54 +384,63 @@ internal sealed class EffigyTutorial
 
 			new()
 			{
-				Instruction = "Cut the windows",
+				Instruction = "Drill two windows",
 				Bullets = new[]
 				{
-					"Click Hole and pick the front face of the walls",
-					"Set Diameter to about 0.8 and leave Depth at 0 (through)",
-					"Pick a second spot, and the hole follows",
+					"Click Hole - it's glowing yellow in the bar above the 3D view",
+					"Your mouse is now a drill! Click high up on one of the two long walls",
+					"Click a second spot beside it for the other window",
+					"Type 0.8 into Diameter, leave Depth at 0, and click the ✓",
 				},
-				Detail = "A hole is a subtract, not a delete. It drills a cylinder into the face "
-					+ "along that face's own normal, straight through to the other side at depth 0. "
-					+ "Make two windows now, both on the same face.",
-				Art = StepArt.Hole,
-				Points = PointAt.Tool,
-				Tool = EffigyToolTarget.Hole,
-				IsDone = s => s.HasClean<HoleFeature>()
-			},
-
-			new()
-			{
-				Instruction = "And the door",
-				Bullets = new[]
-				{
-					"Click Hole again on the face below the windows",
-					"Give it a wider Diameter, around 1.2",
-				},
-				Detail = "The door is the same tool with a bigger number, which is the point. You are "
-					+ "not drawing openings - you are describing them, and a door is just a wider "
-					+ "cylinder. Change the house later and both the windows and the door re-cut "
-					+ "themselves, because the recipe remembers what they are.",
+				Detail = "A hole takes material away instead of adding it. Depth 0 means straight "
+					+ "through, like a real window - turn the camera and you can peek out the other "
+					+ "side. Clicked the wrong spot? Click the ✕ and drill again, no harm done.",
 				Art = StepArt.Hole,
 				Points = PointAt.Tool,
 				Tool = EffigyToolTarget.Hole,
 
-				// Two openings, whatever features they live in. The reader might drill windows and
-				// door with one Hole feature or two, and the check must not care which.
+				// Two spots, not merely a clean Hole - the first click makes the feature clean, and
+				// advancing on it would move on while the reader is still placing the second window.
 				IsDone = s => s.Clean<HoleFeature>().Sum( f => f.Faces.Count ) >= 2
 			},
 
 			new()
 			{
-				Instruction = "Take the house with you",
+				Instruction = "Add a front door",
 				Bullets = new[]
 				{
-					"File → Export OBJ",
-					"Open it in whatever you like - it is a real mesh",
+					"Click Hole one more time",
+					"Click low down on the same wall, between the two windows",
+					"Type 1.2 into Diameter and click the ✓",
 				},
-				Detail = "Everything up to here was a recipe, and the recipe is what makes it "
-					+ "editable: change the box, and the roof and the holes all follow. Export writes "
-					+ "the current shape out as a mesh, for anything that does not care how it was made.",
+				Detail = "A round door - very hobbit. Now the CAD magic: right-click the last Hole in "
+					+ "the Features list, pick Edit, and change 1.2 to 1.6. The wall re-cuts itself "
+					+ "around the bigger door, because nothing was ever really chopped - it's all still "
+					+ "just numbers in the recipe.",
+				Art = StepArt.Hole,
+				Points = PointAt.Tool,
+				Tool = EffigyToolTarget.Hole,
+
+				// Three openings, whatever features they live in. The windows step already needed
+				// two, so two here would tick off the moment the windows were done - which is what
+				// the first version of this lesson did.
+				IsDone = s => s.Clean<HoleFeature>().Sum( f => f.Faces.Count ) >= 3
+			},
+
+			// ---------------------------------------------------------------------------------
+			//  PHASE 4 - TAKE IT
+			// ---------------------------------------------------------------------------------
+
+			new()
+			{
+				Instruction = "Save it and take it with you",
+				Bullets = new[]
+				{
+					"Click File in the menu at the very top, then Save. If it asks for a name, my_house is a fine one",
+					"Click File again, then Export OBJ",
+				},
+				Detail = "Save keeps the recipe, so tomorrow you can open it and move a window. Export "
+					+ "OBJ writes just the finished shape - a mesh that any 3D program can open.",
 				Art = StepArt.Export,
 
 				// The one place nothing can be highlighted - a Menu does not exist between
@@ -809,14 +862,9 @@ internal sealed class EffigyTutorial
 					"Arms out to the sides, legs straight down",
 					"Hips about 31 units off the floor",
 				},
-				Detail = "Your model keeps its own shape. Effigy slides the built-in character's "
-					+ "skeleton inside your model rather than squashing your model into its body, so "
-					+ "the animations only ever say how far each joint bends - never how long your "
-					+ "arms are. What they DO decide is how high the hips ride, because that is part "
-					+ "of the walk. A model much taller or shorter than 31 units at the hips will "
-					+ "float or sink, and legs a little shorter than the built-in character's leave "
-					+ "the knees looking slightly straight. Seen from behind, its left hand should "
-					+ "be on your left.",
+				Detail = "The animations only bend joints, so your proportions are yours to choose - "
+					+ "except the hips. The walk decides how high those ride, and a model far from 31 "
+					+ "units will float or sink.",
 				Art = StepArt.Solid,
 
 				// Geometry AND height. An empty document has no lowest point - LowestPoint returns
@@ -855,10 +903,9 @@ internal sealed class EffigyTutorial
 					"Click the hip part, then press Bone from Part",
 					"If it is not already called pelvis, right-click it in the Rig tree and rename it",
 				},
-				Detail = "Everything else hangs off this one, so it is made first and on its own. The "
-					+ "name has to be exactly pelvis - that is the name the animations look for, and "
-					+ "a bone spelled any other way is a bone they cannot find. Spelling is the one "
-					+ "thing in this lesson that has to be right to the letter.",
+				Detail = "Everything else hangs off this one, so it goes first and on its own. The name "
+					+ "has to be exactly pelvis - a bone spelled any other way is one the animations "
+					+ "cannot find. Spelling is the one thing here that has to be right to the letter.",
 				Art = StepArt.Bone,
 				Points = PointAt.Tool,
 				Tool = EffigyToolTarget.BoneFromPart,
@@ -875,9 +922,8 @@ internal sealed class EffigyTutorial
 					"Select spine_02, then Bone from Part on the ribcage: chest",
 				},
 				Detail = "A selected bone becomes the parent of the next one, so the order you make "
-					+ "them in is the order they hang in. That is what makes the whole upper body "
-					+ "follow the hips when the hips turn. Three back bones is what the animations "
-					+ "expect; a model with fewer is fine, the missing ones simply stay put.",
+					+ "them in is the order they hang in - which is what makes the upper body follow "
+					+ "the hips. Fewer back bones is fine; the missing ones just stay put.",
 				Art = StepArt.Bone,
 				Points = PointAt.Tool,
 				Tool = EffigyToolTarget.BoneFromPart,
@@ -892,9 +938,8 @@ internal sealed class EffigyTutorial
 					"Select chest, then Bone from Part on the neck: neck",
 					"Select neck, then Bone from Part on the head: head",
 				},
-				Detail = "The head hangs off the neck, the neck off the ribcage. Get that wrong - a "
-					+ "head parented straight to the hips, say - and it still compiles and still "
-					+ "loads, and then stays perfectly level while the body leans.",
+				Detail = "Get this wrong - a head parented straight to the hips, say - and it still "
+					+ "compiles, still loads, and then stays perfectly level while the body leans.",
 				Art = StepArt.Bone,
 				Points = PointAt.Tool,
 				Tool = EffigyToolTarget.BoneFromPart,
@@ -910,11 +955,9 @@ internal sealed class EffigyTutorial
 					"Then each side in turn: upperarm, forearm, hand",
 					"Left side ends in _L, right side in _R - the model's own left and right",
 				},
-				Detail = "You can select two parts and press Bone from Part once; both new bones hang "
-					+ "off whatever was selected. The chain that matters is hand off forearm, off "
-					+ "upper arm, off shoulder, off ribcage. Get those five right and an arm swings "
-					+ "from the shoulder instead of from the waist. _L is the side on YOUR left when "
-					+ "you stand behind the model, which is the side the animations mean by left.",
+				Detail = "Select two parts and press Bone from Part once - both hang off whatever was "
+					+ "selected. _L is the side on YOUR left when you stand behind the model, which is "
+					+ "the side the animations mean by left.",
 				Art = StepArt.Bone,
 				Points = PointAt.Tool,
 				Tool = EffigyToolTarget.BoneFromPart,
@@ -931,10 +974,8 @@ internal sealed class EffigyTutorial
 					"Then each side: calf, then foot",
 					"A toe is optional - call it toe_L and toe_R if you have one",
 				},
-				Detail = "Legs hang off the hips, not off the back. The feet are the part the walk "
-					+ "cares about most: the animations plant them on the floor, so a foot bone "
-					+ "pointing the wrong way along the leg is the one mistake you will see "
-					+ "immediately.",
+				Detail = "Legs hang off the hips, not off the back. The walk plants the feet on the "
+					+ "floor, so a foot bone pointing the wrong way is the mistake you see first.",
 				Art = StepArt.Bone,
 				Points = PointAt.Tool,
 				Tool = EffigyToolTarget.BoneFromPart,
@@ -958,10 +999,9 @@ internal sealed class EffigyTutorial
 					"Drag an upper arm, then drag the hips",
 				},
 				Detail = "The arm should swing from the shoulder and take the forearm and hand with "
-					+ "it, while the rest of the model stands still. The hips should carry "
-					+ "everything. If a limb stays behind, it is hanging off the wrong bone - "
-					+ "right-click it in the Rig tree and Parent to the one it should follow. Pose is "
-					+ "a scratchpad; turning it off puts the model back.",
+					+ "it; the hips should carry everything. If a limb stays behind it is on the wrong "
+					+ "bone - right-click it in the Rig tree and Parent to the right one. Pose is a "
+					+ "scratchpad; turning it off puts the model back.",
 				Art = StepArt.Pose,
 				Points = PointAt.Panel,
 				Panel = "Rig",
@@ -976,14 +1016,41 @@ internal sealed class EffigyTutorial
 					"File -> Make Player",
 					"Open the scene it names in the console, and press Play",
 				},
-				Detail = "That builds your model with the built-in character's skeleton inside it and "
-					+ "writes a small scene - a floor, a light, and a player wearing your model. The "
-					+ "console names any bone whose spelling the animations did not recognise, which "
-					+ "is worth reading even when it works: an unrecognised bone is not an error, it "
-					+ "just holds still. Use File -> Compile Playermodel on its own once you have a "
-					+ "scene of your own to drop the model into.",
+				Detail = "You get a floor, a light and a player wearing your model. Read the console "
+					+ "afterwards: it names any bone the animations did not recognise. That is not an "
+					+ "error - the bone just holds still - but it is almost always a typo.",
 				Art = StepArt.Walk,
 				Points = PointAt.Menu,
+				IsDone = _ => false
+			},
+
+			// ---------------------------------------------------------------------------------
+			//  PHASE 4 - KEEP IT
+			//
+			//  The scene Make Player writes is a test rig, and the lesson used to stop there -
+			//  which left the reader holding a model and no idea how to put it in the game they
+			//  actually came here to make. This step happens entirely OUTSIDE Effigy, in the scene
+			//  editor, so it points at nothing and spells out the whole path in its bullets.
+			// ---------------------------------------------------------------------------------
+
+			new()
+			{
+				Instruction = "Put it on the player in your own scene",
+				Bullets = new[]
+				{
+					"Open your scene and pick the object with a Player Controller on it",
+					"Open up its Body child and find the Skinned Model Renderer",
+					"Set that renderer's Model to your model, in models/effigy",
+					"No Body child? The Player Controller has a Create Body button that makes one",
+				},
+				Detail = "Leave Use Anim Graph ticked on the renderer - that is what lets the "
+					+ "animations drive it. Keep the Body child at 0,0,0 so its feet sit at the "
+					+ "player's own origin, and check the Player Controller's Renderer box points at "
+					+ "that Skinned Model Renderer.",
+
+				// Nothing in Effigy to light up: every click in this step is in the scene editor.
+				Art = StepArt.Export,
+				Points = PointAt.None,
 				IsDone = _ => false
 			},
 		};
@@ -1012,6 +1079,31 @@ internal sealed class EffigyTutorial
 
 	public void Restart( EffigyLesson lesson )
 	{
+		Select( lesson );
+		Active = true;
+	}
+
+	/// <summary>
+	/// Choose a lesson and show its START SCREEN, rather than dropping into step one.
+	///
+	/// WHY THIS IS NOT THE SAME AS Restart. The playermodel lesson asks a question before it
+	/// begins - example robot, or your own model - and that question lives on the start screen.
+	/// Restart sets Active, the panel renders steps instead of the start screen when Active is set,
+	/// so opening that lesson from the Help menu skipped the only screen its two buttons exist on.
+	/// The reader landed on step one with nothing loaded and no way to ask for the example, which
+	/// is exactly what po reported on 2026-09-10.
+	///
+	/// The other three lessons still go straight in from the menu. They have nothing to choose:
+	/// their start screen is a description, and a reader who picked the lesson by name has read it.
+	/// </summary>
+	public void Offer( EffigyLesson lesson )
+	{
+		Select( lesson );
+		Active = false;
+	}
+
+	void Select( EffigyLesson lesson )
+	{
 		Lesson = lesson;
 		_steps = lesson switch
 		{
@@ -1020,7 +1112,6 @@ internal sealed class EffigyTutorial
 			EffigyLesson.Playermodel => _playermodel,
 			_ => _house,
 		};
-		Active = true;
 		CurrentIndex = 0;
 		_furthest = 0;
 	}
