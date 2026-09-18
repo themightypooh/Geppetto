@@ -82,6 +82,34 @@ internal sealed class EffigyMeshEditPanel : Widget
 		if ( loose > 0 )
 			Action( $"Remove {loose:N0} loose vertices", "Delete loose", s => s.DeleteLoose() );
 
+		var selVerts = session.SelectedVertices.Count;
+		var selFaces = session.SelectedFaces.Count;
+		var selEdges = session.SelectedEdges.Count;
+
+		if ( selVerts > 0 || selFaces > 0 || selEdges > 0 )
+		{
+			Gap();
+			Heading( "Quick Tools" );
+
+			if ( selVerts == 2 )
+				Action( "Connect across face (J)", "Connect", s => s.ConnectVertices() );
+
+			if ( selVerts >= 3 || selEdges > 0 )
+			{
+				Action( "LoopTools: Circle", "Circle", s => s.LoopCircle() );
+				Action( "LoopTools: Space", "Space", s => s.LoopSpace() );
+				Action( "Flatten to plane", "Flatten", s => s.FlattenFaces() );
+			}
+
+			if ( selFaces > 0 )
+			{
+				Action( "Triangulate (Ctrl+T)", "Triangulate", s => s.TriangulateFaces() );
+				Action( "Poke faces (Alt+P)", "Poke", s => s.PokeFaces() );
+			}
+
+			Action( "Relax surface", "Relax", s => s.Relax() );
+		}
+
 		Gap();
 		Heading( "History" );
 

@@ -1087,6 +1087,8 @@ public sealed partial class EffigyWindow
 	private EffigyStageTool _meshRetopoTool, _meshRelaxTool, _meshEvenQuadsTool, _meshFinishRetopoTool, _meshStripTool;
 	private EffigyStageTool _modMirrorTool, _modArrayTool, _modSubdivideTool, _modSolidifyTool;
 	private EffigyStageTool _meshSplitEdgeTool, _meshSharpenTool;
+	private EffigyStageTool _meshTriangulateTool, _meshPokeFacesTool, _meshLimitedDissolveTool, _meshFlattenTool;
+	private EffigyStageTool _meshConnectTool, _meshLoopCircleTool, _meshLoopSpaceTool, _meshOrganicRelaxTool;
 
 	/// <summary>Which fabric <see cref="StartMeshDrape"/> hangs the cloth as. Cycled by the Fabric tool.</summary>
 	private Fabric _meshFabric = Fabric.Cotton;
@@ -1638,8 +1640,8 @@ public sealed partial class EffigyWindow
 		{
 			Menu( "Select", "All", "Invert", "Grow", "Shrink", "-", "Linked", "Similar", "Path", "Checker", "-", "Non-manifold", "Border", "-", "Lasso", "Circle", "X-ray" ),
 			Menu( "Add", "Extrude", "Extrude along normals", "Extrude individual", "Inset", "Bevel", "Loop cut", "Knife", "Bisect", "-", "Fill", "Grid fill", "Bridge", "-", "Add/Duplicate", "Add/Array", "Spin", "Screw", "Pivot here", "-", "Add/Subdivide" ),
-			Menu( "Vertex", "Merge", "By distance", "Connect", "-", "Vertex slide", "Clean up/Smooth", "Clean up/Relax", "Clean up/Flatten", "Circle", "Space", "To sphere" ),
-			Menu( "Edge", "Edge slide", "Rip", "-", "Circle", "Space", "-", "Make hard", "Harden creases", "-", "Mark seam", "Clear seam" ),
+			Menu( "Vertex", "Merge", "By distance", "Connect", "-", "Vertex slide", "Clean up/Smooth", "Clean up/Relax", "Clean up/Flatten", "Loop circle", "Loop space", "To sphere" ),
+			Menu( "Edge", "Edge slide", "Rip", "-", "Loop circle", "Loop space", "-", "Make hard", "Harden creases", "-", "Mark seam", "Clear seam" ),
 			Menu( "Face", "Triangulate", "Poke faces", "-", "Split", "Separate", "Extract", "-", "Flip", "Fix normals", "-", "Solidify" ),
 			Menu( "Mesh", "Move", "Rotate", "Scale", "Soft", "-", "Shrink/Fatten", "Shear", "Bend", "-", "Symmetrize", "Mirror X", "Snap", "Shrinkwrap", "-", "Dissolve", "Limited dissolve", "Delete", "Delete loose", "-", "Unwrap" ),
 			Menu( "Modifiers", "Modifiers/Live mirror", "Modifiers/Array", "Modifiers/Smooth", "Modifiers/Thickness" ),
@@ -1676,10 +1678,19 @@ public sealed partial class EffigyWindow
 	/// <summary>A tool from the menus by its label, or null.</summary>
 	private EffigyStageTool MeshToolNamed( string label )
 	{
+		var split = label.Split( '/' );
+		var group = split.Length > 1 ? split[0] : null;
+		var name = split[^1];
+
 		foreach ( var stage in _meshEditStages )
+		{
+			if ( group is not null && stage.Name != group )
+				continue;
+
 			foreach ( var tool in stage.Tools )
-				if ( tool.Label == label )
+				if ( tool.Label == name )
 					return tool;
+		}
 
 		return null;
 	}
@@ -1699,8 +1710,8 @@ public sealed partial class EffigyWindow
 			? new[] { "Relax", "Even quads", "Strip brush", "-", "Grow", "Linked", "Invert", "-", "Delete", "Finish retopo" }
 			: session.Mode switch
 			{
-				EditElement.Vertex => new[] { "Connect", "-", "Circle", "Space", "-", "Merge", "By distance", "Vertex slide", "Smooth", "Relax", "To sphere", "-", "Fill", "Rip", "-", "Grow", "Shrink", "Linked", "Invert", "-", "Dissolve", "Delete" },
-				EditElement.Edge => new[] { "Extrude", "-", "Loop cut", "Bevel", "Edge slide", "-", "Circle", "Space", "-", "Bridge", "Fill", "Grid fill", "Rip", "-", "Make hard", "Mark seam", "-", "Grow", "Linked", "Invert", "-", "Dissolve", "Delete" },
+				EditElement.Vertex => new[] { "Connect", "-", "Loop circle", "Loop space", "-", "Merge", "By distance", "Vertex slide", "Smooth", "Clean up/Relax", "Flatten", "To sphere", "-", "Fill", "Rip", "-", "Grow", "Shrink", "Linked", "Invert", "-", "Dissolve", "Delete" },
+				EditElement.Edge => new[] { "Extrude", "-", "Loop cut", "Bevel", "Edge slide", "-", "Loop circle", "Loop space", "-", "Bridge", "Fill", "Grid fill", "Rip", "-", "Make hard", "Mark seam", "-", "Grow", "Linked", "Invert", "-", "Dissolve", "Delete" },
 				_ => new[] { "Extrude", "Extrude along normals", "Extrude individual", "Inset", "Duplicate", "Subdivide", "-", "Triangulate", "Poke faces", "-", "Split", "Separate", "Flip", "Fix normals", "-", "Grow", "Shrink", "Linked", "Similar", "Invert", "-", "Delete" },
 			};
 
@@ -1798,22 +1809,22 @@ public sealed partial class EffigyWindow
 		_meshMergeTool = MeshTool( clean, EffigyIcon.Merge, "Merge", "Merge the selected vertices at their centre (M)", () => RunMeshOp( "Merge", s => s.MergeAtCentre() ) );
 		MeshTool( clean, EffigyIcon.Merge, "By distance", "Weld vertices that sit on top of each other", () => StartMeshOp( "Merge by distance", MeshSize() * 0.001f, ( s, v ) => s.MergeByDistance( v ) ) );
 		_meshDissolveTool = MeshTool( clean, EffigyIcon.Dissolve, "Dissolve", "Remove the selected edges or vertices and join the faces around them", () => RunMeshOp( "Dissolve", s => s.Dissolve() ) );
-		MeshTool( clean, EffigyIcon.Dissolve, "Limited dissolve", "Merge coplanar faces across the entire mesh to simplify it", () => RunMeshOp( "Limited dissolve", s => s.LimitedDissolve() ) );
+		_meshLimitedDissolveTool = MeshTool( clean, EffigyIcon.Dissolve, "Limited dissolve", "Merge coplanar faces across the entire mesh to simplify it (Alt+J)", () => RunMeshOp( "Limited dissolve", s => s.LimitedDissolve() ) );
 		MeshTool( clean, EffigyIcon.DeleteGeometry, "Delete loose", "Remove vertices no face uses — invisible, but still exported", () => RunMeshOp( "Delete loose", s => s.DeleteLoose() ) );
 		_meshDeleteTool = MeshTool( clean, EffigyIcon.DeleteGeometry, "Delete", "Delete what is selected, leaving a hole (X)", () => RunMeshOp( "Delete", s => s.Delete() ) );
 		_meshSplitEdgeTool = MeshTool( clean, EffigyIcon.Boolean, "Make hard", "Make the selected edges shade hard, by unwelding the model along them. Merge by distance puts it back", SplitMeshEdges );
 		_meshSharpenTool = MeshTool( clean, EffigyIcon.Chamfer, "Harden creases", "Make every edge that creases more than this angle shade hard, in one go — for a model that should read as hard-surface", () => StartMeshOp( "Harden creases", 40f, ( s, v ) => s.SplitEdgesByAngle( v ) ) );
 		_meshSmoothTool = MeshTool( clean, EffigyIcon.SculptSmooth, "Smooth", "Relax the selected vertices towards their neighbours — what you want straight after a subdivide. Open rims stay put. Nothing selected smooths everything", () => StartMeshOp( "Smooth", 0.5f, ( s, v ) => s.Smooth( v ) ) );
-		MeshTool( clean, EffigyIcon.SculptSmooth, "Relax", "Relax vertices along the surface without collapsing volume — LoopTools Relax", () => StartMeshOp( "Relax", 0.5f, ( s, v ) => s.Relax( v ) ) );
-		MeshTool( clean, EffigyIcon.CircularPattern, "Circle", "Turn the selected vertices into a regular circle on their best-fit plane — LoopTools Circle", () => RunMeshOp( "Circle", s => s.LoopCircle() ) );
-		MeshTool( clean, EffigyIcon.LinearPattern, "Space", "Distribute the selected vertices evenly along their edge loop — LoopTools Space", () => RunMeshOp( "Space", s => s.LoopSpace() ) );
-		MeshTool( clean, EffigyIcon.CutTool, "Connect", "Connect two selected vertices by cutting an edge across their shared face (J)", () => RunMeshOp( "Connect", s => s.ConnectVertices() ) );
-		MeshTool( clean, EffigyIcon.SculptSmooth, "Flatten", "Flatten the selected vertices onto their best-fit plane", () => RunMeshOp( "Flatten", s => s.FlattenFaces() ) );
+		_meshOrganicRelaxTool = MeshTool( clean, EffigyIcon.SculptSmooth, "Relax", "Relax vertices along the surface without collapsing volume — LoopTools Relax", () => StartMeshOp( "Relax", 0.5f, ( s, v ) => s.Relax( v ) ) );
+		_meshLoopCircleTool = MeshTool( clean, EffigyIcon.CircularPattern, "Loop circle", "Turn the selected vertices into a regular circle on their best-fit plane — LoopTools Circle", () => RunMeshOp( "Circle", s => s.LoopCircle() ) );
+		_meshLoopSpaceTool = MeshTool( clean, EffigyIcon.LinearPattern, "Loop space", "Distribute the selected vertices evenly along their edge loop — LoopTools Space", () => RunMeshOp( "Space", s => s.LoopSpace() ) );
+		_meshConnectTool = MeshTool( clean, EffigyIcon.CutTool, "Connect", "Connect two selected vertices by cutting an edge across their shared face (J)", () => RunMeshOp( "Connect", s => s.ConnectVertices() ) );
+		_meshFlattenTool = MeshTool( clean, EffigyIcon.SculptSmooth, "Flatten", "Flatten the selected vertices onto their best-fit plane", () => RunMeshOp( "Flatten", s => s.FlattenFaces() ) );
 		MeshTool( clean, EffigyIcon.SculptSmooth, "To sphere", "Round the selected vertices off towards a ball — for a head, an eye or a knuckle blocked out as a cube. 1 is a full sphere", () => StartMeshOp( "To sphere", 1f, ( s, v ) => s.ToSphere( v ) ) );
 		MeshTool( clean, EffigyIcon.Mirror, "Fix normals", "Make the selected faces (or all of them) agree with each other and face outward — the fix for faces that show black (Shift+N)", () => RunMeshOp( "Recalculate normals", s => s.RecalculateNormals() ) );
 		MeshTool( clean, EffigyIcon.Mirror, "Flip", "Turn the selected faces (or all of them) inside out", () => RunMeshOp( "Flip normals", s => s.FlipNormals() ) );
-		MeshTool( clean, EffigyIcon.SelectFace, "Triangulate", "Split the selected faces into triangles (Ctrl+T)", () => RunMeshOp( "Triangulate", s => s.TriangulateFaces() ) );
-		MeshTool( clean, EffigyIcon.SelectVertex, "Poke faces", "Add a vertex in the center of the selected faces and triangulate them (Alt+P)", () => RunMeshOp( "Poke Faces", s => s.PokeFaces() ) );
+		_meshTriangulateTool = MeshTool( clean, EffigyIcon.SelectFace, "Triangulate", "Split the selected faces into triangles (Ctrl+T)", () => RunMeshOp( "Triangulate", s => s.TriangulateFaces() ) );
+		_meshPokeFacesTool = MeshTool( clean, EffigyIcon.SelectVertex, "Poke faces", "Add a vertex in the center of the selected faces and triangulate them (Alt+P)", () => RunMeshOp( "Poke Faces", s => s.PokeFaces() ) );
 
 		var surface = new EffigyStage { Name = "Surface" };
 
@@ -2569,6 +2580,14 @@ public sealed partial class EffigyWindow
 			Need( _meshSimilarTool, session is { SelectedFaces.Count: > 0 }, "Select a face (3) to match against" );
 			Need( _meshPathTool, session is { SelectedVertices.Count: 2 } || session is { SelectedFaces.Count: 2 }, "Pick exactly two vertices (1) or two faces (3)" );
 			Need( _meshFillTool, verts >= 3, "Select the vertices or edges round a hole" );
+			Need( _meshTriangulateTool, faces > 0, "Select faces (3) to triangulate (Ctrl+T)" );
+			Need( _meshPokeFacesTool, faces > 0, "Select faces (3) to poke (Alt+P)" );
+			Need( _meshLimitedDissolveTool, session is { Mesh.FaceCount: > 0 }, "There are no faces to dissolve" );
+			Need( _meshFlattenTool, verts >= 3, "Select 3 or more vertices to flatten" );
+			Need( _meshConnectTool, verts == 2, "Select exactly two vertices sharing a face to connect (J)" );
+			Need( _meshLoopCircleTool, verts >= 3, "Select at least 3 vertices or an edge loop to make circular" );
+			Need( _meshLoopSpaceTool, verts >= 3, "Select at least 3 vertices or an edge loop to space evenly" );
+			Need( _meshOrganicRelaxTool, session is { Mesh.VertexCount: > 0 }, "There is nothing to relax" );
 			Need( _meshRelaxTool, session is { IsRetopologizing: true }, "Start Retopo first" );
 			Need( _meshEvenQuadsTool, session is { IsRetopologizing: true }, "Start Retopo first" );
 			Need( _meshStripTool, session is { IsRetopologizing: true }, "Start Retopo first" );
