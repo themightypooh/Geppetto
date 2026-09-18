@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -148,6 +148,16 @@ public sealed class PartStudio
 	/// has to chase anyway.
 	/// </summary>
 	public Skeleton Rig = new();
+
+	/// <summary>
+	/// Rebuild cheaply, because a slider is being dragged. See FeatureContext.Preview.
+	///
+	/// ON THE STUDIO rather than passed to Rebuild, because the incremental rebuild caches each
+	/// feature's output and a cached snapshot taken at preview quality must not be handed back to a
+	/// full rebuild as though it were finished. Keeping the flag here means the caller flips it and
+	/// marks the features dirty, which is the same thing it would do for any other input change.
+	/// </summary>
+	public bool PreviewQuality;
 
 	public Dictionary<string, string> BodyBoneMap = new();
 
@@ -373,7 +383,7 @@ public sealed class PartStudio
 			break;
 		}
 
-		var ctx = new FeatureContext { Resolve = VariableResolver.Bind( Variables ) };
+		var ctx = new FeatureContext { Resolve = VariableResolver.Bind( Variables ), Rig = Rig, Preview = PreviewQuality };
 
 		if ( reusableUpTo > 0 )
 		{
@@ -491,20 +501,30 @@ public sealed class PartStudio
 		return highest;
 	}
 
-	/// <summary>Every body merged into one mesh, which is what export wants.</summary>
-	/// <summary>Every body, hidden or not. Export takes this: hiding a part is a working
-	/// convenience, not a statement that it should leave the model.</summary>
+	/// <summary>
+	/// Every body, hidden or not, merged into one mesh. Export takes this: hiding a part is a
+	/// working convenience, not a statement that it should leave the model.
+	///
+	/// REFERENCE BODIES ARE THE ONE EXCEPTION, and the difference between this and ToVisibleMesh
+	/// is now exactly that: this is what you SHIP, that is what you SEE. A wearer loaded to cut a
+	/// jacket from is on screen the whole time you work and must never end up inside the jacket's
+	/// .vmdl. See Body.IsReference and WearerFeature.
+	/// </summary>
 	public PolyMesh ToMesh()
 	{
 		var merged = new PolyMesh();
 
 		foreach ( var b in Bodies )
-			MeshTransform.Append( merged, b.Mesh );
+		{
+			if ( !b.IsReference )
+				MeshTransform.Append( merged, b.Mesh );
+		}
 
 		return merged;
 	}
 
-	/// <summary>Only what is being drawn. The viewport preview takes this.</summary>
+	/// <summary>Only what is being drawn — reference bodies included, since looking at the body you
+	/// are dressing is the whole point of having loaded it. The viewport preview takes this.</summary>
 	public PolyMesh ToVisibleMesh()
 	{
 		var merged = new PolyMesh();
@@ -533,9 +553,14 @@ public sealed class PartStudio
 
 		foreach ( var b in Bodies )
 		{
+			// Left out for the same reason ToMesh leaves it out — this is the export/rig merge, and
+			// a wearer is neither shipped nor weighted.
+			if ( b.IsReference )
+				continue;
+
 			var start = merged.VertexCount;
 			MeshTransform.Append( merged, b.Mesh );
-			ranges.Add( new BodyRange( b.Id, b.Name, start, merged.VertexCount - start ) );
+			ranges.Add( new BodyRange( b.Id, b.Name, start, merged.VertexCount - start, b.Mesh.IsRigged ) );
 		}
 
 		return (merged, ranges);

@@ -1756,7 +1756,20 @@ internal sealed class EffigyFeatureDialog : Widget
 
 		layout.Add( edit, 1 );
 
-		if ( _feature is ImportFeature import && ReferenceEquals( sp, import.Source ) )
+		// A wearer is picked from the asset browser, not from the filesystem: it is a compiled model,
+		// and the reload has to redo the surface AND the rig together. Checked before Import's own
+		// branch because a WearerFeature IS an ImportFeature and would otherwise be offered a
+		// browse-for-an-OBJ button that quietly replaces the body its rig was taken from.
+		if ( _feature is WearerFeature wearer && ReferenceEquals( sp, wearer.Model ) )
+		{
+			layout.Add( new IconButton( "accessibility_new", () => BrowseWearer( wearer, edit ) )
+			{
+				ToolTip = "Choose a different model to dress",
+				IconSize = 16,
+				Background = Color.Transparent,
+			} );
+		}
+		else if ( _feature is ImportFeature import && ReferenceEquals( sp, import.Source ) )
 		{
 			layout.Add( new IconButton( "folder_open", () => BrowseImport( import, edit ) )
 			{
@@ -1767,6 +1780,58 @@ internal sealed class EffigyFeatureDialog : Widget
 		}
 
 		return row;
+	}
+
+	/// <summary>
+	/// Put a different body under an existing wearer.
+	///
+	/// THE SURFACE ONLY, NOT THE RIG. Loading the wearer the first time installs the model's
+	/// skeleton; this cannot, because by now the rig has bones and the window refuses to overwrite
+	/// bones for the same reason it refuses on load — the undo snapshot does not carry a skeleton.
+	/// So this is honestly the narrow operation: swap the surface, say what did not follow. Someone
+	/// wanting a genuinely different character is better served by a new document than by a rig
+	/// silently belonging to the model before this one.
+	/// </summary>
+	private void BrowseWearer( WearerFeature wearer, LineEdit edit )
+	{
+		var picker = AssetPicker.Create( this, AssetType.Model, new AssetPicker.PickerOptions() );
+		picker.Title = "Choose a different model to dress";
+
+		picker.OnAssetPicked = assets =>
+		{
+			if ( assets.FirstOrDefault() is not { } asset )
+				return;
+
+			var model = Model.Load( asset.Path );
+
+			if ( model is null || model.IsError )
+			{
+				Log.Warning( $"[Effigy] {asset.Name} did not load as a model" );
+				return;
+			}
+
+			var mesh = EffigyWindow.WearerSurface( model );
+
+			if ( mesh is null || mesh.FaceCount == 0 )
+			{
+				Log.Warning( $"[Effigy] {asset.Name} has no render mesh to dress" );
+				return;
+			}
+
+			wearer.Model.Value = asset.Path;
+			wearer.Name = asset.Name;
+			wearer.LoadMesh( System.Text.Encoding.UTF8.GetBytes( ObjWriter.Write( mesh, asset.Name ) ) );
+
+			if ( edit.IsValid() )
+				edit.Text = asset.Path;
+
+			Log.Info( $"[Effigy] wearer is now {asset.Name}. The rig is unchanged - a garment still "
+				+ "fits to the bones that are there, so check it still lines up." );
+
+			RaiseEdited();
+		};
+
+		picker.Show();
 	}
 
 	private void BrowseImport( ImportFeature import, LineEdit edit )

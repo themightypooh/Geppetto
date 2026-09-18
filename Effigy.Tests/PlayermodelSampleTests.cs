@@ -32,6 +32,94 @@ public static class PlayermodelSampleTests
 
 		Report.Section( "playermodel map: every name resolves to a real citizen bone" );
 		TestMapResolves();
+
+		Report.Section( "playermodel check: it passes the sample, and catches each way of breaking it" );
+		TestCheckPassesTheSample();
+	}
+
+	/// <summary>
+	/// The playermodel readiness check, run against the real humanoid sample — the model the tool
+	/// itself says is correct. If the check complains about THAT, the check is wrong.
+	/// </summary>
+	static void TestCheckPassesTheSample()
+	{
+		var studio = RiggedSample( out _ );
+		studio.Rebuild();
+
+		var result = Playermodel.Build( studio );
+		var findings = Playermodel.Check( result );
+
+		var problems = findings.Where( f => f.Severity == Playermodel.Severity.Problem ).ToList();
+
+		Report.Check( "the sample has no playermodel-breaking problems", problems.Count == 0,
+			problems.Count == 0 ? null : string.Join( " | ", problems.Select( f => f.ToString() ) ) );
+
+		Report.Check( "every finding says what to do about it",
+			findings.All( f => !string.IsNullOrWhiteSpace( f.Remedy ) ) );
+
+		Report.Check( "findings come back worst first",
+			findings.Select( f => (int)f.Severity ).SequenceEqual(
+				findings.Select( f => (int)f.Severity ).OrderByDescending( x => x ) ) );
+
+		// Now break it, one way at a time, and check the right thing is reported.
+
+		// 1. Too many influences: the silent one, which the exporter would quietly prune.
+		var fat = Playermodel.Build( studio );
+		for ( var v = 0; v < fat.Mesh.VertexCount; v++ )
+			fat.Mesh.Skin.Vertices[v] = new[]
+			{
+				new BoneWeight( 0, 0.2f ), new BoneWeight( 1, 0.2f ), new BoneWeight( 2, 0.2f ),
+				new BoneWeight( 3, 0.2f ), new BoneWeight( 4, 0.2f ),
+			};
+
+		Report.Check( "five influences is reported",
+			Playermodel.Check( fat ).Any( f => f.Problem.Contains( "more than 4 bones" ) ),
+			string.Join( " | ", Playermodel.Check( fat ).Select( f => f.Problem ) ) );
+
+		// 2. An unweighted vertex collapses onto the origin in game.
+		var bald = Playermodel.Build( studio );
+		bald.Mesh.Skin.Vertices[0] = Array.Empty<BoneWeight>();
+
+		Report.Check( "an unweighted vertex is a Problem, not a warning",
+			Playermodel.Check( bald ).Any( f =>
+				f.Severity == Playermodel.Severity.Problem && f.Problem.Contains( "no skin weights" ) ) );
+
+		// 3. Weights that do not sum to 1 deform too much or too little.
+		var lopsided = Playermodel.Build( studio );
+		lopsided.Mesh.Skin.Vertices[0] = new[] { new BoneWeight( 0, 0.5f ) };
+
+		Report.Check( "weights that do not sum to 1 are reported",
+			Playermodel.Check( lopsided ).Any( f => f.Problem.Contains( "sum to 1" ) ) );
+
+		// 4. A bone index left over from an older rig.
+		var stale = Playermodel.Build( studio );
+		stale.Mesh.Skin.Vertices[0] = new[] { new BoneWeight( 9999, 1f ) };
+
+		Report.Check( "a weight naming a bone that is gone is a Problem",
+			Playermodel.Check( stale ).Any( f =>
+				f.Severity == Playermodel.Severity.Problem && f.Problem.Contains( "not in the skeleton" ) ) );
+
+		// 5. Scale: citizen is about 72 units, and the animations are authored at that stride.
+		var tiny = Playermodel.Build( studio );
+		for ( var v = 0; v < tiny.Mesh.VertexCount; v++ )
+			tiny.Mesh.Positions[v] = tiny.Mesh.Positions[v] * 0.1f;
+
+		Report.Check( "a model far off citizen's height is reported",
+			Playermodel.Check( tiny ).Any( f => f.Problem.Contains( "units tall" ) ),
+			string.Join( " | ", Playermodel.Check( tiny ).Select( f => f.Problem ) ) );
+
+		// 6. Feet off the floor: a playermodel's origin sits between them.
+		var floating = Playermodel.Build( studio );
+		for ( var v = 0; v < floating.Mesh.VertexCount; v++ )
+			floating.Mesh.Positions[v] = floating.Mesh.Positions[v] + new Vec3( 0, 0, 40f );
+
+		Report.Check( "a model whose feet are not on z = 0 is reported",
+			Playermodel.Check( floating ).Any( f => f.Problem.Contains( "feet are at" ) ) );
+
+		// And the empty cases refuse rather than reporting a clean bill of health.
+		Report.Check( "an empty model reports a Problem, not nothing",
+			Playermodel.Check( new Playermodel.Result { Mesh = new PolyMesh(), Skeleton = new Skeleton() } )
+				.Any( f => f.Severity == Playermodel.Severity.Problem ) );
 	}
 
 	/// <summary>
@@ -92,12 +180,18 @@ public static class PlayermodelSampleTests
 	/// knee. The editor does this in MakeBonesFromBodies; if this test did it any other way it would
 	/// be checking a pipeline nobody runs.
 	/// </summary>
-	static void TestLessonFits()
+	/// <summary>
+	/// The sample with its rig derived from its bodies, the way MakeBonesFromBodies does it in the
+	/// editor. Shared so the readiness check runs over the SAME rig the fit test does rather than
+	/// over a second, differently-built one.
+	/// </summary>
+	static PartStudio RiggedSample( out List<string> skipped )
 	{
 		var studio = HumanoidSample.Build();
 		var rig = studio.Rig;
 		var bodyByName = studio.Bodies.ToDictionary( b => b.Name, StringComparer.Ordinal );
-		var skipped = new List<string>();
+
+		skipped = new List<string>();
 
 		foreach ( var chain in HumanoidSample.Chains )
 		{
@@ -124,6 +218,14 @@ public static class PlayermodelSampleTests
 				studio.BodyBoneMap[bodyByName[name].Id] = name;
 			}
 		}
+
+		return studio;
+	}
+
+	static void TestLessonFits()
+	{
+		var studio = RiggedSample( out var skipped );
+		var rig = studio.Rig;
 
 		Report.Check( "every bone in the chains was measurable", skipped.Count == 0,
 			string.Join( ", ", skipped ) );

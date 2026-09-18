@@ -11,12 +11,18 @@ public readonly struct BodyRange
 	public readonly int Start;
 	public readonly int Count;
 
-	public BodyRange( string bodyId, string bodyName, int start, int count )
+	/// <summary>The body arrived with skin weights of its own — an imported rigged mesh, or a garment
+	/// that copied the weights of the body under it. Binding keeps them unless the body is pinned
+	/// to a bone.</summary>
+	public readonly bool HasOwnWeights;
+
+	public BodyRange( string bodyId, string bodyName, int start, int count, bool hasOwnWeights = false )
 	{
 		BodyId = bodyId;
 		BodyName = bodyName;
 		Start = start;
 		Count = count;
+		HasOwnWeights = hasOwnWeights;
 	}
 
 	public bool Contains( int vertex ) => vertex >= Start && vertex < Start + Count;
@@ -166,7 +172,18 @@ public static class SkinBinder
 		foreach ( var range in ranges )
 		{
 			if ( !bodyIdToBoneName.TryGetValue( range.BodyId, out var boneName ) )
+			{
+				// Not pinned, but carrying weights of its own: those win over nearest-bone. A
+				// garment that copied the body's weights must not be flattened back to rigid here.
+				if ( range.HasOwnWeights && mesh.IsRigged )
+				{
+					for ( var i = range.Start; i < range.Start + range.Count && i < weights.Count; i++ )
+						if ( mesh.Skin[i] is { Length: > 0 } own )
+							weights[i] = own;
+				}
+
 				continue;
+			}
 
 			var bone = skeleton.IndexOf( boneName );
 
@@ -346,5 +363,66 @@ public static class SkinBinder
 
 		var t = Math.Clamp( Vec3.Dot( p - a, ab ) / lengthSquared, 0f, 1f );
 		return (p - (a + ab * t)).Length;
+	}
+
+	/// <summary>
+	/// Give <paramref name="target"/> the weights of the nearest point on <paramref name="source"/>'s
+	/// surface — how a garment learns to move with the body it was fitted to.
+	///
+	/// NEAREST SURFACE, NOT NEAREST VERTEX. A shirt vertex over the middle of a large chest face is
+	/// nearest to whichever corner happens to be closest, and snapping to it gives stripes of
+	/// rigid weights across the fabric. The point on the face is blended from all its corners by
+	/// inverse distance, which is smooth across the face and exact at a corner.
+	///
+	/// Vertices further than <paramref name="maxDistance"/> from the source keep what they had (or
+	/// nothing). Returns how many were reached.
+	/// </summary>
+	public static int TransferFrom( PolyMesh target, PolyMesh source, float maxDistance = float.MaxValue )
+	{
+		if ( target is null )
+			throw new ArgumentNullException( nameof( target ) );
+		if ( source is null || !source.IsRigged )
+			throw new InvalidOperationException( "The body to copy weights from has no skin weights. Rig it first." );
+
+		var tree = MeshBVH.Build( source );
+		var weights = target.IsRigged ? target.Skin.Clone() : new SkinWeights( target.VertexCount );
+		var reached = 0;
+
+		for ( var v = 0; v < target.VertexCount; v++ )
+		{
+			if ( tree.NearestSurface( source, target.Positions[v], maxDistance ) is not { } hit )
+				continue;
+
+			var face = source.Faces[hit.FaceIndex];
+			var terms = new List<(BoneWeight[] Weights, float Coefficient)>();
+			var total = 0f;
+
+			foreach ( var corner in face.Indices )
+			{
+				var d = (source.Positions[corner] - hit.Point).Length;
+
+				// On a corner: that corner's weights, exactly.
+				if ( d < 1e-6f )
+				{
+					terms.Clear();
+					terms.Add( (source.Skin[corner], 1f) );
+					total = 1f;
+					break;
+				}
+
+				var k = 1f / d;
+				terms.Add( (source.Skin[corner], k) );
+				total += k;
+			}
+
+			for ( var i = 0; i < terms.Count; i++ )
+				terms[i] = (terms[i].Weights, terms[i].Coefficient / total);
+
+			weights[v] = SkinWeights.Blend( terms );
+			reached++;
+		}
+
+		target.Skin = weights;
+		return reached;
 	}
 }

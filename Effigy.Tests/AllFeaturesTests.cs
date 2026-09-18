@@ -95,6 +95,36 @@ public static class AllFeaturesTests
 	/// </summary>
 	static void GivePickedInput( Feature feature, PartStudio studio )
 	{
+		// GARMENT, FUR AND TRIM ARE THE CLOTHING TOOLS, and the fixture has no rig, which is
+		// exactly the input the garment's own guard is written to refuse. The model these need
+		// is a BODY WITH BONES: a spine inside the fixture box is enough for a T-shirt to cover
+		// it, and fur and trim both need the garment they attach to to already be there.
+		if ( feature is GarmentFeature or FurFeature or TrimFeature )
+		{
+			var rig = studio.Rig;
+			var root = rig.AddBoneFromPoints( "root", -1, new Vec3( 0, 0, -0.9f ), new Vec3( 0, 0, -0.5f ) );
+			var pelvis = rig.AddBoneFromPoints( "pelvis", root, new Vec3( 0, 0, -0.5f ), new Vec3( 0, 0, -0.1f ) );
+			rig.AddBoneFromPoints( "spine", pelvis, new Vec3( 0, 0, -0.1f ), new Vec3( 0, 0, 0.9f ) );
+
+			// Fur with nothing picked falls back to "every garment": give it one. The default
+			// T-shirt on the fixture box is exactly what the Clothing strip produces first.
+			if ( feature is FurFeature or TrimFeature )
+			{
+				var garment = studio.Add( new GarmentFeature() );
+				garment.Name = "Shirt";
+				garment.Drape.Value = false;
+
+				// Trim hangs off an OPENING, and Thickness closes a garment into a solid with
+				// none. The Clothing bar's own first garment is thickened; a fixture for trim
+				// cannot be.
+				if ( feature is TrimFeature )
+					garment.Thickness.Value = 0f;
+			}
+
+			studio.Rebuild();
+			return;
+		}
+
 		// Import is the one feature that needs a FILE rather than a body or a sketch. Bytes in
 		// memory, not a temp path: the harness has no document to sit a sidecar next to, and a
 		// path would leave a file behind.

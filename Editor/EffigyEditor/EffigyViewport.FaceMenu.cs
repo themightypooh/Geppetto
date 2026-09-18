@@ -41,6 +41,9 @@ internal sealed partial class EffigyViewport
 	/// the studio, which lives in the window.</summary>
 	public Action<EffigyFaceHit> FaceContextMenuRequested { get; set; }
 
+	/// <summary>Right-click while editing a mesh. The window opens the menu for the selection.</summary>
+	public Action MeshEditContextMenuRequested { get; set; }
+
 	// --- the cursor ray -------------------------------------------------------------------------
 	//
 	// Kept from the last frame rather than built on demand. Gizmo.CurrentRay only means anything
@@ -195,6 +198,14 @@ internal sealed partial class EffigyViewport
 		// be allowed to touch.
 		if ( PlanePickMode || SketchPickMode || FacePickMode || EdgePickMode || BodyPickMode || BoneToolActive )
 			return;
+
+		// Editing a mesh, the right button is the menu for what is selected — Blender's context
+		// menu, and the quickest way to the tool you want without knowing which menu holds it.
+		if ( IsMeshEditing )
+		{
+			MeshEditContextMenuRequested?.Invoke();
+			return;
+		}
 
 		if ( FaceContextMenuRequested is null )
 			return;

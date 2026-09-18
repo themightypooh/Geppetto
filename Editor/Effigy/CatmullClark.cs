@@ -392,7 +392,16 @@ public static class CatmullClark
 	/// loop. It becomes an n-gon of exactly the same shape (the point is ON the edge) and the two
 	/// faces still agree about every vertex along the seam.
 	/// </summary>
-	public static PolyMesh SubdivideFaces( PolyMesh mesh, IEnumerable<int> faces, int levels = 1 )
+	public static PolyMesh SubdivideFaces( PolyMesh mesh, IEnumerable<int> faces, int levels = 1 ) =>
+		SubdivideFaces( mesh, faces, levels, out _ );
+
+	/// <inheritdoc cref="SubdivideFaces(PolyMesh, IEnumerable{int}, int)"/>
+	/// <param name="region">The faces the selection became. The subdivided faces are emitted in
+	/// place of their originals rather than appended, so this is the only way to know which they
+	/// are — a caller that wants to keep the region selected must use it rather than assume a
+	/// trailing block.</param>
+	public static PolyMesh SubdivideFaces( PolyMesh mesh, IEnumerable<int> faces, int levels,
+		out HashSet<int> region )
 	{
 		if ( levels < 0 )
 			throw new ArgumentOutOfRangeException( nameof( levels ) );
@@ -410,6 +419,7 @@ public static class CatmullClark
 		for ( var i = 0; i < levels && selected.Count > 0; i++ )
 			current = SubdivideFacesOnce( current, selected, out selected );
 
+		region = selected;
 		return current;
 	}
 

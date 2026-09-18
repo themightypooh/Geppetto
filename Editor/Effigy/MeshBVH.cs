@@ -43,6 +43,117 @@ public sealed class MeshBVH
 	}
 
 	public int NodeCount => _nodes.Length;
+
+	/// <summary>
+	/// Project a point onto the target along either requested direction. Distance is measured
+	/// before clearance is applied; clearance follows the target's outward face normal.
+	/// Both meshes must use the same coordinate space. Refit this tree after moving the target.
+	/// A miss leaves the input point unchanged, suitable for live garment snapping.
+	/// </summary>
+	public bool TryProjectSurface( PolyMesh mesh, Vec3 point, Vec3 direction,
+		float maxDistance, float offset, out Vec3 projected,
+		bool positive = true, bool negative = false )
+	{
+		if ( mesh is null )
+			throw new ArgumentNullException( nameof( mesh ) );
+		if ( !float.IsFinite( maxDistance ) || maxDistance < 0f )
+			throw new ArgumentOutOfRangeException( nameof( maxDistance ) );
+		if ( !float.IsFinite( offset ) )
+			throw new ArgumentOutOfRangeException( nameof( offset ) );
+		projected = point;
+		if ( !Finite( point ) || !Finite( direction ) )
+			throw new ArgumentException( "Projection requires finite coordinates and direction" );
+		var forward = positive ? Raycast( mesh, point, direction ) : null;
+		var backward = negative ? Raycast( mesh, point, -direction ) : null;
+		var hit = forward;
+		if ( backward is { } back && (hit is null || back.Distance < hit.Value.Distance) )
+			hit = back;
+		if ( hit is not { } surface || surface.Distance > maxDistance )
+			return false;
+		projected = surface.Point + surface.Normal * offset;
+		return true;
+	}
+
+	static bool Finite( Vec3 value ) =>
+		float.IsFinite( value.x ) && float.IsFinite( value.y ) && float.IsFinite( value.z );
+
+	/// <summary>Closest point on the triangulated target, within a finite search radius.
+	/// Refit after target movement; rebuild after topology edits.</summary>
+	public MeshHit? NearestSurface( PolyMesh mesh, Vec3 point, float maxDistance )
+	{
+		if ( mesh is null ) throw new ArgumentNullException( nameof( mesh ) );
+		if ( !Finite( point ) || !float.IsFinite( maxDistance ) || maxDistance < 0 )
+			throw new ArgumentException( "Nearest surface requires finite coordinates and a nonnegative radius" );
+		if ( mesh.FaceCount != _faceCount ) throw new ArgumentException( "Rebuild the tree after topology changes" );
+		MeshHit? best = null;
+		if ( !IsEmpty ) NearestNode( mesh, 0, point, maxDistance, ref best );
+		return best;
+	}
+
+	void NearestNode( PolyMesh mesh, int index, Vec3 point, float reach, ref MeshHit? best )
+	{
+		var node = _nodes[index];
+		if ( !SphereHitsBox( node.Min, node.Max, point, best?.Distance ?? reach ) ) return;
+		if ( node.Left >= 0 )
+		{
+			// The nearer child first, so the best distance shrinks before the farther one is
+			// tested and it is usually culled whole.
+			var left = _nodes[node.Left];
+			var right = _nodes[node.Right];
+
+			if ( BoxDistanceSq( left.Min, left.Max, point ) <= BoxDistanceSq( right.Min, right.Max, point ) )
+			{
+				NearestNode( mesh, node.Left, point, reach, ref best );
+				NearestNode( mesh, node.Right, point, reach, ref best );
+			}
+			else
+			{
+				NearestNode( mesh, node.Right, point, reach, ref best );
+				NearestNode( mesh, node.Left, point, reach, ref best );
+			}
+
+			return;
+		}
+		for ( var i = 0; i < node.FaceCount; i++ )
+		{
+			var fi = _faces[node.FaceStart + i];
+			var face = mesh.Faces[fi];
+
+			// Triangles without the list and the triangulator: a compiled model is nothing but
+			// triangles, and cloth collision asks this hundreds of thousands of times a drape.
+			if ( face.Count == 3 )
+			{
+				var ta = mesh.Positions[face.Indices[0]];
+				var tb = mesh.Positions[face.Indices[1]];
+				var tc = mesh.Positions[face.Indices[2]];
+				var near = ClosestTriangle( point, ta, tb, tc );
+				var dist = (near - point).Length;
+				if ( dist > (best?.Distance ?? reach) ) continue;
+				if ( best is { } kept && dist == kept.Distance && fi >= kept.FaceIndex ) continue;
+				best = new MeshHit( near, fi, mesh.FaceNormal( face ), dist );
+				continue;
+			}
+
+			var corners = new List<Vec3>( face.Count );
+			foreach ( var vi in face.Indices ) corners.Add( mesh.Positions[vi] );
+			foreach ( var (a, b, c) in Triangulate.Face( corners ) )
+			{
+				var closest = ClosestTriangle( point, corners[a], corners[b], corners[c] );
+				var distance = (closest - point).Length;
+				if ( distance > (best?.Distance ?? reach) ) continue;
+				if ( best is { } held && distance == held.Distance && fi >= held.FaceIndex ) continue;
+				best = new MeshHit( closest, fi, mesh.FaceNormal( face ), distance );
+			}
+		}
+	}
+	static float BoxDistanceSq( Vec3 min, Vec3 max, Vec3 p )
+	{
+		var dx = p.x < min.x ? min.x - p.x : p.x > max.x ? p.x - max.x : 0f;
+		var dy = p.y < min.y ? min.y - p.y : p.y > max.y ? p.y - max.y : 0f;
+		var dz = p.z < min.z ? min.z - p.z : p.z > max.z ? p.z - max.z : 0f;
+		return dx * dx + dy * dy + dz * dz;
+	}
+
 	public int FaceCount => _faceCount;
 	public bool IsEmpty => _nodes.Length == 0;
 
@@ -460,30 +571,44 @@ public sealed class MeshBVH
 	/// contains does not drag a face in.
 	/// </summary>
 	static bool SphereTouchesTriangle( Vec3 p, float r2, Vec3 a, Vec3 b, Vec3 c )
+		=> (ClosestTriangle( p, a, b, c ) - p).LengthSquared <= r2;
+
+	/// <summary>The point of a triangle nearest <paramref name="p"/>, by clamping to the vertex, edge
+	/// and face regions in turn. Public because the cloth solver's self-collision needs the same
+	/// answer and there is no reason for two of these.</summary>
+	public static Vec3 ClosestTriangle( Vec3 p, Vec3 a, Vec3 b, Vec3 c )
 	{
 		var ab = b - a;
 		var ac = c - a;
+		if ( Vec3.Cross( ab, ac ).LengthSquared == 0f )
+		{
+			var first = ClosestSegment( p, a, b );
+			var second = ClosestSegment( p, b, c );
+			var third = ClosestSegment( p, c, a );
+			if ( (second - p).LengthSquared < (first - p).LengthSquared ) first = second;
+			return (third - p).LengthSquared < (first - p).LengthSquared ? third : first;
+		}
 		var ap = p - a;
 
 		var d1 = Vec3.Dot( ab, ap );
 		var d2 = Vec3.Dot( ac, ap );
 
 		if ( d1 <= 0f && d2 <= 0f )
-			return ap.LengthSquared <= r2;
+			return a;
 
 		var bp = p - b;
 		var d3 = Vec3.Dot( ab, bp );
 		var d4 = Vec3.Dot( ac, bp );
 
 		if ( d3 >= 0f && d4 <= d3 )
-			return bp.LengthSquared <= r2;
+			return b;
 
 		var vc = d1 * d4 - d3 * d2;
 
 		if ( vc <= 0f && d1 >= 0f && d3 <= 0f )
 		{
 			var v = d1 / (d1 - d3);
-			return (a + ab * v - p).LengthSquared <= r2;
+			return a + ab * v;
 		}
 
 		var cp = p - c;
@@ -491,14 +616,14 @@ public sealed class MeshBVH
 		var d6 = Vec3.Dot( ac, cp );
 
 		if ( d6 >= 0f && d5 <= d6 )
-			return cp.LengthSquared <= r2;
+			return c;
 
 		var vb = d5 * d2 - d1 * d6;
 
 		if ( vb <= 0f && d2 >= 0f && d6 <= 0f )
 		{
 			var w = d2 / (d2 - d6);
-			return (a + ac * w - p).LengthSquared <= r2;
+			return a + ac * w;
 		}
 
 		var va = d3 * d6 - d5 * d4;
@@ -506,11 +631,18 @@ public sealed class MeshBVH
 		if ( va <= 0f && (d4 - d3) >= 0f && (d5 - d6) >= 0f )
 		{
 			var w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
-			return (b + (c - b) * w - p).LengthSquared <= r2;
+			return b + (c - b) * w;
 		}
 
 		var denom = 1f / (va + vb + vc);
-		return (a + ab * (vb * denom) + ac * (vc * denom) - p).LengthSquared <= r2;
+		return a + ab * (vb * denom) + ac * (vc * denom);
+	}
+
+	static Vec3 ClosestSegment( Vec3 point, Vec3 a, Vec3 b )
+	{
+		var delta = b - a;
+		return delta.LengthSquared == 0f ? a
+			: a + delta * Math.Clamp( Vec3.Dot( point - a, delta ) / delta.LengthSquared, 0f, 1f );
 	}
 
 	/// <summary>

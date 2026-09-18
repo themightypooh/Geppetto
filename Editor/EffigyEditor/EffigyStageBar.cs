@@ -49,6 +49,15 @@ internal enum EffigyBarMode
 	Sculpt,
 	Paint,
 	Rig,
+
+	/// <summary>Edit mode in the Model workspace: direct vertex / edge / face editing of one body
+	/// through a <see cref="MeshEditSession"/>.</summary>
+	MeshEdit,
+
+	/// <summary>The Clothing workspace: bring a wearer in, cut a garment from it, grow fur on it.
+	/// Like <see cref="Rig"/> it is a plain mode with nothing to commit - every tool on its bar
+	/// adds an ordinary feature, so the tree holds the work rather than a session.</summary>
+	Clothing,
 }
 
 /// <summary>
@@ -314,6 +323,16 @@ internal sealed class EffigyStageTool
 }
 
 /// <summary>A named handful of tools, and whether they can be used yet.</summary>
+/// <summary>One button of a mode switch: its label, whether it is the current mode, and what
+/// picking it does.</summary>
+internal sealed class EffigyModeSegment
+{
+	public string Label;
+	public string Tip;
+	public bool Active;
+	public Action Clicked;
+}
+
 internal sealed class EffigyStage
 {
 	public string Name;
@@ -412,6 +431,78 @@ internal sealed class EffigyStageBar : Widget
 
 	public IReadOnlyList<EffigyStage> Stages => _stages;
 
+	/// <summary>
+	/// Menus instead of tabs, or null. When set, the top row is a menu bar — each entry opens a
+	/// dropdown of its tools — and the tool row keeps showing <see cref="Stages"/>, which the owner
+	/// sets to the handful of tools that are held rather than looked up.
+	///
+	/// This is how Model's Edit mode gets from ten tabs of over a hundred buttons, which ran off the
+	/// edge of the window, to a toolbar plus menus: the same tool objects, so every enabled state,
+	/// tick and reason stays exactly as live as it was on a tab.
+	/// </summary>
+	public IReadOnlyList<EffigyStage> Menus => _menus;
+
+	private List<EffigyStage> _menus;
+
+	/// <summary>Called just before a menu opens, so the owner can bring every tool's enabled state
+	/// up to date first.</summary>
+	public Action MenuOpening { get; set; }
+
+	/// <summary>
+	/// A mode switch at the right-hand end — Object | Edit | Retopo — in place of a mode label and
+	/// a Finish button. Leaving a mode is picking another one, as in Blender, so there is no
+	/// separate "finish" to find. Null for none.
+	/// </summary>
+	public void SetSegments( IEnumerable<EffigyModeSegment> segments )
+	{
+		_tabs.Segments = segments is null ? null : new List<EffigyModeSegment>( segments );
+		_tabs.Update();
+	}
+
+	public void SetMenus( IEnumerable<EffigyStage> menus )
+	{
+		_menus = menus is null ? null : new List<EffigyStage>( menus );
+		Refresh();
+	}
+
+	/// <summary>Open menu <paramref name="index"/> with its top-left at <paramref name="screen"/>.</summary>
+	public void OpenMenu( int index, Vector2 screen )
+	{
+		if ( _menus is null || index < 0 || index >= _menus.Count )
+			return;
+
+		MenuOpening?.Invoke();
+
+		var menu = new Menu( this );
+		AddTools( menu, _menus[index].Tools );
+		menu.OpenAt( screen );
+	}
+
+	/// <summary>
+	/// Put tools on a menu as options: the tool's own label, its tip (or the reason it cannot run)
+	/// as the tooltip, a tick for a mode that is on, and dimmed when it cannot run now. Shared by
+	/// the menu bar and the viewport's right-click menu, so a tool reads the same in both.
+	/// </summary>
+	public static void AddTools( Menu menu, IEnumerable<EffigyStageTool> tools )
+	{
+		foreach ( var tool in tools )
+		{
+			if ( tool is null )
+			{
+				menu.AddSeparator();
+				continue;
+			}
+
+			var run = tool.Clicked;
+			var option = menu.AddOption( tool.Label, null, () => run?.Invoke() );
+			option.Checkable = tool.Checkable;
+			option.Checked = tool.Checked;
+			option.Enabled = tool.Enabled;
+			option.ToolTip = tool.Enabled ? tool.Tip : tool.DisabledReason ?? tool.Tip;
+			option.StatusTip = option.ToolTip;
+		}
+	}
+
 	public EffigyStage Current =>
 		_selected >= 0 && _selected < _stages.Count ? _stages[_selected] : null;
 
@@ -426,6 +517,9 @@ internal sealed class EffigyStageBar : Widget
 	/// </summary>
 	public void SetStages( IEnumerable<EffigyStage> stages, int select = -1 )
 	{
+		// A new stage set is a new mode; its menus and mode switch, if it has any, are set after this.
+		_menus = null;
+		_tabs.Segments = null;
 		_stages.Clear();
 		_stages.AddRange( stages );
 
@@ -545,6 +639,12 @@ internal sealed class EffigyStageTabRow : Widget
 	private readonly List<Rect> _tabRects = new();
 
 	private Rect _finishRect;
+
+	/// <summary>The mode switch, when there is one; see <see cref="EffigyStageBar.SetSegments"/>.</summary>
+	public List<EffigyModeSegment> Segments { get; set; }
+
+	private readonly List<Rect> _segmentRects = new();
+	private int _hoveredSegment = -1;
 	private int _hovered = -1;
 	private bool _hoveredFinish;
 
@@ -588,6 +688,12 @@ internal sealed class EffigyStageTabRow : Widget
 
 		if ( Bar is null )
 			return;
+
+		if ( Bar.Menus is { } menus )
+		{
+			PaintMenus( menus );
+			return;
+		}
 
 		var x = Pad * 0.5f;
 
@@ -646,6 +752,41 @@ internal sealed class EffigyStageTabRow : Widget
 		}
 	}
 
+	/// <summary>A menu bar: each name with a small chevron, no counts and no selected tab — a menu
+	/// is a place you open, not a page you are on.</summary>
+	private void PaintMenus( IReadOnlyList<EffigyStage> menus )
+	{
+		var x = Pad * 0.5f;
+
+		for ( var i = 0; i < menus.Count; i++ )
+		{
+			Paint.SetDefaultFont( EffigyToolChrome.TabFontSize, 450 );
+
+			var nameWidth = Paint.MeasureText( menus[i].Name ).x;
+			var rect = new Rect( x, 0f, nameWidth + Pad + 12f, Height );
+			_tabRects.Add( rect );
+
+			if ( _hovered == i )
+			{
+				Paint.ClearPen();
+				Paint.SetBrush( Theme.Text.WithAlpha( 0.08f ) );
+				Paint.DrawRect( rect.Shrink( 0f, 3f, 0f, 3f ), 3f );
+			}
+
+			Paint.SetPen( _hovered == i ? Theme.Text : Theme.TextControl.WithAlpha( 0.85f ) );
+			Paint.DrawText( new Rect( rect.Position.x + Pad * 0.5f, 0f, nameWidth, Height ), menus[i].Name, TextFlag.LeftCenter );
+
+			// The chevron: two short strokes, drawn rather than a glyph so it sits on the text's
+			// centre line whatever the font does.
+			var c = new Vector2( rect.Position.x + Pad * 0.5f + nameWidth + 7f, Height * 0.5f + 1f );
+			Paint.SetPen( Theme.TextControl.WithAlpha( 0.55f ), 1.3f );
+			Paint.DrawLine( c + new Vector2( -3f, -1.5f ), c );
+			Paint.DrawLine( c, c + new Vector2( 3f, -1.5f ) );
+
+			x += rect.Size.x + Gap;
+		}
+	}
+
 	/// <summary>
 	/// The mode, and the way out of it, at the right-hand end.
 	///
@@ -657,6 +798,13 @@ internal sealed class EffigyStageTabRow : Widget
 	private void PaintMode()
 	{
 		_finishRect = default;
+		_segmentRects.Clear();
+
+		if ( Segments is { Count: > 0 } segments )
+		{
+			PaintSegments( segments );
+			return;
+		}
 
 		if ( string.IsNullOrEmpty( Mode ) )
 			return;
@@ -697,6 +845,60 @@ internal sealed class EffigyStageTabRow : Widget
 		Paint.DrawText( new Rect( x - modeWidth, 0f, modeWidth, Height ), Mode, TextFlag.LeftCenter );
 	}
 
+	private void PaintSegments( List<EffigyModeSegment> segments )
+	{
+		Paint.SetDefaultFont( EffigyToolChrome.TabFontSize - 1f, 500 );
+
+		var widths = new float[segments.Count];
+		var total = 0f;
+		for ( var i = 0; i < segments.Count; i++ )
+		{
+			widths[i] = Paint.MeasureText( segments[i].Label ).x + 20f;
+			total += widths[i];
+		}
+
+		var x = Width - Pad * 0.5f - total;
+		var box = new Rect( x, 4f, total, Height - 9f );
+
+		Paint.ClearPen();
+		Paint.SetBrush( Theme.Text.WithAlpha( 0.05f ) );
+		Paint.DrawRect( box, 3f );
+
+		for ( var i = 0; i < segments.Count; i++ )
+		{
+			var rect = new Rect( x, box.Position.y, widths[i], box.Size.y );
+			_segmentRects.Add( rect );
+
+			if ( segments[i].Active )
+			{
+				Paint.ClearPen();
+				Paint.SetBrush( Theme.Blue.WithAlpha( 0.28f ) );
+				Paint.DrawRect( rect, 3f );
+			}
+			else if ( _hoveredSegment == i )
+			{
+				Paint.ClearPen();
+				Paint.SetBrush( Theme.Text.WithAlpha( 0.08f ) );
+				Paint.DrawRect( rect, 3f );
+			}
+
+			Paint.SetDefaultFont( EffigyToolChrome.TabFontSize - 1f, segments[i].Active ? 600 : 500 );
+			Paint.SetPen( segments[i].Active ? Theme.Text : Theme.TextControl.WithAlpha( 0.75f ) );
+			Paint.DrawText( rect, segments[i].Label, TextFlag.Center );
+
+			x += widths[i];
+		}
+	}
+
+	private int SegmentAt( Vector2 local )
+	{
+		for ( var i = 0; i < _segmentRects.Count; i++ )
+			if ( _segmentRects[i].IsInside( local ) )
+				return i;
+
+		return -1;
+	}
+
 	private int TabAt( Vector2 local )
 	{
 		for ( var i = 0; i < _tabRects.Count; i++ )
@@ -712,18 +914,30 @@ internal sealed class EffigyStageTabRow : Widget
 	{
 		var tab = TabAt( e.LocalPosition );
 		var finish = _finishRect.Size.x > 0f && _finishRect.IsInside( e.LocalPosition );
+		var segment = SegmentAt( e.LocalPosition );
 
-		if ( tab == _hovered && finish == _hoveredFinish )
+		if ( tab == _hovered && finish == _hoveredFinish && segment == _hoveredSegment )
 			return;
+
+		_hoveredSegment = segment;
+
+		if ( segment >= 0 && Segments is not null && segment < Segments.Count )
+		{
+			ToolTip = Segments[segment].Tip ?? "";
+			Update();
+			return;
+		}
 
 		_hovered = tab;
 		_hoveredFinish = finish;
 
 		// The locked reason IS the tooltip. It is the only place the rule gets explained, and a
 		// dimmed tab with no explanation is the strip's silent disappearing act with extra steps.
-		ToolTip = tab >= 0 && Bar is not null && tab < Bar.Stages.Count
-			? Bar.Stages[tab].LockedReason ?? Bar.Stages[tab].Name
-			: "";
+		ToolTip = Bar?.Menus is not null
+			? ""
+			: tab >= 0 && Bar is not null && tab < Bar.Stages.Count
+				? Bar.Stages[tab].LockedReason ?? Bar.Stages[tab].Name
+				: "";
 
 		Update();
 	}
@@ -734,6 +948,7 @@ internal sealed class EffigyStageTabRow : Widget
 
 		_hovered = -1;
 		_hoveredFinish = false;
+		_hoveredSegment = -1;
 
 		Update();
 	}
@@ -745,6 +960,13 @@ internal sealed class EffigyStageTabRow : Widget
 
 		e.Accepted = true;
 
+		if ( SegmentAt( e.LocalPosition ) is var segment and >= 0 && Segments is not null && segment < Segments.Count )
+		{
+			if ( !Segments[segment].Active )
+				Segments[segment].Clicked?.Invoke();
+			return;
+		}
+
 		if ( _finishRect.Size.x > 0f && _finishRect.IsInside( e.LocalPosition ) )
 		{
 			FinishClicked?.Invoke();
@@ -752,6 +974,12 @@ internal sealed class EffigyStageTabRow : Widget
 		}
 
 		var tab = TabAt( e.LocalPosition );
+
+		if ( tab >= 0 && Bar?.Menus is not null )
+		{
+			Bar.OpenMenu( tab, ScreenPosition + new Vector2( _tabRects[tab].Position.x, Height ) );
+			return;
+		}
 
 		if ( tab >= 0 )
 			Bar?.Select( tab );

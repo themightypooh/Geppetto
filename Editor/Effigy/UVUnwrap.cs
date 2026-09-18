@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace Effigy;
 
@@ -63,15 +64,22 @@ public static class UVUnwrap
 	/// either side of the average, which keeps a cylinder wall whole and still splits a box corner.
 	///
 	/// <paramref name="margin"/> is the gutter between islands as a fraction of the square.
+	///
+	/// <paramref name="seams"/> are edges a chart may never cross, whatever the angle across them
+	/// says — the user's own cuts, Blender's Mark Seam. The angle rule still applies everywhere
+	/// else, so marking a few seams steers the result rather than replacing it: mark the inside of
+	/// a sleeve and the sleeve unrolls as one island instead of being split wherever it curves past
+	/// the tolerance.
 	/// </summary>
-	public static UnwrapReport Unwrap( PolyMesh mesh, float angleDegrees = 66f, float margin = 0.01f )
+	public static UnwrapReport Unwrap( PolyMesh mesh, float angleDegrees = 66f, float margin = 0.01f,
+		IReadOnlySet<EdgeKey> seams = null )
 	{
 		if ( mesh is null )
 			throw new ArgumentNullException( nameof( mesh ) );
 
 		margin = Math.Clamp( margin, 0f, 0.2f );
 
-		var charts = BuildCharts( mesh, angleDegrees );
+		var charts = BuildCharts( mesh, angleDegrees, seams );
 		var flattened = new List<Chart>( charts.Count );
 		var skipped = 0;
 
@@ -106,10 +114,10 @@ public static class UVUnwrap
 	/// tolerance no matter how gently it curves; comparing against the average lets a cylinder wall
 	/// go all the way round, which is one seam instead of sixteen.
 	/// </summary>
-	static List<List<int>> BuildCharts( PolyMesh mesh, float angleDegrees )
+	static List<List<int>> BuildCharts( PolyMesh mesh, float angleDegrees, IReadOnlySet<EdgeKey> seams )
 	{
 		var limit = MathF.Cos( Math.Clamp( angleDegrees, 1f, 179f ) * MathF.PI / 180f );
-		var neighbours = FaceNeighbours( mesh );
+		var neighbours = FaceNeighbours( mesh, seams );
 		var chartOf = new int[mesh.FaceCount];
 
 		for ( var i = 0; i < chartOf.Length; i++ )
@@ -163,17 +171,27 @@ public static class UVUnwrap
 		return charts;
 	}
 
-	/// <summary>Faces sharing an edge. A non-manifold edge joins everything on it, which is what
-	/// keeps a chart from leaking through a seam it should have stopped at.</summary>
-	static List<int>[] FaceNeighbours( PolyMesh mesh )
+	/// <summary>
+	/// Faces sharing an edge. A non-manifold edge joins everything on it, which is what keeps a
+	/// chart from leaking through a seam it should have stopped at.
+	///
+	/// A marked seam is simply left out of the adjacency: the two faces across it stop being
+	/// neighbours, so the flood fill cannot reach one from the other and they land in different
+	/// charts. Because the UVs are per corner, that is the whole of what a seam has to do — the
+	/// vertices on it keep one position and get a UV per chart.
+	/// </summary>
+	static List<int>[] FaceNeighbours( PolyMesh mesh, IReadOnlySet<EdgeKey> seams = null )
 	{
 		var result = new List<int>[mesh.FaceCount];
 
 		for ( var i = 0; i < result.Length; i++ )
 			result[i] = new List<int>();
 
-		foreach ( var (_, faces) in mesh.BuildEdgeFaces() )
+		foreach ( var (key, faces) in mesh.BuildEdgeFaces() )
 		{
+			if ( seams is { Count: > 0 } && seams.Contains( key ) )
+				continue;
+
 			for ( var a = 0; a < faces.Count; a++ )
 			{
 				for ( var b = a + 1; b < faces.Count; b++ )

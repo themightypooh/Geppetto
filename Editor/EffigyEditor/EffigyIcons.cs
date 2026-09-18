@@ -123,6 +123,39 @@ internal enum EffigyIcon
 	BoneSoft,
 	SoftPreview,
 	SoftRest,
+
+	// --- Model > Edit: direct polygon editing ------------------------------------------------------
+	// Drawn as a small quad cage with the thing being picked or changed lit, so the three pick
+	// modes read as "which part of the same cage" and every operation reads as what it does to it.
+	MeshEdit,
+	SelectVertex,
+	SelectEdge,
+	SelectFace,
+	Inset,
+	LoopCut,
+	Merge,
+	Dissolve,
+	DeleteGeometry,
+	Shrinkwrap,
+	Solidify,
+	Drape,
+	Fabric,
+
+	// --- UV: where the texture is cut and how it is laid out ------------------------------------
+	Seam,
+	Unwrap,
+
+	// --- Clothing: trim hung off a garment's edge ------------------------------------------------
+	// A scalloped edge: the wave a gathered strip takes. Drawn as the EDGE rather than as a frill in
+	// the round, because what the tool does is decorate a boundary, and the boundary is the part a
+	// person is choosing.
+	Frill,
+
+	// --- Clothing: the body being dressed -------------------------------------------------------
+	// A dressmaker's dummy, not a person and not a skeleton. The two things it has to say at a
+	// glance are "this is a whole body" and "the body is not the thing you are making" - a stand
+	// says both, which neither a figure nor a bone does.
+	Wearer,
 }
 
 /// <summary>
@@ -253,6 +286,24 @@ internal static class EffigyIcons
 
 			case EffigyIcon.UseTool: PaintUseTool( center, color ); return;
 			case EffigyIcon.UseAllTool: PaintUseAllTool( center, color ); return;
+
+			case EffigyIcon.MeshEdit: PaintMeshEdit( center, color ); return;
+			case EffigyIcon.SelectVertex: PaintCage( center, color, lit: 1 ); return;
+			case EffigyIcon.SelectEdge: PaintCage( center, color, lit: 2 ); return;
+			case EffigyIcon.SelectFace: PaintCage( center, color, lit: 3 ); return;
+			case EffigyIcon.Inset: PaintInset( center, color ); return;
+			case EffigyIcon.LoopCut: PaintLoopCut( center, color ); return;
+			case EffigyIcon.Merge: PaintMerge( center, color ); return;
+			case EffigyIcon.Dissolve: PaintDissolve( center, color ); return;
+			case EffigyIcon.DeleteGeometry: PaintDeleteGeometry( center, color ); return;
+			case EffigyIcon.Shrinkwrap: PaintShrinkwrap( center, color ); return;
+			case EffigyIcon.Solidify: PaintSolidify( center, color ); return;
+			case EffigyIcon.Drape: PaintDrape( center, color ); return;
+			case EffigyIcon.Fabric: PaintFabric( center, color ); return;
+			case EffigyIcon.Seam: PaintSeam( center, color ); return;
+			case EffigyIcon.Unwrap: PaintUnwrap( center, color ); return;
+			case EffigyIcon.Wearer: PaintWearer( center, color ); return;
+			case EffigyIcon.Frill: PaintFrill( center, color ); return;
 
 			case EffigyIcon.CutTool: PaintCutTool( center, color ); return;
 
@@ -2287,5 +2338,284 @@ internal static class EffigyIcons
 		// The line it came to rest on, so "rest" is a place rather than only a state.
 		Stroked( color.WithAlpha( 0.5f ), 1.4f );
 		Editor.Paint.DrawLine( At( c, -6f, 8.6f ), At( c, 6f, 8.6f ) );
+	}
+
+	// --- Model > Edit ---------------------------------------------------------------------------
+
+	/// <summary>A cube's cage with one corner grabbed and pulled — editing the mesh itself.</summary>
+	private static void PaintMeshEdit( Vector2 c, Color color )
+	{
+		Stroked( color.WithAlpha( 0.55f ), 1.2f );
+		Outline( At( c, -7, -3 ), At( c, 3, -3 ), At( c, 3, 7 ), At( c, -7, 7 ) );
+		Editor.Paint.DrawLine( At( c, -7, -3 ), At( c, -3, -7 ) );
+		Editor.Paint.DrawLine( At( c, -3, -7 ), At( c, 7, -8 ) );
+		Editor.Paint.DrawLine( At( c, 7, -8 ), At( c, 3, -3 ) );
+		Editor.Paint.DrawLine( At( c, 7, -8 ), At( c, 7, 3 ) );
+		Editor.Paint.DrawLine( At( c, 7, 3 ), At( c, 3, 7 ) );
+		Dot( At( c, 7, -8 ), 2.4f, color );
+	}
+
+	/// <summary>A 2x2 quad cage. lit: 1 a vertex, 2 an edge, 3 a face — the pick mode, shown as the
+	/// part of the same cage it picks.</summary>
+	private static void PaintCage( Vector2 c, Color color, int lit )
+	{
+		if ( lit == 3 )
+		{
+			Filled( color.WithAlpha( 0.55f ) );
+			Editor.Paint.DrawPolygon( At( c, 0, -8 ), At( c, 8, -8 ), At( c, 8, 0 ), At( c, 0, 0 ) );
+		}
+
+		Stroked( color.WithAlpha( 0.45f ), 1.1f );
+		Outline( At( c, -8, -8 ), At( c, 8, -8 ), At( c, 8, 8 ), At( c, -8, 8 ) );
+		Editor.Paint.DrawLine( At( c, 0, -8 ), At( c, 0, 8 ) );
+		Editor.Paint.DrawLine( At( c, -8, 0 ), At( c, 8, 0 ) );
+
+		if ( lit == 2 )
+		{
+			Stroked( color, 2.6f );
+			Editor.Paint.DrawLine( At( c, -8, 0 ), At( c, 0, 0 ) );
+		}
+
+		if ( lit == 1 )
+			Dot( At( c, 0, 0 ), 3f, color );
+	}
+
+	/// <summary>A face with a smaller face inside it and the ring between them.</summary>
+	private static void PaintInset( Vector2 c, Color color )
+	{
+		Stroked( color.WithAlpha( 0.6f ), 1.3f );
+		Outline( At( c, -8, -8 ), At( c, 8, -8 ), At( c, 8, 8 ), At( c, -8, 8 ) );
+		Editor.Paint.DrawLine( At( c, -8, -8 ), At( c, -4, -4 ) );
+		Editor.Paint.DrawLine( At( c, 8, -8 ), At( c, 4, -4 ) );
+		Editor.Paint.DrawLine( At( c, 8, 8 ), At( c, 4, 4 ) );
+		Editor.Paint.DrawLine( At( c, -8, 8 ), At( c, -4, 4 ) );
+		Filled( color.WithAlpha( 0.8f ) );
+		Editor.Paint.DrawPolygon( At( c, -4, -4 ), At( c, 4, -4 ), At( c, 4, 4 ), At( c, -4, 4 ) );
+	}
+
+	/// <summary>A strip of quads with a new loop running across it, dashed where it is being added.</summary>
+	private static void PaintLoopCut( Vector2 c, Color color )
+	{
+		Stroked( color.WithAlpha( 0.6f ), 1.3f );
+		Outline( At( c, -8, -6 ), At( c, 8, -6 ), At( c, 8, 6 ), At( c, -8, 6 ) );
+		Stroked( color, 2.2f );
+		for ( var y = -6f; y < 6f; y += 3f )
+			Editor.Paint.DrawLine( At( c, 0, y ), At( c, 0, y + 1.8f ) );
+	}
+
+	/// <summary>Three vertices pulled together into one.</summary>
+	private static void PaintMerge( Vector2 c, Color color )
+	{
+		Stroked( color.WithAlpha( 0.6f ), 1.3f );
+		Editor.Paint.DrawLine( At( c, -7, -6 ), At( c, 0, 3 ) );
+		Editor.Paint.DrawLine( At( c, 7, -6 ), At( c, 0, 3 ) );
+		Editor.Paint.DrawLine( At( c, 0, -8 ), At( c, 0, 3 ) );
+		Dot( At( c, -7, -6 ), 1.6f, color.WithAlpha( 0.6f ) );
+		Dot( At( c, 7, -6 ), 1.6f, color.WithAlpha( 0.6f ) );
+		Dot( At( c, 0, -8 ), 1.6f, color.WithAlpha( 0.6f ) );
+		Dot( At( c, 0, 4 ), 3f, color );
+	}
+
+	/// <summary>Two faces whose shared edge is fading out — they become one.</summary>
+	private static void PaintDissolve( Vector2 c, Color color )
+	{
+		Filled( color.WithAlpha( 0.3f ) );
+		Editor.Paint.DrawPolygon( At( c, -8, -6 ), At( c, 8, -6 ), At( c, 8, 6 ), At( c, -8, 6 ) );
+		Stroked( color, 1.5f );
+		Outline( At( c, -8, -6 ), At( c, 8, -6 ), At( c, 8, 6 ), At( c, -8, 6 ) );
+		Stroked( color.WithAlpha( 0.35f ), 1.2f );
+		for ( var y = -6f; y < 6f; y += 3f )
+			Editor.Paint.DrawLine( At( c, 0, y ), At( c, 0, y + 1f ) );
+	}
+
+	/// <summary>A cage with one face knocked out, leaving a hole.</summary>
+	private static void PaintDeleteGeometry( Vector2 c, Color color )
+	{
+		Filled( color.WithAlpha( 0.45f ) );
+		Editor.Paint.DrawPolygon( At( c, -8, -8 ), At( c, 0, -8 ), At( c, 0, 8 ), At( c, -8, 8 ) );
+		Editor.Paint.DrawPolygon( At( c, 0, 0 ), At( c, 8, 0 ), At( c, 8, 8 ), At( c, 0, 8 ) );
+		Stroked( color, 1.4f );
+		Outline( At( c, -8, -8 ), At( c, 8, -8 ), At( c, 8, 8 ), At( c, -8, 8 ) );
+		Stroked( new Color( 1f, 0.45f, 0.4f ), 1.8f );
+		Editor.Paint.DrawLine( At( c, 2, -6 ), At( c, 6, -2 ) );
+		Editor.Paint.DrawLine( At( c, 6, -6 ), At( c, 2, -2 ) );
+	}
+
+	/// <summary>A body with a dashed sheet pulled tight around it.</summary>
+	private static void PaintShrinkwrap( Vector2 c, Color color )
+	{
+		Filled( color.WithAlpha( 0.35f ) );
+		Editor.Paint.DrawCircle( At( c, 0, 1 ), 5.5f * _scale );
+		Stroked( color, 1.6f );
+		var prev = At( c, -8, 1 );
+		for ( var i = 1; i <= 12; i++ )
+		{
+			var a = MathF.PI + i / 12f * MathF.PI;
+			var p = At( c, MathF.Cos( a ) * 8f, 1f + MathF.Sin( a ) * 8f );
+			if ( i % 2 == 1 )
+				Editor.Paint.DrawLine( prev, p );
+			prev = p;
+		}
+		Editor.Paint.DrawLine( At( c, -8, 1 ), At( c, -5.5f, 1 ) );
+		Editor.Paint.DrawLine( At( c, 8, 1 ), At( c, 5.5f, 1 ) );
+	}
+
+	/// <summary>A thin sheet and the same sheet given a thickness.</summary>
+	private static void PaintSolidify( Vector2 c, Color color )
+	{
+		Stroked( color.WithAlpha( 0.5f ), 1.3f );
+		Editor.Paint.DrawLine( At( c, -8, -6 ), At( c, 8, -6 ) );
+		Filled( color.WithAlpha( 0.85f ) );
+		Editor.Paint.DrawPolygon( At( c, -8, 1 ), At( c, 8, 1 ), At( c, 8, 7 ), At( c, -8, 7 ) );
+	}
+
+	/// <summary>Cloth pinned along the top and sagging under its own weight: two pins, a rail, and
+	/// the catenary the fabric hangs in.</summary>
+	/// <summary>
+	/// A dressmaker's dummy: torso on a stand.
+	///
+	/// DELIBERATELY NOT A PERSON AND NOT A BONE. The button loads somebody else's finished model,
+	/// and the two things the glyph has to carry are that it is a whole body and that the body is
+	/// not what you are making. A figure says the first and denies the second; the rig glyphs next
+	/// door say neither. A stand says both, and it is what the thing is actually for.
+	/// </summary>
+	/// <summary>A scalloped edge - the hem the tool makes, seen side on.</summary>
+	private static void PaintFrill( Vector2 c, Color color )
+	{
+		// The cloth the trim is sewn to: a plain band, so the scallop below reads as an addition to
+		// an edge rather than as a shape in its own right.
+		Stroked( color.WithAlpha( 0.5f ), 1.5f );
+		Editor.Paint.DrawLine( At( c, -8, -6 ), At( c, 8, -6 ) );
+		Editor.Paint.DrawLine( At( c, -8, -6 ), At( c, -8, -1 ) );
+		Editor.Paint.DrawLine( At( c, 8, -6 ), At( c, 8, -1 ) );
+
+		// The seam it hangs from.
+		Stroked( color, 1.6f );
+		Editor.Paint.DrawLine( At( c, -8, -1 ), At( c, 8, -1 ) );
+
+		// Four scallops. Cosine off the seam, deepening as it falls - the same shape the generator
+		// makes, for the same reason: the gather grows with the distance from the seam.
+		Stroked( color, 1.7f );
+
+		var prev = At( c, -8, -1 );
+
+		for ( var i = 1; i <= 32; i++ )
+		{
+			var t = i / 32f;
+			var x = -8f + t * 16f;
+			var drop = 4f + 2.6f * MathF.Cos( t * MathF.PI * 8f );
+
+			var p = At( c, x, -1f + drop );
+			Editor.Paint.DrawLine( prev, p );
+			prev = p;
+		}
+	}
+
+	private static void PaintWearer( Vector2 c, Color color )
+	{
+		// The torso: shoulders wide, waist in, hips out again. Drawn as a filled silhouette because
+		// it is a solid object, unlike the wireframe operations either side of it on the bar.
+		Filled( color );
+
+		var torso = new List<Vector2>();
+
+		for ( var i = 0; i <= 16; i++ )
+		{
+			var t = i / 16f;
+			var y = -8f + t * 11f;
+
+			// Shoulder 5.2 -> waist 3.0 -> hip 4.4, as one smooth sweep rather than three segments.
+			var w = 5.2f - 2.2f * MathF.Sin( t * MathF.PI * 0.72f ) + 2.4f * t * t;
+
+			torso.Add( At( c, w, y ) );
+		}
+
+		for ( var i = 16; i >= 0; i-- )
+		{
+			var t = i / 16f;
+			var y = -8f + t * 11f;
+			var w = 5.2f - 2.2f * MathF.Sin( t * MathF.PI * 0.72f ) + 2.4f * t * t;
+
+			torso.Add( At( c, -w, y ) );
+		}
+
+		Editor.Paint.DrawPolygon( torso );
+
+		// The neck stub, so the shoulders read as shoulders and not as the top of a vase.
+		Editor.Paint.DrawRect( new Rect( At( c, -1.4f, -9.6f ), new Vector2( 2.8f * _scale, 2f * _scale ) ) );
+
+		// The stand. Stroked rather than filled - it is furniture holding the subject up, and
+		// drawing it as lightly as the pins in PaintDrape keeps the body the thing you see first.
+		Stroked( color, 1.6f );
+		Editor.Paint.DrawLine( At( c, 0, 3 ), At( c, 0, 7.5f ) );
+		Editor.Paint.DrawLine( At( c, -4, 8 ), At( c, 4, 8 ) );
+	}
+
+	private static void PaintDrape( Vector2 c, Color color )
+	{
+		Stroked( color.WithAlpha( 0.5f ), 1.4f );
+		Editor.Paint.DrawLine( At( c, -8, -6 ), At( c, 8, -6 ) );
+
+		// The pins that hold it up - the selection, in the tool's own terms.
+		Filled( color );
+		Editor.Paint.DrawCircle( At( c, -6, -6 ), 1.8f * _scale );
+		Editor.Paint.DrawCircle( At( c, 6, -6 ), 1.8f * _scale );
+
+		// cosh, sampled: the shape a hanging sheet actually takes.
+		Stroked( color, 1.7f );
+		var prev = At( c, -6, -6 );
+		for ( var i = 1; i <= 14; i++ )
+		{
+			var t = -1f + i / 7f;
+			var p = At( c, t * 6f, -6f + (MathF.Cosh( 1.6f ) - MathF.Cosh( t * 1.6f )) * 4.6f );
+			Editor.Paint.DrawLine( prev, p );
+			prev = p;
+		}
+	}
+
+	/// <summary>A swatch of woven cloth: the weave is what the fabric setting picks.</summary>
+	private static void PaintFabric( Vector2 c, Color color )
+	{
+		Stroked( color.WithAlpha( 0.8f ), 1.5f );
+		Editor.Paint.DrawLine( At( c, -7, -7 ), At( c, 7, -7 ) );
+		Editor.Paint.DrawLine( At( c, -7, 7 ), At( c, 7, 7 ) );
+		Editor.Paint.DrawLine( At( c, -7, -7 ), At( c, -7, 7 ) );
+		Editor.Paint.DrawLine( At( c, 7, -7 ), At( c, 7, 7 ) );
+
+		Stroked( color.WithAlpha( 0.55f ), 1.2f );
+		for ( var i = 1; i <= 2; i++ )
+		{
+			var o = -7f + i * 14f / 3f;
+			Editor.Paint.DrawLine( At( c, o, -7 ), At( c, o, 7 ) );
+			Editor.Paint.DrawLine( At( c, -7, o ), At( c, 7, o ) );
+		}
+	}
+
+	/// <summary>A surface cut open along a line: the two halves parting, and the cut itself in the
+	/// red every tool uses for a seam.</summary>
+	private static void PaintSeam( Vector2 c, Color color )
+	{
+		Filled( color.WithAlpha( 0.35f ) );
+		Editor.Paint.DrawPolygon( At( c, -8, -7 ), At( c, -2, -7 ), At( c, -2, 7 ), At( c, -8, 7 ) );
+		Editor.Paint.DrawPolygon( At( c, 2, -7 ), At( c, 8, -7 ), At( c, 8, 7 ), At( c, 2, 7 ) );
+
+		// The cut. Red, because that is what a marked seam is drawn as in the viewport.
+		Stroked( new Color( 0.93f, 0.26f, 0.21f ), 2f );
+		Editor.Paint.DrawLine( At( c, -2, -7 ), At( c, -2, 7 ) );
+		Editor.Paint.DrawLine( At( c, 2, -7 ), At( c, 2, 7 ) );
+	}
+
+	/// <summary>A box opened out into its net - the thing unwrapping does, in one picture.</summary>
+	private static void PaintUnwrap( Vector2 c, Color color )
+	{
+		Filled( color.WithAlpha( 0.75f ) );
+		Editor.Paint.DrawPolygon( At( c, -2.5f, -2.5f ), At( c, 2.5f, -2.5f ), At( c, 2.5f, 2.5f ), At( c, -2.5f, 2.5f ) );
+
+		// The four flaps folded out around it.
+		Filled( color.WithAlpha( 0.35f ) );
+		Editor.Paint.DrawPolygon( At( c, -2.5f, -8 ), At( c, 2.5f, -8 ), At( c, 2.5f, -3.5f ), At( c, -2.5f, -3.5f ) );
+		Editor.Paint.DrawPolygon( At( c, -2.5f, 3.5f ), At( c, 2.5f, 3.5f ), At( c, 2.5f, 8 ), At( c, -2.5f, 8 ) );
+		Editor.Paint.DrawPolygon( At( c, -8, -2.5f ), At( c, -3.5f, -2.5f ), At( c, -3.5f, 2.5f ), At( c, -8, 2.5f ) );
+		Editor.Paint.DrawPolygon( At( c, 3.5f, -2.5f ), At( c, 8, -2.5f ), At( c, 8, 2.5f ), At( c, 3.5f, 2.5f ) );
 	}
 }

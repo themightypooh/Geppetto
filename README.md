@@ -224,6 +224,15 @@ studio.Rebuild();
   diagnosable rather than mysterious.
 - **Solids** — extrude, revolve, sweep, loft, shell, bevel, mirror, linear and
   circular pattern, subdivide, transform, UV project, per-face materials.
+- **Direct modelling**, Blender-style, in the Model workspace. Select vertices, edges or
+  faces by box, lasso, circle, loop, ring, linked, similar or shortest path. Extrude, inset,
+  bevel, loop cut, knife, bisect, bridge, fill, grid fill, rip, spin, screw, array, bend and shear. Merge,
+  dissolve, split, flip and fix normals. Mirror editing, and snapping to other bodies.
+  Live modifiers (mirror, array, subdivide, thickness) show the finished shape while you edit the cage.
+- **Retopology** — trace a clean, light mesh over a dense sculpt by clicking quads onto its
+  surface, or dragging strips across it. A ghost of the next face shows before you click and
+  refuses twisted, inward-facing or overlapping faces. There's mirroring across the centre,
+  and Relax to even it out. The sculpt is never changed.
 - **Booleans that actually cut**, through s&box's own `PolygonMesh`.
 - **Rigging** — a skeleton, auto-weighting, and export as a real skinned `.vmdl`
   that Rig Control then opens and poses.

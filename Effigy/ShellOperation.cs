@@ -408,3 +408,151 @@ public static class ShellOperation
 		return n.Normal;
 	}
 }
+
+/// <summary>
+/// Give a surface a uniform thickness, the inverse of <see cref="ShellOperation"/>.
+///
+/// Shell hollows a closed solid to a wall thickness; this turns a surface into a slab of that
+/// thickness. The clothing case is an open garment mesh with boundary edges and no inside — solidify
+/// produces two walls (the original surface and one offset along its normals, facing opposite ways)
+/// joined by a rim around the boundary, so the garment becomes a closed thin solid ready to export.
+/// A closed mesh is inflated into a hollow shell instead.
+///
+/// The offset uses the same plane solve as <see cref="ShellOperation"/> rather than a naive
+/// vertex-normal push, for the same reason that solve exists: thickness is a property of planes, and
+/// at a corner only the plane-constrained solve puts every wall exactly `thickness` away.
+/// Self-intersection is not trimmed away here — solidifying a surface past a concave feature can
+/// still fold the offset surface through itself, and that is left to a caller who checks, rather
+/// than silently repaired.
+/// </summary>
+public static class MeshSolidify
+{
+	public static PolyMesh Solidify( PolyMesh mesh, float thickness )
+	{
+		if ( mesh is null )
+			throw new ArgumentNullException( nameof( mesh ) );
+
+		var validation = MeshValidator.Validate( mesh );
+
+		if ( !validation.IsValid )
+			throw new InvalidOperationException( "Cannot solidify an invalid mesh: " + validation );
+
+		if ( thickness == 0f )
+			return mesh.Clone();
+
+		var faceNormals = new Vec3[mesh.FaceCount];
+
+		for ( var fi = 0; fi < mesh.FaceCount; fi++ )
+			faceNormals[fi] = mesh.FaceNormal( mesh.Faces[fi] );
+
+		var vertexFaces = mesh.BuildVertexFaces();
+
+		// Offset every vertex so each face plane it touches stands `thickness` away along its normal.
+		// A positive thickness offsets along the face normal (outward), a negative one against it.
+		var offsetPositions = new Vec3[mesh.VertexCount];
+
+		for ( var vi = 0; vi < mesh.VertexCount; vi++ )
+		{
+			var planes = PlaneOffset.Distinct( vertexFaces[vi].Select( fi => faceNormals[fi] ) );
+
+			if ( planes.Count == 0 )
+			{
+				offsetPositions[vi] = mesh.Positions[vi];
+				continue;
+			}
+
+			PlaneOffset.TrySolve( planes, thickness, out var displacement );
+
+			// A MITER LIMIT. Where the faces round a vertex nearly face each other - a crease in
+			// draped cloth, a fold - the offset that keeps every plane at the thickness is huge,
+			// and a shirt grew spikes a foot long out of its wrinkles. A cube's corner needs
+			// sqrt(3) of the thickness, so four leaves every hard-surface corner exact.
+			var limit = MathF.Abs( thickness ) * 4f;
+
+			if ( displacement.Length > limit )
+				displacement = displacement.Normal * limit;
+
+			offsetPositions[vi] = mesh.Positions[vi] + displacement;
+		}
+
+		// Layout: [0 .. V) the near wall, [V .. 2V) the far wall.
+		var result = new PolyMesh();
+
+		foreach ( var p in mesh.Positions )
+			result.AddVertex( p );
+
+		foreach ( var p in offsetPositions )
+			result.AddVertex( p );
+
+		// Each far vertex carries the weights of the near vertex it came from, so a rigged garment
+		// keeps its rig through the thickness pass.
+		if ( mesh.IsRigged )
+		{
+			var skin = new SkinWeights();
+
+			foreach ( var w in mesh.Skin.Vertices )
+				skin.Vertices.Add( (BoneWeight[])w.Clone() );
+
+			foreach ( var w in mesh.Skin.Vertices )
+				skin.Vertices.Add( (BoneWeight[])w.Clone() );
+
+			result.Skin = skin;
+		}
+
+		var offset = mesh.VertexCount;
+
+		for ( var fi = 0; fi < mesh.FaceCount; fi++ )
+		{
+			var f = mesh.Faces[fi];
+			var n = f.Count;
+
+			// Far wall: the same winding, on the offset vertices, so its normals still face outward.
+			var far = new int[n];
+
+			for ( var i = 0; i < n; i++ )
+				far[i] = f.Indices[i] + offset;
+
+			result.AddFace( far, (Vec2[])f.UVs.Clone(), f.Material );
+
+			// Near wall: the same sheet turned inside out — reversed winding on the original
+			// vertices — so its normals face the cavity.
+			var near = new int[n];
+			var nearUVs = new Vec2[n];
+
+			for ( var i = 0; i < n; i++ )
+			{
+				near[i] = f.Indices[n - 1 - i];
+				nearUVs[i] = f.UVs[n - 1 - i];
+			}
+
+			result.AddFace( near, nearUVs, f.Material );
+		}
+
+		// Rim quads around the boundary, one per boundary edge, wound outward (the face is on the
+		// left of its own traversal, so [a, b, b', a'] points away from the surface).
+		var edgeFaces = mesh.BuildEdgeFaces();
+
+		for ( var fi = 0; fi < mesh.FaceCount; fi++ )
+		{
+			var f = mesh.Faces[fi];
+			var n = f.Count;
+
+			for ( var i = 0; i < n; i++ )
+			{
+				var a = f.Indices[i];
+				var b = f.Indices[(i + 1) % n];
+				var key = new EdgeKey( a, b );
+
+				if ( !edgeFaces.TryGetValue( key, out var faces ) || faces.Count != 1 )
+					continue;
+
+				result.AddFace(
+					new[] { a, b, b + offset, a + offset },
+					new[] { f.UVs[i], f.UVs[(i + 1) % n], f.UVs[(i + 1) % n], f.UVs[i] },
+					f.Material );
+			}
+		}
+
+		return result;
+	}
+}

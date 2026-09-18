@@ -59,7 +59,7 @@ internal sealed partial class EffigyViewport
 	/// <summary>Whether a left click on a face is a selection rather than an answer to a dialog.
 	/// Anything else with a click of its own owns the mouse while it is armed.</summary>
 	private bool IdlePickingAllowed =>
-		!IsSketching && !IsSculpting && !IsPainting && !IsMaterialBrushing && !IsNoting && !IsWeightPainting
+		!IsSketching && !IsSculpting && !IsMeshEditing && !IsPainting && !IsMaterialBrushing && !IsNoting && !IsWeightPainting
 		&& !PlanePickMode && !SketchPickMode && !FacePickMode && !EdgePickMode && !BodyPickMode
 		&& !BoneToolActive
 		&& !_draggingOrigin && !_draggingLight && !_draggingFace;
@@ -315,7 +315,7 @@ internal sealed partial class EffigyViewport
 		// you are painting hides the very colour you are laying down. The selection survives — it
 		// comes back when the brush is put away — only the drawing of it stops. The shell is cleared
 		// too: it is a cached scene object, and a frame that simply stops drawing leaves it lit.
-		if ( IsPainting || IsSculpting || IsMaterialBrushing || IsWeightPainting )
+		if ( IsPainting || IsSculpting || IsMeshEditing || IsMaterialBrushing || IsWeightPainting )
 		{
 			SyncBodyHighlight( null, BodySelectedColor );
 			return;

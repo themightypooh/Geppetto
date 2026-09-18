@@ -357,3 +357,260 @@ public static class SculptSidecar
 		return removed;
 	}
 }
+
+/// <summary>
+/// A whole <see cref="PolyMesh"/> as bytes, for <see cref="MeshEditFeature"/>.
+///
+/// Full float32 rather than SculptBlob's 16-bit deltas: these are absolute positions somebody placed
+/// vertex by vertex, and a weld or a snap that lands a vertex exactly on another must still land
+/// exactly after a save. Carries faces with their corner UVs and material slots, skin weights and
+/// vertex colours. Paint is not carried — the atlas belongs to the paint stage, downstream of an edit.
+/// </summary>
+public static class MeshEditBlob
+{
+	static readonly byte[] Magic = Encoding.ASCII.GetBytes( "EFFIGYME" );
+
+	/// <summary>2 added separated pieces after the main mesh. Format 1 still reads.</summary>
+	public const int Version = 2;
+
+	public const string Extension = ".meshedit";
+
+	public static byte[] Write( PolyMesh mesh, long baseFingerprint, IReadOnlyList<PolyMesh> pieces = null )
+	{
+		if ( mesh is null )
+			throw new ArgumentNullException( nameof( mesh ) );
+
+		using var stream = new MemoryStream();
+		using var w = new BinaryWriter( stream, Encoding.ASCII, leaveOpen: true );
+
+		w.Write( Magic );
+		w.Write( Version );
+		w.Write( baseFingerprint );
+		WriteMesh( w, mesh );
+
+		w.Write( pieces?.Count ?? 0 );
+		if ( pieces is not null )
+			foreach ( var piece in pieces )
+				WriteMesh( w, piece );
+
+		w.Flush();
+		return stream.ToArray();
+	}
+
+	public static PolyMesh Read( byte[] bytes, out long baseFingerprint ) => Read( bytes, out baseFingerprint, out _ );
+
+	public static PolyMesh Read( byte[] bytes, out long baseFingerprint, out List<PolyMesh> pieces )
+	{
+		if ( bytes is null )
+			throw new ArgumentNullException( nameof( bytes ) );
+
+		using var r = new BinaryReader( new MemoryStream( bytes ), Encoding.ASCII );
+
+		var magic = r.ReadBytes( Magic.Length );
+		if ( magic.Length != Magic.Length )
+			throw new InvalidDataException( "This is not a mesh edit file." );
+
+		for ( var i = 0; i < Magic.Length; i++ )
+		{
+			if ( magic[i] != Magic[i] )
+				throw new InvalidDataException( "This is not a mesh edit file." );
+		}
+
+		var version = r.ReadInt32();
+		if ( version < 1 || version > Version )
+			throw new InvalidDataException( $"This mesh edit is format {version}, and this build reads up to format {Version}." );
+
+		baseFingerprint = r.ReadInt64();
+		var mesh = ReadMesh( r );
+
+		pieces = new List<PolyMesh>();
+		if ( version >= 2 )
+		{
+			var count = r.ReadInt32();
+			for ( var i = 0; i < count; i++ )
+				pieces.Add( ReadMesh( r ) );
+		}
+
+		return mesh;
+	}
+
+	static void WriteMesh( BinaryWriter w, PolyMesh mesh )
+	{
+		w.Write( mesh.Positions.Count );
+		foreach ( var p in mesh.Positions )
+		{
+			w.Write( p.x );
+			w.Write( p.y );
+			w.Write( p.z );
+		}
+
+		w.Write( mesh.Faces.Count );
+		foreach ( var f in mesh.Faces )
+		{
+			w.Write( f.Indices.Length );
+			w.Write( f.Material );
+			w.Write( f.UVs is not null );
+
+			for ( var i = 0; i < f.Indices.Length; i++ )
+			{
+				w.Write( f.Indices[i] );
+
+				if ( f.UVs is not null )
+				{
+					w.Write( f.UVs[i].x );
+					w.Write( f.UVs[i].y );
+				}
+			}
+		}
+
+		w.Write( mesh.IsRigged );
+		if ( mesh.IsRigged )
+		{
+			foreach ( var weights in mesh.Skin.Vertices )
+			{
+				var list = weights ?? Array.Empty<BoneWeight>();
+				w.Write( list.Length );
+
+				foreach ( var bw in list )
+				{
+					w.Write( bw.Bone );
+					w.Write( bw.Weight );
+				}
+			}
+		}
+
+		w.Write( mesh.HasVertexColors );
+		if ( mesh.HasVertexColors )
+		{
+			foreach ( var c in mesh.VertexColors )
+			{
+				w.Write( c.x );
+				w.Write( c.y );
+				w.Write( c.z );
+				w.Write( c.w );
+			}
+		}
+	}
+
+	static PolyMesh ReadMesh( BinaryReader r )
+	{
+		var mesh = new PolyMesh();
+		var vertexCount = r.ReadInt32();
+		for ( var i = 0; i < vertexCount; i++ )
+			mesh.Positions.Add( new Vec3( r.ReadSingle(), r.ReadSingle(), r.ReadSingle() ) );
+
+		var faceCount = r.ReadInt32();
+		for ( var f = 0; f < faceCount; f++ )
+		{
+			var n = r.ReadInt32();
+			var material = r.ReadInt32();
+			var hasUVs = r.ReadBoolean();
+			var indices = new int[n];
+			var uvs = hasUVs ? new Vec2[n] : null;
+
+			for ( var i = 0; i < n; i++ )
+			{
+				indices[i] = r.ReadInt32();
+
+				if ( indices[i] < 0 || indices[i] >= vertexCount )
+					throw new InvalidDataException( $"Face {f} points at vertex {indices[i]}, but there are only {vertexCount}." );
+
+				if ( hasUVs )
+					uvs[i] = new Vec2( r.ReadSingle(), r.ReadSingle() );
+			}
+
+			mesh.Faces.Add( new Face( indices, uvs, material ) );
+		}
+
+		if ( r.ReadBoolean() )
+		{
+			mesh.Skin = new SkinWeights();
+			for ( var v = 0; v < vertexCount; v++ )
+			{
+				var n = r.ReadInt32();
+				var list = new BoneWeight[n];
+
+				for ( var i = 0; i < n; i++ )
+					list[i] = new BoneWeight( r.ReadInt32(), r.ReadSingle() );
+
+				mesh.Skin.Vertices.Add( list );
+			}
+		}
+
+		if ( r.ReadBoolean() )
+		{
+			mesh.VertexColors = new Vec4[vertexCount];
+			for ( var v = 0; v < vertexCount; v++ )
+				mesh.VertexColors[v] = new Vec4( r.ReadSingle(), r.ReadSingle(), r.ReadSingle(), r.ReadSingle() );
+		}
+
+		return mesh;
+	}
+}
+
+/// <summary>
+/// Where mesh edits live beside a document: `model.effigy` keeps them in `model.meshedit/`, one file
+/// per feature id. Same rules as <see cref="SculptSidecar"/>, including never deleting a file it did
+/// not write.
+/// </summary>
+public static class MeshEditSidecar
+{
+	public static string DirectoryFor( string documentPath )
+	{
+		if ( string.IsNullOrWhiteSpace( documentPath ) )
+			throw new ArgumentException( "A document path is needed to find its mesh edits.", nameof( documentPath ) );
+
+		var dir = Path.GetDirectoryName( documentPath ) ?? "";
+		return Path.Combine( dir, Path.GetFileNameWithoutExtension( documentPath ) + MeshEditBlob.Extension );
+	}
+
+	public static string PathFor( string documentPath, string featureId ) =>
+		Path.Combine( DirectoryFor( documentPath ), featureId + ".bin" );
+
+	public static int Save( PartStudio studio, string documentPath )
+	{
+		if ( studio is null )
+			throw new ArgumentNullException( nameof( studio ) );
+
+		var pending = new List<(string Id, byte[] Bytes)>();
+
+		foreach ( var feature in studio.Features )
+		{
+			if ( feature is MeshEditFeature edit && edit.SaveMesh() is { } bytes )
+				pending.Add( (feature.Id, bytes) );
+		}
+
+		if ( pending.Count == 0 )
+			return 0;
+
+		Directory.CreateDirectory( DirectoryFor( documentPath ) );
+
+		foreach ( var (id, bytes) in pending )
+			File.WriteAllBytes( PathFor( documentPath, id ), bytes );
+
+		return pending.Count;
+	}
+
+	public static int Load( PartStudio studio, string documentPath )
+	{
+		if ( studio is null )
+			throw new ArgumentNullException( nameof( studio ) );
+
+		var loaded = 0;
+
+		foreach ( var feature in studio.Features )
+		{
+			if ( feature is not MeshEditFeature edit )
+				continue;
+
+			var path = PathFor( documentPath, feature.Id );
+			if ( !File.Exists( path ) )
+				continue;
+
+			edit.LoadMesh( File.ReadAllBytes( path ) );
+			loaded++;
+		}
+
+		return loaded;
+	}
+}

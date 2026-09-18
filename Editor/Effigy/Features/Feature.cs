@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
@@ -22,6 +22,15 @@ public sealed class Body
 	/// onto, so a Parts list needs this to get from a row back to the thing that owns it.</summary>
 	public string FeatureId;
 
+	/// <summary>Made by a GarmentFeature. Later garments collide with it but are never cut from it,
+	/// and Fur with nothing picked grows on garments.</summary>
+	public bool IsGarment;
+
+	/// <summary>Here to be measured against, not to be shipped — the body a WearerFeature brought
+	/// in so a garment has something to be cut from and collide with. Everything reads it the way
+	/// it reads any other body; only export leaves it out. See WearerFeature.</summary>
+	public bool IsReference;
+
 	public Body( string id, string name, PolyMesh mesh )
 	{
 		Id = id;
@@ -29,7 +38,8 @@ public sealed class Body
 		Mesh = mesh;
 	}
 
-	public Body Clone() => new( Id, Name, Mesh.Clone() ) { Visible = Visible, FeatureId = FeatureId };
+	public Body Clone() => new( Id, Name, Mesh.Clone() )
+		{ Visible = Visible, FeatureId = FeatureId, IsGarment = IsGarment, IsReference = IsReference };
 }
 
 // --- parameters -------------------------------------------------------------------------------
@@ -262,6 +272,27 @@ public sealed class FeatureContext
 	/// </summary>
 	public Func<string, float?> Resolve;
 
+	/// <summary>The studio's rig, read-only, for features that place things by bone - a garment
+	/// finds the torso and the arms from it. Null when the studio has none.</summary>
+	public Skeleton Rig;
+
+	/// <summary>
+	/// This rebuild is a PREVIEW: somebody is dragging a slider and wants to see the shape move, not
+	/// to see the finished article.
+	///
+	/// A feature that has an expensive final step and a cheap approximation of it should take the
+	/// cheap one here. A garment's drape is forty simulation steps and its solidify doubles the
+	/// mesh; neither changes the silhouette you are actually looking at while you drag Length, and
+	/// together they are the difference between a slider that moves and one that stutters.
+	///
+	/// NOT A QUALITY SETTING. Nothing is saved from a preview rebuild and nothing exports from one -
+	/// the full rebuild always follows, within a fraction of a second of the drag stopping. A
+	/// feature must therefore never let a preview change anything but geometry: no material slots
+	/// moving, no bodies appearing or disappearing, or the tree and the parts list would flicker
+	/// through states that never existed.
+	/// </summary>
+	public bool Preview;
+
 	int _nextId = 1;
 	string _featureId;
 	int _featureBodies;
@@ -451,6 +482,7 @@ public abstract class Feature
 			SubdivideFeature subdivide => subdivide.Faces,
 			MoveFaceFeature move => move.Faces,
 			ExtrudeFeature extrude => extrude.Faces,
+			FurFeature fur => fur.Faces,
 			_ => null,
 		};
 

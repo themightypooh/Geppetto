@@ -41,7 +41,7 @@ public static class Program
 		// `dotnet run --nologo` hands the flag straight through to us. The first positional
 		// argument is the output directory, so an unrecognised flag taken as one wrote the whole
 		// sample set into a folder literally named `--nologo`. Drop flags we do not own.
-		var args = rawArgs.Where( a => !a.StartsWith( "--" ) || a == "--tree" || a == "--tentacle" || a == "--paint" || a == "--remesh" ).ToArray();
+		var args = rawArgs.Where( a => !a.StartsWith( "--" ) || a == "--tree" || a == "--tentacle" || a == "--paint" || a == "--remesh" || a == "--playermodels" ).ToArray();
 
 		if ( args.Length > 0 && args[0] == "--tree" )
 			return TreeGen.Run( args.Length > 1 ? args[1] : DefaultOutDir() );
@@ -56,6 +56,9 @@ public static class Program
 			return RemeshGen.Run( args.Length > 1 ? args[1] : DefaultOutDir(),
 				args.Length > 2 ? args[2] : null,
 				args.Length > 3 && float.TryParse( args[3], out var keep ) ? keep : (float?)null );
+
+		if ( args.Length > 1 && args[0] == "--playermodels" )
+			return PlayermodelGen.Run( args[1], args.Length > 2 ? args[2] : Path.Combine( DefaultOutDir(), "playermodels_preview.png" ) );
 
 		var outDir = args.Length > 0 ? args[0] : DefaultOutDir();
 
@@ -94,6 +97,69 @@ public static class Program
 
 		Section( "OBJ round-trips" );
 		TestObjRoundTrip();
+
+		Section( "editable mesh round-trips and validates" );
+		TestEditableRoundTrip();
+
+		Section( "editable mesh extrudes a region" );
+		TestEditableExtrude();
+
+		Section( "editable mesh deletes faces" );
+		TestEditableDelete();
+
+		Section( "editable mesh insets faces" );
+		TestEditableInset();
+
+		Section( "editable mesh loop cuts around quad rings" );
+		TestEditableLoopCut();
+
+		Section( "editable mesh bridges two boundary loops" );
+		TestEditableBridge();
+
+		Section( "editable edit operations compose" );
+		TestEditableCompose();
+
+		Section( "editable mesh dissolves edges and vertices" );
+		TestEditableDissolve();
+
+		Section( "an edit session selects, edits, undoes and commits" );
+		TestEditSession();
+		TestEditSessionModelingOps();
+		TestEditSessionShapingOps();
+		TestRetopology();
+		TestRetopologyHelpers();
+		TestGridFillRipPivot();
+		TestMeshModifiers();
+		TestEditSessionSeams();
+		TestEditSessionVertexSlide();
+		TestLoopCutPreview();
+		TestEditSessionSubdivide();
+		TestEditSessionSmoothAndSymmetry();
+		TestEditSessionWeightTools();
+		TestEditSessionShrinkFattenAndGrow();
+		TestEditSessionEdgeSplit();
+		TestEditSessionSelectionTools();
+
+		Section( "an edit session duplicates, separates, extracts a garment and bridges uneven loops" );
+		TestEditSessionPieces();
+
+		Section( "cloth drapes under gravity, holds its pins and lies on the body" );
+		TestClothDrape();
+
+		Section( "a mesh edit feature keeps its edit through save, and refuses a changed body" );
+		TestMeshEditFeature();
+
+		Section( "a shirt and its fur come out of a rebuild, coloured for the fur shader" );
+		TestClothingBuild();
+		TestClothingDefinition();
+		TestWearer();
+		TestGarmentCheck();
+		TestGarmentTrim();
+		TestGarmentShaping();
+		TestPreviewQuality();
+
+		Section( "welding coincident vertices" );
+		TestWeld();
 
 		DecimateTests.Run();
 
@@ -252,6 +318,3164 @@ public static class Program
 		["wedge"] = Primitives.Wedge( 1, 1, 1 ),
 		["tube"] = Primitives.Tube( 0.5f, 0.3f, 1f, 16 ),
 	};
+
+	static void TestEditableRoundTrip()
+	{
+		// A closed box: positions, faces, winding, per-corner UVs and materials must come back
+		// identical, and the editable mesh must read as valid, closed and manifold.
+		var box = Primitives.Box( 2, 2, 2 );
+		var editable = EditableMesh.FromPolyMesh( box );
+		var ev = editable.Validate();
+		Check( "box converts to a valid editable mesh", ev.IsValid, ev.ToString() );
+		Check( "box editable mesh is closed", ev.IsClosed, $"{ev.BoundaryEdges} boundary edges" );
+
+		var round = editable.ToPolyMesh();
+		Check( "box round-trips to the same vertex count", round.VertexCount == box.VertexCount );
+		Check( "box round-trips to the same face count", round.FaceCount == box.FaceCount );
+		Check( "box round-trips faces, winding, UVs and materials exactly", SameFaces( box, round ) );
+		Check( "box round-trips to a still-valid mesh", MeshValidator.Validate( round ).IsValid );
+		Check( "box round-trips to the same volume",
+			MathF.Abs( box.SignedVolume() - round.SignedVolume() ) < 1e-4f );
+
+		// Winding: face 0 of the editable mesh walks its corners in the same order.
+		Check( "face 0 keeps its winding", editable.FaceVertices( 0 ).SequenceEqual( box.Faces[0].Indices ) );
+
+		// Vertex rotation: a box corner touches exactly three faces.
+		var around = new List<int>();
+		editable.OutgoingHalfEdges( 0, around );
+		Check( "a box corner rotates through 3 faces", around.Count == 3, $"got {around.Count}" );
+
+		// An open plane keeps its boundary edges.
+		var plane = Primitives.Plane( 2, 2, 2, 2 );
+		var planeEdit = EditableMesh.FromPolyMesh( plane );
+		var pv = planeEdit.Validate();
+		Check( "a 2x2 plane keeps its 8-edge boundary", pv.BoundaryEdges == 8, $"got {pv.BoundaryEdges}" );
+		Check( "the plane still round-trips its faces", planeEdit.ToPolyMesh().FaceCount == plane.FaceCount );
+
+		// Skin weights ride the positions, so a round trip must not drop them.
+		var rigged = Primitives.Box( 2, 2, 2 );
+		rigged.Skin = SkinWeights.AllTo( rigged.VertexCount, 1 );
+		var riggedRound = EditableMesh.FromPolyMesh( rigged ).ToPolyMesh();
+		Check( "skin weights survive the round trip", riggedRound.IsRigged
+			&& riggedRound.Skin.Count == rigged.Skin.Count );
+
+		// A deliberately broken twin must be caught, not silently accepted.
+		var corrupt = EditableMesh.FromPolyMesh( box );
+		var broken = corrupt.HalfEdges[0];
+		broken.Twin = -1;
+		corrupt.HalfEdges[0] = broken;
+		Check( "a broken twin is caught by validation", !corrupt.Validate().IsValid );
+	}
+
+	static bool SameFaces( PolyMesh a, PolyMesh b )
+	{
+		if ( a.FaceCount != b.FaceCount )
+			return false;
+
+		for ( var i = 0; i < a.FaceCount; i++ )
+		{
+			var fa = a.Faces[i];
+			var fb = b.Faces[i];
+
+			if ( fa.Material != fb.Material || fa.Count != fb.Count )
+				return false;
+
+			if ( !fa.Indices.SequenceEqual( fb.Indices ) )
+				return false;
+
+			for ( var c = 0; c < fa.Count; c++ )
+			{
+				if ( (fa.UVs[c] - fb.UVs[c]).LengthSquared > 1e-12f )
+					return false;
+			}
+		}
+
+		return true;
+	}
+
+	static void TestEditableExtrude()
+	{
+		// Extrude the top face of a box straight up: the box gains four side walls and its top cap
+		// moves, so a 2x2x2 box becomes a 2x2x3 one — 10 faces, 12 vertices, still closed.
+		var box = Primitives.Box( 2, 2, 2 );
+		var top = box.Faces.FindIndex( f => (box.FaceNormal( f ) - new Vec3( 0, 0, 1 )).Length < 1e-4f );
+
+		var up = EditableMesh.FromPolyMesh( box );
+		up.ExtrudeRegion( new[] { top }, new Vec3( 0, 0, 1 ) );
+		Check( "extruding up keeps the mesh valid", up.Validate().IsValid, up.Validate().ToString() );
+
+		var upMesh = up.ToPolyMesh();
+		Check( "extruded box is closed", MeshValidator.Validate( upMesh ).IsClosed );
+		Check( "extruded box has 10 faces", upMesh.FaceCount == 10, $"got {upMesh.FaceCount}" );
+		Check( "extruded box has 12 vertices", upMesh.VertexCount == 12, $"got {upMesh.VertexCount}" );
+		Check( "extruded box volume is 12", MathF.Abs( upMesh.SignedVolume() - 12f ) < 1e-3f,
+			$"got {upMesh.SignedVolume():0.####}" );
+
+		// Extruding sideways shears the top cap without changing the enclosed volume.
+		var shear = EditableMesh.FromPolyMesh( box );
+		shear.ExtrudeRegion( new[] { top }, new Vec3( 0.5f, 0, 0 ) );
+		var shearMesh = shear.ToPolyMesh();
+		Check( "a sheared extrude stays closed", MeshValidator.Validate( shearMesh ).IsClosed );
+		Check( "a sheared extrude keeps the volume", MathF.Abs( shearMesh.SignedVolume() - 8f ) < 1e-3f,
+			$"got {shearMesh.SignedVolume():0.####}" );
+
+		// Extruding an open sheet gives side walls but no bottom — the classic open skirt.
+		var plane = Primitives.Plane( 2, 2, 1, 1 );
+		var skirt = EditableMesh.FromPolyMesh( plane );
+		skirt.ExtrudeRegion( new[] { 0 }, new Vec3( 0, 0, 1 ) );
+		var skirtMesh = skirt.ToPolyMesh();
+		var skirtValid = MeshValidator.Validate( skirtMesh );
+		Check( "an extruded sheet stays valid", skirtValid.IsValid, skirtValid.ToString() );
+		Check( "an extruded sheet has 5 faces", skirtMesh.FaceCount == 5, $"got {skirtMesh.FaceCount}" );
+		Check( "an extruded sheet stays open underneath", skirtValid.BoundaryEdges == 4,
+			$"got {skirtValid.BoundaryEdges}" );
+	}
+
+	static void TestEditableDelete()
+	{
+		var box = Primitives.Box( 2, 2, 2 );
+		var top = box.Faces.FindIndex( f => (box.FaceNormal( f ) - new Vec3( 0, 0, 1 )).Length < 1e-4f );
+
+		var e = EditableMesh.FromPolyMesh( box );
+		e.DeleteFaces( new[] { top } );
+		var v = e.Validate();
+		Check( "deleting the top face keeps the mesh valid", v.IsValid, v.ToString() );
+		Check( "and leaves it open", !v.IsClosed );
+		Check( "with 4 boundary edges at the rim", v.BoundaryEdges == 4, $"got {v.BoundaryEdges}" );
+
+		var m = e.ToPolyMesh();
+		Check( "the deleted box has 5 faces", m.FaceCount == 5, $"got {m.FaceCount}" );
+		Check( "and keeps its 8 vertices", m.VertexCount == 8, $"got {m.VertexCount}" );
+
+		var mv = MeshValidator.Validate( m );
+		Check( "the round-tripped deleted box is still valid", mv.IsValid, mv.ToString() );
+		Check( "and open with 4 boundary edges", mv.BoundaryEdges == 4, $"got {mv.BoundaryEdges}" );
+
+		// Deleting every face leaves an empty-but-valid mesh with its vertices intact.
+		var all = EditableMesh.FromPolyMesh( box );
+		all.DeleteFaces( Enumerable.Range( 0, box.FaceCount ).ToList() );
+		Check( "deleting every face leaves no faces", all.FaceCount == 0 );
+		Check( "and the vertices survive", all.VertexCount == 8 );
+	}
+
+	static void TestEditableInset()
+	{
+		var box = Primitives.Box( 2, 2, 2 );
+		var top = box.Faces.FindIndex( f => (box.FaceNormal( f ) - new Vec3( 0, 0, 1 )).Length < 1e-4f );
+
+		var e = EditableMesh.FromPolyMesh( box );
+		e.InsetFaces( new[] { top }, 0.25f );
+		Check( "insetting keeps the mesh valid", e.Validate().IsValid, e.Validate().ToString() );
+
+		var m = e.ToPolyMesh();
+		var mv = MeshValidator.Validate( m );
+		Check( "the inset box stays closed", mv.IsClosed );
+		Check( "the inset box has 10 faces", m.FaceCount == 10, $"got {m.FaceCount}" );
+		Check( "the inset box has 12 vertices", m.VertexCount == 12, $"got {m.VertexCount}" );
+		Check( "the inset box volume is unchanged", MathF.Abs( m.SignedVolume() - 8f ) < 1e-3f,
+			$"got {m.SignedVolume():0.####}" );
+
+		// Insetting a lone quad makes a smaller quad ringed by four more, staying an open disc.
+		var plane = Primitives.Plane( 2, 2, 1, 1 );
+		var p = EditableMesh.FromPolyMesh( plane );
+		p.InsetFaces( new[] { 0 }, 0.25f );
+		var pm = p.ToPolyMesh();
+		var pv = MeshValidator.Validate( pm );
+		Check( "the inset plane is valid", pv.IsValid, pv.ToString() );
+		Check( "the inset plane has 5 faces", pm.FaceCount == 5, $"got {pm.FaceCount}" );
+		Check( "the inset plane has 8 vertices", pm.VertexCount == 8, $"got {pm.VertexCount}" );
+		Check( "the inset plane stays open at its rim", pv.BoundaryEdges == 4, $"got {pv.BoundaryEdges}" );
+
+		var area = 0f;
+		foreach ( var f in pm.Faces )
+			area += pm.FaceArea( f );
+		Check( "the inset plane keeps its area", MathF.Abs( area - 4f ) < 1e-3f, $"got {area:0.####}" );
+	}
+
+	static void TestEditableLoopCut()
+	{
+		var box = Primitives.Box( 2, 2, 2 );
+
+		// A loop cut around a box's equator splits each side quad in two and turns the box into
+		// two stacked halves: 4 new vertices on the ring, 4 new faces across the side quads.
+		var e = EditableMesh.FromPolyMesh( box );
+
+		int seed = -1;
+
+		for ( var hei = 0; hei < e.HalfEdges.Count; hei++ )
+		{
+			var a = e.Positions[e.HalfEdges[hei].Origin];
+			var b = e.Positions[e.HalfEdges[e.HalfEdges[hei].Next].Origin];
+
+			if ( MathF.Abs( a.x - b.x ) < 1e-5f && MathF.Abs( a.y - b.y ) < 1e-5f && MathF.Abs( a.z - b.z ) > 1e-3f )
+			{
+				seed = hei;
+				break;
+			}
+		}
+
+		Check( "a vertical edge of the box seeds the ring", seed >= 0 );
+
+		e.LoopCut( seed, 0.5f );
+		Check( "the loop cut keeps the mesh valid", e.Validate().IsValid, e.Validate().ToString() );
+
+		var m = e.ToPolyMesh();
+		var v = MeshValidator.Validate( m );
+		Check( "the cut box stays closed", v.IsClosed, v.ToString() );
+		Check( "the cut box has 12 vertices", m.VertexCount == 12, $"got {m.VertexCount}" );
+		Check( "the cut box has 10 faces", m.FaceCount == 10, $"got {m.FaceCount}" );
+		Check( "the cut box keeps its volume", MathF.Abs( m.SignedVolume() - 8f ) < 1e-3f,
+			$"got {m.SignedVolume():0.####}" );
+
+		// An uneven cut still splits cleanly and preserves volume exactly (nothing moves).
+		var e2 = EditableMesh.FromPolyMesh( box );
+		e2.LoopCut( seed, 0.25f );
+		var m2 = e2.ToPolyMesh();
+		var v2 = MeshValidator.Validate( m2 );
+		Check( "an uneven cut stays valid and closed", v2.IsValid && v2.IsClosed, v2.ToString() );
+		Check( "an uneven cut keeps the volume", MathF.Abs( m2.SignedVolume() - 8f ) < 1e-3f,
+			$"got {m2.SignedVolume():0.####}" );
+
+		// A ring that runs off the mesh's boundary is refused, not guessed at.
+		var plane = Primitives.Plane( 2, 2, 1, 1 );
+		var p = EditableMesh.FromPolyMesh( plane );
+
+		var threw = false;
+
+		try { p.LoopCut( 0, 0.5f ); }
+		catch ( InvalidOperationException ) { threw = true; }
+
+		Check( "an open ring that meets the boundary is refused", threw );
+	}
+
+	/// <summary>Two identical quads, one flipped, make a slab fixture whose two rims a bridge joins.</summary>
+	static PolyMesh BridgedSlabFixture()
+	{
+		var mesh = new PolyMesh();
+
+		// Bottom cap, fronting -z.
+		mesh.AddVertex( new Vec3( -1, -1, 0 ) );
+		mesh.AddVertex( new Vec3(  1, -1, 0 ) );
+		mesh.AddVertex( new Vec3(  1,  1, 0 ) );
+		mesh.AddVertex( new Vec3( -1,  1, 0 ) );
+		mesh.AddFace( new[] { 0, 3, 2, 1 }, new[] { new Vec2( 0, 0 ), new Vec2( 1, 0 ), new Vec2( 1, 1 ), new Vec2( 0, 1 ) }, 0 );
+
+		// Top cap, stacked 2 up, fronting +z.
+		mesh.AddVertex( new Vec3( -1, -1, 2 ) );
+		mesh.AddVertex( new Vec3(  1, -1, 2 ) );
+		mesh.AddVertex( new Vec3(  1,  1, 2 ) );
+		mesh.AddVertex( new Vec3( -1,  1, 2 ) );
+		mesh.AddFace( new[] { 4, 5, 6, 7 }, new[] { new Vec2( 0, 0 ), new Vec2( 1, 0 ), new Vec2( 1, 1 ), new Vec2( 0, 1 ) }, 0 );
+
+		return mesh;
+	}
+
+	static int BoundarySeed( EditableMesh e, int face )
+	{
+		for ( var hei = 0; hei < e.HalfEdges.Count; hei++ )
+			if ( e.HalfEdges[hei].Face == face && e.HalfEdges[hei].Twin < 0 )
+				return hei;
+
+		return -1;
+	}
+
+	static void TestEditableBridge()
+	{
+		var mesh = BridgedSlabFixture();
+		var e = EditableMesh.FromPolyMesh( mesh );
+
+		var seedA = BoundarySeed( e, 0 );
+		var seedB = BoundarySeed( e, 1 );
+
+		Check( "a boundary half-edge of each cap seeds a rim", seedA >= 0 && seedB >= 0 );
+
+		e.BridgeLoops( seedA, seedB );
+		Check( "the bridge keeps the mesh valid", e.Validate().IsValid, e.Validate().ToString() );
+		Check( "and closes the slab", e.Validate().IsClosed, $"{e.Validate().BoundaryEdges} boundary edges" );
+
+		var m = e.ToPolyMesh();
+		var mv = MeshValidator.Validate( m );
+		Check( "the round-tripped slab is valid", mv.IsValid, mv.ToString() );
+		Check( "and closed", mv.IsClosed );
+		Check( "the slab has 6 faces", m.FaceCount == 6, $"got {m.FaceCount}" );
+		Check( "the slab has 8 vertices", m.VertexCount == 8, $"got {m.VertexCount}" );
+		Check( "the slab encloses volume 8", MathF.Abs( m.SignedVolume() - 8f ) < 1e-3f,
+			$"got {m.SignedVolume():0.####}" );
+		Check( "wound outward like the caps", m.SignedVolume() > 0, $"got {m.SignedVolume():0.####}" );
+
+		// An interior seed is refused — a bridge needs two rims.
+		var box = EditableMesh.FromPolyMesh( Primitives.Box( 2, 2, 2 ) );
+		var interiorSeed = -1;
+
+		for ( var hei = 0; hei < box.HalfEdges.Count && interiorSeed < 0; hei++ )
+			if ( box.HalfEdges[hei].Twin >= 0 )
+				interiorSeed = hei;
+
+		var interiorThrew = false;
+
+		try { box.BridgeLoops( interiorSeed, interiorSeed ); }
+		catch ( ArgumentOutOfRangeException ) { interiorThrew = true; }
+
+		Check( "a seed on an interior edge is refused", interiorThrew );
+
+		// Mismatched rim lengths are refused rather than interpolated.
+		var grid = Primitives.Plane( 2, 2, 2, 2 );
+		var quad = Primitives.Plane( 2, 2, 1, 1 );
+		MeshTransform.Append( grid, quad );
+
+		var mismatched = EditableMesh.FromPolyMesh( grid );
+		var gSeed = BoundarySeed( mismatched, 0 );
+		var qSeed = BoundarySeed( mismatched, 4 );
+
+		var mismatchThrew = false;
+
+		try { mismatched.BridgeLoops( gSeed, qSeed ); }
+		catch ( InvalidOperationException ) { mismatchThrew = true; }
+
+		Check( "two rims of different sizes are refused", mismatchThrew );
+	}
+
+	static void TestEditableCompose()
+	{
+		// Ops must stack the way an edit session will use them: extrude, then cut the result.
+		var box = Primitives.Box( 2, 2, 2 );
+		var top = box.Faces.FindIndex( f => (box.FaceNormal( f ) - new Vec3( 0, 0, 1 )).Length < 1e-4f );
+
+		var e = EditableMesh.FromPolyMesh( box );
+		e.ExtrudeRegion( new[] { top }, new Vec3( 0, 0, 1 ) );
+		Check( "after the extrude the mesh stays valid", e.Validate().IsValid, e.Validate().ToString() );
+		Check( "and closed", e.Validate().IsClosed );
+
+		var seed = -1;
+
+		for ( var hei = 0; hei < e.HalfEdges.Count && seed < 0; hei++ )
+		{
+			var a = e.Positions[e.HalfEdges[hei].Origin];
+			var b = e.Positions[e.HalfEdges[e.HalfEdges[hei].Next].Origin];
+
+			if ( MathF.Abs( a.x - b.x ) < 1e-5f && MathF.Abs( a.y - b.y ) < 1e-5f && MathF.Abs( a.z - b.z ) > 1e-3f )
+				seed = hei;
+		}
+
+		e.LoopCut( seed, 0.5f );
+
+		var m = e.ToPolyMesh();
+		var v = MeshValidator.Validate( m );
+		Check( "after the loop cut the mesh is still valid and closed", v.IsValid && v.IsClosed, v.ToString() );
+		Check( "the cut added four vertices and four faces", m.VertexCount == 16 && m.FaceCount == 14,
+			$"got {m.VertexCount}v/{m.FaceCount}f" );
+		Check( "the composed solid keeps its volume", MathF.Abs( m.SignedVolume() - 12f ) < 1e-3f,
+			$"got {m.SignedVolume():0.####}" );
+	}
+
+	static int TopFace( PolyMesh m ) =>
+		m.Faces.FindIndex( f => (m.FaceNormal( f ) - new Vec3( 0, 0, 1 )).Length < 1e-4f && m.FaceCentroid( f ).z > 0.5f );
+
+	/// <summary>Vertex slide: a vertex runs along the edge that points the way you asked, all the
+	/// way to its neighbour at 1, and nowhere at 0.</summary>
+	static void TestEditSessionVertexSlide()
+	{
+		Section( "edit session: a vertex slides along the edge you point at" );
+
+		// A 4x4 grid on the XY plane, 8 inches across: interior vertices have four square neighbours,
+		// one exactly along +x.
+		MeshEditSession Fresh()
+		{
+			var s = new MeshEditSession( Primitives.Plane( 8f, 8f, 4, 4 ) );
+			s.SetMode( EditElement.Vertex );
+			return s;
+		}
+
+		var session = Fresh();
+
+		// The vertex at the very centre, and the one 2 inches along +x from it.
+		var centre = -1;
+		for ( var i = 0; i < session.Mesh.VertexCount; i++ )
+			if ( session.Mesh.Positions[i].Length < 1e-3f )
+				centre = i;
+
+		Check( "the grid has a centre vertex", centre >= 0 );
+
+		var start = session.Mesh.Positions[centre];
+		session.SelectVertex( centre );
+
+		// All the way along +x lands exactly on the neighbour at (2, 0, 0).
+		session.VertexSlide( 1f, new Vec3( 1, 0, 0 ) );
+		var slid = session.Mesh.Positions[centre];
+		Check( "sliding fully along +x lands on the neighbour",
+			slid.AlmostEquals( new Vec3( 2, 0, 0 ), 1e-4f ), $"{slid}" );
+		Check( "and nothing else moved",
+			session.Mesh.VertexCount == Fresh().Mesh.VertexCount && session.Mesh.FaceCount == 16 );
+		Check( "sliding is one undo step", session.UndoCount == 1 );
+		Check( "undo puts it back", session.Undo() && session.Mesh.Positions[centre].AlmostEquals( start, 1e-5f ) );
+
+		// Halfway is halfway.
+		var half = Fresh();
+		half.SelectVertex( centre );
+		half.VertexSlide( 0.5f, new Vec3( 1, 0, 0 ) );
+		Check( "half the way is half the way",
+			half.Mesh.Positions[centre].AlmostEquals( new Vec3( 1, 0, 0 ), 1e-4f ), $"{half.Mesh.Positions[centre]}" );
+
+		// A negative amount takes the other end of the same run.
+		var back = Fresh();
+		back.SelectVertex( centre );
+		back.VertexSlide( -1f, new Vec3( 1, 0, 0 ) );
+		Check( "a negative amount slides the opposite way",
+			back.Mesh.Positions[centre].AlmostEquals( new Vec3( -2, 0, 0 ), 1e-4f ), $"{back.Mesh.Positions[centre]}" );
+
+		// Pointing along +y picks the other pair of edges instead.
+		var up = Fresh();
+		up.SelectVertex( centre );
+		up.VertexSlide( 1f, new Vec3( 0, 1, 0 ) );
+		Check( "pointing along +y picks the +y edge",
+			up.Mesh.Positions[centre].AlmostEquals( new Vec3( 0, 2, 0 ), 1e-4f ), $"{up.Mesh.Positions[centre]}" );
+
+		// Determinism, and the refusals.
+		var twice = Fresh();
+		twice.SelectVertex( centre );
+		twice.VertexSlide( 0.37f, new Vec3( 1, 0.2f, 0 ) );
+		var once = Fresh();
+		once.SelectVertex( centre );
+		once.VertexSlide( 0.37f, new Vec3( 1, 0.2f, 0 ) );
+		Check( "vertex slide is deterministic", twice.Mesh.Positions[centre].Equals( once.Mesh.Positions[centre] ) );
+
+		var empty = Fresh();
+		var refusedSelection = false;
+		try { empty.VertexSlide( 1f, new Vec3( 1, 0, 0 ) ); } catch ( InvalidOperationException ) { refusedSelection = true; }
+		Check( "sliding with nothing selected is refused", refusedSelection );
+
+		var noDirection = Fresh();
+		noDirection.SelectVertex( centre );
+		var refusedDirection = false;
+		try { noDirection.VertexSlide( 1f, Vec3.Zero ); } catch ( InvalidOperationException ) { refusedDirection = true; }
+		Check( "sliding with no direction is refused", refusedDirection );
+	}
+
+	/// <summary>
+	/// The loop cut hover preview. The only thing that matters about it is that it does not lie:
+	/// the points it draws must be where the cut actually lands, and it must refuse exactly where
+	/// the cut refuses.
+	/// </summary>
+	static void TestLoopCutPreview()
+	{
+		Section( "loop cut: the preview is where the cut lands" );
+
+		var session = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		var edge = session.Mesh.BuildEdgeFaces().Keys.First();
+
+		var preview = session.LoopCutPreview( edge, 0.5f );
+		Check( "a box previews a closed ring", preview is { Count: 4 }, $"{preview?.Count}" );
+
+		// Every previewed point must be an actual vertex of the cut mesh - that is the whole claim.
+		var before = session.Mesh.VertexCount;
+		session.LoopCut( edge, 0.5f );
+		var after = session.Mesh;
+		Check( "the cut added one vertex per previewed point", after.VertexCount == before + preview.Count,
+			$"{before} -> {after.VertexCount} for {preview.Count} points" );
+
+		var landed = 0;
+		foreach ( var p in preview )
+			for ( var i = 0; i < after.VertexCount; i++ )
+				if ( after.Positions[i].AlmostEquals( p, 1e-4f ) ) { landed++; break; }
+		Check( "every previewed point is where a vertex ended up", landed == preview.Count,
+			$"{landed} of {preview.Count}" );
+
+		// The fraction moves the preview the same way it moves the cut.
+		var quarter = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		var low = quarter.LoopCutPreview( edge, 0.25f );
+		var high = quarter.LoopCutPreview( edge, 0.75f );
+		Check( "the fraction moves the preview",
+			low is not null && high is not null && !low[0].AlmostEquals( high[0], 1e-4f ) );
+
+		// Refusals are an answer, not an exception: a preview runs on every mouse move.
+		var triangles = new PolyMesh();
+		triangles.AddVertex( new Vec3( 0, 0, 0 ) );
+		triangles.AddVertex( new Vec3( 1, 0, 0 ) );
+		triangles.AddVertex( new Vec3( 0, 1, 0 ) );
+		triangles.AddFace( new[] { 0, 1, 2 }, null, 0 );
+
+		var tri = new MeshEditSession( triangles );
+		Check( "a triangle previews nothing rather than throwing",
+			tri.LoopCutPreview( new EdgeKey( 0, 1 ), 0.5f ) is null );
+
+		var gone = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		Check( "an edge that is not on the mesh previews nothing",
+			gone.LoopCutPreview( new EdgeKey( 900, 901 ), 0.5f ) is null );
+
+		// And where the preview refuses, the cut refuses too - the pair must agree.
+		var refused = false;
+		try { tri.LoopCut( new EdgeKey( 0, 1 ), 0.5f ); } catch ( InvalidOperationException ) { refused = true; }
+		Check( "the cut refuses wherever the preview did", refused );
+	}
+
+	/// <summary>
+	/// Subdivide in Edit mode — the tool you reach for to put detail somewhere. The properties that
+	/// matter: a partial subdivide does not move the shape, it leaves no T-junctions, it keeps the
+	/// region selected so you can go again, and a rigged body comes out still rigged.
+	/// </summary>
+	static void TestEditSessionSubdivide()
+	{
+		Section( "edit session: subdivide adds detail where you put it" );
+
+		// Whole-mesh subdivide is the full Catmull-Clark, smoothing included.
+		var all = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		var boxVolume = all.Mesh.SignedVolume();
+		all.Subdivide();
+		Check( "subdividing everything makes it all quads",
+			all.Mesh.Faces.All( f => f.Count == 4 ), $"{all.Mesh.FaceCount} faces" );
+		Check( "and smooths it, so a cube shrinks toward its limit surface",
+			all.Mesh.SignedVolume() < boxVolume, $"{boxVolume} -> {all.Mesh.SignedVolume()}" );
+		Check( "and it is still a valid closed solid",
+			MeshValidator.Validate( all.Mesh ) is { IsValid: true, IsClosed: true } );
+
+		// A partial subdivide must NOT move anything: that is the whole reason it is linear.
+		var part = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		part.SetMode( EditElement.Face );
+		part.SelectFace( 0 );
+		var originals = part.Mesh.Positions.ToArray();
+		part.Subdivide();
+
+		var moved = false;
+		for ( var i = 0; i < originals.Length; i++ )
+			if ( !part.Mesh.Positions[i].AlmostEquals( originals[i], 1e-6f ) )
+				moved = true;
+
+		Check( "subdividing one face moves no original vertex", !moved );
+		Check( "the volume is unchanged", MathF.Abs( part.Mesh.SignedVolume() - 8f ) < 1e-4f, $"{part.Mesh.SignedVolume()}" );
+		Check( "it is still valid and closed",
+			MeshValidator.Validate( part.Mesh ) is { IsValid: true, IsClosed: true } );
+		Check( "one quad became four", part.Mesh.FaceCount == 9, $"{part.Mesh.FaceCount}" );
+
+		// The region stays selected, and it is the NEW faces - so a second subdivide goes deeper in
+		// the same place rather than spreading.
+		Check( "the new faces are the selection", part.SelectedFaces.Count == 4, $"{part.SelectedFaces.Count}" );
+		var deeper = part.Mesh.FaceCount;
+		part.Subdivide();
+		Check( "a second subdivide refines the same region", part.Mesh.FaceCount == deeper + 12,
+			$"{deeper} -> {part.Mesh.FaceCount}" );
+		Check( "and still moves nothing", MathF.Abs( part.Mesh.SignedVolume() - 8f ) < 1e-4f );
+
+		// Undo, and the prediction.
+		Check( "subdivide is one undo step each", part.UndoCount == 2 );
+		Check( "undo goes back a level", part.Undo() && part.Mesh.FaceCount == deeper );
+
+		var predicted = part.PredictSubdivide();
+		var predictedFaces = predicted.Faces;
+		part.Subdivide();
+		Check( "the predicted cost is what it actually cost", part.Mesh.FaceCount == predictedFaces,
+			$"predicted {predictedFaces}, got {part.Mesh.FaceCount}" );
+
+		// The playermodel case: a rigged body has to come out rigged, with the new vertices weighted.
+		var rigged = Primitives.Box( 2, 2, 2 );
+		var skin = new SkinWeights();
+		for ( var i = 0; i < rigged.VertexCount; i++ )
+			skin.Vertices.Add( new[] { new BoneWeight( rigged.Positions[i].z > 0 ? 1 : 0, 1f ) } );
+		rigged.Skin = skin;
+
+		var riggedSession = new MeshEditSession( rigged );
+		riggedSession.SetMode( EditElement.Face );
+		riggedSession.SelectFace( 0 );
+		riggedSession.Subdivide();
+
+		Check( "a rigged body stays rigged through a subdivide", riggedSession.Mesh.IsRigged );
+		Check( "every vertex has weights, new ones included",
+			riggedSession.Mesh.Skin.Vertices.Count == riggedSession.Mesh.VertexCount,
+			$"{riggedSession.Mesh.Skin.Vertices.Count} weights for {riggedSession.Mesh.VertexCount} vertices" );
+		Check( "and every weight set sums to one",
+			Enumerable.Range( 0, riggedSession.Mesh.VertexCount )
+				.All( i => MathF.Abs( riggedSession.Mesh.Skin[i].Sum( w => w.Weight ) - 1f ) < 1e-4f ) );
+
+		var empty = new MeshEditSession( new PolyMesh() );
+		var refused = false;
+		try { empty.Subdivide(); } catch ( InvalidOperationException ) { refused = true; }
+		Check( "subdividing nothing is refused", refused );
+	}
+
+	/// <summary>Smooth and Symmetrize: the two operations a character model wants that a prop does
+	/// not.</summary>
+	static void TestEditSessionSmoothAndSymmetry()
+	{
+		Section( "edit session: smooth relaxes, symmetrize mirrors a half" );
+
+		// A subdivided box with one vertex yanked out: smoothing must pull the spike back in without
+		// moving the whole shape.
+		var bumpy = CatmullClark.Subdivide( Primitives.Box( 4, 4, 4 ), 2 );
+		var spike = 0;
+		for ( var i = 0; i < bumpy.VertexCount; i++ )
+			if ( bumpy.Positions[i].z > bumpy.Positions[spike].z )
+				spike = i;
+
+		bumpy.Positions[spike] = bumpy.Positions[spike] + new Vec3( 0, 0, 4f );
+
+		var session = new MeshEditSession( bumpy );
+		var before = bumpy.Positions[spike];
+		var faces = bumpy.FaceCount;
+		session.Smooth();
+
+		Check( "smoothing pulls a spike back in", session.Mesh.Positions[spike].z < before.z - 1f,
+			$"{before.z:0.##} -> {session.Mesh.Positions[spike].z:0.##}" );
+		Check( "and changes no topology", session.Mesh.FaceCount == faces && session.Mesh.VertexCount == bumpy.VertexCount );
+		Check( "and is one undo step", session.UndoCount == 1 );
+		Check( "undo puts the spike back", session.Undo() && session.Mesh.Positions[spike].AlmostEquals( before, 1e-5f ) );
+
+		// An open sheet's rim must not move, or smoothing shrinks the silhouette.
+		var sheet = new MeshEditSession( Primitives.Plane( 8f, 8f, 4, 4 ) );
+		var rim = new List<int>();
+		foreach ( var (key, sharing) in sheet.Mesh.BuildEdgeFaces() )
+			if ( sharing.Count == 1 ) { rim.Add( key.A ); rim.Add( key.B ); }
+
+		var rimBefore = rim.Select( i => sheet.Mesh.Positions[i] ).ToArray();
+		sheet.Smooth( 1f, 10 );
+		Check( "smoothing does not move an open rim",
+			rim.Select( ( v, i ) => sheet.Mesh.Positions[v].AlmostEquals( rimBefore[i], 1e-5f ) ).All( ok => ok ) );
+
+		// Symmetrize: a deliberately lopsided box.
+		var lop = Primitives.Box( 4, 4, 4 );
+		for ( var i = 0; i < lop.VertexCount; i++ )
+			if ( lop.Positions[i].x < 0 )
+				lop.Positions[i] = lop.Positions[i] + new Vec3( 0, 0, 3f );
+
+		var sym = new MeshEditSession( lop );
+		sym.Symmetrize();
+
+		Check( "symmetrize leaves a valid closed mesh",
+			MeshValidator.Validate( sym.Mesh ) is { IsValid: true, IsClosed: true } );
+		Check( "and a positive volume, so nothing is inside out", sym.Mesh.SignedVolume() > 0f,
+			$"{sym.Mesh.SignedVolume()}" );
+
+		// Every vertex must have a partner at -x.
+		var paired = true;
+		foreach ( var p in sym.Mesh.Positions )
+		{
+			var found = false;
+			foreach ( var q in sym.Mesh.Positions )
+				if ( q.AlmostEquals( new Vec3( -p.x, p.y, p.z ), 1e-4f ) ) { found = true; break; }
+			if ( !found ) { paired = false; break; }
+		}
+		Check( "every vertex has a mirror partner", paired );
+
+		// The half that was kept is untouched; the lopsided half is gone.
+		var raised = sym.Mesh.Positions.Count( p => p.x < -0.01f && p.z > 3f );
+		Check( "the lopsided half was replaced, not kept", raised == 0, $"{raised} raised vertices left" );
+
+		// Symmetrizing an already-symmetric mesh is a no-op in shape.
+		var already = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		already.Symmetrize();
+		Check( "a symmetric box stays volume 8", MathF.Abs( already.Mesh.SignedVolume() - 8f ) < 1e-4f,
+			$"{already.Mesh.SignedVolume()}" );
+		Check( "and stays closed", MeshValidator.Validate( already.Mesh ) is { IsValid: true, IsClosed: true } );
+
+		// A rigged body keeps its weights across the mirror.
+		var rigged = Primitives.Box( 2, 2, 2 );
+		var skin = new SkinWeights();
+		for ( var i = 0; i < rigged.VertexCount; i++ )
+			skin.Vertices.Add( new[] { new BoneWeight( 0, 1f ) } );
+		rigged.Skin = skin;
+
+		var riggedSym = new MeshEditSession( rigged );
+		riggedSym.Symmetrize();
+		Check( "symmetrize keeps a body rigged",
+			riggedSym.Mesh.IsRigged && riggedSym.Mesh.Skin.Vertices.Count == riggedSym.Mesh.VertexCount );
+
+		// Nothing on the chosen side is refused, not silently emptied.
+		var offside = Primitives.Box( 2, 2, 2 );
+		for ( var i = 0; i < offside.VertexCount; i++ )
+			offside.Positions[i] = offside.Positions[i] + new Vec3( 10f, 0, 0 );
+
+		var refused = false;
+		try { new MeshEditSession( offside ).Symmetrize( keepPositive: false ); }
+		catch ( InvalidOperationException ) { refused = true; }
+		Check( "symmetrizing from an empty side is refused", refused );
+	}
+
+	/// <summary>The three weight tools a playermodel needs: what the exporter will really use,
+	/// relaxed joints, and one side copied to the other.</summary>
+	static void TestEditSessionWeightTools()
+	{
+		Section( "edit session: skin weights normalise, smooth and mirror" );
+
+		// A box whose vertices carry SIX influences - more than any exporter will write.
+		PolyMesh Overweighted()
+		{
+			var mesh = Primitives.Box( 4, 4, 4 );
+			var skin = new SkinWeights();
+
+			for ( var i = 0; i < mesh.VertexCount; i++ )
+				skin.Vertices.Add( new[]
+				{
+					new BoneWeight( 0, 0.30f ), new BoneWeight( 1, 0.25f ), new BoneWeight( 2, 0.20f ),
+					new BoneWeight( 3, 0.15f ), new BoneWeight( 4, 0.07f ), new BoneWeight( 5, 0.03f ),
+				} );
+
+			mesh.Skin = skin;
+			return mesh;
+		}
+
+		var session = new MeshEditSession( Overweighted() );
+		var changed = session.NormalizeWeights();
+
+		Check( "every over-weighted vertex is reported", changed == session.Mesh.VertexCount, $"{changed}" );
+		Check( "no vertex keeps more than four influences",
+			Enumerable.Range( 0, session.Mesh.VertexCount ).All( i => session.Mesh.Skin[i].Length <= 4 ) );
+		Check( "and each still sums to one",
+			Enumerable.Range( 0, session.Mesh.VertexCount )
+				.All( i => MathF.Abs( session.Mesh.Skin[i].Sum( w => w.Weight ) - 1f ) < 1e-4f ) );
+		Check( "strongest influence first, which is what the SMD writer reads as the parent bone",
+			session.Mesh.Skin[0][0].Bone == 0 );
+		Check( "the weakest bones are the ones dropped",
+			session.Mesh.Skin[0].All( w => w.Bone != 5 ) );
+		Check( "normalising is one undo step", session.UndoCount == 1 );
+		Check( "running it again reports nothing left to fix", session.NormalizeWeights() == 0 );
+
+		// Smoothing weights: a hard split down the middle should soften at the seam.
+		var split = Primitives.Plane( 8f, 8f, 4, 4 );
+		var splitSkin = new SkinWeights();
+		for ( var i = 0; i < split.VertexCount; i++ )
+			splitSkin.Vertices.Add( new[] { new BoneWeight( split.Positions[i].x > 0 ? 1 : 0, 1f ) } );
+		split.Skin = splitSkin;
+
+		var seam = new MeshEditSession( split );
+		seam.SmoothWeights();
+
+		var blended = 0;
+		for ( var i = 0; i < seam.Mesh.VertexCount; i++ )
+			if ( seam.Mesh.Skin[i].Length > 1 )
+				blended++;
+
+		Check( "smoothing blends the seam across two bones", blended > 0, $"{blended} blended" );
+		Check( "and every vertex still sums to one",
+			Enumerable.Range( 0, seam.Mesh.VertexCount )
+				.All( i => MathF.Abs( seam.Mesh.Skin[i].Sum( w => w.Weight ) - 1f ) < 1e-4f ) );
+		Check( "and none exceeds four influences",
+			Enumerable.Range( 0, seam.Mesh.VertexCount ).All( i => seam.Mesh.Skin[i].Length <= 4 ) );
+		Check( "smoothing weights moves no vertex",
+			Enumerable.Range( 0, seam.Mesh.VertexCount )
+				.All( i => seam.Mesh.Positions[i].AlmostEquals( split.Positions[i], 1e-6f ) ) );
+
+		// Mirror weights: bone 1 is "left", bone 2 is "right", and they swap.
+		var body = Primitives.Box( 4, 4, 4 );
+		var bodySkin = new SkinWeights();
+		for ( var i = 0; i < body.VertexCount; i++ )
+			bodySkin.Vertices.Add( new[] { new BoneWeight( body.Positions[i].x > 0 ? 1 : 9, 1f ) } );
+		body.Skin = bodySkin;
+
+		var mirror = new MeshEditSession( body );
+		var copied = mirror.MirrorWeights( bone => bone == 1 ? 2 : bone == 2 ? 1 : bone );
+
+		Check( "the far side received weights", copied > 0, $"{copied}" );
+		Check( "the kept side is untouched",
+			Enumerable.Range( 0, mirror.Mesh.VertexCount )
+				.Where( i => mirror.Mesh.Positions[i].x > 0 )
+				.All( i => mirror.Mesh.Skin[i][0].Bone == 1 ) );
+		Check( "and the mirrored side got the PARTNER bone, not the same one",
+			Enumerable.Range( 0, mirror.Mesh.VertexCount )
+				.Where( i => mirror.Mesh.Positions[i].x < 0 )
+				.All( i => mirror.Mesh.Skin[i][0].Bone == 2 ) );
+		Check( "mirroring weights moves no vertex",
+			Enumerable.Range( 0, mirror.Mesh.VertexCount )
+				.All( i => mirror.Mesh.Positions[i].AlmostEquals( body.Positions[i], 1e-6f ) ) );
+
+		// All three refuse an unrigged body rather than inventing weights.
+		var bare = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		var refusals = 0;
+		try { bare.NormalizeWeights(); } catch ( InvalidOperationException ) { refusals++; }
+		try { bare.SmoothWeights(); } catch ( InvalidOperationException ) { refusals++; }
+		try { bare.MirrorWeights( b => b ); } catch ( InvalidOperationException ) { refusals++; }
+		Check( "all three refuse an unrigged body", refusals == 3, $"{refusals} of 3" );
+	}
+
+	/// <summary>Shrink/Fatten and growing a selection — two things you do constantly on a character
+	/// and cannot reasonably do without.</summary>
+	static void TestEditSessionShrinkFattenAndGrow()
+	{
+		Section( "edit session: shrink/fatten and growing a selection" );
+
+		// Fattening a whole sphere makes it bigger; shrinking makes it smaller. Along its own
+		// normals, so it stays a sphere.
+		var ball = new MeshEditSession( Primitives.QuadSphere( 2f, 3 ) );
+		ball.SetMode( EditElement.Face );
+		ball.SelectAll();
+		var before = ball.Mesh.SignedVolume();
+		var radiusBefore = ball.Mesh.Positions.Max( p => p.Length );
+
+		ball.ShrinkFatten( 0.5f );
+		Check( "fattening a ball grows it", ball.Mesh.SignedVolume() > before,
+			$"{before:0.###} -> {ball.Mesh.SignedVolume():0.###}" );
+		Check( "and it grows by the distance asked for",
+			MathF.Abs( ball.Mesh.Positions.Max( p => p.Length ) - (radiusBefore + 0.5f) ) < 0.05f,
+			$"{radiusBefore:0.###} -> {ball.Mesh.Positions.Max( p => p.Length ):0.###}" );
+		Check( "and it is still a valid closed solid",
+			MeshValidator.Validate( ball.Mesh ) is { IsValid: true, IsClosed: true } );
+		Check( "and the topology is untouched", ball.Mesh.FaceCount == Primitives.QuadSphere( 2f, 3 ).FaceCount );
+
+		ball.ShrinkFatten( -0.5f );
+		Check( "shrinking by the same amount comes back",
+			MathF.Abs( ball.Mesh.SignedVolume() - before ) < 0.05f,
+			$"{before:0.###} vs {ball.Mesh.SignedVolume():0.###}" );
+
+		Check( "each is its own undo step", ball.UndoCount == 2 );
+
+		var bare = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		var refused = false;
+		try { bare.ShrinkFatten( 1f ); } catch ( InvalidOperationException ) { refused = true; }
+		Check( "shrink/fatten with no selection is refused", refused );
+
+		// Grow and shrink a selection on a grid, where the answer is countable by hand.
+		var grid = new MeshEditSession( Primitives.Plane( 8f, 8f, 4, 4 ) );
+		grid.SetMode( EditElement.Vertex );
+
+		// The exact centre of a 4x4 grid of quads is a vertex with four neighbours.
+		var centre = -1;
+		for ( var i = 0; i < grid.Mesh.VertexCount; i++ )
+			if ( grid.Mesh.Positions[i].Length < 1e-3f )
+				centre = i;
+
+		grid.SelectVertex( centre );
+		grid.GrowSelection();
+		Check( "growing one vertex takes in its four neighbours", grid.SelectedVertices.Count == 5,
+			$"{grid.SelectedVertices.Count}" );
+
+		grid.GrowSelection();
+		Check( "growing again takes the next ring", grid.SelectedVertices.Count == 13,
+			$"{grid.SelectedVertices.Count}" );
+
+		grid.ShrinkSelection();
+		Check( "shrinking drops the border again", grid.SelectedVertices.Count == 5,
+			$"{grid.SelectedVertices.Count}" );
+
+		// Face mode: growing from one face takes in the faces sharing its corners.
+		var faces = new MeshEditSession( Primitives.Plane( 8f, 8f, 4, 4 ) );
+		faces.SetMode( EditElement.Face );
+		faces.SelectFace( 5 );
+		faces.GrowSelection();
+		Check( "growing a face takes in its neighbours", faces.SelectedFaces.Count > 1,
+			$"{faces.SelectedFaces.Count}" );
+		Check( "growing does not move anything",
+			faces.Mesh.Positions.Count == Primitives.Plane( 8f, 8f, 4, 4 ).VertexCount );
+
+		var nothing = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		var refusedGrow = false;
+		try { nothing.GrowSelection(); } catch ( InvalidOperationException ) { refusedGrow = true; }
+		Check( "growing nothing is refused", refusedGrow );
+	}
+
+	/// <summary>
+	/// Edge Split — making an edge shade hard by unwelding it. The claim to prove is that the two
+	/// sides stop sharing a normal, which is what the exporter reads, and that nothing else moves.
+	/// </summary>
+	static void TestEditSessionEdgeSplit()
+	{
+		Section( "edit session: splitting edges makes them shade hard" );
+
+		// A flat grid: coplanar, so at any angle it shades perfectly smooth and every normal is
+		// shared. A cut straight across the middle is the case that genuinely separates, because it
+		// reaches the boundary at both ends.
+		PolyMesh Grid() => Primitives.Plane( 8f, 8f, 4, 4 );
+
+		var session = new MeshEditSession( Grid() );
+		session.SetMode( EditElement.Edge );
+
+		var across = new List<EdgeKey>();
+		foreach ( var key in session.Mesh.BuildEdgeFaces().Keys )
+			if ( MathF.Abs( session.Mesh.Positions[key.A].y ) < 1e-3f && MathF.Abs( session.Mesh.Positions[key.B].y ) < 1e-3f )
+				across.Add( key );
+
+		foreach ( var key in across )
+			session.SelectEdge( key, MeshEditSession.Combine.Add );
+
+		var vertsBefore = session.Mesh.VertexCount;
+		var facesBefore = session.Mesh.FaceCount;
+		var split = session.SplitEdges();
+
+		Check( "every edge of the cut reports as split", split == across.Count, $"{split} of {across.Count}" );
+		Check( "face count is unchanged — splitting unwelds, it does not add geometry",
+			session.Mesh.FaceCount == facesBefore, $"{facesBefore} -> {session.Mesh.FaceCount}" );
+		Check( "vertex count went up", session.Mesh.VertexCount > vertsBefore,
+			$"{vertsBefore} -> {session.Mesh.VertexCount}" );
+		// NOT a normal-count check: this grid is flat, so the two halves genuinely still face the same
+		// way and SHOULD still share a normal value. What the split changes is that they no longer
+		// share the VERTICES, which is what lets them diverge the moment either side moves or bends.
+		// The box below is where the shading claim itself is proved.
+		var stillJoined = 0;
+		foreach ( var key in across )
+			if ( session.Mesh.BuildEdgeFaces().TryGetValue( key, out var sharing ) && sharing.Count == 2 )
+				stillJoined++;
+		Check( "the two halves no longer share the vertices along the cut", stillJoined == 0,
+			$"{stillJoined} edges still joined" );
+		Check( "nothing moved",
+			Enumerable.Range( 0, vertsBefore )
+				.All( i => session.Mesh.Positions[i].AlmostEquals( Grid().Positions[i], 1e-6f ) ) );
+		Check( "splitting is one undo step", session.UndoCount == 1 );
+		Check( "undo welds it back", session.Undo() && session.Mesh.VertexCount == vertsBefore );
+
+		// Merge by distance is the documented way back.
+		foreach ( var key in across )
+			session.SelectEdge( key, MeshEditSession.Combine.Add );
+		session.SplitEdges();
+		session.MergeByDistance( 1e-4f );
+		Check( "merge by distance welds a split back up", session.Mesh.VertexCount == vertsBefore,
+			$"{session.Mesh.VertexCount} vs {vertsBefore}" );
+
+		// THE HONEST LIMIT, asserted rather than left to be discovered: a cut that does not reach a
+		// boundary or another cut cannot separate the vertices at its ends, because the faces are
+		// still joined the long way round. One vertical seam on a closed cylinder is that case — the
+		// caps hold the rim together — and it changes nothing.
+		var tube = new MeshEditSession( Primitives.Cylinder( 1f, 4f, 16 ) );
+		tube.SetMode( EditElement.Edge );
+
+		foreach ( var key in tube.Mesh.BuildEdgeFaces().Keys )
+		{
+			var a = tube.Mesh.Positions[key.A];
+			var b = tube.Mesh.Positions[key.B];
+
+			if ( MathF.Abs( a.z - b.z ) > 1e-3f && MathF.Abs( a.x - b.x ) < 1e-3f && MathF.Abs( a.y - b.y ) < 1e-3f )
+			{
+				tube.SelectEdge( key, MeshEditSession.Combine.Add );
+				break;
+			}
+		}
+
+		var tubeVerts = tube.Mesh.VertexCount;
+		Check( "a lone seam on a closed cylinder splits nothing, because the caps hold it together",
+			tube.SplitEdges() == 0 && tube.Mesh.VertexCount == tubeVerts, $"{tube.Mesh.VertexCount} vs {tubeVerts}" );
+
+		// By angle: a box creases at 90 degrees everywhere, a smooth ball nowhere.
+		var box = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		var boxSplit = box.SplitEdgesByAngle( 45f );
+		Check( "a box splits at every one of its twelve edges", boxSplit == 12, $"{boxSplit}" );
+		Check( "and every corner becomes three vertices, one per face",
+			box.Mesh.VertexCount == 24, $"{box.Mesh.VertexCount}" );
+		Check( "the box still has six faces", box.Mesh.FaceCount == 6 );
+		Check( "and the same volume", MathF.Abs( box.Mesh.SignedVolume() - 8f ) < 1e-4f );
+		Check( "so every face now shades flat, one normal each",
+			MeshNormals.ComputeCornerNormals( box.Mesh, 179f ).Normals.Count == 6,
+			$"{MeshNormals.ComputeCornerNormals( box.Mesh, 179f ).Normals.Count}" );
+
+		var ball = new MeshEditSession( Primitives.QuadSphere( 2f, 3 ) );
+		var refusedAngle = false;
+		try { ball.SplitEdgesByAngle( 60f ); } catch ( InvalidOperationException ) { refusedAngle = true; }
+		Check( "a smooth ball has nothing to split at 60 degrees, and says so", refusedAngle );
+
+		var bare = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		var refused = false;
+		try { bare.SplitEdges(); } catch ( InvalidOperationException ) { refused = true; }
+		Check( "splitting with no edges selected is refused", refused );
+	}
+
+	/// <summary>Ring, Linked and Similar — the selection tools you use constantly on a character and
+	/// cannot reasonably box-select your way around.</summary>
+	static void TestEditSessionSelectionTools()
+	{
+		Section( "edit session: ring, linked and similar selection" );
+
+		// A cylinder: a loop runs around it, a ring runs along it. They must not be the same set.
+		var tube = new MeshEditSession( Primitives.Cylinder( 1f, 4f, 16 ) );
+		tube.SetMode( EditElement.Edge );
+
+		EdgeKey? vertical = null;
+		foreach ( var key in tube.Mesh.BuildEdgeFaces().Keys )
+		{
+			var a = tube.Mesh.Positions[key.A];
+			var b = tube.Mesh.Positions[key.B];
+
+			if ( MathF.Abs( a.z - b.z ) > 1e-3f && MathF.Abs( a.x - b.x ) < 1e-3f && MathF.Abs( a.y - b.y ) < 1e-3f )
+			{
+				vertical = key;
+				break;
+			}
+		}
+
+		Check( "the cylinder has a vertical edge to ring from", vertical is not null );
+
+		tube.SelectEdgeRing( vertical.Value );
+		var ring = tube.SelectedEdges.Count;
+		Check( "a ring from a vertical edge takes more than the seed", ring > 1, $"{ring}" );
+		Check( "and every edge in it is vertical, like the seed",
+			tube.SelectedEdges.All( k =>
+				MathF.Abs( tube.Mesh.Positions[k.A].x - tube.Mesh.Positions[k.B].x ) < 1e-3f
+				&& MathF.Abs( tube.Mesh.Positions[k.A].y - tube.Mesh.Positions[k.B].y ) < 1e-3f ) );
+
+		tube.SelectEdgeLoop( vertical.Value );
+		Check( "the loop through the same edge is a different set",
+			!tube.SelectedEdges.SetEquals( new HashSet<EdgeKey>() ) && tube.SelectedEdges.Count != ring
+				|| tube.SelectedEdges.Count != ring,
+			$"ring {ring}, loop {tube.SelectedEdges.Count}" );
+
+		// Selecting a ring never changes the mesh.
+		Check( "selecting changes no geometry",
+			tube.Mesh.VertexCount == Primitives.Cylinder( 1f, 4f, 16 ).VertexCount && tube.UndoCount == 0 );
+
+		// Linked: two boxes far apart in one mesh. One click on either takes only that one.
+		var two = new PolyMesh();
+		void Append( PolyMesh m, Vec3 offset )
+		{
+			var start = two.VertexCount;
+			foreach ( var p in m.Positions )
+				two.AddVertex( p + offset );
+			foreach ( var f in m.Faces )
+			{
+				var idx = new int[f.Indices.Length];
+				for ( var i = 0; i < idx.Length; i++ )
+					idx[i] = f.Indices[i] + start;
+				two.AddFace( idx, null, 0 );
+			}
+		}
+
+		Append( Primitives.Box( 2, 2, 2 ), Vec3.Zero );
+		Append( Primitives.Box( 2, 2, 2 ), new Vec3( 20f, 0, 0 ) );
+
+		var islands = new MeshEditSession( two );
+		islands.SetMode( EditElement.Face );
+		islands.SelectFace( 0 );
+		islands.SelectLinked();
+
+		Check( "linked takes one whole box", islands.SelectedFaces.Count == 6,
+			$"{islands.SelectedFaces.Count} of {two.FaceCount}" );
+		Check( "and not the other one", islands.SelectedFaces.Count < two.FaceCount );
+		Check( "every face it took belongs to the first box",
+			islands.SelectedFaces.All( f => two.FaceCentroid( two.Faces[f] ).x < 10f ) );
+
+		var nothing = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		var refused = false;
+		try { nothing.SelectLinked(); } catch ( InvalidOperationException ) { refused = true; }
+		Check( "linked with nothing selected is refused", refused );
+
+		// Similar by normal: one face of a box matches only itself, because no two agree.
+		var box = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		box.SetMode( EditElement.Face );
+		box.SelectFace( 0 );
+		box.SelectSimilar( MeshEditSession.Similarity.Normal, 10f );
+		Check( "one face of a box matches only itself by normal", box.SelectedFaces.Count == 1,
+			$"{box.SelectedFaces.Count}" );
+
+		// 179 degrees takes five, not six: the far face of a box points EXACTLY 180 degrees away, so
+		// it is correctly outside a 179 degree tolerance. Worth pinning, because "nearly everything"
+		// looking like a bug is how a tolerance quietly gets widened until it means nothing.
+		box.SelectSimilar( MeshEditSession.Similarity.Normal, 179f );
+		Check( "179 degrees takes every face except the one pointing exactly the other way",
+			box.SelectedFaces.Count == 5, $"{box.SelectedFaces.Count}" );
+
+		box.SelectedFaces.Clear();
+		box.SelectFace( 0 );
+		box.SelectSimilar( MeshEditSession.Similarity.Normal, 180f );
+		Check( "and 180 takes all six", box.SelectedFaces.Count == 6, $"{box.SelectedFaces.Count}" );
+
+		// Similar by area on a uniform grid: every face is the same size, so one picks all.
+		var grid = new MeshEditSession( Primitives.Plane( 8f, 8f, 4, 4 ) );
+		grid.SetMode( EditElement.Face );
+		grid.SelectFace( 0 );
+		grid.SelectSimilar( MeshEditSession.Similarity.Area, 0.01f );
+		Check( "a uniform grid is all one area", grid.SelectedFaces.Count == grid.Mesh.FaceCount,
+			$"{grid.SelectedFaces.Count} of {grid.Mesh.FaceCount}" );
+
+		// After a local subdivide the new faces are a quarter the size, so area separates them.
+		grid.SelectedFaces.Clear();
+		grid.SelectFace( 0 );
+		grid.Subdivide();
+		var fine = grid.SelectedFaces.Count;
+		grid.SelectSimilar( MeshEditSession.Similarity.Area, 0.01f );
+		Check( "and area finds just the subdivided region afterwards",
+			grid.SelectedFaces.Count == fine, $"{grid.SelectedFaces.Count} vs {fine}" );
+
+		var bare = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		var refusedSimilar = false;
+		try { bare.SelectSimilar( MeshEditSession.Similarity.Normal ); }
+		catch ( InvalidOperationException ) { refusedSimilar = true; }
+		Check( "similar with no face selected is refused", refusedSimilar );
+	}
+
+	/// <summary>Invert, shortest path, flip, recalculate normals, fill and to sphere.</summary>
+	static void TestEditSessionModelingOps()
+	{
+		Section( "edit session: invert, path, normals, fill, to sphere" );
+
+		// Invert: one face of a box inverts to the other five, and back again.
+		var box = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		box.SetMode( EditElement.Face );
+		box.SelectFace( 0 );
+		box.InvertSelection();
+		Check( "inverting one face of a box gives the other five",
+			box.SelectedFaces.Count == 5 && !box.SelectedFaces.Contains( 0 ), $"{box.SelectedFaces.Count}" );
+		box.InvertSelection();
+		Check( "and inverting again gives it back",
+			box.SelectedFaces.Count == 1 && box.SelectedFaces.Contains( 0 ) );
+
+		// Shortest path across a 4x4 grid, corner to corner along one side: five vertices.
+		var grid = new MeshEditSession( Primitives.Plane( 8f, 8f, 4, 4 ) );
+		grid.SetMode( EditElement.Vertex );
+		int At( float x, float y )
+		{
+			for ( var i = 0; i < grid.Mesh.VertexCount; i++ )
+				if ( MathF.Abs( grid.Mesh.Positions[i].x - x ) < 1e-3f && MathF.Abs( grid.Mesh.Positions[i].y - y ) < 1e-3f )
+					return i;
+			return -1;
+		}
+
+		grid.SelectVertex( At( -4f, -4f ) );
+		grid.SelectVertex( At( 4f, -4f ), MeshEditSession.Combine.Add );
+		grid.SelectShortestPath();
+		Check( "a path along one side of a 4x4 grid takes five vertices", grid.SelectedVertices.Count == 5,
+			$"{grid.SelectedVertices.Count}" );
+		Check( "and all of them are on that side",
+			grid.SelectedVertices.All( v => MathF.Abs( grid.Mesh.Positions[v].y + 4f ) < 1e-3f ) );
+
+		var lone = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		lone.SetMode( EditElement.Vertex );
+		lone.SelectVertex( 0 );
+		var refusedPath = false;
+		try { lone.SelectShortestPath(); } catch ( InvalidOperationException ) { refusedPath = true; }
+		Check( "a path from one vertex is refused", refusedPath );
+
+		// Flip: a box turned inside out has negative volume, and flipping twice is a no-op.
+		var flip = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		var uvBefore = flip.Mesh.Faces[0].UVs[0];
+		var cornerBefore = flip.Mesh.Faces[0].Indices[0];
+		flip.FlipNormals();
+		Check( "flipping every face of a box negates its volume",
+			MathF.Abs( flip.Mesh.SignedVolume() + 8f ) < 1e-3f, $"{flip.Mesh.SignedVolume():0.###}" );
+		var last = flip.Mesh.Faces[0].Indices.Length - 1;
+		Check( "and each UV stays with its corner",
+			flip.Mesh.Faces[0].Indices[last] == cornerBefore && flip.Mesh.Faces[0].UVs[last].x == uvBefore.x
+				&& flip.Mesh.Faces[0].UVs[last].y == uvBefore.y );
+		flip.Undo();
+		Check( "undo puts it right way out", MathF.Abs( flip.Mesh.SignedVolume() - 8f ) < 1e-3f );
+
+		// Recalculate: flip two faces of a box by hand, recalculate, and it is a clean box again.
+		var messy = Primitives.Box( 2, 2, 2 );
+		Array.Reverse( messy.Faces[1].Indices );
+		Array.Reverse( messy.Faces[1].UVs );
+		Array.Reverse( messy.Faces[4].Indices );
+		Array.Reverse( messy.Faces[4].UVs );
+		var fix = new MeshEditSession( messy );
+		fix.RecalculateNormals();
+		Check( "recalculate fixes a box with two faces flipped",
+			MathF.Abs( fix.Mesh.SignedVolume() - 8f ) < 1e-3f, $"{fix.Mesh.SignedVolume():0.###}" );
+
+		// Even when EVERY face is wrong: the whole box inside out comes back out.
+		var inside = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		inside.FlipNormals();
+		inside.RecalculateNormals();
+		Check( "and turns a box that is entirely inside out the right way round",
+			MathF.Abs( inside.Mesh.SignedVolume() - 8f ) < 1e-3f, $"{inside.Mesh.SignedVolume():0.###}" );
+
+		// Fill: delete a face of a box, select the hole's border, fill, and it is closed again.
+		var holed = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		holed.SetMode( EditElement.Face );
+		var capCorners = new HashSet<int>( holed.Mesh.Faces[0].Indices );
+		holed.SelectFace( 0 );
+		holed.Delete();
+		holed.SetMode( EditElement.Vertex );
+		foreach ( var v in capCorners )
+			holed.SelectVertex( v, MeshEditSession.Combine.Add );
+		holed.Fill();
+		Check( "fill caps the hole in a box with one face", holed.Mesh.FaceCount == 6, $"{holed.Mesh.FaceCount}" );
+		Check( "wound to match, so the box has its volume back",
+			MathF.Abs( holed.Mesh.SignedVolume() - 8f ) < 1e-3f, $"{holed.Mesh.SignedVolume():0.###}" );
+		Check( "and the new face is left selected", holed.SelectedFaces.Count == 1 );
+
+		var tooFew = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		tooFew.SetMode( EditElement.Vertex );
+		tooFew.SelectVertex( 0 );
+		tooFew.SelectVertex( 1, MeshEditSession.Combine.Add );
+		var refusedFill = false;
+		try { tooFew.Fill(); } catch ( InvalidOperationException ) { refusedFill = true; }
+		Check( "fill with two vertices is refused", refusedFill );
+
+		// To sphere: a subdivided cube's vertices all end up the same distance from the middle.
+		var cube = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		cube.SetMode( EditElement.Face );
+		cube.SelectAll();
+		cube.Subdivide();
+		cube.SelectAll();
+		cube.ToSphere( 1f );
+		var middle = Vec3.Zero;
+		foreach ( var p in cube.Mesh.Positions )
+			middle += p;
+		middle /= cube.Mesh.VertexCount;
+		var min = float.MaxValue;
+		var max = 0f;
+		foreach ( var p in cube.Mesh.Positions )
+		{
+			var r = (p - middle).Length;
+			min = MathF.Min( min, r );
+			max = MathF.Max( max, r );
+		}
+		Check( "to sphere puts every vertex at one radius", max - min < 1e-3f, $"{min:0.###}..{max:0.###}" );
+	}
+
+	/// <summary>Split, spin/screw, shear, bend, array and the trait selections.</summary>
+	static void TestEditSessionShapingOps()
+	{
+		Section( "edit session: split, spin, shear, bend, array, trait selection" );
+
+		// Split: the top face of a box gets four vertices of its own, and the box keeps its shape.
+		var split = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		split.SetMode( EditElement.Face );
+		split.SelectFace( 0 );
+		var before = split.Mesh.VertexCount;
+		split.SplitFaces();
+		Check( "split gives the face its own four corners", split.Mesh.VertexCount == before + 4,
+			$"{before} -> {split.Mesh.VertexCount}" );
+		var open = 0;
+		foreach ( var pair in split.Mesh.BuildEdgeFaces() )
+			if ( pair.Value.Count == 1 )
+				open++;
+		Check( "and both sides of the cut are now open rims", open == 8, $"{open}" );
+		Check( "without moving anything", MathF.Abs( split.Mesh.SignedVolume() - 8f ) < 1e-3f );
+
+		// Spin: the open top rim of a tube-less sheet swept a full turn closes on itself.
+		var sheet = new PolyMesh();
+		sheet.AddVertex( new Vec3( 1, 0, 0 ) );
+		sheet.AddVertex( new Vec3( 2, 0, 0 ) );
+		sheet.AddVertex( new Vec3( 2, 0, 1 ) );
+		sheet.AddVertex( new Vec3( 1, 0, 1 ) );
+		sheet.AddFace( new[] { 0, 1, 2, 3 }, null, 0 );
+		var spin = new MeshEditSession( sheet );
+		spin.SetMode( EditElement.Edge );
+		spin.SelectEdge( new EdgeKey( 1, 2 ) );
+		spin.Spin( 360f, 12 );
+		Check( "a full spin in 12 steps adds 12 faces", spin.Mesh.FaceCount == 13, $"{spin.Mesh.FaceCount}" );
+		Check( "and 11 rings of new vertices, not 12 — it closes on itself", spin.Mesh.VertexCount == 4 + 22,
+			$"{spin.Mesh.VertexCount}" );
+		Check( "every new vertex stays at radius 2",
+			Enumerable.Range( 4, spin.Mesh.VertexCount - 4 ).All( v =>
+				MathF.Abs( MathF.Sqrt( spin.Mesh.Positions[v].x * spin.Mesh.Positions[v].x + spin.Mesh.Positions[v].y * spin.Mesh.Positions[v].y ) - 2f ) < 1e-3f ) );
+		Check( "the band agrees with the face it grew from", MeshValidator.Validate( spin.Mesh ).IsValid );
+
+		var screw = new MeshEditSession( sheet );
+		screw.SetMode( EditElement.Edge );
+		screw.SelectEdge( new EdgeKey( 1, 2 ) );
+		screw.Spin( 360f, 8, 4f );
+		var top = 0f;
+		foreach ( var p in screw.Mesh.Positions )
+			top = MathF.Max( top, p.z );
+		Check( "a screw does not close, and climbs by its rise", screw.Mesh.VertexCount == 4 + 16 && MathF.Abs( top - 5f ) < 1e-3f,
+			$"{screw.Mesh.VertexCount} verts, top {top:0.###}" );
+
+		// Shear keeps volume (it is a shear) and leans the top over.
+		var shear = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		shear.SelectAll();
+		shear.Shear( 1f );
+		Check( "shear keeps the volume", MathF.Abs( shear.Mesh.SignedVolume() - 8f ) < 1e-3f, $"{shear.Mesh.SignedVolume():0.###}" );
+		Check( "and leans the top forward in X past the bottom",
+			shear.Mesh.Positions.Where( p => p.z > 0f ).Average( p => p.x ) - shear.Mesh.Positions.Where( p => p.z < 0f ).Average( p => p.x ) > 1.9f );
+
+		// Bend 180 degrees: a long thin strip along X ends up folded back on itself.
+		var strip = new MeshEditSession( Primitives.Plane( 10f, 1f, 10, 1 ) );
+		strip.SelectAll();
+		strip.Bend( 180f );
+		var minX = float.MaxValue;
+		var maxX = float.MinValue;
+		foreach ( var p in strip.Mesh.Positions )
+		{
+			minX = MathF.Min( minX, p.x );
+			maxX = MathF.Max( maxX, p.x );
+		}
+		var diameter = 10f / MathF.PI * 2f;
+		var height = strip.Mesh.Positions.Max( p => p.z ) - strip.Mesh.Positions.Min( p => p.z );
+		Check( "bending a 10-long strip by 180 degrees makes a half circle", MathF.Abs( height - diameter ) < 0.05f,
+			$"height {height:0.###}, want {diameter:0.###}" );
+		Check( "and the -X end stays put", MathF.Abs( minX + 5f ) < 1e-3f, $"{minX:0.###}" );
+
+		// Array: one box times three, side by side.
+		var array = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		array.SetMode( EditElement.Face );
+		array.SelectAll();
+		array.ArrayFaces( 3 );
+		Check( "array of 3 has three boxes' faces", array.Mesh.FaceCount == 18, $"{array.Mesh.FaceCount}" );
+		Check( "three boxes' volume", MathF.Abs( array.Mesh.SignedVolume() - 24f ) < 1e-3f, $"{array.Mesh.SignedVolume():0.###}" );
+		Check( "and the last one sits two widths along", MathF.Abs( array.Mesh.Positions.Max( p => p.x ) - 5f ) < 1e-3f );
+
+		// Non-manifold: a closed box has none; take a face away and its four edges light up.
+		var holed = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		holed.SelectNonManifold();
+		Check( "a closed box has no non-manifold edges", holed.SelectedEdges.Count == 0 );
+		holed.SetMode( EditElement.Face );
+		holed.SelectFace( 0 );
+		holed.Delete();
+		holed.SelectNonManifold();
+		Check( "a box with a hole has its four rim edges", holed.SelectedEdges.Count == 4, $"{holed.SelectedEdges.Count}" );
+
+		// Boundary loop: the middle 2x2 of a 4x4 grid has an 8-edge rim.
+		var grid = new MeshEditSession( Primitives.Plane( 8f, 8f, 4, 4 ) );
+		grid.SetMode( EditElement.Face );
+		for ( var f = 0; f < grid.Mesh.FaceCount; f++ )
+		{
+			var c = grid.Mesh.FaceCentroid( grid.Mesh.Faces[f] );
+			if ( MathF.Abs( c.x ) < 2f && MathF.Abs( c.y ) < 2f )
+				grid.SelectFace( f, MeshEditSession.Combine.Add );
+		}
+		grid.SelectBoundaryLoop();
+		Check( "the rim of a 2x2 patch is 8 edges", grid.SelectedEdges.Count == 8, $"{grid.SelectedEdges.Count}" );
+
+		// Checker on a 4x4 grid keeps 8 of 16, and no two kept faces share an edge.
+		var checker = new MeshEditSession( Primitives.Plane( 8f, 8f, 4, 4 ) );
+		checker.SetMode( EditElement.Face );
+		checker.SelectAll();
+		checker.CheckerDeselect();
+		Check( "checker keeps half of a 4x4 grid", checker.SelectedFaces.Count == 8, $"{checker.SelectedFaces.Count}" );
+		var touching = false;
+		foreach ( var pair in checker.Mesh.BuildEdgeFaces() )
+			if ( pair.Value.Count(f => checker.SelectedFaces.Contains( f )) > 1 )
+				touching = true;
+		Check( "and no two kept faces share an edge", !touching );
+
+		// Delete loose: two stray vertices an import left behind.
+		var stray = Primitives.Box( 2, 2, 2 );
+		stray.AddVertex( new Vec3( 9, 9, 9 ) );
+		stray.AddVertex( new Vec3( -9, 9, 9 ) );
+		var loose = new MeshEditSession( stray );
+		loose.DeleteLoose();
+		Check( "delete loose drops vertices no face uses", loose.Mesh.VertexCount == 8, $"{loose.Mesh.VertexCount}" );
+		Check( "and leaves the box whole", MathF.Abs( loose.Mesh.SignedVolume() - 8f ) < 1e-3f );
+		var refusedLoose = false;
+		try { loose.DeleteLoose(); } catch ( InvalidOperationException ) { refusedLoose = true; }
+		Check( "and says so when there are none", refusedLoose );
+	}
+
+	/// <summary>Poly build over a dense body: first quad, strips, welding, the refusals, relax and
+	/// separating the result — with the traced body left exactly as it was.</summary>
+	static void TestRetopology()
+	{
+		Section( "retopology: poly build, guard rails, relax, separate" );
+
+		var dense = Primitives.Plane( 20f, 20f, 40, 40 );
+		var session = new MeshEditSession( dense );
+		var faces0 = session.Mesh.FaceCount;
+		var verts0 = session.Mesh.VertexCount;
+		const float Lift = 0.05f;
+
+		var refusedEarly = false;
+		try { session.PolyBuild( Vec3.Zero ); } catch ( InvalidOperationException ) { refusedEarly = true; }
+		Check( "poly build before retopology starts is refused", refusedEarly );
+
+		session.BeginRetopo( Lift );
+
+		// Clicks above the surface land on it, lifted by the offset.
+		session.PolyBuild( new Vec3( 0, 0, 3f ) );
+		Check( "a click lands on the surface plus the lift",
+			MathF.Abs( session.Mesh.Positions[^1].z - Lift ) < 1e-4f, $"{session.Mesh.Positions[^1].z}" );
+
+		// Corners in a scrambled order still make one clean quad.
+		var plan = session.PlanPolyBuild( new Vec3( 2, 2, 0 ) );
+		Check( "a second click only plans a vertex", !plan.ClosesFace && plan.IsValid );
+		session.PolyBuild( new Vec3( 2, 2, 0 ) );
+		session.PolyBuild( new Vec3( 2, 0, 0 ) );
+		session.PolyBuild( new Vec3( 0, 2, 0 ) );
+
+		Check( "four clicks make one face", session.Mesh.FaceCount == faces0 + 1, $"{session.Mesh.FaceCount - faces0}" );
+		var quad = session.Mesh.Faces[^1];
+		Check( "which is a quad, not a bow-tie", quad.Indices.Length == 4
+			&& MathF.Abs( session.Mesh.FaceArea( quad ) - 4f ) < 1e-3f, $"area {session.Mesh.FaceArea( quad ):0.###}" );
+		Check( "facing out of the surface, not into it", session.Mesh.FaceNormal( quad ).z > 0f );
+		Check( "and an edge of it is left selected to grow from",
+			session.Mode == EditElement.Edge && session.SelectedEdges.Count == 1 );
+
+		// Grow a strip off the +X side: select that edge, click further along +X.
+		var right = new EdgeKey( -1, -1 );
+		foreach ( var key in session.Mesh.BuildEdgeFaces().Keys )
+			if ( key.A >= verts0 && key.B >= verts0
+				&& MathF.Abs( session.Mesh.Positions[key.A].x - 2f ) < 1e-3f && MathF.Abs( session.Mesh.Positions[key.B].x - 2f ) < 1e-3f )
+				right = key;
+
+		session.SelectEdge( right );
+
+		var back = session.PlanPolyBuild( new Vec3( 1f, 1f, 0 ) );
+		Check( "clicking back over the quad is refused before it happens", !back.IsValid, back.Problem ?? "valid" );
+
+		session.EvenQuads = true;
+		session.PolyBuild( new Vec3( 9f, 1.3f, 0 ) );
+		var grown = session.Mesh.Faces[^1];
+		Check( "an even extension is square to its edge, however far the click",
+			MathF.Abs( session.Mesh.FaceArea( grown ) - 4f ) < 1e-3f, $"area {session.Mesh.FaceArea( grown ):0.###}" );
+		Check( "and shares the edge with the first quad",
+			session.Mesh.BuildEdgeFaces()[right].Count == 2 );
+		Check( "and faces the same way", session.Mesh.FaceNormal( grown ).z > 0f );
+
+		var free = session.PlanPolyBuild( new Vec3( 9f, 1f, 0 ) );
+		session.EvenQuads = false;
+		var loose = session.PlanPolyBuild( new Vec3( 9f, 1f, 0 ) );
+		session.EvenQuads = true;
+		Check( "turning even quads off reaches to the click instead",
+			loose.Corners[2].x > free.Corners[2].x + 1f, $"{free.Corners[2].x:0.##} vs {loose.Corners[2].x:0.##}" );
+
+		// Weld: with nothing selected, a click just beside a corner of the strip reuses that corner.
+		session.ClearSelection();
+		var before = session.Mesh.VertexCount;
+		session.PolyBuild( new Vec3( 4f, 0.1f, 0 ), weld: 0.3f );
+		Check( "a click near an existing vertex reuses it", session.Mesh.VertexCount == before,
+			$"{before} -> {session.Mesh.VertexCount}" );
+
+		// Undo takes back exactly one click.
+		var undoFaces = session.Mesh.FaceCount;
+		session.ClearSelection();
+		session.PolyBuild( new Vec3( -6, -6, 0 ) );
+		session.Undo();
+		Check( "undo takes back one click", session.Mesh.FaceCount == undoFaces && session.Mesh.VertexCount == before );
+
+		// Relax keeps everything on the surface.
+		session.ClearSelection();
+		session.RelaxRetopo( 0.5f, 3 );
+		var onSurface = true;
+		for ( var v = verts0; v < session.Mesh.VertexCount; v++ )
+			if ( MathF.Abs( session.Mesh.Positions[v].z - Lift ) > 1e-3f )
+				onSurface = false;
+		Check( "relax leaves every new vertex on the surface", onSurface );
+
+		// Separate: the drawn faces leave, the traced body is exactly what it was.
+		var drawn = session.Mesh.FaceCount - faces0;
+		session.SeparateRetopo();
+		Check( "finishing lifts the new mesh out as its own body",
+			session.Separated.Count == 1 && session.Separated[0].FaceCount == drawn,
+			$"{session.Separated.Count} bodies, {(session.Separated.Count > 0 ? session.Separated[0].FaceCount : 0)} of {drawn} faces" );
+		Check( "the traced body is left as it was",
+			session.Mesh.FaceCount == faces0 && session.Mesh.VertexCount == verts0 );
+		Check( "and retopology is over", !session.IsRetopologizing );
+		Check( "the new body is valid", MeshValidator.Validate( session.Separated[0] ).IsValid );
+	}
+
+	/// <summary>Retopology helpers: cheap undo, mirrored poly build, strips.</summary>
+	static void TestRetopologyHelpers()
+	{
+		Section( "retopology: tail undo, mirror, strips" );
+
+		var dense = Primitives.Plane( 20f, 20f, 40, 40 );
+		var faces0 = dense.FaceCount;
+		var verts0 = dense.VertexCount;
+
+		// Tail undo: clicks, then undo them all and redo them all, and the sculpt never changes.
+		var s = new MeshEditSession( dense );
+		s.BeginRetopo( 0.05f );
+		s.PolyBuild( new Vec3( 1, 1, 0 ) );
+		s.PolyBuild( new Vec3( 3, 1, 0 ) );
+		s.PolyBuild( new Vec3( 3, 3, 0 ) );
+		Check( "three corners placed are three selected vertices", s.SelectedVertices.Count == 3 );
+		s.Undo();
+		Check( "undoing the third leaves two, still counted as corners",
+			s.SelectedVertices.Count == 2 && s.Mesh.VertexCount == verts0 + 2 );
+		s.PolyBuild( new Vec3( 3, 3, 0 ) );
+		s.PolyBuild( new Vec3( 1, 3, 0 ) );
+		Check( "and the quad still closes on the fourth", s.Mesh.FaceCount == faces0 + 1 );
+
+		var closed = s.Mesh.FaceCount;
+		while ( s.Undo() ) { }
+		Check( "undoing everything leaves the sculpt exactly", s.Mesh.FaceCount == faces0 && s.Mesh.VertexCount == verts0 );
+		var firstCorner = dense.Positions[0];
+		Check( "with its vertices where they were", s.Mesh.Positions[0].x == firstCorner.x && s.Mesh.Positions[0].z == firstCorner.z );
+		while ( s.Redo() ) { }
+		Check( "and redoing everything brings the quad back", s.Mesh.FaceCount == closed );
+
+		// Undo of Finish puts you back in retopology with the drawing intact.
+		s.SeparateRetopo();
+		Check( "finishing ends retopology", !s.IsRetopologizing && s.Mesh.FaceCount == faces0 );
+		s.Undo();
+		Check( "undoing the finish resumes it", s.IsRetopologizing && s.Mesh.FaceCount == closed && s.Separated.Count == 0 );
+
+		// Mirror: a quad drawn on +X appears on -X too, and one on the centre line shares it.
+		var m = new MeshEditSession( dense ) { MirrorX = true };
+		m.BeginRetopo( 0.05f );
+		foreach ( var p in new[] { new Vec3( 2, 0, 0 ), new Vec3( 4, 0, 0 ), new Vec3( 4, 2, 0 ), new Vec3( 2, 2, 0 ) } )
+			m.PolyBuild( p );
+		Check( "a mirrored quad makes two faces", m.Mesh.FaceCount == faces0 + 2, $"{m.Mesh.FaceCount - faces0}" );
+		var mirrored = m.Mesh.Faces[^1];
+		Check( "the second one on the -X side", m.Mesh.FaceCentroid( mirrored ).x < -2f );
+		Check( "facing out like the first", m.Mesh.FaceNormal( mirrored ).z > 0f );
+
+		var seam = new MeshEditSession( dense ) { MirrorX = true };
+		seam.BeginRetopo( 0.05f );
+		foreach ( var p in new[] { new Vec3( 0.1f, 0, 0 ), new Vec3( 2, 0, 0 ), new Vec3( 2, 2, 0 ), new Vec3( 0.1f, 2, 0 ) } )
+			seam.PolyBuild( p, weld: 0.3f );
+		Check( "corners near the centre go onto it",
+			seam.Mesh.Positions.Skip( verts0 ).Count( v => v.x == 0f ) == 2 );
+		Check( "and the two halves share them — six vertices, not eight",
+			seam.Mesh.VertexCount == verts0 + 6, $"{seam.Mesh.VertexCount - verts0}" );
+
+		// Strip: a stroke 8 long at width 2 lays four square quads in a row.
+		var strip = new MeshEditSession( dense );
+		strip.BeginRetopo( 0.05f );
+		strip.PolyBuildStroke( new[] { new Vec3( -4, 5, 0 ), new Vec3( 0, 5, 0 ), new Vec3( 4, 5, 0 ) }, 2f );
+		Check( "an 8-long stroke at width 2 lays four quads", strip.Mesh.FaceCount == faces0 + 4, $"{strip.Mesh.FaceCount - faces0}" );
+		Check( "all square", strip.Mesh.Faces.Skip( faces0 ).All( f => MathF.Abs( strip.Mesh.FaceArea( f ) - 4f ) < 0.05f ) );
+		Check( "all facing out", strip.Mesh.Faces.Skip( faces0 ).All( f => strip.Mesh.FaceNormal( f ).z > 0f ) );
+		Check( "joined along the strip, not loose quads", strip.Mesh.VertexCount == verts0 + 10, $"{strip.Mesh.VertexCount - verts0}" );
+		Check( "and its end edge is left selected", strip.SelectedEdges.Count == 1 );
+
+		// Carrying on from the selected end edge continues the same strip.
+		var before = strip.Mesh.VertexCount;
+		strip.PolyBuildStroke( new[] { new Vec3( 4, 5, 0 ), new Vec3( 8, 5, 0 ) }, 0f );
+		Check( "a stroke from the selected edge carries the strip on", strip.Mesh.FaceCount == faces0 + 6
+			&& strip.Mesh.VertexCount == before + 4, $"{strip.Mesh.FaceCount - faces0} faces" );
+
+		// Back over what is there: refused whole, nothing built.
+		var count = strip.Mesh.FaceCount;
+		var refused = false;
+		strip.ClearSelection();
+		try { strip.PolyBuildStroke( new[] { new Vec3( -4, 5, 0 ), new Vec3( 4, 5, 0 ) }, 2f ); }
+		catch ( InvalidOperationException ) { refused = true; }
+		Check( "a strip over the top of one already there is refused", refused && strip.Mesh.FaceCount == count );
+	}
+
+	/// <summary>Grid fill, rip, and spin round a moved pivot.</summary>
+	static void TestGridFillRipPivot()
+	{
+		Section( "edit session: grid fill, rip, pivot" );
+
+		int OpenEdges( PolyMesh m ) => m.BuildEdgeFaces().Values.Count( f => f.Count == 1 );
+
+		// Grid fill: cut the middle 2x2 out of a 4x4 grid, then fill the 8-edge hole with a grid.
+		var holed = new MeshEditSession( Primitives.Plane( 8f, 8f, 4, 4 ) );
+		holed.SetMode( EditElement.Face );
+		for ( var f = 0; f < holed.Mesh.FaceCount; f++ )
+		{
+			var c = holed.Mesh.FaceCentroid( holed.Mesh.Faces[f] );
+			if ( MathF.Abs( c.x ) < 2f && MathF.Abs( c.y ) < 2f )
+				holed.SelectFace( f, MeshEditSession.Combine.Add );
+		}
+		holed.Delete();
+		var rimOnly = holed.Mesh.FaceCount;
+		holed.SetMode( EditElement.Vertex );
+		foreach ( var v in Enumerable.Range( 0, holed.Mesh.VertexCount ) )
+		{
+			var p = holed.Mesh.Positions[v];
+			if ( MathF.Abs( p.x ) < 2.5f && MathF.Abs( p.y ) < 2.5f )
+				holed.SelectVertex( v, MeshEditSession.Combine.Add );
+		}
+		holed.GridFill();
+		Check( "grid fill caps an 8-edge hole with four quads", holed.Mesh.FaceCount == rimOnly + 4, $"{holed.Mesh.FaceCount - rimOnly}" );
+		Check( "leaving only the outer border open", OpenEdges( holed.Mesh ) == 16, $"{OpenEdges( holed.Mesh )}" );
+		Check( "facing the same way as the grid round it",
+			holed.SelectedFaces.All( f => holed.Mesh.FaceNormal( holed.Mesh.Faces[f] ).z > 0f ) );
+		Check( "with its middle vertex in the middle",
+			holed.Mesh.Positions.Any( p => p.Length < 1e-3f ) );
+
+		var odd = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		odd.SetMode( EditElement.Face );
+		odd.SelectFace( 0 );
+		odd.Delete();
+		odd.SetMode( EditElement.Vertex );
+		odd.SelectAll();
+		odd.GridFill();
+		Check( "a 4-edge hole takes a single quad", odd.Mesh.FaceCount == 6 && MathF.Abs( odd.Mesh.SignedVolume() - 8f ) < 1e-3f );
+
+		// Rip, border to border: the grid comes apart along x = 0.
+		var sheet = new MeshEditSession( Primitives.Plane( 8f, 8f, 4, 4 ) );
+		sheet.SetMode( EditElement.Edge );
+		foreach ( var key in sheet.Mesh.BuildEdgeFaces().Keys )
+			if ( MathF.Abs( sheet.Mesh.Positions[key.A].x ) < 1e-3f && MathF.Abs( sheet.Mesh.Positions[key.B].x ) < 1e-3f )
+				sheet.SelectEdge( key, MeshEditSession.Combine.Add );
+		var verts = sheet.Mesh.VertexCount;
+		sheet.Rip();
+		Check( "ripping a line border to border splits all five of its vertices", sheet.Mesh.VertexCount == verts + 5,
+			$"+{sheet.Mesh.VertexCount - verts}" );
+		Check( "and opens both sides of all four edges", OpenEdges( sheet.Mesh ) == 16 + 8, $"{OpenEdges( sheet.Mesh )}" );
+		Check( "leaving the new side selected", sheet.SelectedEdges.Count == 4 );
+
+		// Rip inside the mesh: a slit, closed at both ends.
+		var slit = new MeshEditSession( Primitives.Plane( 8f, 8f, 4, 4 ) );
+		slit.SetMode( EditElement.Edge );
+		foreach ( var key in slit.Mesh.BuildEdgeFaces().Keys )
+		{
+			var a = slit.Mesh.Positions[key.A];
+			var b = slit.Mesh.Positions[key.B];
+			if ( MathF.Abs( a.x ) < 1e-3f && MathF.Abs( b.x ) < 1e-3f && MathF.Abs( a.y ) < 2.5f && MathF.Abs( b.y ) < 2.5f )
+				slit.SelectEdge( key, MeshEditSession.Combine.Add );
+		}
+		verts = slit.Mesh.VertexCount;
+		slit.Rip();
+		Check( "a slit inside the mesh splits only its middle vertex", slit.Mesh.VertexCount == verts + 1, $"+{slit.Mesh.VertexCount - verts}" );
+		Check( "and opens a hole of four edges", OpenEdges( slit.Mesh ) == 16 + 4, $"{OpenEdges( slit.Mesh )}" );
+
+		var border = new MeshEditSession( Primitives.Plane( 2f, 2f, 1, 1 ) );
+		border.SetMode( EditElement.Edge );
+		border.SelectEdge( border.Mesh.BuildEdgeFaces().Keys.First() );
+		var refused = false;
+		try { border.Rip(); } catch ( InvalidOperationException ) { refused = true; }
+		Check( "ripping an open border is refused", refused );
+
+		// Spin round a moved pivot: the swept edge keeps its distance from the pivot, not the origin.
+		var profile = new PolyMesh();
+		profile.AddVertex( new Vec3( 3, 0, 0 ) );
+		profile.AddVertex( new Vec3( 4, 0, 0 ) );
+		profile.AddVertex( new Vec3( 4, 0, 1 ) );
+		profile.AddVertex( new Vec3( 3, 0, 1 ) );
+		profile.AddFace( new[] { 0, 1, 2, 3 }, null, 0 );
+		var spin = new MeshEditSession( profile ) { Pivot = new Vec3( 3.5f, 0, 0 ) };
+		spin.SetMode( EditElement.Edge );
+		spin.SelectEdge( new EdgeKey( 1, 2 ) );
+		spin.Spin( 360f, 8 );
+		Check( "spin turns round the pivot",
+			Enumerable.Range( 4, spin.Mesh.VertexCount - 4 ).All( v =>
+				MathF.Abs( MathF.Sqrt( MathF.Pow( spin.Mesh.Positions[v].x - 3.5f, 2 ) + MathF.Pow( spin.Mesh.Positions[v].y, 2 ) ) - 0.5f ) < 1e-3f ) );
+
+		var pivot = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		pivot.SetMode( EditElement.Face );
+		pivot.SelectFace( 0 );
+		pivot.PivotToSelection();
+		Check( "pivot to selection lands on the face's middle",
+			(pivot.Pivot - pivot.Mesh.FaceCentroid( pivot.Mesh.Faces[0] )).Length < 1e-4f );
+	}
+
+	/// <summary>The live modifier stack on a mesh edit: mirror joins at the seam, array, the fixed
+	/// order, and the cage left alone.</summary>
+	static void TestMeshModifiers()
+	{
+		Section( "mesh edit: live modifiers" );
+
+		int OpenEdges( PolyMesh m ) => m.BuildEdgeFaces().Values.Count( f => f.Count == 1 );
+
+		// Half a box, open at x = 0 — the way you model half a head.
+		var half = Primitives.Box( 2, 2, 2 );
+		for ( var i = 0; i < half.VertexCount; i++ )
+			half.Positions[i] += new Vec3( 1f, 0, 0 );
+		var open = half.Faces.FindIndex( f => f.Indices.All( v => MathF.Abs( half.Positions[v].x ) < 1e-4f ) );
+		half.Faces.RemoveAt( open );
+		Check( "the half box is open at the middle", OpenEdges( half ) == 4 );
+
+		var whole = MeshModifiers.MirrorX( half );
+		Check( "mirroring joins it into one closed body", OpenEdges( whole ) == 0, $"{OpenEdges( whole )} open" );
+		Check( "twice the size", MathF.Abs( whole.SignedVolume() - 16f ) < 1e-3f, $"{whole.SignedVolume():0.###}" );
+		Check( "sharing the seam's four vertices", whole.VertexCount == 12, $"{whole.VertexCount}" );
+		Check( "and the half is untouched", half.FaceCount == 5 && half.VertexCount == 8 );
+
+		var row = MeshModifiers.ArrayX( Primitives.Box( 2, 2, 2 ), 3, 1f );
+		Check( "array of three with a gap of 1", row.FaceCount == 18 && MathF.Abs( row.Positions.Max( p => p.x ) - 7f ) < 1e-3f );
+
+		var feature = new MeshEditFeature();
+		Check( "a new edit has no modifiers", !feature.HasModifiers );
+
+		feature.MirrorX.Value = true;
+		feature.SubdivideLevels.Value = 1;
+		var smooth = feature.ApplyModifiers( half );
+		Check( "mirror then subdivide gives a smooth closed body", OpenEdges( smooth ) == 0 && smooth.FaceCount == 10 * 4,
+			$"{smooth.FaceCount} faces, {OpenEdges( smooth )} open" );
+
+		feature.SolidifyThickness.Value = 0.1f;
+		var thick = feature.ApplyModifiers( half );
+		Check( "thickness comes last, over the smoothed surface", thick.FaceCount > smooth.FaceCount );
+
+		feature.MirrorX.Value = false;
+		feature.SubdivideLevels.Value = 0;
+		feature.SolidifyThickness.Value = 0f;
+		Check( "switched off, it is the mesh again", !feature.HasModifiers && feature.ApplyModifiers( half ).FaceCount == 5 );
+	}
+
+	/// <summary>Seams on the session: marked from the selection, undoable, pruned when the edge they
+	/// sit on is deleted, and actually steering the unwrap.</summary>
+	static void TestEditSessionSeams()
+	{
+		Section( "edit session: seams mark, undo and steer the unwrap" );
+
+		var session = new MeshEditSession( Primitives.Plane( 8f, 8f, 4, 4 ) );
+		session.SetMode( EditElement.Edge );
+
+		// The straight cut across the middle, same as the unwrap test.
+		var across = new List<EdgeKey>();
+		foreach ( var key in session.Mesh.BuildEdgeFaces().Keys )
+			if ( MathF.Abs( session.Mesh.Positions[key.A].y ) < 1e-3f && MathF.Abs( session.Mesh.Positions[key.B].y ) < 1e-3f )
+				across.Add( key );
+
+		foreach ( var key in across )
+			session.SelectEdge( key, MeshEditSession.Combine.Add );
+
+		var before = session.Mesh.VertexCount;
+		session.MarkSeam();
+		Check( "marking takes the selected edges", session.Seams.Count == across.Count, $"{session.Seams.Count}" );
+		Check( "and does not touch the mesh", session.Mesh.VertexCount == before );
+		Check( "marking is one undo step", session.UndoCount == 1 );
+
+		var report = session.Unwrap();
+		Check( "the seam splits the unwrap in two", report.Charts == 2, $"{report.Charts}" );
+
+		Check( "undo takes the unwrap back", session.Undo() );
+		Check( "and the seams are still there", session.Seams.Count == across.Count );
+		Check( "undo again takes the marks back", session.Undo() );
+		Check( "leaving no seams", session.Seams.Count == 0, $"{session.Seams.Count}" );
+		Check( "redo puts them back", session.Redo() && session.Seams.Count == across.Count );
+
+		// Deleting the faces on a seam must take the seam with it, not leave it pointing at nothing.
+		session.ClearSelection();
+		session.SetMode( EditElement.Face );
+		for ( var f = 0; f < session.Mesh.FaceCount; f++ )
+			session.SelectFace( f, MeshEditSession.Combine.Add );
+		session.Delete();
+		Check( "deleting every face prunes every seam", session.Seams.Count == 0, $"{session.Seams.Count}" );
+		Check( "and undo brings both back", session.Undo() && session.Seams.Count == across.Count,
+			$"{session.Seams.Count}" );
+
+		// Marking needs a selection, and says so rather than doing nothing.
+		session.ClearSelection();
+		session.SetMode( EditElement.Edge );
+		var refused = false;
+		try { session.MarkSeam(); } catch ( InvalidOperationException ) { refused = true; }
+		Check( "marking with nothing selected is refused", refused );
+	}
+
+	static void TestEditSession()
+	{
+		var box = Primitives.Box( 2, 2, 2 );
+		var s = new MeshEditSession( box );
+		var top = TopFace( s.Mesh );
+		var topZ = s.Mesh.FaceCentroid( s.Mesh.Faces[top] ).z;
+
+		s.SelectFace( top );
+		s.Extrude( 1f );
+		var v = MeshValidator.Validate( s.Mesh );
+		Check( "extrude through the session gives a valid closed solid", v.IsValid && v.IsClosed, v.ToString() );
+		Check( "extrude adds 4 vertices and 4 faces", s.Mesh.VertexCount == 12 && s.Mesh.FaceCount == 10, $"{s.Mesh.VertexCount}v/{s.Mesh.FaceCount}f" );
+		Check( "the extruded face is still the selection, one inch up",
+			s.SelectedFaces.Count == 1 && MathF.Abs( s.Mesh.FaceCentroid( s.Mesh.Faces[top] ).z - (topZ + 1f) ) < 1e-4f );
+		Check( "extrude is one undo step", s.UndoCount == 1 && s.LastLabel == "Extrude" );
+
+		s.Undo();
+		Check( "undo brings the box back", s.Mesh.VertexCount == 8 && s.Mesh.FaceCount == 6 );
+		s.Redo();
+		Check( "redo puts the extrude back", s.Mesh.VertexCount == 12 );
+
+		// Scrubbing: three previews, one accept, one step.
+		var steps = s.UndoCount;
+		s.Preview( "Inset", x => x.Inset( 0.1f ) );
+		s.Preview( "Inset", x => x.Inset( 0.3f ) );
+		s.Preview( "Inset", x => x.Inset( 0.2f ) );
+		s.Accept();
+		Check( "scrubbing an inset lands as one undo step", s.UndoCount == steps + 1, $"{s.UndoCount - steps} steps" );
+		Check( "and only the last preview's inset is applied", s.Mesh.FaceCount == 14, $"{s.Mesh.FaceCount} faces" );
+
+		s.Preview( "Inset", x => x.Inset( 0.1f ) );
+		s.Cancel();
+		Check( "cancelling a preview changes nothing", s.Mesh.FaceCount == 14 && s.UndoCount == steps + 1 );
+
+		// Dragging.
+		var before = s.Mesh.Clone();
+		steps = s.UndoCount;
+		s.BeginDrag();
+		s.Drag( new Vec3( 0, 0, 0.5f ) );
+		s.Drag( new Vec3( 0, 0, 1f ) );
+		s.EndDrag();
+		Check( "a drag is one undo step and never accumulates",
+			s.UndoCount == steps + 1 && MathF.Abs( s.SelectionCentre().z - (s.Mesh.FaceCentroid( before.Faces[top] ).z) ) < 1e-3f );
+		s.BeginDrag();
+		s.Drag( new Vec3( 5, 5, 5 ) );
+		s.EndDrag( keep: false );
+		Check( "a cancelled drag puts every vertex back", s.UndoCount == steps + 1 );
+
+		// Delete a face off a fresh box.
+		var d = new MeshEditSession( box );
+		d.SelectFace( TopFace( d.Mesh ) );
+		d.Delete();
+		v = MeshValidator.Validate( d.Mesh );
+		Check( "deleting a face opens the box", d.Mesh.FaceCount == 5 && v.BoundaryEdges == 4, v.ToString() );
+
+		// Mode conversion: a face selected, then vertex mode, has its four corners.
+		var c = new MeshEditSession( box );
+		c.SelectFace( TopFace( c.Mesh ) );
+		c.SetMode( EditElement.Vertex );
+		Check( "switching to vertex mode keeps the face's corners", c.SelectedVertices.Count == 4 );
+		c.SetMode( EditElement.Edge );
+		Check( "and edge mode selects the four edges between them", c.SelectedEdges.Count == 4 );
+
+		// Loop cut from a vertical edge: the new loop is selected.
+		var l = new MeshEditSession( box );
+		EdgeKey vertical = default;
+		foreach ( var key in l.Mesh.BuildEdgeFaces().Keys )
+		{
+			var a = l.Mesh.Positions[key.A];
+			var b = l.Mesh.Positions[key.B];
+			if ( MathF.Abs( a.z - b.z ) > 1f )
+			{
+				vertical = key;
+				break;
+			}
+		}
+		l.LoopCut( vertical, 0.5f );
+		v = MeshValidator.Validate( l.Mesh );
+		Check( "loop cut through the session stays closed", v.IsValid && v.IsClosed && l.Mesh.VertexCount == 12, v.ToString() );
+		Check( "the new loop is the selection", l.Mode == EditElement.Edge && l.SelectedEdges.Count == 4, $"{l.SelectedEdges.Count} edges" );
+
+		// Edge loop select on the cut box finds that same ring of 4.
+		var ring = MeshEditSession.EdgeLoop( l.Mesh, new List<EdgeKey>( l.SelectedEdges )[0] );
+		Check( "edge loop select walks the whole ring", ring.Count == 4, $"{ring.Count}" );
+
+		// Merge the top face to a point: a pyramid.
+		var p = new MeshEditSession( box );
+		p.SelectFace( TopFace( p.Mesh ) );
+		p.MergeAtCentre();
+		v = MeshValidator.Validate( p.Mesh );
+		Check( "merging the top face gives a closed 5-vertex pyramid", v.IsClosed && p.Mesh.VertexCount == 5 && p.Mesh.FaceCount == 5,
+			$"{p.Mesh.VertexCount}v/{p.Mesh.FaceCount}f {v}" );
+
+		// Mirror: moving a +x vertex moves its -x partner.
+		var m = new MeshEditSession( box ) { MirrorX = true };
+		m.SetMode( EditElement.Vertex );
+		var right = m.Mesh.Positions.FindIndex( q => q.x > 0.5f && q.y > 0.5f && q.z > 0.5f );
+		var left = m.Mesh.Positions.FindIndex( q => q.x < -0.5f && q.y > 0.5f && q.z > 0.5f );
+		m.SelectVertex( right );
+		m.BeginDrag();
+		m.Drag( new Vec3( 0.5f, 0, 0.25f ) );
+		m.EndDrag();
+		Check( "mirror editing moves the partner the mirrored way",
+			m.Mesh.Positions[left].AlmostEquals( new Vec3( -m.Mesh.Positions[right].x, m.Mesh.Positions[right].y, m.Mesh.Positions[right].z ) ),
+			$"{m.Mesh.Positions[left]} vs {m.Mesh.Positions[right]}" );
+
+		// Snapping: a vertex dragged near a big box's surface lands on it.
+		var sn = new MeshEditSession( box ) { SnapTarget = Primitives.Box( 10, 10, 10 ), SnapOffset = 0.1f };
+		sn.SetMode( EditElement.Vertex );
+		sn.SelectVertex( right );
+		sn.BeginDrag();
+		sn.Drag( new Vec3( 3.5f, 0, 0 ) );
+		sn.EndDrag();
+		Check( "a snapped vertex sits on the target plus the offset", MathF.Abs( sn.Mesh.Positions[right].x - 5.1f ) < 1e-3f, $"{sn.Mesh.Positions[right]}" );
+
+		// Edge slide: the loop cut at the box's middle slides halfway to one rim and back the other way.
+		var sl = new MeshEditSession( box );
+		sl.LoopCut( vertical, 0.5f );
+		var loopVerts = sl.AffectedVertices();
+		float LoopHeight() { var z = 0f; foreach ( var i in loopVerts ) z += sl.Mesh.Positions[i].z; return z / loopVerts.Count; }
+		var h0 = LoopHeight();
+		sl.EdgeSlide( 0.5f );
+		var h1 = LoopHeight();
+		Check( "edge slide moves the whole loop halfway to one rim, level", MathF.Abs( MathF.Abs( h1 - h0 ) - 0.5f ) < 1e-3f
+			&& loopVerts.All( i => MathF.Abs( sl.Mesh.Positions[i].z - h1 ) < 1e-3f ), $"{h0} -> {h1}" );
+		sl.Undo();
+		sl.EdgeSlide( -0.5f );
+		Check( "and the other way with a negative amount", MathF.Abs( LoopHeight() - (h0 - (h1 - h0)) ) < 1e-3f, $"{LoopHeight()}" );
+		v = MeshValidator.Validate( sl.Mesh );
+		Check( "edge slide keeps the solid closed and its topology", v.IsClosed && sl.Mesh.VertexCount == 12 );
+
+		// Bevel one edge of a box: two new faces' worth of corner, still closed, a little smaller.
+		var bv = new MeshEditSession( box );
+		bv.SetMode( EditElement.Edge );
+		bv.SelectEdge( vertical );
+		bv.Bevel( 0.2f, 1 );
+		v = MeshValidator.Validate( bv.Mesh );
+		Check( "chamfering one selected edge gives a closed solid with the cut and its corner patches", v.IsClosed && bv.Mesh.FaceCount > 6, $"{bv.Mesh.FaceCount} faces {v}" );
+		Check( "and trims only that edge's corner off", bv.Mesh.SignedVolume() < 8f && bv.Mesh.SignedVolume() > 7.9f, $"{bv.Mesh.SignedVolume()}" );
+		var fl = new MeshEditSession( box );
+		fl.SetMode( EditElement.Edge );
+		fl.SelectEdge( vertical );
+		fl.Bevel( 0.2f, 4 );
+		Check( "a four-segment bevel rounds it with more faces than the chamfer", MeshValidator.Validate( fl.Mesh ).IsClosed && fl.Mesh.FaceCount > bv.Mesh.FaceCount, $"{fl.Mesh.FaceCount}" );
+
+		// Rotate and scale through the drag.
+		var rs = new MeshEditSession( box );
+		rs.SelectFace( TopFace( rs.Mesh ) );
+		var pivot = rs.SelectionCentre();
+		rs.BeginDrag();
+		rs.DragRotate( pivot, new Vec3( 0, 0, 1 ), 45f );
+		rs.EndDrag();
+		var corner = rs.Mesh.Positions[rs.Mesh.Faces[TopFace( rs.Mesh )].Indices[0]];
+		Check( "rotating the top face 45 degrees puts a corner on an axis", MathF.Abs( corner.x ) < 1e-3f || MathF.Abs( corner.y ) < 1e-3f, $"{corner}" );
+		rs.BeginDrag();
+		rs.DragScale( pivot, new Vec3( 2, 2, 1 ) );
+		rs.EndDrag();
+		corner = rs.Mesh.Positions[rs.Mesh.Faces[TopFace( rs.Mesh )].Indices[0]];
+		Check( "scaling it by 2 doubles its reach", MathF.Abs( new Vec3( corner.x, corner.y, 0 ).Length - 2f * MathF.Sqrt( 2f ) ) < 1e-3f, $"{corner}" );
+		Check( "rotate and scale are one undo step each", rs.UndoCount == 2 );
+
+		var threw = false;
+
+		// Bisect the box at its middle: a loop of four new edges, still closed, same volume.
+		var bi = new MeshEditSession( box );
+		bi.Bisect( Vec3.Zero, new Vec3( 0, 0, 1 ) );
+		v = MeshValidator.Validate( bi.Mesh );
+		Check( "bisect through the middle splits the four sides", v.IsValid && v.IsClosed && bi.Mesh.VertexCount == 12 && bi.Mesh.FaceCount == 10, $"{bi.Mesh.VertexCount}v/{bi.Mesh.FaceCount}f {v}" );
+		Check( "and keeps the volume", MathF.Abs( bi.Mesh.SignedVolume() - 8f ) < 1e-3f );
+		Check( "and selects the new loop", bi.SelectedEdges.Count == 4, $"{bi.SelectedEdges.Count}" );
+
+		// Knife across the top only, looking down: the top splits, its two neighbours take the
+		// new vertices, nothing else is touched.
+		var kn = new MeshEditSession( box );
+		kn.Knife( new Vec3( -2, 0, 1 ), new Vec3( 2, 0, 1 ), new Vec3( 0, 0, -1 ) );
+		v = MeshValidator.Validate( kn.Mesh );
+		Check( "a knife line across the top splits it and stays welded", v.IsValid && v.IsClosed && kn.Mesh.FaceCount == 7, $"{kn.Mesh.FaceCount}f {v}" );
+
+		// A knife stroke that stops short of the model cuts nothing, and says so.
+		threw = false;
+		try { kn.Knife( new Vec3( 5, 5, 1 ), new Vec3( 6, 5, 1 ), new Vec3( 0, 0, -1 ) ); } catch ( InvalidOperationException ) { threw = true; }
+		Check( "a knife line that misses the model refuses", threw );
+
+		// Soft falloff: lifting the top of a cut box drags the middle loop partway, the bottom not at all.
+		var so = new MeshEditSession( box );
+		so.LoopCut( vertical, 0.5f );
+		so.SetMode( EditElement.Vertex );
+		so.ClearSelection();
+		for ( var i = 0; i < so.Mesh.VertexCount; i++ )
+			if ( so.Mesh.Positions[i].z > 0.9f )
+				so.SelectVertex( i, MeshEditSession.Combine.Add );
+		so.SoftRadius = 1.5f;
+		var middle = so.Mesh.Positions.FindIndex( q => MathF.Abs( q.z ) < 1e-3f );
+		var bottom = so.Mesh.Positions.FindIndex( q => q.z < -0.9f );
+		so.BeginDrag();
+		so.Drag( new Vec3( 0, 0, 1 ) );
+		so.EndDrag();
+		Check( "soft falloff moves the nearby loop part of the way", so.Mesh.Positions[middle].z > 0.1f && so.Mesh.Positions[middle].z < 0.5f, $"{so.Mesh.Positions[middle].z}" );
+		Check( "and leaves what is out of reach alone", MathF.Abs( so.Mesh.Positions[bottom].z + 1f ) < 1e-5f );
+
+		// Operations refuse with a reason instead of doing something odd.
+		var r = new MeshEditSession( box );
+		threw = false;
+		try { r.Extrude( 1f ); } catch ( InvalidOperationException ) { threw = true; }
+		Check( "extrude with no faces selected refuses", threw && r.UndoCount == 0 );
+	}
+
+	static void TestMeshEditFeature()
+	{
+		var studio = new PartStudio();
+		var box = studio.Add( new PrimitiveFeature() );
+		box.SizeX.Value = 2f;
+		box.SizeY.Value = 2f;
+		box.SizeZ.Value = 2f;
+		var edit = studio.Add( new MeshEditFeature() );
+		studio.Rebuild();
+
+		Check( "an empty mesh edit passes the body through", edit.Error is null && studio.Bodies[0].Mesh.VertexCount == 8, edit.Error ?? "" );
+
+		var s = new MeshEditSession( edit.LastInput );
+		s.SelectFace( TopFace( s.Mesh ) );
+		s.Extrude( 1f );
+		Check( "committing a session reports it changed something", s.CommitTo( edit ) );
+		studio.Rebuild();
+		Check( "the studio shows the edit without a MarkDirty", edit.Error is null && studio.Bodies[0].Mesh.VertexCount == 12, edit.Error ?? $"{studio.Bodies[0].Mesh.VertexCount}" );
+
+		// Through the side-car and back.
+		var dir = Path.Combine( Path.GetTempPath(), "effigy-meshedit-" + Guid.NewGuid().ToString( "N" ) );
+		Directory.CreateDirectory( dir );
+		var doc = Path.Combine( dir, "part.effigy" );
+		StudioDocument.WriteFile( studio, doc );
+		Check( "saving writes one mesh edit", MeshEditSidecar.Save( studio, doc ) == 1 );
+
+		var back = StudioDocument.ReadFile( doc );
+		Check( "loading hands it back", MeshEditSidecar.Load( back, doc ) == 1 );
+		back.Rebuild();
+		var reloaded = back.Features[1] as MeshEditFeature;
+		Check( "the reopened edit builds the same mesh", reloaded?.Error is null && back.Bodies[0].Mesh.VertexCount == 12, reloaded?.Error ?? "" );
+		Directory.Delete( dir, true );
+
+		// Change the box: refuse, keep the edit.
+		box.SizeX.Value = 3f;
+		studio.MarkDirty( box );
+		studio.Rebuild();
+		Check( "a resized body is refused", edit.Error is not null );
+		Check( "and the edit is still held", edit.HasEdit );
+
+		box.SizeX.Value = 2f;
+		studio.MarkDirty( box );
+		studio.Rebuild();
+		Check( "undoing the resize brings the edit back", edit.Error is null && studio.Bodies[0].Mesh.VertexCount == 12, edit.Error ?? "" );
+
+		edit.KeepIfChanged.Value = true;
+		box.SizeX.Value = 3f;
+		studio.MarkDirty( box );
+		studio.Rebuild();
+		Check( "keep-if-changed outputs the edit anyway", studio.Bodies.Count == 1 && studio.Bodies[0].Mesh.VertexCount == 12 );
+
+		// Blob round trip carries UVs, materials and skin.
+		var rigged = Primitives.Box( 1, 1, 1 );
+		rigged.Skin = SkinWeights.AllTo( rigged.VertexCount, 3 );
+		rigged.Faces[2].Material = 5;
+		var bytes = MeshEditBlob.Write( rigged, 42 );
+		var read = MeshEditBlob.Read( bytes, out var fp );
+		Check( "the blob carries fingerprint, material and skin",
+			fp == 42 && read.Faces[2].Material == 5 && read.IsRigged && read.Skin[0][0].Bone == 3 && read.Faces[0].UVs[1].Equals( rigged.Faces[0].UVs[1] ) );
+	}
+
+	static void TestClothDrape()
+	{
+		// A 6x6 inch sheet, 12x12 quads, held at two corners: it hangs.
+		var sheet = Primitives.Plane( 6f, 6f, 12, 12 );
+		var corners = new List<int>();
+		for ( var i = 0; i < sheet.VertexCount; i++ )
+			if ( sheet.Positions[i].y > 2.99f && MathF.Abs( MathF.Abs( sheet.Positions[i].x ) - 3f ) < 1e-3f )
+				corners.Add( i );
+
+		var sim = new ClothSim( sheet, corners );
+		sim.Run( 1.5f );
+		var hung = sim.Bake( sheet );
+		var lowest = hung.Positions.Min( p => p.z );
+		Check( "a sheet pinned at two corners falls", lowest < -2f, $"lowest {lowest}" );
+		Check( "and its pins do not move", corners.All( i => hung.Positions[i].AlmostEquals( sheet.Positions[i], 1e-5f ) ) );
+
+		// Edges stretch little: the longest is within 15% of its rest length.
+		var worst = 0f;
+		foreach ( var face in sheet.Faces )
+			for ( var k = 0; k < face.Indices.Length; k++ )
+			{
+				var a = face.Indices[k];
+				var b = face.Indices[(k + 1) % face.Indices.Length];
+				var rest = (sheet.Positions[a] - sheet.Positions[b]).Length;
+				var now = (hung.Positions[a] - hung.Positions[b]).Length;
+				worst = MathF.Max( worst, now / rest );
+			}
+		Check( "the fabric barely stretches", worst < 1.15f, $"worst edge {worst:0.###}x" );
+		Check( "nothing blew up", hung.Positions.All( p => float.IsFinite( p.x ) && float.IsFinite( p.y ) && float.IsFinite( p.z ) ) );
+
+		// The same sheet dropped onto a box: it rests on the top, and hangs over the sides.
+		var table = Primitives.Box( 3f, 3f, 2f );
+		var cloth = Primitives.Plane( 6f, 6f, 16, 16 );
+		for ( var i = 0; i < cloth.VertexCount; i++ )
+			cloth.Positions[i] = cloth.Positions[i] + new Vec3( 0f, 0f, 1.5f );
+
+		var session = new MeshEditSession( cloth ) { SnapTarget = table };
+		session.Drape( 1.5f, thickness: 0.05f );
+		var draped = session.Mesh;
+		var middle = draped.Positions.OrderBy( p => p.x * p.x + p.y * p.y ).First();
+		Check( "the middle of the cloth rests on the table top", MathF.Abs( middle.z - 1.05f ) < 0.1f, $"{middle}" );
+		var inside = draped.Positions.Count( p => MathF.Abs( p.x ) < 1.45f && MathF.Abs( p.y ) < 1.45f && p.z < 0.95f && p.z > -0.95f );
+		Check( "no vertex ends up inside the table", inside == 0, $"{inside} inside" );
+		var edge = draped.Positions.OrderByDescending( p => p.x * p.x + p.y * p.y ).First();
+		Check( "the corners hang down past the top", edge.z < 0.5f, $"{edge}" );
+		Check( "draping is one undo step", session.UndoCount == 1 );
+
+		// Deterministic: the same drape twice is the same mesh.
+		var again = new MeshEditSession( cloth ) { SnapTarget = table };
+		again.Drape( 1.5f, thickness: 0.05f );
+		Check( "the same drape twice gives the same result",
+			Enumerable.Range( 0, draped.VertexCount ).All( i => draped.Positions[i].Equals( again.Mesh.Positions[i] ) ) );
+
+		TestClothSelfCollision();
+	}
+
+	/// <summary>A fold must not pass through itself. A sheet is creased flat — half of it laid
+	/// exactly on the other half — and the solver has to prise the two layers apart.</summary>
+	static void TestClothSelfCollision()
+	{
+		Section( "cloth does not pass through itself where it folds" );
+
+		// A 8x4 sheet, then every vertex with x > 0 reflected onto -x: the sheet is now folded shut,
+		// with the two layers occupying the same space.
+		PolyMesh Folded()
+		{
+			var m = Primitives.Plane( 8f, 4f, 16, 8 );
+			for ( var i = 0; i < m.VertexCount; i++ )
+			{
+				var p = m.Positions[i];
+				if ( p.x > 0f )
+					m.Positions[i] = new Vec3( -p.x, p.y, p.z );
+			}
+			return m;
+		}
+
+		// Pinned along the crease so the fold cannot simply slide apart sideways and call it solved.
+		var creased = Folded();
+		var pins = new List<int>();
+		for ( var i = 0; i < creased.VertexCount; i++ )
+			if ( MathF.Abs( creased.Positions[i].x ) < 1e-3f )
+				pins.Add( i );
+
+		float Closest( PolyMesh m, HashSet<EdgeKey> linked )
+		{
+			var worst = float.MaxValue;
+			for ( var i = 0; i < m.VertexCount; i++ )
+			for ( var j = i + 1; j < m.VertexCount; j++ )
+			{
+				if ( linked.Contains( new EdgeKey( i, j ) ) )
+					continue;
+				worst = MathF.Min( worst, (m.Positions[i] - m.Positions[j]).Length );
+			}
+			return worst;
+		}
+
+		// Which pairs a constraint already holds - the same ones the solver refuses to separate.
+		var held = new HashSet<EdgeKey>();
+		foreach ( var f in creased.Faces )
+		{
+			var idx = f.Indices;
+			for ( var i = 0; i < idx.Length; i++ )
+				held.Add( new EdgeKey( idx[i], idx[(i + 1) % idx.Length] ) );
+			if ( idx.Length == 4 )
+			{
+				held.Add( new EdgeKey( idx[0], idx[2] ) );
+				held.Add( new EdgeKey( idx[1], idx[3] ) );
+			}
+		}
+		foreach ( var (key, faces) in creased.BuildEdgeFaces() )
+			if ( faces.Count == 2 )
+				held.Add( key );
+
+		var before = Closest( creased, held );
+		Check( "the folded sheet starts with layers on top of each other", before < 1e-4f, $"{before}" );
+
+		var sim = new ClothSim( creased, pins ) { Thickness = 0.1f, Gravity = 0f, SelfCollision = true };
+		sim.Run( 0.5f );
+		var opened = sim.Bake( creased );
+
+		var after = Closest( opened, held );
+		Check( "self-collision prises the layers apart", after > 0.1f, $"closest unlinked pair {after:0.####}" );
+		Check( "and nothing blew up", opened.Positions.All( p => float.IsFinite( p.x ) && float.IsFinite( p.y ) && float.IsFinite( p.z ) ) );
+		Check( "the crease pins stayed put",
+			pins.All( i => opened.Positions[i].AlmostEquals( creased.Positions[i], 1e-5f ) ) );
+
+		// Off, the layers stay welded together - which is what makes the check above meaningful.
+		var stuck = Folded();
+		var off = new ClothSim( stuck, pins ) { Thickness = 0.1f, Gravity = 0f, SelfCollision = false };
+		off.Run( 0.5f );
+		var flat = Closest( off.Bake( stuck ), held );
+		Check( "with self-collision off they stay through each other", flat < 0.01f, $"closest {flat:0.####}" );
+
+		// It stays deterministic, which is what lets the seconds be scrubbed.
+		var twice = Folded();
+		var repeat = new ClothSim( twice, pins ) { Thickness = 0.1f, Gravity = 0f, SelfCollision = true };
+		repeat.Run( 0.5f );
+		Check( "self-collision is deterministic",
+			Enumerable.Range( 0, opened.VertexCount ).All( i => opened.Positions[i].Equals( repeat.Positions[i] ) ) );
+
+		TestClothFaceCollision();
+	}
+
+	/// <summary>
+	/// The case particle-to-particle separation cannot see: a FINE sheet resting in the middle of a
+	/// COARSE one's faces. Every vertex of the fine sheet is far from any corner of the coarse
+	/// triangles under it, so every pair distance is legal and it falls straight through — unless
+	/// the solver keeps points off faces as well as off points.
+	/// </summary>
+	static void TestClothFaceCollision()
+	{
+		Section( "cloth: a fine fold does not sink through a coarse face" );
+
+		// One cloth, two halves that never touch each other's vertices: a coarse 2x2 sheet at z = 0
+		// and a fine 10x10 sheet just above it, joined into one mesh so it is all one simulation.
+		PolyMesh Stacked()
+		{
+			var coarse = Primitives.Plane( 10f, 10f, 2, 2 );
+			var fine = Primitives.Plane( 4f, 4f, 10, 10 );
+			var mesh = new PolyMesh();
+
+			void Append( PolyMesh m, float z )
+			{
+				var offset = mesh.VertexCount;
+				foreach ( var pos in m.Positions )
+					mesh.AddVertex( new Vec3( pos.x, pos.y, pos.z + z ) );
+
+				foreach ( var f in m.Faces )
+				{
+					var idx = new int[f.Indices.Length];
+					for ( var i = 0; i < idx.Length; i++ )
+						idx[i] = f.Indices[i] + offset;
+					mesh.AddFace( idx, null, 0 );
+				}
+			}
+
+			Append( coarse, 0f );
+			Append( fine, 0.6f );
+			return mesh;
+		}
+
+		// Pin the coarse sheet entirely: it is the floor. The fine sheet falls onto it.
+		var mesh = Stacked();
+		var coarseCount = Primitives.Plane( 10f, 10f, 2, 2 ).VertexCount;
+		var pins = Enumerable.Range( 0, coarseCount ).ToList();
+
+		float LowestFine( ClothSim sim )
+		{
+			var lowest = float.MaxValue;
+			for ( var i = coarseCount; i < mesh.VertexCount; i++ )
+				lowest = MathF.Min( lowest, sim.Positions[i].z );
+			return lowest;
+		}
+
+		var held = new ClothSim( Stacked(), pins ) { Thickness = 0.25f, SelfCollision = true };
+		held.Run( 1f );
+		var restingOn = LowestFine( held );
+		Check( "the fine sheet stays above the coarse one", restingOn > 0.1f, $"lowest {restingOn:0.###}" );
+		Check( "and does not blow up",
+			Enumerable.Range( 0, mesh.VertexCount ).All( i => float.IsFinite( held.Positions[i].z ) ) );
+
+		// The coarse sheet is pinned, so nothing may have moved it.
+		var floorMoved = false;
+		for ( var i = 0; i < coarseCount; i++ )
+			if ( !held.Positions[i].AlmostEquals( mesh.Positions[i], 1e-5f ) )
+				floorMoved = true;
+		Check( "the pinned floor did not move", !floorMoved );
+
+		// Off, it falls through - which is what makes the check above mean something.
+		var through = new ClothSim( Stacked(), pins ) { Thickness = 0.25f, SelfCollision = false };
+		through.Run( 1f );
+		var fell = LowestFine( through );
+		Check( "without self-collision it sinks through", fell < -1f, $"lowest {fell:0.###}" );
+
+		// Still deterministic with the face pass running.
+		var again = new ClothSim( Stacked(), pins ) { Thickness = 0.25f, SelfCollision = true };
+		again.Run( 1f );
+		Check( "face self-collision is deterministic",
+			Enumerable.Range( 0, mesh.VertexCount ).All( i => held.Positions[i].Equals( again.Positions[i] ) ) );
+	}
+
+	/// <summary>
+	/// A wearer is a body you dress and never ship.
+	///
+	/// The whole point of the flag is that it is invisible in exactly one place, so testing it means
+	/// testing BOTH sides: a garment must find the wearer and be cut from it, and the export merge
+	/// must leave it out. Getting only the first half right is a tool that silently republishes
+	/// somebody else's character inside your jacket.
+	/// </summary>
+	/// <summary>
+	/// The pre-export check has to be right about the one thing it exists to catch, and quiet about
+	/// the things that only look like faults.
+	///
+	/// Openings are the trap. A garment is FULL of holes on purpose, and a check that called a neck
+	/// hole an error would be one people learn to ignore - at which point it catches nothing.
+	/// </summary>
+	static void TestGarmentCheck()
+	{
+		// A flat sheet floating clear of a box: nothing wrong except the things a bare sheet
+		// genuinely lacks.
+		var body = Primitives.Box( 10f, 10f, 10f );
+
+		var sheet = new PolyMesh();
+		sheet.Positions.Add( new Vec3( -3, -3, 9 ) );
+		sheet.Positions.Add( new Vec3( 3, -3, 9 ) );
+		sheet.Positions.Add( new Vec3( 3, 3, 9 ) );
+		sheet.Positions.Add( new Vec3( -3, 3, 9 ) );
+		sheet.Faces.Add( new Face( new[] { 0, 1, 2, 3 } ) );
+
+		var clear = GarmentCheck.Run( sheet, new[] { body } );
+
+		Check( "a garment clear of the body does not clip", clear.Clipping == 0, $"{clear.Clipping}" );
+		Check( "and its one hole is one opening", clear.Openings == 1, $"{clear.Openings} openings" );
+		Check( "two triangles", clear.Triangles == 2, $"{clear.Triangles}" );
+		Check( "an unweighted garment says so", !clear.HasWeights );
+		Check( "and that is not clean", !clear.Clean );
+
+		// The same sheet pushed down inside the box. This is the fault the check exists for.
+		var through = sheet.Clone();
+
+		for ( var i = 0; i < through.VertexCount; i++ )
+			through.Positions[i] = through.Positions[i] - new Vec3( 0, 0, 8 );
+
+		var clipped = GarmentCheck.Run( through, new[] { body } );
+
+		Check( "a garment inside the body clips at every vertex", clipped.Clipping == 4,
+			$"{clipped.Clipping}" );
+		// Inches, not a flag - "2 in inside the body" is actionable and "clipping: true" is not.
+		Check( "and says how deep, in inches", clipped.DeepestClip >= 1f,
+			$"{clipped.DeepestClip:0.##} in" );
+
+		// Resting exactly ON the surface is what a drape produces and must not be reported.
+		var resting = sheet.Clone();
+
+		for ( var i = 0; i < resting.VertexCount; i++ )
+			resting.Positions[i] = new Vec3( resting.Positions[i].x, resting.Positions[i].y, 5f );
+
+		Check( "a garment resting on the body does not clip",
+			GarmentCheck.Run( resting, new[] { body } ).Clipping == 0 );
+
+		// A closed box has no openings and no degenerate faces - the reassuring end of the scale.
+		var closed = GarmentCheck.Run( Primitives.Box( 2f, 2f, 2f ), Array.Empty<PolyMesh>() );
+
+		Check( "a closed garment has no openings", closed.Openings == 0, $"{closed.Openings}" );
+		Check( "and nothing degenerate", closed.Degenerate == 0, $"{closed.Degenerate}" );
+
+		// A zero-area face is always a fault.
+		var flat = sheet.Clone();
+		flat.Positions[2] = flat.Positions[1];
+		flat.Faces.Add( new Face( new[] { 0, 1, 2 } ) );
+
+		Check( "a face with no area is reported", GarmentCheck.Run( flat, Array.Empty<PolyMesh>() ).Degenerate > 0 );
+
+		// And the whole point: a real garment on a real body reads as clean apart from what it
+		// honestly lacks, rather than drowning in false alarms about its own openings.
+		var studio = new PartStudio();
+		var torso = studio.Add( new PrimitiveFeature() );
+		torso.SizeX.Value = 12f;
+		torso.SizeY.Value = 8f;
+		torso.SizeZ.Value = 16f;
+
+		var rig = studio.Rig;
+		var root = rig.AddBoneFromPoints( "root", -1, new Vec3( 0, 0, -7 ), new Vec3( 0, 0, -5 ) );
+		var pelvis = rig.AddBoneFromPoints( "pelvis", root, new Vec3( 0, 0, -5 ), new Vec3( 0, 0, -3 ) );
+		rig.AddBoneFromPoints( "spine", pelvis, new Vec3( 0, 0, -3 ), new Vec3( 0, 0, 7 ) );
+
+		var shirt = studio.Add( new GarmentFeature() );
+		shirt.Drape.Value = false;
+		studio.Rebuild();
+
+		var made = studio.Bodies.First( b => b.IsGarment );
+		var wornOver = studio.Bodies.Where( b => !b.IsGarment ).Select( b => b.Mesh ).ToList();
+		var real = GarmentCheck.Run( made.Mesh, wornOver );
+
+		Check( "a fitted garment does not report itself as clipping", real.Clipping == 0,
+			$"{real.Clipping} of {made.Mesh.VertexCount}, deepest {real.DeepestClip:0.###} in" );
+		Check( "and is structurally sound", real.Structure.Count == 0,
+			real.Structure.Count > 0 ? real.Structure[0] : "" );
+		Check( "and has triangles to show for it", real.Triangles > 0, $"{real.Triangles}" );
+
+		// The two things a garment is useless without, and which you cannot see are missing by
+		// looking at it in the editor: it has to move with the body, and it has to be texturable.
+		Check( "a garment comes out weighted, without anyone asking", real.HasWeights );
+		Check( "and with UVs", real.HasUVs );
+	}
+
+	/// <summary>
+	/// Trim hangs off a garment's openings.
+	///
+	/// The thing most likely to be silently wrong is ATTACHMENT: a frill whose seam row has drifted
+	/// off the hem is a ring of cloth floating near a shirt, and it looks fine from most angles
+	/// right up until it does not. So the seam is checked against the edge it claims to be sewn to,
+	/// not just the face count.
+	/// </summary>
+	static void TestGarmentTrim()
+	{
+		// An open tube: two openings, a low one and a high one, like a sleeve.
+		var tube = new PolyMesh();
+		const int Sides = 16;
+
+		for ( var ring = 0; ring < 2; ring++ )
+		{
+			for ( var i = 0; i < Sides; i++ )
+			{
+				var a = i / (float)Sides * MathF.Tau;
+				tube.Positions.Add( new Vec3( MathF.Cos( a ) * 4f, MathF.Sin( a ) * 4f, ring * 10f ) );
+			}
+		}
+
+		for ( var i = 0; i < Sides; i++ )
+		{
+			var j = (i + 1) % Sides;
+			tube.Faces.Add( new Face( new[] { i, j, Sides + j, Sides + i } ) );
+		}
+
+		var loops = GarmentTrim.OrderedBoundaryLoops( tube );
+
+		Check( "an open tube has two openings", loops.Count == 2, $"{loops.Count}" );
+		Check( "each walked as a whole ring", loops.All( l => l.Count == Sides ),
+			string.Join( ",", loops.Select( l => l.Count ) ) );
+		Check( "lowest first", loops.Count == 2
+			&& loops[0].Average( v => tube.Positions[v].z ) < loops[1].Average( v => tube.Positions[v].z ) );
+
+		// A frill on the hem only.
+		var frill = GarmentTrim.Build( tube, new[] { 0 }, new GarmentTrim.Options
+		{
+			Style = TrimStyle.Frill,
+			Width = 2f,
+			Gather = 0.6f,
+			Waves = 4,
+			Rows = 3,
+		} );
+
+		Check( "a frill builds", frill.Problem is null, frill.Problem ?? "" );
+		Check( "on one opening", frill.Openings == 1, $"{frill.Openings}" );
+		Check( "with quads to show for it", frill.Mesh.FaceCount == Sides * 3,
+			$"{frill.Mesh.FaceCount}" );
+
+		// ATTACHMENT. Every vertex of the hem ring must appear in the trim, unmoved: that is what
+		// "sewn on" means, and it is the failure that does not look like a failure.
+		var hem = loops[0].Select( v => tube.Positions[v] ).ToList();
+		var attached = hem.Count( p => frill.Mesh.Positions.Any( q => (q - p).Length < 1e-4f ) );
+
+		Check( "the seam sits exactly on the hem it hangs from", attached == Sides,
+			$"{attached} of {Sides}" );
+
+		// And it hangs DOWNWARD, away from the tube, rather than up into it.
+		var lowest = frill.Mesh.Positions.Min( p => p.z );
+
+		Check( "and it hangs off the end rather than back up the garment", lowest < -0.5f,
+			$"lowest {lowest:0.##}" );
+
+		// The gather is what makes it a frill: with waves, the free edge is longer than the seam.
+		var seam = RingLength( frill.Mesh, 0, Sides );
+		var free = RingLength( frill.Mesh, Sides * 3, Sides );
+
+		Check( "the free edge is longer than the seam - that is the gather", free > seam * 1.05f,
+			$"seam {seam:0.#}, free {free:0.#}" );
+
+		// A ribbon is the same strip with no gather, so its edges match.
+		var ribbon = GarmentTrim.Build( tube, new[] { 0 }, new GarmentTrim.Options
+		{
+			Style = TrimStyle.Ribbon,
+			Width = 1f,
+			Rows = 1,
+		} );
+
+		Check( "a ribbon is a flat band",
+			Math.Abs( RingLength( ribbon.Mesh, Sides, Sides ) - RingLength( ribbon.Mesh, 0, Sides ) )
+				< seam * 0.25f );
+
+		// Fringe drops whole slots, so it has fewer faces than the strip it came from.
+		var fringe = GarmentTrim.Build( tube, new[] { 0 }, new GarmentTrim.Options
+		{
+			Style = TrimStyle.Fringe,
+			Width = 2f,
+			Waves = 4,
+			Gap = 0.5f,
+			Rows = 3,
+		} );
+
+		Check( "fringe is cut into strips", fringe.Mesh.FaceCount < Sides * 3 && fringe.Mesh.FaceCount > 0,
+			$"{fringe.Mesh.FaceCount} of {Sides * 3}" );
+
+		// A closed shape has nothing to hang trim from, and says so rather than producing nothing.
+		var closed = GarmentTrim.Build( Primitives.Box( 2f, 2f, 2f ), null, new GarmentTrim.Options() );
+
+		Check( "a closed shape refuses with a reason", closed.Problem is not null && closed.Mesh.FaceCount == 0,
+			closed.Problem ?? "no problem given" );
+
+		// And the feature, over a real garment.
+		var studio = new PartStudio();
+		var torso = studio.Add( new PrimitiveFeature() );
+		torso.SizeX.Value = 12f;
+		torso.SizeY.Value = 8f;
+		torso.SizeZ.Value = 16f;
+
+		var rig = studio.Rig;
+		var root = rig.AddBoneFromPoints( "root", -1, new Vec3( 0, 0, -7 ), new Vec3( 0, 0, -5 ) );
+		var pelvis = rig.AddBoneFromPoints( "pelvis", root, new Vec3( 0, 0, -5 ), new Vec3( 0, 0, -3 ) );
+		rig.AddBoneFromPoints( "spine", pelvis, new Vec3( 0, 0, -3 ), new Vec3( 0, 0, 7 ) );
+
+		var shirt = studio.Add( new GarmentFeature() );
+		shirt.Drape.Value = false;
+		shirt.Thickness.Value = 0f; // Thickness closes the garment, and trim needs an open hem.
+
+		var trim = studio.Add( new TrimFeature() );
+		studio.Rebuild();
+
+		Check( "a Trim feature builds on a garment", trim.Error is null, trim.Error ?? "" );
+
+		var trimmed = studio.Bodies.LastOrDefault();
+
+		Check( "and lands as its own body", trimmed is not null && trimmed.Mesh.FaceCount > 0,
+			$"{trimmed?.Mesh.FaceCount} faces" );
+		Check( "on its own material slot", trim.ResolvedSlot > shirt.ResolvedSlot,
+			$"trim {trim.ResolvedSlot}, garment {shirt.ResolvedSlot}" );
+		Check( "counted as clothing, so fur and later garments see it",
+			trimmed is { IsGarment: true } );
+		Check( "and weighted, so it moves with the hem it hangs from", trimmed.Mesh.IsRigged );
+
+		// It follows the garment: change the shirt and the trim is rebuilt onto the new hem rather
+		// than left behind where the old one was. Measured against the GARMENT's own hem, not
+		// against a fixed number - Length's effect depends on the body, and a test that asserts
+		// inches would be testing this fixture's proportions instead of the following.
+		var hemBefore = trimmed.Mesh.Positions.Min( p => p.z );
+		var shirtBefore = studio.Bodies.First( b => b.FeatureId == shirt.Id ).Mesh.Positions.Min( p => p.z );
+
+		shirt.Neckline.Value = 0.45f;
+		studio.MarkDirty( shirt );
+		studio.Rebuild();
+
+		var shirtAfter = studio.Bodies.First( b => b.FeatureId == shirt.Id ).Mesh.Positions.Min( p => p.z );
+		var hemAfter = studio.Bodies.Last().Mesh.Positions.Min( p => p.z );
+
+		Check( "the trim is rebuilt from the garment every time",
+			studio.Bodies.Last().Mesh.FaceCount > 0 );
+		Check( "and follows it rather than staying where it was",
+			Math.Abs( (hemAfter - shirtAfter) - (hemBefore - shirtBefore) ) < 1.5f,
+			$"gap {hemBefore - shirtBefore:0.##} -> {hemAfter - shirtAfter:0.##}" );
+	}
+
+	/// <summary>Total length of a run of <paramref name="count"/> positions treated as a closed
+	/// ring, starting at <paramref name="start"/>.</summary>
+	static float RingLength( PolyMesh mesh, int start, int count )
+	{
+		var total = 0f;
+
+		for ( var i = 0; i < count; i++ )
+		{
+			var a = mesh.Positions[start + i];
+			var b = mesh.Positions[start + (i + 1) % count];
+			total += (b - a).Length;
+		}
+
+		return total;
+	}
+
+	/// <summary>
+	/// Puff, Cinch and Wrinkles: the three shaping controls Marvelous Designer and Simply Cloth both
+	/// put on their front page, because they are what turns a fitted shape into a different GARMENT
+	/// rather than the same garment at a different size.
+	///
+	/// Each is checked for the thing that distinguishes it from the others, since all three move
+	/// vertices and any of them would pass a "the mesh changed" test while doing the wrong job.
+	/// </summary>
+	static void TestGarmentShaping()
+	{
+		PartStudio Dress( out GarmentFeature garment )
+		{
+			var studio = new PartStudio();
+			var torso = studio.Add( new PrimitiveFeature() );
+			torso.SizeX.Value = 12f;
+			torso.SizeY.Value = 8f;
+			torso.SizeZ.Value = 16f;
+
+			var rig = studio.Rig;
+			var root = rig.AddBoneFromPoints( "root", -1, new Vec3( 0, 0, -7 ), new Vec3( 0, 0, -5 ) );
+			var pelvis = rig.AddBoneFromPoints( "pelvis", root, new Vec3( 0, 0, -5 ), new Vec3( 0, 0, -3 ) );
+			rig.AddBoneFromPoints( "spine", pelvis, new Vec3( 0, 0, -3 ), new Vec3( 0, 0, 7 ) );
+
+			garment = studio.Add( new GarmentFeature() );
+			garment.Drape.Value = false;
+			garment.Thickness.Value = 0f;
+
+			return studio;
+		}
+
+		var plain = Dress( out var flat );
+		plain.Rebuild();
+
+		var before = plain.Bodies.First( b => b.IsGarment ).Mesh;
+		var beforeVolume = Math.Abs( before.SignedVolume() );
+		var beforeCount = before.VertexCount;
+
+		// PUFF inflates along the normals, so the garment encloses MORE while keeping its topology.
+		var puffed = Dress( out var puff );
+		puff.Puff.Value = 0.8f;
+		puffed.Rebuild();
+
+		var puffedMesh = puffed.Bodies.First( b => b.IsGarment ).Mesh;
+
+		Check( "puff keeps the same topology", puffedMesh.VertexCount == beforeCount,
+			$"{puffedMesh.VertexCount} vs {beforeCount}" );
+		Check( "and makes the garment enclose more",
+			Math.Abs( puffedMesh.SignedVolume() ) > beforeVolume,
+			$"{Math.Abs( puffedMesh.SignedVolume() ):0.#} vs {beforeVolume:0.#}" );
+
+		// CINCH pulls the openings in. The test is the opening's own width, not the whole mesh:
+		// a garment that got smaller everywhere would pass a bounds test and be the wrong thing.
+		var cinched = Dress( out var cinch );
+		cinch.Cinch.Value = 0.8f;
+		cinch.CinchReach.Value = 2f;
+		cinched.Rebuild();
+
+		var cinchedMesh = cinched.Bodies.First( b => b.IsGarment ).Mesh;
+
+		var hemBefore = OpeningWidth( before, 0 );
+		var hemAfter = OpeningWidth( cinchedMesh, 0 );
+
+		Check( "cinch pulls the opening in", hemAfter < hemBefore * 0.9f,
+			$"{hemBefore:0.##} -> {hemAfter:0.##}" );
+
+		// And leaves the rest of the garment alone - that is what makes it a waistband rather than
+		// a taper. The top of a shirt is well beyond a 2in reach from the hem.
+		Check( "and leaves the far side of the garment where it was",
+			Math.Abs( cinchedMesh.Positions.Max( v => v.z ) - before.Positions.Max( v => v.z ) ) < 0.2f,
+			$"{before.Positions.Max( v => v.z ):0.##} -> {cinchedMesh.Positions.Max( v => v.z ):0.##}" );
+
+		// WRINKLES displace but must not inflate: cloth that has been crumpled is not cloth that
+		// has been pumped up, so the volume should barely move while the surface gets longer.
+		var rumpled = Dress( out var wrinkle );
+		wrinkle.Wrinkles.Value = 1f;
+		rumpled.Rebuild();
+
+		var rumpledMesh = rumpled.Bodies.First( b => b.IsGarment ).Mesh;
+
+		Check( "wrinkles move the surface", Moved( before, rumpledMesh ) > 0.01f,
+			$"{Moved( before, rumpledMesh ):0.###} in average" );
+		Check( "but do not puff it up",
+			Math.Abs( Math.Abs( rumpledMesh.SignedVolume() ) - beforeVolume ) < beforeVolume * 0.25f,
+			$"{Math.Abs( rumpledMesh.SignedVolume() ):0.#} vs {beforeVolume:0.#}" );
+
+		// DETERMINISM. The wrinkles are noise, and noise that is different on every rebuild makes
+		// undo a surprise and a saved document a different model when it is reopened.
+		var again = Dress( out var repeat );
+		repeat.Wrinkles.Value = 1f;
+		again.Rebuild();
+
+		Check( "and are the same wrinkles every rebuild",
+			Moved( rumpledMesh, again.Bodies.First( b => b.IsGarment ).Mesh ) < 1e-5f );
+
+		// Zero is genuinely zero: none of the three costs anything or changes anything when it is
+		// left alone, so an existing garment is untouched by their arrival.
+		Check( "and none of them touch a garment that did not ask",
+			Moved( before, plain.Bodies.First( b => b.IsGarment ).Mesh ) < 1e-6f );
+
+		// FABRIC. Leather holds its shape and stretch clings, so the same garment draped in the two
+		// must not come out identical - which is the failure mode a preset table invites: four names
+		// that all reach the solver as the same numbers.
+		PolyMesh Draped( int fabric )
+		{
+			var s = Dress( out var g );
+			g.Drape.Value = true;
+			g.DrapeSteps.Value = 20;
+			g.Fabric.Index = fabric;
+			s.Rebuild();
+
+			return s.Bodies.First( b => b.IsGarment ).Mesh;
+		}
+
+		var cotton = Draped( 0 );
+		var leather = Draped( 2 );
+		var stretch = Draped( 3 );
+
+		Check( "leather drapes differently from cotton", Moved( cotton, leather ) > 1e-4f,
+			$"{Moved( cotton, leather ):0.####} in average" );
+		Check( "and stretch differently again", Moved( cotton, stretch ) > 1e-4f,
+			$"{Moved( cotton, stretch ):0.####} in average" );
+		Check( "and the same fabric twice is the same garment", Moved( cotton, Draped( 0 ) ) < 1e-6f );
+	}
+
+	/// <summary>How wide the nth opening of a mesh is, measured across its own ring.</summary>
+	static float OpeningWidth( PolyMesh mesh, int index )
+	{
+		var loops = GarmentTrim.OrderedBoundaryLoops( mesh );
+
+		if ( index < 0 || index >= loops.Count )
+			return 0f;
+
+		var points = loops[index].Select( v => mesh.Positions[v] ).ToList();
+		var centre = Vec3.Zero;
+
+		foreach ( var p in points )
+			centre += p;
+
+		centre /= points.Count;
+
+		var width = 0f;
+
+		foreach ( var p in points )
+			width += (p - centre).Length;
+
+		return width / points.Count;
+	}
+
+	/// <summary>Average distance each vertex moved between two versions of the same mesh. Returns
+	/// infinity when the topology changed, since nothing else is comparable then.</summary>
+	static float Moved( PolyMesh a, PolyMesh b )
+	{
+		if ( a.VertexCount != b.VertexCount )
+			return float.PositiveInfinity;
+
+		var total = 0f;
+
+		for ( var i = 0; i < a.VertexCount; i++ )
+			total += (b.Positions[i] - a.Positions[i]).Length;
+
+		return total / Math.Max( 1, a.VertexCount );
+	}
+
+	/// <summary>
+	/// A preview rebuild is a deliberate lie about the model, told so a slider can keep up. The two
+	/// things that make telling it acceptable are that it is CHEAPER and that it is CORRECTED - and
+	/// the second matters more, because a preview left in place is a garment that exports without
+	/// its thickness or its weights.
+	/// </summary>
+	static void TestPreviewQuality()
+	{
+		var studio = new PartStudio();
+		var torso = studio.Add( new PrimitiveFeature() );
+		torso.SizeX.Value = 12f;
+		torso.SizeY.Value = 8f;
+		torso.SizeZ.Value = 16f;
+
+		var rig = studio.Rig;
+		var root = rig.AddBoneFromPoints( "root", -1, new Vec3( 0, 0, -7 ), new Vec3( 0, 0, -5 ) );
+		var pelvis = rig.AddBoneFromPoints( "pelvis", root, new Vec3( 0, 0, -5 ), new Vec3( 0, 0, -3 ) );
+		rig.AddBoneFromPoints( "spine", pelvis, new Vec3( 0, 0, -3 ), new Vec3( 0, 0, 7 ) );
+
+		var shirt = studio.Add( new GarmentFeature() );
+		studio.Rebuild();
+
+		var full = studio.Bodies.First( b => b.IsGarment ).Mesh;
+		var fullFaces = full.FaceCount;
+
+		Check( "a full garment is thickened", MeshValidator.Validate( full ).IsClosed );
+		Check( "and weighted", full.IsRigged );
+
+		// The preview drops the thickness, so the garment is a single-sided sheet: open, and about
+		// half the faces.
+		studio.PreviewQuality = true;
+		studio.MarkDirty( shirt );
+		studio.Rebuild();
+
+		var preview = studio.Bodies.First( b => b.IsGarment ).Mesh;
+
+		Check( "a preview garment is not thickened", !MeshValidator.Validate( preview ).IsClosed );
+		Check( "so it is cheaper", preview.FaceCount < fullFaces,
+			$"{preview.FaceCount} vs {fullFaces}" );
+		Check( "and is not weighted either", !preview.IsRigged );
+
+		// THE PART THAT MATTERS. Turning the flag off has to give the real thing back, exactly -
+		// not something close to it.
+		studio.PreviewQuality = false;
+		studio.MarkDirty( shirt );
+		studio.Rebuild();
+
+		var restored = studio.Bodies.First( b => b.IsGarment ).Mesh;
+
+		Check( "and clearing the flag restores the real garment exactly",
+			restored.FaceCount == fullFaces && restored.IsRigged
+				&& MeshValidator.Validate( restored ).IsClosed,
+			$"{restored.FaceCount} vs {fullFaces}" );
+
+		// A preview must not change anything but geometry: the same bodies, on the same material
+		// slots, or the feature tree and the parts list would flicker through states that never
+		// existed while somebody drags a slider.
+		var slot = shirt.ResolvedSlot;
+		var bodies = studio.Bodies.Count;
+
+		studio.PreviewQuality = true;
+		studio.MarkDirty( shirt );
+		studio.Rebuild();
+
+		Check( "a preview keeps the same bodies", studio.Bodies.Count == bodies,
+			$"{studio.Bodies.Count} vs {bodies}" );
+		Check( "on the same material slot", shirt.ResolvedSlot == slot,
+			$"{shirt.ResolvedSlot} vs {slot}" );
+		Check( "and does not fail", shirt.Error is null, shirt.Error ?? "" );
+	}
+
+	static void TestWearer()
+	{
+		var studio = new PartStudio();
+
+		// The wearer arrives the way the editor sends it: OBJ bytes, no file on disk.
+		var box = new PartStudio();
+		var prim = box.Add( new PrimitiveFeature() );
+		prim.SizeX.Value = 12f;
+		prim.SizeY.Value = 8f;
+		prim.SizeZ.Value = 16f;
+		box.Rebuild();
+
+		var wearer = studio.Add( new WearerFeature() );
+		wearer.Name = "Citizen";
+		wearer.Model.Value = "models/citizen/citizen.vmdl";
+		wearer.LoadMesh( System.Text.Encoding.UTF8.GetBytes( ObjWriter.Write( box.ToMesh(), "citizen" ) ) );
+
+		var rig = studio.Rig;
+		var root = rig.AddBoneFromPoints( "root", -1, new Vec3( 0, 0, -7 ), new Vec3( 0, 0, -5 ) );
+		var pelvis = rig.AddBoneFromPoints( "pelvis", root, new Vec3( 0, 0, -5 ), new Vec3( 0, 0, -3 ) );
+		rig.AddBoneFromPoints( "spine", pelvis, new Vec3( 0, 0, -3 ), new Vec3( 0, 0, 7 ) );
+
+		studio.Rebuild();
+
+		Check( "a wearer builds from bytes alone", wearer.Error is null, wearer.Error ?? "" );
+
+		var body = studio.Bodies.FirstOrDefault();
+		Check( "and lands as one body", studio.Bodies.Count == 1, $"{studio.Bodies.Count} bodies" );
+		Check( "flagged reference", body is { IsReference: true } );
+		Check( "with the model's faces on it", body is not null && body.Mesh.FaceCount > 0,
+			$"{body?.Mesh.FaceCount} faces" );
+
+		// The export merge is the one view that leaves it out. The viewport's is not.
+		Check( "a wearer is not in the exported mesh", studio.ToMesh().FaceCount == 0,
+			$"{studio.ToMesh().FaceCount} faces" );
+		Check( "and not in the rigging merge either", studio.ToMeshWithBodies().Ranges.Count == 0 );
+		Check( "but is drawn", studio.ToVisibleMesh().FaceCount == body.Mesh.FaceCount );
+
+		// And it is still a body a garment can be cut from, which is the entire reason it is here.
+		var shirt = studio.Add( new GarmentFeature() );
+		shirt.Drape.Value = false;
+		studio.Rebuild();
+
+		Check( "a garment is cut from the wearer", shirt.Error is null, shirt.Error ?? "" );
+
+		var garment = studio.Bodies.FirstOrDefault( b => b.IsGarment );
+		Check( "and the garment has faces", garment is not null && garment.Mesh.FaceCount > 0,
+			$"{garment?.Mesh.FaceCount} faces" );
+		Check( "the garment is not a reference body", garment is { IsReference: false } );
+		Check( "so the export holds the garment and nothing else",
+			studio.ToMesh().FaceCount == garment.Mesh.FaceCount,
+			$"{studio.ToMesh().FaceCount} vs {garment.Mesh.FaceCount}" );
+
+		// A reopen must not turn the wearer back into something shippable.
+		var reopened = StudioDocument.Read( StudioDocument.Write( studio ) );
+		var carried = studio.Features.OfType<WearerFeature>().First().SaveMesh();
+		reopened.Features.OfType<WearerFeature>().First().LoadMesh( carried );
+		reopened.Rebuild();
+
+		Check( "a reopened wearer is still reference only",
+			reopened.Bodies.Any( b => b.IsReference ) && reopened.ToMesh().FaceCount == garment.Mesh.FaceCount );
+		Check( "and remembers where it came from",
+			reopened.Features.OfType<WearerFeature>().First().Model.Value == "models/citizen/citizen.vmdl" );
+	}
+
+	static void TestClothingDefinition()
+	{
+		// A shirt and trousers compiled together are one item, so the one .clothing claims both.
+		var shirt = GarmentRecipe.Build( Array.IndexOf( GarmentRecipe.Names, "Long sleeve" ), 1f, 1f, 0.5f, 0 );
+		var trousers = GarmentRecipe.Build( Array.IndexOf( GarmentRecipe.Names, "Trousers" ), 1f, 1f, 0.5f, 0 );
+		var both = ClothingDefinition.Combine( new[] { shirt, trousers } );
+		var slots = ClothingDefinition.SlotsFor( both ).ToList();
+
+		Check( "clothing: combined takes the shirt's category", ClothingDefinition.CategoryFor( both ) == "Shirt" );
+		Check( "clothing: combined claims the chest", slots.Contains( "Chest" ) );
+		Check( "clothing: combined claims the legs", slots.Contains( "LeftThigh" ) && slots.Contains( "RightShin" ),
+			string.Join( ",", slots ) );
+		Check( "clothing: nothing combined is nothing", ClothingDefinition.Combine( Array.Empty<GarmentRecipe>() ) is null );
+
+		var text = ClothingDefinition.Write( both, "models/effigy/outfit.vmdl", "Outfit \"one\"" );
+		Check( "clothing: model path written", text.Contains( "\"Model\": \"models/effigy/outfit.vmdl\"" ) );
+		Check( "clothing: title escaped", text.Contains( "\"Outfit \\\"one\\\"\"" ), text );
+		Check( "clothing: over-slots empty as 0", text.Contains( "\"SlotsOver\": 0" ) );
+	}
+
+	static void TestClothingBuild()
+	{
+		// A chest-sized box with a spine and pelvis inside it: the rig is what a garment wears,
+		// and the T-shirt is a recipe over the Torso and Hips regions those bones declare.
+		var studio = new PartStudio();
+		var body = studio.Add( new PrimitiveFeature() );
+		body.Name = "Torso";
+		body.SizeX.Value = 12f;
+		body.SizeY.Value = 8f;
+		body.SizeZ.Value = 16f;
+
+		var rig = studio.Rig;
+		var root = rig.AddBoneFromPoints( "root", -1, new Vec3( 0, 0, -7 ), new Vec3( 0, 0, -5 ) );
+		var pelvis = rig.AddBoneFromPoints( "pelvis", root, new Vec3( 0, 0, -5 ), new Vec3( 0, 0, -3 ) );
+		rig.AddBoneFromPoints( "spine", pelvis, new Vec3( 0, 0, -3 ), new Vec3( 0, 0, 7 ) );
+
+		var shirt = studio.Add( new GarmentFeature() );
+		shirt.Name = "Shirt";
+		shirt.Drape.Value = false;
+		studio.Rebuild();
+
+		Check( "a garment builds on a rigged body", shirt.Error is null, shirt.Error ?? "" );
+		Check( "and leaves the body it was cut from in place",
+			studio.Bodies.Count == 2 && !studio.Bodies[0].IsGarment, $"{studio.Bodies.Count} bodies" );
+
+		var garment = studio.Bodies.FirstOrDefault( b => b.IsGarment );
+		Check( "the rebuilt studio has a garment body", garment is not null );
+		Check( "with faces lifted off the body", garment is not null && garment.Mesh.FaceCount > 0,
+			$"{garment?.Mesh.FaceCount} faces" );
+		Check( "on its own material slot", shirt.ResolvedSlot == 1, $"slot {shirt.ResolvedSlot}" );
+		Check( "every garment face on that slot",
+			garment is not null && garment.Mesh.Faces.All( f => f.Material == shirt.ResolvedSlot ) );
+
+		var built = garment is null ? default : MeshValidator.Validate( garment.Mesh );
+		Check( "the thickened garment is a valid solid", garment is not null && built.IsValid && built.IsClosed,
+			$"{built}" );
+
+		// Fur grows shells on the garment, each stepped outward with RED = its height, which is
+		// the mesh colour stream s&box's fur.shader reads.
+		var fur = studio.Add( new FurFeature() );
+		fur.Name = "Shirt fur";
+		studio.Rebuild();
+
+		Check( "fur grows on every garment by default", fur.Error is null, fur.Error ?? "" );
+		Check( "and adds shells", fur.ShellFaces > 0, $"{fur.ShellFaces} shell faces" );
+		Check( "on the next slot after the garment", fur.ResolvedSlot == 2, $"slot {fur.ResolvedSlot}" );
+
+		var furred = studio.Bodies.First( b => b.IsGarment ).Mesh;
+		Check( "the garment carries the vertex colours the fur shader reads", furred.HasVertexColors );
+
+		var reds = furred.VertexColors.Select( c => c.x ).ToList();
+		Check( "the root shell sits at height 0", reds.Min() < 1e-3f, $"min {reds.Min():0.###}" );
+		Check( "the tip shell reaches height 1", reds.Max() > 0.999f, $"max {reds.Max():0.###}" );
+		Check( "and there are layers in between", reds.Any( r => r > 0.1f && r < 0.9f ) );
+		Check( "the shell faces carry the fur slot",
+			furred.Faces.Count( f => f.Material == fur.ResolvedSlot ) == fur.ShellFaces );
+
+		// The same settings rebuild to the same shape, so a triangle budget stays predictable.
+		var facesBefore = furred.FaceCount;
+		var vertsBefore = furred.VertexCount;
+		studio.Rebuild();
+		var again = studio.Bodies.First( b => b.IsGarment ).Mesh;
+		Check( "a rebuild reproduces the same garment and shells",
+			again.FaceCount == facesBefore && again.VertexCount == vertsBefore,
+			$"{vertsBefore}v/{facesBefore}f -> {again.VertexCount}v/{again.FaceCount}f" );
+
+		// And the document carries both, so the shirt survives save/reopen.
+		var reopened = StudioDocument.Read( StudioDocument.Write( studio ) );
+		reopened.Rebuild();
+		Check( "the garment and fur survive save/reopen",
+			reopened.Bodies.Count == studio.Bodies.Count
+			&& reopened.Bodies.First( b => b.IsGarment ).Mesh.FaceCount == facesBefore,
+			$"{reopened.Bodies.Count} bodies, {reopened.Bodies.FirstOrDefault( b => b.IsGarment )?.Mesh.FaceCount} faces" );
+
+		// The material the editor writes is text the fur shader accepts.
+		var vmat = FurMaterial.VmatSource( "models/effigy/fur/fur_1_color.png", "models/effigy/fur/fur_1_noise.png",
+			24f, 0.5f, new Vec3( 0.23f, 0.2f, 0.18f ), 0f );
+		Check( "the fur material targets the fur shader", vmat.Contains( "shaders/fur.shader" ) );
+		Check( "and binds the colour and noise textures",
+			vmat.Contains( "fur_1_color.png" ) && vmat.Contains( "fur_1_noise.png" ) );
+		var brown = FurMaterial.ParseHex( "#8a6e55", Vec3.Zero );
+		Check( "the colour parses from the hex the feature saves",
+			MathF.Abs( brown.x - 138f / 255f ) < 0.01f && MathF.Abs( brown.y - 110f / 255f ) < 0.01f,
+			$"{brown.x:0.###} {brown.y:0.###} {brown.z:0.###}" );
+		Check( "garbage hex falls back", FurMaterial.ParseHex( "not a colour", Vec3.One ).Equals( Vec3.One ) );
+		var noise = FurMaterial.NoiseRgba( 42, 0.4f );
+		Check( "strand noise is a square alpha texture", noise.Length == 256 * 256 * 4 && noise[3] == 255 );
+		var swatch = FurMaterial.ColorRgba( brown );
+		Check( "the base colour swatch is opaque", swatch.Length == 16 * 16 * 4 && swatch[3] == 255 );
+	}
+
+	static void TestEditSessionPieces()
+	{
+		var box = Primitives.Box( 2, 2, 2 );
+
+		// Duplicate: a copy of the top on its own vertices, selected.
+		var d = new MeshEditSession( box );
+		var top = TopFace( d.Mesh );
+		d.SelectFace( top );
+		d.Duplicate();
+		Check( "duplicate adds the face on four new vertices", d.Mesh.VertexCount == 12 && d.Mesh.FaceCount == 7, $"{d.Mesh.VertexCount}v/{d.Mesh.FaceCount}f" );
+		Check( "and the copy is what is selected", d.SelectedFaces.Count == 1 && !d.SelectedFaces.Contains( top ) );
+
+		// Separate: the top leaves as its own piece; the box is left open.
+		var s = new MeshEditSession( box );
+		s.SelectFace( TopFace( s.Mesh ) );
+		s.Separate();
+		Check( "separate takes the face out into a piece", s.Separated.Count == 1 && s.Separated[0].FaceCount == 1 && s.Separated[0].VertexCount == 4 );
+		Check( "and leaves the body open where it was", s.Mesh.FaceCount == 5 && MeshValidator.Validate( s.Mesh ).BoundaryEdges == 4 );
+		s.Undo();
+		Check( "undo puts it back", s.Separated.Count == 0 && s.Mesh.FaceCount == 6 );
+
+		// Extract a garment: five faces of the box, lifted a gap off it, body untouched.
+		var g = new MeshEditSession( box );
+		for ( var f = 0; f < g.Mesh.FaceCount; f++ )
+			if ( g.Mesh.FaceNormal( g.Mesh.Faces[f] ).z > -0.5f )
+				g.SelectFace( f, MeshEditSession.Combine.Add );
+		g.ExtractGarment( 0.1f );
+		var piece = g.Separated.Count == 1 ? g.Separated[0] : null;
+		Check( "extract makes one garment piece of five faces", piece is not null && piece.FaceCount == 5, $"{piece?.FaceCount}" );
+		Check( "the body is left exactly as it was", g.Mesh.VertexCount == 8 && g.Mesh.FaceCount == 6 && MeshValidator.Validate( g.Mesh ).IsClosed );
+		Check( "the garment is open at the bottom, like a shirt", piece is not null && MeshValidator.Validate( piece ).BoundaryEdges == 4 );
+		Check( "and sits off the skin", piece is not null && piece.Positions.TrueForAll( q => MathF.Max( MathF.Abs( q.x ), MathF.Max( MathF.Abs( q.y ), q.z ) ) > 1.01f ) );
+
+		// Bridge a 4-edge rim to an 8-edge rim: an open cup and an octagon lid close into a solid.
+		var cup = Primitives.Box( 2, 2, 2 );
+		var cupTop = TopFace( cup );
+		var mesh = new PolyMesh { Positions = new List<Vec3>( cup.Positions ) };
+		for ( var f = 0; f < cup.FaceCount; f++ )
+			if ( f != cupTop )
+				mesh.AddFace( (int[])cup.Faces[f].Indices.Clone() );
+		var lid = new int[8];
+		for ( var i = 0; i < 8; i++ )
+		{
+			var a = i / 8f * MathF.PI * 2f + MathF.PI / 8f;
+			lid[i] = mesh.AddVertex( new Vec3( MathF.Cos( a ) * 1.2f, MathF.Sin( a ) * 1.2f, 2f ) );
+		}
+		mesh.AddFace( lid );
+		var br = new MeshEditSession( mesh );
+		br.SetMode( EditElement.Edge );
+		foreach ( var (key, owners) in mesh.BuildEdgeFaces() )
+			if ( owners.Count == 1 )
+				br.SelectEdge( key, MeshEditSession.Combine.Add );
+		br.BridgeSelectedLoops();
+		var v = MeshValidator.Validate( br.Mesh );
+		Check( "bridging a 4-edge rim to an 8-edge rim closes the solid", v.IsValid && v.IsClosed, v.ToString() );
+		Check( "and it is wound outward", br.Mesh.SignedVolume() > 0f, $"{br.Mesh.SignedVolume()}" );
+
+		// One rim is not a bridge.
+		var one = new MeshEditSession( s.Mesh );
+		var threw = false;
+		try { one.BridgeSelectedLoops(); } catch ( InvalidOperationException ) { threw = true; }
+		Check( "bridge with nothing selected refuses", threw );
+
+		// Weights: a box rigged bottom-to-top, a shell just outside it takes the same gradient.
+		var rigged = Primitives.Box( 2, 2, 2 );
+		rigged.Skin = new SkinWeights( rigged.VertexCount );
+		for ( var i = 0; i < rigged.VertexCount; i++ )
+			rigged.Skin[i] = rigged.Positions[i].z > 0f ? new[] { new BoneWeight( 1, 1f ) } : new[] { new BoneWeight( 0, 1f ) };
+		var shirt = new MeshEditSession( MeshTransform.Transformed( Primitives.Box( 2.2f, 2.2f, 2f ), Xform.Identity ) );
+		var reached = shirt.TransferWeights( rigged );
+		var topCorner = shirt.Mesh.Positions.FindIndex( q => q.z > 0.9f );
+		var bottomCorner = shirt.Mesh.Positions.FindIndex( q => q.z < -0.9f );
+		Check( "copying weights reaches every vertex", reached == shirt.Mesh.VertexCount && shirt.Mesh.IsRigged );
+		Check( "a top vertex follows the top bone", shirt.Mesh.Skin[topCorner].Length == 1 && shirt.Mesh.Skin[topCorner][0].Bone == 1,
+			string.Join( ",", shirt.Mesh.Skin[topCorner] ) );
+		Check( "a bottom vertex follows the bottom bone", shirt.Mesh.Skin[bottomCorner][0].Bone == 0 );
+		threw = false;
+		try { shirt.TransferWeights( Primitives.Box( 1, 1, 1 ) ); } catch ( InvalidOperationException ) { threw = true; }
+		Check( "copying from an unrigged body refuses", threw );
+
+		// Binding keeps a body's own weights when it is not pinned to a bone.
+		var skeleton = new Skeleton();
+		skeleton.AddBone( "root", -1, Xform.Identity );
+		skeleton.AddBone( "spine", 0, Xform.Identity );
+		var ranges = new List<BodyRange> { new BodyRange( "garment", "Garment", 0, shirt.Mesh.VertexCount, hasOwnWeights: true ) };
+		var bound = SkinBinder.BindBodies( shirt.Mesh, ranges, new Dictionary<string, string>(), skeleton );
+		Check( "binding keeps a garment's copied weights", bound[topCorner][0].Bone == 1 && bound[bottomCorner][0].Bone == 0 );
+
+		// Pieces come out of the feature as bodies, and survive the blob.
+		var studio = new PartStudio();
+		var prim = studio.Add( new PrimitiveFeature() );
+		prim.SizeX.Value = 2f;
+		prim.SizeY.Value = 2f;
+		prim.SizeZ.Value = 2f;
+		var edit = studio.Add( new MeshEditFeature() );
+		studio.Rebuild();
+		var session = new MeshEditSession( edit.LastInput );
+		for ( var f = 0; f < session.Mesh.FaceCount; f++ )
+			if ( session.Mesh.FaceNormal( session.Mesh.Faces[f] ).z > -0.5f )
+				session.SelectFace( f, MeshEditSession.Combine.Add );
+		session.ExtractGarment( 0.1f );
+		session.CommitTo( edit );
+		studio.Rebuild();
+		Check( "the extracted garment is its own body in the studio", edit.Error is null && studio.Bodies.Count == 2, edit.Error ?? $"{studio.Bodies.Count} bodies" );
+		var read = MeshEditBlob.Read( edit.SaveMesh(), out _, out var pieces );
+		Check( "and the side-car carries it", pieces.Count == 1 && pieces[0].FaceCount == 5 && read.FaceCount == 6 );
+	}
+
+	static void TestEditableDissolve()
+	{
+		// Dissolve one interior edge of a box: the two quads sharing it merge into a single
+		// hexagon and the solid is otherwise unchanged.
+		var box = Primitives.Box( 2, 2, 2 );
+		var e = EditableMesh.FromPolyMesh( box );
+
+		var interior = -1;
+
+		for ( var hei = 0; hei < e.HalfEdges.Count && interior < 0; hei++ )
+			if ( e.HalfEdges[hei].Twin >= 0 )
+				interior = hei;
+
+		e.DissolveEdges( new[] { interior } );
+		Check( "dissolving an edge keeps the mesh valid", e.Validate().IsValid, e.Validate().ToString() );
+
+		var m = e.ToPolyMesh();
+		var v = MeshValidator.Validate( m );
+		Check( "the dissolved box stays closed", v.IsClosed, v.ToString() );
+		Check( "the dissolved box has 5 faces", m.FaceCount == 5, $"got {m.FaceCount}" );
+		Check( "the merged face is a hexagon", m.Faces.Any( f => f.Count == 6 ),
+			$"max {m.Faces.Max( f => f.Count )}" );
+		// The two faces either side were not coplanar, so merging them into one non-planar n-gon
+		// folds the corner and the enclosed volume changes. That is the difference from
+		// CoplanarMerge, which refuses this pair rather than approximating it.
+		Check( "dissolving a non-coplanar edge changes the enclosed volume",
+			m.SignedVolume() > 0f && MathF.Abs( m.SignedVolume() - 8f ) > 1e-3f,
+			$"got {m.SignedVolume():0.####}" );
+
+		// Dissolving all four vertical edges would join the four side quads into a band whose
+		// boundary is two loops - a face with a hole - so it is refused.
+		var e2 = EditableMesh.FromPolyMesh( box );
+		var vertical = new List<int>();
+
+		for ( var hei = 0; hei < e2.HalfEdges.Count; hei++ )
+		{
+			var a = e2.Positions[e2.HalfEdges[hei].Origin];
+			var b = e2.Positions[e2.HalfEdges[e2.HalfEdges[hei].Next].Origin];
+
+			if ( MathF.Abs( a.x - b.x ) < 1e-5f && MathF.Abs( a.y - b.y ) < 1e-5f && a.z < b.z )
+				vertical.Add( hei );
+		}
+
+		Check( "the box exposes four vertical edges", vertical.Count == 4, $"got {vertical.Count}" );
+
+		var holed = false;
+
+		try { e2.DissolveEdges( vertical ); }
+		catch ( InvalidOperationException ) { holed = true; }
+
+		Check( "a dissolve that would make a face with a hole is refused", holed );
+
+		// A boundary edge has no second face to merge with.
+		var plane = Primitives.Plane( 2, 2, 2, 2 );
+		var p = EditableMesh.FromPolyMesh( plane );
+		var rim = -1;
+
+		for ( var hei = 0; hei < p.HalfEdges.Count && rim < 0; hei++ )
+			if ( p.HalfEdges[hei].Twin < 0 )
+				rim = hei;
+
+		var boundaryRefused = false;
+
+		try { p.DissolveEdges( new[] { rim } ); }
+		catch ( InvalidOperationException ) { boundaryRefused = true; }
+
+		Check( "dissolving a boundary edge is refused", boundaryRefused );
+
+		// Where the faces ARE coplanar the merge is exact: dissolving an internal edge of a 2x2
+		// plane joins two quads into one hexagon with no change in area.
+		var grid = EditableMesh.FromPolyMesh( plane );
+		var inner = -1;
+
+		for ( var hei = 0; hei < grid.HalfEdges.Count && inner < 0; hei++ )
+			if ( grid.HalfEdges[hei].Twin >= 0 )
+				inner = hei;
+
+		grid.DissolveEdges( new[] { inner } );
+
+		var gm = grid.ToPolyMesh();
+		var gv = MeshValidator.Validate( gm );
+		Check( "the coplanar dissolve stays valid and open", gv.IsValid && !gv.IsClosed, gv.ToString() );
+		Check( "the coplanar dissolve leaves three faces", gm.FaceCount == 3, $"got {gm.FaceCount}" );
+
+		var garea = 0f;
+
+		foreach ( var f in gm.Faces )
+			garea += gm.FaceArea( f );
+
+		Check( "the coplanar dissolve keeps the area", MathF.Abs( garea - 4f ) < 1e-3f, $"got {garea:0.####}" );
+
+		// Dissolve the centre vertex of a 2x2 plane: the four quads around it merge into one
+		// octagon, the disc stays open and keeps its area.
+		var centre = plane.Positions.FindIndex( q => MathF.Abs( q.x ) < 1e-5f && MathF.Abs( q.y ) < 1e-5f );
+		Check( "the plane has an interior centre vertex", centre >= 0 );
+
+		var q2 = EditableMesh.FromPolyMesh( plane );
+		q2.DissolveVertex( centre );
+		Check( "dissolving a vertex keeps the mesh valid", q2.Validate().IsValid, q2.Validate().ToString() );
+
+		var qm = q2.ToPolyMesh();
+		var qv = MeshValidator.Validate( qm );
+		Check( "the dissolved plane is one octagon", qm.FaceCount == 1 && qm.Faces[0].Count == 8,
+			$"{qm.FaceCount} faces, {(qm.FaceCount > 0 ? qm.Faces[0].Count : 0)} corners" );
+		Check( "the dissolved plane stays open", !qv.IsClosed && qv.BoundaryEdges == 8,
+			$"boundary {qv.BoundaryEdges}" );
+
+		var area = 0f;
+		foreach ( var f in qm.Faces )
+			area += qm.FaceArea( f );
+		Check( "the dissolved plane keeps its area", MathF.Abs( area - 4f ) < 1e-3f, $"got {area:0.####}" );
+
+		// A boundary vertex has no face on the open side to merge with, so it is refused.
+		var cornerRefused = false;
+
+		try { EditableMesh.FromPolyMesh( plane ).DissolveVertex( 0 ); }
+		catch ( InvalidOperationException ) { cornerRefused = true; }
+
+		Check( "dissolving a boundary vertex is refused", cornerRefused );
+
+		// Dissolving a box corner merges the three quads that meet there into one face. The result
+		// is bounded by that six-corner face, so the solid stays valid and closed.
+		var e3 = EditableMesh.FromPolyMesh( box );
+		var corner = e3.Positions.FindIndex( q => q.x > 0.5f && q.y > 0.5f && q.z > 0.5f );
+		Check( "the box has its +x+y+z corner", corner >= 0 );
+
+		e3.DissolveVertex( corner );
+		var m3 = e3.ToPolyMesh();
+		var v3 = MeshValidator.Validate( m3 );
+		Check( "the corner-dissolved box is valid and closed", v3.IsValid && v3.IsClosed, v3.ToString() );
+		Check( "the corner-dissolved box has 4 faces", m3.FaceCount == 4, $"got {m3.FaceCount}" );
+		Check( "the corner-dissolved box has a six-corner face", m3.Faces.Any( f => f.Count == 6 ),
+			$"max {m3.Faces.Max( f => f.Count )}" );
+	}
+
+	static void TestWeld()
+	{
+		var box = Primitives.Box( 2, 2, 2 );
+
+		// Unweld: give every face its own four corners, so the box is 24 coincident-but-distinct
+		// vertices and nothing is topologically connected.
+		var loose = new PolyMesh();
+
+		foreach ( var f in box.Faces )
+		{
+			var start = loose.Positions.Count;
+
+			for ( var i = 0; i < f.Count; i++ )
+				loose.AddVertex( box.Positions[f.Indices[i]] );
+
+			loose.AddFace( new[] { start, start + 1, start + 2, start + 3 }, (Vec2[])f.UVs.Clone(), f.Material );
+		}
+
+		Check( "the loose box really is unwelded", loose.VertexCount == 24, $"got {loose.VertexCount}" );
+		Check( "and it reads as open", !MeshValidator.Validate( loose ).IsClosed );
+
+		var welded = MeshWeld.Weld( loose, 1e-4f );
+		Check( "welding recovers the 8 vertices", welded.VertexCount == 8, $"got {welded.VertexCount}" );
+		Check( "welding keeps the 6 faces", welded.FaceCount == 6, $"got {welded.FaceCount}" );
+
+		var v = MeshValidator.Validate( welded );
+		Check( "welded box is valid", v.IsValid, v.ToString() );
+		Check( "welded box is closed", v.IsClosed );
+		Check( "welded box volume is 8", MathF.Abs( welded.SignedVolume() - 8f ) < 1e-3f,
+			$"got {welded.SignedVolume():0.####}" );
+
+		// A tolerance gates the weld: two sheets a gap apart merge only once the tolerance reaches.
+		var sheet = Primitives.Plane( 2, 2, 1, 1 );
+		var raised = sheet.Clone();
+
+		for ( var i = 0; i < raised.VertexCount; i++ )
+			raised.Positions[i] += new Vec3( 0, 0, 0.01f );
+
+		var stacked = sheet.Clone();
+		MeshTransform.Append( stacked, raised );
+
+		Check( "a gap wider than the tolerance stays unmerged", MeshWeld.Weld( stacked, 0.001f ).VertexCount == 8 );
+		Check( "a tolerance that reaches the gap welds the sheets", MeshWeld.Weld( stacked, 0.1f ).VertexCount == 4 );
+
+		// An already-welded box is left alone.
+		Check( "an already-welded box is unchanged", MeshWeld.Weld( box, 1e-4f ).VertexCount == 8 );
+	}
 
 	static void TestPrimitiveValidity()
 	{

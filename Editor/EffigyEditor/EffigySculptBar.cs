@@ -206,3 +206,153 @@ internal sealed class EffigySculptBar : Widget
 		Changed?.Invoke();
 	}
 }
+
+/// <summary>
+/// Edit mode's floating bar: what is selected, and the operation you are tuning.
+///
+/// THE OPERATION STAYS OPEN UNTIL DONE. Blender's redo panel folds into a corner and vanishes the
+/// moment you click anything else; here the last operation's number sits in plain view and updates
+/// the mesh live — every edit re-runs the operation from the state before it through
+/// <see cref="MeshEditSession.Preview"/> — until Done (Enter) or Cancel (Escape). Either way it is
+/// one undo step.
+/// </summary>
+internal sealed class EffigyMeshEditBar : Widget
+{
+	public const float BarHeight = 28f;
+
+	private readonly Editor.Label _info;
+	private readonly Editor.Label _hints;
+	private readonly Editor.Label _operation;
+	private readonly EffigyNumericField _amount;
+	private readonly Button _done;
+	private readonly Button _cancel;
+
+	private MeshEditSession _session;
+	private Action<float> _amountChanged;
+
+	/// <summary>Done was pressed. The window accepts the preview.</summary>
+	public Action Accepted { get; set; }
+
+	/// <summary>Cancel was pressed. The window cancels the preview.</summary>
+	public Action Cancelled { get; set; }
+
+	public EffigyMeshEditBar( Widget parent ) : base( parent )
+	{
+		TranslucentBackground = true;
+		NoSystemBackground = true;
+
+		Visible = false;
+		FixedHeight = BarHeight;
+		FixedWidth = 700f;
+
+		Layout = Layout.Row();
+		Layout.Spacing = 8;
+		Layout.Margin = new Sandbox.UI.Margin( 8, 0, 8, 0 );
+
+		_operation = new Editor.Label( "" ) { Color = Theme.Text };
+		Layout.Add( _operation );
+
+		_amount = new EffigyNumericField( this, 0.1f, "u" )
+		{
+			ValueEdited = v => _amountChanged?.Invoke( v ),
+			FixedWidth = 90f,
+		};
+		Layout.Add( _amount );
+
+		_done = new Button( "Done" ) { Clicked = () => Accepted?.Invoke(), ToolTip = "Keep this (Enter)" };
+		_cancel = new Button( "Cancel" ) { Clicked = () => Cancelled?.Invoke(), ToolTip = "Put the mesh back as it was (Escape)" };
+		Layout.Add( _done );
+		Layout.Add( _cancel );
+
+		_info = new Editor.Label( "" ) { Color = Theme.TextControl.WithAlpha( 0.85f ) };
+		Layout.Add( _info, 1 );
+
+		// What the mouse does here, at the right-hand end — so nobody has to know that the right
+		// button is a menu or that Space finds any tool.
+		_hints = new Editor.Label( "" ) { Color = Theme.TextControl.WithAlpha( 0.5f ) };
+		Layout.Add( _hints );
+
+		ShowOperation( null, 0f, null );
+	}
+
+	public Color GapColor { get; set; } = Theme.ControlBackground;
+
+	protected override void OnPaint()
+	{
+		Paint.ClearPen();
+		Paint.SetBrush( GapColor );
+		Paint.DrawRect( LocalRect );
+	}
+
+	public void Bind( MeshEditSession session )
+	{
+		_session = session;
+		Visible = session is not null;
+
+		if ( session is null )
+			ShowOperation( null, 0f, null );
+
+		Refresh();
+	}
+
+	/// <summary>Show an operation's number, or hide it with a null name.</summary>
+	public void ShowOperation( string name, float value, Action<float> changed )
+	{
+		_amountChanged = changed;
+
+		var open = name is not null;
+		_operation.Visible = open;
+		_amount.Visible = open;
+		_done.Visible = open;
+		_cancel.Visible = open;
+
+		if ( open )
+		{
+			_operation.Text = name;
+			_amount.SetValue( value );
+		}
+	}
+
+	public void Refresh()
+	{
+		if ( _session is not { } s )
+			return;
+
+		var (what, count) = s.Mode switch
+		{
+			EditElement.Vertex => ("vertices", s.SelectedVertices.Count),
+			EditElement.Edge => ("edges", s.SelectedEdges.Count),
+			_ => ("faces", s.SelectedFaces.Count),
+		};
+
+		var text = count == 0
+			? $"Nothing selected — click {what} to pick them"
+			: $"{count} {what} selected";
+
+		_hints.Text = s.IsRetopologizing
+			? "Ctrl+click places · Ctrl+drag lays a strip (Strip brush) · Right-click: menu · Space: search"
+			: "Click: select · Shift: add · Drag: box · Alt+click: loop · Right-click: menu · Space: search";
+
+		text += $" · {s.Mesh.VertexCount:N0} verts / {s.Mesh.FaceCount:N0} faces";
+
+		if ( s.MirrorX )
+			text += " · mirror X";
+
+		if ( s.Separated.Count > 0 )
+			text += $" · {s.Separated.Count} piece(s) split off";
+
+		if ( s.SoftRadius > 0f )
+			text += $" · soft {s.SoftRadius:0.##}";
+
+		if ( s.SnapTarget is not null )
+			text += " · snapping to surface";
+
+		var check = MeshValidator.Validate( s.Mesh );
+		if ( check.BoundaryEdges > 0 )
+			text += $" · {check.BoundaryEdges} open edges";
+		if ( check.NonManifoldEdges > 0 )
+			text += $" · {check.NonManifoldEdges} non-manifold";
+
+		_info.Text = text;
+	}
+}

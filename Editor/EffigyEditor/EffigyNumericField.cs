@@ -208,6 +208,18 @@ internal abstract class EffigyScrub : Widget
 	/// <summary>Called on every move with the new value.</summary>
 	public Action<float> Dragged { get; set; }
 
+	/// <summary>
+	/// True while the button is down, false when it comes up. The signal a live preview needs.
+	///
+	/// WHY THIS IS NOT JUST Dragged. Dragged fires per pixel and says nothing about the END of a
+	/// drag, so anything downstream that wants to work cheaply while you scrub and properly when
+	/// you let go had no way to know which it was in. A garment slider re-runs the fit, the
+	/// collision, the drape and the solidify on every pixel; the drape alone is forty simulation
+	/// steps. Knowing a drag is in progress is what lets the rebuild skip the expensive half and
+	/// put it back on release.
+	/// </summary>
+	public Action<bool> Scrubbing { get; set; }
+
 	protected bool Dragging;
 	private float _startValue;
 	private float _startX;
@@ -231,6 +243,8 @@ internal abstract class EffigyScrub : Widget
 		Dragging = true;
 		_startValue = Value();
 		_startX = e.LocalPosition.x;
+
+		Scrubbing?.Invoke( true );
 
 		Update();
 		e.Accepted = true;
@@ -273,6 +287,12 @@ internal abstract class EffigyScrub : Widget
 	private void EndDrag()
 	{
 		Dragging = false;
+
+		// ALWAYS FIRES, including when the button came up somewhere this widget never saw - see
+		// OnMouseMove. A preview that is never told the drag ended is a model left permanently in
+		// its cheap form, which is a worse bug than the slowness it was avoiding.
+		Scrubbing?.Invoke( false );
+
 		Update();
 	}
 }

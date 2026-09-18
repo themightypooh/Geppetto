@@ -2194,7 +2194,7 @@ internal sealed partial class EffigyViewport
 			return;
 
 		// Same rule as the idle selection: a brush sees the bare surface.
-		if ( IsPainting || IsSculpting || IsMaterialBrushing || IsWeightPainting )
+		if ( IsPainting || IsSculpting || IsMeshEditing || IsMaterialBrushing || IsWeightPainting )
 		{
 			SyncBodyHighlight( null, BodySelectedColor );
 			return;

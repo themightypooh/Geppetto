@@ -21,9 +21,13 @@ namespace Effigy;
 /// triangles live in that file, or in a copy next to the .effigy (see <see cref="ImportSidecar"/>),
 /// and they are loaded at rebuild.
 /// </summary>
-public sealed class ImportFeature : Feature
+public class ImportFeature : Feature
 {
 	public override string TypeName => "Import";
+
+	/// <summary>Whether the bodies this feature publishes are reference only — see Body.IsReference.
+	/// False here and true for WearerFeature, which is otherwise the same import.</summary>
+	protected virtual bool ReferenceBodies => false;
 
 	/// <summary>The mesh file this feature reads. Wavefront OBJ; anything else is a refusal with
 	/// a remedy, not a crash.</summary>
@@ -313,7 +317,7 @@ public sealed class ImportFeature : Feature
 				? Name
 				: $"{Name} / {piece.Name}";
 
-			ctx.Bodies.Add( new Body( id, label, mesh ) );
+			ctx.Bodies.Add( new Body( id, label, mesh ) { IsReference = ReferenceBodies } );
 		}
 	}
 

@@ -219,3 +219,108 @@ public static class EffigySkeletonProbe
 		return MathF.Acos( Math.Clamp( Vector3.Dot( a, b ), -1f, 1f ) ).RadianToDegree();
 	}
 }
+
+/// <summary>
+/// What a compiled model's RENDER mesh looks like from managed code — reflected, not assumed.
+///
+/// WHY REFLECTION RATHER THAN A CALL. The Wearer feature needs a body's actual surface, and the
+/// only mesh reader this codebase has proven is <c>Model.Physics</c>, which is a collision hull:
+/// far too coarse to cut a collar out of. s&box's render-mesh API has moved between SDK versions,
+/// so this prints the members that exist in the engine actually running rather than the ones the
+/// docs last described — same argument EffigySkeletonProbe makes for existing at all.
+///
+///     effigy_model_probe                                  citizen, members only
+///     effigy_model_probe models/citizen/citizen.vmdl       any model
+/// </summary>
+public static class EffigyModelProbe
+{
+	const string Citizen = "models/citizen/citizen.vmdl";
+
+	[ConCmd( "effigy_model_probe" )]
+	public static void Probe( string path = Citizen )
+	{
+		if ( string.IsNullOrWhiteSpace( path ) )
+			path = Citizen;
+
+		var model = Model.Load( path );
+
+		if ( model is null || model.IsError )
+		{
+			Log.Error( $"[mesh] could not load {path}" );
+			return;
+		}
+
+		Log.Info( $"[mesh] {path}: bones {model.BoneCount}, bounds {model.Bounds.Size}" );
+
+		var type = model.GetType();
+
+		foreach ( var member in type.GetMembers( System.Reflection.BindingFlags.Public
+			| System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Static )
+			.OrderBy( m => m.Name ) )
+		{
+			if ( member is System.Reflection.PropertyInfo prop )
+				Log.Info( $"[mesh] prop {prop.PropertyType.Name} {prop.Name}" );
+			else if ( member is System.Reflection.MethodInfo method && !method.IsSpecialName )
+				Log.Info( $"[mesh] method {method.ReturnType.Name} {method.Name}("
+					+ string.Join( ", ", method.GetParameters().Select( p => $"{p.ParameterType.Name} {p.Name}" ) ) + ")" );
+		}
+	}
+}
+
+/// <summary>
+/// What an s&amp;box `.clothing` definition actually is, reflected out of the engine that is running.
+///
+/// WHY THIS EXISTS. A garment is only clothing once it is a Clothing resource: a small record naming
+/// a model, a category, which body slots it covers and which it hides. Every one of those is an
+/// ENUM, and an exporter that writes a category or a slot the engine does not know produces an asset
+/// that compiles, loads, and silently does not work. The names change between SDK versions, so this
+/// prints the ones this build has rather than the ones the docs last described - same argument
+/// EffigySkeletonProbe and EffigyModelProbe both make.
+///
+///     effigy_clothing_probe
+/// </summary>
+public static class EffigyClothingProbe
+{
+	[ConCmd( "effigy_clothing_probe" )]
+	public static void Probe()
+	{
+		var type = TypeLibrary.GetType( "Clothing" )?.TargetType
+			?? System.AppDomain.CurrentDomain.GetAssemblies()
+				.SelectMany( a =>
+				{
+					try { return a.GetTypes(); }
+					catch { return System.Array.Empty<System.Type>(); }
+				} )
+				.FirstOrDefault( t => t.Name == "Clothing" && t.Namespace == "Sandbox" );
+
+		if ( type is null )
+		{
+			Log.Error( "[cloth] no Sandbox.Clothing type in this build" );
+			return;
+		}
+
+		Log.Info( $"[cloth] {type.FullName}" );
+
+		foreach ( var prop in type.GetProperties( System.Reflection.BindingFlags.Public
+			| System.Reflection.BindingFlags.Instance ).OrderBy( p => p.Name ) )
+		{
+			var pt = prop.PropertyType;
+			var inner = System.Nullable.GetUnderlyingType( pt ) ?? pt;
+
+			if ( inner.IsEnum )
+			{
+				Log.Info( $"[cloth] {prop.Name} : {inner.Name}"
+					+ (inner.GetCustomAttributes( typeof( System.FlagsAttribute ), false ).Length > 0 ? " [Flags]" : "")
+					+ " = " + string.Join( ", ", System.Enum.GetNames( inner ) ) );
+			}
+			else
+			{
+				Log.Info( $"[cloth] {prop.Name} : {pt.Name}" );
+			}
+		}
+
+		// The nested types carry the enums that are not reachable through a property's type alone.
+		foreach ( var nested in type.GetNestedTypes().Where( t => t.IsEnum ) )
+			Log.Info( $"[cloth] nested enum {nested.Name} = " + string.Join( ", ", System.Enum.GetNames( nested ) ) );
+	}
+}

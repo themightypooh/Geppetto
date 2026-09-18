@@ -159,3 +159,226 @@ public sealed class SculptFeature : Feature
 		_builtRevision = _sculpt.Revision;
 	}
 }
+
+/// <summary>
+/// Direct polygon edits in the feature tree — what the Modeling workspace's Edit mode commits.
+///
+/// Same shape as <see cref="SculptFeature"/>: it consumes one body and replaces its mesh, and its
+/// real state is a mesh rather than a handful of numbers, so it lives in a side-car
+/// (<see cref="MeshEditSidecar"/>) and not in the readable document.
+///
+/// WHAT IS STORED IS THE RESULT, NOT THE STEPS. Replaying extrudes and loop cuts by element index
+/// would be a parametric history on top of a parametric history, and it breaks the moment the body
+/// underneath gains a face. So the edited mesh is kept whole, together with a fingerprint of the
+/// body it was made from.
+///
+/// WHEN THE BODY ABOVE CHANGES, IT REFUSES AND KEEPS THE EDIT, exactly as Sculpt refuses a changed
+/// cage: the usual cause is an upstream edit somebody did not mean, and undoing it brings this
+/// back untouched. <see cref="KeepIfChanged"/> is the deliberate way past that — it outputs the
+/// edit anyway and says so, because an edit made on the old body no longer follows the new one.
+/// </summary>
+public sealed class MeshEditFeature : Feature
+{
+	public override string TypeName => "Mesh edit";
+
+	public override GeometryKind Accepts => GeometryKind.Body;
+
+	public readonly BodySelectionParam Bodies = new( "Body" );
+
+	public readonly BoolParam KeepIfChanged = new( "Keep this edit if the body above changes", false );
+
+	// The live modifiers — see MeshModifiers. Saved like any other parameter; the edit itself
+	// stays the cage, and these run on the way out.
+	public readonly BoolParam MirrorX = new( "Mirror across X", false );
+	public readonly IntParam ArrayCount = new( "Copies along X", 1, 1, 64 );
+	public readonly FloatParam ArrayGap = new( "Gap between copies", 0f, 0f );
+	public readonly IntParam SubdivideLevels = new( "Subdivide", 0, 0, 3 );
+	public readonly FloatParam SolidifyThickness = new( "Thickness", 0f, 0f );
+
+	public override IReadOnlyList<IParam> Parameters => new IParam[] { Bodies, KeepIfChanged };
+
+	public override IReadOnlyList<IParam> AdvancedParameters => new IParam[] { MirrorX, ArrayCount, ArrayGap, SubdivideLevels, SolidifyThickness };
+
+	/// <summary>True when any live modifier would change the mesh.</summary>
+	public bool HasModifiers => MirrorX.Value || ArrayCount.Clamped > 1 || SubdivideLevels.Clamped > 0 || SolidifyThickness.Value > 0f;
+
+	/// <summary>The live modifiers applied to <paramref name="mesh"/> — what this feature outputs
+	/// for it, and what the editor shows over the cage while you edit.</summary>
+	public PolyMesh ApplyModifiers( PolyMesh mesh ) => HasModifiers
+		? MeshModifiers.Apply( mesh, MirrorX.Value, ArrayCount.Clamped, ArrayGap.Value, SubdivideLevels.Clamped, SolidifyThickness.Value )
+		: mesh.Clone();
+
+	PolyMesh _edited;
+	List<PolyMesh> _pieces = new();
+	long _baseFingerprint;
+	byte[] _pending;
+	int _revision;
+	int _builtRevision = -1;
+	PolyMesh _lastInput;
+
+	/// <summary>The mesh this feature outputs, or null before anything was committed.</summary>
+	public PolyMesh Edited => _edited;
+
+	/// <summary>Faces separated off during the edit, each output as a body of its own after this one.</summary>
+	public IReadOnlyList<PolyMesh> Pieces => _pieces;
+
+	/// <summary>The body as it arrived at the last rebuild — what an edit session starts from when
+	/// there is no edit yet. Null before the first rebuild.</summary>
+	public PolyMesh LastInput => _lastInput;
+
+	/// <summary>The id of the body this edit replaced at the last rebuild, so the editor can tell
+	/// it apart from the others (snapping targets everything else). A property, not a field:
+	/// StudioDocument serialises public fields, and this is derived.</summary>
+	public string LastBodyId { get; private set; }
+
+	public bool HasEdit => _edited is not null || _pending is not null;
+
+	/// <summary>Bumped by every <see cref="Commit"/>, so the studio rebuilds without a MarkDirty —
+	/// the same trick SculptFeature plays with its revision.</summary>
+	public int Revision => _revision;
+
+	public override bool IsStale => _pending is not null || _revision != _builtRevision;
+
+	/// <summary>
+	/// Hand the feature an edited mesh. <paramref name="basedOn"/> is the body the session started
+	/// from — normally <see cref="LastInput"/>. The mesh is cloned: the session keeps editing its own.
+	/// </summary>
+	public void Commit( PolyMesh edited, PolyMesh basedOn, IEnumerable<PolyMesh> pieces = null )
+	{
+		if ( edited is null )
+			throw new System.ArgumentNullException( nameof( edited ) );
+		if ( basedOn is null )
+			throw new System.ArgumentNullException( nameof( basedOn ) );
+
+		_edited = edited.Clone();
+		_pieces = new List<PolyMesh>();
+		if ( pieces is not null )
+			foreach ( var piece in pieces )
+				_pieces.Add( piece.Clone() );
+		_baseFingerprint = Fingerprint( basedOn );
+		_pending = null;
+		_revision++;
+	}
+
+	/// <summary>Forget the edit, so the body passes through unchanged.</summary>
+	public void Clear()
+	{
+		_edited = null;
+		_pieces = new List<PolyMesh>();
+		_pending = null;
+		_revision++;
+	}
+
+	public byte[] SaveMesh() => _edited is null ? _pending : MeshEditBlob.Write( _edited, _baseFingerprint, _pieces );
+
+	public void LoadMesh( byte[] blob )
+	{
+		_pending = blob;
+		_revision++;
+	}
+
+	/// <summary>
+	/// Topology AND positions. Topology alone would miss a resized box, and an edit made on a 2-inch
+	/// box output unchanged on top of a 4-inch one is exactly the silent wrong answer this exists to
+	/// refuse. Positions are quantised to 1/1024 inch so float noise from an identical rebuild does
+	/// not count as a change.
+	/// </summary>
+	public static long Fingerprint( PolyMesh mesh )
+	{
+		const long prime = 0x100000001b3;
+		var hash = MultiresSculpt.TopologyId( mesh );
+
+		void Mix( int value )
+		{
+			for ( var b = 0; b < 4; b++ )
+			{
+				hash ^= (value >> (b * 8)) & 0xff;
+				hash = unchecked(hash * prime);
+			}
+		}
+
+		foreach ( var p in mesh.Positions )
+		{
+			Mix( (int)System.MathF.Round( p.x * 1024f ) );
+			Mix( (int)System.MathF.Round( p.y * 1024f ) );
+			Mix( (int)System.MathF.Round( p.z * 1024f ) );
+		}
+
+		return hash;
+	}
+
+	protected override void Execute( FeatureContext ctx )
+	{
+		var targets = RequireBodies( ctx, Bodies );
+
+		if ( targets.Count != 1 )
+		{
+			Fail(
+				"A mesh edit works on one body at a time",
+				$"This feature's selection matches {targets.Count} bodies. The edit is one mesh, made from one body.",
+				"Pick a single body in the selection" );
+		}
+
+		var body = targets[0];
+		_lastInput = body.Mesh.Clone();
+		LastBodyId = body.Id;
+
+		if ( _pending is not null )
+		{
+			try
+			{
+				_edited = MeshEditBlob.Read( _pending, out _baseFingerprint, out var pieces );
+				_pieces = pieces;
+			}
+			catch ( System.Exception e )
+			{
+				// Kept, never dropped: a blob this build cannot read is still somebody's work.
+				Fail(
+					"This mesh edit could not be read",
+					e.Message,
+					"Delete this feature to start a new edit on the current body" );
+				return;
+			}
+
+			_pending = null;
+		}
+
+		if ( _edited is null )
+		{
+			// Nothing committed yet: pass the body through. A freshly added edit must not change
+			// anything until somebody actually edits — beyond the modifiers somebody switched on.
+			if ( HasModifiers )
+				body.Mesh = ApplyModifiers( body.Mesh );
+
+			_builtRevision = _revision;
+			return;
+		}
+
+		if ( Fingerprint( body.Mesh ) != _baseFingerprint )
+		{
+			if ( !KeepIfChanged.Value )
+			{
+				Fail(
+					"The body under this mesh edit changed",
+					"The edit was made on a different version of this body, so it no longer lines up with it.",
+					"Undo the change above this feature",
+					"Turn on \"Keep this edit if the body above changes\" to use the edit as it is",
+					"Delete this feature to edit the current body from scratch" );
+			}
+
+			Warn(
+				"This mesh edit ignores changes above it",
+				"The body above changed after the edit was made. The edit is used as it was, so those changes do not show.",
+				"Delete this feature and edit again to pick the changes up" );
+		}
+
+		body.Mesh = ApplyModifiers( _edited );
+
+		// Separated pieces come out as bodies of their own, named after the one they came from.
+		// Ids come from the context, so they are the same ids on every rebuild.
+		for ( var i = 0; i < _pieces.Count; i++ )
+			ctx.Bodies.Add( new Body( ctx.NewBodyId(), $"{body.Name} piece {i + 1}", _pieces[i].Clone() ) );
+
+		_builtRevision = _revision;
+	}
+}

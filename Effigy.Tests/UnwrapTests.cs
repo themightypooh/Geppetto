@@ -1,3 +1,5 @@
+using System.Linq;
+using System.Collections.Generic;
 using System;
 using Effigy;
 using static Effigy.Tests.Report;
@@ -24,6 +26,7 @@ public static class UnwrapTests
 		TestUnwrappingIsDeterministic();
 		TestUniformDensityAcrossCharts();
 		TestABakeThroughAnUnwrapIsCorrect();
+		TestSeamsCutChartsTheAngleWouldHaveKeptWhole();
 	}
 
 	static void TestTheDefaultProjectionCannotBakeAndTheUnwrapCan()
@@ -254,5 +257,82 @@ public static class UnwrapTests
 		}
 
 		return area;
+	}
+
+	/// <summary>
+	/// A marked seam has to beat the angle rule, or it is decoration. A flat grid is the case that
+	/// proves it: every face is coplanar, so the angle rule makes exactly ONE chart and any second
+	/// island can only have come from the seam.
+	///
+	/// The seam has to cut the whole way across. One edge in the middle of a grid changes nothing,
+	/// because the flood fill simply walks around it — which is true of seams in any tool, and worth
+	/// a check of its own.
+	/// </summary>
+	static void TestSeamsCutChartsTheAngleWouldHaveKeptWhole()
+	{
+		Section( "unwrap: a marked seam cuts where the angle would not" );
+
+		// 4x4 quads, 8 inches across: coplanar, so charting alone gives one island.
+		PolyMesh Grid() => Primitives.Plane( 8f, 8f, 4, 4 );
+
+		var plain = Grid();
+		var plainReport = UVUnwrap.Unwrap( plain );
+		Check( "a flat grid is one island to start with", plainReport.Charts == 1, $"{plainReport.Charts}" );
+
+		// Every edge lying on the y = 0 line: a straight cut from one side of the grid to the other.
+		HashSet<EdgeKey> AcrossTheMiddle( PolyMesh m )
+		{
+			var seams = new HashSet<EdgeKey>();
+
+			foreach ( var key in m.BuildEdgeFaces().Keys )
+				if ( MathF.Abs( m.Positions[key.A].y ) < 1e-3f && MathF.Abs( m.Positions[key.B].y ) < 1e-3f )
+					seams.Add( key );
+
+			return seams;
+		}
+
+		var cut = Grid();
+		var seams = AcrossTheMiddle( cut );
+		Check( "the cut runs the full width", seams.Count == 4, $"{seams.Count} edges" );
+
+		var cutReport = UVUnwrap.Unwrap( cut, seams: seams );
+		Check( "the seam splits it in two", cutReport.Charts == 2, $"{plainReport.Charts} -> {cutReport.Charts}" );
+		Check( "and no face was lost to it", cutReport.Faces == plainReport.Faces,
+			$"{plainReport.Faces} vs {cutReport.Faces}" );
+		Check( "no vertex moved - a seam is a UV cut, not a mesh cut",
+			cut.VertexCount == plain.VertexCount && cut.FaceCount == plain.FaceCount );
+
+		// A vertex on the cut now carries a different UV in each half. That IS the seam.
+		var onSeam = seams.First().A;
+		var uvs = new HashSet<Vec2>();
+		foreach ( var face in cut.Faces )
+			for ( var c = 0; c < face.Indices.Length; c++ )
+				if ( face.Indices[c] == onSeam )
+					uvs.Add( face.UVs[c] );
+		Check( "a vertex on the seam carries more than one UV", uvs.Count > 1, $"{uvs.Count}" );
+
+		// Same seam, same layout: the whole map must not shuffle between runs.
+		var again = Grid();
+		UVUnwrap.Unwrap( again, seams: AcrossTheMiddle( again ) );
+		var same = true;
+		for ( var f = 0; f < again.FaceCount && same; f++ )
+			for ( var c = 0; c < again.Faces[f].UVs.Length; c++ )
+				if ( !again.Faces[f].UVs[c].Equals( cut.Faces[f].UVs[c] ) ) { same = false; break; }
+		Check( "seamed unwrapping is deterministic", same );
+
+		// One edge in the middle is not a cut: the fill goes round it.
+		var nicked = Grid();
+		var nickReport = UVUnwrap.Unwrap( nicked, seams: new HashSet<EdgeKey> { seams.First() } );
+		Check( "a seam that does not reach across changes nothing", nickReport.Charts == 1, $"{nickReport.Charts}" );
+
+		// And a seam on an edge the angle already split is equally a no-op.
+		var box = Primitives.Box( 2, 2, 2 );
+		var boxPlain = UVUnwrap.Unwrap( box );
+		var boxSeamed = Primitives.Box( 2, 2, 2 );
+		var corner = new HashSet<EdgeKey>();
+		foreach ( var key in boxSeamed.BuildEdgeFaces().Keys ) { corner.Add( key ); break; }
+		var boxReport = UVUnwrap.Unwrap( boxSeamed, seams: corner );
+		Check( "a seam on an already-split edge changes nothing",
+			boxReport.Charts == boxPlain.Charts, $"{boxPlain.Charts} vs {boxReport.Charts}" );
 	}
 }

@@ -35,6 +35,9 @@ public static class ShellTests
 
 		Section( "shell: thicker than the shape itself" );
 		TestTooThick();
+
+		Section( "solidify: a surface gains thickness" );
+		TestSolidify();
 	}
 
 	/// <summary>
@@ -444,9 +447,41 @@ public static class ShellTests
 			$"{Volume( studio.Bodies[0].Mesh ):0.####} vs {thicker:0.####}" );
 	}
 
+	// --- solidify -----------------------------------------------------------------------
+
+	static void TestSolidify()
+	{
+		// A closed box inflated outward becomes a hollow shell: an outer 3x3x3 box minus the inner
+		// 2x2x2 one, so the shell encloses 27 - 8 = 19.
+		var box = Primitives.Box( 2, 2, 2 );
+		var solid = MeshSolidify.Solidify( box, 0.5f );
+		var v = MeshValidator.Validate( solid );
+
+		Check( "solidified box is valid", v.IsValid, v.ToString() );
+		Check( "solidified box is closed", v.IsClosed );
+		Check( "solidified box has 12 faces", solid.FaceCount == 12, $"got {solid.FaceCount}" );
+		Check( "solidified box has 16 vertices", solid.VertexCount == 16, $"got {solid.VertexCount}" );
+		Check( "solidified box shell volume is 19", Near( solid.SignedVolume(), 19f, 1e-2f ),
+			$"got {solid.SignedVolume():0.####}" );
+
+		// An open sheet becomes a closed slab: a 2x2 plane solidified by 0.5 encloses 2.
+		var plane = Primitives.Plane( 2, 2, 1, 1 );
+		var slab = MeshSolidify.Solidify( plane, 0.5f );
+		var sv = MeshValidator.Validate( slab );
+
+		Check( "solidified plane is valid", sv.IsValid, sv.ToString() );
+		Check( "solidified plane is closed", sv.IsClosed );
+		Check( "solidified plane has 6 faces", slab.FaceCount == 6, $"got {slab.FaceCount}" );
+		Check( "solidified plane has 8 vertices", slab.VertexCount == 8, $"got {slab.VertexCount}" );
+		Check( "solidified plane volume is 2", Near( MathF.Abs( slab.SignedVolume() ), 2f, 1e-2f ),
+			$"got {slab.SignedVolume():0.####}" );
+
+		// The source meshes are untouched, and zero thickness is a no-op clone.
+		Check( "solidify leaves the source box alone", box.FaceCount == 6 && box.VertexCount == 8 );
+		Check( "zero thickness returns a clone", MeshSolidify.Solidify( plane, 0f ).FaceCount == plane.FaceCount );
+	}
+
 	// --- helpers ------------------------------------------------------------------------
-
-
 	/// <summary>
 	/// Build a solid by extruding a rectangle, through the public feature path.
 	///

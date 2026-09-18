@@ -36,6 +36,119 @@ forgotten.
 ## Unreleased
 
 ### Added
+- **Select a ring.** Ctrl+Alt+click an edge in Model to select the ring around a limb, the edges a loop cut would cross.
+- **Select Linked (L).** Adds every piece your selection touches, so one click on an ear picks up the whole ear.
+- **Select Similar (Shift+L).** Adds every face pointing within 10 degrees of the faces you picked.
+- **Invert the selection (Ctrl+I).** Selects everything that wasn't selected, and nothing that was.
+- **Select a path.** Pick two vertices or two faces and **Path** selects the shortest line between them, such as a seam or a waistline.
+- **Fill a hole (F).** Select the edges round a hole to cap it with one face. Three or four loose vertices make a face too.
+- **Fix normals (Shift+N).** Makes faces agree with each other and point outward, for faces that show up black.
+- **Flip.** Turns the selected faces inside out.
+- **To sphere.** Rounds the selected vertices into a ball, for a head or an eye blocked out as a cube.
+- **Circle select (C).** Hold the mouse and paint the selection on. Ctrl paints it off, and [ and ] change the brush size.
+- **Spin and Screw.** Sweep the selected edges round the model's up axis, like a lathe: a bowl from a rim, a horn from a ring. Screw climbs as it turns.
+- **Shear and Bend.** Shear leans the selection over. Bend curls it up along its length without stretching, for tails, toes and horns.
+- **Array.** Repeats the selected faces in a row, for teeth, rivets and buttons.
+- **Split (Y).** Tears the selected faces loose where they stand, so moving them opens a gap.
+- **Select Non-manifold, Border and Checker.** Non-manifold finds holes and bad joins before export. Border swaps faces for the edges round them. Checker keeps every other face.
+- **Delete loose.** Removes vertices that no face uses. You can't see them, but they still get exported.
+- **Grid fill.** Caps a hole with a grid of quads that follows its rim, instead of one big face. Good for eye sockets, necks and cuffs. Drag the number to turn the grid.
+- **Rip (V).** Tears the mesh open along the selected edges, so moving them opens a slit, like a mouth or a pocket. A cut that stops inside the mesh stays closed at its ends.
+- **A pivot for Spin and Screw.** **Pivot here** moves the point they turn round to the selection, so you can lathe a part that isn't at the middle of the model. Shift-click puts it back.
+- **Live modifiers.** A mesh edit can now keep Mirror, Array, Smooth (subdivide) and Thickness switched on while you work. You edit the simple cage, and the model shows and outputs the finished result. Model half a head and see the whole one, or block a limb out in a few quads and see it smooth. Toggle them in the new **Modifiers** group, and set exact values in the feature's settings.
+- **Retopology.** Draw a clean, light mesh over a dense sculpt: open the sculpt in Model and press **Retopo**. Everything you place sticks to the surface, and the sculpt itself is never changed.
+- **Poly build (Ctrl+click).** Four clicks lay the first quad. After that, each click beside the selected edge adds one quad, so you click your way along a limb in a strip. Click any open edge to grow a new strip from it.
+- **See the next face before you click.** A ghost of the face follows the cursor. It turns red when the click would be refused, for a face that's twisted, points into the body, or covers one you already drew.
+- **Strips join up.** A click near a vertex you already placed reuses it, and a ring shows which one. The reach stays the same size on screen as you zoom.
+- **Even quads.** On by default: each new face is square to the edge it grows from, however far away you click. Turn it off to reach exactly to the click.
+- **Relax and Finish retopo.** Relax evens out lumpy hand-drawn topology and keeps it on the surface. Finish retopo lifts the new mesh out as its own body.
+- **Strip brush.** Turn it on and Ctrl+drag across the surface to lay a whole row of square quads in one stroke. Start on the selected edge to carry on from it.
+- **Mirrored retopology.** With Mirror X on, every face you draw also appears on the other side. Corners near the centre line snap onto it, so the two halves join.
+- **The sculpt stays out of the way.** While you retopologize, only your new mesh is wired, open borders are highlighted, and hovering and clicking only reach the new mesh.
+- **Make clothes: a Clothing workspace.** A fifth workspace next to CAD, Model, Paint and Rig.
+  Load the body you want to dress, cut a garment from it, grow fur on it. Everything it makes is an
+  ordinary feature, so it is in the history, it rebuilds when the body underneath changes, and it
+  saves with the document. Clothing used to be two buttons borrowed onto the Model and Rig bars.
+- **Make clothing that can be worn.** **Make clothing** on the Clothing bar's Publish stage compiles your garments and writes a `.clothing` item next to the model.
+  That is the asset s&box dresses a citizen with. Its category, the slots it takes and the parts of the body it hides all come from the garment itself, so a long sleeve claims the wrists and a T-shirt does not.
+  Garments made together become one item. `EffigyWindow.Clothing.cs`
+- **Live cloth.** **Make live cloth** on the Clothing bar writes a garment as real cloth. Add the **Garment Cloth** component to the character and the shirt hangs off their shoulders and swings as they move, instead of riding the bones stiffly.
+  It runs in the editor too, so you can watch it settle without pressing Play. `Code/Cloth/GarmentCloth.cs`
+- **Clothes for robots.** A Garment on a wearer built from separate parts, like a robot or a kitbash, is now cut from a smooth stand-in around it instead of from every strut and plate.
+  The shirt hangs straight down from the chest like real cloth. **Fit to** on the Garment picks Skin or Envelope yourself; Auto decides from how many pieces the wearer is made of.
+- **Dress a model you already have.** **Wearer** takes any compiled model — Citizen, your own
+  playermodel, anything in the asset browser. Its surface comes in as a body for the garment to be
+  cut from and fitted to, and its skeleton becomes the document's rig, which is what a garment reads
+  to find the torso, the arms and the legs. A wearer is drawn but never exported: you are making a
+  jacket, not republishing somebody else's character. It leaves an existing rig alone rather than
+  overwriting bones you placed yourself.
+- **Sliders keep up with expensive garments.** While you drag, the rebuild skips the drape, the
+  thickness and the weighting — the parts you cannot see under a moving cursor — and the real
+  rebuild follows a fifth of a second after you stop. It turns itself on by measuring how long the
+  last rebuild took, so a simple model never pays for it and a heavy one never has to be told.
+- **Fabric.** Cotton, denim, leather or stretch, as the drape's starting point — the difference
+  between them is most of the difference between two garments of the same shape. Stiffness still
+  adjusts whichever you pick.
+- **Frills, ruffles, ribbons, pleats and fringe.** **Trim** hangs detail off a garment's own
+  openings — the hem, the collar, the cuffs — so there is nothing to select or draw: the shape of
+  the garment already says where a frill could go. Add one per detail, so a frill at the hem and a
+  ribbon at the collar are two Trims, each with its own numbers. Trim follows the garment, so
+  changing the shirt takes its frill with it, and it inherits the garment's weights so it moves with
+  the hem it hangs from. (Lace is an alpha-cut material rather than geometry — use a Frill for the
+  shape the lace edging follows.)
+- **Puff, Cinch and Wrinkles.** Puff inflates a garment along its own surface: puffed sleeves, a
+  padded jacket, a quilted vest — which is a different thing from making it looser. Cinch tightens
+  the openings and leaves the rest alone, which is a waistband, elastic cuffs or a gathered ankle.
+  Wrinkles adds fine creases on top of whatever the drape found.
+- **A neckline.** Length has always said where a garment ends; now Neckline says where it starts.
+  Raise it for a scoop, then off the shoulder, then a tube top — the sleeves come down with it, so
+  "off the shoulder" is one slider rather than a modelling session.
+- **One sleeve.** Sleeves can be Both, Left only or Right only. Sides are the wearer's own, and they
+  are read from the body rather than from bone names, so an imported skeleton with no _L / _R
+  convention still works.
+- **Fit in words.** Close, Regular, Loose and Baggy, instead of a number between 0 and 1. Custom
+  hands the number back.
+- **Garments move with the body now, without being asked.** A garment is weighted as it is built —
+  from the body's own weights where it has them, from the skeleton otherwise. An unweighted garment
+  hangs in the air when its wearer walks, and it looks perfect in the editor right up until it does
+  not.
+- **Check a garment before you publish it.** Clothing's **Check** asks the questions you cannot see
+  the answers to: does it clip through the body and how deep, has it got UVs and skin weights, how
+  many triangles, how many openings. It reports rather than refuses — a shirt is meant to have four
+  holes in it, and the count is there so you can recognise the right number rather than be told off
+  for it.
+- **Shape** takes you from a garment straight into editing it by hand, where Shrinkwrap, Solidify,
+  Drape and the fabric presets already live.
+- **Garment.** A T-shirt, trousers, a beanie, gloves — cut from the body, fitted to it with a
+  looseness you choose, draped, and thickened into a real solid. It is a recipe rather than a mesh,
+  so the same shirt fits Citizen, Camhead and the Gearhead, and follows any of them when the body
+  changes upstream. Garments made earlier are collided with but never cut from, which is what makes
+  a jacket go over a shirt.
+- **Fur.** Shell layers for s&box's fur shader, with colour, density, clumping, dark roots, rim
+  colour and wind. The material is written and bound for you. Coverage > Trim the openings does
+  collars, cuffs and hems.
+- **Edit a mesh directly, Blender style.** The Sculpt workspace is now **Model**, and its bar
+  starts with **Edit mesh**: click vertices, edges or faces (1 / 2 / 3), drag the arrows to move
+  them, and Extrude (E), Inset (I), Loop cut (Ctrl+R), Merge (M), Dissolve or Delete (X). An
+  operation's number stays on the bar and updates the mesh live until you press Done. Alt+click
+  an edge selects its whole loop. The edit is saved as a Mesh edit in the history, beside the
+  file in a `.meshedit` folder. (`MeshEditFeature`, `MeshEditSession`)
+- **More Edit mode tools.** Rotate (R) and Scale (S) handles beside Move (G), box select by
+  dragging on empty space (Shift adds, Ctrl removes), X-ray (Alt+Z) to select through the model,
+  Bevel on just the edges you picked (Ctrl+B, Shift for a flat chamfer), and Edge slide.
+- **Knife and soft falloff in Edit mode.** Knife (K): click points on the model and each click
+  cuts from the last, through the back too with X-ray on. Soft (O): moving, rotating or scaling
+  pulls nearby vertices along, less the further away they are; [ and ] change its reach.
+- **Start clothing from the body itself.** In Edit mode, select the faces a garment should cover
+  and press **Extract**: they are copied, lifted off the skin by the gap you set, and become a
+  body of their own when you Finish. **Copy weights** then gives the garment the skin weights of
+  the rigged body under it, so it bends with the character.
+- **More Edit mode tools.** Duplicate (Shift+D), Separate (P) into a new body, Bridge two open
+  holes — even when their edge counts differ — Bisect (slice the whole model along a line you
+  click), and Lasso select alongside the box.
+- **Fit clothing to a body.** In Edit mode, **Snap** makes dragged vertices stick to the other
+  bodies' surfaces, **Shrinkwrap** pulls the selection onto them with a gap you choose,
+  **Solidify** gives a surface its thickness, and **Mirror X** edits both sides at once.
 - **Light the Marionette viewport.** A pose reads by its shadows, and the viewport had one
   fixed sun over the shoulder — under which an arm in front of a chest is a flat shape and a
   hand turned over looks the same either way. There is now a **Lights** tab (View ▸ Lights):
@@ -78,6 +191,15 @@ forgotten.
   `Editor/EffigyEditor/EffigyWindow.cs`
 
 ### Improved
+- **Model's Edit mode is laid out like a modeller now, not like CAD.**
+  - **A toolbar and menus.** The ten tabs of tools that ran off the edge of the window are now a toolbar of the tools you use all the time, and menus for everything else.
+  - **Right-click the model** for what you can do with your selection. **Space** finds any tool by name.
+  - **Object, Edit and Retopo** replace the Finish button. Pick Object to stop editing, and your edit is kept.
+  - **The left dock** shows the bodies, a live mesh check with one-click fixes, and the edit's history. Click a step to undo back to it. The feature tree comes back when you leave.
+  - **The info line** moved to the bottom of the viewport, and now says what the mouse does.
+- A body that already has skin weights — an imported rigged mesh, or a garment that copied
+  them — keeps them when the model is rigged, unless you pin it to a bone. Before, every unpinned
+  body was re-weighted to its nearest bone. (`SkinBinder.BindBodies`)
 - **Dense imports load and simplify much faster.** The OBJ reader no longer spends its time
   parsing numbers, and the decimator does far less work per step, so a million-vertex mesh
   gets through import in a fraction of the time. `Editor/Effigy/ObjWriter.cs`,
@@ -94,6 +216,8 @@ forgotten.
   `Editor/EffigyEditor/EffigyTutorialPanel.cs`
 
 ### Fixed
+- A Garment on a dense or hard-surface wearer no longer freezes the editor for minutes. The drape is about five times faster, loaded wearers are welded so the cloth holds together, and it no longer blows up into giant spikes.
+- Solidify no longer grows long spikes out of tight creases in draped cloth.
 - **The house tutorial no longer skips the door.** The door step ticked itself off as soon
   as the second window was drilled. It now waits for a third opening.
   `Editor/EffigyEditor/EffigyTutorial.cs`

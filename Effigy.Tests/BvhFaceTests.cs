@@ -26,6 +26,65 @@ public static class BvhFaceTests
 		TestWholeModelReturnsEveryFaceOnce();
 		TestOutsideReturnsEmpty();
 		TestZeroRadiusDoesNotThrow();
+		TestSurfaceProjection();
+		TestNearestAndShrinkwrap();
+	}
+
+	static void TestNearestAndShrinkwrap()
+	{
+		Section( "nearest surface and weighted garment fitting" );
+		var target = new PolyMesh();
+		target.AddVertex( new Vec3( 0, 0, 0 ) );
+		target.AddVertex( new Vec3( 2, 0, 0 ) );
+		target.AddVertex( new Vec3( 0, 2, 0 ) );
+		target.AddFace( new[] { 0, 1, 2 } );
+		var tree = MeshBVH.Build( target );
+		var interior = tree.NearestSurface( target, new Vec3( 0.5f, 0.5f, 1 ), 1 );
+		Check( "nearest finds face interior at exact radius", interior is { } hit
+			&& (hit.Point - new Vec3( 0.5f, 0.5f, 0 )).Length < 1e-5f );
+		var edge = tree.NearestSurface( target, new Vec3( 2, 2, 0 ), 2 );
+		Check( "nearest clamps to triangle edge rather than bounding box", edge is { } e
+			&& (e.Point - new Vec3( 1, 1, 0 )).Length < 1e-5f );
+		Check( "nearest respects reach", tree.NearestSurface( target, new Vec3( 0, 0, 2 ), 1 ) is null );
+		var source = target.Clone();
+		for ( var i = 0; i < source.VertexCount; i++ ) source.Positions[i] += new Vec3( 0, 0, 1 );
+		var fitted = MeshShrinkwrap.Apply( source, target, 2, 0.2f, out var hits, new[] { 1f, 0.5f, 0f } );
+		Check( "weights select and blend garment vertices", hits == 2
+			&& MathF.Abs( fitted.Positions[0].z - 0.2f ) < 1e-5f
+			&& MathF.Abs( fitted.Positions[1].z - 0.6f ) < 1e-5f && fitted.Positions[2].z == 1 );
+		Check( "fitting leaves source and target intact", source.Positions.All( p => p.z == 1 )
+			&& target.Positions.All( p => p.z == 0 ) );
+		Check( "fitting retains face corners and UVs", fitted.Faces[0].Indices.SequenceEqual( source.Faces[0].Indices )
+			&& fitted.Faces[0].UVs.SequenceEqual( source.Faces[0].UVs ) );
+	}
+
+	static void TestSurfaceProjection()
+	{
+		Section( "directional surface snapping: garment clearance and misses" );
+		var mesh = new PolyMesh();
+		mesh.AddVertex( new Vec3( -2, -2, 0 ) );
+		mesh.AddVertex( new Vec3( 2, -2, 0 ) );
+		mesh.AddVertex( new Vec3( 2, 2, 0 ) );
+		mesh.AddVertex( new Vec3( -2, 2, 0 ) );
+		mesh.AddFace( new[] { 0, 1, 2, 3 } );
+		var tree = MeshBVH.Build( mesh );
+		var point = new Vec3( 0, 0, 2 );
+		var direction = new Vec3( 0, 0, -10 );
+		Check( "projection offsets along target normal", tree.TryProjectSurface( mesh, point,
+			direction, 2, 0.25f, out var fitted ) && (fitted - new Vec3( 0, 0, 0.25f )).Length < 1e-5f );
+		Check( "distance limit preserves missed vertex", !tree.TryProjectSurface( mesh, point,
+			direction, 1, 0, out var missed ) && (missed - point).Length < 1e-5f );
+		Check( "negative projection direction", tree.TryProjectSurface( mesh, point,
+			-direction, 3, 0, out _, positive: false, negative: true ) );
+		Check( "wrong direction misses", !tree.TryProjectSurface( mesh, point,
+			-direction, 3, 0, out _ ) );
+		Check( "zero direction misses", !tree.TryProjectSurface( mesh, point,
+			Vec3.Zero, 3, 0, out _ ) );
+		for ( var i = 0; i < mesh.VertexCount; i++ )
+			mesh.Positions[i] += new Vec3( 0, 0, 1 );
+		tree.Refit( mesh );
+		Check( "projection follows refitted target", tree.TryProjectSurface( mesh, point,
+			direction, 1, 0.1f, out fitted ) && MathF.Abs( fitted.z - 1.1f ) < 1e-5f );
 	}
 
 	static void TestAgreesWithBruteForce()

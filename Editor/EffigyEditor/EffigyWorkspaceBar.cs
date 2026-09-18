@@ -56,9 +56,17 @@ namespace Marionette.EditorTools;
 internal enum EffigyWorkspace
 {
 	Cad,
-	Sculpt,
+
+	/// <summary>Direct modelling: Edit (vertices, edges, faces) and Sculpt. Was "Sculpt" alone
+	/// until the Edit mode joined it — the two are the same job at two scales.</summary>
+	Model,
 	Paint,
 	Rig,
+
+	/// <summary>Clothing: dress a body. Last because a garment is cut from a rigged body, so the
+	/// four before it are what produce the thing this one needs - but it is not a dead end either,
+	/// since Wearer can bring a finished model in from outside and none of them were visited.</summary>
+	Clothing,
 }
 
 /// <summary>
@@ -103,12 +111,14 @@ internal sealed class EffigyWorkspaceBar : Widget
 	{
 		(EffigyWorkspace.Cad, "CAD",
 			"Sketches, solids and the feature tree — how the shape gets made"),
-		(EffigyWorkspace.Sculpt, "Sculpt",
-			"Brush the shape by hand. Opens the sculpt you were last in, or adds one"),
+		(EffigyWorkspace.Model, "Model",
+			"Shape a body by hand: edit its vertices, edges and faces, or sculpt it with brushes"),
 		(EffigyWorkspace.Paint, "Paint",
 			"Lay colour onto a body's texture. Opens the paint you were last in, or adds one"),
 		(EffigyWorkspace.Rig, "Rig",
 			"Place bones and pin bodies to them, ready to export"),
+		(EffigyWorkspace.Clothing, "Clothing",
+			"Dress a body: load a rigged model to clothe, cut a garment from it, grow fur"),
 	};
 
 	private EffigyWorkspace _selected = EffigyWorkspace.Cad;

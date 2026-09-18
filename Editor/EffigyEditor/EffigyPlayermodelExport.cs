@@ -5,8 +5,6 @@ using System;
 using System.IO;
 using System.Linq;
 
-using Skeleton = Effigy.Skeleton;
-
 namespace Marionette.EditorTools;
 
 /// <summary>
@@ -31,12 +29,8 @@ namespace Marionette.EditorTools;
 ///      animation graph and the citizen prefabs, with body bones marked to ignore the clips'
 ///      translation so citizen's bone lengths never reach it.
 ///
-/// WHY FIT AND NOT SNAP. Snapping the mesh onto citizen's joints (<see cref="SkeletonRetarget.To"/>)
-/// gives any model citizen's proportions and stretches the skin across every joint where the two
-/// disagree — the Gearhead came out long-limbed and pinched. Fitting keeps the model's look and
-/// still walks, because each fitted bone keeps citizen's ORIENTATION convention, pinned against
-/// the engine in CitizenSkeletonTests: a bone with the right position and the wrong roll walks
-/// into a knot, and nothing in the compiler says a word about it.
+/// Steps 2-4 and the .vmdl text are <see cref="Playermodel"/> in the kernel, which also says why
+/// the skeleton is fitted into the mesh rather than the mesh snapped onto citizen.
 /// </summary>
 public static class EffigyPlayermodelExport
 {
@@ -129,39 +123,26 @@ public static class EffigyPlayermodelExport
 			Log.Warning( "[pm] the studio has no rig - assign bones in the Rig panel, or this will "
 				+ "compile into a model that animates as one rigid lump" );
 
-		// Mesh and weights, exactly as the rigged export builds them.
-		var (mesh, ranges) = studio.ToMeshWithBodies();
-		var sourceSkeleton = studio.Rig;
-		var weights = SkinBinder.BindBodies( mesh, ranges, studio.BodyBoneMap, sourceSkeleton );
-		weights = SkinBinder.SmoothWeights( mesh, weights );
+		// Bind, fit citizen INTO the mesh, spread twist weight and order depth-first - the kernel's
+		// half, shared with the headless generator so the two cannot drift apart.
+		var fit = Playermodel.Build( studio );
 
-		if ( studio.WeightPaint is not null )
-			studio.WeightPaint.Apply( mesh, weights, sourceSkeleton, out _ );
+		// EVERYTHING THAT MAKES A MODEL FAIL AS A PLAYERMODEL, said before it ships rather than
+		// after it is standing wrong in a game. Checked on the FIT result, because binding, fitting
+		// and twist spreading all change the weights - a check before them passes models that fail
+		// after. Unmapped bones and stranded vertices are among what it reports, so the two hand
+		// written warnings that used to be here are now part of one list.
+		foreach ( var finding in Playermodel.Check( fit, DmxWriter.MaxInfluences ) )
+		{
+			var line = $"[pm] {finding.Problem}. {finding.Remedy}";
 
-		mesh.Skin = weights;
+			if ( finding.Severity == Playermodel.Severity.Note )
+				Log.Info( line );
+			else
+				Log.Warning( line );
+		}
 
-		// Fit citizen's skeleton INTO the mesh rather than squashing the mesh onto citizen - the
-		// model keeps its own proportions. Then spread twist weight along the fitted limbs and put
-		// the skeleton in the order the DMX writer needs (depth-first), remapping the weights.
-		var citizen = CitizenSkeleton.Build();
-		var fit = SkeletonRetarget.Fit( mesh, sourceSkeleton, citizen,
-			CitizenBoneMap.Playermodel(), CitizenBoneMap.UnrealStyleRideAlong(), CitizenBoneMap.ChainAims() );
-
-		// THE ONE DIAGNOSTIC WORTH READING. An unmapped bone is a name citizen's animations have
-		// never heard of, so whatever is weighted to it rides along with its parent instead of being
-		// animated. Nearly always a typo or a convention mismatch, and nothing else in the pipeline
-		// mentions it - the model compiles, loads and walks with one limb held stiff.
-		if ( fit.Unmapped.Count > 0 )
-			Log.Warning( $"[pm] {fit.Unmapped.Count} bone(s) have no animation name and will just "
-				+ $"ride along with their parent: {string.Join( ", ", fit.Unmapped.Take( 12 ) )}" );
-
-		if ( fit.VerticesStranded > 0 )
-			Log.Warning( $"[pm] {fit.VerticesStranded} vertex/vertices had no placeable weight and were left where they were" );
-
-		TwistWeights.Spread( fit.Mesh, fit.Skeleton );
-
-		var (ordered, oldToNew) = SkeletonOrder.DepthFirst( fit.Skeleton );
-		SkeletonOrder.Remap( fit.Mesh, oldToNew );
+		var ordered = fit.Skeleton;
 
 		var folder = EffigyAssetFolder.ResolveAssetFolder( "models/effigy" );
 		Directory.CreateDirectory( folder );
@@ -170,7 +151,7 @@ public static class EffigyPlayermodelExport
 		DmxWriter.WriteFile( fit.Mesh, dmxPath, ordered, materialName: studio.NameForSlot, modelName: name );
 
 		var vmdlPath = Path.Combine( folder, $"{name}.vmdl" );
-		File.WriteAllText( vmdlPath, PlayermodelVmdl( $"models/effigy/{name}.dmx", ordered ) );
+		File.WriteAllText( vmdlPath, Playermodel.Vmdl( $"models/effigy/{name}.dmx", ordered ) );
 
 		EffigyAssetFolder.Register( folder );
 
@@ -196,165 +177,4 @@ public static class EffigyPlayermodelExport
 
 		return assetPath;
 	}
-
-	/// <summary>
-	/// The .vmdl that makes a citizen-skeleton DMX into a playermodel: citizen's animation graph,
-	/// plus the prefabs citizen ships that hang the animation list, pose params, hitboxes, IK data
-	/// and physics off a body. Read back from a playermodel the Model Editor produced, so it is
-	/// the compiler's own spelling rather than a guess.
-	///
-	/// EVERY PREFAB BUT ONE. The bone markup is written here instead of included, because it is
-	/// what keeps the fitted proportions: citizen's clips carry citizen's bone lengths, and without
-	/// ignore_Translation on the body bones the graph drags every joint back to citizen's and the
-	/// skin stretches between them. Citizen's own prefab marks the same bones with it off, and two
-	/// markups naming one bone is a fight the compiler would settle without saying who won.
-	/// </summary>
-	static string PlayermodelVmdl( string meshFilename, Skeleton skeleton ) =>
-		"<!-- kv3 encoding:text:version{e21c7f3c-8a33-41c5-9977-a76d3a32aa0d} format:modeldoc30:version{8c2d7a91-9c42-4bf0-883a-5a3b1762d4f1} -->\n"
-		+ "{\n"
-		+ "\trootNode = \n"
-		+ "\t{\n"
-		+ "\t\t_class = \"RootNode\"\n"
-		+ "\t\tchildren = \n"
-		+ "\t\t[\n"
-		+ "\t\t\t{\n"
-		+ "\t\t\t\t_class = \"RenderMeshList\"\n"
-		+ "\t\t\t\tchildren = \n"
-		+ "\t\t\t\t[\n"
-		+ "\t\t\t\t\t{\n"
-		+ "\t\t\t\t\t\t_class = \"RenderMeshFile\"\n"
-		+ "\t\t\t\t\t\tname = \"Body_LOD0\"\n"
-		+ $"\t\t\t\t\t\tfilename = \"{meshFilename}\"\n"
-		+ "\t\t\t\t\t\timport_translation = [ 0.0, 0.0, 0.0 ]\n"
-		+ "\t\t\t\t\t\timport_rotation = [ 0.0, 0.0, 0.0 ]\n"
-		// CENTIMETRES IN, INCHES OUT. Citizen's clips, hitboxes and attachments are authored in
-		// centimetres and citizen.vmdl scales the whole model by 0.3937 on the way through - clips
-		// included. Leave the modifier out and every translation a clip carries lands 2.54 times too
-		// big: with snapped bones that was stilt legs and a giraffe neck, with fitted ones it is the
-		// pelvis riding four feet up and the legs locked straight reaching for IK targets that far
-		// away. So the mesh, which is already in inches, goes in at 2.54 and comes out at 1.
-		+ "\t\t\t\t\t\timport_scale = 2.54\n"
-		+ "\t\t\t\t\t\talign_origin_x_type = \"None\"\n"
-		+ "\t\t\t\t\t\talign_origin_y_type = \"None\"\n"
-		+ "\t\t\t\t\t\talign_origin_z_type = \"None\"\n"
-		+ "\t\t\t\t\t\tparent_bone = \"\"\n"
-		+ "\t\t\t\t\t},\n"
-		+ "\t\t\t\t]\n"
-		+ "\t\t\t},\n"
-		+ "\t\t\t{\n"
-		+ "\t\t\t\t_class = \"ModelModifierList\"\n"
-		+ "\t\t\t\tchildren = \n"
-		+ "\t\t\t\t[\n"
-		+ "\t\t\t\t\t{\n"
-		+ "\t\t\t\t\t\t_class = \"ModelModifier_ScaleAndMirror\"\n"
-		+ "\t\t\t\t\t\tscale = 0.3937\n"
-		+ "\t\t\t\t\t\tmirror_x = false\n"
-		+ "\t\t\t\t\t\tmirror_y = false\n"
-		+ "\t\t\t\t\t\tmirror_z = false\n"
-		+ "\t\t\t\t\t\tflip_bone_forward = false\n"
-		+ "\t\t\t\t\t\tswap_left_and_right_bones = false\n"
-		+ "\t\t\t\t\t},\n"
-		+ "\t\t\t\t]\n"
-		+ "\t\t\t},\n"
-		+ "\t\t\t{\n"
-		+ "\t\t\t\t_class = \"AnimConstraintList\"\n"
-		+ "\t\t\t\tchildren = \n"
-		+ "\t\t\t\t[\n"
-		+ "\t\t\t\t\t{ \"_class\" = \"Prefab\" target_file = \"models/citizen/prefabs/citizen_animconstraintlist.vmdl_prefab\" },\n"
-		+ "\t\t\t\t]\n"
-		+ "\t\t\t},\n"
-		+ "\t\t\t{\n"
-		+ "\t\t\t\t_class = \"AnimationList\"\n"
-		+ "\t\t\t\tchildren = \n"
-		+ "\t\t\t\t[\n"
-		+ "\t\t\t\t\t{ \"_class\" = \"Prefab\" target_file = \"models/citizen/prefabs/citizen_animationlist.vmdl_prefab\" },\n"
-		+ "\t\t\t\t\t{ \"_class\" = \"Prefab\" target_file = \"models/citizen/prefabs/citizen_animationlist_unicycle.vmdl_prefab\" },\n"
-		+ "\t\t\t\t\t{ \"_class\" = \"Prefab\" target_file = \"models/citizen/prefabs/citizen_animationlist_debug.vmdl_prefab\" },\n"
-		+ "\t\t\t\t\t{ \"_class\" = \"Prefab\" target_file = \"models/citizen/prefabs/citizen_animationlist_visemes.vmdl_prefab\" },\n"
-		+ "\t\t\t\t\t{ \"_class\" = \"Prefab\" target_file = \"models/citizen/prefabs/citizen_animationlist_menu.vmdl_prefab\" },\n"
-		+ "\t\t\t\t]\n"
-		+ "\t\t\t\tdefault_root_bone_name = \"pelvis\"\n"
-		+ "\t\t\t},\n"
-		+ "\t\t\t{\n"
-		+ "\t\t\t\t_class = \"BoneMarkupList\"\n"
-		+ "\t\t\t\tchildren = \n"
-		+ "\t\t\t\t[\n"
-		+ BoneMarkup( skeleton )
-		+ "\t\t\t\t]\n"
-		+ "\t\t\t\tbone_cull_type = \"None\"\n"
-		+ "\t\t\t},\n"
-		+ "\t\t\t{\n"
-		+ "\t\t\t\t_class = \"AttachmentList\"\n"
-		+ "\t\t\t\tchildren = \n"
-		+ "\t\t\t\t[\n"
-		+ "\t\t\t\t\t{ \"_class\" = \"Prefab\" target_file = \"models/citizen/prefabs/citizen_attachmentlist.vmdl_prefab\" },\n"
-		+ "\t\t\t\t]\n"
-		+ "\t\t\t},\n"
-		+ "\t\t\t{\n"
-		+ "\t\t\t\t_class = \"PoseParamList\"\n"
-		+ "\t\t\t\tchildren = \n"
-		+ "\t\t\t\t[\n"
-		+ "\t\t\t\t\t{ \"_class\" = \"Prefab\" target_file = \"models/citizen/prefabs/citizen_poseparamlist.vmdl_prefab\" },\n"
-		+ "\t\t\t\t]\n"
-		+ "\t\t\t},\n"
-		+ "\t\t\t{\n"
-		+ "\t\t\t\t_class = \"WeightListList\"\n"
-		+ "\t\t\t\tchildren = \n"
-		+ "\t\t\t\t[\n"
-		+ "\t\t\t\t\t{ \"_class\" = \"Prefab\" target_file = \"models/citizen/prefabs/citizen_weightlistlist.vmdl_prefab\" },\n"
-		+ "\t\t\t\t]\n"
-		+ "\t\t\t},\n"
-		+ "\t\t\t{\n"
-		+ "\t\t\t\t_class = \"IKData\"\n"
-		+ "\t\t\t\tchildren = \n"
-		+ "\t\t\t\t[\n"
-		+ "\t\t\t\t\t{ \"_class\" = \"Prefab\" target_file = \"models/citizen/prefabs/citizen_ikdata.vmdl_prefab\" },\n"
-		+ "\t\t\t\t]\n"
-		+ "\t\t\t},\n"
-		+ "\t\t\t{\n"
-		+ "\t\t\t\t_class = \"GameDataList\"\n"
-		+ "\t\t\t\tchildren = \n"
-		+ "\t\t\t\t[\n"
-		+ "\t\t\t\t\t{ \"_class\" = \"Prefab\" target_file = \"models/citizen/prefabs/citizen_gamedatalist.vmdl_prefab\" },\n"
-		+ "\t\t\t\t]\n"
-		+ "\t\t\t},\n"
-		+ "\t\t\t{\n"
-		+ "\t\t\t\t_class = \"HitboxSetList\"\n"
-		+ "\t\t\t\tchildren = \n"
-		+ "\t\t\t\t[\n"
-		+ "\t\t\t\t\t{ \"_class\" = \"Prefab\" target_file = \"models/citizen/prefabs/citizen_hitboxsetlist.vmdl_prefab\" },\n"
-		+ "\t\t\t\t]\n"
-		+ "\t\t\t},\n"
-		+ "\t\t\t{\n"
-		+ "\t\t\t\t_class = \"PhysicsJointList\"\n"
-		+ "\t\t\t\tchildren = \n"
-		+ "\t\t\t\t[\n"
-		+ "\t\t\t\t\t{ \"_class\" = \"Prefab\" target_file = \"models/citizen/prefabs/citizen_physicsjointlist.vmdl_prefab\" },\n"
-		+ "\t\t\t\t]\n"
-		+ "\t\t\t},\n"
-		+ "\t\t\t{\n"
-		+ "\t\t\t\t_class = \"PhysicsShapeList\"\n"
-		+ "\t\t\t\tchildren = \n"
-		+ "\t\t\t\t[\n"
-		+ "\t\t\t\t\t{ \"_class\" = \"Prefab\" target_file = \"models/citizen/prefabs/citizen_physicsshapelist.vmdl_prefab\" },\n"
-		+ "\t\t\t\t]\n"
-		+ "\t\t\t},\n"
-		+ "\t\t]\n"
-		+ "\t\tmodel_archetype = \"\"\n"
-		+ "\t\tprimary_associated_entity = \"\"\n"
-		+ "\t\tanim_graph_name = \"models/citizen/citizen.vanmgrph\"\n"
-		+ "\t\tbase_model_name = \"\"\n"
-		+ "\t}\n"
-		+ "}\n";
-
-	/// <summary>
-	/// One BoneMarkup per bone. Every bone is kept - the compiler discards bones nothing is
-	/// weighted to, and the graph writes to twists, helpers and IK targets that carry no weight by
-	/// design - and each says whether it keeps its own length; see
-	/// <see cref="CitizenBoneMap.KeepsOwnLength"/>.
-	/// </summary>
-	static string BoneMarkup( Skeleton skeleton ) => string.Concat( Enumerable.Range( 0, skeleton.Count ).Select( b =>
-		$"\t\t\t\t\t{{ \"_class\" = \"BoneMarkup\" target_bone = \"{skeleton.Bones[b].Name}\" "
-		+ $"ignore_Translation = {(CitizenBoneMap.KeepsOwnLength( skeleton, b ) ? "true" : "false")} "
-		+ "ignore_rotation = false do_not_discard = true },\n" ) );
 }

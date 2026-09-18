@@ -1,6 +1,7 @@
 ﻿using Sandbox;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace Marionette;
 
@@ -13,9 +14,16 @@ namespace Marionette;
 /// Loop, and call Play() from your interact code. NormalizedTime is 0..1 on the same clock as
 /// the clip, which is what you tween the fridge door against.
 ///
-/// Posing writes LocalPosition/LocalRotation on the procedural bone objects. UseAnimGraph = false
-/// stops the graph fighting those writes. A sibling RigEventPlayerComponent, if present, gets
-/// the same frame so attached props stay in sync.
+/// Posing writes LocalPosition/LocalRotation on the bone objects, and flags each one it drives
+/// ProceduralBone - the engine's "animation, keep your hands off this bone". Without the flag the
+/// renderer writes its own pose back over the clip every frame. A sibling RigEventPlayerComponent,
+/// if present, gets the same frame so attached props stay in sync.
+///
+/// THREE MODES, see <see cref="RigAnimMode"/>. Exclusive is the original: the graph goes off and
+/// the clip owns the body. Overlay and Additive leave the graph running - he keeps walking - and
+/// take only the bones the clip keys, narrowed further by <see cref="Mask"/>. They fade in on
+/// Play() and back out on Stop() or when a one-shot ends, and hand the bones back to the graph
+/// once faded, so a reload is a thing that happens to the arms and then stops happening.
 /// </summary>
 public sealed class RigAnimPlayerComponent : Component
 {
@@ -27,6 +35,35 @@ public sealed class RigAnimPlayerComponent : Component
 
 	/// <summary>Off for interaction clips. On would play the grab the moment the pawn spawns.</summary>
 	[Property] public bool PlayOnStart { get; set; } = true;
+
+	/// <summary>Whether the clip replaces the animgraph or rides on top of it. See RigAnimMode.</summary>
+	[Property] public RigAnimMode Mode { get; set; } = RigAnimMode.Exclusive;
+
+	/// <summary>
+	/// The bones this clip may take, each WITH EVERYTHING BELOW IT - "arm_upper_R" is the whole
+	/// right arm down to the fingertips. Empty means every bone the clip keys.
+	///
+	/// A mask narrows, it never widens: a bone the clip has no track for is left to the graph
+	/// whatever the mask says. It exists for the clip that was authored full-body - a reload keyed
+	/// with the legs standing still - played over a character who is running.
+	/// </summary>
+	[Property, HideIf( nameof( Mode ), RigAnimMode.Exclusive )]
+	public List<string> Mask { get; set; } = new();
+
+	/// <summary>How much of the clip reaches the body at full fade-in. 0.5 is half a wave.</summary>
+	[Property, Range( 0f, 1f ), HideIf( nameof( Mode ), RigAnimMode.Exclusive )]
+	public float Weight { get; set; } = 1f;
+
+	/// <summary>Seconds to fade in on Play(). Zero snaps.</summary>
+	[Property, HideIf( nameof( Mode ), RigAnimMode.Exclusive )]
+	public float BlendIn { get; set; } = 0.15f;
+
+	/// <summary>Seconds to fade out on Stop() or at the end of a one-shot. Zero snaps.</summary>
+	[Property, HideIf( nameof( Mode ), RigAnimMode.Exclusive )]
+	public float BlendOut { get; set; } = 0.2f;
+
+	/// <summary>Where the fade is, 0 to 1. Always 1 in Exclusive.</summary>
+	public float Blend => Mode == RigAnimMode.Exclusive ? 1f : _blend;
 
 	/// <summary>
 	/// Which GameObject each of the clip's whole-part tracks drives.
@@ -51,6 +88,14 @@ public sealed class RigAnimPlayerComponent : Component
 	private RigEventPlayerComponent _events;
 	private bool _rigReady;
 	private bool _notifiedFinish;
+
+	/// <summary>Overlay/Additive: fading toward full (true) or toward nothing (false).</summary>
+	private bool _active;
+	private float _blend;
+
+	/// <summary>Each skeleton track's bone, resolved once rather than searched for every frame.
+	/// Null values are remembered too - a track for a part nobody bound. Cleared on Play().</summary>
+	private readonly Dictionary<string, DrivenBone> _driven = new();
 
 	/// <summary>The light objects this component put up, so it can take down its own and only
 	/// its own. See SpawnLights.</summary>
@@ -111,6 +156,9 @@ public sealed class RigAnimPlayerComponent : Component
 	{
 		DespawnLights();
 		DespawnCameras();
+		ReleaseBones();
+		_active = false;
+		_blend = 0f;
 	}
 
 	/// <summary>
@@ -260,6 +308,10 @@ public sealed class RigAnimPlayerComponent : Component
 					Frame = LastFrame;
 					IsPlaying = false;
 
+					// A layered one-shot hands the body back when it ends; an exclusive one holds
+					// its last pose, which is what a cutscene's final frame wants.
+					_active = false;
+
 					if ( !_notifiedFinish )
 					{
 						_notifiedFinish = true;
@@ -269,6 +321,23 @@ public sealed class RigAnimPlayerComponent : Component
 			}
 		}
 
+		if ( Mode == RigAnimMode.Exclusive )
+		{
+			ApplyFrame( Frame );
+			return;
+		}
+
+		var fade = _active ? BlendIn : BlendOut;
+		_blend = fade <= 0f
+			? (_active ? 1f : 0f)
+			: _blend.Approach( _active ? 1f : 0f, Time.Delta / fade );
+
+		if ( !_active && _blend <= 0f )
+		{
+			ReleaseBones();
+			return;
+		}
+
 		ApplyFrame( Frame );
 	}
 
@@ -276,20 +345,32 @@ public sealed class RigAnimPlayerComponent : Component
 	/// the fridge again" has to mean. Pause() then Play() resumes if you have not hit the end.</summary>
 	public void Play()
 	{
-		if ( Frame >= LastFrame )
+		if ( Frame >= LastFrame || (Mode != RigAnimMode.Exclusive && !_active && _blend <= 0f) )
 			Frame = 0f;
+
+		// Resolve afresh: Parts may have been bound, or the model swapped, since last time.
+		ReleaseBones();
+		_driven.Clear();
 
 		_notifiedFinish = false;
 		IsPlaying = true;
+		_active = true;
 	}
 
+	/// <summary>Holds the current frame. In Overlay/Additive the clip stays faded in, frozen.</summary>
 	public void Pause() => IsPlaying = false;
 
+	/// <summary>Exclusive: back to frame 0. Overlay/Additive: fades out from wherever it is, and
+	/// the next Play() starts over.</summary>
 	public void Stop()
 	{
 		IsPlaying = false;
-		Frame = 0f;
 		_notifiedFinish = false;
+
+		if ( Mode == RigAnimMode.Exclusive )
+			Frame = 0f;
+		else
+			_active = false;
 	}
 
 	public void Seek( float frame )
@@ -304,8 +385,14 @@ public sealed class RigAnimPlayerComponent : Component
 		if ( _rigReady )
 			return;
 
+		// Layered modes need nothing switched off - the graph running underneath is the point -
+		// only the bone objects to write to.
+		var exclusive = Mode == RigAnimMode.Exclusive;
+
 		Target.CreateBoneObjects = true;
-		Target.UseAnimGraph = false;
+
+		if ( exclusive )
+			Target.UseAnimGraph = false;
 
 		// Every bound part that carries its own skeleton needs the same preparation - bone objects
 		// to write to, and the graph off so it stops fighting those writes. A part with no skinned
@@ -322,7 +409,9 @@ public sealed class RigAnimPlayerComponent : Component
 				foreach ( var renderer in part.Target.GetComponentsInChildren<SkinnedModelRenderer>( true ) )
 				{
 					renderer.CreateBoneObjects = true;
-					renderer.UseAnimGraph = false;
+
+					if ( exclusive )
+						renderer.UseAnimGraph = false;
 				}
 			}
 		}
@@ -337,23 +426,183 @@ public sealed class RigAnimPlayerComponent : Component
 			if ( track.Keyframes.Count == 0 )
 				continue;
 
-			// A track name says which object as well as which bone - see RigTrackName. Bare names
-			// are the main model's, which is every bone track written before clips could hold more
-			// than one object.
-			var bone = FindBoneFor( track.BoneName );
-
-			if ( !bone.IsValid() )
+			if ( Driven( track ) is not { } driven )
 				continue;
 
-			var local = track.Evaluate( frame );
-			bone.LocalPosition = local.Position;
-			bone.LocalRotation = local.Rotation;
-			bone.LocalScale = local.Scale;
+			var clip = track.Evaluate( frame );
+
+			if ( Mode == RigAnimMode.Exclusive )
+			{
+				driven.Object.LocalTransform = clip;
+				continue;
+			}
+
+			if ( !driven.InMask )
+				continue;
+
+			var weight = (Weight * _blend).Clamp( 0f, 1f );
+			var anim = AnimatedLocal( driven );
+
+			driven.Object.LocalTransform = Mode == RigAnimMode.Additive
+				? AddOnto( anim, driven.Reference, clip, weight )
+				: new Transform(
+					Vector3.Lerp( anim.Position, clip.Position, weight ),
+					Rotation.Slerp( anim.Rotation, clip.Rotation, weight ),
+					Vector3.Lerp( anim.Scale, clip.Scale, weight ) );
 		}
 
 		ApplyParts( frame );
 
 		_events?.SetFrame( frame );
+	}
+
+	/// <summary>
+	/// Additive: the clip's motion AWAY FROM ITS FIRST FRAME, laid on top of whatever the graph
+	/// is doing. So author an additive clip starting from a rest pose - the recoil's frame 0 is
+	/// "nothing has happened yet" - and every later key is read as a nudge from there.
+	///
+	/// Rotation composes in the bone's own frame, so a spine kick bends the spine the same way
+	/// whether he is standing or crouched. Position adds as a plain offset. Scale is the graph's.
+	/// </summary>
+	private static Transform AddOnto( Transform anim, Transform reference, Transform clip, float weight )
+	{
+		var delta = Rotation.Slerp( Rotation.Identity, reference.Rotation.Inverse * clip.Rotation, weight );
+
+		return new Transform(
+			anim.Position + (clip.Position - reference.Position) * weight,
+			anim.Rotation * delta,
+			anim.Scale );
+	}
+
+	/// <summary>
+	/// What the graph wants this bone to be, in its parent's space - the pose the clip blends
+	/// away from.
+	///
+	/// ONE FRAME BEHIND. Components update before the renderer animates, so this is the graph's
+	/// pose from the frame just gone. At full weight in Overlay that is invisible, because the
+	/// clip ignores it; during a fade, or in Additive, it is a sixtieth of a second of lag on the
+	/// bones the clip owns, against a body a sixtieth of a second ahead.
+	///
+	/// When there is no animated pose to read - the graph has not ticked yet - the bone's current
+	/// transform stands in, which at worst means the first frame fades from wherever it was.
+	/// </summary>
+	private static Transform AnimatedLocal( DrivenBone driven )
+	{
+		var renderer = driven.Renderer;
+
+		if ( !renderer.IsValid() || driven.Bone is null || !renderer.TryGetBoneTransformAnimation( driven.Bone, out var world ) )
+			return driven.Object.LocalTransform;
+
+		var parent = driven.Bone.Parent;
+
+		if ( parent is null )
+			return renderer.WorldTransform.ToLocal( world );
+
+		return renderer.TryGetBoneTransformAnimation( parent, out var parentWorld )
+			? parentWorld.ToLocal( world )
+			: driven.Object.LocalTransform;
+	}
+
+	/// <summary>
+	/// The bone a skeleton track drives, resolved and flagged on first use.
+	///
+	/// FLAGGED PROCEDURALBONE, which is the whole mechanism: the renderer reads a flagged bone's
+	/// local transform INTO the pose and leaves every other bone to the graph. That per-bone
+	/// switch is what lets a clip own an arm while the legs keep walking. Only bones this player
+	/// flagged are remembered as its own, so releasing never unflags somebody else's.
+	/// </summary>
+	private DrivenBone Driven( BoneTrack track )
+	{
+		// A track name says which object as well as which bone - see RigTrackName. Bare names are
+		// the main model's, which is every bone track written before clips could hold more than
+		// one object.
+		if ( !_driven.TryGetValue( track.BoneName, out var driven ) || (driven is not null && !driven.Object.IsValid()) )
+		{
+			driven = Resolve( track );
+			_driven[track.BoneName] = driven;
+		}
+
+		if ( driven is null )
+			return null;
+
+		if ( Mode != RigAnimMode.Exclusive && !driven.InMask )
+			return driven;
+
+		if ( !driven.Object.Flags.Contains( GameObjectFlags.ProceduralBone ) )
+		{
+			driven.Object.Flags |= GameObjectFlags.ProceduralBone;
+			driven.Flagged = true;
+		}
+
+		return driven;
+	}
+
+	private DrivenBone Resolve( BoneTrack track )
+	{
+		var bone = FindBoneFor( track.BoneName );
+
+		if ( !bone.IsValid() )
+			return null;
+
+		var renderer = bone.GetComponentInParent<SkinnedModelRenderer>( true, false );
+		var first = track.Keyframes.Count > 0 ? track.Keyframes.Min( k => k.Frame ) : 0f;
+
+		return new DrivenBone
+		{
+			Object = bone,
+			Renderer = renderer,
+			Bone = renderer?.Model?.Bones.GetBone( bone.Name ),
+			Reference = track.Evaluate( first ),
+			InMask = InMask( bone ),
+		};
+	}
+
+	/// <summary>The bone or anything above it is named in Mask. An empty mask takes everything.</summary>
+	private bool InMask( GameObject bone )
+	{
+		if ( Mask is null || Mask.Count == 0 )
+			return true;
+
+		for ( var go = bone; go.IsValid() && IsBone( go ); go = go.Parent )
+		{
+			if ( Mask.Contains( go.Name ) )
+				return true;
+		}
+
+		return false;
+	}
+
+	/// <summary>Give every bone this player flagged back to the graph.</summary>
+	private void ReleaseBones()
+	{
+		foreach ( var driven in _driven.Values )
+		{
+			if ( driven is null || !driven.Flagged )
+				continue;
+
+			if ( driven.Object.IsValid() )
+				driven.Object.Flags &= ~GameObjectFlags.ProceduralBone;
+
+			driven.Flagged = false;
+		}
+	}
+
+	private static bool IsBone( GameObject go ) =>
+		go.Flags.Contains( GameObjectFlags.Bone ) || go.Flags.Contains( GameObjectFlags.ProceduralBone );
+
+	private sealed class DrivenBone
+	{
+		public GameObject Object;
+		public SkinnedModelRenderer Renderer;
+		public BoneCollection.Bone Bone;
+
+		/// <summary>The clip's first keyed pose, which Additive measures every later key against.</summary>
+		public Transform Reference;
+
+		public bool InMask;
+
+		/// <summary>This player set the ProceduralBone flag, so this player takes it off.</summary>
+		public bool Flagged;
 	}
 
 	/// <summary>
@@ -503,7 +752,7 @@ public sealed class RigAnimPlayerComponent : Component
 		{
 			foreach ( var child in queue.Dequeue().Children )
 			{
-				if ( child.Name == name && !child.Flags.HasFlag( GameObjectFlags.ProceduralBone ) )
+				if ( child.Name == name && !IsBone( child ) )
 					return child;
 
 				queue.Enqueue( child );
@@ -566,7 +815,7 @@ public sealed class RigAnimPlayerComponent : Component
 
 			foreach ( var child in go.Children )
 			{
-				if ( child.Name == name && child.Flags.HasFlag( GameObjectFlags.ProceduralBone ) )
+				if ( child.Name == name && IsBone( child ) )
 					return child;
 
 				queue.Enqueue( child );
@@ -584,4 +833,20 @@ public sealed class AnimPartBinding
 	[Property] public string Name { get; set; } = "";
 
 	[Property] public GameObject Target { get; set; }
+}
+
+/// <summary>How a RigAnimPlayerComponent shares the body with the animgraph.</summary>
+public enum RigAnimMode
+{
+	/// <summary>The graph goes off and the clip owns every bone it keys, holding the last frame at
+	/// the end. Cutscenes, sitting down, anything the whole body does.</summary>
+	Exclusive,
+
+	/// <summary>The graph keeps running; the clip replaces the bones it keys (narrowed by Mask),
+	/// faded by Weight. A reload or a wave while he walks.</summary>
+	Overlay,
+
+	/// <summary>The graph keeps running; the clip's motion away from its first frame is added on
+	/// top. Recoil, breathing, a flinch.</summary>
+	Additive,
 }

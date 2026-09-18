@@ -346,7 +346,7 @@ internal sealed partial class EffigyViewport
 		// bone tool all have a click of their own, and an arrow floating over the model while one of
 		// them is armed invites a click that will not do what it looks like. Not while the drag is
 		// already running: it has the button, so nothing else can have started.
-		if ( (IsSketching || IsSculpting || IsPainting || IsMaterialBrushing || IsNoting || BoneToolActive)
+		if ( (IsSketching || IsSculpting || IsMeshEditing || IsPainting || IsMaterialBrushing || IsNoting || BoneToolActive)
 			&& !_draggingPlaneOffset )
 		{
 			EndPlaneOffsetDrag();

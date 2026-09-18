@@ -1441,8 +1441,22 @@ internal sealed partial class EffigyViewport : Widget
 	/// sketch pass, which has no hitbox of its own to hover.</summary>
 	private bool _canvasHasCursor;
 
+	/// <summary>
+	/// Called once a frame, before the scene ticks. The window's hook for work that has to happen
+	/// on a clock rather than on an event.
+	///
+	/// THE VIEWPORT ALREADY HAS THE ONLY CLOCK IN THE TOOL. A DockWindow does not tick; the canvas
+	/// does, because it is rendering. Anything else wanting a heartbeat - the settle timer that
+	/// turns a preview rebuild back into a real one - would otherwise have to invent one.
+	/// Re-assigned in RebuildStages like every other delegate here, so a hot reload does not leave
+	/// it pointing into the dead assembly.
+	/// </summary>
+	public Action Ticked { get; set; }
+
 	private void OnPreFrame()
 	{
+		Ticked?.Invoke();
+
 		if ( _canvas.Scene is { } scene )
 			scene.EditorTick( RealTime.Now, RealTime.Delta );
 
@@ -1469,6 +1483,7 @@ internal sealed partial class EffigyViewport : Widget
 
 		var overAnyOverlay = (_resultOverlay?.IsUnderMouse ?? false)
 			|| (_sculptBarOverlay?.IsUnderMouse ?? false)
+			|| (_meshEditBarOverlay?.IsValid() == true && _meshEditBarOverlay.IsUnderMouse)
 			|| (_weightBarOverlay?.IsValid() == true && _weightBarOverlay.IsUnderMouse)
 			|| _paintBarOverlays.Any( b => b.IsValid() && b.IsUnderMouse );
 		var overCanvas = _canvas.IsUnderMouse && !overAnyOverlay;
@@ -1519,6 +1534,7 @@ internal sealed partial class EffigyViewport : Widget
 
 		SketchFrame();
 		SculptFrame();
+		MeshEditFrame();
 		PaintFrame();
 		MaterialBrushFrame();
 		WeightPaintFrame();
@@ -1539,7 +1555,7 @@ internal sealed partial class EffigyViewport : Widget
 		// sit where first clicks land, and stealing them was the first thing that broke.
 		// RigMode joins the list for the same reason every other entry is on it: these sit where
 		// first clicks land, and in the rig workspace those clicks are meant for bones and parts.
-		if ( !IsSketching && !PlanePickMode && !SketchPickMode && !FacePickMode && !EdgePickMode
+		if ( !IsSketching && !IsMeshEditing && !PlanePickMode && !SketchPickMode && !FacePickMode && !EdgePickMode
 			&& !BodyPickMode && !BoneToolActive && !RigMode )
 		{
 			DrawViewportLights();
@@ -1586,7 +1602,7 @@ internal sealed partial class EffigyViewport : Widget
 		// pick mode already gets from Gizmo.HasHovered/_hoveredSketchId/_hoveredFaceBodyId. Without
 		// it, placing a bone or assigning a body was the only click-to-act mode in the whole tool
 		// that left the cursor a plain arrow the entire time.
-		Cursor = Gizmo.HasHovered || IsSketching || IsPainting || IsMaterialBrushing || _hoveredSketchId is not null || _hoveredFaceBodyId is not null
+		Cursor = Gizmo.HasHovered || IsSketching || IsMeshEditing || IsPainting || IsMaterialBrushing || _hoveredSketchId is not null || _hoveredFaceBodyId is not null
 			|| BoneToolActive || BodyPickMode || FacePickMode || EdgePickMode
 			|| ( RigMode && TryPickBoneUnderCursor( out _ ) )
 			? CursorShape.Finger : CursorShape.Arrow;
@@ -2134,6 +2150,16 @@ internal sealed partial class EffigyViewport : Widget
 	/// now, registered on the window, so they never reach this method.</summary>
 	protected override void OnKeyPress( KeyEvent e )
 	{
+		// Edit mode's Enter (accept the operation) and Escape (cancel it, or drop the selection).
+		// First, because an open operation is the shallowest thing Escape can mean.
+		if ( IsMeshEditing && MeshEditKeyPressed is not null
+			&& (e.Key == KeyCode.Escape || e.Key == KeyCode.Enter || e.Key == KeyCode.Return)
+			&& MeshEditKeyPressed( e.Key == KeyCode.Escape ? (char)27 : (char)13 ) )
+		{
+			e.Accepted = true;
+			return;
+		}
+
 		// A dimension box up on screen owns the keyboard first - digits, Enter and its own Escape.
 		// It has to come before the Escape branch below or dismissing the number would also back
 		// out of the tool you are drawing with.

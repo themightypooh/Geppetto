@@ -167,6 +167,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	private EffigyRigPanel _rigPanel;
 	private EffigyVariablesPanel _variablesPanel;
 	private Widget _leftPanel;
+	private EffigyMeshEditPanel _meshPanel;
 
 	// --- View menu dock toggles ----------------------------------------------------------------
 
@@ -630,6 +631,8 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		_viewport.AddSculptOverlay( _sculptBar );
 
+		BuildMeshEditBar();
+
 		// Citizen first, then the grid, both flush-right on the tool row. The citizen is scenery
 		// in the viewport, so the switch that hides it lives next to the viewport — Settings is
 		// still the other home, and both write the same bool. The grid still only shows while a
@@ -691,6 +694,8 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		_sculptHomeStages = BuildSculptHomeStages();
 		_paintHomeStages = BuildPaintHomeStages();
 		_rigStages = BuildRigStages();
+		_meshEditStages = BuildMeshEditStages();
+		_clothingStages = BuildClothingStages();
 
 		// The rig tools read their armed state off the panel, and the panel changes it without
 		// being asked — Escape closes a chain, clicking another bone disarms an assign. Wired here
@@ -763,6 +768,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		_sculptHomeStages = BuildSculptHomeStages();
 		_paintHomeStages = BuildPaintHomeStages();
 		_rigStages = BuildRigStages();
+		_meshEditStages = BuildMeshEditStages();
 
 		// Same reason as StageChanged below: a lambda compiled into the dead assembly is a rig tool
 		// that still highlights and calls nothing.
@@ -771,6 +777,11 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		if ( _workspaceBar is not null )
 			_workspaceBar.Switched = SetWorkspace;
+
+		// A lambda compiled into the dead assembly is a settle rebuild that never arrives, leaving
+		// the model stuck in its preview form. Same reason every other delegate is re-assigned here.
+		if ( _viewport is not null )
+			_viewport.Ticked = OnTick;
 
 		// A hotload taken inside the rig workspace: the mode field survived, a newly-added viewport
 		// flag did not. See SyncViewportMode.
@@ -828,12 +839,31 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 				}
 				break;
 
+			case EffigyBarMode.MeshEdit:
+				if ( _viewport is { IsMeshEditing: true } )
+				{
+					ShowMeshEditBar();
+					UpdateMeshEditChecks();
+				}
+				else
+				{
+					ShowSculptHome();
+				}
+				break;
+
 			case EffigyBarMode.Rig:
 				// No finish — a rig has no feature to commit to. See EnterRig.
 				_stageBar.SetFinish( null, null );
 				_stageBar.SetStages( _rigStages, stage );
 
 				UpdateRigChecks();
+				break;
+
+			case EffigyBarMode.Clothing:
+				// No finish, same argument as Rig: every clothing tool adds a feature, and the
+				// feature tree already holds it the moment it is added.
+				_stageBar.SetFinish( null, null );
+				_stageBar.SetStages( _clothingStages, stage );
 				break;
 
 			default:
@@ -1501,7 +1531,8 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		stage.Add( _sculptHomeTool );
 
-		return new List<EffigyStage> { stage };
+		// Edit first: box-modelling the shape comes before brushing detail onto it.
+		return new List<EffigyStage> { BuildMeshEditHomeStage(), stage };
 	}
 
 	private List<EffigyStage> BuildSculptStages()
@@ -2886,10 +2917,45 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	/// many times you picked Front or Right), an extrude distance, subdivide levels, every checkbox.
 	/// Picking highlighted beautifully and then changed nothing.
 	/// </summary>
+	/// <summary>
+	/// How long a full rebuild has to take before edits start previewing, in seconds. Below this
+	/// the slider already keeps up and there is nothing to trade away.
+	/// </summary>
+	private const float PreviewThreshold = 0.05f;
+
+	/// <summary>How long after the last edit the real rebuild runs. Long enough that a slider being
+	/// dragged does not keep triggering it, short enough that letting go feels like it finished
+	/// rather than like it is loading.</summary>
+	private const float SettleDelay = 0.18f;
+
+	/// <summary>How long the last full rebuild took. What decides whether previewing is worth it at
+	/// all - a box with two features rebuilds in a millisecond and should never preview.</summary>
+	private float _rebuildCost;
+
+	/// <summary>When the settle rebuild is due, or 0 for none.</summary>
+	private float _settleAt;
+
 	private void OnFeatureEdited()
 	{
 		if ( _dialog?.Feature is { } feature )
 			_studio.MarkDirty( feature );
+
+		// LIVE EDITING, ADAPTIVELY.
+		//
+		// Every edit has always rebuilt immediately, which is right and is why the numbers feel
+		// connected to the model. It stopped being right once a feature could be expensive: a
+		// garment slider re-runs the fit, the collision, forty steps of cloth simulation and a
+		// solidify on every pixel of the drag, and the result is a number that moves and a model
+		// that lurches after it.
+		//
+		// MEASURED RATHER THAN GUESSED. There is no list of expensive features here, and there
+		// should not be - it would be wrong the day somebody adds one, and wrong in the other
+		// direction for a simple garment on a coarse body. The last rebuild's own cost decides.
+		if ( _rebuildCost > PreviewThreshold )
+		{
+			_studio.PreviewQuality = true;
+			_settleAt = RealTime.Now + SettleDelay;
+		}
 
 		// A drag reports an edit every frame, but only geometry the drag is driving changes — the
 		// tree, the parts list and every panel are exactly as they were. Drags get the light rebuild
@@ -3198,6 +3264,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		Remesh,
 		Draft, Hole, Sculpt, Mirror, LinearPattern, CircularPattern, Transform, UVProject, FaceMaterial,
 		MoveFace, Paint, Boolean,
+		Garment, Fur, Trim,
 	}
 
 	/// <summary>Build one, and apply the variant chosen from its dropdown where it has one.</summary>
@@ -3228,6 +3295,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		ToolKind.MoveFace => new MoveFaceFeature(),
 		ToolKind.Paint => new PaintFeature(),
 		ToolKind.Boolean => NewBoolean( choice ),
+		ToolKind.Garment => new GarmentFeature(),
+		ToolKind.Fur => new FurFeature(),
+		ToolKind.Trim => new TrimFeature(),
 		_ => throw new ArgumentOutOfRangeException( nameof( kind ), kind, "no feature for this tool" )
 	};
 
@@ -3814,6 +3884,11 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		// actually built underneath.
 		_leftPanel.Layout.Add( _partsPanel );
 
+		// Edit mode's own column — scene, mesh check, history — shown in place of the tree and the
+		// parts while a mesh is being edited. See EffigyMeshEditPanel.
+		_meshPanel = new EffigyMeshEditPanel( this ) { RunOp = RunMeshOp, UndoTo = UndoMeshTo };
+		_leftPanel.Layout.Add( _meshPanel, 1 );
+
 		_viewport.SketchEdited = OnSketchEdited;
 
 		// The origin is the model's pivot, so moving it changes the exported result and has to be
@@ -3900,7 +3975,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		// Bumped from Effigy7: the Console dock is new. A restored Effigy7 layout knows nothing
 		// about it, so the panel would exist, be registered, and have nowhere on screen to go -
 		// the same failure the Materials and Tutorial docks each hit when they arrived.
-		StateCookie = "Effigy9";
+		StateCookie = "Effigy10";
 	}
 
 	/// <summary>The Parts list clicked a row. That is a whole-part selection — faces drop, the
@@ -4745,6 +4820,39 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	private void UpdateTitle() =>
 		Title = $"Effigy - {(_documentPath is null ? "untitled" : Path.GetFileName( _documentPath ))}{(_dirty ? "*" : "")}";
 
+	/// <summary>
+	/// Once a frame, from the viewport's canvas. Turns a preview back into the real thing once the
+	/// edits stop.
+	///
+	/// THE SETTLE IS WHAT MAKES THE PREVIEW SAFE. A cheap rebuild is a lie about the model - no
+	/// drape, no thickness, no weights - and the only thing that makes telling it acceptable is
+	/// that it is corrected within a fifth of a second, without being asked, every time. So this
+	/// runs off a clock rather than off a mouse-up: a drag that ends outside the window, a slider
+	/// released on a disabled control, a value typed instead of dragged and a hot reload taken
+	/// mid-drag all stop producing edits, and that is the only condition this waits for.
+	/// </summary>
+	private void OnTick()
+	{
+		if ( _settleAt <= 0f || RealTime.Now < _settleAt )
+			return;
+
+		_settleAt = 0f;
+
+		if ( !_studio.PreviewQuality )
+			return;
+
+		_studio.PreviewQuality = false;
+
+		// Every feature that took the cheap path cached a cheap result, so asking for a rebuild
+		// without dirtying them would hand those snapshots straight back. Only the feature being
+		// edited can have previewed - it is the only one marked dirty per edit - but its
+		// DOWNSTREAM neighbours consumed its preview output, so the rebuild has to start there.
+		if ( _dialog?.Feature is { } feature )
+			_studio.MarkDirty( feature );
+
+		RebuildStudio();
+	}
+
 	private void RebuildStudio()
 	{
 		if ( !_dirty )
@@ -4753,7 +4861,17 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			UpdateTitle();
 		}
 
+		// Timed so OnFeatureEdited can decide whether previewing is worth it - see PreviewThreshold.
+		// Only a FULL rebuild is measured: a preview is cheap by construction, and letting one set
+		// the bar would turn previewing off after the first time it worked.
+		var started = RealTime.Now;
+
 		var report = _studio.Rebuild();
+
+		if ( !_studio.PreviewQuality )
+			_rebuildCost = RealTime.Now - started;
+
+		SyncFurMaterials();
 		_featureTree?.Rebuild();
 		_partsPanel?.Refresh();
 		_materialsPanel?.Refresh();
@@ -5505,6 +5623,12 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			return;
 		}
 
+		if ( feature is MeshEditFeature meshEdit )
+		{
+			EnterMeshEdit( meshEdit );
+			return;
+		}
+
 		// Paint is the same shape as sculpt: editing it means painting it, not parking on a dialog.
 		if ( feature is PaintFeature paint )
 		{
@@ -5630,6 +5754,18 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			Log.Error( $"[Effigy] saved {path} but could NOT write its imported mesh: {e.Message}" );
 		}
 
+		try
+		{
+			var edits = MeshEditSidecar.Save( _studio, path );
+
+			if ( edits > 0 )
+				Log.Info( $"[Effigy] wrote {edits} mesh edit(s) beside {path}" );
+		}
+		catch ( Exception e )
+		{
+			Log.Error( $"[Effigy] saved {path} but could NOT write its mesh edits: {e.Message}" );
+		}
+
 		_documentPath = path;
 		MarkClean();
 
@@ -5721,6 +5857,15 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		catch ( Exception e )
 		{
 			Log.Error( $"[Effigy] opened {path} but could not read its imported mesh: {e.Message}" );
+		}
+
+		try
+		{
+			MeshEditSidecar.Load( loaded, path );
+		}
+		catch ( Exception e )
+		{
+			Log.Error( $"[Effigy] opened {path} but could not read its mesh edits: {e.Message}" );
 		}
 
 		_studio = loaded;
@@ -6236,8 +6381,14 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		Log.Info( $"[Effigy] exported {objPath}" );
 	}
 
+	/// <summary>The skinned model the last CompileVmdl produced, as an asset path, or null when it
+	/// did not get that far. Publish as clothing reads it; nothing else should.</summary>
+	private string _lastSkinnedVmdl;
+
 	private void CompileVmdl()
 	{
+		_lastSkinnedVmdl = null;
+
 		var report = RebuildForExport( "vmdl compile" );
 		if ( report.HasErrors || _studio.Bodies.Count == 0 )
 		{
@@ -6329,6 +6480,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 				return;
 			}
 
+			_lastSkinnedVmdl = $"models/effigy/{name}.vmdl";
 			Log.Info( $"[Effigy] {name}.vmdl compiled - {skeleton.Count} bone(s), loading into viewport" );
 			_viewport?.SetModel( Model.Load( $"models/effigy/{name}.vmdl" ) );
 			return;
@@ -6501,6 +6653,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	private sealed class StudioSnapshot
 	{
 		public List<Feature> Features;
+
+		/// <summary>Each mesh edit's mesh, as bytes. Not a parameter, so invisible to undo without this.</summary>
+		public Dictionary<MeshEditFeature, byte[]> MeshEdits;
 		public Dictionary<IParam, object> Values;
 
 		/// <summary>
@@ -6598,8 +6753,16 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		foreach ( var feature in _studio.Features.OfType<ImportFeature>() )
 			removedPieces[feature] = new List<int>( feature.RemovedPieces );
 
+		// A mesh edit's state is a mesh, not parameters — held as its side-car bytes, which is the
+		// one form of it that is already a faithful copy.
+		var meshEdits = new Dictionary<MeshEditFeature, byte[]>();
+
+		foreach ( var feature in _studio.Features.OfType<MeshEditFeature>() )
+			meshEdits[feature] = feature.SaveMesh();
+
 		return new StudioSnapshot
 		{
+			MeshEdits = meshEdits,
 			Features = _studio.Features.ToList(),
 			Values = values,
 			Sketches = sketches,
@@ -6667,6 +6830,25 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		foreach ( var (feature, strokes) in snapshot.PaintStrokes )
 			feature.ReplaceStrokes( strokes );
+
+		if ( snapshot.MeshEdits is not null )
+		{
+			foreach ( var (feature, bytes) in snapshot.MeshEdits )
+			{
+				if ( bytes is null )
+					feature.Clear();
+				else
+					feature.LoadMesh( bytes );
+			}
+		}
+
+		// An open edit whose feature the restore just removed ends with it, uncommitted.
+		if ( _viewport?.IsMeshEditing == true
+			&& (_meshEditFeature is null || !_studio.Features.Contains( _meshEditFeature )) )
+		{
+			CloseMeshEdit();
+			ShowSculptHome();
+		}
 
 		foreach ( var (feature, pieces) in snapshot.RemovedPieces )
 		{
@@ -6972,6 +7154,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	[Shortcut( "editor.undo", "CTRL+Z", ShortcutType.Window )]
 	private void Undo()
 	{
+		if ( StepMeshEditHistory( redo: false ) )
+			return;
+
 		// SCULPT MODE OWNS UNDO OUTRIGHT while it is open, and does not fall through when its own
 		// stack is empty. The studio's undo restores a feature list, and a snapshot taken before this
 		// sculpt feature existed would leave the live session holding a feature the studio no longer
@@ -7011,6 +7196,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	[Shortcut( "editor.redo", "CTRL+Y", ShortcutType.Window )]
 	private void Redo()
 	{
+		if ( StepMeshEditHistory( redo: true ) )
+			return;
+
 		if ( _viewport?.SculptSession is not null )
 		{
 			StepSculptHistory( redo: true );
@@ -7079,19 +7267,49 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	// apart instead of the old OnKeyPress ordering.
 
 	[Shortcut( "effigy.sculpt.mirror", "X", typeof( EffigyViewport ) )]
-	private void ShortcutSculptMirror() => ToggleSculptSymmetry();
+	private void ShortcutSculptMirror()
+	{
+		if ( MeshEditKey( 'X' ) )
+			return;
+
+		ToggleSculptSymmetry();
+	}
 
 	[Shortcut( "effigy.sculpt.mask", "M", typeof( EffigyViewport ) )]
-	private void ShortcutSculptMask() => ToggleSculptMasking();
+	private void ShortcutSculptMask()
+	{
+		if ( MeshEditKey( 'M' ) )
+			return;
+
+		ToggleSculptMasking();
+	}
 
 	[Shortcut( "effigy.sculpt.brush1", "1", typeof( EffigyViewport ) )]
-	private void ShortcutSculptBrush1() => SelectSculptBrush( 0 );
+	private void ShortcutSculptBrush1()
+	{
+		if ( MeshEditKey( '1' ) )
+			return;
+
+		SelectSculptBrush( 0 );
+	}
 
 	[Shortcut( "effigy.sculpt.brush2", "2", typeof( EffigyViewport ) )]
-	private void ShortcutSculptBrush2() => SelectSculptBrush( 1 );
+	private void ShortcutSculptBrush2()
+	{
+		if ( MeshEditKey( '2' ) )
+			return;
+
+		SelectSculptBrush( 1 );
+	}
 
 	[Shortcut( "effigy.sculpt.brush3", "3", typeof( EffigyViewport ) )]
-	private void ShortcutSculptBrush3() => SelectSculptBrush( 2 );
+	private void ShortcutSculptBrush3()
+	{
+		if ( MeshEditKey( '3' ) )
+			return;
+
+		SelectSculptBrush( 2 );
+	}
 
 	[Shortcut( "effigy.sculpt.brush4", "4", typeof( EffigyViewport ) )]
 	private void ShortcutSculptBrush4() => SelectSculptBrush( 3 );
@@ -7103,10 +7321,22 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	private void ShortcutSculptBrush6() => SelectSculptBrush( 5 );
 
 	[Shortcut( "effigy.sculpt.radius.decrease", "[", typeof( EffigyViewport ) )]
-	private void ShortcutSculptRadiusDecrease() => ScaleSculptRadius( 0.8f );
+	private void ShortcutSculptRadiusDecrease()
+	{
+		if ( MeshEditKey( '[' ) )
+			return;
+
+		ScaleSculptRadius( 0.8f );
+	}
 
 	[Shortcut( "effigy.sculpt.radius.increase", "]", typeof( EffigyViewport ) )]
-	private void ShortcutSculptRadiusIncrease() => ScaleSculptRadius( 1.25f );
+	private void ShortcutSculptRadiusIncrease()
+	{
+		if ( MeshEditKey( ']' ) )
+			return;
+
+		ScaleSculptRadius( 1.25f );
+	}
 
 	[Shortcut( "effigy.paint.symmetry", "X", typeof( EffigyViewport ) )]
 	private void ShortcutPaintSymmetry()
@@ -7122,6 +7352,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	[Shortcut( "effigy.note.erase", "E", typeof( EffigyViewport ) )]
 	private void ShortcutNoteErase()
 	{
+		if ( MeshEditKey( 'E' ) )
+			return;
+
 		if ( _viewport?.NoteSession is null )
 			return;
 
@@ -7144,6 +7377,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	[Shortcut( "effigy.bone.move", "W", typeof( EffigyViewport ) )]
 	private void ShortcutBoneMove()
 	{
+		if ( MeshEditKey( 'W' ) )
+			return;
+
 		_viewport?.SetBoneDragMode( EffigyViewport.BoneDragMode.Move );
 		_viewport?.SetBodyDragMode( EffigyViewport.BodyDragMode.Move );
 	}
@@ -7151,6 +7387,11 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	[Shortcut( "effigy.bone.rotate", "E", typeof( EffigyViewport ) )]
 	private void ShortcutBoneRotate()
 	{
+		// E is Extrude while editing a mesh — the note eraser shortcut on the same key already
+		// routes it there, and doing it twice would extrude twice.
+		if ( _viewport?.IsMeshEditing == true )
+			return;
+
 		_viewport?.SetBoneDragMode( EffigyViewport.BoneDragMode.Rotate );
 		_viewport?.SetBodyDragMode( EffigyViewport.BodyDragMode.Rotate );
 	}
@@ -7158,6 +7399,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	[Shortcut( "effigy.bone.scale", "R", typeof( EffigyViewport ) )]
 	private void ShortcutBoneScale()
 	{
+		if ( MeshEditKey( 'R' ) )
+			return;
+
 		_viewport?.SetBoneDragMode( EffigyViewport.BoneDragMode.Scale );
 		_viewport?.SetBodyDragMode( EffigyViewport.BodyDragMode.Scale );
 	}

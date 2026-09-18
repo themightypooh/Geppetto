@@ -166,7 +166,7 @@ internal static class EffigyPreview
 		/// </summary>
 		public bool TryUpdate( PolyMesh mesh, Func<int, string> materialForSlot, float smoothingAngleDegrees )
 		{
-			if ( Model is null || mesh.FaceCount != _faceCount )
+			if ( Model is null || mesh.FaceCount != _faceCount || mesh.HasVertexColors )
 				return false;
 
 			var placeholder = Material.Load( PreviewMaterial );
@@ -224,7 +224,7 @@ internal static class EffigyPreview
 		/// </summary>
 		public bool TryUpdatePositions( PolyMesh mesh )
 		{
-			if ( Model is null || mesh.FaceCount != _faceCount || _cornerNormals is null )
+			if ( Model is null || mesh.FaceCount != _faceCount || _cornerNormals is null || mesh.HasVertexColors )
 				return false;
 
 			var faceLists = new List<List<int>>( _meshes.Count );
@@ -305,7 +305,14 @@ internal static class EffigyPreview
 
 				var indices = TriangulateIndices( mesh, faces );
 				var sbMesh = new Mesh( material );
-				sbMesh.CreateVertexBuffer<SimpleVertex>( vertices.Count, vertices );
+
+				if ( mesh.HasVertexColors )
+				{
+					var coloured = BuildColouredVertices( mesh, faces, cornerNormals, normals );
+					sbMesh.CreateVertexBuffer<Vertex>( coloured.Count, coloured );
+				}
+				else
+					sbMesh.CreateVertexBuffer<SimpleVertex>( vertices.Count, vertices );
 				sbMesh.CreateIndexBuffer( indices.Count, indices );
 				sbMesh.Bounds = bounds;
 
@@ -366,11 +373,67 @@ internal static class EffigyPreview
 			return null;
 
 		var sbMesh = new Mesh( material );
-		sbMesh.CreateVertexBuffer<SimpleVertex>( vertices.Count, vertices );
+
+		if ( mesh.HasVertexColors )
+		{
+			var coloured = BuildColouredVertices( mesh, faceIndices, cornerNormals, normals );
+			sbMesh.CreateVertexBuffer<Vertex>( coloured.Count, coloured );
+		}
+		else
+			sbMesh.CreateVertexBuffer<SimpleVertex>( vertices.Count, vertices );
+
 		sbMesh.CreateIndexBuffer( indices.Count, indices );
 		sbMesh.Bounds = bounds;
 
 		return sbMesh;
+	}
+
+	/// <summary>
+	/// The same corners as <see cref="BuildVertices"/>, carrying the mesh's vertex colour.
+	///
+	/// BACK FOR FUR. The vertex-colour path was retired when paint became a texture; it returns
+	/// because s&box's fur.shader reads the mesh COLOR stream - red is each shell's height - and
+	/// without it every shell reads as the root layer and the fur renders as a solid lump. Every other
+	/// shader ignores the stream, so the rest of a furred part looks exactly as it did.
+	/// </summary>
+	private static List<Vertex> BuildColouredVertices( PolyMesh mesh, List<int> faceIndices,
+		int[][] cornerNormals, List<Vec3> normals )
+	{
+		var colours = mesh.VertexColors;
+		var vertices = new List<Vertex>( faceIndices.Count * 4 );
+
+		foreach ( var fi in faceIndices )
+		{
+			var face = mesh.Faces[fi];
+			var corners = cornerNormals[fi];
+
+			for ( var c = 0; c < face.Count; c++ )
+			{
+				var p = mesh.Positions[face.Indices[c]];
+				var n = normals[corners[c]];
+				var uv = face.UVs is not null && c < face.UVs.Length ? face.UVs[c] : default;
+				var tint = colours[face.Indices[c]].Tint();
+				var normal = new Vector3( n.x, n.y, n.z );
+				var tangent = MathF.Abs( normal.z ) < 0.9f
+					? Vector3.Cross( Vector3.Up, normal ).Normal
+					: Vector3.Cross( Vector3.Forward, normal ).Normal;
+
+				vertices.Add( new Vertex
+				{
+					Position = new Vector3( p.x, p.y, p.z ),
+					Normal = normal,
+					Tangent = new Vector4( tangent, 1f ),
+					TexCoord0 = new Vector2( uv.x, uv.y ),
+					Color = new Color32(
+						(byte)MathF.Round( Math.Clamp( tint.x, 0f, 1f ) * 255f ),
+						(byte)MathF.Round( Math.Clamp( tint.y, 0f, 1f ) * 255f ),
+						(byte)MathF.Round( Math.Clamp( tint.z, 0f, 1f ) * 255f ),
+						255 ),
+				} );
+			}
+		}
+
+		return vertices;
 	}
 
 	/// <summary>

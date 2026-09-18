@@ -658,14 +658,14 @@ internal sealed class EffigyTutorial
 				Instruction = "Switch to Sculpt",
 				Bullets = new[]
 				{
-					"Click Sculpt on the bar above the tools",
+					"Click Model on the bar above the tools, then Sculpt",
 				},
 				Detail = "A Sculpt carries its own levels — you do not Subdivide first. Subdivide "
 					+ "is for smoothing a part you are not going to brush.",
 				Art = StepArt.Sculpt,
 				Points = PointAt.Workspace,
-				Workspace = EffigyWorkspace.Sculpt,
-				IsDone = s => s.Workspace == EffigyWorkspace.Sculpt
+				Workspace = EffigyWorkspace.Model,
+				IsDone = s => s.Workspace == EffigyWorkspace.Model
 			},
 
 			new()

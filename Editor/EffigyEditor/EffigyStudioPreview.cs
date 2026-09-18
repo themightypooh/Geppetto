@@ -84,6 +84,14 @@ internal sealed class EffigyStudioPreview : AssetPreview
 		{
 		}
 
+		try
+		{
+			MeshEditSidecar.Load( studio, path );
+		}
+		catch ( Exception )
+		{
+		}
+
 		using ( Scene.Push() )
 		using ( EditorUtility.DisableTextureStreaming() )
 		{
