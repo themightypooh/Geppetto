@@ -1638,8 +1638,8 @@ public sealed partial class EffigyWindow
 		{
 			Menu( "Select", "All", "Invert", "Grow", "Shrink", "-", "Linked", "Similar", "Path", "Checker", "-", "Non-manifold", "Border", "-", "Lasso", "Circle", "X-ray" ),
 			Menu( "Add", "Extrude", "Extrude along normals", "Extrude individual", "Inset", "Bevel", "Loop cut", "Knife", "Bisect", "-", "Fill", "Grid fill", "Bridge", "-", "Add/Duplicate", "Add/Array", "Spin", "Screw", "Pivot here", "-", "Add/Subdivide" ),
-			Menu( "Vertex", "Merge", "By distance", "-", "Vertex slide", "Clean up/Smooth", "Clean up/Flatten", "To sphere" ),
-			Menu( "Edge", "Edge slide", "Rip", "-", "Make hard", "Harden creases", "-", "Mark seam", "Clear seam" ),
+			Menu( "Vertex", "Merge", "By distance", "Connect", "-", "Vertex slide", "Clean up/Smooth", "Clean up/Relax", "Clean up/Flatten", "Circle", "Space", "To sphere" ),
+			Menu( "Edge", "Edge slide", "Rip", "-", "Circle", "Space", "-", "Make hard", "Harden creases", "-", "Mark seam", "Clear seam" ),
 			Menu( "Face", "Triangulate", "Poke faces", "-", "Split", "Separate", "Extract", "-", "Flip", "Fix normals", "-", "Solidify" ),
 			Menu( "Mesh", "Move", "Rotate", "Scale", "Soft", "-", "Shrink/Fatten", "Shear", "Bend", "-", "Symmetrize", "Mirror X", "Snap", "Shrinkwrap", "-", "Dissolve", "Limited dissolve", "Delete", "Delete loose", "-", "Unwrap" ),
 			Menu( "Modifiers", "Modifiers/Live mirror", "Modifiers/Array", "Modifiers/Smooth", "Modifiers/Thickness" ),
@@ -1699,8 +1699,8 @@ public sealed partial class EffigyWindow
 			? new[] { "Relax", "Even quads", "Strip brush", "-", "Grow", "Linked", "Invert", "-", "Delete", "Finish retopo" }
 			: session.Mode switch
 			{
-				EditElement.Vertex => new[] { "Merge", "By distance", "Vertex slide", "Smooth", "To sphere", "-", "Fill", "Rip", "-", "Grow", "Shrink", "Linked", "Invert", "-", "Dissolve", "Delete" },
-				EditElement.Edge => new[] { "Extrude", "-", "Loop cut", "Bevel", "Edge slide", "-", "Bridge", "Fill", "Grid fill", "Rip", "-", "Make hard", "Mark seam", "-", "Grow", "Linked", "Invert", "-", "Dissolve", "Delete" },
+				EditElement.Vertex => new[] { "Connect", "-", "Circle", "Space", "-", "Merge", "By distance", "Vertex slide", "Smooth", "Relax", "To sphere", "-", "Fill", "Rip", "-", "Grow", "Shrink", "Linked", "Invert", "-", "Dissolve", "Delete" },
+				EditElement.Edge => new[] { "Extrude", "-", "Loop cut", "Bevel", "Edge slide", "-", "Circle", "Space", "-", "Bridge", "Fill", "Grid fill", "Rip", "-", "Make hard", "Mark seam", "-", "Grow", "Linked", "Invert", "-", "Dissolve", "Delete" },
 				_ => new[] { "Extrude", "Extrude along normals", "Extrude individual", "Inset", "Duplicate", "Subdivide", "-", "Triangulate", "Poke faces", "-", "Split", "Separate", "Flip", "Fix normals", "-", "Grow", "Shrink", "Linked", "Similar", "Invert", "-", "Delete" },
 			};
 
@@ -1804,6 +1804,10 @@ public sealed partial class EffigyWindow
 		_meshSplitEdgeTool = MeshTool( clean, EffigyIcon.Boolean, "Make hard", "Make the selected edges shade hard, by unwelding the model along them. Merge by distance puts it back", SplitMeshEdges );
 		_meshSharpenTool = MeshTool( clean, EffigyIcon.Chamfer, "Harden creases", "Make every edge that creases more than this angle shade hard, in one go — for a model that should read as hard-surface", () => StartMeshOp( "Harden creases", 40f, ( s, v ) => s.SplitEdgesByAngle( v ) ) );
 		_meshSmoothTool = MeshTool( clean, EffigyIcon.SculptSmooth, "Smooth", "Relax the selected vertices towards their neighbours — what you want straight after a subdivide. Open rims stay put. Nothing selected smooths everything", () => StartMeshOp( "Smooth", 0.5f, ( s, v ) => s.Smooth( v ) ) );
+		MeshTool( clean, EffigyIcon.SculptSmooth, "Relax", "Relax vertices along the surface without collapsing volume — LoopTools Relax", () => StartMeshOp( "Relax", 0.5f, ( s, v ) => s.Relax( v ) ) );
+		MeshTool( clean, EffigyIcon.CircularPattern, "Circle", "Turn the selected vertices into a regular circle on their best-fit plane — LoopTools Circle", () => RunMeshOp( "Circle", s => s.LoopCircle() ) );
+		MeshTool( clean, EffigyIcon.LinearPattern, "Space", "Distribute the selected vertices evenly along their edge loop — LoopTools Space", () => RunMeshOp( "Space", s => s.LoopSpace() ) );
+		MeshTool( clean, EffigyIcon.CutTool, "Connect", "Connect two selected vertices by cutting an edge across their shared face (J)", () => RunMeshOp( "Connect", s => s.ConnectVertices() ) );
 		MeshTool( clean, EffigyIcon.SculptSmooth, "Flatten", "Flatten the selected vertices onto their best-fit plane", () => RunMeshOp( "Flatten", s => s.FlattenFaces() ) );
 		MeshTool( clean, EffigyIcon.SculptSmooth, "To sphere", "Round the selected vertices off towards a ball — for a head, an eye or a knuckle blocked out as a cube. 1 is a full sphere", () => StartMeshOp( "To sphere", 1f, ( s, v ) => s.ToSphere( v ) ) );
 		MeshTool( clean, EffigyIcon.Mirror, "Fix normals", "Make the selected faces (or all of them) agree with each other and face outward — the fix for faces that show black (Shift+N)", () => RunMeshOp( "Recalculate normals", s => s.RecalculateNormals() ) );
@@ -2639,6 +2643,7 @@ public sealed partial class EffigyWindow
 			case 'L': RunMeshOp( "Linked", s => s.SelectLinked() ); return true;
 			case 'F': RunMeshOp( "Fill", s => s.Fill() ); return true;
 			case 'C': ToggleMeshCircle(); return true;
+			case 'J': RunMeshOp( "Connect", s => s.ConnectVertices() ); return true;
 			case 'V': RunMeshOp( "Rip", s => s.Rip() ); return true;
 			case MeshKeySplit: RunMeshOp( "Split", s => s.SplitFaces() ); return true;
 			case MeshKeySearch: OpenMeshToolSearch(); return true;
@@ -2733,6 +2738,9 @@ public sealed partial class EffigyWindow
 
 	[Shortcut( "effigy.mesh.fill", "F", typeof( EffigyViewport ) )]
 	private void ShortcutMeshFill() => MeshEditKey( 'F' );
+
+	[Shortcut( "effigy.mesh.connect", "J", typeof( EffigyViewport ) )]
+	private void ShortcutMeshConnect() => MeshEditKey( 'J' );
 
 	[Shortcut( "effigy.mesh.invert", "CTRL+I", typeof( EffigyViewport ) )]
 	private void ShortcutMeshInvert() => MeshEditKey( MeshKeyInvert );

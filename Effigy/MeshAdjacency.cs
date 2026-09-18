@@ -2220,6 +2220,410 @@ public sealed class MeshEditSession
 		} );
 	}
 
+	/// <summary>Turn the selected vertices into a regular circle on their best-fit plane — LoopTools Circle.</summary>
+	public void LoopCircle()
+	{
+		var verts = RequireVertices( "Circle" );
+		if ( verts.Count < 3 )
+			throw new InvalidOperationException( "Circle requires at least 3 vertices." );
+
+		Step( "Circle", () =>
+		{
+			var m = Mesh.Clone();
+			var vertList = new List<int>( verts );
+
+			// Build adjacency map between selected vertices using mesh faces
+			var edgeMap = new Dictionary<int, List<int>>();
+			foreach ( var v in vertList ) edgeMap[v] = new List<int>();
+
+			foreach ( var face in m.Faces )
+			{
+				for ( var i = 0; i < face.Indices.Length; i++ )
+				{
+					var a = face.Indices[i];
+					var b = face.Indices[(i + 1) % face.Indices.Length];
+					if ( verts.Contains( a ) && verts.Contains( b ) )
+					{
+						if ( !edgeMap[a].Contains( b ) ) edgeMap[a].Add( b );
+						if ( !edgeMap[b].Contains( a ) ) edgeMap[b].Add( a );
+					}
+				}
+			}
+
+			// Try to walk a continuous loop or chain
+			var orderedVerts = new List<int>();
+			var visited = new HashSet<int>();
+			var start = vertList[0];
+			foreach ( var v in vertList )
+			{
+				if ( edgeMap[v].Count == 1 )
+				{
+					start = v;
+					break;
+				}
+			}
+
+			var current = start;
+			while ( current >= 0 && visited.Add( current ) )
+			{
+				orderedVerts.Add( current );
+				var next = -1;
+				foreach ( var nbr in edgeMap[current] )
+				{
+					if ( !visited.Contains( nbr ) )
+					{
+						next = nbr;
+						break;
+					}
+				}
+				current = next;
+			}
+
+			if ( orderedVerts.Count < vertList.Count )
+			{
+				foreach ( var v in vertList )
+				{
+					if ( !visited.Contains( v ) )
+						orderedVerts.Add( v );
+				}
+			}
+
+			// Calculate center
+			var center = Vec3.Zero;
+			foreach ( var v in orderedVerts )
+				center += m.Positions[v];
+			center /= orderedVerts.Count;
+
+			// Normal of loop
+			var normal = Vec3.Zero;
+			for ( var i = 0; i < orderedVerts.Count; i++ )
+			{
+				var a = m.Positions[orderedVerts[i]] - center;
+				var b = m.Positions[orderedVerts[(i + 1) % orderedVerts.Count]] - center;
+				normal += Vec3.Cross( a, b );
+			}
+
+			if ( normal.LengthSquared < 1e-12f )
+				normal = new Vec3( 0, 0, 1 );
+			else
+				normal = normal.Normal;
+
+			var seed = MathF.Abs( normal.z ) < 0.9f ? new Vec3( 0, 0, 1 ) : new Vec3( 1, 0, 0 );
+			var u = Vec3.Cross( seed, normal ).Normal;
+			var vAxis = Vec3.Cross( normal, u ).Normal;
+
+			// Average in-plane radius
+			var avgRadius = 0f;
+			foreach ( var v in orderedVerts )
+			{
+				var p = m.Positions[v] - center;
+				var inPlane = p - normal * Vec3.Dot( p, normal );
+				avgRadius += inPlane.Length;
+			}
+			avgRadius /= orderedVerts.Count;
+			if ( avgRadius < 1e-6f ) avgRadius = 1f;
+
+			// If no topological edges connect them, sort by angle
+			if ( edgeMap[vertList[0]].Count == 0 )
+			{
+				orderedVerts.Sort( ( a, b ) =>
+				{
+					var pa = m.Positions[a] - center;
+					var pb = m.Positions[b] - center;
+					var angA = MathF.Atan2( Vec3.Dot( pa, vAxis ), Vec3.Dot( pa, u ) );
+					var angB = MathF.Atan2( Vec3.Dot( pb, vAxis ), Vec3.Dot( pb, u ) );
+					return angA.CompareTo( angB );
+				} );
+			}
+
+			var firstP = m.Positions[orderedVerts[0]] - center;
+			var startAngle = MathF.Atan2( Vec3.Dot( firstP, vAxis ), Vec3.Dot( firstP, u ) );
+
+			var stepDir = 1f;
+			if ( orderedVerts.Count > 1 )
+			{
+				var secondP = m.Positions[orderedVerts[1]] - center;
+				var secondAngle = MathF.Atan2( Vec3.Dot( secondP, vAxis ), Vec3.Dot( secondP, u ) );
+				var diff = secondAngle - startAngle;
+				while ( diff <= -MathF.PI ) diff += MathF.PI * 2;
+				while ( diff > MathF.PI ) diff -= MathF.PI * 2;
+				stepDir = diff >= 0 ? 1f : -1f;
+			}
+
+			var n = orderedVerts.Count;
+			for ( var i = 0; i < n; i++ )
+			{
+				var angle = startAngle + stepDir * (i * MathF.PI * 2 / n);
+				m.Positions[orderedVerts[i]] = center + (u * MathF.Cos( angle ) + vAxis * MathF.Sin( angle )) * avgRadius;
+			}
+
+			Mesh = m;
+		} );
+	}
+
+	/// <summary>Distribute the selected vertices evenly along their edge chain or loop — LoopTools Space.</summary>
+	public void LoopSpace()
+	{
+		var verts = RequireVertices( "Space" );
+		if ( verts.Count < 3 )
+			throw new InvalidOperationException( "Space requires at least 3 vertices." );
+
+		Step( "Space", () =>
+		{
+			var m = Mesh.Clone();
+			var vertList = new List<int>( verts );
+
+			var edgeMap = new Dictionary<int, List<int>>();
+			foreach ( var v in vertList ) edgeMap[v] = new List<int>();
+
+			foreach ( var face in m.Faces )
+			{
+				for ( var i = 0; i < face.Indices.Length; i++ )
+				{
+					var a = face.Indices[i];
+					var b = face.Indices[(i + 1) % face.Indices.Length];
+					if ( verts.Contains( a ) && verts.Contains( b ) )
+					{
+						if ( !edgeMap[a].Contains( b ) ) edgeMap[a].Add( b );
+						if ( !edgeMap[b].Contains( a ) ) edgeMap[b].Add( a );
+					}
+				}
+			}
+
+			var orderedVerts = new List<int>();
+			var visited = new HashSet<int>();
+			var start = vertList[0];
+			var isClosed = true;
+
+			foreach ( var v in vertList )
+			{
+				if ( edgeMap[v].Count == 1 )
+				{
+					start = v;
+					isClosed = false;
+					break;
+				}
+			}
+
+			var current = start;
+			while ( current >= 0 && visited.Add( current ) )
+			{
+				orderedVerts.Add( current );
+				var next = -1;
+				foreach ( var nbr in edgeMap[current] )
+				{
+					if ( !visited.Contains( nbr ) )
+					{
+						next = nbr;
+						break;
+					}
+				}
+				current = next;
+			}
+
+			if ( orderedVerts.Count < 3 )
+				return;
+
+			if ( isClosed && !edgeMap[orderedVerts[^1]].Contains( orderedVerts[0] ) )
+				isClosed = false;
+
+			var n = orderedVerts.Count;
+			var cumulative = new float[n + (isClosed ? 1 : 0)];
+			cumulative[0] = 0f;
+
+			for ( var i = 0; i < n - 1; i++ )
+			{
+				var d = (m.Positions[orderedVerts[i + 1]] - m.Positions[orderedVerts[i]]).Length;
+				cumulative[i + 1] = cumulative[i] + d;
+			}
+
+			if ( isClosed )
+			{
+				var d = (m.Positions[orderedVerts[0]] - m.Positions[orderedVerts[^1]]).Length;
+				cumulative[n] = cumulative[n - 1] + d;
+			}
+
+			var totalLen = cumulative[^1];
+			if ( totalLen < 1e-6f )
+				return;
+
+			var newPositions = new Vec3[n];
+			newPositions[0] = m.Positions[orderedVerts[0]];
+
+			var stepDist = isClosed ? totalLen / n : totalLen / (n - 1);
+
+			for ( var i = 1; i < (isClosed ? n : n - 1); i++ )
+			{
+				var targetDist = i * stepDist;
+
+				var seg = 0;
+				while ( seg < cumulative.Length - 1 && cumulative[seg + 1] < targetDist )
+					seg++;
+
+				var segStartDist = cumulative[seg];
+				var segEndDist = cumulative[seg + 1];
+				var t = segEndDist > segStartDist ? (targetDist - segStartDist) / (segEndDist - segStartDist) : 0f;
+
+				var pA = m.Positions[orderedVerts[seg % n]];
+				var pB = m.Positions[orderedVerts[(seg + 1) % n]];
+				newPositions[i] = pA + (pB - pA) * t;
+			}
+
+			if ( !isClosed )
+				newPositions[n - 1] = m.Positions[orderedVerts[n - 1]];
+
+			for ( var i = 0; i < n; i++ )
+				m.Positions[orderedVerts[i]] = newPositions[i];
+
+			Mesh = m;
+		} );
+	}
+
+	/// <summary>Connect two selected vertices by cutting an edge across their shared face (J).</summary>
+	public void ConnectVertices()
+	{
+		var verts = RequireVertices( "Connect" );
+		if ( verts.Count != 2 )
+			throw new InvalidOperationException( "Select exactly two vertices across a face to connect them (J)." );
+
+		var v1 = -1;
+		var v2 = -1;
+		foreach ( var v in verts )
+		{
+			if ( v1 < 0 ) v1 = v;
+			else v2 = v;
+		}
+
+		Step( "Connect Vertices", () =>
+		{
+			var m = Mesh.Clone();
+			var faceIdx = -1;
+			int idx1 = -1, idx2 = -1;
+
+			for ( var fi = 0; fi < m.Faces.Count; fi++ )
+			{
+				var f = m.Faces[fi];
+				var i1 = Array.IndexOf( f.Indices, v1 );
+				var i2 = Array.IndexOf( f.Indices, v2 );
+
+				if ( i1 >= 0 && i2 >= 0 )
+				{
+					var count = f.Indices.Length;
+					if ( Math.Abs( i1 - i2 ) != 1 && Math.Abs( i1 - i2 ) != count - 1 )
+					{
+						faceIdx = fi;
+						idx1 = i1;
+						idx2 = i2;
+						break;
+					}
+				}
+			}
+
+			if ( faceIdx < 0 )
+				throw new InvalidOperationException( "The two selected vertices must share a face (and not already be directly connected)." );
+
+			var oldFace = m.Faces[faceIdx];
+			var n = oldFace.Indices.Length;
+
+			if ( idx1 > idx2 )
+			{
+				var tmp = idx1; idx1 = idx2; idx2 = tmp;
+			}
+
+			// Sub-face 1: from idx1 to idx2
+			var count1 = idx2 - idx1 + 1;
+			var indices1 = new int[count1];
+			var uvs1 = new Vec2[count1];
+			for ( var i = 0; i < count1; i++ )
+			{
+				indices1[i] = oldFace.Indices[idx1 + i];
+				uvs1[i] = oldFace.UVs[idx1 + i];
+			}
+
+			// Sub-face 2: from idx2 wrapping around to idx1
+			var count2 = (n - idx2) + idx1 + 1;
+			var indices2 = new int[count2];
+			var uvs2 = new Vec2[count2];
+			for ( var i = 0; i < count2; i++ )
+			{
+				var cur = (idx2 + i) % n;
+				indices2[i] = oldFace.Indices[cur];
+				uvs2[i] = oldFace.UVs[cur];
+			}
+
+			m.Faces[faceIdx] = new Face( indices1, uvs1, oldFace.Material );
+			m.Faces.Add( new Face( indices2, uvs2, oldFace.Material ) );
+
+			Mesh = m;
+			SelectedEdges.Clear();
+			SelectedEdges.Add( new EdgeKey( v1, v2 ) );
+		} );
+	}
+
+	/// <summary>
+	/// Relax the selected vertices along the surface without collapsing volume — LoopTools Relax.
+	/// Vertices move tangential to the surface towards the average of their neighbours.
+	/// </summary>
+	public void Relax( float strength = 0.5f, int iterations = 4 )
+	{
+		var moving = AffectedVertices();
+
+		if ( moving.Count == 0 )
+		{
+			moving = new HashSet<int>();
+			for ( var i = 0; i < Mesh.VertexCount; i++ )
+				moving.Add( i );
+		}
+
+		if ( moving.Count == 0 )
+			throw new InvalidOperationException( "There is nothing to relax." );
+
+		strength = Math.Clamp( strength, 0f, 1f );
+		iterations = Math.Clamp( iterations, 1, 100 );
+
+		Step( "Relax", () =>
+		{
+			var neighbours = VertexNeighbours();
+			var boundary = BoundaryVertexSet();
+			var normals = Mesh.ComputeVertexNormals();
+			var positions = Mesh.Positions;
+			var scratch = new Vec3[positions.Count];
+
+			for ( var pass = 0; pass < iterations; pass++ )
+			{
+				for ( var i = 0; i < positions.Count; i++ )
+					scratch[i] = positions[i];
+
+				foreach ( var v in moving )
+				{
+					if ( boundary.Contains( v ) || !neighbours.TryGetValue( v, out var around ) || around.Count == 0 )
+						continue;
+
+					var sum = Vec3.Zero;
+					foreach ( var n in around )
+						sum += scratch[n];
+
+					var avg = sum / around.Count;
+					var delta = avg - scratch[v];
+
+					var nrm = normals[v];
+					if ( nrm.LengthSquared > 1e-12f )
+					{
+						nrm = nrm.Normal;
+						delta -= nrm * Vec3.Dot( delta, nrm );
+					}
+
+					var target = scratch[v] + delta * strength;
+
+					if ( MirrorX && MathF.Abs( scratch[v].x ) <= MirrorTolerance )
+						target = new Vec3( 0f, target.y, target.z );
+
+					positions[v] = target;
+				}
+			}
+		} );
+	}
+
 	/// <summary>Merge coplanar faces into n-gons across the whole mesh.</summary>
 	public void LimitedDissolve()
 	{
@@ -2675,7 +3079,7 @@ public sealed class MeshEditSession
 
 			if ( weight < 1f )
 				to = Vec3.Lerp( from, to, weight );
-			var onPlane = MirrorX && MathF.Abs( from.x ) <= MirrorTolerance;
+			var onPlane = MirrorX && (MathF.Abs( from.x ) <= MirrorTolerance || MathF.Abs( to.x ) <= MirrorTolerance || (from.x > 0f && to.x < 0f) || (from.x < 0f && to.x > 0f));
 
 			if ( onPlane )
 				to = new Vec3( 0f, to.y, to.z );
@@ -5876,8 +6280,12 @@ public sealed class MeshEditSession
 				to = hit.Point + hit.Normal * SnapOffset;
 		}
 
-		if ( MirrorX && MathF.Abs( from.TryGetValue( vertex, out var start ) ? start.x : Mesh.Positions[vertex].x ) <= MirrorTolerance )
-			to = new Vec3( 0f, to.y, to.z );
+		if ( MirrorX )
+		{
+			var startX = from.TryGetValue( vertex, out var start ) ? start.x : Mesh.Positions[vertex].x;
+			if ( MathF.Abs( startX ) <= MirrorTolerance || MathF.Abs( to.x ) <= MirrorTolerance || (startX > 0f && to.x < 0f) || (startX < 0f && to.x > 0f) )
+				to = new Vec3( 0f, to.y, to.z );
+		}
 
 		Mesh.Positions[vertex] = to;
 

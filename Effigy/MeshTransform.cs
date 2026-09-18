@@ -389,6 +389,7 @@ public static class MeshModifiers
 			if ( MathF.Abs( p.x ) <= seam )
 			{
 				map[v] = v;
+				result.Positions[v] = new Vec3( 0f, p.y, p.z );
 				continue;
 			}
 
