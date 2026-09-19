@@ -263,6 +263,9 @@ forgotten.
   change is an undo step in the edit. `Editor/EffigyEditor/EffigyUVPanel.cs`, `Editor/Effigy/UVIslands.cs`
 - **Join parts.** Select two or more parts in the Parts list and right-click ▸ Join to make one
   part of them, as one undo step. Materials come through; rig and paint the joined part after.
+- **Snap to a vertex while dragging.** Hold Ctrl+Shift while dragging the move handle in Edit
+  mode and the selection's centre lands on the nearest vertex that is not moving — on this part,
+  or on the surface Snap is set to.
 
 ### Improved
 - **Check shows you where.** Clipping vertices are marked on the model, yellow for a graze through red for the deepest, instead of only a count in the console. **Push out** next to it gives each clipping garment exactly the Clearance it needs and rebuilds, as one undo step. **Clear marks** takes them off.

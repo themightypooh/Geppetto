@@ -698,10 +698,20 @@ internal sealed partial class EffigyViewport
 					var moved = _meshEditDragDelta;
 
 					// Ctrl snaps the move to the grid: whole units, or tenths on a small model.
+					// Ctrl+Shift snaps to geometry instead: the selection's centre lands on the
+					// nearest vertex that is not being moved, on this body or the snap target.
 					if ( Editor.Application.IsKeyDown( KeyCode.Control ) )
 					{
-						var step = MeshSnapStep( session );
-						moved = new Vector3( MathF.Round( moved.x / step ) * step, MathF.Round( moved.y / step ) * step, MathF.Round( moved.z / step ) * step );
+						if ( Editor.Application.IsKeyDown( KeyCode.Shift ) )
+						{
+							if ( NearestSnapVertex( session, ToVec( _meshEditDragAnchor + moved ) ) is { } target )
+								moved = ToVector( target ) - _meshEditDragAnchor;
+						}
+						else
+						{
+							var step = MeshSnapStep( session );
+							moved = new Vector3( MathF.Round( moved.x / step ) * step, MathF.Round( moved.y / step ) * step, MathF.Round( moved.z / step ) * step );
+						}
 					}
 
 					session.Drag( new Vec3( moved.x, moved.y, moved.z ) );
@@ -717,6 +727,47 @@ internal sealed partial class EffigyViewport
 	}
 
 	private Vector3 _meshEditDragAnchor;
+
+	/// <summary>
+	/// The vertex a Ctrl+Shift drag snaps to: the nearest one to <paramref name="at"/> that is not
+	/// part of the drag, within a twentieth of the model, on the mesh being edited (visible faces
+	/// only) or on the surface being snapped to. Null when nothing is close enough.
+	/// </summary>
+	private static Vec3? NearestSnapVertex( MeshEditSession session, Vec3 at )
+	{
+		var reach = MathF.Max( session.Mesh.BoundsDiagonal, 1e-3f ) * 0.05f;
+		var best = reach * reach;
+		Vec3? found = null;
+		var moving = session.AffectedVertices();
+
+		for ( var v = 0; v < session.Mesh.VertexCount; v++ )
+		{
+			if ( moving.Contains( v ) || !session.IsVertexVisible( v ) )
+				continue;
+
+			var d = (session.Mesh.Positions[v] - at).LengthSquared;
+			if ( d < best )
+			{
+				best = d;
+				found = session.Mesh.Positions[v];
+			}
+		}
+
+		if ( session.SnapTarget is { } target )
+		{
+			foreach ( var p in target.Positions )
+			{
+				var d = (p - at).LengthSquared;
+				if ( d < best )
+				{
+					best = d;
+					found = p;
+				}
+			}
+		}
+
+		return found;
+	}
 
 	/// <summary>The grid a Ctrl-drag snaps to: one unit on anything bigger than a hand, a tenth
 	/// on something small enough that a unit would be most of it.</summary>
