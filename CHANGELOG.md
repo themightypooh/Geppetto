@@ -222,6 +222,14 @@ forgotten.
   X/Y/Z: type the exact amount instead of dragging for it. Shift-click rotates or scales about
   the pivot. **Hold Ctrl while dragging a handle** to snap: whole units for a move, 5° for a turn,
   tenths for a scale.
+- **Rotate edge.** Turn an edge one corner round the two faces it separates — the fix for a
+  diagonal running the wrong way through a quad flow. Shift-click turns it the other way.
+- **Subdivide edges.** Cut the selected edges into pieces: two opposite edges of a quad make a
+  strip across it, all four make a grid, and nothing is left with a crack.
+- **Fill holes.** Cap every open hole with up to so many sides in one go.
+- **Beautify.** Flip the diagonals between selected triangles wherever that makes them better
+  shaped — what to run after a triangulate leaves slivers.
+- **Select sharp edges, mirror and loose**, and **To pivot** (move the selection onto the pivot).
 
 ### Improved
 - **Model's Edit mode is laid out like a modeller now, not like CAD.**

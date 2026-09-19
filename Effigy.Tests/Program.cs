@@ -142,6 +142,7 @@ public static class Program
 		TestEditSessionTrisToQuadsAndBevelVertices();
 		TestEditSessionHideAndExtras();
 		TestEdgeCreases();
+		TestEditSessionTopologyTools();
 
 		Section( "an edit session duplicates, separates, extracts a garment and bridges uneven loops" );
 		TestEditSessionPieces();
@@ -1648,6 +1649,170 @@ public static class Program
 		studio2.Rebuild();
 		Check( "a reloaded edit keeps its creases", reloaded.Creases.Count == 4 && reloaded.Error is null, reloaded.Error ?? "" );
 		Check( "and still outputs the flat top", studio2.Bodies[0].Mesh.Positions.Count( p => MathF.Abs( p.z - 1f ) < 1e-5f ) == 9 );
+	}
+
+	static void TestEditSessionTopologyTools()
+	{
+		Section( "edit session: rotate edge, subdivide edges, fill holes, beautify, sharp/mirror/loose selects, selection to pivot" );
+
+		// Rotate edge on a quad split into two triangles flips its diagonal.
+		var q = new MeshEditSession( Primitives.Plane( 2f, 2f, 1, 1 ) );
+		q.SetMode( EditElement.Face );
+		q.SelectAll();
+		q.TriangulateFaces();
+		var diagonal = q.Mesh.BuildEdgeFaces().First( kv => kv.Value.Count == 2 ).Key;
+		q.SetMode( EditElement.Edge );
+		q.SelectEdge( diagonal );
+		q.RotateEdge();
+		var newDiagonal = q.Mesh.BuildEdgeFaces().First( kv => kv.Value.Count == 2 ).Key;
+		Check( "rotating the diagonal of two triangles gives the other diagonal",
+			!newDiagonal.Equals( diagonal ) && q.Mesh.FaceCount == 2 && q.Mesh.Faces.All( f => f.Indices.Length == 3 ), $"{diagonal.A}-{diagonal.B} -> {newDiagonal.A}-{newDiagonal.B}" );
+		Check( "the other diagonal joins the two corners the old one missed",
+			new HashSet<int> { newDiagonal.A, newDiagonal.B }.SetEquals( Enumerable.Range( 0, 4 ).Where( v => v != diagonal.A && v != diagonal.B ) ) );
+		Check( "and it is the selection", q.SelectedEdges.Count == 1 && q.SelectedEdges.Contains( newDiagonal ) );
+		Check( "the sheet is still valid and faces the same way", MeshValidator.Validate( q.Mesh ).IsValid && q.Mesh.Faces.All( f => q.Mesh.FaceNormal( f ).z > 0.9f ) );
+		q.RotateEdge();
+		Check( "turning it again gives the first diagonal back", q.Mesh.BuildEdgeFaces().First( kv => kv.Value.Count == 2 ).Key.Equals( diagonal ) );
+
+		// On two quads of a 2x1 grid the shared edge turns one corner round the hexagon they make:
+		// still two quads, now slanted, sharing a different edge. Blender does the same.
+		var g = new MeshEditSession( Primitives.Plane( 4f, 2f, 2, 1 ) );
+		g.SetMode( EditElement.Edge );
+		var between = g.Mesh.BuildEdgeFaces().First( kv => kv.Value.Count == 2 ).Key;
+		g.SelectEdge( between );
+		g.RotateEdge();
+		var after = g.Mesh.BuildEdgeFaces().First( kv => kv.Value.Count == 2 ).Key;
+		Check( "rotating the edge between two quads gives two slanted quads on a new shared edge",
+			g.Mesh.FaceCount == 2 && g.Mesh.Faces.All( f => f.Indices.Length == 4 ) && !after.Equals( between ) && (after.A == between.A || after.A == between.B || after.B == between.A || after.B == between.B) == false,
+			string.Join( ",", g.Mesh.Faces.Select( f => f.Indices.Length ) ) + $" {between.A}-{between.B} -> {after.A}-{after.B}" );
+		Check( "and keeps the sheet's area", MathF.Abs( g.Mesh.Faces.Sum( f => g.Mesh.FaceArea( f ) ) - 8f ) < 1e-4f );
+
+		var refused = false;
+		var open = new MeshEditSession( Primitives.Plane( 2f, 2f, 1, 1 ) );
+		open.SetMode( EditElement.Edge );
+		open.SelectEdge( open.Mesh.BuildEdgeFaces().First().Key );
+		try { open.RotateEdge(); } catch ( InvalidOperationException ) { refused = true; }
+		Check( "a border edge cannot be rotated", refused );
+
+		// Subdivide edges: one edge of a quad cut twice makes a hexagon; two opposite edges make a strip.
+		var se = new MeshEditSession( Primitives.Plane( 2f, 2f, 1, 1 ) );
+		se.SetMode( EditElement.Edge );
+		se.SelectEdge( se.Mesh.BuildEdgeFaces().First().Key );
+		se.SubdivideEdges( 2 );
+		Check( "cutting one edge of a quad twice gives a six-sided face", se.Mesh.FaceCount == 1 && se.Mesh.Faces[0].Indices.Length == 6 && se.Mesh.VertexCount == 6 );
+		Check( "the cut points are the selection, in vertex mode", se.Mode == EditElement.Vertex && se.SelectedVertices.Count == 2 );
+		Check( "and sit a third of the way along", se.SelectedVertices.All( v => { var p = se.Mesh.Positions[v]; return MathF.Abs( MathF.Abs( p.x ) - 1f / 3f ) < 1e-4f || MathF.Abs( MathF.Abs( p.y ) - 1f / 3f ) < 1e-4f; } ) );
+
+		var strip = new MeshEditSession( Primitives.Plane( 2f, 2f, 1, 1 ) );
+		strip.SetMode( EditElement.Edge );
+		foreach ( var key in strip.Mesh.BuildEdgeFaces().Keys )
+			if ( MathF.Abs( strip.Mesh.Positions[key.A].y - strip.Mesh.Positions[key.B].y ) < 1e-5f )
+				strip.SelectEdge( key, MeshEditSession.Combine.Add );
+		Check( "the two edges running along x are picked", strip.SelectedEdges.Count == 2 );
+		strip.SubdivideEdges( 3 );
+		Check( "cutting two opposite edges three times gives a strip of four quads", strip.Mesh.FaceCount == 4 && strip.Mesh.Faces.All( f => f.Indices.Length == 4 ), $"{strip.Mesh.FaceCount}" );
+		Check( "each with a quarter of the area", strip.Mesh.Faces.All( f => MathF.Abs( strip.Mesh.FaceArea( f ) - 1f ) < 1e-4f ) );
+		Check( "the strip is valid", MeshValidator.Validate( strip.Mesh ).IsValid, MeshValidator.Validate( strip.Mesh ).ToString() );
+		Check( "and still faces up", strip.Mesh.Faces.All( f => strip.Mesh.FaceNormal( f ).z > 0.9f ) );
+
+		var grid = new MeshEditSession( Primitives.Plane( 2f, 2f, 1, 1 ) );
+		grid.SetMode( EditElement.Edge );
+		grid.SelectAll();
+		grid.SubdivideEdges( 1 );
+		Check( "cutting all four edges once gives a 2x2 grid", grid.Mesh.FaceCount == 4 && grid.Mesh.VertexCount == 9 && grid.Mesh.Faces.All( f => f.Indices.Length == 4 ), $"{grid.Mesh.FaceCount}f {grid.Mesh.VertexCount}v" );
+		Check( "with its centre vertex in the middle", grid.Mesh.Positions.Any( p => p.Length < 1e-5f ) );
+		Check( "the grid is valid", MeshValidator.Validate( grid.Mesh ).IsValid );
+
+		// On a box, cutting the four vertical edges splits every side into two quads and leaves the
+		// top and bottom as they were — a closed solid throughout.
+		var box = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		box.SetMode( EditElement.Edge );
+		foreach ( var key in box.Mesh.BuildEdgeFaces().Keys )
+			if ( MathF.Abs( box.Mesh.Positions[key.A].z - box.Mesh.Positions[key.B].z ) > 1.5f )
+				box.SelectEdge( key, MeshEditSession.Combine.Add );
+		box.SubdivideEdges( 1 );
+		Check( "cutting a box's vertical edges gives 10 faces on 12 vertices", box.Mesh.FaceCount == 10 && box.Mesh.VertexCount == 12, $"{box.Mesh.FaceCount}f {box.Mesh.VertexCount}v" );
+		Check( "and it stays a closed solid of volume 8", MeshValidator.Validate( box.Mesh ) is { IsValid: true, IsClosed: true } && MathF.Abs( box.Mesh.SignedVolume() - 8f ) < 1e-4f, MeshValidator.Validate( box.Mesh ).ToString() );
+
+		// Fill holes: knock two faces out of a box, fill holes up to four sides puts both back.
+		var holes = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		holes.SetMode( EditElement.Face );
+		holes.SelectFace( 0 );
+		holes.SelectFace( 1, MeshEditSession.Combine.Add );
+		holes.DeleteOnlyFaces();
+		var opened = MeshValidator.Validate( holes.Mesh );
+		Check( "two faces gone leaves an open box", !opened.IsClosed );
+		var closedCount = holes.FillHoles( 4 );
+		Check( "fill holes closes both", closedCount == 2 && MeshValidator.Validate( holes.Mesh ) is { IsValid: true, IsClosed: true }, MeshValidator.Validate( holes.Mesh ).ToString() );
+		Check( "with the right winding: the volume is +8", MathF.Abs( holes.Mesh.SignedVolume() - 8f ) < 1e-4f, $"{holes.Mesh.SignedVolume()}" );
+		Check( "the new faces are the selection", holes.SelectedFaces.Count == 2 && holes.Mode == EditElement.Face );
+		holes.Undo();
+		refused = false;
+		try { holes.FillHoles( 3 ); } catch ( InvalidOperationException ) { refused = true; }
+		Check( "a side limit below the hole's size fills nothing, and says so", refused && holes.UndoCount == 1 );
+		refused = false;
+		try { new MeshEditSession( Primitives.Box( 2, 2, 2 ) ).FillHoles(); } catch ( InvalidOperationException ) { refused = true; }
+		Check( "a closed solid has no holes to fill", refused );
+
+		// Beautify: a quad strip triangulated badly (long diagonals) gets its diagonals flipped.
+		var ugly = Primitives.Plane( 4f, 1f, 1, 1 );
+		var ug = new MeshEditSession( ugly );
+		ug.SetMode( EditElement.Face );
+		ug.SelectAll();
+		ug.TriangulateFaces();
+		Check( "a long thin quad triangulates into two triangles", ug.Mesh.FaceCount == 2 );
+		// A 4x1 quad has only one sensible pair of triangles either way; make one that is genuinely
+		// bad: a kite whose diagonal runs the long way.
+		var kite = new PolyMesh();
+		kite.Positions.Add( new Vec3( 0, 0, 0 ) );
+		kite.Positions.Add( new Vec3( 5, 0.5f, 0 ) );
+		kite.Positions.Add( new Vec3( 10, 0, 0 ) );
+		kite.Positions.Add( new Vec3( 5, -0.5f, 0 ) );
+		kite.AddFace( new[] { 0, 1, 2 } );
+		kite.AddFace( new[] { 0, 2, 3 } );
+		var bk = new MeshEditSession( kite );
+		bk.SetMode( EditElement.Face );
+		bk.SelectAll();
+		bk.BeautifyFaces();
+		var shared = bk.Mesh.BuildEdgeFaces().First( kv => kv.Value.Count == 2 ).Key;
+		Check( "beautify flips the long diagonal to the short one", shared.Equals( new EdgeKey( 1, 3 ) ), $"{shared.A}-{shared.B}" );
+		Check( "and keeps the faces pointing the same way (this kite was wound facing down)", bk.Mesh.Faces.All( f => bk.Mesh.FaceNormal( f ).z < -0.9f ) );
+		refused = false;
+		try { bk.BeautifyFaces(); } catch ( InvalidOperationException ) { refused = true; }
+		Check( "beautify on already good triangles refuses rather than doing nothing silently", refused );
+
+		// Select sharp edges: the twelve edges of a box, none of a flat sheet.
+		var sharp = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		sharp.SelectSharpEdges( 30f );
+		Check( "a box's twelve edges are all sharp", sharp.SelectedEdges.Count == 12 && sharp.Mode == EditElement.Edge );
+		var flat = new MeshEditSession( Primitives.Plane( 4f, 4f, 4, 4 ) );
+		flat.SelectSharpEdges( 30f );
+		Check( "a flat sheet has none", flat.SelectedEdges.Count == 0 );
+
+		// Select mirror: a top corner on +X picks up its twin on -X.
+		var mir = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		mir.SetMode( EditElement.Vertex );
+		mir.SelectVertex( mir.Mesh.Positions.FindIndex( p => p.x > 0 && p.y > 0 && p.z > 0 ) );
+		mir.SelectMirror();
+		Check( "select mirror adds the partner across X", mir.SelectedVertices.Count == 2 && mir.SelectedVertices.All( v => mir.Mesh.Positions[v].y > 0 && mir.Mesh.Positions[v].z > 0 ) );
+
+		// Select loose finds a stray vertex.
+		var strayMesh = Primitives.Box( 2, 2, 2 );
+		strayMesh.Positions.Add( new Vec3( 9, 9, 9 ) );
+		var stray = new MeshEditSession( strayMesh );
+		stray.SelectLoose();
+		Check( "select loose finds the stray", stray.SelectedVertices.Count == 1 && stray.SelectedVertices.Contains( 8 ) );
+		refused = false;
+		try { new MeshEditSession( Primitives.Box( 2, 2, 2 ) ).SelectLoose(); } catch ( InvalidOperationException ) { refused = true; }
+		Check( "and says when there are none", refused );
+
+		// Selection to pivot.
+		var stp = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		stp.SetMode( EditElement.Face );
+		stp.SelectFace( Enumerable.Range( 0, 6 ).First( f => stp.Mesh.FaceNormal( stp.Mesh.Faces[f] ).z > 0.9f ) );
+		stp.Pivot = new Vec3( 0, 0, 5 );
+		stp.SelectionToPivot();
+		Check( "selection to pivot moves the face's centre onto the pivot", (stp.SelectionCentre() - new Vec3( 0, 0, 5 )).Length < 1e-5f && stp.UndoCount == 1 );
 	}
 
 	static void TestEditSessionEdgeSplit()

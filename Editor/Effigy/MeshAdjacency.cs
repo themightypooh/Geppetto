@@ -3562,6 +3562,497 @@ public sealed class MeshEditSession
 		} );
 	}
 
+	/// <summary>
+	/// Turn each selected edge one step round the two faces it separates, Blender's Rotate Edge:
+	/// the two faces are read as one polygon and split again along the next diagonal. On two
+	/// triangles it flips the diagonal of the quad they make; on two quads it swaps which
+	/// corners the edge joins. The fix for a diagonal running the wrong way through a quad flow.
+	/// </summary>
+	public void RotateEdge( bool clockwise = false )
+	{
+		if ( SelectedEdges.Count == 0 )
+			throw new InvalidOperationException( "Rotate Edge needs edges selected. Switch to Edge mode (2) and pick the edge to turn." );
+
+		var edges = new List<EdgeKey>( SelectedEdges );
+
+		Step( "Rotate Edge", () =>
+		{
+			var m = Mesh.Clone();
+			var done = new HashSet<int>();
+			var turned = new List<EdgeKey>();
+
+			foreach ( var key in edges )
+			{
+				var edgeFaces = m.BuildEdgeFaces();
+				if ( !edgeFaces.TryGetValue( key, out var owners ) || owners.Count != 2 || done.Contains( owners[0] ) || done.Contains( owners[1] ) )
+					continue;
+
+				var fa = m.Faces[owners[0]];
+				var fb = m.Faces[owners[1]];
+
+				// The merged loop: A from the edge's far end round to its near end, then B's
+				// other corners. Each face runs the shared edge its own way, so both are walked
+				// forward and the edge itself is skipped.
+				var loop = new List<(int v, Vec2 uv)>();
+				void Walk( Face f, int from )
+				{
+					var n = f.Indices.Length;
+					var at = Array.IndexOf( f.Indices, from );
+					for ( var i = 0; i < n - 1; i++ )
+					{
+						var k = (at + i) % n;
+						loop.Add( (f.Indices[k], f.UVs[k]) );
+					}
+				}
+
+				// A holds u→v; walk A starting at v so the edge (u→v) is the step left out.
+				var u = RunsForward( fa, key.A, key.B ) ? key.A : key.B;
+				var v = u == key.A ? key.B : key.A;
+				Walk( fa, v );
+				Walk( fb, u );
+
+				var count = loop.Count;
+				if ( count < 4 )
+					continue;
+
+				// The diagonal now joins loop[0] (v) and loop[na-1] (u). Turn it one corner.
+				var na = fa.Indices.Length;
+				var i0 = 0;
+				var i1 = na - 1;
+				var step = clockwise ? count - 1 : 1;
+				i0 = (i0 + step) % count;
+				i1 = (i1 + step) % count;
+
+				var first = new List<(int, Vec2)>();
+				for ( var k = i0; ; k = (k + 1) % count )
+				{
+					first.Add( loop[k] );
+					if ( k == i1 )
+						break;
+				}
+
+				var second = new List<(int, Vec2)>();
+				for ( var k = i1; ; k = (k + 1) % count )
+				{
+					second.Add( loop[k] );
+					if ( k == i0 )
+						break;
+				}
+
+				if ( first.Count < 3 || second.Count < 3 )
+					continue;
+
+				m.Faces[owners[0]] = new Face( first.ConvertAll( x => x.Item1 ).ToArray(), first.ConvertAll( x => x.Item2 ).ToArray(), fa.Material );
+				m.Faces[owners[1]] = new Face( second.ConvertAll( x => x.Item1 ).ToArray(), second.ConvertAll( x => x.Item2 ).ToArray(), fb.Material );
+				done.Add( owners[0] );
+				done.Add( owners[1] );
+				turned.Add( new EdgeKey( loop[i0].v, loop[i1].v ) );
+			}
+
+			if ( turned.Count == 0 )
+				throw new InvalidOperationException( "None of the selected edges sits between two faces, so there is nothing to turn." );
+
+			Mesh = m;
+			ClearSelection();
+			SelectedEdges.UnionWith( turned );
+		} );
+	}
+
+	/// <summary>
+	/// Cut each selected edge into <paramref name="cuts"/> + 1 pieces, Blender's Subdivide on
+	/// edges. A quad with two opposite edges cut the same way is split into a strip across; one
+	/// with all four cut alike becomes a grid; any other face just gains the new vertices on its
+	/// rim, so nothing is left with a crack. The new vertices become the selection.
+	/// </summary>
+	public void SubdivideEdges( int cuts = 1 )
+	{
+		if ( cuts < 1 )
+			throw new ArgumentOutOfRangeException( nameof( cuts ), "at least one cut" );
+
+		var edges = SelectedEdgesOrFaceBorders();
+		if ( edges.Count == 0 )
+			throw new InvalidOperationException( "Subdivide Edges needs edges selected. Switch to Edge mode (2) and pick the edges to cut." );
+
+		Step( "Subdivide Edges", () =>
+		{
+			var m = Mesh.Clone();
+			var points = new Dictionary<EdgeKey, int[]>();
+			foreach ( var key in edges )
+			{
+				var list = new int[cuts];
+				for ( var c = 0; c < cuts; c++ )
+				{
+					var t = (c + 1f) / (cuts + 1f);
+					list[c] = m.Positions.Count;
+					m.Positions.Add( Vec3.Lerp( m.Positions[key.A], m.Positions[key.B], t ) );
+					if ( m.Skin is not null )
+						m.Skin.Vertices.Add( SkinWeights.Blend( (m.Skin[key.A], 1f - t), (m.Skin[key.B], t) ) );
+				}
+
+				points[key] = list;
+			}
+
+			if ( m.VertexColors is not null )
+			{
+				var was = m.VertexColors.Length;
+				Array.Resize( ref m.VertexColors, m.Positions.Count );
+				foreach ( var (key, list) in points )
+					for ( var c = 0; c < cuts; c++ )
+						if ( list[c] >= was )
+							m.VertexColors[list[c]] = Vec4.Lerp( m.VertexColors[key.A], m.VertexColors[key.B], (c + 1f) / (cuts + 1f) );
+			}
+
+			// A face's side from corner i to i+1, with the cut points in walking order.
+			List<(int v, Vec2 uv)> Side( Face f, int i )
+			{
+				var n = f.Indices.Length;
+				var a = f.Indices[i];
+				var b = f.Indices[(i + 1) % n];
+				var side = new List<(int, Vec2)> { (a, f.UVs[i]) };
+				if ( points.TryGetValue( new EdgeKey( a, b ), out var list ) )
+				{
+					for ( var c = 0; c < cuts; c++ )
+					{
+						var t = (c + 1f) / (cuts + 1f);
+						var k = a < b ? c : cuts - 1 - c;
+						side.Add( (list[k], f.UVs[i] + (f.UVs[(i + 1) % n] - f.UVs[i]) * t) );
+					}
+				}
+
+				return side;
+			}
+
+			var newFaces = new List<Face>( m.Faces.Count );
+			foreach ( var f in m.Faces )
+			{
+				var n = f.Indices.Length;
+				var cut = new bool[n];
+				var cutCount = 0;
+				for ( var i = 0; i < n; i++ )
+				{
+					cut[i] = points.ContainsKey( new EdgeKey( f.Indices[i], f.Indices[(i + 1) % n] ) );
+					if ( cut[i] )
+						cutCount++;
+				}
+
+				if ( n == 4 && cutCount == 2 && cut[0] == cut[2] )
+				{
+					// Two opposite sides: a strip across. Sides s and s+2 run opposite ways round
+					// the quad, so the far side is read backwards to pair the cuts up.
+					var s0 = cut[0] ? 0 : 1;
+					var near = Side( f, s0 );
+					near.Add( (f.Indices[(s0 + 1) % 4], f.UVs[(s0 + 1) % 4]) );
+					var far = Side( f, s0 + 2 );
+					far.Add( (f.Indices[(s0 + 3) % 4], f.UVs[(s0 + 3) % 4]) );
+					far.Reverse();
+
+					for ( var k = 0; k < near.Count - 1; k++ )
+						newFaces.Add( new Face( new[] { near[k].v, near[k + 1].v, far[k + 1].v, far[k].v }, new[] { near[k].uv, near[k + 1].uv, far[k + 1].uv, far[k].uv }, f.Material ) );
+					continue;
+				}
+
+				if ( n == 4 && cutCount == 4 )
+				{
+					// All four: a grid, with the inside blended between opposite sides.
+					var s0 = Side( f, 0 ); s0.Add( (f.Indices[1], f.UVs[1]) );
+					var s1 = Side( f, 1 ); s1.Add( (f.Indices[2], f.UVs[2]) );
+					var s2 = Side( f, 2 ); s2.Add( (f.Indices[3], f.UVs[3]) ); s2.Reverse();
+					var s3 = Side( f, 3 ); s3.Add( (f.Indices[0], f.UVs[0]) ); s3.Reverse();
+					var w = cuts + 2;
+					var grid = new int[w, w];
+					var guv = new Vec2[w, w];
+					for ( var x = 0; x < w; x++ )
+					{
+						grid[x, 0] = s0[x].v; guv[x, 0] = s0[x].uv;
+						grid[x, w - 1] = s2[x].v; guv[x, w - 1] = s2[x].uv;
+					}
+
+					for ( var y = 0; y < w; y++ )
+					{
+						grid[w - 1, y] = s1[y].v; guv[w - 1, y] = s1[y].uv;
+						grid[0, y] = s3[y].v; guv[0, y] = s3[y].uv;
+					}
+
+					for ( var x = 1; x < w - 1; x++ )
+					{
+						for ( var y = 1; y < w - 1; y++ )
+						{
+							var tx = x / (w - 1f);
+							var ty = y / (w - 1f);
+							var bottom = Vec3.Lerp( m.Positions[grid[0, 0]], m.Positions[grid[w - 1, 0]], tx );
+							var top = Vec3.Lerp( m.Positions[grid[0, w - 1]], m.Positions[grid[w - 1, w - 1]], tx );
+							grid[x, y] = m.Positions.Count;
+							m.Positions.Add( Vec3.Lerp( bottom, top, ty ) );
+							var uvBottom = guv[0, 0] + (guv[w - 1, 0] - guv[0, 0]) * tx;
+							var uvTop = guv[0, w - 1] + (guv[w - 1, w - 1] - guv[0, w - 1]) * tx;
+							guv[x, y] = uvBottom + (uvTop - uvBottom) * ty;
+							if ( m.Skin is not null )
+								m.Skin.Vertices.Add( SkinWeights.Blend( (m.Skin[grid[0, 0]], (1 - tx) * (1 - ty)), (m.Skin[grid[w - 1, 0]], tx * (1 - ty)), (m.Skin[grid[0, w - 1]], (1 - tx) * ty), (m.Skin[grid[w - 1, w - 1]], tx * ty) ) );
+							if ( m.VertexColors is not null )
+							{
+								Array.Resize( ref m.VertexColors, m.Positions.Count );
+								m.VertexColors[^1] = m.VertexColors[grid[0, 0]];
+							}
+						}
+					}
+
+					for ( var x = 0; x < w - 1; x++ )
+						for ( var y = 0; y < w - 1; y++ )
+							newFaces.Add( new Face( new[] { grid[x, y], grid[x + 1, y], grid[x + 1, y + 1], grid[x, y + 1] }, new[] { guv[x, y], guv[x + 1, y], guv[x + 1, y + 1], guv[x, y + 1] }, f.Material ) );
+					continue;
+				}
+
+				if ( cutCount == 0 )
+				{
+					newFaces.Add( f );
+					continue;
+				}
+
+				var idx = new List<int>();
+				var uvs = new List<Vec2>();
+				for ( var i = 0; i < n; i++ )
+				{
+					foreach ( var (v, uv) in Side( f, i ) )
+					{
+						idx.Add( v );
+						uvs.Add( uv );
+					}
+				}
+
+				newFaces.Add( new Face( idx.ToArray(), uvs.ToArray(), f.Material ) );
+			}
+
+			m.Faces = newFaces;
+			Mesh = m;
+			ClearSelection();
+			Mode = EditElement.Vertex;
+			foreach ( var list in points.Values )
+				SelectedVertices.UnionWith( list );
+		} );
+	}
+
+	/// <summary>
+	/// Cap every open border with up to <paramref name="maxSides"/> edges with one face, Blender's
+	/// Fill Holes. Bigger holes are left: they are more likely a missing side than a hole. Returns
+	/// how many were closed.
+	/// </summary>
+	public int FillHoles( int maxSides = 4 )
+	{
+		var closed = 0;
+		Step( "Fill Holes", () =>
+		{
+			var nextOf = new Dictionary<int, int>();
+			var materialOf = new Dictionary<int, int>();
+			foreach ( var (key, owners) in Mesh.BuildEdgeFaces() )
+			{
+				if ( owners.Count != 1 )
+					continue;
+
+				var owner = Mesh.Faces[owners[0]];
+				var (from, to) = RunsForward( owner, key.A, key.B ) ? (key.B, key.A) : (key.A, key.B);
+				nextOf[from] = to;
+				materialOf[from] = owner.Material;
+			}
+
+			var seen = new HashSet<int>();
+			var added = new List<int>();
+			foreach ( var start in new List<int>( nextOf.Keys ) )
+			{
+				if ( seen.Contains( start ) )
+					continue;
+
+				var ring = new List<int>();
+				var at = start;
+				var ok = true;
+				do
+				{
+					if ( !seen.Add( at ) || !nextOf.TryGetValue( at, out var next ) )
+					{
+						ok = false;
+						break;
+					}
+
+					ring.Add( at );
+					at = next;
+				}
+				while ( at != start && ring.Count <= nextOf.Count );
+
+				if ( !ok || at != start || ring.Count < 3 || ring.Count > maxSides )
+					continue;
+
+				added.Add( Mesh.FaceCount );
+				Mesh.Faces.Add( new Face( ring.ToArray(), null, materialOf[start] ) );
+			}
+
+			closed = added.Count;
+			if ( closed == 0 )
+				throw new InvalidOperationException( maxSides >= 3 ? $"There are no open holes with {maxSides} sides or fewer." : "Fill Holes needs a side limit of at least 3." );
+
+			ClearSelection();
+			Mode = EditElement.Face;
+			SelectedFaces.UnionWith( added );
+		} );
+
+		return closed;
+	}
+
+	/// <summary>
+	/// Flip diagonals between selected triangles wherever that makes the pair better shaped —
+	/// Blender's Beautify Faces. Keeps going until no flip improves the worst angle. What to run
+	/// after a triangulate that left long slivers.
+	/// </summary>
+	public void BeautifyFaces()
+	{
+		var faces = RequireFaces( "Beautify Faces" );
+
+		Step( "Beautify Faces", () =>
+		{
+			var m = Mesh.Clone();
+			var selected = new HashSet<int>();
+			foreach ( var f in faces )
+				if ( m.Faces[f].Indices.Length == 3 )
+					selected.Add( f );
+
+			if ( selected.Count < 2 )
+				throw new InvalidOperationException( "Beautify needs two or more triangles selected. Triangulate first, or pick the triangles to tidy." );
+
+			float MinAngle( int a, int b, int c )
+			{
+				var pa = m.Positions[a]; var pb = m.Positions[b]; var pc = m.Positions[c];
+				float Angle( Vec3 p, Vec3 q, Vec3 r ) => MathF.Acos( Math.Clamp( Vec3.Dot( (q - p).Normal, (r - p).Normal ), -1f, 1f ) );
+				return MathF.Min( Angle( pa, pb, pc ), MathF.Min( Angle( pb, pc, pa ), Angle( pc, pa, pb ) ) );
+			}
+
+			var flips = 0;
+			for ( var pass = 0; pass < 50; pass++ )
+			{
+				var improved = false;
+				foreach ( var (key, owners) in m.BuildEdgeFaces() )
+				{
+					if ( owners.Count != 2 || !selected.Contains( owners[0] ) || !selected.Contains( owners[1] ) )
+						continue;
+
+					var fa = m.Faces[owners[0]];
+					var fb = m.Faces[owners[1]];
+					if ( fa.Material != fb.Material )
+						continue;
+
+					var u = RunsForward( fa, key.A, key.B ) ? key.A : key.B;
+					var v = u == key.A ? key.B : key.A;
+					var c = Array.Find( fa.Indices, x => x != u && x != v );
+					var d = Array.Find( fb.Indices, x => x != u && x != v );
+
+					// The loop round both is v, c, u, d. The flipped pair is (d, v, c) and (c, u, d), and
+					// both must still face the way the old pair did, or the quad was not convex.
+					var pu = m.Positions[u]; var pv = m.Positions[v]; var pc = m.Positions[c]; var pd = m.Positions[d];
+					var n1 = Vec3.Cross( pv - pd, pc - pd );
+					var n2 = Vec3.Cross( pu - pc, pd - pc );
+					var was = m.FaceNormal( fa );
+					if ( Vec3.Dot( n1, was ) <= 1e-9f || Vec3.Dot( n2, was ) <= 1e-9f )
+						continue;
+
+					var before = MathF.Min( MinAngle( u, v, c ), MinAngle( v, u, d ) );
+					var after = MathF.Min( MinAngle( c, d, v ), MinAngle( d, c, u ) );
+					if ( after <= before + 1e-4f )
+						continue;
+
+					var uvA = new Dictionary<int, Vec2>();
+					for ( var i = 0; i < 3; i++ ) uvA[fa.Indices[i]] = fa.UVs[i];
+					var uvB = new Dictionary<int, Vec2>();
+					for ( var i = 0; i < 3; i++ ) uvB[fb.Indices[i]] = fb.UVs[i];
+					m.Faces[owners[0]] = new Face( new[] { d, v, c }, new[] { uvB[d], uvA[v], uvA[c] }, fa.Material );
+					m.Faces[owners[1]] = new Face( new[] { c, u, d }, new[] { uvA[c], uvA[u], uvB[d] }, fb.Material );
+					improved = true;
+					flips++;
+					break;
+				}
+
+				if ( !improved )
+					break;
+			}
+
+			if ( flips == 0 )
+				throw new InvalidOperationException( "The selected triangles are already as well shaped as a flip can make them." );
+
+			Mesh = m;
+		} );
+	}
+
+	/// <summary>Select every edge where the faces meet at more than <paramref name="angleDegrees"/>
+	/// — Blender's Select Sharp Edges. The edges to crease, harden or bevel.</summary>
+	public void SelectSharpEdges( float angleDegrees = 30f, Combine how = Combine.Replace )
+	{
+		if ( how == Combine.Replace )
+			ClearSelection();
+
+		var limit = MathF.Cos( angleDegrees * MathF.PI / 180f );
+		foreach ( var (key, owners) in VisibleMesh.BuildEdgeFaces() )
+		{
+			if ( owners.Count != 2 )
+				continue;
+
+			var visible = VisibleMesh;
+			if ( Vec3.Dot( visible.FaceNormal( visible.Faces[owners[0]] ), visible.FaceNormal( visible.Faces[owners[1]] ) ) < limit )
+				Apply( SelectedEdges, key, how == Combine.Remove ? Combine.Remove : Combine.Add );
+		}
+
+		Mode = EditElement.Edge;
+		SelectionRevision++;
+	}
+
+	/// <summary>Add the mirror image of the selection across X = 0 — Blender's Select Mirror. A
+	/// vertex with no partner within tolerance is skipped.</summary>
+	public void SelectMirror()
+	{
+		var verts = AffectedVertices();
+		if ( verts.Count == 0 )
+			throw new InvalidOperationException( "Select something to mirror the selection of." );
+
+		var partners = new HashSet<int>();
+		foreach ( var v in verts )
+		{
+			var p = MirrorPartner( v );
+			if ( p >= 0 )
+				partners.Add( p );
+		}
+
+		if ( partners.Count == 0 )
+			throw new InvalidOperationException( "Nothing on the other side lines up with the selection. The model may not be symmetric across X." );
+
+		partners.UnionWith( verts );
+		SelectByVertices( partners );
+	}
+
+	/// <summary>Select the vertices no face uses — Blender's Select Loose. Delete loose removes
+	/// them; this shows where they are first.</summary>
+	public void SelectLoose()
+	{
+		var used = new bool[Mesh.VertexCount];
+		foreach ( var f in Mesh.Faces )
+			foreach ( var v in f.Indices )
+				used[v] = true;
+
+		ClearSelection();
+		Mode = EditElement.Vertex;
+		for ( var v = 0; v < used.Length; v++ )
+			if ( !used[v] )
+				SelectedVertices.Add( v );
+
+		SelectionRevision++;
+		if ( SelectedVertices.Count == 0 )
+			throw new InvalidOperationException( "There are no loose vertices." );
+	}
+
+	/// <summary>Move the selection so its centre lands on the pivot — Blender's Selection to
+	/// Cursor. The other half of Pivot here.</summary>
+	public void SelectionToPivot()
+	{
+		if ( AffectedVertices().Count == 0 )
+			throw new InvalidOperationException( "Select what to move to the pivot." );
+
+		Move( Pivot - SelectionCentre() );
+	}
+
 	/// <summary>Dissolve the selected edges (Edge mode) or vertices (Vertex mode) — they go, and the
 	/// faces around them merge into one, unlike Delete, which leaves a hole.</summary>
 	public void Dissolve()
