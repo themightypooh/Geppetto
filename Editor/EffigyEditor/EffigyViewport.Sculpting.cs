@@ -1417,6 +1417,23 @@ internal sealed partial class EffigyViewport
 			}
 		}
 
+		// Creases: the edges Smooth will keep sharp, brighter the sharper. Under the selection like
+		// seams, and through the model for the same reason.
+		if ( session.Creases.Count > 0 )
+		{
+			Gizmo.Draw.IgnoreDepth = true;
+			Gizmo.Draw.LineThickness = 3f;
+
+			foreach ( var (key, weight) in session.Creases )
+			{
+				if ( key.A >= mesh.VertexCount || key.B >= mesh.VertexCount )
+					continue;
+
+				Gizmo.Draw.Color = MeshCreaseColor.WithAlpha( 0.45f + 0.55f * Math.Clamp( weight, 0f, 1f ) );
+				Gizmo.Draw.Line( ToVector( mesh.Positions[key.A] ), ToVector( mesh.Positions[key.B] ) );
+			}
+		}
+
 		Gizmo.Draw.IgnoreDepth = true;
 		Gizmo.Draw.LineThickness = 2.5f;
 		Gizmo.Draw.Color = MeshSelectedColor;
@@ -1484,4 +1501,5 @@ internal sealed partial class EffigyViewport
 
 	/// <summary>Red, the colour a marked seam is in every tool that has them.</summary>
 	private static readonly Color MeshSeamColor = new( 0.93f, 0.26f, 0.21f, 1f );
+	private static readonly Color MeshCreaseColor = new( 0.85f, 0.35f, 0.95f, 1f );
 }

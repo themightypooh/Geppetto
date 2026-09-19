@@ -370,12 +370,13 @@ public static class MeshEditBlob
 {
 	static readonly byte[] Magic = Encoding.ASCII.GetBytes( "EFFIGYME" );
 
-	/// <summary>2 added separated pieces after the main mesh. Format 1 still reads.</summary>
-	public const int Version = 2;
+	/// <summary>2 added separated pieces after the main mesh; 3 added edge creases after the
+	/// pieces. Formats 1 and 2 still read.</summary>
+	public const int Version = 3;
 
 	public const string Extension = ".meshedit";
 
-	public static byte[] Write( PolyMesh mesh, long baseFingerprint, IReadOnlyList<PolyMesh> pieces = null )
+	public static byte[] Write( PolyMesh mesh, long baseFingerprint, IReadOnlyList<PolyMesh> pieces = null, IReadOnlyDictionary<EdgeKey, float> creases = null )
 	{
 		if ( mesh is null )
 			throw new ArgumentNullException( nameof( mesh ) );
@@ -393,13 +394,26 @@ public static class MeshEditBlob
 			foreach ( var piece in pieces )
 				WriteMesh( w, piece );
 
+		w.Write( creases?.Count ?? 0 );
+		if ( creases is not null )
+		{
+			foreach ( var (key, weight) in creases )
+			{
+				w.Write( key.A );
+				w.Write( key.B );
+				w.Write( weight );
+			}
+		}
+
 		w.Flush();
 		return stream.ToArray();
 	}
 
-	public static PolyMesh Read( byte[] bytes, out long baseFingerprint ) => Read( bytes, out baseFingerprint, out _ );
+	public static PolyMesh Read( byte[] bytes, out long baseFingerprint ) => Read( bytes, out baseFingerprint, out _, out _ );
 
-	public static PolyMesh Read( byte[] bytes, out long baseFingerprint, out List<PolyMesh> pieces )
+	public static PolyMesh Read( byte[] bytes, out long baseFingerprint, out List<PolyMesh> pieces ) => Read( bytes, out baseFingerprint, out pieces, out _ );
+
+	public static PolyMesh Read( byte[] bytes, out long baseFingerprint, out List<PolyMesh> pieces, out Dictionary<EdgeKey, float> creases )
 	{
 		if ( bytes is null )
 			throw new ArgumentNullException( nameof( bytes ) );
@@ -429,6 +443,20 @@ public static class MeshEditBlob
 			var count = r.ReadInt32();
 			for ( var i = 0; i < count; i++ )
 				pieces.Add( ReadMesh( r ) );
+		}
+
+		creases = new Dictionary<EdgeKey, float>();
+		if ( version >= 3 )
+		{
+			var count = r.ReadInt32();
+			for ( var i = 0; i < count; i++ )
+			{
+				var a = r.ReadInt32();
+				var b = r.ReadInt32();
+				var weight = r.ReadSingle();
+				if ( a >= 0 && b >= 0 && a < mesh.VertexCount && b < mesh.VertexCount && a != b )
+					creases[new EdgeKey( a, b )] = weight;
+			}
 		}
 
 		return mesh;

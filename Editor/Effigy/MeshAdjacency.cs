@@ -1523,6 +1523,7 @@ public sealed class MeshEditSession
 		public readonly string Label;
 		public readonly List<PolyMesh> Separated;
 		public readonly EdgeKey[] Seams;
+		public readonly KeyValuePair<EdgeKey, float>[] Creases;
 		public readonly HiddenKey[] Hidden;
 		public readonly int RetopoStart, RetopoFaceStart;
 
@@ -1551,6 +1552,7 @@ public sealed class MeshEditSession
 			Separated = new List<PolyMesh>( s.Separated );
 			Seams = new List<EdgeKey>( s.Seams ).ToArray();
 			Hidden = s._hidden.ToArray();
+			Creases = new List<KeyValuePair<EdgeKey, float>>( s.Creases ).ToArray();
 			RetopoStart = s.RetopoStart;
 			RetopoFaceStart = s._retopoFaceStart;
 			SnapTarget = s._snapTarget;
@@ -1617,6 +1619,95 @@ public sealed class MeshEditSession
 	/// that made it.
 	/// </summary>
 	public HashSet<EdgeKey> Seams { get; } = new();
+
+	/// <summary>
+	/// Edges that stay sharp under subdivision, with how many levels they hold for — Blender's
+	/// edge crease (Shift+E). 1 keeps a fold through one level of the Smooth modifier, 2 through
+	/// two; a fraction softens it. Unlike seams these ARE saved with the edit: the live Smooth
+	/// modifier needs them every time the body is rebuilt.
+	/// </summary>
+	public Dictionary<EdgeKey, float> Creases { get; } = new();
+
+	/// <summary>Give the selected edges (or the edges round the selected faces) a crease of
+	/// <paramref name="sharpness"/>. Zero clears it. Scrubbable.</summary>
+	public void Crease( float sharpness )
+	{
+		var edges = SelectedEdgesOrFaceBorders();
+		if ( edges.Count == 0 )
+			throw new InvalidOperationException( "Crease needs edges selected. Switch to Edge mode (2) and pick the edges that should stay sharp." );
+
+		Step( sharpness > 0f ? "Crease" : "Clear crease", () =>
+		{
+			foreach ( var key in edges )
+			{
+				if ( sharpness > 0f )
+					Creases[key] = sharpness;
+				else
+					Creases.Remove( key );
+			}
+		} );
+	}
+
+	/// <summary>Take the crease off the selected edges, or every edge with nothing selected.</summary>
+	public void ClearCreases()
+	{
+		var edges = SelectedEdgesOrFaceBorders();
+		if ( edges.Count == 0 && Creases.Count == 0 )
+			throw new InvalidOperationException( "There are no creases to clear." );
+
+		Step( "Clear crease", () =>
+		{
+			if ( edges.Count == 0 )
+				Creases.Clear();
+			else
+				foreach ( var key in edges )
+					Creases.Remove( key );
+		} );
+	}
+
+	/// <summary>Replace the creases wholesale — how a resumed edit gets the ones the feature saved.</summary>
+	public void LoadCreases( IEnumerable<KeyValuePair<EdgeKey, float>> creases )
+	{
+		Creases.Clear();
+		if ( creases is null )
+			return;
+
+		foreach ( var (key, weight) in creases )
+			Creases[key] = weight;
+		PruneCreases();
+	}
+
+	/// <summary>The selected edges; in Face mode, every edge of the selected faces.</summary>
+	HashSet<EdgeKey> SelectedEdgesOrFaceBorders()
+	{
+		var edges = new HashSet<EdgeKey>( SelectedEdges );
+		foreach ( var f in SelectedFaces )
+		{
+			var idx = Mesh.Faces[f].Indices;
+			for ( var i = 0; i < idx.Length; i++ )
+				edges.Add( new EdgeKey( idx[i], idx[(i + 1) % idx.Length] ) );
+		}
+
+		return edges;
+	}
+
+	/// <summary>Drop creases on edges that no longer exist, as <see cref="PruneSeams"/> does.</summary>
+	public int PruneCreases()
+	{
+		if ( Creases.Count == 0 )
+			return 0;
+
+		var live = new HashSet<EdgeKey>( Mesh.BuildEdgeFaces().Keys );
+		var dead = new List<EdgeKey>();
+		foreach ( var key in Creases.Keys )
+			if ( !live.Contains( key ) )
+				dead.Add( key );
+
+		foreach ( var key in dead )
+			Creases.Remove( key );
+
+		return dead.Count;
+	}
 
 	/// <summary>Bumped on every change to the mesh, so a preview knows when to re-upload.</summary>
 	public int Revision { get; private set; }
@@ -1873,6 +1964,9 @@ public sealed class MeshEditSession
 		Seams.UnionWith( s.Seams );
 		_hidden.Clear();
 		_hidden.AddRange( s.Hidden );
+		Creases.Clear();
+		foreach ( var (key, weight) in s.Creases )
+			Creases[key] = weight;
 		RetopoStart = s.RetopoStart;
 		_retopoFaceStart = s.RetopoFaceStart;
 		// Only a retopology snapshot owns the snap target; anywhere else it belongs to the Snap
@@ -1966,6 +2060,7 @@ public sealed class MeshEditSession
 		// an edge that is not there and the overlay draws a vertex that has been renumbered. Undo
 		// puts it back, because the snapshot was taken before the operation ran.
 		PruneSeams();
+		PruneCreases();
 		ReconcileHidden();
 		if ( _snapTree is not null && ReferenceEquals( _snapTarget, Mesh ) )
 			_snapTree = MeshBVH.Build( Mesh );
@@ -3047,7 +3142,7 @@ public sealed class MeshEditSession
 			m.Faces = newFaces;
 
 			// Compaction only drops the bevelled vertices, so every face keeps its index.
-			Mesh = RemoveUnusedVertices( m );
+			Mesh = Compact( m );
 			ClearSelection();
 			if ( Mode == EditElement.Vertex )
 			{
@@ -3166,7 +3261,7 @@ public sealed class MeshEditSession
 		{
 			var e = EditableMesh.FromPolyMesh( Mesh );
 			e.DeleteFaces( doomed );
-			Mesh = RemoveUnusedVertices( e.ToPolyMesh() );
+			Mesh = Compact( e.ToPolyMesh() );
 			ClearSelection();
 		} );
 	}
@@ -3182,7 +3277,7 @@ public sealed class MeshEditSession
 		{
 			var e = EditableMesh.FromPolyMesh( Mesh );
 			e.DeleteFaces( faces );
-			Mesh = RemoveUnusedVertices( e.ToPolyMesh() );
+			Mesh = Compact( e.ToPolyMesh() );
 			ClearSelection();
 		} );
 	}
@@ -3221,7 +3316,7 @@ public sealed class MeshEditSession
 			}
 
 			e.DissolveEdges( hes );
-			Mesh = RemoveUnusedVertices( e.ToPolyMesh() );
+			Mesh = Compact( e.ToPolyMesh() );
 			ClearSelection();
 		} );
 	}
@@ -3435,7 +3530,7 @@ public sealed class MeshEditSession
 		{
 			if ( faces is null )
 			{
-				Mesh = RemoveUnusedVertices( Decimate.ToRatio( Mesh, ratio ) );
+				Mesh = Compact( Decimate.ToRatio( Mesh, ratio ) );
 				ClearSelection();
 				return;
 			}
@@ -3462,7 +3557,7 @@ public sealed class MeshEditSession
 				for ( var i = 0; i < face.Indices.Length; i++ )
 					face.Indices[i] = remap[face.Indices[i]];
 
-			Mesh = RemoveUnusedVertices( Mesh );
+			Mesh = Compact( Mesh );
 			ClearSelection();
 		} );
 	}
@@ -3504,7 +3599,7 @@ public sealed class MeshEditSession
 					e.DissolveVertex( v );
 			}
 
-			Mesh = RemoveUnusedVertices( e.ToPolyMesh() );
+			Mesh = Compact( e.ToPolyMesh() );
 			ClearSelection();
 		} );
 	}
@@ -3579,7 +3674,7 @@ public sealed class MeshEditSession
 					result.AddFace( idx.ToArray(), uvs.ToArray(), face.Material );
 			}
 
-			Mesh = RemoveUnusedVertices( result );
+			Mesh = Compact( result );
 			ClearSelection();
 		} );
 	}
@@ -3589,7 +3684,7 @@ public sealed class MeshEditSession
 	{
 		Step( "Merge by distance", () =>
 		{
-			Mesh = RemoveUnusedVertices( MeshWeld.Weld( Mesh, tolerance ) );
+			Mesh = Compact( MeshWeld.Weld( Mesh, tolerance ) );
 			ClearSelection();
 		} );
 	}
@@ -3783,7 +3878,7 @@ public sealed class MeshEditSession
 		if ( !HasChanges )
 			return false;
 
-		feature.Commit( Mesh, Base, Separated );
+		feature.Commit( Mesh, Base, Separated, Creases );
 		return true;
 	}
 
@@ -4759,7 +4854,7 @@ public sealed class MeshEditSession
 			(set.Contains( f ) ? piece : rest).AddFace( (int[])face.Indices.Clone(), (Vec2[])face.UVs.Clone(), face.Material );
 		}
 
-		Mesh = RemoveUnusedVertices( rest );
+		Mesh = Compact( rest );
 		return RemoveUnusedVertices( piece );
 	}
 
@@ -6141,7 +6236,7 @@ public sealed class MeshEditSession
 
 		Step( "Delete loose", () =>
 		{
-			Mesh = RemoveUnusedVertices( Mesh );
+			Mesh = Compact( Mesh );
 			ClearSelection();
 		} );
 	}
@@ -7725,7 +7820,7 @@ public sealed class MeshEditSession
 			if ( kept == 0 )
 				throw new InvalidOperationException( $"Nothing lies on the {(keepPositive ? "+X" : "-X")} side to mirror. Move the model so the half you want to keep is there, or symmetrize the other way." );
 
-			Mesh = RemoveUnusedVertices( result );
+			Mesh = Compact( result );
 			ClearSelection();
 		} );
 	}
@@ -7759,7 +7854,11 @@ public sealed class MeshEditSession
 		{
 			if ( region.Count == 0 )
 			{
-				Mesh = CatmullClark.Subdivide( Mesh, levels );
+				// Creases hold their folds and come out one level shallower, ready for the next.
+				Mesh = CatmullClark.Subdivide( Mesh, levels, Creases, out var left );
+				Creases.Clear();
+				foreach ( var (key, weight) in left )
+					Creases[key] = weight;
 				ClearSelection();
 				return;
 			}
@@ -8107,9 +8206,43 @@ public sealed class MeshEditSession
 	}
 
 	/// <summary>Drop vertices no face uses, keeping skin and colour parallel.</summary>
-	public static PolyMesh RemoveUnusedVertices( PolyMesh mesh )
+	/// <summary>
+	/// <see cref="RemoveUnusedVertices"/> for the session's own mesh: the seams and creases are
+	/// renumbered along with the vertices, so a mark on an edge that survives stays on that edge
+	/// instead of drifting onto whichever edge inherits its index.
+	/// </summary>
+	PolyMesh Compact( PolyMesh mesh )
 	{
-		var remap = new int[mesh.VertexCount];
+		var result = RemoveUnusedVertices( mesh, out var remap );
+
+		if ( Seams.Count > 0 )
+		{
+			var seams = new List<EdgeKey>( Seams );
+			Seams.Clear();
+			foreach ( var key in seams )
+				if ( key.A < remap.Length && key.B < remap.Length && remap[key.A] >= 0 && remap[key.B] >= 0 )
+					Seams.Add( new EdgeKey( remap[key.A], remap[key.B] ) );
+		}
+
+		if ( Creases.Count > 0 )
+		{
+			var creases = new List<KeyValuePair<EdgeKey, float>>( Creases );
+			Creases.Clear();
+			foreach ( var (key, weight) in creases )
+				if ( key.A < remap.Length && key.B < remap.Length && remap[key.A] >= 0 && remap[key.B] >= 0 )
+					Creases[new EdgeKey( remap[key.A], remap[key.B] )] = weight;
+		}
+
+		return result;
+	}
+
+	public static PolyMesh RemoveUnusedVertices( PolyMesh mesh ) => RemoveUnusedVertices( mesh, out _ );
+
+	/// <summary>Drop the vertices no face uses. <paramref name="remap"/>[old] is the new index, or
+	/// -1 for a vertex that went; survivors keep their order.</summary>
+	public static PolyMesh RemoveUnusedVertices( PolyMesh mesh, out int[] remap )
+	{
+		remap = new int[mesh.VertexCount];
 		Array.Fill( remap, -1 );
 
 		var result = new PolyMesh();

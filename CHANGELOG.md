@@ -214,6 +214,10 @@ forgotten.
   find the faces a quad model should not have; **Interior** finds faces pointing into the model.
 - **Separate by loose parts and by material.** Split a body into its disconnected pieces, or one
   body per material, in one go.
+- **Edge creases (Shift+E).** Mark edges to stay sharp under the Smooth modifier and under
+  Subdivide: 1 holds the fold through one level, 2 through two, a fraction softens it. Creases
+  show as purple edges, follow the live mirror and array, and are saved with the edit.
+  `Editor/Effigy/CatmullClark.cs`, `Editor/Effigy/MeshAdjacency.cs`
 
 ### Improved
 - **Model's Edit mode is laid out like a modeller now, not like CAD.**
@@ -241,6 +245,7 @@ forgotten.
   `Editor/EffigyEditor/EffigyTutorialPanel.cs`
 
 ### Fixed
+- **Seams no longer drift after a delete.** Deleting vertices renumbered the rest, and a seam marked before the delete could end up on a different edge. Marks now follow their edges.
 - **Extrude (E) now leaves the new walls selected**, so pressing E again keeps going. Before, nothing was selected after an extrude.
 - **Fill after a Delete closed the wrong hole.** Deleting faces silently renumbered every vertex, so a selection made before the delete pointed at the wrong ring afterwards.
 - **A full 360° Spin no longer leaves its seam edge shared by three faces.** The seam now closes on its own copy of the first ring, so the result is a clean solid.

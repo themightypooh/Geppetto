@@ -353,15 +353,41 @@ public static class MeshWeld
 /// </summary>
 public static class MeshModifiers
 {
-	public static PolyMesh Apply( PolyMesh mesh, bool mirrorX, int arrayCount, float arrayGap, int subdivide, float solidify, float seam = 1e-3f )
+	public static PolyMesh Apply( PolyMesh mesh, bool mirrorX, int arrayCount, float arrayGap, int subdivide, float solidify, float seam = 1e-3f ) =>
+		Apply( mesh, mirrorX, arrayCount, arrayGap, subdivide, solidify, null, seam );
+
+	/// <summary>The modifiers with edge creases for the subdivide. Creases follow the mesh through
+	/// the mirror and the array: a crease on the left is a crease on the right.</summary>
+	public static PolyMesh Apply( PolyMesh mesh, bool mirrorX, int arrayCount, float arrayGap, int subdivide, float solidify, IReadOnlyDictionary<EdgeKey, float> creases, float seam = 1e-3f )
 	{
-		var result = mirrorX ? MirrorX( mesh, seam ) : mesh.Clone();
+		var result = mesh.Clone();
+		var live = creases is null || creases.Count == 0 ? null : new Dictionary<EdgeKey, float>( creases );
+
+		if ( mirrorX )
+		{
+			result = MirrorX( result, seam, out var map );
+			if ( live is not null )
+			{
+				foreach ( var (key, weight) in creases )
+					if ( key.A < map.Length && key.B < map.Length )
+						live[new EdgeKey( map[key.A], map[key.B] )] = weight;
+			}
+		}
 
 		if ( arrayCount > 1 )
+		{
+			var n = result.VertexCount;
 			result = ArrayX( result, arrayCount, arrayGap );
+			if ( live is not null )
+			{
+				foreach ( var (key, weight) in new List<KeyValuePair<EdgeKey, float>>( live ) )
+					for ( var k = 1; k < arrayCount; k++ )
+						live[new EdgeKey( key.A + n * k, key.B + n * k )] = weight;
+			}
+		}
 
 		if ( subdivide > 0 )
-			result = CatmullClark.Subdivide( result, Math.Min( subdivide, 3 ) );
+			result = CatmullClark.Subdivide( result, Math.Min( subdivide, 3 ), live, out _ );
 
 		if ( solidify > 0f )
 			result = MeshSolidify.Solidify( result, solidify );
@@ -375,11 +401,15 @@ public static class MeshModifiers
 	/// instead of leaving a crack. Skin weights are copied as they are, not swapped left for right:
 	/// mirror, then rig.
 	/// </summary>
-	public static PolyMesh MirrorX( PolyMesh mesh, float seam = 1e-3f )
+	public static PolyMesh MirrorX( PolyMesh mesh, float seam = 1e-3f ) => MirrorX( mesh, seam, out _ );
+
+	/// <summary>Mirror, and say where each vertex's reflection landed: <paramref name="map"/>[v]
+	/// is the mirrored copy of v, or v itself on the plane.</summary>
+	public static PolyMesh MirrorX( PolyMesh mesh, float seam, out int[] map )
 	{
 		var result = mesh.Clone();
 		var n = mesh.VertexCount;
-		var map = new int[n];
+		map = new int[n];
 		var colours = result.VertexColors is null ? null : new List<Vec4>( result.VertexColors );
 
 		for ( var v = 0; v < n; v++ )

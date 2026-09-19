@@ -77,16 +77,31 @@ public static class CatmullClark
 {
 	/// <summary>Subdivide `levels` times. Level 0 returns a clone, so callers can always treat the
 	/// result as theirs to mutate.</summary>
-	public static PolyMesh Subdivide( PolyMesh mesh, int levels = 1 )
+	public static PolyMesh Subdivide( PolyMesh mesh, int levels = 1 ) => Subdivide( mesh, levels, null, out _ );
+
+	/// <summary>
+	/// Subdivide with creased edges, Blender's edge crease (Shift+E). A crease's sharpness is how
+	/// many levels the edge stays a hard fold before it starts to round: 1 holds it through one
+	/// level, 2 through two; a fraction blends between rounded and sharp at the first level. The
+	/// creases the result still carries — each cut edge inherits its parent's sharpness less one —
+	/// come back in <paramref name="remaining"/>, so a further level can carry on.
+	/// </summary>
+	public static PolyMesh Subdivide( PolyMesh mesh, int levels, IReadOnlyDictionary<EdgeKey, float> creases, out Dictionary<EdgeKey, float> remaining )
 	{
 		if ( levels < 0 )
 			throw new ArgumentOutOfRangeException( nameof( levels ) );
 
 		var current = mesh.Clone();
+		var live = creases is null ? null : new Dictionary<EdgeKey, float>( creases );
 
 		for ( var i = 0; i < levels; i++ )
-			current = SubdivideOnce( current ).Mesh;
+		{
+			var (next, _, nextCreases) = SubdivideOnce( current, live );
+			current = next;
+			live = nextCreases;
+		}
 
+		remaining = live ?? new Dictionary<EdgeKey, float>();
 		return current;
 	}
 
@@ -94,12 +109,20 @@ public static class CatmullClark
 	/// One subdivision step plus the correspondence map. Sculpt deltas are stored per output
 	/// vertex; this is how those vertices name the cage elements they came from.
 	/// </summary>
-	public static (PolyMesh Mesh, SubdivisionMap Map) SubdivideWithMap( PolyMesh mesh ) =>
-		SubdivideOnce( mesh );
+	public static (PolyMesh Mesh, SubdivisionMap Map) SubdivideWithMap( PolyMesh mesh )
+	{
+		var (m, map, _) = SubdivideOnce( mesh, null );
+		return (m, map);
+	}
 
-	static (PolyMesh Mesh, SubdivisionMap Map) SubdivideOnce( PolyMesh mesh )
+	static (PolyMesh Mesh, SubdivisionMap Map, Dictionary<EdgeKey, float> Creases) SubdivideOnce( PolyMesh mesh, IReadOnlyDictionary<EdgeKey, float> creases )
 	{
 		var edgeFaces = mesh.BuildEdgeFaces();
+
+		// A crease's sharpness clamped to one level: how far this level leans toward the hard
+		// rule. What is left over goes to the two halves of the edge.
+		float Sharp( EdgeKey key ) => creases is not null && creases.TryGetValue( key, out var s ) ? Math.Clamp( s, 0f, 1f ) : 0f;
+		var nextCreases = new Dictionary<EdgeKey, float>();
 		var vertexFaces = mesh.BuildVertexFaces();
 		var vertexEdges = mesh.BuildVertexEdges();
 
@@ -201,19 +224,29 @@ public static class CatmullClark
 
 			// (v0 + v1 + average of adjacent face points) weighted as the standard 4-point rule.
 			// Written to average over faces.Count rather than assuming 2, so a non-manifold edge
-			// degrades to something sane instead of reading past the end.
-			newPositions[vertCount + ei] = (a + b + faceSum / faces.Count * 2f) * 0.25f;
+			// degrades to something sane instead of reading past the end. A crease pulls the point
+			// back toward the plain midpoint — all the way at sharpness 1, which is the boundary
+			// rule, and a fold stays a fold.
+			var sharp = Sharp( key );
+			var smooth = (a + b + faceSum / faces.Count * 2f) * 0.25f;
+			newPositions[vertCount + ei] = Vec3.Lerp( smooth, (a + b) * 0.5f, sharp );
+
+			if ( creases is not null && creases.TryGetValue( key, out var carried ) && carried > 1f )
+			{
+				nextCreases[new EdgeKey( key.A, vertCount + ei )] = carried - 1f;
+				nextCreases[new EdgeKey( vertCount + ei, key.B )] = carried - 1f;
+			}
 
 			if ( !rigged )
 				continue;
 
 			var edgeTerms = new List<(BoneWeight[], float)>( faces.Count + 2 )
 			{
-				(mesh.Skin[key.A], 0.25f),
-				(mesh.Skin[key.B], 0.25f)
+				(mesh.Skin[key.A], 0.25f + 0.25f * sharp),
+				(mesh.Skin[key.B], 0.25f + 0.25f * sharp)
 			};
 
-			var facePointShare = 0.5f / faces.Count;
+			var facePointShare = 0.5f / faces.Count * (1f - sharp);
 
 			foreach ( var fi in faces )
 				edgeTerms.Add( (facePointWeights[fi], facePointShare) );
@@ -280,6 +313,23 @@ public static class CatmullClark
 				continue;
 			}
 
+			// Creases meeting here. Two make the vertex follow the crease as a curve, like a
+			// border; three or more pin it as a corner. Either blends in by the creases' sharpness.
+			var creaseNeighbours = new List<int>( 2 );
+			var creaseSharp = 0f;
+			if ( creases is not null )
+			{
+				foreach ( var key in edges )
+				{
+					var sh = Sharp( key );
+					if ( sh <= 0f )
+						continue;
+
+					creaseNeighbours.Add( key.A == vi ? key.B : key.A );
+					creaseSharp = creaseNeighbours.Count == 1 ? sh : MathF.Min( creaseSharp, sh );
+				}
+			}
+
 			// F: average of adjacent face points.
 			var f = Vec3.Zero;
 
@@ -298,7 +348,15 @@ public static class CatmullClark
 
 			r /= edges.Count;
 
-			newPositions[vi] = (f + r * 2f + v * (n - 3)) / n;
+			var smoothVertex = (f + r * 2f + v * (n - 3)) / n;
+			var creased = creaseNeighbours.Count switch
+			{
+				2 => (mesh.Positions[creaseNeighbours[0]] + v * 6f + mesh.Positions[creaseNeighbours[1]]) / 8f,
+				> 2 => v,
+				_ => smoothVertex,
+			};
+			var creaseMix = creaseNeighbours.Count >= 2 ? creaseSharp : 0f;
+			newPositions[vi] = Vec3.Lerp( smoothVertex, creased, creaseMix );
 
 			if ( !rigged )
 				continue;
@@ -322,6 +380,25 @@ public static class CatmullClark
 			}
 
 			vertexTerms.Add( (mesh.Skin[vi], (n - 3f) / n) );
+
+			if ( creaseMix > 0f )
+			{
+				// The same lerp as the positions, term by term: both sides are affine, so the mix is.
+				for ( var t = 0; t < vertexTerms.Count; t++ )
+					vertexTerms[t] = (vertexTerms[t].Item1, vertexTerms[t].Item2 * (1f - creaseMix));
+
+				if ( creaseNeighbours.Count == 2 )
+				{
+					vertexTerms.Add( (mesh.Skin[creaseNeighbours[0]], 0.125f * creaseMix) );
+					vertexTerms.Add( (mesh.Skin[vi], 0.75f * creaseMix) );
+					vertexTerms.Add( (mesh.Skin[creaseNeighbours[1]], 0.125f * creaseMix) );
+				}
+				else
+				{
+					vertexTerms.Add( (mesh.Skin[vi], creaseMix) );
+				}
+			}
+
 			newWeights[vi] = SkinWeights.Blend( vertexTerms );
 		}
 
@@ -371,7 +448,7 @@ public static class CatmullClark
 			}
 		}
 
-		return (result, new SubdivisionMap( mapVertices, vertCount, edgeCount, faceCount ));
+		return (result, new SubdivisionMap( mapVertices, vertCount, edgeCount, faceCount ), nextCreases);
 	}
 
 	/// <summary>

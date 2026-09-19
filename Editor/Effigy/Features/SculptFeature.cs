@@ -202,10 +202,18 @@ public sealed class MeshEditFeature : Feature
 	/// <summary>True when any live modifier would change the mesh.</summary>
 	public bool HasModifiers => MirrorX.Value || ArrayCount.Clamped > 1 || SubdivideLevels.Clamped > 0 || SolidifyThickness.Value > 0f;
 
+	/// <summary>Edges the Subdivide modifier keeps sharp, with their sharpness — set in the edit,
+	/// saved with it. See <see cref="MeshEditSession.Creases"/>.</summary>
+	public Dictionary<EdgeKey, float> Creases { get; private set; } = new();
+
 	/// <summary>The live modifiers applied to <paramref name="mesh"/> — what this feature outputs
 	/// for it, and what the editor shows over the cage while you edit.</summary>
-	public PolyMesh ApplyModifiers( PolyMesh mesh ) => HasModifiers
-		? MeshModifiers.Apply( mesh, MirrorX.Value, ArrayCount.Clamped, ArrayGap.Value, SubdivideLevels.Clamped, SolidifyThickness.Value )
+	public PolyMesh ApplyModifiers( PolyMesh mesh ) => ApplyModifiers( mesh, Creases );
+
+	/// <summary>The modifiers with creases from elsewhere — the live edit's, which are ahead of
+	/// the ones committed here until the edit finishes.</summary>
+	public PolyMesh ApplyModifiers( PolyMesh mesh, IReadOnlyDictionary<EdgeKey, float> creases ) => HasModifiers
+		? MeshModifiers.Apply( mesh, MirrorX.Value, ArrayCount.Clamped, ArrayGap.Value, SubdivideLevels.Clamped, SolidifyThickness.Value, creases )
 		: mesh.Clone();
 
 	PolyMesh _edited;
@@ -243,7 +251,7 @@ public sealed class MeshEditFeature : Feature
 	/// Hand the feature an edited mesh. <paramref name="basedOn"/> is the body the session started
 	/// from — normally <see cref="LastInput"/>. The mesh is cloned: the session keeps editing its own.
 	/// </summary>
-	public void Commit( PolyMesh edited, PolyMesh basedOn, IEnumerable<PolyMesh> pieces = null )
+	public void Commit( PolyMesh edited, PolyMesh basedOn, IEnumerable<PolyMesh> pieces = null, IEnumerable<KeyValuePair<EdgeKey, float>> creases = null )
 	{
 		if ( edited is null )
 			throw new System.ArgumentNullException( nameof( edited ) );
@@ -251,6 +259,10 @@ public sealed class MeshEditFeature : Feature
 			throw new System.ArgumentNullException( nameof( basedOn ) );
 
 		_edited = edited.Clone();
+		Creases = new Dictionary<EdgeKey, float>();
+		if ( creases is not null )
+			foreach ( var (key, weight) in creases )
+				Creases[key] = weight;
 		_pieces = new List<PolyMesh>();
 		if ( pieces is not null )
 			foreach ( var piece in pieces )
@@ -264,12 +276,13 @@ public sealed class MeshEditFeature : Feature
 	public void Clear()
 	{
 		_edited = null;
+		Creases = new Dictionary<EdgeKey, float>();
 		_pieces = new List<PolyMesh>();
 		_pending = null;
 		_revision++;
 	}
 
-	public byte[] SaveMesh() => _edited is null ? _pending : MeshEditBlob.Write( _edited, _baseFingerprint, _pieces );
+	public byte[] SaveMesh() => _edited is null ? _pending : MeshEditBlob.Write( _edited, _baseFingerprint, _pieces, Creases );
 
 	public void LoadMesh( byte[] blob )
 	{
@@ -327,8 +340,9 @@ public sealed class MeshEditFeature : Feature
 		{
 			try
 			{
-				_edited = MeshEditBlob.Read( _pending, out _baseFingerprint, out var pieces );
+				_edited = MeshEditBlob.Read( _pending, out _baseFingerprint, out var pieces, out var creases );
 				_pieces = pieces;
+				Creases = creases;
 			}
 			catch ( System.Exception e )
 			{

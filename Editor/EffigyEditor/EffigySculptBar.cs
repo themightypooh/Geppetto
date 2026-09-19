@@ -350,6 +350,9 @@ internal sealed class EffigyMeshEditBar : Widget
 		if ( s.HasHiddenFaces )
 			text += $" · {s.HiddenFaces.Count} hidden (Alt+H shows)";
 
+		if ( s.Creases.Count > 0 )
+			text += $" · {s.Creases.Count} creased edge{(s.Creases.Count == 1 ? "" : "s")}";
+
 		var check = MeshValidator.Validate( s.Mesh );
 		if ( check.BoundaryEdges > 0 )
 			text += $" · {check.BoundaryEdges} open edges";

@@ -1092,7 +1092,7 @@ public sealed partial class EffigyWindow
 	private EffigyStageTool _meshTrisToQuadsTool, _meshBevelVerticesTool;
 	private EffigyStageTool _meshHideTool, _meshHideOthersTool, _meshUnhideTool, _meshRandomSelectTool, _meshTrianglesTool, _meshNgonsTool, _meshInteriorTool;
 	private EffigyStageTool _meshDeleteFacesTool, _meshDeleteEdgesTool, _meshMergeFirstTool, _meshMergeLastTool, _meshMergePivotTool, _meshRandomizeTool, _meshDecimateTool;
-	private EffigyStageTool _meshLoosePartsTool, _meshByMaterialTool;
+	private EffigyStageTool _meshLoosePartsTool, _meshByMaterialTool, _meshCreaseTool, _meshUncreaseTool;
 
 	/// <summary>Which fabric <see cref="StartMeshDrape"/> hangs the cloth as. Cycled by the Fabric tool.</summary>
 	private Fabric _meshFabric = Fabric.Cotton;
@@ -1117,6 +1117,7 @@ public sealed partial class EffigyWindow
 	private const char MeshKeyHide = (char)8;
 	private const char MeshKeyHideOthers = (char)4;
 	private const char MeshKeyUnhide = (char)21;
+	private const char MeshKeyCrease = (char)3;
 
 	private void ToggleMeshKnife()
 	{
@@ -1225,6 +1226,16 @@ public sealed partial class EffigyWindow
 	/// Change one of the edit's live modifiers: one document undo step, the history marked to
 	/// rebuild, and the preview over the cage refreshed straight away.
 	/// </summary>
+	/// <summary>The live modifier pass for the preview, fed the session's creases rather than the
+	/// feature's, which only catch up when the edit is committed.</summary>
+	private Func<PolyMesh, PolyMesh> MeshModifiersFor( MeshEditFeature feature )
+	{
+		if ( !feature.HasModifiers )
+			return null;
+
+		return mesh => feature.ApplyModifiers( mesh, _viewport?.MeshEditSession?.Creases ?? feature.Creases );
+	}
+
 	private void SetMeshModifier( string what, Action<MeshEditFeature> change )
 	{
 		if ( _meshEditFeature is not { } feature || _viewport is null )
@@ -1233,7 +1244,7 @@ public sealed partial class EffigyWindow
 		RecordUndo();
 		change( feature );
 		_studio.MarkDirty( feature );
-		_viewport.MeshEditModifiers = feature.HasModifiers ? feature.ApplyModifiers : null;
+		_viewport.MeshEditModifiers = MeshModifiersFor( feature );
 		_viewport.RefreshMeshEditPreview();
 		SetPrompt( what ?? DescribeMeshModifiers() );
 		OnMeshEditChanged();
@@ -1677,10 +1688,10 @@ public sealed partial class EffigyWindow
 			Menu( "Select", "All", "Invert", "Grow", "Shrink", "-", "Linked", "Similar", "Path", "Checker", "Random", "-", "Non-manifold", "Border", "Triangles", "N-gons", "Interior", "-", "Lasso", "Circle", "X-ray", "-", "Hide", "Hide others", "Unhide" ),
 			Menu( "Add", "Extrude", "Extrude along normals", "Extrude individual", "Inset", "Bevel", "Loop cut", "Knife", "Bisect", "-", "Fill", "Grid fill", "Bridge", "-", "Add/Duplicate", "Add/Array", "Spin", "Screw", "Pivot here", "-", "Add/Subdivide" ),
 			Menu( "Vertex", "Merge", "Merge first", "Merge last", "Merge at pivot", "By distance", "Connect", "Bevel vertices", "-", "Vertex slide", "Clean up/Smooth", "Clean up/Relax", "Clean up/Flatten", "Loop circle", "Loop space", "To sphere", "Randomize" ),
-			Menu( "Edge", "Edge slide", "Rip", "-", "Loop circle", "Loop space", "-", "Make hard", "Harden creases", "-", "Mark seam", "Clear seam", "-", "Delete edges" ),
+			Menu( "Edge", "Edge slide", "Rip", "-", "Loop circle", "Loop space", "-", "Make hard", "Harden creases", "Crease", "Clear crease", "-", "Mark seam", "Clear seam", "-", "Delete edges" ),
 			Menu( "Face", "Triangulate", "Tris to quads", "Poke faces", "-", "Split", "Separate", "Loose parts", "By material", "Extract", "-", "Flip", "Fix normals", "-", "Solidify", "-", "Delete faces only" ),
 			Menu( "Mesh", "Move", "Rotate", "Scale", "Soft", "Connected", "Falloff shape", "-", "Shrink/Fatten", "Shear", "Bend", "-", "Symmetrize", "Mirror X", "Snap", "Shrinkwrap", "-", "Dissolve", "Limited dissolve", "Decimate", "Delete", "Delete loose", "-", "Unwrap" ),
-			Menu( "Modifiers", "Modifiers/Live mirror", "Modifiers/Array", "Modifiers/Smooth", "Modifiers/Thickness" ),
+			Menu( "Modifiers", "Modifiers/Live mirror", "Modifiers/Array", "Modifiers/Smooth", "Crease", "Clear crease", "Modifiers/Thickness" ),
 			Menu( "Retopo", "Retopo/Retopo", "Even quads", "Strip brush", "Relax", "Finish retopo" ),
 			Menu( "Skin", "Copy weights", "Smooth weights", "Mirror weights", "Fix weights" ),
 			Menu( "Cloth", "Drape", "Cotton" ),
@@ -1747,7 +1758,7 @@ public sealed partial class EffigyWindow
 			: session.Mode switch
 			{
 				EditElement.Vertex => new[] { "Connect", "Bevel vertices", "-", "Loop circle", "Loop space", "-", "Merge", "Merge first", "Merge last", "By distance", "Vertex slide", "Smooth", "Clean up/Relax", "Flatten", "To sphere", "Randomize", "-", "Fill", "Rip", "-", "Grow", "Shrink", "Linked", "Invert", "-", "Hide", "Hide others", "Unhide", "-", "Dissolve", "Delete" },
-				EditElement.Edge => new[] { "Extrude", "-", "Loop cut", "Bevel", "Edge slide", "-", "Loop circle", "Loop space", "-", "Bridge", "Fill", "Grid fill", "Rip", "-", "Make hard", "Mark seam", "-", "Grow", "Linked", "Invert", "-", "Hide", "Hide others", "Unhide", "-", "Dissolve", "Delete edges", "Delete" },
+				EditElement.Edge => new[] { "Extrude", "-", "Loop cut", "Bevel", "Edge slide", "-", "Loop circle", "Loop space", "-", "Bridge", "Fill", "Grid fill", "Rip", "-", "Make hard", "Crease", "Mark seam", "-", "Grow", "Linked", "Invert", "-", "Hide", "Hide others", "Unhide", "-", "Dissolve", "Delete edges", "Delete" },
 				_ => new[] { "Extrude", "Extrude along normals", "Extrude individual", "Inset", "Duplicate", "Subdivide", "-", "Triangulate", "Tris to quads", "Poke faces", "-", "Split", "Separate", "Flip", "Fix normals", "-", "Grow", "Shrink", "Linked", "Similar", "Invert", "-", "Hide", "Hide others", "Unhide", "-", "Delete faces only", "Delete" },
 			};
 
@@ -1886,6 +1897,9 @@ public sealed partial class EffigyWindow
 		_meshMirrorTool = MeshTool( surface, EffigyIcon.Mirror, "Mirror X", "Edit both sides at once: moving a vertex moves its partner across X = 0", ToggleMeshMirror, checkable: true );
 		var modifiers = new EffigyStage { Name = "Modifiers" };
 
+		_meshCreaseTool = MeshTool( modifiers, EffigyIcon.Chamfer, "Crease", "Keep the selected edges sharp under the Smooth modifier (Shift+E). The number is how many levels the fold holds for: 1 for one level, 2 for two; a fraction softens it", () => StartMeshOp( "Crease", 1f, ( s, v ) => s.Crease( Math.Max( v, 0f ) ) ) );
+		_meshUncreaseTool = MeshTool( modifiers, EffigyIcon.Chamfer, "Clear crease", "Let the selected edges round off again under Smooth. Nothing selected clears every crease", () => RunMeshOp( "Clear crease", s => s.ClearCreases() ) );
+
 		_modMirrorTool = MeshTool( modifiers, EffigyIcon.Mirror, "Live mirror", "Show and output this mesh mirrored across X, joined down the middle — model half, get the whole. Unlike Symmetrize it stays live: keep editing the half", ToggleModMirror, checkable: true );
 		_modArrayTool = MeshTool( modifiers, EffigyIcon.LinearPattern, "Array", "Repeat the whole mesh along X, live. Each click adds a copy, up to five, then off", CycleModArray, checkable: true );
 		_modSubdivideTool = MeshTool( modifiers, EffigyIcon.Subdivide, "Smooth", "Show and output the mesh subdivided and smoothed, live — block out in a few quads, see the smooth result. Each click is one more level, up to three, then off", CycleModSubdivide, checkable: true );
@@ -2006,8 +2020,9 @@ public sealed partial class EffigyWindow
 		_dialog?.Close();
 
 		var session = new MeshEditSession( feature.LastInput, feature.Edited );
+		session.LoadCreases( feature.Creases );
 		_viewport.BeginMeshEdit( session );
-		_viewport.MeshEditModifiers = feature.HasModifiers ? feature.ApplyModifiers : null;
+		_viewport.MeshEditModifiers = MeshModifiersFor( feature );
 		_meshEditBar.Bind( session );
 
 		UpdateMeshEditChecks();
@@ -2642,6 +2657,8 @@ public sealed partial class EffigyWindow
 			Need( _meshNgonsTool, session is { Mesh.FaceCount: > 0 }, "There are no faces" );
 			Need( _meshInteriorTool, session is { Mesh.FaceCount: > 0 }, "There are no faces" );
 			Need( _meshLoosePartsTool, session is { Mesh.FaceCount: > 0 }, "There is nothing to split" );
+			Need( _meshCreaseTool, edges > 0 || faces > 0, "Select the edges (2) that should stay sharp when smoothed (Shift+E)" );
+			Need( _meshUncreaseTool, edges > 0 || faces > 0 || session is { Creases.Count: > 0 }, "There are no creases" );
 			Need( _meshByMaterialTool, session is { Mesh.FaceCount: > 0 }, "There is nothing to split" );
 			Need( _meshWrapTool, session is not null && _studio.Bodies.Count > 1, "Needs another body to wrap onto" );
 			Need( _meshSubdivideTool, session is { Mesh.FaceCount: > 0 }, "There is nothing to subdivide" );
@@ -2725,6 +2742,7 @@ public sealed partial class EffigyWindow
 			case 'O': ToggleMeshSoft(); return true;
 			case MeshKeySoftConnected: ToggleMeshSoftConnected(); return true;
 			case MeshKeyHide: RunMeshOp( "Hide", s => s.Hide() ); return true;
+			case MeshKeyCrease: _meshCreaseTool?.Clicked?.Invoke(); return true;
 			case MeshKeyHideOthers: RunMeshOp( "Hide others", s => s.Hide( unselected: true ) ); return true;
 			case MeshKeyUnhide: RunMeshOp( "Unhide", s => s.Unhide() ); return true;
 			case '[': ScaleMeshSoft( 0.8f ); return true;
@@ -2859,6 +2877,9 @@ public sealed partial class EffigyWindow
 
 	[Shortcut( "effigy.mesh.knife", "K", typeof( EffigyViewport ) )]
 	private void ShortcutMeshKnife() => MeshEditKey( 'K' );
+
+	[Shortcut( "effigy.mesh.crease", "SHIFT+E", typeof( EffigyViewport ) )]
+	private void ShortcutMeshCrease() => MeshEditKey( MeshKeyCrease );
 
 	[Shortcut( "effigy.mesh.hide", "H", typeof( EffigyViewport ) )]
 	private void ShortcutMeshHide() => MeshEditKey( MeshKeyHide );

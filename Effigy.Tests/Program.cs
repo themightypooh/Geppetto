@@ -141,6 +141,7 @@ public static class Program
 		TestEditSessionSelectionTools();
 		TestEditSessionTrisToQuadsAndBevelVertices();
 		TestEditSessionHideAndExtras();
+		TestEdgeCreases();
 
 		Section( "an edit session duplicates, separates, extracts a garment and bridges uneven loops" );
 		TestEditSessionPieces();
@@ -1487,6 +1488,142 @@ public static class Program
 		refused = false;
 		try { whole.DecimateSelection( 1f ); } catch ( InvalidOperationException ) { refused = true; }
 		Check( "a ratio of 1 is refused", refused );
+	}
+
+	static void TestEdgeCreases()
+	{
+		Section( "edge creases: sharp folds under Catmull-Clark" );
+
+		var box = Primitives.Box( 2, 2, 2 );
+		var topEdges = new Dictionary<EdgeKey, float>();
+		foreach ( var key in box.BuildEdgeFaces().Keys )
+			if ( box.Positions[key.A].z > 0.9f && box.Positions[key.B].z > 0.9f )
+				topEdges[key] = 1f;
+		Check( "a box has four top edges", topEdges.Count == 4 );
+
+		// The top face's own centre point stays at z = 1 whatever happens; it is the corners and
+		// edge points that a crease holds up there.
+		int AtTop( PolyMesh m ) => m.Positions.Count( p => MathF.Abs( p.z - 1f ) < 1e-5f );
+		float SecondHighest( PolyMesh m ) => m.Positions.Select( p => p.z ).OrderByDescending( z => z ).Skip( 1 ).First();
+		var plain = CatmullClark.Subdivide( box, 1 );
+		var topZ = SecondHighest( plain );
+		Check( "plain subdivision rounds the top off: only the face point stays at z = 1", AtTop( plain ) == 1 && topZ < 0.99f, $"{AtTop( plain )} at top, next {topZ}" );
+
+		var creased = CatmullClark.Subdivide( box, 1, topEdges, out var left );
+		Check( "creasing the top edges keeps a flat top at z = 1",
+			creased.Positions.Count( p => MathF.Abs( p.z - 1f ) < 1e-5f ) == 9, $"{creased.Positions.Count( p => MathF.Abs( p.z - 1f ) < 1e-5f )} at the top" );
+		Check( "and the top ring keeps its full width",
+			creased.Positions.Where( p => MathF.Abs( p.z - 1f ) < 1e-5f ).Max( p => p.x ) > 0.99f );
+		Check( "the bottom still rounds", creased.Positions.Count( p => MathF.Abs( p.z + 1f ) < 1e-5f ) == 1 );
+		Check( "a sharpness of 1 leaves nothing for the next level", left.Count == 0 );
+		Check( "the result is a closed solid", MeshValidator.Validate( creased ) is { IsValid: true, IsClosed: true } );
+
+		// Sharpness 2 survives a second level; sharpness 1 does not.
+		var two = new Dictionary<EdgeKey, float>();
+		foreach ( var key in topEdges.Keys )
+			two[key] = 2f;
+		var twice = CatmullClark.Subdivide( box, 2, two, out var leftTwo );
+		Check( "sharpness 2 keeps the top flat through two levels", twice.Positions.Max( p => p.z ) > 0.999f && twice.Positions.Count( p => MathF.Abs( p.z - 1f ) < 1e-5f ) == 25,
+			$"{twice.Positions.Count( p => MathF.Abs( p.z - 1f ) < 1e-5f )}" );
+		Check( "and is used up", leftTwo.Count == 0 );
+		var once = CatmullClark.Subdivide( box, 2, topEdges, out _ );
+		Check( "sharpness 1 starts rounding at the second level", AtTop( once ) > 1 && AtTop( once ) < 25, $"{AtTop( once )}" );
+
+		// A fraction sits between.
+		var half = new Dictionary<EdgeKey, float>();
+		foreach ( var key in topEdges.Keys )
+			half[key] = 0.5f;
+		var soft = CatmullClark.Subdivide( box, 1, half, out _ );
+		Check( "a half crease lands between rounded and sharp", SecondHighest( soft ) > topZ && SecondHighest( soft ) < 0.999f, $"{SecondHighest( soft )}" );
+
+		// Weights ride along and still sum to one.
+		var rigged = Primitives.Box( 2, 2, 2 );
+		rigged.Skin = new SkinWeights();
+		for ( var v = 0; v < rigged.VertexCount; v++ )
+			rigged.Skin.Vertices.Add( new[] { new BoneWeight( rigged.Positions[v].z > 0 ? 1 : 0, 1f ) } );
+		var riggedOut = CatmullClark.Subdivide( rigged, 1, topEdges, out _ );
+		Check( "a rigged creased subdivision keeps every vertex's weights summing to one",
+			riggedOut.Skin.Vertices.All( w => MathF.Abs( w.Sum( b => b.Weight ) - 1f ) < 1e-4f ) );
+		Check( "and the flat top is all on the top bone",
+			Enumerable.Range( 0, riggedOut.VertexCount ).Where( v => MathF.Abs( riggedOut.Positions[v].z - 1f ) < 1e-5f ).All( v => riggedOut.Skin[v].All( b => b.Bone == 1 ) ) );
+
+		// Through the modifiers: a crease on the +X half is a crease on the mirrored half too.
+		var halfBox = Primitives.Box( 2, 2, 2 );
+		MeshTransform.Apply( halfBox, Xform.Translate( new Vec3( 1, 0, 0 ) ) );
+		var halfTop = new Dictionary<EdgeKey, float>();
+		foreach ( var key in halfBox.BuildEdgeFaces().Keys )
+			if ( halfBox.Positions[key.A].z > 0.9f && halfBox.Positions[key.B].z > 0.9f )
+				halfTop[key] = 1f;
+		var mirrored = MeshModifiers.Apply( halfBox, true, 1, 0f, 1, 0f, halfTop );
+		Check( "mirror carries the creases to the other side: both tops stay flat",
+			mirrored.Positions.Count( p => MathF.Abs( p.z - 1f ) < 1e-5f ) >= 15 && mirrored.Positions.Where( p => p.x < -0.5f ).Max( p => p.z ) > 0.999f,
+			$"{mirrored.Positions.Count( p => MathF.Abs( p.z - 1f ) < 1e-5f )}" );
+
+		// The edit blob keeps them, and an old blob without them still reads.
+		var blob = MeshEditBlob.Write( box, 123, null, topEdges );
+		var back = MeshEditBlob.Read( blob, out var fp, out var pieces, out var readCreases );
+		Check( "creases round-trip through the mesh edit blob", fp == 123 && back.FaceCount == 6 && readCreases.Count == 4 && readCreases.All( kv => topEdges[kv.Key] == kv.Value ) );
+		var old = MeshEditBlob.Write( box, 7 );
+		MeshEditBlob.Read( old, out _, out _, out var none );
+		Check( "a blob written without creases reads as none", none.Count == 0 );
+
+		// The session: crease the top edges, subdivide, and the creases are consumed.
+		var s = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		s.SetMode( EditElement.Edge );
+		foreach ( var key in topEdges.Keys )
+			s.SelectEdge( key, MeshEditSession.Combine.Add );
+		s.Crease( 1f );
+		Check( "crease marks the selected edges", s.Creases.Count == 4 && s.Creases.Values.All( w => w == 1f ) && s.LastLabel == "Crease" );
+		s.Subdivide();
+		Check( "subdividing in the session honours them", s.Mesh.Positions.Count( p => MathF.Abs( p.z - 1f ) < 1e-5f ) == 9 );
+		Check( "and uses them up", s.Creases.Count == 0 );
+		s.Undo();
+		Check( "undo brings the creases back", s.Creases.Count == 4 && s.Mesh.FaceCount == 6 );
+		s.ClearCreases();
+		Check( "clear crease on the selection clears them", s.Creases.Count == 0 );
+		s.Undo();
+		s.SetMode( EditElement.Vertex );
+		s.SelectVertex( s.Mesh.Positions.FindIndex( p => p.x > 0 && p.y > 0 && p.z > 0 ) );
+		s.Delete();
+		Check( "deleting a creased corner drops the creases on its two edges and keeps the other two", s.Creases.Count == 2, $"{s.Creases.Count}" );
+
+		var refused = false;
+		try { new MeshEditSession( Primitives.Box( 2, 2, 2 ) ).Crease( 1f ); } catch ( InvalidOperationException ) { refused = true; }
+		Check( "crease with nothing selected is refused", refused );
+
+		// Committing hands them to the feature, which saves and reloads them.
+		var studio = new PartStudio();
+		var prim = studio.Add( new PrimitiveFeature() );
+		prim.SizeX.Value = 2f;
+		prim.SizeY.Value = 2f;
+		prim.SizeZ.Value = 2f;
+		var edit = studio.Add( new MeshEditFeature() );
+		studio.Rebuild();
+		var session = new MeshEditSession( edit.LastInput );
+		session.SetMode( EditElement.Edge );
+		foreach ( var key in session.Mesh.BuildEdgeFaces().Keys )
+			if ( session.Mesh.Positions[key.A].z > 0.9f && session.Mesh.Positions[key.B].z > 0.9f )
+				session.SelectEdge( key, MeshEditSession.Combine.Add );
+		session.Crease( 1f );
+		edit.SubdivideLevels.Value = 1;
+		session.CommitTo( edit );
+		studio.Rebuild();
+		Check( "the feature keeps the creases", edit.Creases.Count == 4 );
+		Check( "and its subdivided output has the flat top", studio.Bodies[0].Mesh.Positions.Count( p => MathF.Abs( p.z - 1f ) < 1e-5f ) == 9, $"{studio.Bodies[0].Mesh.Positions.Count( p => MathF.Abs( p.z - 1f ) < 1e-5f )}" );
+
+		var saved = edit.SaveMesh();
+		var reloaded = new MeshEditFeature();
+		reloaded.LoadMesh( saved );
+		var studio2 = new PartStudio();
+		var prim2 = studio2.Add( new PrimitiveFeature() );
+		prim2.SizeX.Value = 2f;
+		prim2.SizeY.Value = 2f;
+		prim2.SizeZ.Value = 2f;
+		studio2.Add( reloaded );
+		reloaded.SubdivideLevels.Value = 1;
+		studio2.Rebuild();
+		Check( "a reloaded edit keeps its creases", reloaded.Creases.Count == 4 && reloaded.Error is null, reloaded.Error ?? "" );
+		Check( "and still outputs the flat top", studio2.Bodies[0].Mesh.Positions.Count( p => MathF.Abs( p.z - 1f ) < 1e-5f ) == 9 );
 	}
 
 	static void TestEditSessionEdgeSplit()
