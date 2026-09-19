@@ -2071,17 +2071,16 @@ public sealed class MeshEditSession
 				throw new InvalidOperationException( "The selected faces point in opposite directions, so there is no one way to extrude them. Extrude them in smaller groups." );
 
 			var e = EditableMesh.FromPolyMesh( Mesh );
+			var wallStart = e.Faces.Count;
 			e.ExtrudeRegion( faces, normal.Normal * distance );
 			Mesh = e.ToPolyMesh();
 
-			// Extrude leaves the inner faces selected, but the new side walls are what is usually
-			// selected, so pressing E again keeps going.
+			// Blender leaves the whole new extrusion selected: cap and side walls. ExtrudeRegion
+			// appends the band faces last, so the wall faces are exactly the trailing block. Without
+			// this the walls (and nothing else) stay unselected and pressing E again refuses.
 			ClearSelection();
-			foreach ( var side in e.Faces )
-			{
-				if ( side.Material == -1 )
-					SelectedFaces.Add( e.Faces.IndexOf( side ) );
-			}
+			for ( var f = wallStart; f < e.Faces.Count; f++ )
+				SelectedFaces.Add( f );
 		} );
 	}
 
@@ -4878,7 +4877,7 @@ public sealed class MeshEditSession
 			var rings = new List<Dictionary<int, int>>();
 			var first = new Dictionary<int, int>();
 			foreach ( var v in profile )
-				first[v] = v;
+				first[v] = closes ? CopyVertex( v ) : v;
 			rings.Add( first );
 
 			for ( var k = 1; k <= steps; k++ )
@@ -7177,18 +7176,23 @@ public sealed class MeshEditSession
 		var skin = mesh.IsRigged ? new SkinWeights() : null;
 		var colours = mesh.HasVertexColors ? new List<Vec4>() : null;
 
+		var used = new bool[mesh.VertexCount];
 		foreach ( var f in mesh.Faces )
 		{
 			foreach ( var i in f.Indices )
-			{
-				if ( remap[i] >= 0 )
-					continue;
+				used[i] = true;
+		}
 
-				remap[i] = result.Positions.Count;
-				result.Positions.Add( mesh.Positions[i] );
-				skin?.Vertices.Add( mesh.Skin[i] );
-				colours?.Add( mesh.VertexColors[i] );
-			}
+		// Walk the vertices in their original order so a surviving vertex keeps its index.
+		for ( var v = 0; v < mesh.VertexCount; v++ )
+		{
+			if ( !used[v] )
+				continue;
+
+			remap[v] = result.Positions.Count;
+			result.Positions.Add( mesh.Positions[v] );
+			skin?.Vertices.Add( mesh.Skin[v] );
+			colours?.Add( mesh.VertexColors[v] );
 		}
 
 		result.Skin = skin;

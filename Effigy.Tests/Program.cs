@@ -1535,7 +1535,7 @@ public static class Program
 		spin.SelectEdge( new EdgeKey( 1, 2 ) );
 		spin.Spin( 360f, 12 );
 		Check( "a full spin in 12 steps adds 12 faces", spin.Mesh.FaceCount == 13, $"{spin.Mesh.FaceCount}" );
-		Check( "and 11 rings of new vertices, not 12 — it closes on itself", spin.Mesh.VertexCount == 4 + 22,
+		Check( "and 12 rings of new vertices — the seam is a copy, not the original edge", spin.Mesh.VertexCount == 4 + 24,
 			$"{spin.Mesh.VertexCount}" );
 		Check( "every new vertex stays at radius 2",
 			Enumerable.Range( 4, spin.Mesh.VertexCount - 4 ).All( v =>
@@ -2022,8 +2022,9 @@ public static class Program
 		var v = MeshValidator.Validate( s.Mesh );
 		Check( "extrude through the session gives a valid closed solid", v.IsValid && v.IsClosed, v.ToString() );
 		Check( "extrude adds 4 vertices and 4 faces", s.Mesh.VertexCount == 12 && s.Mesh.FaceCount == 10, $"{s.Mesh.VertexCount}v/{s.Mesh.FaceCount}f" );
-		Check( "the extruded face is still the selection, one inch up",
-			s.SelectedFaces.Count == 1 && MathF.Abs( s.Mesh.FaceCentroid( s.Mesh.Faces[top] ).z - (topZ + 1f) ) < 1e-4f );
+		Check( "the new side walls become the selection", s.SelectedFaces.Count == 4 && !s.SelectedFaces.Contains( top ) );
+		Check( "and they sit halfway up the extrusion, so E keeps going",
+			MathF.Abs( s.SelectionCentre().z - (topZ + 0.5f) ) < 1e-3f );
 		Check( "extrude is one undo step", s.UndoCount == 1 && s.LastLabel == "Extrude" );
 
 		s.Undo();
@@ -2038,21 +2039,22 @@ public static class Program
 		s.Preview( "Inset", x => x.Inset( 0.2f ) );
 		s.Accept();
 		Check( "scrubbing an inset lands as one undo step", s.UndoCount == steps + 1, $"{s.UndoCount - steps} steps" );
-		Check( "and only the last preview's inset is applied", s.Mesh.FaceCount == 14, $"{s.Mesh.FaceCount} faces" );
+		Check( "and only the last preview's inset is applied", s.Mesh.FaceCount == 18, $"{s.Mesh.FaceCount} faces" );
 
 		s.Preview( "Inset", x => x.Inset( 0.1f ) );
 		s.Cancel();
-		Check( "cancelling a preview changes nothing", s.Mesh.FaceCount == 14 && s.UndoCount == steps + 1 );
+		Check( "cancelling a preview changes nothing", s.Mesh.FaceCount == 18 && s.UndoCount == steps + 1 );
 
-		// Dragging.
+		// Dragging: absolute from the gesture start, so two calls land once, not twice.
 		var before = s.Mesh.Clone();
+		var beforeCentre = s.SelectionCentre();
 		steps = s.UndoCount;
 		s.BeginDrag();
 		s.Drag( new Vec3( 0, 0, 0.5f ) );
 		s.Drag( new Vec3( 0, 0, 1f ) );
 		s.EndDrag();
 		Check( "a drag is one undo step and never accumulates",
-			s.UndoCount == steps + 1 && MathF.Abs( s.SelectionCentre().z - (s.Mesh.FaceCentroid( before.Faces[top] ).z) ) < 1e-3f );
+			s.UndoCount == steps + 1 && MathF.Abs( s.SelectionCentre().z - (beforeCentre.z + 1f) ) < 1e-3f );
 		s.BeginDrag();
 		s.Drag( new Vec3( 5, 5, 5 ) );
 		s.EndDrag( keep: false );
