@@ -715,6 +715,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		_viewport.PaintStrokeFinished = OnPaintStrokeFinished;
 
+		_testBar = new EffigyTestBar( _viewport.Canvas ) { Scrubbed = OnTestScrubbed };
+		_viewport.AddTestOverlay( _testBar );
+
 		_weightBar = new EffigyWeightBar( _viewport.Canvas ) { Changed = () => _viewport?.Update() };
 		_viewport.AddWeightOverlay( _weightBar );
 		_viewport.WeightStrokeFinished = OnWeightStrokeFinished;
@@ -1394,6 +1397,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	private EffigyPaintBar _paintBar;
 	private EffigyMaterialBrushBar _materialBrushBar;
 	private EffigyWeightBar _weightBar;
+	private EffigyTestBar _testBar;
 
 	/// <summary>The feature being painted, so finishing knows what to mark dirty.</summary>
 	private PaintFeature _paintFeature;
