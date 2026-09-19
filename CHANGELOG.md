@@ -230,6 +230,14 @@ forgotten.
 - **Beautify.** Flip the diagonals between selected triangles wherever that makes them better
   shaped — what to run after a triangulate leaves slivers.
 - **Select sharp edges, mirror and loose**, and **To pivot** (move the selection onto the pivot).
+- **World-scale UVs for map props.** A UV menu with **Project UVs** (box-map the selected faces
+  so a tiling material repeats every N units — the same on every prop), **Project from above**
+  (one continuous texture for a floor or road; Shift for along X), and **Trim row** (put faces on
+  one row of a trim sheet, running along the face at world scale).
+- **Pipe.** Build a tube along the selected edges — cables, pipes, rails, branches. Rings never
+  twist, ends are capped, closed loops make rings.
+- **Scatter.** Scatter copies of another body over the selected faces: stood on the surface,
+  turned and sized at random, nothing on slopes over 45°. The copies become a body of their own.
 
 ### Improved
 - **Live cloth stays on the character.** The shirt used to trail behind a walking character and clip into their back; it now rides along with them, and **Inertia** on the Garment Cloth component sets how much swing a walk still gives it.
