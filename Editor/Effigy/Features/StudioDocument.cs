@@ -112,6 +112,12 @@ public static class StudioDocument
 				sb.Append( "hiddenbody " ).Append( id ).Append( '\n' );
 		}
 
+		foreach ( var (id, kind) in studio.BodyCollision.OrderBy( kv => kv.Key, StringComparer.Ordinal ) )
+		{
+			if ( !string.IsNullOrWhiteSpace( id ) && !string.IsNullOrWhiteSpace( kind ) )
+				sb.Append( "bodycollision " ).Append( id ).Append( ' ' ).Append( kind.Trim() ).Append( '\n' );
+		}
+
 		// Same rule as origin: a document with no variables must not grow a line. Names sorted so
 		// two saves of the same table are the same bytes.
 		foreach ( var variable in studio.Variables
@@ -583,6 +589,16 @@ public static class StudioDocument
 
 				if ( !string.IsNullOrWhiteSpace( id ) )
 					studio.HiddenBodyIds.Add( id );
+
+				continue;
+			}
+
+			if ( line.StartsWith( "bodycollision " ) )
+			{
+				var (id, kind) = Split( line[14..] );
+
+				if ( !string.IsNullOrWhiteSpace( id ) && !string.IsNullOrWhiteSpace( kind ) )
+					studio.BodyCollision[id.Trim()] = kind.Trim();
 
 				continue;
 			}

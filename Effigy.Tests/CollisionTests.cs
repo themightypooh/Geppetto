@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Effigy;
 using static Effigy.Tests.Report;
 
@@ -30,6 +31,47 @@ public static class CollisionTests
 		TestAnythingElseFallsBackToHulls();
 		TestARotatedTransformSpoilsItRatherThanBeingIgnored();
 		TestASuppressedFeatureIsNotInTheCollision();
+
+		Section( "collision: chosen per part" );
+		TestCollisionChosenPerPart();
+	}
+
+	static void TestCollisionChosenPerPart()
+	{
+		var studio = Box( 2f, new Vec3( 1, 0, 0 ) );
+
+		var second = studio.Add( new PrimitiveFeature() );
+		second.Shape.Index = 1; // Cylinder
+		second.Radius.Value = 0.5f;
+		second.SizeZ.Value = 3f;
+		second.Position.Value = new Vec3( -2, 0, 0 );
+		studio.Rebuild();
+
+		var auto = CollisionBuilder.Build( studio );
+		Check( "with nothing chosen the history is read", auto.FromHistory && auto.Shapes.Count == 2 );
+
+		var cylinder = studio.Bodies.First( b => b.FeatureId == second.Id );
+		studio.BodyCollision[cylinder.Id] = "none";
+		var without = CollisionBuilder.Build( studio );
+		Check( "choosing None for a part switches the model to per-part collision and leaves that part out",
+			!without.FromHistory && without.Shapes.Count == 1 && without.Shapes[0].BodyId != cylinder.Id, without.ToString() );
+		Check( "and the rest is a hull now, not the history's box", without.Shapes[0].Kind == CollisionKind.Hull );
+
+		studio.BodyCollision[cylinder.Id] = "box";
+		var boxed = CollisionBuilder.Build( studio );
+		var boxShape = boxed.Shapes.First( sh => sh.BodyId == cylinder.Id );
+		Check( "choosing Box wraps the part in a box", boxShape.Kind == CollisionKind.Box && MathF.Abs( boxShape.Size.z - 1.5f ) < 1e-3f && MathF.Abs( boxShape.Position.x + 2f ) < 1e-3f, boxShape.ToString() );
+
+		studio.BodyCollision[cylinder.Id] = "hull";
+		var hulled = CollisionBuilder.Build( studio );
+		Check( "choosing Hull gives the hull", hulled.Shapes.First( sh => sh.BodyId == cylinder.Id ).Kind == CollisionKind.Hull );
+
+		// The choice is document state and survives a save.
+		var back = StudioDocument.Read( StudioDocument.Write( studio ) );
+		Check( "the choice is saved with the document", back.BodyCollision.TryGetValue( cylinder.Id, out var kind ) && kind == "hull" );
+
+		studio.BodyCollision.Clear();
+		Check( "clearing every choice goes back to the history", CollisionBuilder.Build( studio ).FromHistory );
 	}
 
 	static void TestAHullOfABoxIsTheBox()

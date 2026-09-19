@@ -94,6 +94,11 @@ public static class CollisionBuilder
 		if ( studio is null )
 			throw new ArgumentNullException( nameof( studio ) );
 
+		// Collision chosen by hand wins over the history: the choice is what the modeller wants
+		// to ship, and the history cannot express "this part has none".
+		if ( studio.BodyCollision.Count > 0 )
+			return new CollisionReport( Hulls( studio ), false, "collision was set per part" );
+
 		if ( TryFromHistory( studio, out var shapes, out var spoiler ) )
 			return new CollisionReport( shapes, true, null );
 
@@ -285,6 +290,17 @@ public static class CollisionBuilder
 		{
 			if ( body.Mesh is not { VertexCount: >= 4 } mesh )
 				continue;
+
+			// A choice made per part: none, a box, or the hull below.
+			studio.BodyCollision.TryGetValue( body.Id, out var chosen );
+			if ( chosen == "none" )
+				continue;
+
+			if ( chosen == "box" )
+			{
+				shapes.Add( BoxAround( mesh, body.Id ) );
+				continue;
+			}
 
 			var hull = ConvexHull.Build( mesh.Positions );
 

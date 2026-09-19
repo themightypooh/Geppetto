@@ -4283,6 +4283,22 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 				if ( _studio.Bodies.FirstOrDefault( b => b.Id == bodyId ) is { } part )
 					MakeBonesFromBodies( new[] { part } );
 				break;
+
+			case EffigyPartCommand.CollisionAuto:
+			case EffigyPartCommand.CollisionBox:
+			case EffigyPartCommand.CollisionHull:
+			case EffigyPartCommand.CollisionNone:
+				RecordUndo();
+				if ( command == EffigyPartCommand.CollisionAuto )
+					_studio.BodyCollision.Remove( bodyId );
+				else
+					_studio.BodyCollision[bodyId] = command switch { EffigyPartCommand.CollisionBox => "box", EffigyPartCommand.CollisionHull => "hull", _ => "none" };
+				var collisions = _studio.BodyCollision.Count;
+				Log.Info( collisions == 0
+					? "[Effigy] collision is automatic again for every part"
+					: $"[Effigy] collision set on {collisions} part(s); the model's collision is now built per part. File > Collision Report shows it." );
+				RebuildStudio();
+				break;
 		}
 	}
 
@@ -4859,6 +4875,10 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 	private void RebuildStudio()
 	{
+		// A test pose bends the document's rig in place; rebuilding on it would cut the garment
+		// to the pose. See TestRelax.
+		TestRelax( false );
+
 		if ( !_dirty )
 		{
 			_dirty = true;
@@ -5716,6 +5736,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 	private void WriteDocument( string path )
 	{
+		// A rig bent by a clothing test pose must not be what gets written. See TestRelax.
+		TestRelax( false );
+
 		try
 		{
 			StudioDocument.WriteFile( _studio, path );
@@ -8434,6 +8457,10 @@ internal enum EffigyPartCommand
 	Isolate,
 	ShowAll,
 	MakeBone,
+	CollisionAuto,
+	CollisionBox,
+	CollisionHull,
+	CollisionNone,
 }
 
 internal sealed class EffigyFeatureTreePanel : Widget
@@ -9278,6 +9305,24 @@ internal sealed class EffigyPartsPanel : Widget
 			() => CommandRequested?.Invoke( bodyId, EffigyPartCommand.MakeBone ) );
 
 		makeBone.StatusTip = "Adds a bone spanning the part's longest axis, and pins the part to it.";
+
+		// What this part collides as when the model ships. Auto reads the history (a box stays a
+		// box) or wraps a hull; the rest override it. Setting any part switches the whole model
+		// to per-part collision, so a box here does not leave the rest reading the history.
+		_studio.BodyCollision.TryGetValue( bodyId, out var collision );
+		var collisionMenu = menu.AddMenu( "Collision", "fitness_center" );
+		void CollisionChoice( string label, string kind, EffigyPartCommand command, string tip )
+		{
+			var option = collisionMenu.AddOption( label, null, () => CommandRequested?.Invoke( bodyId, command ) );
+			option.Checkable = true;
+			option.Checked = (collision ?? "auto") == kind;
+			option.StatusTip = tip;
+		}
+
+		CollisionChoice( "Auto", "auto", EffigyPartCommand.CollisionAuto, "Read from the history where it can be, a convex hull otherwise." );
+		CollisionChoice( "Box", "box", EffigyPartCommand.CollisionBox, "A box round the part - cheapest, and right for walls, crates and floors." );
+		CollisionChoice( "Hull", "hull", EffigyPartCommand.CollisionHull, "The part's convex hull - follows a rock or a barrel without the cost of the mesh." );
+		CollisionChoice( "None", "none", EffigyPartCommand.CollisionNone, "No collision: foliage, cables, decoration you should walk through." );
 
 		var selectedBone = SelectedBoneName?.Invoke();
 

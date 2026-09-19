@@ -244,6 +244,9 @@ forgotten.
 - **Export with LODs.** Tick it under File and Compile .vmdl also writes half- and quarter-detail
   copies of a static model and switches to them with distance — what every map prop wants.
   Rigged models are unchanged. `Editor/Effigy/VmdlDocument.cs`
+- **Collision per part.** Right-click a part ▸ Collision: Auto, Box, Hull or None. Foliage and
+  cables get None, crates get a box, rocks a hull. Saved with the document; the Collision Report
+  shows the result. `Editor/Effigy/CollisionBuilder.cs`
 
 ### Improved
 - **Live cloth stays on the character.** The shirt used to trail behind a walking character and clip into their back; it now rides along with them, and **Inertia** on the Garment Cloth component sets how much swing a walk still gives it.

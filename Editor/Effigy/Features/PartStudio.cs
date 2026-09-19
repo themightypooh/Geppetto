@@ -99,6 +99,14 @@ public sealed class PartStudio
 	public HashSet<string> HiddenBodyIds = new();
 
 	/// <summary>
+	/// Collision set by hand, per body: "box", "hull" or "none". A body not in here gets the
+	/// automatic answer. Once any body is set, the whole model's collision is built per body
+	/// rather than read from the history, so what you chose is what ships — see
+	/// CollisionBuilder.Build.
+	/// </summary>
+	public Dictionary<string, string> BodyCollision = new();
+
+	/// <summary>
 	/// THE MODEL'S PIVOT, in the same coordinates every feature builds in.
 	///
 	/// Everything the kernel makes is built where the features put it; this says which point of
