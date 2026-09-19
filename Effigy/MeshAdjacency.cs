@@ -4074,6 +4074,70 @@ public sealed class MeshEditSession
 		Move( Pivot - SelectionCentre() );
 	}
 
+	// --- UV islands ----------------------------------------------------------------------------
+
+	/// <summary>The faces of every UV island the selection touches — what the UV tools act on.
+	/// With nothing selected, every face.</summary>
+	public List<int> SelectedIslandFaces( UVIslands.Layout layout = null )
+	{
+		if ( SelectedFaces.Count == 0 )
+			return AllFaces( Mesh.FaceCount );
+
+		layout ??= UVIslands.Find( Mesh );
+		var islands = new HashSet<int>();
+		foreach ( var f in SelectedFaces )
+			if ( f >= 0 && f < layout.IslandOfFace.Length )
+				islands.Add( layout.IslandOfFace[f] );
+
+		var faces = new List<int>();
+		foreach ( var i in islands )
+			faces.AddRange( layout.Islands[i] );
+		return faces;
+	}
+
+	/// <summary>Grow the face selection to whole UV islands — click one face of a piece and get
+	/// the piece, as a UV editor's island select does.</summary>
+	public void SelectUVIslands()
+	{
+		if ( SelectedFaces.Count == 0 )
+			throw new InvalidOperationException( "Select a face (3) on the island you want." );
+
+		var faces = SelectedIslandFaces();
+		ClearSelection();
+		Mode = EditElement.Face;
+		SelectedFaces.UnionWith( faces );
+	}
+
+	/// <summary>Slide the selected islands' UVs by <paramref name="offset"/>, in texture space.</summary>
+	public void MoveUVs( Vec2 offset ) => UVStep( "Move UVs", faces => UVIslands.Translate( Mesh, faces, offset ) );
+
+	/// <summary>Turn the selected islands' UVs, each about its own centre.</summary>
+	public void RotateUVs( float degrees ) => UVStep( "Rotate UVs", faces => UVIslands.Rotate( Mesh, faces, degrees ) );
+
+	/// <summary>Size the selected islands' UVs about their centre. Negative on an axis flips it.</summary>
+	public void ScaleUVs( Vec2 factor ) => UVStep( "Scale UVs", faces => UVIslands.Scale( Mesh, faces, factor ) );
+
+	/// <summary>Lay every island into the texture square at one scale, <paramref name="margin"/>
+	/// apart. Returns the scale used.</summary>
+	public float PackUVs( float margin = 0.01f )
+	{
+		if ( Mesh.FaceCount == 0 )
+			throw new InvalidOperationException( "There is nothing to pack." );
+
+		var scale = 1f;
+		Step( "Pack UVs", () => scale = UVIslands.Pack( Mesh, margin ) );
+		return scale;
+	}
+
+	void UVStep( string label, Action<List<int>> apply )
+	{
+		if ( Mesh.FaceCount == 0 )
+			throw new InvalidOperationException( "There are no faces with UVs to move." );
+
+		var faces = SelectedIslandFaces();
+		Step( label, () => apply( faces ) );
+	}
+
 	// --- mapping: world-scale UVs, trims, pipes, scatter -----------------------------------------
 
 	/// <summary>

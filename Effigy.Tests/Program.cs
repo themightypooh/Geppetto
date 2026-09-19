@@ -145,6 +145,7 @@ public static class Program
 		TestEditSessionTopologyTools();
 		TestEditSessionMappingTools();
 		TestSkinBlockout();
+		TestUVIslands();
 
 		Section( "an edit session duplicates, separates, extracts a garment and bridges uneven loops" );
 		TestEditSessionPieces();
@@ -1976,6 +1977,87 @@ public static class Program
 		var refused = false;
 		try { SkinBlockout.Build( new Skeleton() ); } catch ( InvalidOperationException ) { refused = true; }
 		Check( "no bones is refused", refused );
+	}
+
+	static void TestUVIslands()
+	{
+		Section( "uv islands: find, move, turn, size, pack, stretch" );
+
+		// A box-projected box: every face its own island (no two faces agree about UVs at an edge).
+		var box = Primitives.Box( 2, 2, 2 );
+		UVProjection.BoxProject( box, 1f );
+		var layout = UVIslands.Find( box );
+		Check( "a box-projected box is six islands", layout.Count == 6, $"{layout.Count}" );
+
+		// A flat grid projected as one: one island.
+		var grid = Primitives.Plane( 4f, 4f, 4, 4 );
+		UVProjection.PlanarProject( grid, new Vec3( 0, 0, 1 ), 4f );
+		Check( "a planar-projected grid is one island", UVIslands.Find( grid ).Count == 1 );
+
+		// Two grids side by side in one mesh: two islands, and selecting one face grows to its island.
+		var two = Primitives.Plane( 4f, 4f, 2, 2 );
+		UVProjection.PlanarProject( two, new Vec3( 0, 0, 1 ), 4f );
+		var other = MeshTransform.Transformed( Primitives.Plane( 4f, 4f, 2, 2 ), Xform.Translate( new Vec3( 10, 0, 0 ) ) );
+		UVProjection.PlanarProject( other, new Vec3( 0, 0, 1 ), 4f );
+		MeshTransform.Append( two, other );
+		var s = new MeshEditSession( two );
+		s.SetMode( EditElement.Face );
+		s.SelectFace( 0 );
+		s.SelectUVIslands();
+		Check( "island select grows one face to its island of four", s.SelectedFaces.Count == 4 && s.SelectedFaces.All( f => f < 4 ) );
+
+		// Move the island: only its UVs change.
+		var before = two.Faces[5].UVs[0];
+		s.MoveUVs( new Vec2( 0.25f, 0f ) );
+		Check( "moving the island shifts its UVs", MathF.Abs( s.Mesh.Faces[0].UVs[0].x - two.Faces[0].UVs[0].x ) < 1e-6f ? false : true );
+		Check( "and leaves the other island alone", s.Mesh.Faces[5].UVs[0].x == before.x && s.Mesh.Faces[5].UVs[0].y == before.y );
+		Check( "as one undo step", s.UndoCount == 1 && s.LastLabel == "Move UVs" );
+		s.Undo();
+
+		// Rotate by 90 about the centre keeps the bounds' size (a square island) and moves corners.
+		s.SelectFace( 0 );
+		var (min0, max0) = UVIslands.Bounds( s.Mesh, s.SelectedIslandFaces() );
+		s.RotateUVs( 90f );
+		var (min1, max1) = UVIslands.Bounds( s.Mesh, s.SelectedIslandFaces() );
+		Check( "turning a square island a quarter keeps its bounds", (min1 - min0).Length < 1e-4f && (max1 - max0).Length < 1e-4f, $"{min0}-{max0} vs {min1}-{max1}" );
+		s.Undo();
+
+		s.SelectFace( 0 );
+		s.ScaleUVs( new Vec2( 2f, 2f ) );
+		var (min2, max2) = UVIslands.Bounds( s.Mesh, s.SelectedIslandFaces() );
+		Check( "scaling doubles the island's size about its centre", MathF.Abs( (max2 - min2).x - 2f * (max0 - min0).x ) < 1e-4f && ((min2 + max2) * 0.5f - (min0 + max0) * 0.5f).Length < 1e-4f );
+		s.Undo();
+
+		s.SelectFace( 0 );
+		var flipBefore = s.Mesh.Faces[0].UVs.Select( uv => uv.x ).ToArray();
+		s.ScaleUVs( new Vec2( -1f, 1f ) );
+		Check( "a negative scale flips the island", s.Mesh.Faces[0].UVs.Select( uv => uv.x ).Zip( flipBefore ).All( p => MathF.Abs( p.First - p.Second ) > 1e-6f || MathF.Abs( p.First - (min0.x + max0.x) * 0.5f ) < 1e-6f ) );
+		s.Undo();
+
+		// Pack: every island inside 0..1, none overlapping, all at one scale.
+		var packed = new MeshEditSession( box.Clone() );
+		var scale = packed.PackUVs( 0.02f );
+		var boxLayout = UVIslands.Find( packed.Mesh );
+		Check( "packing keeps six islands", boxLayout.Count == 6 );
+		Check( "all inside the unit square", packed.Mesh.Faces.All( f => f.UVs.All( uv => uv.x >= -1e-4f && uv.x <= 1f + 1e-4f && uv.y >= -1e-4f && uv.y <= 1f + 1e-4f ) ) );
+		var rects = boxLayout.Islands.Select( i => UVIslands.Bounds( packed.Mesh, i ) ).ToList();
+		var overlap = false;
+		for ( var a = 0; a < rects.Count; a++ )
+			for ( var b = a + 1; b < rects.Count; b++ )
+				if ( rects[a].Min.x < rects[b].Max.x - 1e-4f && rects[b].Min.x < rects[a].Max.x - 1e-4f && rects[a].Min.y < rects[b].Max.y - 1e-4f && rects[b].Min.y < rects[a].Max.y - 1e-4f )
+					overlap = true;
+		Check( "and none overlap", !overlap );
+		Check( "six equal squares pack three to a row, each about a third of the square", rects.All( r => (r.Max.x - r.Min.x) > 0.29f && MathF.Abs( (r.Max.x - r.Min.x) - (r.Max.y - r.Min.y) ) < 1e-4f ) && MathF.Abs( scale * 2f - (rects[0].Max.x - rects[0].Min.x) ) < 1e-4f, $"scale {scale}, side {rects[0].Max.x - rects[0].Min.x}" );
+		Check( "pack is one undo step", packed.UndoCount == 1 );
+
+		// Stretch: a uniform box projection is 1 everywhere; squashing one face's UVs reads as squashed.
+		var stretch = UVIslands.Stretch( box );
+		Check( "a uniform projection has no stretch", stretch.All( v => MathF.Abs( v - 1f ) < 1e-4f ) );
+		var squashed = box.Clone();
+		UVIslands.Scale( squashed, new[] { 0 }, new Vec2( 0.5f, 0.5f ) );
+		var st = UVIslands.Stretch( squashed );
+		Check( "a face given a quarter of its texture reads below one, the rest above",
+			st[0] < 0.4f && Enumerable.Range( 1, 5 ).All( f => st[f] > 1f ), $"{st[0]:0.00} / {st[1]:0.00}" );
 	}
 
 	static void TestEditSessionEdgeSplit()

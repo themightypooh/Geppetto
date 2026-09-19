@@ -256,6 +256,11 @@ forgotten.
   per joint, a tube per bone, subdivided twice — as an ordinary part you can edit, sculpt and rig
   to the same bones. The fastest way from a stick figure to something poseable.
   `Editor/Effigy/SkinBlockout.cs`
+- **A UV editor.** View ▸ UV Editor shows the texture square with the edited part's islands on
+  it. Click an island to select it (Shift adds), drag to move it, and Turn, Flip, Bigger, Smaller
+  and Pack do the rest. **Stretch** tints each face red where the texture is stretched and blue
+  where it is squashed — what an unwrap gets wrong that you cannot see until you paint. Every
+  change is an undo step in the edit. `Editor/EffigyEditor/EffigyUVPanel.cs`, `Editor/Effigy/UVIslands.cs`
 
 ### Improved
 - **Clean hems, cuffs and collars.** A garment's openings are now cut straight across the limb where the recipe says, instead of a sawtooth of whole faces one face deep. Length, Sleeve and Neckline land exactly where the sliders put them.

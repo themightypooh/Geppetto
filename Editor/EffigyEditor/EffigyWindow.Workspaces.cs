@@ -2064,6 +2064,7 @@ public sealed partial class EffigyWindow
 		var session = new MeshEditSession( feature.LastInput, feature.Edited );
 		session.LoadCreases( feature.Creases );
 		_viewport.BeginMeshEdit( session );
+		_uvPanel?.Bind( session );
 		_viewport.MeshEditModifiers = MeshModifiersFor( feature );
 		_meshEditBar.Bind( session );
 
@@ -2108,6 +2109,7 @@ public sealed partial class EffigyWindow
 	{
 		_viewport?.EndMeshEdit();
 		_meshEditBar?.Bind( null );
+		_uvPanel?.Bind( null );
 		ShowMeshEditPanel( false );
 		_meshOpName = null;
 		_meshEditFeature = null;
@@ -2675,6 +2677,7 @@ public sealed partial class EffigyWindow
 		UpdateMeshEditChecks();
 		_meshEditBar?.Refresh();
 		RefreshMeshEditPanel();
+		_uvPanel?.Refresh();
 	}
 
 	/// <summary>Ticks on the pick-mode and toggle buttons, and greyed tools that say what they need —

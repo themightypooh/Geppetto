@@ -166,6 +166,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	private EffigyMaterialsPanel _materialsPanel;
 	private EffigyRigPanel _rigPanel;
 	private EffigyVariablesPanel _variablesPanel;
+	private EffigyUVPanel _uvPanel;
 	private Widget _leftPanel;
 	private EffigyMeshEditPanel _meshPanel;
 
@@ -175,7 +176,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	/// back at what DockManager actually has open. Held as fields because the menu is built before
 	/// the docks exist, so the ticks cannot be right at the moment they are created.</summary>
 	private Option _featuresDockOption, _materialsDockOption, _rigDockOption, _tutorialDockOption,
-		_consoleDockOption, _variablesDockOption;
+		_consoleDockOption, _variablesDockOption, _uvDockOption;
 
 	/// <summary>Set while SyncDockChecks writes the ticks. Assigning Checked fires Toggled just as
 	/// a click does, and without this the sync would turn straight round and re-issue SetDockState
@@ -449,6 +450,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		_rigDockOption = AddDockOption( view, "Rig", "polyline", "Rig" );
 		_tutorialDockOption = AddDockOption( view, "Tutorial", "school", "Tutorial" );
 		_variablesDockOption = AddDockOption( view, "Variables", "tag", "Variables" );
+		_uvDockOption = AddDockOption( view, "UV Editor", "texture", "UV" );
 		view.AddOption( "Section View", "content_cut", ToggleSectionView );
 
 		// Pictures to model against. One entry per view to add, then the list to adjust or drop.
@@ -550,6 +552,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			SetDockCheck( _tutorialDockOption, "Tutorial" );
 			SetDockCheck( _consoleDockOption, "Console" );
 			SetDockCheck( _variablesDockOption, "Variables" );
+			SetDockCheck( _uvDockOption, "UV" );
 		}
 		finally
 		{
@@ -3885,6 +3888,12 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		_tutorial = new EffigyTutorial();
 
+		_uvPanel = new EffigyUVPanel( this )
+		{
+			RunOp = RunMeshOp,
+			Changed = OnMeshEditChanged,
+		};
+
 		_tutorialPanel = new EffigyTutorialPanel( this )
 		{
 			Tutorial = _tutorial,
@@ -3977,6 +3986,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		// modelled and neither is worth permanent screen room while you are still modelling it.
 		DockManager.RegisterDock( new() { Title = "Materials", Icon = "palette", Area = DockArea.Right, CreateAction = () => _materialsPanel } );
 		DockManager.RegisterDock( new() { Title = "Variables", Icon = "tag", Area = DockArea.Left, CreateAction = () => _variablesPanel } );
+
+		// Right, with the Materials it serves: the UV square is where a texture gets its layout.
+		DockManager.RegisterDock( new() { Title = "UV", Icon = "texture", Area = DockArea.Right, CreateAction = () => _uvPanel } );
 
 		// Bottom, full width, and NOT tabbed behind anything. A tutorial that shares a tab strip
 		// is a tutorial you lose the moment you look at the thing it told you to look at — which
