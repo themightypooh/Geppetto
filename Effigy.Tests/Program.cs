@@ -140,6 +140,7 @@ public static class Program
 		TestEditSessionEdgeSplit();
 		TestEditSessionSelectionTools();
 		TestEditSessionTrisToQuadsAndBevelVertices();
+		TestEditSessionHideAndExtras();
 
 		Section( "an edit session duplicates, separates, extracts a garment and bridges uneven loops" );
 		TestEditSessionPieces();
@@ -1258,6 +1259,234 @@ public static class Program
 		refused = false;
 		try { new MeshEditSession( Primitives.Box( 2, 2, 2 ) ).BevelVertices( 0.5f ); } catch ( InvalidOperationException ) { refused = true; }
 		Check( "bevel vertices with no selection is refused", refused );
+	}
+
+	static void TestEditSessionHideAndExtras()
+	{
+		Section( "edit session: hide, delete kinds, merge targets, randomize, select extras, separate by, decimate" );
+
+		// Hide the top of a box: the visible mesh has five faces, the top's vertices are still
+		// there, and Select All never picks it.
+		var s = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		s.SetMode( EditElement.Face );
+		var top = -1;
+		for ( var f = 0; f < s.Mesh.FaceCount; f++ )
+			if ( s.Mesh.FaceNormal( s.Mesh.Faces[f] ).z > 0.9f )
+				top = f;
+
+		s.SelectFace( top );
+		s.Hide();
+		Check( "hiding a face takes it out of the visible mesh", s.VisibleMesh.FaceCount == 5 && s.Mesh.FaceCount == 6, $"{s.VisibleMesh.FaceCount}" );
+		Check( "and the visible mesh shares the vertices", ReferenceEquals( s.VisibleMesh.Positions, s.Mesh.Positions ) );
+		Check( "the hidden face is known by index", s.HiddenFaces.Count == 1 && s.HiddenFaces.Contains( top ) );
+		Check( "the face map points back at real faces", s.VisibleFaceMap.Length == 5 && !s.VisibleFaceMap.Contains( top ) );
+		Check( "hiding clears the selection", s.SelectedFaces.Count == 0 );
+		Check( "hide is an undo step", s.UndoCount == 1 && s.LastLabel == "Hide" );
+		Check( "every vertex is still visible: each touches a side", Enumerable.Range( 0, 8 ).All( s.IsVertexVisible ) );
+
+		s.SelectAll();
+		Check( "select all skips the hidden face", s.SelectedFaces.Count == 5 && !s.SelectedFaces.Contains( top ) );
+
+		// An operation on the rest keeps the top hidden: it is found again by where it is.
+		s.ClearSelection();
+		var bottom = -1;
+		for ( var f = 0; f < s.Mesh.FaceCount; f++ )
+			if ( s.Mesh.FaceNormal( s.Mesh.Faces[f] ).z < -0.9f )
+				bottom = f;
+		s.SelectFace( bottom );
+		s.Extrude( 1f );
+		Check( "an extrude elsewhere keeps the top hidden", s.HiddenFaces.Count == 1 && s.Mesh.FaceNormal( s.Mesh.Faces[s.HiddenFaces.First()] ).z > 0.9f );
+
+		s.Unhide();
+		Check( "unhide brings it back and selects it", s.HiddenFaces.Count == 0 && s.SelectedFaces.Count == 1 && s.SelectedFaces.Contains( top ) );
+		Check( "with nothing hidden the visible mesh is the mesh", ReferenceEquals( s.VisibleMesh, s.Mesh ) );
+
+		s.Undo();
+		Check( "undoing the unhide hides it again", s.HiddenFaces.Count == 1 );
+		s.Undo();
+		s.Undo();
+		Check( "and undoing the hide shows it", s.HiddenFaces.Count == 0 && s.Mesh.FaceCount == 6 );
+
+		// Hide unselected keeps only the selection. Hiding everything is refused.
+		s.SelectFace( top );
+		s.Hide( unselected: true );
+		Check( "hide unselected leaves the selection showing", s.VisibleMesh.FaceCount == 1 && s.VisibleFaceMap[0] == top );
+		Check( "and the bottom's vertices are no longer visible", !s.IsVertexVisible( s.Mesh.Faces[bottom].Indices[0] ) );
+		var refused = false;
+		s.SelectFace( top );
+		try { s.Hide(); } catch ( InvalidOperationException ) { refused = true; }
+		Check( "hiding the last visible face is refused", refused );
+		s.Unhide();
+
+		// Soft falloff sits out hidden vertices.
+		var soft = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		soft.SetMode( EditElement.Face );
+		soft.SelectFace( bottom );
+		soft.Hide();
+		soft.SetMode( EditElement.Vertex );
+		soft.ClearSelection();
+		for ( var i = 0; i < soft.Mesh.VertexCount; i++ )
+			if ( soft.Mesh.Positions[i].z > 0.9f )
+				soft.SelectVertex( i, MeshEditSession.Combine.Add );
+		soft.SoftRadius = 5f;
+		soft.BeginDrag();
+		soft.Drag( new Vec3( 0, 0, 1 ) );
+		soft.EndDrag();
+		Check( "soft falloff still reaches visible vertices", soft.Mesh.Positions.Count( p => p.z > 1.5f ) == 4 );
+		soft.Undo();
+		soft.Undo();
+		soft.SetMode( EditElement.Face );
+		soft.SelectFace( top );
+		soft.Hide( unselected: true );
+		soft.SetMode( EditElement.Vertex );
+		soft.SelectAll();
+		soft.BeginDrag();
+		soft.Drag( new Vec3( 0, 0, 1 ) );
+		soft.EndDrag();
+		Check( "and leaves vertices only hidden faces use alone", soft.Mesh.Positions.Count( p => MathF.Abs( p.z + 1f ) < 1e-5f ) == 4, $"{soft.Mesh.Positions.Count( p => MathF.Abs( p.z + 1f ) < 1e-5f )}" );
+
+		// Delete only faces vs delete: a vertex-mode delete takes every face touching the corner,
+		// but Only Faces in Face mode takes exactly the faces picked.
+		var d = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		d.SetMode( EditElement.Face );
+		d.SelectFace( top );
+		d.DeleteOnlyFaces();
+		Check( "delete only faces removes one face", d.Mesh.FaceCount == 5 && d.Mesh.VertexCount == 8 );
+
+		var k = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		k.SetMode( EditElement.Face );
+		k.SelectFace( top );
+		k.SelectFace( bottom, MeshEditSession.Combine.Add );
+		refused = false;
+		try { k.DeleteEdgesKeepFaces(); } catch ( InvalidOperationException ) { refused = true; }
+		Check( "delete edges with no shared edge in the selection is refused", refused );
+
+		var g = new MeshEditSession( Primitives.Plane( 4f, 4f, 2, 2 ) );
+		g.SetMode( EditElement.Face );
+		g.SelectAll();
+		g.DeleteEdgesKeepFaces();
+		Check( "deleting the inner edges of a 2x2 grid leaves one face", g.Mesh.FaceCount == 1, $"{g.Mesh.FaceCount}" );
+
+		// Merge at first / last / pivot.
+		var m = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		m.SetMode( EditElement.Vertex );
+		var a = m.Mesh.Positions.FindIndex( p => p.x > 0 && p.y > 0 && p.z > 0 );
+		var b = m.Mesh.Positions.FindIndex( p => p.x < 0 && p.y > 0 && p.z > 0 );
+		m.SelectVertex( a );
+		m.SelectVertex( b, MeshEditSession.Combine.Add );
+		m.Merge( MeshEditSession.MergeTarget.First );
+		Check( "merge at first lands on the first pick", m.Mesh.VertexCount == 7 && m.Mesh.Positions.Any( p => (p - new Vec3( 1, 1, 1 )).Length < 1e-5f ) && !m.Mesh.Positions.Any( p => (p - new Vec3( -1, 1, 1 )).Length < 1e-5f ) );
+		m.Undo();
+		m.SelectVertex( a );
+		m.SelectVertex( b, MeshEditSession.Combine.Add );
+		m.Merge( MeshEditSession.MergeTarget.Last );
+		Check( "merge at last lands on the last pick", m.Mesh.Positions.Any( p => (p - new Vec3( -1, 1, 1 )).Length < 1e-5f ) && !m.Mesh.Positions.Any( p => (p - new Vec3( 1, 1, 1 )).Length < 1e-5f ) );
+		m.Undo();
+		m.SelectVertex( a );
+		m.SelectVertex( b, MeshEditSession.Combine.Add );
+		m.Pivot = new Vec3( 0, 5, 5 );
+		m.Merge( MeshEditSession.MergeTarget.Pivot );
+		Check( "merge at pivot lands on the pivot", m.Mesh.Positions.Any( p => (p - new Vec3( 0, 5, 5 )).Length < 1e-5f ) );
+		m.Undo();
+		m.SetMode( EditElement.Face );
+		m.SelectFace( top );
+		refused = false;
+		try { m.Merge( MeshEditSession.MergeTarget.First ); } catch ( InvalidOperationException ) { refused = true; }
+		Check( "merge at first needs clicked vertices", refused );
+
+		// Randomize moves every selected vertex, by at most the amount, and repeats with the seed.
+		var r = new MeshEditSession( Primitives.QuadSphere( 2f, 3 ) );
+		r.SetMode( EditElement.Vertex );
+		r.SelectAll();
+		var before = r.Mesh.Clone();
+		r.Randomize( 0.1f, seed: 7 );
+		var moved = Enumerable.Range( 0, r.Mesh.VertexCount ).Select( i => (r.Mesh.Positions[i] - before.Positions[i]).Length ).ToList();
+		Check( "randomize moves the vertices", moved.Count( x => x > 1e-4f ) > r.Mesh.VertexCount / 2 );
+		Check( "by no more than the amount", moved.All( x => x <= 0.1f + 1e-5f ), $"{moved.Max()}" );
+		var normals = before.ComputeVertexNormals();
+		Check( "along the normal",
+			Enumerable.Range( 0, r.Mesh.VertexCount ).All( i => moved[i] < 1e-4f || Vec3.Cross( (r.Mesh.Positions[i] - before.Positions[i]).Normal, normals[i] ).Length < 1e-3f ) );
+		var once = r.Mesh.Clone();
+		r.Undo();
+		r.SelectAll();
+		r.Randomize( 0.1f, seed: 7 );
+		Check( "the same seed gives the same jitter", Enumerable.Range( 0, r.Mesh.VertexCount ).All( i => (r.Mesh.Positions[i] - once.Positions[i]).Length < 1e-6f ) );
+		r.Undo();
+		r.SelectAll();
+		r.Randomize( 0.1f, seed: 8 );
+		Check( "and another seed gives another", Enumerable.Range( 0, r.Mesh.VertexCount ).Any( i => (r.Mesh.Positions[i] - once.Positions[i]).Length > 1e-4f ) );
+
+		// Select random, faces by sides, interior faces.
+		var sel = new MeshEditSession( Primitives.Plane( 8f, 8f, 8, 8 ) );
+		sel.SetMode( EditElement.Face );
+		sel.SelectRandom( 0.5f, seed: 1 );
+		Check( "select random picks about half", sel.SelectedFaces.Count > 16 && sel.SelectedFaces.Count < 48, $"{sel.SelectedFaces.Count}" );
+		var pick = new HashSet<int>( sel.SelectedFaces );
+		sel.SelectRandom( 0.5f, seed: 1 );
+		Check( "and the same seed picks the same", pick.SetEquals( sel.SelectedFaces ) );
+		sel.SelectRandom( 0f, seed: 1 );
+		Check( "a ratio of zero picks nothing", sel.SelectedFaces.Count == 0 );
+
+		sel.SelectAll();
+		var few = sel.SelectedFaces.Take( 3 ).ToList();
+		sel.ClearSelection();
+		foreach ( var f in few )
+			sel.SelectFace( f, MeshEditSession.Combine.Add );
+		sel.TriangulateFaces();
+		sel.SelectFacesBySides( 3 );
+		Check( "faces by sides finds the six triangles", sel.SelectedFaces.Count == 6, $"{sel.SelectedFaces.Count}" );
+		sel.SelectFacesBySides( 4 );
+		Check( "and the quads", sel.SelectedFaces.Count == 61, $"{sel.SelectedFaces.Count}" );
+		sel.SelectFacesBySides( 4, orMore: true );
+		Check( "or more includes bigger faces", sel.SelectedFaces.Count == 61 );
+
+		var inside = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		inside.SetMode( EditElement.Face );
+		inside.SelectInteriorFaces();
+		Check( "a clean box has no interior faces", inside.SelectedFaces.Count == 0, $"{inside.SelectedFaces.Count}" );
+		inside.SelectFace( top );
+		inside.FlipNormals();
+		inside.SelectInteriorFaces();
+		Check( "a flipped face is found as interior", inside.SelectedFaces.Count == 1 && inside.SelectedFaces.Contains( top ), $"{inside.SelectedFaces.Count}" );
+
+		// Separate by loose parts and by material.
+		var loose = Primitives.Box( 2, 2, 2 );
+		MeshTransform.Append( loose, MeshTransform.Transformed( Primitives.Box( 1, 1, 1 ), Xform.Translate( new Vec3( 5, 0, 0 ) ) ) );
+		MeshTransform.Append( loose, MeshTransform.Transformed( Primitives.Box( 1, 1, 1 ), Xform.Translate( new Vec3( -5, 0, 0 ) ) ) );
+		var lp = new MeshEditSession( loose );
+		lp.SeparateLooseParts();
+		Check( "separate loose parts keeps the biggest piece", lp.Mesh.FaceCount == 6 && lp.Mesh.Positions.All( p => MathF.Abs( p.x ) < 1.5f ) );
+		Check( "and splits the others off", lp.Separated.Count == 2 && lp.Separated.All( p => p.FaceCount == 6 && p.VertexCount == 8 ) );
+		refused = false;
+		try { new MeshEditSession( Primitives.Box( 2, 2, 2 ) ).SeparateLooseParts(); } catch ( InvalidOperationException ) { refused = true; }
+		Check( "one piece refuses", refused );
+
+		var mat = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		mat.Mesh.Faces[top].Material = 1;
+		mat.SeparateByMaterial();
+		Check( "separate by material keeps the busiest slot", mat.Mesh.FaceCount == 5 && mat.Mesh.Faces.All( f => f.Material == 0 ) );
+		Check( "and splits the other off with only its vertices", mat.Separated.Count == 1 && mat.Separated[0].FaceCount == 1 && mat.Separated[0].VertexCount == 4 );
+
+		// Decimate a dense patch of a sphere, leaving the rest and staying closed.
+		var dec = new MeshEditSession( Primitives.QuadSphere( 2f, 6 ) );
+		dec.SetMode( EditElement.Face );
+		var facesBefore = dec.Mesh.FaceCount;
+		for ( var f = 0; f < dec.Mesh.FaceCount; f++ )
+			if ( dec.Mesh.FaceCentroid( dec.Mesh.Faces[f] ).z > 1f )
+				dec.SelectFace( f, MeshEditSession.Combine.Add );
+		var patch = dec.SelectedFaces.Count;
+		dec.DecimateSelection( 0.3f );
+		var v = MeshValidator.Validate( dec.Mesh );
+		Check( "decimating a patch leaves fewer faces", dec.Mesh.FaceCount < facesBefore, $"{facesBefore} -> {dec.Mesh.FaceCount}" );
+		Check( "the rest of the sphere is untouched", dec.Mesh.Faces.Count( f => f.Indices.Length == 4 ) == facesBefore - patch, $"{dec.Mesh.Faces.Count( f => f.Indices.Length == 4 )} quads vs {facesBefore - patch}" );
+		Check( "and it is still one closed solid", v.IsValid && v.IsClosed, v.ToString() );
+
+		var whole = new MeshEditSession( Primitives.QuadSphere( 2f, 6 ) );
+		whole.DecimateSelection( 0.25f );
+		Check( "decimate with nothing selected does the whole body", whole.Mesh.FaceCount <= facesBefore / 2, $"{whole.Mesh.FaceCount}" );
+		refused = false;
+		try { whole.DecimateSelection( 1f ); } catch ( InvalidOperationException ) { refused = true; }
+		Check( "a ratio of 1 is refused", refused );
 	}
 
 	static void TestEditSessionEdgeSplit()

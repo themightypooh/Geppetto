@@ -89,6 +89,15 @@ public static class Decimate
 		public bool PreserveBoundary = true;
 
 		/// <summary>
+		/// Never collapse an edge that runs along an open border, so every border vertex survives
+		/// exactly where it was. <see cref="PreserveBoundary"/> keeps a border's shape;
+		/// this keeps its vertices, which is what a patch decimated inside a larger mesh needs to
+		/// stitch back onto its neighbours. Off by default: a shell's opening rarely needs every
+		/// one of its vertices.
+		/// </summary>
+		public bool FreezeBoundary;
+
+		/// <summary>
 		/// Stop early if the cheapest collapse left costs more than this, even with the target
 		/// unmet. The unit is squared distance in model units, so it scales with the model and is
 		/// off by default: a target the user typed is a target, and silently stopping short of it
@@ -837,7 +846,7 @@ public static class Decimate
 			// Both ends on a border, but the edge between them is not one: collapsing it pulls two
 			// separate stretches of border together through the middle of the surface. Refused
 			// outright rather than priced, because there is no position that makes it acceptable.
-			if ( lockedA && lockedB && !IsConstrainedEdge( a, b ) )
+			if ( lockedA && lockedB && (_options.FreezeBoundary || !IsConstrainedEdge( a, b )) )
 				return false;
 
 			var q = _quadric[a];

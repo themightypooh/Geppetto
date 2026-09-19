@@ -110,6 +110,14 @@ internal sealed class EffigyMeshEditPanel : Widget
 			}
 
 			Action( "Relax surface", "Relax", s => s.Relax() );
+			Action( "Hide selected (H)", "Hide", s => s.Hide() );
+			Action( "Hide everything else (Shift+H)", "Hide others", s => s.Hide( unselected: true ) );
+		}
+
+		if ( session.HasHiddenFaces )
+		{
+			Gap();
+			Action( $"Show {session.HiddenFaces.Count} hidden faces (Alt+H)", "Unhide", s => s.Unhide() );
 		}
 
 		Gap();

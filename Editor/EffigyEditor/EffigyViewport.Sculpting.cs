@@ -362,11 +362,14 @@ internal sealed partial class EffigyViewport
 		if ( MeshEditSession is not { } session )
 			return;
 
-		if ( session.Revision == _meshEditPreviewRevision && _meshEditPreview is not null && _renderer?.Model == _meshEditPreview.Model )
+		if ( session.Revision == _meshEditPreviewRevision && session.HiddenRevision == _meshEditPreviewHidden && _meshEditPreview is not null && _renderer?.Model == _meshEditPreview.Model )
 			return;
 
-		var mesh = session.Mesh;
+		// Hidden faces are left out of what is drawn; the vertices are shared, so a drag still
+		// uploads positions only.
+		var mesh = session.VisibleMesh;
 		_meshEditPreviewRevision = session.Revision;
+		_meshEditPreviewHidden = session.HiddenRevision;
 
 		if ( mesh is null || mesh.FaceCount == 0 )
 			return;
@@ -394,22 +397,41 @@ internal sealed partial class EffigyViewport
 			SetModel( _meshEditPreview.Model, frameCamera: false );
 	}
 
+	/// <summary>The pick tree, over the visible faces only: a hidden face can neither be picked
+	/// nor get in the way of picking what is behind it.</summary>
 	private MeshBVH MeshEditTree()
 	{
 		var session = MeshEditSession;
 
-		if ( _meshEditTree is null || _meshEditTreeRevision != session.Revision )
+		if ( _meshEditTree is null || _meshEditTreeRevision != session.Revision || _meshEditTreeHidden != session.HiddenRevision )
 		{
 			// Refit is enough while only positions move; a new face layout needs a new tree.
-			if ( _meshEditTree is not null && session.IsDragging )
-				_meshEditTree.Refit( session.Mesh );
+			if ( _meshEditTree is not null && session.IsDragging && _meshEditTreeHidden == session.HiddenRevision )
+				_meshEditTree.Refit( session.VisibleMesh );
 			else
-				_meshEditTree = MeshBVH.Build( session.Mesh );
+				_meshEditTree = MeshBVH.Build( session.VisibleMesh );
 
 			_meshEditTreeRevision = session.Revision;
+			_meshEditTreeHidden = session.HiddenRevision;
 		}
 
 		return _meshEditTree;
+	}
+
+	private int _meshEditTreeHidden = -1, _meshEditPreviewHidden = -1;
+
+	/// <summary>Cast at the visible mesh and report the hit with its face index in
+	/// <see cref="MeshEditSession.Mesh"/>, not in the visible copy.</summary>
+	private MeshHit? MeshEditRaycast( MeshEditSession session, Vec3 origin, Vec3 direction )
+	{
+		if ( MeshEditTree().Raycast( session.VisibleMesh, origin, direction ) is not { } hit )
+			return null;
+
+		var map = session.VisibleFaceMap;
+		if ( hit.FaceIndex < 0 || hit.FaceIndex >= map.Length )
+			return null;
+
+		return new MeshHit( hit.Point, map[hit.FaceIndex], hit.Normal, hit.Distance );
 	}
 
 	private void MeshEditFrame()
@@ -464,7 +486,7 @@ internal sealed partial class EffigyViewport
 			var origin = new Vec3( ray.Position.x, ray.Position.y, ray.Position.z );
 			var direction = new Vec3( ray.Forward.x, ray.Forward.y, ray.Forward.z );
 
-			var surfaceHit = MeshEditTree().Raycast( mesh, origin, direction );
+			var surfaceHit = MeshEditRaycast( session, origin, direction );
 
 			if ( surfaceHit is { } hit && hit.FaceIndex >= 0 && hit.FaceIndex < mesh.FaceCount )
 			{
@@ -725,7 +747,7 @@ internal sealed partial class EffigyViewport
 			var origin = new Vec3( ray.Position.x, ray.Position.y, ray.Position.z );
 			var direction = new Vec3( ray.Forward.x, ray.Forward.y, ray.Forward.z );
 
-			if ( MeshEditTree().Raycast( session.Mesh, origin, direction ) is { } hit
+			if ( MeshEditRaycast( session, origin, direction ) is { } hit
 				&& hit.FaceIndex >= 0 && hit.FaceIndex < session.Mesh.FaceCount )
 			{
 				// The cut runs ACROSS the edge nearest the cursor, so the loop follows the face's
@@ -804,7 +826,7 @@ internal sealed partial class EffigyViewport
 			var origin = ToVec( ray.Position );
 			var direction = ToVec( ray.Forward );
 
-			if ( MeshEditTree().Raycast( session.Mesh, origin, direction ) is { } hit )
+			if ( MeshEditRaycast( session, origin, direction ) is { } hit )
 				cursor = hit.Point;
 
 			if ( Gizmo.WasLeftMousePressed && cursor is { } p )
@@ -951,7 +973,7 @@ internal sealed partial class EffigyViewport
 
 			var to = p - ToVec( eye );
 			var d = to.Length;
-			return tree.Raycast( mesh, ToVec( eye ), to / d ) is not { } hit || hit.Distance >= d - eps;
+			return tree.Raycast( session.VisibleMesh, ToVec( eye ), to / d ) is not { } hit || hit.Distance >= d - eps;
 		}
 
 		var picked = new List<int>();
@@ -961,7 +983,7 @@ internal sealed partial class EffigyViewport
 		{
 			case EditElement.Vertex:
 				for ( var i = 0; i < mesh.VertexCount; i++ )
-					if ( Inside( mesh.Positions[i] ) && Visible( mesh.Positions[i] ) )
+					if ( session.IsVertexVisible( i ) && Inside( mesh.Positions[i] ) && Visible( mesh.Positions[i] ) )
 						picked.Add( i );
 				break;
 
@@ -976,7 +998,7 @@ internal sealed partial class EffigyViewport
 				break;
 
 			default:
-				for ( var f = 0; f < mesh.FaceCount; f++ )
+				foreach ( var f in session.VisibleFaceMap )
 				{
 					var c = mesh.FaceCentroid( mesh.Faces[f] );
 					if ( Inside( c ) && Visible( c + mesh.FaceNormal( mesh.Faces[f] ) * eps ) )
@@ -1080,7 +1102,7 @@ internal sealed partial class EffigyViewport
 		var direction = new Vec3( ray.Forward.x, ray.Forward.y, ray.Forward.z );
 		var weld = PolyBuildWeld( _retopoStroke[^1] );
 
-		if ( _canvasHasCursor && MeshEditTree().Raycast( session.Mesh, origin, direction ) is { } hit
+		if ( _canvasHasCursor && MeshEditRaycast( session, origin, direction ) is { } hit
 			&& (hit.Point - _retopoStroke[^1]).Length > weld * 0.5f )
 			_retopoStroke.Add( hit.Point );
 
@@ -1261,16 +1283,17 @@ internal sealed partial class EffigyViewport
 	/// </summary>
 	private EdgeKey[] MeshEditEdges( MeshEditSession session )
 	{
-		if ( _meshEdgeCache is not null && _meshEdgeCacheOwner == session && _meshEdgeCacheRevision == session.TopologyRevision )
+		if ( _meshEdgeCache is not null && _meshEdgeCacheOwner == session && _meshEdgeCacheRevision == session.TopologyRevision && _meshEdgeCacheHidden == session.HiddenRevision )
 			return _meshEdgeCache;
 
-		var keys = session.Mesh.BuildEdgeFaces().Keys;
+		var keys = session.VisibleMesh.BuildEdgeFaces().Keys;
 		var edges = new EdgeKey[keys.Count];
 		keys.CopyTo( edges, 0 );
 
 		_meshEdgeCache = edges;
 		_meshEdgeCacheOwner = session;
 		_meshEdgeCacheRevision = session.TopologyRevision;
+		_meshEdgeCacheHidden = session.HiddenRevision;
 		return edges;
 	}
 
@@ -1324,6 +1347,7 @@ internal sealed partial class EffigyViewport
 
 	private EdgeKey[] _meshEdgeCache;
 	private MeshEditSession _meshEdgeCacheOwner;
+	private int _meshEdgeCacheHidden = -1;
 	private int _meshEdgeCacheRevision = -1;
 
 	/// <summary>Wire, selection and hover. The wire is skipped on dense meshes, where drawing every

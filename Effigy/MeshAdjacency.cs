@@ -1523,6 +1523,7 @@ public sealed class MeshEditSession
 		public readonly string Label;
 		public readonly List<PolyMesh> Separated;
 		public readonly EdgeKey[] Seams;
+		public readonly HiddenKey[] Hidden;
 		public readonly int RetopoStart, RetopoFaceStart;
 
 		/// <summary>The surface snapping was holding — a reference, not a copy: it is replaced, never
@@ -1549,6 +1550,7 @@ public sealed class MeshEditSession
 		{
 			Separated = new List<PolyMesh>( s.Separated );
 			Seams = new List<EdgeKey>( s.Seams ).ToArray();
+			Hidden = s._hidden.ToArray();
 			RetopoStart = s.RetopoStart;
 			RetopoFaceStart = s._retopoFaceStart;
 			SnapTarget = s._snapTarget;
@@ -1725,6 +1727,7 @@ public sealed class MeshEditSession
 
 	public void ClearSelection()
 	{
+		_pickOrder.Clear();
 		SelectedVertices.Clear();
 		SelectedEdges.Clear();
 		SelectedFaces.Clear();
@@ -1735,18 +1738,19 @@ public sealed class MeshEditSession
 	{
 		ClearSelection();
 
+		// Everything you can see: hidden faces stay out of it, as in Blender.
+		var visible = VisibleMesh;
 		switch ( Mode )
 		{
 			case EditElement.Vertex:
-				foreach ( var f in Mesh.Faces )
+				foreach ( var f in visible.Faces )
 					SelectedVertices.UnionWith( f.Indices );
 				break;
 			case EditElement.Edge:
-				SelectedEdges.UnionWith( Mesh.BuildEdgeFaces().Keys );
+				SelectedEdges.UnionWith( visible.BuildEdgeFaces().Keys );
 				break;
 			case EditElement.Face:
-				for ( var f = 0; f < Mesh.FaceCount; f++ )
-					SelectedFaces.Add( f );
+				SelectedFaces.UnionWith( VisibleFaceMap );
 				break;
 		}
 	}
@@ -1754,7 +1758,18 @@ public sealed class MeshEditSession
 	/// <summary>How a click combines with what is already selected.</summary>
 	public enum Combine { Replace, Add, Remove, Toggle }
 
-	public void SelectVertex( int vertex, Combine how = Combine.Replace ) => Apply( SelectedVertices, vertex, how );
+	public void SelectVertex( int vertex, Combine how = Combine.Replace )
+	{
+		// The order vertices were picked in, for Merge at First and Last. A vertex picked twice
+		// counts from its latest pick, as in Blender's selection history.
+		var picked = how != Combine.Remove && !(how == Combine.Toggle && SelectedVertices.Contains( vertex ));
+		Apply( SelectedVertices, vertex, how );
+		_pickOrder.Remove( vertex );
+		if ( picked )
+			_pickOrder.Add( vertex );
+	}
+
+	readonly List<int> _pickOrder = new();
 	public void SelectEdge( EdgeKey edge, Combine how = Combine.Replace ) => Apply( SelectedEdges, edge, how );
 	public void SelectFace( int face, Combine how = Combine.Replace ) => Apply( SelectedFaces, face, how );
 
@@ -1856,6 +1871,8 @@ public sealed class MeshEditSession
 		Separated = new List<PolyMesh>( s.Separated );
 		Seams.Clear();
 		Seams.UnionWith( s.Seams );
+		_hidden.Clear();
+		_hidden.AddRange( s.Hidden );
 		RetopoStart = s.RetopoStart;
 		_retopoFaceStart = s.RetopoFaceStart;
 		// Only a retopology snapshot owns the snap target; anywhere else it belongs to the Snap
@@ -1949,6 +1966,7 @@ public sealed class MeshEditSession
 		// an edge that is not there and the overlay draws a vertex that has been renumbered. Undo
 		// puts it back, because the snapshot was taken before the operation ran.
 		PruneSeams();
+		ReconcileHidden();
 		if ( _snapTree is not null && ReferenceEquals( _snapTarget, Mesh ) )
 			_snapTree = MeshBVH.Build( Mesh );
 	}
@@ -3153,6 +3171,302 @@ public sealed class MeshEditSession
 		} );
 	}
 
+	/// <summary>Delete only the selected faces, leaving their edges and vertices where other faces
+	/// still use them — Blender's Delete ▸ Only Faces. Unlike <see cref="Delete"/> in Vertex or
+	/// Edge mode, a face merely touched by the selection stays.</summary>
+	public void DeleteOnlyFaces()
+	{
+		var faces = RequireFaces( "Delete Only Faces" );
+
+		Step( "Delete faces", () =>
+		{
+			var e = EditableMesh.FromPolyMesh( Mesh );
+			e.DeleteFaces( faces );
+			Mesh = RemoveUnusedVertices( e.ToPolyMesh() );
+			ClearSelection();
+		} );
+	}
+
+	/// <summary>
+	/// Delete the selected edges but keep the faces round them, joined into one — Blender's
+	/// Delete ▸ Edges & Faces is a hole; this is Dissolve Edges by another name, offered where
+	/// people look for it. In Face mode, every edge inside the selection goes, leaving one face.
+	/// </summary>
+	public void DeleteEdgesKeepFaces()
+	{
+		var edges = new HashSet<EdgeKey>( SelectedEdges );
+		if ( Mode == EditElement.Face )
+		{
+			foreach ( var (key, owners) in Mesh.BuildEdgeFaces() )
+			{
+				if ( owners.Count == 2 && SelectedFaces.Contains( owners[0] ) && SelectedFaces.Contains( owners[1] ) )
+					edges.Add( key );
+			}
+		}
+
+		if ( edges.Count == 0 )
+			throw new InvalidOperationException( "Select the edges (2) to remove, or faces (3) to join into one." );
+
+		Step( "Delete edges", () =>
+		{
+			var e = EditableMesh.FromPolyMesh( Mesh );
+			var hes = new List<int>();
+			foreach ( var key in edges )
+			{
+				var he = FindHalfEdge( e, key.A, key.B );
+				if ( he < 0 )
+					he = FindHalfEdge( e, key.B, key.A );
+				if ( he >= 0 )
+					hes.Add( he );
+			}
+
+			e.DissolveEdges( hes );
+			Mesh = RemoveUnusedVertices( e.ToPolyMesh() );
+			ClearSelection();
+		} );
+	}
+
+	/// <summary>
+	/// Jitter the selected vertices, Blender's Randomize: each moves up to <paramref name="amount"/>
+	/// along its normal, or in any direction with <paramref name="uniform"/> above zero (0 to 1,
+	/// how much of the offset is free to point anywhere). Same <paramref name="seed"/>, same jitter,
+	/// so scrubbing the amount is stable. Quick roughness for rock, bark and cloth.
+	/// </summary>
+	public void Randomize( float amount, float uniform = 0f, int seed = 0 )
+	{
+		var verts = AffectedVertices();
+		if ( verts.Count == 0 )
+			throw new InvalidOperationException( "Randomize needs vertices selected." );
+
+		Step( "Randomize", () =>
+		{
+			var normals = Mesh.ComputeVertexNormals();
+			var ordered = new List<int>( verts );
+			ordered.Sort();
+
+			foreach ( var v in ordered )
+			{
+				// Hash the vertex with the seed, so a vertex's offset does not depend on which
+				// others are selected, and the same seed always gives the same surface.
+				var h = unchecked( (uint)(v * 374761393) + (uint)(seed * 668265263) );
+				float Next()
+				{
+					h ^= h << 13;
+					h ^= h >> 17;
+					h ^= h << 5;
+					return (h & 0xFFFFFF) / (float)0x1000000 * 2f - 1f;
+				}
+
+				var along = normals[v] * (Next() * amount);
+				var free = new Vec3( Next(), Next(), Next() );
+				if ( free.LengthSquared > 1e-12f )
+					free = free.Normal * (Next() * amount);
+
+				Mesh.Positions[v] += Vec3.Lerp( along, free, Math.Clamp( uniform, 0f, 1f ) );
+			}
+		} );
+	}
+
+	/// <summary>Select a random share of the visible elements in the current mode, Blender's
+	/// Select Random. <paramref name="ratio"/> is 0 to 1. Same seed, same pick.</summary>
+	public void SelectRandom( float ratio, int seed = 0, Combine how = Combine.Replace )
+	{
+		if ( how == Combine.Replace )
+			ClearSelection();
+
+		var h = unchecked( (uint)(seed * 2654435761u) + 0x9E3779B9u );
+		bool Roll()
+		{
+			h ^= h << 13;
+			h ^= h >> 17;
+			h ^= h << 5;
+			return (h & 0xFFFFFF) / (float)0x1000000 < ratio;
+		}
+
+		var visible = VisibleMesh;
+		switch ( Mode )
+		{
+			case EditElement.Vertex:
+			{
+				var used = new HashSet<int>();
+				foreach ( var f in visible.Faces )
+					used.UnionWith( f.Indices );
+				var ordered = new List<int>( used );
+				ordered.Sort();
+				foreach ( var v in ordered )
+					if ( Roll() )
+						Apply( SelectedVertices, v, how == Combine.Remove ? Combine.Remove : Combine.Add );
+				break;
+			}
+			case EditElement.Edge:
+				foreach ( var key in visible.BuildEdgeFaces().Keys )
+					if ( Roll() )
+						Apply( SelectedEdges, key, how == Combine.Remove ? Combine.Remove : Combine.Add );
+				break;
+			default:
+				foreach ( var f in VisibleFaceMap )
+					if ( Roll() )
+						Apply( SelectedFaces, f, how == Combine.Remove ? Combine.Remove : Combine.Add );
+				break;
+		}
+
+		SelectionRevision++;
+	}
+
+	/// <summary>Select every face with <paramref name="sides"/> corners — Blender's Faces by Sides.
+	/// The way to find the triangles and n-gons left in a quad model before they cause trouble.
+	/// <paramref name="orMore"/> selects faces with that many corners or more.</summary>
+	public void SelectFacesBySides( int sides, bool orMore = false, Combine how = Combine.Replace )
+	{
+		if ( how == Combine.Replace )
+			ClearSelection();
+
+		foreach ( var f in VisibleFaceMap )
+		{
+			var n = Mesh.Faces[f].Indices.Length;
+			if ( orMore ? n >= sides : n == sides )
+				Apply( SelectedFaces, f, how == Combine.Remove ? Combine.Remove : Combine.Add );
+		}
+
+		SelectionRevision++;
+	}
+
+	/// <summary>
+	/// Select every face that faces into the model, Blender's Interior Faces: the faces whose
+	/// normal points against the direction from the model's centre, on a closed mesh a sure sign
+	/// of a face left inside after a join or a boolean.
+	/// </summary>
+	public void SelectInteriorFaces( Combine how = Combine.Replace )
+	{
+		if ( how == Combine.Replace )
+			ClearSelection();
+
+		// A face is interior when its normal points into the model, tested by casting from just
+		// off its front: hitting the model from the inside of another face means we are inside.
+		var tree = MeshBVH.Build( Mesh );
+		var eps = MathF.Max( Mesh.BoundsDiagonal, 1e-3f ) * 1e-4f;
+		foreach ( var f in VisibleFaceMap )
+		{
+			var face = Mesh.Faces[f];
+			var n = Mesh.FaceNormal( face );
+			var from = Mesh.FaceCentroid( face ) + n * eps;
+			if ( tree.Raycast( Mesh, from, n ) is { } hit && Vec3.Dot( hit.Normal, n ) > 0f )
+				Apply( SelectedFaces, f, how == Combine.Remove ? Combine.Remove : Combine.Add );
+		}
+
+		SelectionRevision++;
+	}
+
+	/// <summary>Select the whole pieces the selection touches, then split every piece that is not
+	/// the biggest off as a body of its own — Blender's Separate ▸ By Loose Parts, kept sane for a
+	/// character: the biggest piece stays, everything else leaves.</summary>
+	public void SeparateLooseParts()
+	{
+		var pieces = MeshSplit.ConnectedPieces( Mesh );
+		if ( pieces.Count < 2 )
+			throw new InvalidOperationException( "This body is one connected piece already." );
+
+		Step( "Separate loose parts", () =>
+		{
+			var biggest = 0;
+			for ( var i = 1; i < pieces.Count; i++ )
+				if ( pieces[i].FaceCount > pieces[biggest].FaceCount )
+					biggest = i;
+
+			for ( var i = 0; i < pieces.Count; i++ )
+				if ( i != biggest )
+					Separated.Add( pieces[i] );
+
+			Mesh = pieces[biggest];
+			ClearSelection();
+		} );
+	}
+
+	/// <summary>Split the body into one body per material slot, Blender's Separate ▸ By Material.
+	/// The faces on the most-used slot stay; every other slot becomes a body of its own.</summary>
+	public void SeparateByMaterial()
+	{
+		var counts = new Dictionary<int, int>();
+		foreach ( var f in Mesh.Faces )
+			counts[f.Material] = counts.GetValueOrDefault( f.Material ) + 1;
+
+		if ( counts.Count < 2 )
+			throw new InvalidOperationException( "Every face is on the same material, so there is nothing to separate." );
+
+		Step( "Separate by material", () =>
+		{
+			var keep = -1;
+			foreach ( var (material, n) in counts )
+				if ( keep < 0 || n > counts[keep] )
+					keep = material;
+
+			var slots = new List<int>( counts.Keys );
+			slots.Sort();
+			foreach ( var material in slots )
+			{
+				if ( material == keep )
+					continue;
+
+				var faces = new List<int>();
+				for ( var f = 0; f < Mesh.FaceCount; f++ )
+					if ( Mesh.Faces[f].Material == material )
+						faces.Add( f );
+
+				Separated.Add( TakeFaces( faces ) );
+			}
+
+			ClearSelection();
+		} );
+	}
+
+	/// <summary>
+	/// Reduce the selected faces (or the whole body with nothing selected) to
+	/// <paramref name="ratio"/> of their triangles, Blender's Decimate. The rest of the body is
+	/// untouched, and the border between kept and decimated is held so the two stay stitched.
+	/// </summary>
+	public void DecimateSelection( float ratio )
+	{
+		if ( ratio <= 0f || ratio >= 1f )
+			throw new InvalidOperationException( "Decimate wants a ratio between 0 and 1: how much of the detail to keep." );
+
+		var faces = SelectedFaces.Count > 0 ? new List<int>( SelectedFaces ) : null;
+
+		Step( "Decimate", () =>
+		{
+			if ( faces is null )
+			{
+				Mesh = RemoveUnusedVertices( Decimate.ToRatio( Mesh, ratio ) );
+				ClearSelection();
+				return;
+			}
+
+			// Decimate the selection as a mesh of its own with its rim frozen, then put it back:
+			// every rim vertex is still where the body has one, so they stitch by position.
+			var piece = TakeFaces( faces );
+			var slimmed = Decimate.Run( piece, new Decimate.Options { Ratio = ratio, FreezeBoundary = true } ).Mesh;
+			var first = Mesh.VertexCount;
+			MeshTransform.Append( Mesh, slimmed );
+
+			// Stitch only the piece's rim to the body, by position: a global weld would also close
+			// any hard edge the body was deliberately split along.
+			var at = new Dictionary<(int, int, int), int>();
+			(int, int, int) Cell( Vec3 p ) => ((int)MathF.Round( p.x * 1e4f ), (int)MathF.Round( p.y * 1e4f ), (int)MathF.Round( p.z * 1e4f ));
+			for ( var v = 0; v < first; v++ )
+				at.TryAdd( Cell( Mesh.Positions[v] ), v );
+
+			var remap = new int[Mesh.VertexCount];
+			for ( var v = 0; v < remap.Length; v++ )
+				remap[v] = v < first || !at.TryGetValue( Cell( Mesh.Positions[v] ), out var body ) ? v : body;
+
+			foreach ( var face in Mesh.Faces )
+				for ( var i = 0; i < face.Indices.Length; i++ )
+					face.Indices[i] = remap[face.Indices[i]];
+
+			Mesh = RemoveUnusedVertices( Mesh );
+			ClearSelection();
+		} );
+	}
+
 	/// <summary>Dissolve the selected edges (Edge mode) or vertices (Vertex mode) — they go, and the
 	/// faces around them merge into one, unlike Delete, which leaves a hole.</summary>
 	public void Dissolve()
@@ -3195,18 +3509,45 @@ public sealed class MeshEditSession
 		} );
 	}
 
+	/// <summary>Where <see cref="Merge"/> puts the vertices it joins.</summary>
+	public enum MergeTarget
+	{
+		/// <summary>The middle of the selection.</summary>
+		Centre,
+		/// <summary>The first vertex you clicked (Vertex mode).</summary>
+		First,
+		/// <summary>The last vertex you clicked (Vertex mode).</summary>
+		Last,
+		/// <summary>The <see cref="Pivot"/> — Blender's Merge at Cursor.</summary>
+		Pivot,
+	}
+
 	/// <summary>Merge the selected vertices to their centre, Blender's Merge at Center. Faces the
 	/// merge squeezes flat are dropped.</summary>
-	public void MergeAtCentre()
+	public void MergeAtCentre() => Merge( MergeTarget.Centre );
+
+	/// <summary>Merge the selected vertices into one at <paramref name="target"/> (M). Faces the
+	/// merge squeezes flat are dropped.</summary>
+	public void Merge( MergeTarget target )
 	{
 		var verts = AffectedVertices();
 
 		if ( verts.Count < 2 )
 			throw new InvalidOperationException( "Merging needs two or more vertices selected." );
 
+		var picked = _pickOrder.FindAll( verts.Contains );
+		if ( target is MergeTarget.First or MergeTarget.Last && picked.Count == 0 )
+			throw new InvalidOperationException( "Merge at First and Last go by the order you clicked vertices. Pick them one at a time in Vertex mode (1)." );
+
 		Step( "Merge", () =>
 		{
-			var centre = SelectionCentre();
+			var centre = target switch
+			{
+				MergeTarget.First => Mesh.Positions[picked[0]],
+				MergeTarget.Last => Mesh.Positions[picked[^1]],
+				MergeTarget.Pivot => Pivot,
+				_ => SelectionCentre(),
+			};
 			var keep = int.MaxValue;
 			foreach ( var v in verts )
 				keep = Math.Min( keep, v );
@@ -3315,6 +3656,9 @@ public sealed class MeshEditSession
 		{
 			foreach ( var (i, d) in SoftConnected ? ConnectedDistances( verts, SoftRadius ) : StraightDistances( verts, SoftRadius ) )
 			{
+				if ( !IsVertexVisible( i ) )
+					continue;
+
 				list.Add( i );
 				weights.Add( SoftWeight( 1f - d / SoftRadius ) );
 			}
@@ -3970,6 +4314,212 @@ public sealed class MeshEditSession
 
 	static Vec4 Vec4Lerp( Vec4 a, Vec4 b, float t ) =>
 		new( a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t, a.w + (b.w - a.w) * t );
+
+	// --- hide and unhide -------------------------------------------------------------------------
+
+	/// <summary>
+	/// A hidden face, remembered by where it is rather than by index: face indices shift under
+	/// every operation, but a hidden face is unselectable, so nothing moves it — it is found again
+	/// by its centroid afterwards. A face an operation did change simply comes back into view.
+	/// </summary>
+	public readonly record struct HiddenKey( Vec3 Centroid, int Corners );
+
+	readonly List<HiddenKey> _hidden = new();
+
+	/// <summary>The faces hidden right now, as indices into <see cref="Mesh"/>. Rebuilt after
+	/// every operation and undo, so it is always current.</summary>
+	public HashSet<int> HiddenFaces { get; } = new();
+
+	/// <summary>Bumped when the set of hidden faces changes, so a view built from
+	/// <see cref="VisibleMesh"/> knows to rebuild.</summary>
+	public int HiddenRevision { get; private set; }
+
+	public bool HasHiddenFaces => HiddenFaces.Count > 0;
+
+	static HiddenKey KeyOf( PolyMesh mesh, Face face )
+	{
+		var c = mesh.FaceCentroid( face );
+		var q = 1e4f;
+		return new HiddenKey( new Vec3( MathF.Round( c.x * q ) / q, MathF.Round( c.y * q ) / q, MathF.Round( c.z * q ) / q ), face.Indices.Length );
+	}
+
+	/// <summary>
+	/// Hide the selected faces (H), or with <paramref name="unselected"/> every face that is not
+	/// selected (Shift+H) — the way to get everything but the hand out of the way. In Vertex and
+	/// Edge mode a face goes when it touches the selection. Hidden faces leave the selection, cannot
+	/// be picked, and sit out soft falloff. One undo step.
+	/// </summary>
+	public void Hide( bool unselected = false )
+	{
+		var touched = new HashSet<int>( SelectedFaces );
+		for ( var f = 0; f < Mesh.FaceCount; f++ )
+		{
+			var idx = Mesh.Faces[f].Indices;
+			for ( var i = 0; i < idx.Length; i++ )
+			{
+				if ( SelectedVertices.Contains( idx[i] ) || SelectedEdges.Contains( new EdgeKey( idx[i], idx[(i + 1) % idx.Length] ) ) )
+				{
+					touched.Add( f );
+					break;
+				}
+			}
+		}
+
+		var doomed = new List<int>();
+		for ( var f = 0; f < Mesh.FaceCount; f++ )
+		{
+			if ( HiddenFaces.Contains( f ) )
+				continue;
+
+			if ( touched.Contains( f ) != unselected )
+				doomed.Add( f );
+		}
+
+		if ( doomed.Count == 0 )
+			throw new InvalidOperationException( unselected ? "Everything else is already hidden." : "Select something to hide." );
+
+		if ( doomed.Count + HiddenFaces.Count == Mesh.FaceCount )
+			throw new InvalidOperationException( "That would hide the whole body. Leave something to look at." );
+
+		Push( unselected ? "Hide unselected" : "Hide" );
+		foreach ( var f in doomed )
+			_hidden.Add( KeyOf( Mesh, Mesh.Faces[f] ) );
+
+		ClearSelection();
+		ReconcileHidden();
+		Revision++;
+	}
+
+	/// <summary>Bring every hidden face back (Alt+H). The faces revealed become the selection, so
+	/// they can be hidden again with one key.</summary>
+	public void Unhide()
+	{
+		if ( HiddenFaces.Count == 0 )
+			throw new InvalidOperationException( "Nothing is hidden." );
+
+		Push( "Unhide" );
+		var revealed = new List<int>( HiddenFaces );
+		_hidden.Clear();
+		ReconcileHidden();
+
+		ClearSelection();
+		if ( Mode == EditElement.Face )
+			SelectedFaces.UnionWith( revealed );
+		else
+		{
+			var verts = new HashSet<int>();
+			foreach ( var f in revealed )
+				verts.UnionWith( Mesh.Faces[f].Indices );
+			SelectByVertices( verts );
+		}
+
+		Revision++;
+	}
+
+	/// <summary>Find the hidden faces in the current mesh again. Keys that match nothing are
+	/// dropped: the face changed or went, and a face you cannot find is not hidden any more.</summary>
+	void ReconcileHidden()
+	{
+		var before = HiddenFaces.Count;
+		HiddenFaces.Clear();
+
+		if ( _hidden.Count > 0 )
+		{
+			var wanted = new HashSet<HiddenKey>( _hidden );
+			var found = new List<HiddenKey>();
+			for ( var f = 0; f < Mesh.FaceCount; f++ )
+			{
+				var key = KeyOf( Mesh, Mesh.Faces[f] );
+				if ( wanted.Remove( key ) )
+				{
+					HiddenFaces.Add( f );
+					found.Add( key );
+				}
+			}
+
+			_hidden.Clear();
+			_hidden.AddRange( found );
+		}
+
+		if ( before != HiddenFaces.Count || HiddenFaces.Count > 0 )
+			HiddenRevision++;
+
+		_visible = null;
+	}
+
+	PolyMesh _visible;
+	int[] _visibleMap;
+	bool[] _visibleVertex;
+	int _visibleTopology = -1, _visibleHidden = -1;
+
+	/// <summary>
+	/// The mesh with its hidden faces left out, for drawing and picking. It shares its vertex
+	/// list with <see cref="Mesh"/>, so vertex indices agree and a drag moves both; only the faces
+	/// differ. <see cref="VisibleFaceMap"/> turns one of its face indices back into a real one.
+	/// With nothing hidden it is <see cref="Mesh"/> itself.
+	/// </summary>
+	public PolyMesh VisibleMesh
+	{
+		get
+		{
+			RefreshVisible();
+			return _visible;
+		}
+	}
+
+	/// <summary>For each face of <see cref="VisibleMesh"/>, its index in <see cref="Mesh"/>.</summary>
+	public int[] VisibleFaceMap
+	{
+		get
+		{
+			RefreshVisible();
+			return _visibleMap;
+		}
+	}
+
+	/// <summary>Whether any face that uses <paramref name="vertex"/> is showing.</summary>
+	public bool IsVertexVisible( int vertex )
+	{
+		RefreshVisible();
+		return _visibleVertex is null || (vertex >= 0 && vertex < _visibleVertex.Length && _visibleVertex[vertex]);
+	}
+
+	void RefreshVisible()
+	{
+		if ( _visible is not null && _visibleTopology == TopologyRevision && _visibleHidden == HiddenRevision && ReferenceEquals( _visible.Positions, Mesh.Positions ) )
+			return;
+
+		_visibleTopology = TopologyRevision;
+		_visibleHidden = HiddenRevision;
+
+		if ( HiddenFaces.Count == 0 )
+		{
+			_visible = Mesh;
+			_visibleVertex = null;
+			_visibleMap = new int[Mesh.FaceCount];
+			for ( var f = 0; f < _visibleMap.Length; f++ )
+				_visibleMap[f] = f;
+			return;
+		}
+
+		var faces = new List<Face>( Mesh.FaceCount - HiddenFaces.Count );
+		var map = new List<int>( faces.Capacity );
+		var seen = new bool[Mesh.VertexCount];
+		for ( var f = 0; f < Mesh.FaceCount; f++ )
+		{
+			if ( HiddenFaces.Contains( f ) )
+				continue;
+
+			faces.Add( Mesh.Faces[f] );
+			map.Add( f );
+			foreach ( var v in Mesh.Faces[f].Indices )
+				seen[v] = true;
+		}
+
+		_visible = new PolyMesh { Positions = Mesh.Positions, Faces = faces, Skin = Mesh.Skin, VertexColors = Mesh.VertexColors, Paint = Mesh.Paint };
+		_visibleMap = map.ToArray();
+		_visibleVertex = seen;
+	}
 
 	// --- proportional editing ---------------------------------------------------------------------
 

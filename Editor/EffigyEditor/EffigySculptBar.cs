@@ -347,6 +347,9 @@ internal sealed class EffigyMeshEditBar : Widget
 		if ( s.SnapTarget is not null )
 			text += " · snapping to surface";
 
+		if ( s.HasHiddenFaces )
+			text += $" · {s.HiddenFaces.Count} hidden (Alt+H shows)";
+
 		var check = MeshValidator.Validate( s.Mesh );
 		if ( check.BoundaryEdges > 0 )
 			text += $" · {check.BoundaryEdges} open edges";

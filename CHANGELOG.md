@@ -198,6 +198,22 @@ forgotten.
   instead of reaching through space, so pulling a lip leaves the other lip alone and bending a
   finger leaves the one beside it. **Falloff shape** cycles the curve: Smooth, Sphere, Root,
   Inverse Square, Sharp, Linear, Constant. `Editor/Effigy/MeshAdjacency.cs`
+- **Hide and unhide (H, Shift+H, Alt+H).** Hide the selected faces, or everything except them,
+  to work on a hand without the body in the way. Hidden faces do not draw, cannot be picked or
+  box-selected, and sit out soft falloff. They survive edits to the rest of the model, and undo
+  puts them back. `Editor/Effigy/MeshAdjacency.cs`, `Editor/EffigyEditor/EffigyViewport.Sculpting.cs`
+- **More ways to delete.** **Delete faces only** takes exactly the faces picked; **Delete edges**
+  removes edges and joins the faces on either side into one instead of leaving a hole.
+- **Merge first, last, and at pivot**, next to Merge at centre. First and last go by the order you
+  clicked vertices.
+- **Randomize.** Jitter the selected vertices along their normals — quick roughness for rock,
+  bark and cloth. Scrub the amount.
+- **Decimate in Edit mode.** Cut the selected faces (or the whole body) down to a share of their
+  triangles. The rest of the body is untouched and the border stays stitched.
+- **More selection tools.** **Random** picks half of what is showing; **Triangles** and **N-gons**
+  find the faces a quad model should not have; **Interior** finds faces pointing into the model.
+- **Separate by loose parts and by material.** Split a body into its disconnected pieces, or one
+  body per material, in one go.
 
 ### Improved
 - **Model's Edit mode is laid out like a modeller now, not like CAD.**
