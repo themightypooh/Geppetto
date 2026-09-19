@@ -252,6 +252,10 @@ forgotten.
   viewport to model against, behind the model in that view. Size, position, depth and opacity
   are adjusted from the same menu, and the pictures are saved with the document.
   `Editor/EffigyEditor/EffigyViewport.ReferenceImages.cs`
+- **Body from Bones.** File ▸ Body from Bones builds a smooth block-out body on the rig — a cube
+  per joint, a tube per bone, subdivided twice — as an ordinary part you can edit, sculpt and rig
+  to the same bones. The fastest way from a stick figure to something poseable.
+  `Editor/Effigy/SkinBlockout.cs`
 
 ### Improved
 - **Publish puts the garment on the character for you.** Make live cloth and Make clothing now find the wearer in the open scene (the model the document was dressed on, or the selected character) and put the Garment Cloth or the .clothing on it, undoably. If they cannot tell which character, they say so and leave the file ready.

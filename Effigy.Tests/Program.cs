@@ -144,6 +144,7 @@ public static class Program
 		TestEdgeCreases();
 		TestEditSessionTopologyTools();
 		TestEditSessionMappingTools();
+		TestSkinBlockout();
 
 		Section( "an edit session duplicates, separates, extracts a garment and bridges uneven loops" );
 		TestEditSessionPieces();
@@ -1932,6 +1933,48 @@ public static class Program
 		Check( "scatter undoes as one step", hill.UndoCount == 2 );
 		hill.Undo();
 		Check( "and the scattered body goes with it", hill.Separated.Count == 1 );
+	}
+
+	static void TestSkinBlockout()
+	{
+		Section( "skin block-out: a body from bones" );
+
+		// One bone straight up: two cubes and a tube, closed, with the tube's volume plus the ends.
+		var one = new Skeleton();
+		one.AddBone( "spine", -1, Xform.Translate( Vec3.Zero ), 10f );
+		var blocky = SkinBlockout.Build( one, _ => 2f, smoothLevels: 0 );
+		var v = MeshValidator.Validate( blocky );
+		Check( "one bone gives a closed all-quad solid", v.IsValid && v.IsClosed && blocky.Faces.All( f => f.Indices.Length == 4 ), v.ToString() );
+		Check( "of two cubes joined by a tube: 5 + 5 + 4 faces", blocky.FaceCount == 14, $"{blocky.FaceCount}" );
+		// Two 4x4x4 cubes at the ends overlap the 4x4 tube of length 10 between their centres:
+		// the union is a 4x4 box from -2 to 12 along the bone.
+		Check( "wound outward, with the volume of the box it makes", MathF.Abs( blocky.SignedVolume() - 4f * 4f * 14f ) < 1e-2f, $"{blocky.SignedVolume()}" );
+
+		var smooth = SkinBlockout.Build( one, _ => 2f );
+		Check( "smoothed twice it is still a closed solid", MeshValidator.Validate( smooth ) is { IsValid: true, IsClosed: true } );
+		Check( "and smaller than the box, as a rounded thing is", smooth.SignedVolume() < blocky.SignedVolume() && smooth.SignedVolume() > blocky.SignedVolume() * 0.5f );
+
+		// A chain: the child's head sits on the parent's tail, so they share one joint cube.
+		var chain = new Skeleton();
+		var root = chain.AddBone( "a", -1, Xform.Translate( Vec3.Zero ), 10f );
+		chain.AddBone( "b", root, Xform.Translate( chain.TailWorld( root ) ), 8f );
+		var linked = SkinBlockout.Build( chain, _ => 1f, smoothLevels: 0 );
+		Check( "a chain of two bones shares the middle joint: three cubes, two tubes", linked.FaceCount == 5 + 4 + 4 + 4 + 5, $"{linked.FaceCount}" );
+		Check( "and is one closed solid", MeshValidator.Validate( linked ) is { IsValid: true, IsClosed: true } );
+
+		// A fork: three bones out of one joint take three faces of its cube.
+		var fork = new Skeleton();
+		var hip = fork.AddBone( "hip", -1, Xform.Translate( Vec3.Zero ), 6f );
+		var top = fork.TailWorld( hip );
+		fork.AddBone( "l", hip, Xform.Translate( top ) * Xform.Rotate( new Vec3( 1, 0, 0 ), 1.2f ), 8f );
+		fork.AddBone( "r", hip, Xform.Translate( top ) * Xform.Rotate( new Vec3( 1, 0, 0 ), -1.2f ), 8f );
+		var forked = SkinBlockout.Build( fork, _ => 1f, smoothLevels: 1 );
+		Check( "a fork builds and closes", MeshValidator.Validate( forked ) is { IsValid: true, IsClosed: true }, MeshValidator.Validate( forked ).ToString() );
+		Check( "with the pieces of all three limbs", MeshSplit.ConnectedPieces( forked ).Count == 1 );
+
+		var refused = false;
+		try { SkinBlockout.Build( new Skeleton() ); } catch ( InvalidOperationException ) { refused = true; }
+		Check( "no bones is refused", refused );
 	}
 
 	static void TestEditSessionEdgeSplit()

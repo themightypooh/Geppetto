@@ -366,6 +366,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		file.AddOption( "New Studio", "common/new.png", NewStudio );
 		file.AddOption( "Open...", "folder_open", Open );
 		file.AddOption( "Import OBJ...", "file_open", ImportObj );
+		file.AddOption( "Body from Bones", "accessibility_new", BodyFromBones );
 		file.AddSeparator();
 		file.AddOption( "Save", "common/save.png", Save, "editor.save" );
 		file.AddOption( "Save As...", "save_alt", SaveAs );
@@ -5941,6 +5942,43 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 	/// <summary>Import a mesh as a body into the current studio, same as the Import tool button.</summary>
 	private void ImportObj() => AddFeature( new ImportFeature() );
+
+	/// <summary>
+	/// File ▸ Body from Bones: the block-out a character starts from, built on the rig. A cube per
+	/// joint, a tube per bone, smoothed twice — see <see cref="SkinBlockout"/>. It arrives as an
+	/// Import with the mesh kept beside the document, so it is an ordinary part from here on:
+	/// edit it, sculpt it, rig it to the same bones.
+	/// </summary>
+	private void BodyFromBones()
+	{
+		if ( _rigPanel is not { HasBones: true } rig )
+		{
+			SetPrompt( "Body from Bones needs a rig. Switch to Rig and draw the bones first - or Make a bone from a part." );
+			Log.Info( "[Effigy] Body from Bones: there are no bones yet" );
+			return;
+		}
+
+		PolyMesh body;
+		try
+		{
+			body = SkinBlockout.Build( rig.Skeleton );
+		}
+		catch ( InvalidOperationException e )
+		{
+			SetPrompt( e.Message );
+			Log.Warning( $"[Effigy] Body from Bones: {e.Message}" );
+			return;
+		}
+
+		var import = new ImportFeature { Name = "Blockout" };
+		import.LoadMesh( System.Text.Encoding.UTF8.GetBytes( ObjWriter.Write( body, "blockout" ) ) );
+
+		RecordUndo();
+		InsertAtRollback( import );
+		RebuildStudio();
+		_featureTree?.Select( import );
+		SetPrompt( $"Blockout: {body.FaceCount:N0} quads over {rig.Skeleton.Count} bones. Edit it, sculpt it, and rig it to the same bones." );
+	}
 
 	private void Open()
 	{
