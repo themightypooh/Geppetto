@@ -194,6 +194,10 @@ forgotten.
   left alone. `Editor/Effigy/MeshAdjacency.cs`
 - **Bevel Vertices (Ctrl+Shift+B).** Cut the corner off the selected vertices and cap each
   notch with a flat face, in Vertex mode. `Editor/Effigy/MeshAdjacency.cs`
+- **Soft falloff along the surface (Alt+O).** With Connected on, a soft move follows the mesh
+  instead of reaching through space, so pulling a lip leaves the other lip alone and bending a
+  finger leaves the one beside it. **Falloff shape** cycles the curve: Smooth, Sphere, Root,
+  Inverse Square, Sharp, Linear, Constant. `Editor/Effigy/MeshAdjacency.cs`
 
 ### Improved
 - **Model's Edit mode is laid out like a modeller now, not like CAD.**

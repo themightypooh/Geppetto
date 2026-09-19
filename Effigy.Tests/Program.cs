@@ -2309,6 +2309,48 @@ public static class Program
 		Check( "soft falloff moves the nearby loop part of the way", so.Mesh.Positions[middle].z > 0.1f && so.Mesh.Positions[middle].z < 0.5f, $"{so.Mesh.Positions[middle].z}" );
 		Check( "and leaves what is out of reach alone", MathF.Abs( so.Mesh.Positions[bottom].z + 1f ) < 1e-5f );
 
+		// Connected only: two boxes half an inch apart. Lifting the top of one pulls the other's
+		// top through space, but not along the surface — there is no surface between them.
+		var pair = Primitives.Box( 2, 2, 2 );
+		MeshTransform.Append( pair, MeshTransform.Transformed( Primitives.Box( 2, 2, 2 ), Xform.Translate( new Vec3( 2.5f, 0, 0 ) ) ) );
+		int OtherTop( PolyMesh m ) => m.Positions.FindIndex( q => q.x > 1.4f && q.x < 2f && q.y > 0 && q.z > 0.9f );
+
+		foreach ( var connected in new[] { false, true } )
+		{
+			var two = new MeshEditSession( pair.Clone() );
+			two.SetMode( EditElement.Vertex );
+			for ( var i = 0; i < two.Mesh.VertexCount; i++ )
+				if ( two.Mesh.Positions[i].x < 1.1f && two.Mesh.Positions[i].z > 0.9f )
+					two.SelectVertex( i, MeshEditSession.Combine.Add );
+			two.SoftRadius = 1.5f;
+			two.SoftConnected = connected;
+			var other = OtherTop( two.Mesh );
+			two.BeginDrag();
+			two.Drag( new Vec3( 0, 0, 1 ) );
+			two.EndDrag();
+			var lifted = two.Mesh.Positions[other].z - 1f;
+			Check( connected ? "connected-only falloff leaves the box next door alone" : "through-space falloff pulls the box next door",
+				connected ? MathF.Abs( lifted ) < 1e-5f : lifted > 0.3f, $"{lifted}" );
+		}
+
+		// The curve shapes: all agree at the ends, and order themselves in the middle.
+		var shapes = new MeshEditSession( box );
+		var mid = new Dictionary<MeshEditSession.SoftFalloff, float>();
+		foreach ( var shape in Enum.GetValues<MeshEditSession.SoftFalloff>() )
+		{
+			shapes.SoftShape = shape;
+			var ends = shapes.SoftWeight( 0f ) == 0f && shapes.SoftWeight( 1f ) == 1f;
+			Check( $"{shape} falloff is 0 at the edge and 1 at the selection", shape == MeshEditSession.SoftFalloff.Constant ? shapes.SoftWeight( 1f ) == 1f : ends );
+			mid[shape] = shapes.SoftWeight( 0.5f );
+		}
+
+		Check( "sharp pulls less than linear, smooth is in the middle, root and sphere pull more, constant pulls everything",
+			mid[MeshEditSession.SoftFalloff.Sharp] < mid[MeshEditSession.SoftFalloff.Linear]
+			&& MathF.Abs( mid[MeshEditSession.SoftFalloff.Smooth] - 0.5f ) < 1e-6f
+			&& mid[MeshEditSession.SoftFalloff.Linear] < mid[MeshEditSession.SoftFalloff.Root]
+			&& mid[MeshEditSession.SoftFalloff.Root] < mid[MeshEditSession.SoftFalloff.Sphere]
+			&& mid[MeshEditSession.SoftFalloff.Constant] == 1f );
+
 		// Operations refuse with a reason instead of doing something odd.
 		var r = new MeshEditSession( box );
 		threw = false;

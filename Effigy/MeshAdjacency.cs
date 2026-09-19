@@ -3310,30 +3310,13 @@ public sealed class MeshEditSession
 		foreach ( var _ in verts )
 			weights.Add( 1f );
 
-		// Soft falloff: every other vertex near the selection joins with a weight. Brute force over
-		// the selection per vertex — fine at game-character sizes, and a drag only pays it once.
+		// Soft falloff: every other vertex near the selection joins with a weight.
 		if ( SoftRadius > 0f )
 		{
-			var chosen = new List<Vec3>();
-			foreach ( var v in verts )
-				chosen.Add( Mesh.Positions[v] );
-
-			for ( var i = 0; i < Mesh.VertexCount; i++ )
+			foreach ( var (i, d) in SoftConnected ? ConnectedDistances( verts, SoftRadius ) : StraightDistances( verts, SoftRadius ) )
 			{
-				if ( verts.Contains( i ) )
-					continue;
-
-				var nearest = float.MaxValue;
-				foreach ( var c in chosen )
-					nearest = MathF.Min( nearest, (Mesh.Positions[i] - c).LengthSquared );
-
-				var d = MathF.Sqrt( nearest );
-				if ( d >= SoftRadius )
-					continue;
-
-				var t = 1f - d / SoftRadius;
 				list.Add( i );
-				weights.Add( t * t * (3f - 2f * t) );
+				weights.Add( SoftWeight( 1f - d / SoftRadius ) );
 			}
 		}
 
@@ -3996,6 +3979,117 @@ public sealed class MeshEditSession
 	/// Proportional Editing, and what makes a dragged vertex pull a curve rather than a spike.
 	/// </summary>
 	public float SoftRadius { get; set; }
+
+	/// <summary>The shape of the soft falloff's curve, Blender's falloff types. Smooth by default.</summary>
+	public SoftFalloff SoftShape { get; set; } = SoftFalloff.Smooth;
+
+	/// <summary>
+	/// Measure the falloff along the surface instead of through space (Blender's Connected Only,
+	/// Alt+O). Moving a lip then leaves the other lip alone even though it is close by, and a finger
+	/// can be bent without pulling the one beside it.
+	/// </summary>
+	public bool SoftConnected { get; set; }
+
+	public enum SoftFalloff
+	{
+		Smooth,
+		Sphere,
+		Root,
+		InverseSquare,
+		Sharp,
+		Linear,
+		Constant,
+	}
+
+	/// <summary>The weight a vertex gets at <paramref name="t"/>, 1 at the selection and 0 at the
+	/// edge of the radius. Blender's curves.</summary>
+	public float SoftWeight( float t )
+	{
+		t = Math.Clamp( t, 0f, 1f );
+		return SoftShape switch
+		{
+			SoftFalloff.Sphere => MathF.Sqrt( 2f * t - t * t ),
+			SoftFalloff.Root => MathF.Sqrt( t ),
+			SoftFalloff.InverseSquare => t * (2f - t),
+			SoftFalloff.Sharp => t * t,
+			SoftFalloff.Linear => t,
+			SoftFalloff.Constant => 1f,
+			_ => t * t * (3f - 2f * t),
+		};
+	}
+
+	/// <summary>Every unselected vertex within <paramref name="radius"/> of the selection through
+	/// space, with its distance. Brute force over the selection per vertex — fine at game-character
+	/// sizes, and a drag only pays it once.</summary>
+	IEnumerable<(int vertex, float distance)> StraightDistances( HashSet<int> verts, float radius )
+	{
+		var chosen = new List<Vec3>();
+		foreach ( var v in verts )
+			chosen.Add( Mesh.Positions[v] );
+
+		for ( var i = 0; i < Mesh.VertexCount; i++ )
+		{
+			if ( verts.Contains( i ) )
+				continue;
+
+			var nearest = float.MaxValue;
+			foreach ( var c in chosen )
+				nearest = MathF.Min( nearest, (Mesh.Positions[i] - c).LengthSquared );
+
+			var d = MathF.Sqrt( nearest );
+			if ( d < radius )
+				yield return (i, d);
+		}
+	}
+
+	/// <summary>Every unselected vertex within <paramref name="radius"/> of the selection walking
+	/// along edges, with the length of the shortest walk. Dijkstra out from the whole selection at
+	/// once, stopping at the radius, so only the reachable neighbourhood is visited.</summary>
+	IEnumerable<(int vertex, float distance)> ConnectedDistances( HashSet<int> verts, float radius )
+	{
+		var neighbours = new List<int>[Mesh.VertexCount];
+		foreach ( var f in Mesh.Faces )
+		{
+			var n = f.Indices.Length;
+			for ( var i = 0; i < n; i++ )
+			{
+				var a = f.Indices[i];
+				var b = f.Indices[(i + 1) % n];
+				(neighbours[a] ??= new List<int>()).Add( b );
+				(neighbours[b] ??= new List<int>()).Add( a );
+			}
+		}
+
+		var best = new Dictionary<int, float>();
+		var queue = new PriorityQueue<int, float>();
+		foreach ( var v in verts )
+		{
+			best[v] = 0f;
+			queue.Enqueue( v, 0f );
+		}
+
+		while ( queue.TryDequeue( out var v, out var d ) )
+		{
+			if ( d > best[v] || neighbours[v] is null )
+				continue;
+
+			foreach ( var w in neighbours[v] )
+			{
+				var next = d + (Mesh.Positions[w] - Mesh.Positions[v]).Length;
+				if ( next >= radius || (best.TryGetValue( w, out var known ) && known <= next) )
+					continue;
+
+				best[w] = next;
+				queue.Enqueue( w, next );
+			}
+		}
+
+		foreach ( var (v, d) in best )
+		{
+			if ( !verts.Contains( v ) )
+				yield return (v, d);
+		}
+	}
 
 	// --- duplicate, separate, extract ------------------------------------------------------------
 

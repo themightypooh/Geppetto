@@ -342,7 +342,7 @@ internal sealed class EffigyMeshEditBar : Widget
 			text += $" · {s.Separated.Count} piece(s) split off";
 
 		if ( s.SoftRadius > 0f )
-			text += $" · soft {s.SoftRadius:0.##}";
+			text += $" · soft {s.SoftRadius:0.##}{(s.SoftConnected ? " connected" : "")}{(s.SoftShape != MeshEditSession.SoftFalloff.Smooth ? $" {s.SoftShape}" : "")}";
 
 		if ( s.SnapTarget is not null )
 			text += " · snapping to surface";

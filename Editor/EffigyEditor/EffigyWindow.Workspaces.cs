@@ -1073,7 +1073,7 @@ public sealed partial class EffigyWindow
 	private EffigyStageTool _meshExtrudeTool, _meshExtrudeNormalsTool, _meshExtrudeIndividualTool, _meshInsetTool, _meshLoopCutTool;
 	private EffigyStageTool _meshMergeTool, _meshDissolveTool, _meshDeleteTool;
 	private EffigyStageTool _meshMirrorTool, _meshSnapTool, _meshWrapTool;
-	private EffigyStageTool _meshKnifeTool, _meshSoftTool;
+	private EffigyStageTool _meshKnifeTool, _meshSoftTool, _meshSoftConnectedTool, _meshSoftShapeTool;
 	private EffigyStageTool _meshWeightsTool;
 	private EffigyStageTool _meshLassoTool, _meshBisectTool, _meshDuplicateTool, _meshBridgeTool, _meshExtractTool, _meshSeparateTool;
 	private EffigyStageTool _meshXrayTool, _meshMoveTool, _meshRotateTool, _meshScaleTool, _meshSlideTool, _meshBevelTool;
@@ -1110,6 +1110,7 @@ public sealed partial class EffigyWindow
 	private const char MeshKeyLimitedDissolve = (char)29;
 	private const char MeshKeyTrisToQuads = (char)16;
 	private const char MeshKeyBevelVertices = (char)22;
+	private const char MeshKeySoftConnected = (char)15;
 
 	private void ToggleMeshKnife()
 	{
@@ -1335,6 +1336,32 @@ public sealed partial class EffigyWindow
 			return;
 
 		session.SoftRadius = session.SoftRadius > 0f ? 0f : MeshSize() * 0.15f;
+		OnMeshEditChanged();
+	}
+
+	private void ToggleMeshSoftConnected()
+	{
+		if ( _viewport?.MeshEditSession is not { } session )
+			return;
+
+		session.SoftConnected = !session.SoftConnected;
+		if ( session.SoftConnected && session.SoftRadius <= 0f )
+			session.SoftRadius = MeshSize() * 0.15f;
+
+		SetPrompt( session.SoftConnected
+			? "Soft falloff follows the surface: nearby but unconnected parts stay put."
+			: "Soft falloff reaches through space." );
+		OnMeshEditChanged();
+	}
+
+	private void CycleMeshSoftShape()
+	{
+		if ( _viewport?.MeshEditSession is not { } session )
+			return;
+
+		var shapes = Enum.GetValues<MeshEditSession.SoftFalloff>();
+		session.SoftShape = shapes[(Array.IndexOf( shapes, session.SoftShape ) + 1) % shapes.Length];
+		SetPrompt( $"Soft falloff shape: {session.SoftShape}." );
 		OnMeshEditChanged();
 	}
 
@@ -1779,6 +1806,8 @@ public sealed partial class EffigyWindow
 		_meshRotateTool = MeshTool( move, EffigyIcon.CircularPattern, "Rotate", "Rotate handle (R)", () => SetMeshHandle( EffigyViewport.BodyDragMode.Rotate ), checkable: true );
 		_meshScaleTool = MeshTool( move, EffigyIcon.Primitive, "Scale", "Scale handle (S)", () => SetMeshHandle( EffigyViewport.BodyDragMode.Scale ), checkable: true );
 		_meshSoftTool = MeshTool( move, EffigyIcon.SculptSmooth, "Soft", "Soft falloff: moving pulls nearby vertices along too. [ and ] change its reach (O)", ToggleMeshSoft, checkable: true );
+		_meshSoftConnectedTool = MeshTool( move, EffigyIcon.SculptSmooth, "Connected", "Soft falloff along the surface only, so a lip moves without the other lip and a finger without the one beside it (Alt+O)", ToggleMeshSoftConnected, checkable: true );
+		_meshSoftShapeTool = MeshTool( move, EffigyIcon.SculptSmooth, "Falloff shape", "Cycle the soft falloff's curve: Smooth, Sphere, Root, Inverse Square, Sharp, Linear, Constant", CycleMeshSoftShape );
 		_meshSlideTool = MeshTool( move, EffigyIcon.LoopCut, "Edge slide", "Slide the selected edge loop towards one neighbour or the other", () => StartMeshOp( "Edge slide", 0.25f, ( s, v ) => s.EdgeSlide( v ) ) );
 		_meshShrinkFattenTool = MeshTool( move, EffigyIcon.Shell, "Shrink/Fatten", "Move the selection along its own normals — thicken a limb, or pull a surface in, without changing its shape (Alt+S)", () => StartMeshOp( "Shrink/Fatten", MeshSize() * 0.02f, ( s, v ) => s.ShrinkFatten( v ) ) );
 		MeshTool( move, EffigyIcon.Transform, "Shear", "Lean the selection over along X, more the higher up it is. 1 is 45 degrees", () => StartMeshOp( "Shear", 0.5f, ( s, v ) => s.Shear( v ) ) );
@@ -2543,6 +2572,7 @@ public sealed partial class EffigyWindow
 			_meshXrayTool.Checked = _viewport?.MeshXray ?? false;
 			_meshKnifeTool.Checked = _viewport?.MeshKnifeArmed ?? false;
 			_meshSoftTool.Checked = session is { SoftRadius: > 0f };
+			_meshSoftConnectedTool.Checked = session is { SoftConnected: true };
 			_meshMoveTool.Checked = _viewport?.MeshHandleMode == EffigyViewport.BodyDragMode.Move;
 			_meshRotateTool.Checked = _viewport?.MeshHandleMode == EffigyViewport.BodyDragMode.Rotate;
 			_meshScaleTool.Checked = _viewport?.MeshHandleMode == EffigyViewport.BodyDragMode.Scale;
@@ -2655,6 +2685,7 @@ public sealed partial class EffigyWindow
 			case 'D': RunMeshOp( "Duplicate", s => s.Duplicate() ); return true;
 			case 'P': RunMeshOp( "Separate", s => s.Separate() ); return true;
 			case 'O': ToggleMeshSoft(); return true;
+			case MeshKeySoftConnected: ToggleMeshSoftConnected(); return true;
 			case '[': ScaleMeshSoft( 0.8f ); return true;
 			case ']': ScaleMeshSoft( 1.25f ); return true;
 			case 'G': case 'W': SetMeshHandle( EffigyViewport.BodyDragMode.Move ); return true;
@@ -2787,6 +2818,9 @@ public sealed partial class EffigyWindow
 
 	[Shortcut( "effigy.mesh.knife", "K", typeof( EffigyViewport ) )]
 	private void ShortcutMeshKnife() => MeshEditKey( 'K' );
+
+	[Shortcut( "effigy.mesh.soft_connected", "ALT+O", typeof( EffigyViewport ) )]
+	private void ShortcutMeshSoftConnected() => MeshEditKey( MeshKeySoftConnected );
 
 	[Shortcut( "effigy.mesh.soft", "O", typeof( EffigyViewport ) )]
 	private void ShortcutMeshSoft() => MeshEditKey( 'O' );
