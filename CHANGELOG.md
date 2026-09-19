@@ -757,6 +757,7 @@ forgotten.
   out now, the same way the FBX writer already does. `ObjWriter.cs`
 
 ### Known Issues
+- **Live cloth has no self-collision.** It collides with the body only: a fold can pass through itself, and a jacket over a shirt passes through the shirt.
 - Animation clips have to be added again every time you open the tool. File → Animation
   Clips… builds the list that Compile .vmdl bakes in, and that list is not written to the
   .effigy -- close Effigy and it is empty next time, with nothing said about it. Saving it

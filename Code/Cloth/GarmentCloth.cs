@@ -19,6 +19,11 @@ namespace Marionette;
 /// any frame rate, which a spring simulation is not, and it costs a few milliseconds for a
 /// T-shirt. It also runs in the editor, so a garment can be watched settling without pressing Play.
 ///
+/// NO SELF-COLLISION, AND NO CLOTH-ON-CLOTH. The cloth collides with the body's capsules and
+/// nothing else: a fold can pass through itself, and a jacket over a shirt passes through the
+/// shirt. That is the usual first version of a game cloth solver and it is what this is; the
+/// tool says so where it writes the file rather than letting a layered outfit be a surprise.
+///
 /// LEASHED. Every particle is held within Leash of where the garment was fitted relative to its
 /// bone. Free cloth left behind by a teleport, a respawn or a frame hitch would otherwise be found
 /// on the floor; the leash is the long-range attachment every shipped cloth solver has for that.

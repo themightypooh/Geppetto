@@ -627,7 +627,9 @@ public sealed partial class EffigyWindow
 			Label = "Make live cloth",
 			Tip = "Write the garment as live cloth - models/effigy/NAME.cloth.json - for the Garment Cloth "
 				+ "component. Put that component on the character and the shirt hangs and swings with "
-				+ "real cloth physics instead of riding the bones stiffly. Works in the editor without Play.",
+				+ "real cloth physics instead of riding the bones stiffly. Works in the editor without Play. "
+				+ "It collides with the body only: no self-collision yet, and a jacket over a shirt will pass "
+				+ "through the shirt.",
 			Clicked = PublishLiveCloth,
 		} );
 
