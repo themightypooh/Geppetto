@@ -4074,6 +4074,46 @@ public sealed class MeshEditSession
 		Move( Pivot - SelectionCentre() );
 	}
 
+	// --- adding primitives -------------------------------------------------------------------
+
+	/// <summary>What <see cref="AddPrimitive"/> can drop in.</summary>
+	public enum PrimitiveKind { Cube, Sphere, Cylinder, Plane, Tube, Wedge }
+
+	/// <summary>
+	/// Drop a primitive into the mesh being edited — Blender's Shift+A in Edit Mode. It lands with
+	/// its centre at <paramref name="at"/> (the pivot when null), <paramref name="size"/> across, as
+	/// its own piece: bridge it, merge it or leave it loose. The new faces become the selection, so
+	/// G moves it straight away. On an empty edit this is how the mesh begins.
+	/// </summary>
+	public void AddPrimitive( PrimitiveKind kind, float size, Vec3? at = null, int segments = 16 )
+	{
+		if ( size <= 0f )
+			throw new InvalidOperationException( "A primitive needs a size above zero." );
+
+		var material = Mesh.FaceCount > 0 ? Mesh.Faces[0].Material : 0;
+		var piece = kind switch
+		{
+			PrimitiveKind.Sphere => Primitives.QuadSphere( size * 0.5f, Math.Clamp( segments / 4, 2, 8 ), material ),
+			PrimitiveKind.Cylinder => Primitives.Cylinder( size * 0.5f, size, Math.Max( segments, 3 ), material ),
+			PrimitiveKind.Plane => Primitives.Plane( size, size, 1, 1, material ),
+			PrimitiveKind.Tube => Primitives.Tube( size * 0.5f, size * 0.3f, size, Math.Max( segments, 3 ), material ),
+			PrimitiveKind.Wedge => Primitives.Wedge( size, size, size, material ),
+			_ => Primitives.Box( size, size, size, material ),
+		};
+
+		var centre = at ?? Pivot;
+		Step( $"Add {kind}", () =>
+		{
+			var first = Mesh.FaceCount;
+			MeshTransform.Append( Mesh, MeshTransform.Transformed( piece, Xform.Translate( centre ) ) );
+			Changed();
+			ClearSelection();
+			Mode = EditElement.Face;
+			for ( var f = first; f < Mesh.FaceCount; f++ )
+				SelectedFaces.Add( f );
+		} );
+	}
+
 	// --- named selections ------------------------------------------------------------------
 
 	/// <summary>

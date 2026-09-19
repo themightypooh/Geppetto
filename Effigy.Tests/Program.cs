@@ -146,6 +146,7 @@ public static class Program
 		TestEditSessionMappingTools();
 		TestSkinBlockout();
 		TestUVIslands();
+		TestAddPrimitiveAndFromScratch();
 
 		Section( "an edit session duplicates, separates, extracts a garment and bridges uneven loops" );
 		TestEditSessionPieces();
@@ -2079,6 +2080,53 @@ public static class Program
 		var st = UVIslands.Stretch( squashed );
 		Check( "a face given a quarter of its texture reads below one, the rest above",
 			st[0] < 0.4f && Enumerable.Range( 1, 5 ).All( f => st[f] > 1f ), $"{st[0]:0.00} / {st[1]:0.00}" );
+	}
+
+	static void TestAddPrimitiveAndFromScratch()
+	{
+		Section( "edit session: adding primitives, and an edit that starts from nothing" );
+
+		var s = new MeshEditSession( new PolyMesh() );
+		Check( "an edit can start on an empty mesh", s.Mesh.FaceCount == 0 );
+		s.AddPrimitive( MeshEditSession.PrimitiveKind.Cube, 4f );
+		Check( "adding a cube to nothing gives a cube", s.Mesh.FaceCount == 6 && s.Mesh.VertexCount == 8 && MathF.Abs( s.Mesh.SignedVolume() - 64f ) < 1e-3f, $"{s.Mesh.FaceCount}f {s.Mesh.SignedVolume()}" );
+		Check( "selected, in face mode", s.Mode == EditElement.Face && s.SelectedFaces.Count == 6 );
+		Check( "as one undo step", s.UndoCount == 1 && s.LastLabel == "Add Cube" );
+
+		s.Pivot = new Vec3( 10, 0, 0 );
+		s.AddPrimitive( MeshEditSession.PrimitiveKind.Sphere, 2f );
+		Check( "a sphere lands at the pivot as its own piece", MeshSplit.ConnectedPieces( s.Mesh ).Count == 2 && s.Mesh.Positions.Skip( 8 ).All( p => (p - new Vec3( 10, 0, 0 )).Length < 1.01f ) );
+		Check( "and only the sphere is selected", s.SelectedFaces.Count == s.Mesh.FaceCount - 6 && !s.SelectedFaces.Contains( 0 ) );
+		s.AddPrimitive( MeshEditSession.PrimitiveKind.Cylinder, 2f, new Vec3( 0, 10, 0 ), 8 );
+		s.AddPrimitive( MeshEditSession.PrimitiveKind.Plane, 2f, new Vec3( 0, -10, 0 ) );
+		s.AddPrimitive( MeshEditSession.PrimitiveKind.Tube, 2f, new Vec3( 0, 0, 10 ) );
+		s.AddPrimitive( MeshEditSession.PrimitiveKind.Wedge, 2f, new Vec3( 0, 0, -10 ) );
+		Check( "every kind adds a piece", MeshSplit.ConnectedPieces( s.Mesh ).Count == 6 && MeshValidator.Validate( s.Mesh ).IsValid, MeshValidator.Validate( s.Mesh ).ToString() );
+		s.Undo(); s.Undo(); s.Undo(); s.Undo(); s.Undo();
+		Check( "and every one undoes", s.Mesh.FaceCount == 6 );
+		var refused = false;
+		try { s.AddPrimitive( MeshEditSession.PrimitiveKind.Cube, 0f ); } catch ( InvalidOperationException ) { refused = true; }
+		Check( "a zero size is refused", refused );
+
+		// A from-scratch edit in a studio: no body above it, and it makes one.
+		var studio = new PartStudio();
+		var edit = studio.Add( new MeshEditFeature { Name = "Mesh" } );
+		edit.FromScratch.Value = true;
+		studio.Rebuild();
+		Check( "a from-scratch edit builds on an empty studio", edit.Error is null && studio.Bodies.Count == 1 && studio.Bodies[0].Mesh.FaceCount == 0, edit.Error ?? "" );
+		Check( "and knows its body", studio.Bodies[0].Id == edit.LastBodyId && edit.LastInput is { FaceCount: 0 } );
+
+		var session = new MeshEditSession( edit.LastInput );
+		session.AddPrimitive( MeshEditSession.PrimitiveKind.Cube, 2f );
+		session.CommitTo( edit );
+		studio.Rebuild();
+		Check( "committing a cube makes the body a cube", studio.Bodies.Count == 1 && studio.Bodies[0].Mesh.FaceCount == 6 );
+
+		var back = StudioDocument.Read( StudioDocument.Write( studio ) );
+		var reloaded = back.Features.OfType<MeshEditFeature>().First();
+		reloaded.LoadMesh( edit.SaveMesh() );
+		back.Rebuild();
+		Check( "and it survives the document", reloaded.FromScratch.Value && reloaded.Error is null && back.Bodies.Count == 1 && back.Bodies[0].Mesh.FaceCount == 6, reloaded.Error ?? "" );
 	}
 
 	static void TestEditSessionEdgeSplit()

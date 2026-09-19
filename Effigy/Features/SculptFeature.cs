@@ -187,6 +187,13 @@ public sealed class MeshEditFeature : Feature
 
 	public readonly BoolParam KeepIfChanged = new( "Keep this edit if the body above changes", false );
 
+	/// <summary>
+	/// The edit starts from nothing and makes a new body, instead of editing one above it — how
+	/// modelling begins on an empty document: an edit, then Add ▸ Cube. Nothing in the tree is
+	/// read, so nothing above it can change under it.
+	/// </summary>
+	public readonly BoolParam FromScratch = new( "Starts a new body", false );
+
 	// The live modifiers — see MeshModifiers. Saved like any other parameter; the edit itself
 	// stays the cage, and these run on the way out.
 	public readonly BoolParam MirrorX = new( "Mirror across X", false );
@@ -195,7 +202,7 @@ public sealed class MeshEditFeature : Feature
 	public readonly IntParam SubdivideLevels = new( "Subdivide", 0, 0, 3 );
 	public readonly FloatParam SolidifyThickness = new( "Thickness", 0f, 0f );
 
-	public override IReadOnlyList<IParam> Parameters => new IParam[] { Bodies, KeepIfChanged };
+	public override IReadOnlyList<IParam> Parameters => new IParam[] { Bodies, KeepIfChanged, FromScratch };
 
 	public override IReadOnlyList<IParam> AdvancedParameters => new IParam[] { MirrorX, ArrayCount, ArrayGap, SubdivideLevels, SolidifyThickness };
 
@@ -296,6 +303,38 @@ public sealed class MeshEditFeature : Feature
 	/// refuse. Positions are quantised to 1/1024 inch so float noise from an identical rebuild does
 	/// not count as a change.
 	/// </summary>
+	/// <summary>A new body from the edit alone: empty until something is added to it.</summary>
+	void ExecuteFromScratch( FeatureContext ctx )
+	{
+		_lastInput = new PolyMesh();
+
+		if ( _pending is not null )
+		{
+			try
+			{
+				_edited = MeshEditBlob.Read( _pending, out _baseFingerprint, out var pieces, out var creases );
+				_pieces = pieces;
+				Creases = creases;
+			}
+			catch ( System.Exception e )
+			{
+				Fail( "This mesh edit could not be read", e.Message, "Delete this feature and start the edit again" );
+				return;
+			}
+
+			_pending = null;
+		}
+
+		var body = new Body( ctx.NewBodyId(), Name ?? "Mesh", ApplyModifiers( _edited ?? new PolyMesh() ) );
+		LastBodyId = body.Id;
+		ctx.Bodies.Add( body );
+
+		for ( var i = 0; i < _pieces.Count; i++ )
+			ctx.Bodies.Add( new Body( ctx.NewBodyId(), $"{body.Name} piece {i + 1}", _pieces[i].Clone() ) );
+
+		_builtRevision = _revision;
+	}
+
 	public static long Fingerprint( PolyMesh mesh )
 	{
 		const long prime = 0x100000001b3;
@@ -322,6 +361,12 @@ public sealed class MeshEditFeature : Feature
 
 	protected override void Execute( FeatureContext ctx )
 	{
+		if ( FromScratch.Value )
+		{
+			ExecuteFromScratch( ctx );
+			return;
+		}
+
 		var targets = RequireBodies( ctx, Bodies );
 
 		if ( targets.Count != 1 )

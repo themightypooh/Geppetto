@@ -273,6 +273,12 @@ forgotten.
 - **Saved selections.** Save selection keeps what is selected under a name; Recall selection
   brings it back (Shift adds, Ctrl takes it away). For the ear, the fingers, the hem — anything
   you keep coming back to during an edit.
+- **Add primitives inside Edit mode (Shift+A).** Drop a cube, sphere, cylinder, plane, tube or
+  wedge into the mesh you are editing, at the pivot, sized by the number on the bar — as its own
+  piece, selected and ready to move, bridge or merge.
+- **Edit mesh on an empty document.** Edit mesh with no body starts a new mesh from nothing, the
+  way Blender starts on an empty scene; Shift+A a cube and go. The edit is a "Starts a new body"
+  feature, saved like any other.
 
 ### Improved
 - **Check shows you where.** Clipping vertices are marked on the model, yellow for a graze through red for the deepest, instead of only a count in the console. **Push out** next to it gives each clipping garment exactly the Clearance it needs and rebuilds, as one undo step. **Clear marks** takes them off.

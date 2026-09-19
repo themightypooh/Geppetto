@@ -344,7 +344,7 @@ public sealed partial class EffigyWindow
 		_stageBar.SetStages( _sculptHomeStages );
 
 		SetPrompt( _studio.Bodies.Count == 0
-			? "Model needs a body — draw a sketch and extrude it, or add a primitive first."
+			? "Model: press Edit mesh to start a new mesh from nothing (Shift+A adds a cube), or add a primitive or extrude a sketch first."
 			: "Model: Edit mesh to move vertices, edges and faces, or add a Sculpt to brush detail on." );
 	}
 
@@ -1094,6 +1094,8 @@ public sealed partial class EffigyWindow
 	private EffigyStageTool _meshDeleteFacesTool, _meshDeleteEdgesTool, _meshMergeFirstTool, _meshMergeLastTool, _meshMergePivotTool, _meshRandomizeTool, _meshDecimateTool;
 	private EffigyStageTool _meshLoosePartsTool, _meshByMaterialTool, _meshCreaseTool, _meshUncreaseTool;
 	private readonly List<EffigyStageTool> _meshTypedTools = new();
+	private readonly List<EffigyStageTool> _meshPrimitiveTools = new();
+	private const char MeshKeyAddPrimitive = (char)1;
 	private EffigyStageTool _meshRotateEdgeTool, _meshRotateEdgeBackTool, _meshSubdivideEdgesTool, _meshFillHolesTool, _meshBeautifyTool;
 	private EffigyStageTool _meshSharpSelectTool, _meshMirrorSelectTool, _meshLooseSelectTool, _meshToPivotTool;
 	private EffigyStageTool _meshProjectUVsTool, _meshPlanarUVsTool, _meshTrimRowTool, _meshTrimRowsTool, _meshPipeTool, _meshScatterTool;
@@ -1747,7 +1749,7 @@ public sealed partial class EffigyWindow
 		var menus = new List<EffigyStage>
 		{
 			Menu( "Select", "All", "Invert", "Grow", "Shrink", "-", "Linked", "Similar", "Path", "Checker", "Random", "Select/Mirror", "-", "Save selection", "Recall selection", "-", "Non-manifold", "Border", "Sharp edges", "Triangles", "N-gons", "Interior", "Loose", "-", "Lasso", "Circle", "X-ray", "-", "Hide", "Hide others", "Unhide" ),
-			Menu( "Add", "Extrude", "Extrude along normals", "Extrude individual", "Inset", "Bevel", "Loop cut", "Knife", "Bisect", "-", "Fill", "Grid fill", "Bridge", "-", "Add/Duplicate", "Add/Array", "Spin", "Screw", "Pivot here", "-", "Add/Subdivide" ),
+			Menu( "Add", "Add Cube", "Add Sphere", "Add Cylinder", "Add Plane", "Add Tube", "Add Wedge", "-", "Extrude", "Extrude along normals", "Extrude individual", "Inset", "Bevel", "Loop cut", "Knife", "Bisect", "-", "Fill", "Grid fill", "Bridge", "-", "Add/Duplicate", "Add/Array", "Spin", "Screw", "Pivot here", "-", "Add/Subdivide" ),
 			Menu( "Vertex", "Merge", "Merge first", "Merge last", "Merge at pivot", "By distance", "Connect", "Bevel vertices", "-", "Vertex slide", "Clean up/Smooth", "Clean up/Relax", "Clean up/Flatten", "Loop circle", "Loop space", "To sphere", "Randomize" ),
 			Menu( "Edge", "Edge slide", "Rip", "Rotate edge", "Subdivide edges", "Pipe", "-", "Loop circle", "Loop space", "-", "Make hard", "Harden creases", "Crease", "Clear crease", "-", "Mark seam", "Clear seam", "-", "Delete edges" ),
 			Menu( "Face", "Triangulate", "Tris to quads", "Beautify", "Poke faces", "Fill holes", "Scatter", "-", "Split", "Separate", "Loose parts", "By material", "Extract", "-", "Flip", "Fix normals", "-", "Solidify", "-", "Delete faces only" ),
@@ -1945,6 +1947,16 @@ public sealed partial class EffigyWindow
 		_meshBeautifyTool = MeshTool( add, EffigyIcon.SelectFace, "Beautify", "Flip the diagonals between the selected triangles wherever that makes them better shaped — what to run after a triangulate leaves slivers", () => RunMeshOp( "Beautify", s => s.BeautifyFaces() ) );
 		_meshPipeTool = MeshTool( add, EffigyIcon.CircularPattern, "Pipe", "Build a tube of this radius along the selected edges — cables, pipes, rails, branches. Rings never twist, ends are capped, and the guide edges stay. Shift-click makes it six-sided", () => StartMeshOp( "Pipe", MeshSize() * 0.01f, ( s, v ) => s.Pipe( MathF.Max( v, 0.001f ), Editor.Application.IsKeyDown( KeyCode.Shift ) ? 6 : 8 ) ) );
 		_meshScatterTool = MeshTool( add, EffigyIcon.Primitive, "Scatter", "Scatter this many copies of another body over the selected faces (or the whole surface) — rocks over ground, tufts over a field. Stood on the surface, turned at random, sized 80–120%, nothing steeper than 45°. The copies become a body of their own. Shift-click keeps them upright", StartMeshScatter );
+		foreach ( var (kind, tip) in new[]
+		{
+			(MeshEditSession.PrimitiveKind.Cube, "a cube"), (MeshEditSession.PrimitiveKind.Sphere, "a sphere"), (MeshEditSession.PrimitiveKind.Cylinder, "a cylinder"),
+			(MeshEditSession.PrimitiveKind.Plane, "a flat square"), (MeshEditSession.PrimitiveKind.Tube, "a tube"), (MeshEditSession.PrimitiveKind.Wedge, "a wedge"),
+		} )
+		{
+			var captured = kind;
+			_meshPrimitiveTools.Add( MeshTool( add, EffigyIcon.Primitive, $"Add {kind}", $"Drop {tip} into this mesh at the pivot, this big across, as its own piece — bridge it, merge it or leave it loose. The new faces are selected, so Move works straight away (Shift+A)", () => StartMeshOp( $"Add {captured}", MeshSize() > 1e-3f && _viewport?.MeshEditSession is { Mesh.FaceCount: > 0 } ? MeshSize() * 0.25f : 16f, ( s, v ) => s.AddPrimitive( captured, v ) ) ) );
+		}
+
 		_meshTypedTools.Add( MeshTool( add, EffigyIcon.Transform, "Snap to grid", "Snap the selected vertices onto a grid of this many units — 16 makes a wall piece's edges land where the next piece meets them", () => StartMeshOp( "Snap to grid", 16f, ( s, v ) => s.SnapToGrid( MathF.Max( v, 0.001f ) ) ) ) );
 		_meshToPivotTool = MeshTool( add, EffigyIcon.Transform, "To pivot", "Move the selection so its centre lands on the pivot — the other half of Pivot here", () => RunMeshOp( "To pivot", s => s.SelectionToPivot() ) );
 		_meshSubdivideTool = MeshTool( add, EffigyIcon.Subdivide, "Subdivide", "Split the selected faces into four, for somewhere you want more detail. With nothing selected it subdivides and smooths the whole body. Skin weights come with it", SubdivideMesh );
@@ -2059,15 +2071,17 @@ public sealed partial class EffigyWindow
 		if ( _viewport is null )
 			return;
 
-		if ( _studio.Bodies.Count == 0 )
-		{
-			SetPrompt( "Edit mesh needs a body — add a primitive, or draw a sketch and extrude it." );
-			return;
-		}
-
 		LeaveCurrentWorkspace();
 
 		var feature = new MeshEditFeature();
+
+		// No body yet: the edit starts a new one, as Blender starts on an empty scene. Add ▸ Cube
+		// inside the edit is the first thing to do, and the prompt says so.
+		if ( _studio.Bodies.Count == 0 )
+		{
+			feature.FromScratch.Value = true;
+			feature.Name = "Mesh";
+		}
 
 		RecordUndo();
 		ApplyIdleGeometrySelection( feature );
@@ -2896,6 +2910,7 @@ public sealed partial class EffigyWindow
 			case 'O': ToggleMeshSoft(); return true;
 			case MeshKeySoftConnected: ToggleMeshSoftConnected(); return true;
 			case MeshKeyHide: RunMeshOp( "Hide", s => s.Hide() ); return true;
+			case MeshKeyAddPrimitive: OpenMeshAddMenu(); return true;
 			case MeshKeyCrease: _meshCreaseTool?.Clicked?.Invoke(); return true;
 			case MeshKeyHideOthers: RunMeshOp( "Hide others", s => s.Hide( unselected: true ) ); return true;
 			case MeshKeyUnhide: RunMeshOp( "Unhide", s => s.Unhide() ); return true;
@@ -3034,6 +3049,26 @@ public sealed partial class EffigyWindow
 
 	[Shortcut( "effigy.mesh.crease", "SHIFT+E", typeof( EffigyViewport ) )]
 	private void ShortcutMeshCrease() => MeshEditKey( MeshKeyCrease );
+
+	[Shortcut( "effigy.mesh.add_primitive", "SHIFT+A", typeof( EffigyViewport ) )]
+	private void ShortcutMeshAddPrimitive() => MeshEditKey( MeshKeyAddPrimitive );
+
+	/// <summary>Shift+A: the primitives, as a menu at the cursor.</summary>
+	private void OpenMeshAddMenu()
+	{
+		if ( _viewport?.MeshEditSession is null )
+			return;
+
+		var menu = new Menu( _viewport );
+		menu.AddHeading( "Add" );
+		foreach ( var tool in _meshPrimitiveTools )
+		{
+			var captured = tool;
+			menu.AddOption( captured.Label, null, () => captured.Clicked?.Invoke() );
+		}
+
+		menu.OpenAtCursor();
+	}
 
 	[Shortcut( "effigy.mesh.hide", "H", typeof( EffigyViewport ) )]
 	private void ShortcutMeshHide() => MeshEditKey( MeshKeyHide );
