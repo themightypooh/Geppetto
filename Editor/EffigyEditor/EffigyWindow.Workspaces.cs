@@ -1358,6 +1358,56 @@ public sealed partial class EffigyWindow
 	private void OnMeshKnifeCut( Vec3 from, Vec3 to, Vec3 view, bool throughAll ) =>
 		RunMeshOp( "Knife", s => s.Knife( from, to, view, throughAll ) );
 
+	private void SaveMeshSelection()
+	{
+		if ( _viewport?.MeshEditSession is not { } session )
+			return;
+
+		if ( session.AffectedVertices().Count == 0 )
+		{
+			SetPrompt( "Select something to save first." );
+			return;
+		}
+
+		var name = $"Selection {session.NamedSelections.Count + 1}";
+		session.SaveSelection( name );
+		SetPrompt( $"Saved as {name}. Recall selection brings it back." );
+		OnMeshEditChanged();
+	}
+
+	private void RecallMeshSelection()
+	{
+		if ( _viewport?.MeshEditSession is not { } session )
+			return;
+
+		if ( session.NamedSelections.Count == 0 )
+		{
+			SetPrompt( "Nothing is saved yet. Select something and press Save selection." );
+			return;
+		}
+
+		var how = Editor.Application.IsKeyDown( KeyCode.Shift ) ? MeshEditSession.Combine.Add
+			: Editor.Application.IsKeyDown( KeyCode.Control ) ? MeshEditSession.Combine.Remove
+			: MeshEditSession.Combine.Replace;
+
+		var menu = new Menu( _viewport );
+		menu.AddHeading( "Saved selections" );
+		foreach ( var name in session.NamedSelections.Keys )
+		{
+			var captured = name;
+			menu.AddOption( captured, null, () => RunMeshOp( "Recall", s => s.RecallSelection( captured, how ) ) );
+		}
+
+		menu.AddSeparator();
+		foreach ( var name in session.NamedSelections.Keys )
+		{
+			var captured = name;
+			menu.AddOption( $"Forget {captured}", "delete", () => { session.ForgetSelection( captured ); OnMeshEditChanged(); } );
+		}
+
+		menu.OpenAtCursor();
+	}
+
 	private void ToggleMeshSoft()
 	{
 		if ( _viewport?.MeshEditSession is not { } session )
@@ -1696,7 +1746,7 @@ public sealed partial class EffigyWindow
 
 		var menus = new List<EffigyStage>
 		{
-			Menu( "Select", "All", "Invert", "Grow", "Shrink", "-", "Linked", "Similar", "Path", "Checker", "Random", "Select/Mirror", "-", "Non-manifold", "Border", "Sharp edges", "Triangles", "N-gons", "Interior", "Loose", "-", "Lasso", "Circle", "X-ray", "-", "Hide", "Hide others", "Unhide" ),
+			Menu( "Select", "All", "Invert", "Grow", "Shrink", "-", "Linked", "Similar", "Path", "Checker", "Random", "Select/Mirror", "-", "Save selection", "Recall selection", "-", "Non-manifold", "Border", "Sharp edges", "Triangles", "N-gons", "Interior", "Loose", "-", "Lasso", "Circle", "X-ray", "-", "Hide", "Hide others", "Unhide" ),
 			Menu( "Add", "Extrude", "Extrude along normals", "Extrude individual", "Inset", "Bevel", "Loop cut", "Knife", "Bisect", "-", "Fill", "Grid fill", "Bridge", "-", "Add/Duplicate", "Add/Array", "Spin", "Screw", "Pivot here", "-", "Add/Subdivide" ),
 			Menu( "Vertex", "Merge", "Merge first", "Merge last", "Merge at pivot", "By distance", "Connect", "Bevel vertices", "-", "Vertex slide", "Clean up/Smooth", "Clean up/Relax", "Clean up/Flatten", "Loop circle", "Loop space", "To sphere", "Randomize" ),
 			Menu( "Edge", "Edge slide", "Rip", "Rotate edge", "Subdivide edges", "Pipe", "-", "Loop circle", "Loop space", "-", "Make hard", "Harden creases", "Crease", "Clear crease", "-", "Mark seam", "Clear seam", "-", "Delete edges" ),
@@ -1822,6 +1872,8 @@ public sealed partial class EffigyWindow
 		MeshTool( select, EffigyIcon.SelectEdge, "Border", "Swap the selected faces for the loop of edges round their edge — ready to bridge, extrude or mark as a seam", () => RunMeshOp( "Border", s => s.SelectBoundaryLoop() ) );
 		_meshSharpSelectTool = MeshTool( select, EffigyIcon.SelectEdge, "Sharp edges", "Select every edge where the faces meet at more than 30° — the edges to crease, harden or bevel", () => RunMeshOp( "Sharp edges", s => s.SelectSharpEdges( 30f ) ) );
 		_meshMirrorSelectTool = MeshTool( select, EffigyIcon.Mirror, "Mirror", "Add the selection's twin across X, so both sides get the same edit", () => RunMeshOp( "Mirror", s => s.SelectMirror() ) );
+		MeshTool( select, EffigyIcon.SelectVertex, "Save selection", "Keep this selection under a name, to get back with Recall — the ear, the fingers, the hem", SaveMeshSelection );
+		MeshTool( select, EffigyIcon.SelectVertex, "Recall selection", "Select a saved selection again. Shift adds it, Ctrl takes it away", RecallMeshSelection );
 		_meshLooseSelectTool = MeshTool( select, EffigyIcon.SelectVertex, "Loose", "Select the vertices no face uses, to see what Delete loose would remove", () => RunMeshOp( "Loose", s => s.SelectLoose() ) );
 		MeshTool( select, EffigyIcon.SelectFace, "Checker", "Drop every other face (or vertex) of the selection in a checkerboard — for alternating panels and studs", () => RunMeshOp( "Checker", s => s.CheckerDeselect() ) );
 		_meshCircleTool = MeshTool( select, EffigyIcon.CircleTool, "Circle", "Paint the selection on with a circle brush: hold the mouse and sweep. Ctrl paints it off; [ and ] resize (C)", ToggleMeshCircle, checkable: true );

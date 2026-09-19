@@ -171,6 +171,7 @@ public static class Program
 		DecimateTests.Run();
 		GarmentPosesTests.Run();
 		GarmentCutTests.Run();
+		FabricMaterialTests.Run();
 
 		SculptTests.Run();
 
@@ -1824,6 +1825,26 @@ public static class Program
 		grid16.SetMode( EditElement.Vertex );
 		grid16.SelectAll();
 		grid16.SnapToGrid( 16f );
+		// Named selections.
+		var named = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		named.SetMode( EditElement.Vertex );
+		for ( var i = 0; i < named.Mesh.VertexCount; i++ )
+			if ( named.Mesh.Positions[i].z > 0 )
+				named.SelectVertex( i, MeshEditSession.Combine.Add );
+		named.SaveSelection( "top" );
+		named.ClearSelection();
+		named.RecallSelection( "top" );
+		Check( "a saved selection comes back", named.SelectedVertices.Count == 4 && named.SelectedVertices.All( v => named.Mesh.Positions[v].z > 0 ) );
+		named.SetMode( EditElement.Face );
+		named.RecallSelection( "top" );
+		Check( "in whatever mode is current: the top face", named.SelectedFaces.Count == 1 );
+		named.SelectAll();
+		named.RecallSelection( "top", MeshEditSession.Combine.Remove );
+		Check( "and can be taken away from a selection", named.SelectedFaces.Count == 1 && named.Mesh.FaceNormal( named.Mesh.Faces[named.SelectedFaces.First()] ).z < -0.9f, $"{named.SelectedFaces.Count}" );
+		refused = false;
+		try { named.RecallSelection( "nope" ); } catch ( InvalidOperationException ) { refused = true; }
+		Check( "an unknown name is refused", refused );
+
 		Check( "snap to grid lands every corner on a 16", grid16.Mesh.Positions.All( p => MathF.Abs( MathF.Abs( p.x ) - 16f ) < 1e-5f && MathF.Abs( MathF.Abs( p.y ) - 16f ) < 1e-5f && MathF.Abs( MathF.Abs( p.z ) - 16f ) < 1e-5f ) );
 	}
 

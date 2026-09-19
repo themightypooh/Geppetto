@@ -4074,6 +4074,59 @@ public sealed class MeshEditSession
 		Move( Pivot - SelectionCentre() );
 	}
 
+	// --- named selections ------------------------------------------------------------------
+
+	/// <summary>
+	/// Selections kept by name — Blender's vertex groups, as far as selecting goes: save the
+	/// vertices of the ear, the fingers, the hem, and get them back with one click later in the
+	/// edit. Held on the session: they are working state, like the pivot, not part of the mesh.
+	/// Vertices are remembered by index, so a group survives everything except deleting or
+	/// welding its own vertices.
+	/// </summary>
+	public Dictionary<string, HashSet<int>> NamedSelections { get; } = new();
+
+	/// <summary>Keep the current selection's vertices under <paramref name="name"/>.</summary>
+	public void SaveSelection( string name )
+	{
+		var verts = AffectedVertices();
+		if ( verts.Count == 0 )
+			throw new InvalidOperationException( "Select something to save first." );
+
+		if ( string.IsNullOrWhiteSpace( name ) )
+			throw new InvalidOperationException( "A saved selection needs a name." );
+
+		NamedSelections[name.Trim()] = new HashSet<int>( verts );
+	}
+
+	/// <summary>Select the saved vertices again, in the current mode. Vertices that no longer
+	/// exist are skipped.</summary>
+	public void RecallSelection( string name, Combine how = Combine.Replace )
+	{
+		if ( !NamedSelections.TryGetValue( name, out var verts ) )
+			throw new InvalidOperationException( $"There is no saved selection called {name}." );
+
+		var live = new HashSet<int>();
+		foreach ( var v in verts )
+			if ( v >= 0 && v < Mesh.VertexCount )
+				live.Add( v );
+
+		if ( how == Combine.Replace )
+			ClearSelection();
+
+		if ( how == Combine.Remove )
+		{
+			SelectedVertices.ExceptWith( live );
+			SelectedEdges.RemoveWhere( e => live.Contains( e.A ) || live.Contains( e.B ) );
+			SelectedFaces.RemoveWhere( f => f < Mesh.FaceCount && Array.Exists( Mesh.Faces[f].Indices, live.Contains ) );
+			SelectionRevision++;
+			return;
+		}
+
+		SelectByVertices( live );
+	}
+
+	public void ForgetSelection( string name ) => NamedSelections.Remove( name );
+
 	// --- UV islands ----------------------------------------------------------------------------
 
 	/// <summary>The faces of every UV island the selection touches — what the UV tools act on.

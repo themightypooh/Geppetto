@@ -269,6 +269,9 @@ forgotten.
 - **Sculpt mask by piece, and grow/shrink.** Edit ▸ Sculpt Mask ▸ Mask All But the Piece Under
   the Cursor holds everything except the connected piece you are pointing at — an ear, a hand, an
   eye — so it can be sculpted on its own. Grow and Shrink push the held region out or in one ring.
+- **Saved selections.** Save selection keeps what is selected under a name; Recall selection
+  brings it back (Shift adds, Ctrl takes it away). For the ear, the fingers, the hem — anything
+  you keep coming back to during an edit.
 
 ### Improved
 - **Check shows you where.** Clipping vertices are marked on the model, yellow for a graze through red for the deepest, instead of only a count in the console. **Push out** next to it gives each clipping garment exactly the Clearance it needs and rebuilds, as one undo step. **Clear marks** takes them off.
