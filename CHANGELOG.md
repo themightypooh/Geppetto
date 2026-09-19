@@ -258,6 +258,8 @@ forgotten.
   `Editor/Effigy/SkinBlockout.cs`
 
 ### Improved
+- **Clean hems, cuffs and collars.** A garment's openings are now cut straight across the limb where the recipe says, instead of a sawtooth of whole faces one face deep. Length, Sleeve and Neckline land exactly where the sliders put them.
+- **Sleeves and trouser legs are textured along the limb.** A garment's UVs wrap round each limb's own bone, scaled to its girth, so fabric on a sleeve is the same size and direction as fabric on the chest instead of being smeared along the arm. Seams fall where region meets region, as on a real garment. `GarmentFit.LimbUVs`
 - **Publish puts the garment on the character for you.** Make live cloth and Make clothing now find the wearer in the open scene (the model the document was dressed on, or the selected character) and put the Garment Cloth or the .clothing on it, undoably. If they cannot tell which character, they say so and leave the file ready.
 - **Live cloth stays on the character.** The shirt used to trail behind a walking character and clip into their back; it now rides along with them, and **Inertia** on the Garment Cloth component sets how much swing a walk still gives it.
 - **Live cloth knows its fabric.** Make live cloth writes the Garment's Fabric and Stiffness into the file, so denim, leather and stretch behave differently in the game without touching the component. **Fabric from file** turns it off if you would rather use the sliders.

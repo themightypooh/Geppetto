@@ -278,7 +278,29 @@ public static class BodyRegions
 			// Chains: measure t over the whole region on this side, start to end, so a limb reads
 			// 0..1 shoulder to wrist whether it is one bone or a bone with twist bones laid over it
 			// (Citizen's are - summing their lengths would count the arm twice).
-			var side = Side( p );
+			if ( Chain( region, Side( p ), out var from, out var to ) )
+			{
+				var axis = to - from;
+				chainT = Math.Clamp( Vec3.Dot( p - from, axis ) / axis.LengthSquared, 0f, 1f );
+			}
+
+			// The head is measured bottom-up (a beanie covers the TOP), the torso and hips top-down
+			// (a hem reads down from the collar).
+			if ( region == BodyRegion.Head )
+				chainT = 1f - chainT;
+
+			return (region, chainT);
+		}
+
+		/// <summary>
+		/// The line a region runs along, on one side of the body: from the end nearest the body's
+		/// centre (the top, for anything on the spine or a leg) to the far end. This is the axis t
+		/// is measured on and the axis a limb's UVs wrap around, so both agree about where a
+		/// sleeve starts. False for a region the skeleton does not have.
+		/// </summary>
+		public bool Chain( BodyRegion region, int side, out Vec3 from, out Vec3 to )
+		{
+			from = to = Vec3.Zero;
 			var ends = new List<Vec3>();
 
 			foreach ( var s in _segments )
@@ -290,31 +312,20 @@ public static class BodyRegions
 				ends.Add( s.B );
 			}
 
-			if ( ends.Count >= 2 )
-			{
-				var from = IsCentral( region )
-					? ends.OrderByDescending( e => e.z ).First()
-					: ends.OrderBy( e => MathF.Abs( e.y ) ).First();
+			if ( ends.Count < 2 )
+				return false;
 
-				if ( !IsCentral( region ) && region is BodyRegion.UpperLeg or BodyRegion.LowerLeg or BodyRegion.Foot )
-					from = ends.OrderByDescending( e => e.z ).First();
+			from = IsCentral( region ) || region is BodyRegion.UpperLeg or BodyRegion.LowerLeg or BodyRegion.Foot
+				? ends.OrderByDescending( e => e.z ).First()
+				: ends.OrderBy( e => MathF.Abs( e.y ) ).First();
 
-				var to = ends.OrderByDescending( e => (e - from).LengthSquared ).First();
-				var axis = to - from;
+			var start = from;
+			to = ends.OrderByDescending( e => (e - start).LengthSquared ).First();
 
-				if ( axis.LengthSquared > 1e-8f )
-					chainT = Math.Clamp( Vec3.Dot( p - from, axis ) / axis.LengthSquared, 0f, 1f );
-			}
-
-			// The head is measured bottom-up (a beanie covers the TOP), the torso and hips top-down
-			// (a hem reads down from the collar).
-			if ( region == BodyRegion.Head )
-				chainT = 1f - chainT;
-
-			return (region, chainT);
+			return (to - from).LengthSquared > 1e-8f;
 		}
 
-		static bool IsCentral( BodyRegion r ) => r is BodyRegion.Head or BodyRegion.Neck or BodyRegion.Torso or BodyRegion.Hips;
+		public static bool IsCentral( BodyRegion r ) => r is BodyRegion.Head or BodyRegion.Neck or BodyRegion.Torso or BodyRegion.Hips;
 
 		static int Side( Vec3 p ) => p.y > 0 ? 1 : -1;
 
@@ -470,10 +481,29 @@ public static class GarmentFit
 		var result = new Result { Mesh = new PolyMesh() };
 		var garment = result.Mesh;
 		var remap = new Dictionary<(int Body, int Vertex), int>();
+		var cutRemap = new Dictionary<(int Body, int A, int B, BodyRegion Region, int End), int>();
 
 		for ( var bi = 0; bi < wearers.Count; bi++ )
 		{
 			var body = bodies[bi];
+
+			// A wearer that already knows its region - an envelope hull - keeps it, and is only
+			// measured along it. Left to the nearest bone, the front of Camhead's torso hull was
+			// claimed by the arms hanging beside it and cut out of the shirt.
+			var only = wearerRegions is not null && bi < wearerRegions.Count ? wearerRegions[bi] : BodyRegion.None;
+
+			int Vertex( int vi )
+			{
+				var key = (bi, vi);
+
+				if ( !remap.TryGetValue( key, out var index ) )
+				{
+					index = garment.AddVertex( body.Positions[vi] );
+					remap[key] = index;
+				}
+
+				return index;
+			}
 
 			for ( var fi = 0; fi < body.FaceCount; fi++ )
 			{
@@ -483,16 +513,56 @@ public static class GarmentFit
 					continue;
 
 				var centroid = body.FaceCentroid( face );
-				// A wearer that already knows its region - an envelope hull - keeps it, and is only
-				// measured along it. Left to the nearest bone, the front of Camhead's torso hull was
-				// claimed by the arms hanging beside it and cut out of the shirt.
-				var (region, t) = map.Locate( centroid,
-					wearerRegions is not null && bi < wearerRegions.Count ? wearerRegions[bi] : BodyRegion.None );
+				var (region, t) = map.Locate( centroid, only );
 
 				// The side is the face's own position, not the bone's: +y is the body's left, the
 				// way Source measures it. Taken from the face rather than from the bone name so an
 				// imported skeleton with no _L / _R convention still makes a one-sleeved shirt.
-				if ( !recipe.Covers( region, t, centroid.y > 0 ? 1 : -1 ) )
+				var side = centroid.y > 0 ? 1 : -1;
+				var spans = recipe.Spans.Where( s => s.Region == region && (s.Side == 0 || s.Side == side) ).ToList();
+
+				if ( spans.Count == 0 )
+					continue;
+
+				static bool Within( (BodyRegion Region, float From, float To, int Side) s, float t ) =>
+					t >= s.From - 1e-4f && t <= s.To + 1e-4f;
+
+				// THE FACE IS CUT AT THE HEM, not kept or dropped whole. Whole faces gave every
+				// opening a sawtooth edge one face deep - the jagged cuffs and collars that said
+				// "generated" from across the room - and no amount of relaxing put a straight line
+				// back. The span's two ends are two planes across the bone (t is linear along it),
+				// and the polygon is clipped to each (Sutherland-Hodgman), so the edge is a clean
+				// line round the limb. An end at 0 or 1 is open - a sleeve runs into the shoulder,
+				// a glove past the fingertips - and is not cut. A face is in if any corner of it
+				// is, and it is the span round the centre, or failing that round a corner, that
+				// does the cutting.
+				var nodes = new List<CutNode>( face.Count + 2 );
+				var span = spans[0];
+				var chained = map.Chain( region, side, out var from, out var to );
+
+				if ( chained )
+				{
+					var axis = to - from;
+					var lengthSq = axis.LengthSquared;
+
+					for ( var c = 0; c < face.Count; c++ )
+					{
+						var vi = face.Indices[c];
+						var p = body.Positions[vi];
+						nodes.Add( new CutNode( vi, vi, -1, p, Vec3.Dot( p - from, axis ) / lengthSq ) );
+					}
+
+					var covering = spans.FirstOrDefault( s => Within( s, t ) );
+
+					if ( covering.Region != region )
+						covering = spans.FirstOrDefault( s => nodes.Any( n => Within( s, n.T ) ) );
+
+					if ( covering.Region != region )
+						continue;
+
+					span = covering;
+				}
+				else if ( !spans.Any( s => Within( s, t ) ) )
 					continue;
 
 				// A face buried inside another part - an arm cylinder's end inside the torso block,
@@ -504,19 +574,48 @@ public static class GarmentFit
 					continue;
 				}
 
-				var indices = new int[face.Count];
-
-				for ( var c = 0; c < face.Count; c++ )
+				if ( chained )
 				{
-					var key = (bi, face.Indices[c]);
+					if ( span.From > 0f )
+						nodes = ClipSpan( nodes, span.From, keepAbove: true, end: 0 );
 
-					if ( !remap.TryGetValue( key, out var vi ) )
+					if ( span.To < 1f && nodes.Count >= 3 )
+						nodes = ClipSpan( nodes, span.To, keepAbove: false, end: 1 );
+
+					if ( nodes.Count < 3 )
+						continue;
+				}
+				else
+				{
+					for ( var c = 0; c < face.Count; c++ )
+						nodes.Add( new CutNode( face.Indices[c], face.Indices[c], -1, body.Positions[face.Indices[c]], 0f ) );
+				}
+
+				var indices = new int[nodes.Count];
+
+				for ( var c = 0; c < nodes.Count; c++ )
+				{
+					var node = nodes[c];
+
+					// An original corner; or a cut point on an original edge, which the face on the
+					// other side of that edge finds again by the same key, so the cut is watertight.
+					if ( node.End < 0 )
+						indices[c] = Vertex( node.A );
+					else if ( node.A >= 0 )
 					{
-						vi = garment.AddVertex( body.Positions[face.Indices[c]] );
-						remap[key] = vi;
-					}
+						var (lo, hi) = node.A < node.B ? (node.A, node.B) : (node.B, node.A);
+						var key = (bi, lo, hi, region, node.End);
 
-					indices[c] = vi;
+						if ( !cutRemap.TryGetValue( key, out var index ) )
+						{
+							index = garment.AddVertex( node.P );
+							cutRemap[key] = index;
+						}
+
+						indices[c] = index;
+					}
+					else
+						indices[c] = garment.AddVertex( node.P );
 				}
 
 				garment.AddFace( indices, null, o.MaterialSlot );
@@ -571,7 +670,7 @@ public static class GarmentFit
 		if ( o.Puff > 0f || o.Wrinkles > 0f )
 			PushOut( garment, bodies, trees, o.Clearance, reach );
 
-		CylinderUVs( garment );
+		LimbUVs( garment, map );
 
 		if ( o.Thickness > 0f )
 		{
@@ -588,6 +687,58 @@ public static class GarmentFit
 
 		result.Mesh = garment;
 		return result;
+	}
+
+	/// <summary>A corner of a face being cut: an original vertex (A == B, End -1), or a point on
+	/// the original edge A-B where the span's end (0 the start, 1 the finish) crosses it. A is -1
+	/// for a point on an edge the cut itself made, which no other face shares.</summary>
+	readonly record struct CutNode( int A, int B, int End, Vec3 P, float T );
+
+	/// <summary>One Sutherland-Hodgman pass: keep the side of t = limit the span is on.</summary>
+	static List<CutNode> ClipSpan( List<CutNode> nodes, float limit, bool keepAbove, int end )
+	{
+		var kept = new List<CutNode>( nodes.Count + 2 );
+
+		for ( var i = 0; i < nodes.Count; i++ )
+		{
+			var cur = nodes[i];
+			var nxt = nodes[(i + 1) % nodes.Count];
+			var inCur = keepAbove ? cur.T >= limit : cur.T <= limit;
+			var inNxt = keepAbove ? nxt.T >= limit : nxt.T <= limit;
+
+			if ( inCur )
+				kept.Add( cur );
+
+			if ( inCur == inNxt )
+				continue;
+
+			var s = Math.Clamp( (limit - cur.T) / (nxt.T - cur.T), 0f, 1f );
+			var (a, b) = EdgeUnder( cur, nxt );
+			kept.Add( new CutNode( a, b, end, cur.P + (nxt.P - cur.P) * s, limit ) );
+		}
+
+		return kept;
+	}
+
+	/// <summary>The original edge a segment between two nodes lies on, or (-1, -1) when it is a
+	/// line the first cut drew across the face and nothing else can share.</summary>
+	static (int, int) EdgeUnder( CutNode x, CutNode y )
+	{
+		static bool OnEdge( CutNode cut, int vertex ) => cut.A == vertex || cut.B == vertex;
+
+		if ( x.End < 0 && y.End < 0 )
+			return (x.A, y.A);
+
+		if ( x.End < 0 && y.A >= 0 && OnEdge( y, x.A ) )
+			return (y.A, y.B);
+
+		if ( y.End < 0 && x.A >= 0 && OnEdge( x, y.A ) )
+			return (x.A, x.B);
+
+		if ( x.End >= 0 && y.End >= 0 && x.A >= 0 && x.A == y.A && x.B == y.B )
+			return (x.A, x.B);
+
+		return (-1, -1);
 	}
 
 	/// <summary>
@@ -925,9 +1076,88 @@ public static class GarmentFit
 	}
 
 	/// <summary>
+	/// UVs wrapped round each limb on its own bone, a foot to a UV unit everywhere.
+	///
+	/// ONE CYLINDER ROUND THE WHOLE BODY WAS WRONG FOR THE SLEEVES. CylinderUVs wraps everything
+	/// about the body's vertical axis, which is right for the torso and stretches a sleeve into a
+	/// smear: the arm is a tube lying across that projection, so its texture ran the wrong way and
+	/// was squeezed to a sliver on the top and bottom of the arm. Trouser legs the same, less so.
+	/// So each face is projected round the bone chain its region runs along - the torso's spine,
+	/// each arm, each leg - with the angle scaled by that limb's own girth, so a check the size of
+	/// a thumbnail on the chest is the size of a thumbnail on the cuff. The seam between a region
+	/// and the next is a UV seam, as it is on every real garment.
+	/// </summary>
+	public static void LimbUVs( PolyMesh mesh, BodyRegions.Map map )
+	{
+		const float UnitsPerUv = 12f;
+
+		// Every face's chain, and every chain's girth from the faces on it.
+		var chains = new Dictionary<(BodyRegion, int), (Vec3 From, Vec3 Axis, Vec3 E1, Vec3 E2, float Radius, int Count)>();
+		var faceChain = new (BodyRegion, int)[mesh.FaceCount];
+
+		for ( var fi = 0; fi < mesh.FaceCount; fi++ )
+		{
+			var centroid = mesh.FaceCentroid( mesh.Faces[fi] );
+			var (region, _) = map.Locate( centroid );
+			var side = BodyRegions.Map.IsCentral( region ) ? 0 : centroid.y > 0 ? 1 : -1;
+			var key = (region, side);
+			faceChain[fi] = key;
+
+			if ( !chains.TryGetValue( key, out var chain ) )
+			{
+				Vec3 from, to;
+
+				if ( region == BodyRegion.None || !map.Chain( region, side == 0 ? 1 : side, out from, out to ) )
+				{
+					// Nothing to hang it on: the old projection about the vertical.
+					from = Vec3.Zero;
+					to = new Vec3( 0f, 0f, -1f );
+				}
+
+				var axis = (to - from).Normal;
+				var reference = MathF.Abs( axis.z ) < 0.9f ? new Vec3( 0f, 0f, 1f ) : new Vec3( 1f, 0f, 0f );
+				var e1 = Vec3.Cross( reference, axis ).Normal;
+				var e2 = Vec3.Cross( axis, e1 );
+				chain = (from, axis, e1, e2, 0f, 0);
+			}
+
+			var q = centroid - chain.From;
+			var radial = q - chain.Axis * Vec3.Dot( q, chain.Axis );
+			chain.Radius += radial.Length;
+			chain.Count++;
+			chains[key] = chain;
+		}
+
+		foreach ( var fi in Enumerable.Range( 0, mesh.FaceCount ) )
+		{
+			var face = mesh.Faces[fi];
+			var chain = chains[faceChain[fi]];
+			var radius = MathF.Max( 1f, chain.Radius / Math.Max( 1, chain.Count ) );
+			var span = MathF.PI * 2f * radius / UnitsPerUv;
+			var uvs = new Vec2[face.Count];
+
+			for ( var c = 0; c < face.Count; c++ )
+			{
+				var q = mesh.Positions[face.Indices[c]] - chain.From;
+				var angle = MathF.Atan2( Vec3.Dot( q, chain.E2 ), Vec3.Dot( q, chain.E1 ) );
+				uvs[c] = new Vec2( angle * radius / UnitsPerUv, Vec3.Dot( q, chain.Axis ) / UnitsPerUv );
+			}
+
+			// A face straddling the seam at +-180 degrees would stretch across the whole texture.
+			var max = uvs.Max( u => u.x );
+
+			for ( var c = 0; c < uvs.Length; c++ )
+				if ( max - uvs[c].x > span * 0.5f )
+					uvs[c] = new Vec2( uvs[c].x + span, uvs[c].y );
+
+			face.UVs = uvs;
+		}
+	}
+
+	/// <summary>
 	/// A wrap-around projection about the vertical axis, a foot to a UV unit. Fabric tiles and fur
 	/// noise both want something even; the body's own UVs are laid out for the body, and a CAD part
-	/// may have none.
+	/// may have none. LimbUVs is what Fit uses now; this is kept for a mesh with no rig to go by.
 	/// </summary>
 	public static void CylinderUVs( PolyMesh mesh )
 	{

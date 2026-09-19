@@ -169,6 +169,7 @@ public static class Program
 
 		DecimateTests.Run();
 		GarmentPosesTests.Run();
+		GarmentCutTests.Run();
 
 		SculptTests.Run();
 
