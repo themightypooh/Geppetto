@@ -250,6 +250,7 @@ forgotten.
   shows the result. `Editor/Effigy/CollisionBuilder.cs`
 
 ### Improved
+- **Publish puts the garment on the character for you.** Make live cloth and Make clothing now find the wearer in the open scene (the model the document was dressed on, or the selected character) and put the Garment Cloth or the .clothing on it, undoably. If they cannot tell which character, they say so and leave the file ready.
 - **Live cloth stays on the character.** The shirt used to trail behind a walking character and clip into their back; it now rides along with them, and **Inertia** on the Garment Cloth component sets how much swing a walk still gives it.
 - **Live cloth knows its fabric.** Make live cloth writes the Garment's Fabric and Stiffness into the file, so denim, leather and stretch behave differently in the game without touching the component. **Fabric from file** turns it off if you would rather use the sliders.
 - **Live cloth holds its collar.** The collar and yoke of a top and the waistband of trousers are pinned to the body, so the garment hangs from the shoulders instead of sliding down the chest when the character runs. Beanies, gloves and socks are held everywhere.

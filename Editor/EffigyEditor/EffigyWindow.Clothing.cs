@@ -463,12 +463,154 @@ public sealed partial class EffigyWindow
 			File.WriteAllText( file, ClothExport.Write( mesh, capsules, _studio.Rig, material, fabric, pins.ToArray() ) );
 
 			Log.Info( $"[Effigy] wrote {file} - {mesh.VertexCount} cloth vertices on {capsules.Count} capsules" );
-			SetPrompt( $"models/effigy/{name}.cloth.json is ready - add a Garment Cloth component to the character and point it at this file." );
+
+			var rel = $"models/effigy/{name}.cloth.json";
+			SetPrompt( WearLiveCloth( rel ) ?? $"{rel} is ready - add a Garment Cloth component to the character and point it at this file." );
 		}
 		catch ( Exception e )
 		{
 			Log.Warning( $"[Effigy] could not write the live cloth for {name}: {e.Message}" );
 		}
+	}
+
+	// --- wearing it, in the open scene ------------------------------------------------------
+
+	/// <summary>
+	/// The renderer in the open scene that is the wearer, or null with a reason.
+	///
+	/// PUBLISH ENDED WITH HOMEWORK. "Add a Garment Cloth component and point it at this file" is a
+	/// sentence that assumes you know what a component is, where the file went and which of the
+	/// forty objects in the scene is the character - and the whole point of the workspace is that
+	/// you do not have to. So Publish finishes the job when it can tell where the job is: the
+	/// wearer is the character whose model this document was loaded from, and if it is standing
+	/// in the open scene, the garment goes on it. When it cannot tell, it says what it wanted.
+	/// </summary>
+	private SkinnedModelRenderer FindSceneWearer( out string why )
+	{
+		why = null;
+
+		var session = SceneEditorSession.Active;
+
+		if ( session?.Scene is not { } scene )
+		{
+			why = "no scene is open";
+			return null;
+		}
+
+		var renderers = scene.GetAllComponents<SkinnedModelRenderer>()
+			.Where( r => r.IsValid() && r.Model is not null && !r.GameObject.Flags.HasFlag( GameObjectFlags.NotSaved ) )
+			.ToList();
+
+		if ( renderers.Count == 0 )
+		{
+			why = "there is no character in the open scene";
+			return null;
+		}
+
+		// The model the document was dressed on, from its Wearer. Matching that is the only
+		// answer that is right for certain.
+		var wanted = _studio?.Features.OfType<WearerFeature>()
+			.Select( w => w.Model.Value )
+			.FirstOrDefault( v => !string.IsNullOrWhiteSpace( v ) );
+
+		static string Norm( string path ) => (path ?? "").Replace( '\\', '/' ).Trim().ToLowerInvariant();
+
+		if ( !string.IsNullOrEmpty( wanted ) )
+		{
+			var want = Norm( wanted );
+			var matches = renderers.Where( r => Norm( r.Model.ResourcePath ) == want || Norm( r.Model.Name ) == want ).ToList();
+
+			if ( matches.Count == 1 )
+				return matches[0];
+
+			if ( matches.Count > 1 )
+			{
+				// Several of the same character: the selected one, if one of them is selected.
+				var selected = matches.FirstOrDefault( r => EditorScene.Selection.Contains( r.GameObject ) );
+
+				if ( selected is not null )
+					return selected;
+
+				why = $"{matches.Count} objects in the scene wear {wanted} - select the one to dress";
+				return null;
+			}
+		}
+
+		// No Wearer, or it is not in the scene: the selected character, or the only one.
+		var picked = renderers.FirstOrDefault( r => EditorScene.Selection.Contains( r.GameObject ) );
+
+		if ( picked is not null )
+			return picked;
+
+		if ( renderers.Count == 1 )
+			return renderers[0];
+
+		why = string.IsNullOrEmpty( wanted )
+			? "the scene has several characters - select the one to dress"
+			: $"{wanted} is not in the open scene - select the character to dress";
+		return null;
+	}
+
+	/// <summary>Put a Garment Cloth on the scene's wearer, pointed at the file. Returns what
+	/// happened, or null when it could not, so the caller can fall back to telling the user what
+	/// to do by hand.</summary>
+	private string WearLiveCloth( string clothPath )
+	{
+		var wearer = FindSceneWearer( out var why );
+
+		if ( wearer is null )
+		{
+			Log.Info( $"[Effigy] {clothPath} not put on a character: {why}." );
+			return null;
+		}
+
+		var session = SceneEditorSession.Active;
+
+		using ( session.UndoScope( "Wear garment" ).WithComponentCreations().WithComponentChanges( wearer ).Push() )
+		{
+			// The same garment again replaces itself; a different one is a second component,
+			// because a jacket over a shirt is two cloths.
+			var cloth = wearer.GameObject.Components.GetAll<GarmentCloth>( FindMode.EverythingInSelf )
+				.FirstOrDefault( c => string.Equals( c.Cloth, clothPath, StringComparison.OrdinalIgnoreCase ) )
+				?? wearer.GameObject.Components.Create<GarmentCloth>();
+
+			cloth.Wearer = wearer;
+			cloth.Cloth = clothPath;
+		}
+
+		EditorScene.Selection.Set( wearer.GameObject );
+
+		return $"{clothPath} is on {wearer.GameObject.Name} in the scene - it is hanging there now. Ctrl+Z takes it off.";
+	}
+
+	/// <summary>Put a .clothing item on the scene's wearer's Dresser. Only a citizen has a
+	/// Dresser, and a Dresser only fits citizen's body, so anything else falls back to the
+	/// drag-it-on prompt.</summary>
+	private string WearClothing( string clothingPath )
+	{
+		var wearer = FindSceneWearer( out _ );
+		var dresser = wearer?.GameObject.Components.Get<Dresser>( FindMode.EverythingInSelfAndParent );
+
+		if ( wearer is null || dresser is null )
+			return null;
+
+		var clothing = ResourceLibrary.Get<Clothing>( clothingPath );
+
+		if ( clothing is null )
+			return null;
+
+		var session = SceneEditorSession.Active;
+
+		using ( session.UndoScope( "Wear clothing" ).WithComponentChanges( dresser ).Push() )
+		{
+			dresser.Source = Dresser.ClothingSource.Manual;
+			dresser.Clothing ??= new List<ClothingContainer.ClothingEntry>();
+
+			if ( dresser.Clothing.All( e => e.Clothing != clothing ) )
+				dresser.Clothing.Add( new ClothingContainer.ClothingEntry( clothing ) );
+		}
+
+		return $"{clothingPath} is on {wearer.GameObject.Name}'s Dresser in the scene. Ctrl+Z takes it off.";
 	}
 
 	/// <summary>Compile, then write models/effigy/NAME.clothing pointing at the compiled model.</summary>
@@ -519,7 +661,8 @@ public sealed partial class EffigyWindow
 			Log.Info( $"[Effigy] wrote {file} - {ClothingDefinition.CategoryFor( recipe )}, slots "
 				+ $"{string.Join( ", ", ClothingDefinition.SlotsFor( recipe ) )}" );
 
-			SetPrompt( $"models/effigy/{name}.clothing is ready - drag it onto a Dresser or a citizen to wear it." );
+			SetPrompt( WearClothing( $"models/effigy/{name}.clothing" )
+				?? $"models/effigy/{name}.clothing is ready - drag it onto a Dresser or a citizen to wear it." );
 		}
 		catch ( Exception e )
 		{
