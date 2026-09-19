@@ -36,6 +36,7 @@ forgotten.
 ## Unreleased
 
 ### Added
+- **Fabric: a real material for a garment.** Clothing's new **Material** stage gives a garment jersey, rib knit, fleece, denim, corduroy, leather, satin, canvas, plaid, gingham or quilting - a tiling weave with normal and roughness maps, in your colours, at your weave size, with the Complex cloth or anisotropic switch that kind of cloth needs. It is a feature, so recolouring rewrites the material. `FabricFeature`, `FabricMaterial`
 - **Test a garment in the poses that break it.** Clothing's new **Test** stage bends the wearer into arms up, arms out, reach, bend, twist, sit, stride and crouch, with the garment on, and marks every vertex that ends up inside the body in red. **Relax** puts the rig back. `GarmentPoses`
 - **Select a ring.** Ctrl+Alt+click an edge in Model to select the ring around a limb, the edges a loop cut would cross.
 - **Select Linked (L).** Adds every piece your selection touches, so one click on an ear picks up the whole ear.

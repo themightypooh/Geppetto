@@ -694,3 +694,67 @@ public sealed class TrimFeature : Feature
 		}
 	}
 }
+
+/// <summary>
+/// Fabric: what a garment is made of, as a real material.
+///
+/// A GARMENT IN DEFAULT GREY IS A SHAPE, NOT A SHIRT. The Garment's Fabric choice already sets
+/// how it drapes and how live cloth swings; this is the same word for what it looks like. It
+/// writes a tiling colour, normal and roughness set from the weave (see FabricMaterial) and a
+/// Complex .vmat with the cloth or anisotropic switch that kind of cloth wants, and binds it to
+/// the garment's material slot - the way Fur binds its shell material. No textures to find, and
+/// the fabric is a feature: change the colour and the .vmat is rewritten on the next rebuild.
+/// </summary>
+public sealed class FabricFeature : Feature
+{
+	public override string TypeName => "Fabric";
+
+	public override GeometryKind Accepts => GeometryKind.Body;
+
+	/// <summary>Which garments. Empty is every garment.</summary>
+	public readonly BodySelectionParam Bodies = new( "On" );
+
+	public readonly ChoiceParam Preset = new( "Fabric", FabricMaterial.Presets );
+	public readonly StringParam Colour = new( "Colour", "#5a6e8c" );
+
+	/// <summary>The second thread of a plaid or gingham, and the pale weft of denim.</summary>
+	public readonly StringParam Accent = new( "Second colour", "#e8e2d4" );
+
+	/// <summary>Repeats of the weave across a foot of cloth. More is finer.</summary>
+	public readonly FloatParam Scale = new( "Weave size", 6f, 1f, 24f );
+	public readonly FloatParam Wear = new( "Wear", 0.2f, 0f, 1f );
+
+	public override IReadOnlyList<IParam> Parameters => new IParam[] { Bodies, Preset, Colour, Accent, Scale, Wear };
+
+	public override IReadOnlyList<IParam> AdvancedParameters => new IParam[] { Wear };
+
+	/// <summary>The material slots the last rebuild found on the garments this dresses. The editor
+	/// binds the written .vmat to each.</summary>
+	public IReadOnlyList<int> ResolvedSlots { get; private set; } = Array.Empty<int>();
+
+	public string PresetName => FabricMaterial.Presets[Math.Clamp( Preset.Index, 0, FabricMaterial.Presets.Length - 1 )];
+
+	protected override void Execute( FeatureContext ctx )
+	{
+		ResolvedSlots = Array.Empty<int>();
+
+		var targets = Bodies.BodyIds.Count > 0
+			? ctx.Bodies.Where( Bodies.Matches ).ToList()
+			: ctx.Bodies.Where( b => b.IsGarment ).ToList();
+
+		if ( targets.Count == 0 )
+		{
+			Fail(
+				"Nothing to make of this fabric",
+				Bodies.BodyIds.Count == 0
+					? "There is no garment in the model yet."
+					: "The bodies this fabric names are not in the model.",
+				"Add a Garment first",
+				"Or name the part to dress in On" );
+		}
+
+		// The garment already has a slot of its own (see GarmentFeature.MaterialSlot); the fabric
+		// goes on that rather than renumbering, so paint and fur on the same garment stay put.
+		ResolvedSlots = targets.SelectMany( b => b.Mesh.Faces ).Select( f => f.Material ).Distinct().OrderBy( s => s ).ToList();
+	}
+}

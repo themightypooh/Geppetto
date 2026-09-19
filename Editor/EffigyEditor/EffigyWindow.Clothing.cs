@@ -62,8 +62,112 @@ public sealed partial class EffigyWindow
 	private bool HasWearableBody() => _studio is { Rig.Count: > 0 } && _studio.Features.Count > 0;
 
 	private List<EffigyStage> BuildClothingStages() =>
-		new() { BuildWearerStage(), BuildClothingStage(), BuildGarmentShapeStage(), BuildGarmentTestStage(),
-			BuildGarmentCheckStage(), BuildGarmentPublishStage() };
+		new() { BuildWearerStage(), BuildClothingStage(), BuildGarmentShapeStage(), BuildGarmentMaterialStage(),
+			BuildGarmentTestStage(), BuildGarmentCheckStage(), BuildGarmentPublishStage() };
+
+	/// <summary>
+	/// Material: what the garment is made of, to look at.
+	///
+	/// ONE BUTTON, BECAUSE IT IS ONE DECISION. Painting is a workspace of its own and always will
+	/// be; picking "denim, this blue" is not painting, it is the thing you do before deciding
+	/// whether to paint at all, and most garments never need more. See FabricFeature.
+	/// </summary>
+	private EffigyStage BuildGarmentMaterialStage()
+	{
+		var stage = new EffigyStage { Name = "Material" };
+
+		stage.Add( new EffigyStageTool
+		{
+			Icon = EffigyIcon.FaceMaterial,
+			Label = "Fabric",
+			Tip = "Give the garment a fabric - jersey, denim, leather, satin, plaid and more - as a real "
+				+ "material: a tiling weave with normal and roughness maps, and the Complex shader switch "
+				+ "that kind of cloth needs. Select a garment first, or it goes on every garment.",
+			Clicked = () => AddFeature( NewFeature( ToolKind.Fabric, -1 ) ),
+		} );
+
+		return stage;
+	}
+
+	/// <summary>
+	/// Write each Fabric feature's maps and .vmat and bind them to its garments' slots. The same
+	/// shape as SyncFurMaterials: after every rebuild, and only rewriting what changed.
+	/// </summary>
+	private void SyncFabricMaterials()
+	{
+		if ( _studio is null )
+			return;
+
+		foreach ( var fabric in _studio.Features.OfType<FabricFeature>() )
+		{
+			if ( fabric.Suppressed || fabric.ResolvedSlots.Count == 0 || fabric.Error is not null )
+				continue;
+
+			try
+			{
+				var folder = EffigyAssetFolder.ResolveAssetFolder( "models/effigy/fabric" );
+				Directory.CreateDirectory( folder );
+
+				var tag = new string( fabric.Id.Select( c => char.IsLetterOrDigit( c ) ? c : '_' ).ToArray() );
+				var colour = FurMaterial.ParseHex( fabric.Colour.Value, new Vec3( 0.35f, 0.43f, 0.55f ) );
+				var accent = FurMaterial.ParseHex( fabric.Accent.Value, new Vec3( 0.91f, 0.89f, 0.83f ) );
+
+				var relColor = $"models/effigy/fabric/fabric_{tag}_color.png";
+				var relNormal = $"models/effigy/fabric/fabric_{tag}_normal.png";
+				var relRough = $"models/effigy/fabric/fabric_{tag}_rough.png";
+				var relVmat = $"models/effigy/fabric/fabric_{tag}.vmat";
+
+				// The maps are half a second of maths at 512; a recipe string over the settings says
+				// whether that has to be paid again, so a rebuild for an unrelated slider does not.
+				var recipe = $"{fabric.PresetName}|{fabric.Colour.Value}|{fabric.Accent.Value}|{fabric.Scale.Clamped:0.##}|{fabric.Wear.Clamped:0.###}";
+				var recipeFile = Path.Combine( folder, $"fabric_{tag}.recipe" );
+				var changed = false;
+
+				if ( !File.Exists( recipeFile ) || File.ReadAllText( recipeFile ) != recipe
+					|| !File.Exists( Path.Combine( folder, $"fabric_{tag}_color.png" ) ) )
+				{
+					var (color, normal, rough) = FabricMaterial.Maps( fabric.PresetName, colour, accent,
+						fabric.Scale.Clamped, fabric.Wear.Clamped, fabric.Id.GetHashCode() & 0xffff );
+
+					changed |= WriteIfChanged( Path.Combine( folder, $"fabric_{tag}_color.png" ),
+						PngWriter.ToBytesRgba( color, FabricMaterial.Size, FabricMaterial.Size ) );
+					changed |= WriteIfChanged( Path.Combine( folder, $"fabric_{tag}_normal.png" ),
+						PngWriter.ToBytesRgba( normal, FabricMaterial.Size, FabricMaterial.Size ) );
+					changed |= WriteIfChanged( Path.Combine( folder, $"fabric_{tag}_rough.png" ),
+						PngWriter.ToBytesRgba( rough, FabricMaterial.Size, FabricMaterial.Size ) );
+					File.WriteAllText( recipeFile, recipe );
+				}
+
+				changed |= WriteIfChanged( Path.Combine( folder, $"fabric_{tag}.vmat" ),
+					System.Text.Encoding.UTF8.GetBytes( FabricMaterial.VmatSource( fabric.PresetName, relColor, relNormal, relRough ) ) );
+
+				if ( changed )
+				{
+					foreach ( var rel in new[] { relColor, relNormal, relRough, relVmat } )
+					{
+						var asset = AssetSystem.FindByPath( rel )
+							?? AssetSystem.RegisterFile( Path.Combine( folder, Path.GetFileName( rel ) ) );
+						asset?.Compile( true );
+					}
+
+					Log.Info( $"[Effigy] fabric material {relVmat} written ({fabric.PresetName})" );
+				}
+
+				foreach ( var slot in fabric.ResolvedSlots )
+				{
+					if ( !_studio.MaterialNames.TryGetValue( slot, out var bound ) || bound != relVmat )
+					{
+						_studio.MaterialNames[slot] = relVmat;
+						_livePreview = null;
+					}
+				}
+			}
+			catch ( Exception e )
+			{
+				Log.Warning( $"[Effigy] could not write the fabric material for {fabric.Name ?? fabric.Id}: {e.Message}" );
+			}
+		}
+	}
 
 	// --- Test: the garment in the poses that break it ---------------------------------------
 
