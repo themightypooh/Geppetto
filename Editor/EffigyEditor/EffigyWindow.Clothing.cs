@@ -62,8 +62,228 @@ public sealed partial class EffigyWindow
 	private bool HasWearableBody() => _studio is { Rig.Count: > 0 } && _studio.Features.Count > 0;
 
 	private List<EffigyStage> BuildClothingStages() =>
-		new() { BuildWearerStage(), BuildClothingStage(), BuildGarmentShapeStage(), BuildGarmentCheckStage(),
-			BuildGarmentPublishStage() };
+		new() { BuildWearerStage(), BuildClothingStage(), BuildGarmentShapeStage(), BuildGarmentTestStage(),
+			BuildGarmentCheckStage(), BuildGarmentPublishStage() };
+
+	// --- Test: the garment in the poses that break it ---------------------------------------
+
+	/// <summary>The rig's bind pose while a test pose is on it, and null otherwise. The document's
+	/// rig is bent IN PLACE for the test, so this is what puts it back - see TestRelax.</summary>
+	private Skeleton _testBind;
+
+	/// <summary>Nearest-bone weights for bodies that carry none (a wearer read off a compiled
+	/// model), keyed by body id, so eight poses do not bind the wearer eight times.</summary>
+	private readonly Dictionary<string, (int Vertices, SkinWeights Weights)> _testWeights = new();
+
+	/// <summary>
+	/// Test: the garment with the arms up, bent over, sat down.
+	///
+	/// THE FIT IS ONLY TRUE FOR THE POSE IT WAS MADE IN. Check finds a shoulder that is through a
+	/// sleeve now; it cannot find one that will be through it the first time the character reaches
+	/// for something, and that is the one people ship. Every clothing tool has a pose library for
+	/// this reason. Each button bends the rig into one extreme, deforms the wearer and the garment
+	/// with it, and marks every vertex that ends up inside the body. Relax puts the rig back.
+	/// See GarmentPoses for the poses.
+	/// </summary>
+	private EffigyStage BuildGarmentTestStage()
+	{
+		var stage = new EffigyStage { Name = "Test" };
+
+		foreach ( var pose in GarmentPoses.All )
+		{
+			var captured = pose;
+
+			stage.Add( new EffigyStageTool
+			{
+				Icon = EffigyIcon.Bone,
+				Label = pose.Name,
+				Tip = pose.Tip + " Clipping vertices are marked in red and counted in the prompt.",
+				Clicked = () => TestPose( captured ),
+			} );
+		}
+
+		stage.Add( new EffigyStageTool
+		{
+			Icon = EffigyIcon.SoftRest,
+			Label = "Relax",
+			Tip = "Back to the bind pose, and the marks come off.",
+			Clicked = () => TestRelax( true ),
+		} );
+
+		return stage;
+	}
+
+	/// <summary>Bend the rig into a pose, show everything deformed by it, and mark what clips.</summary>
+	private void TestPose( GarmentPoses.Pose pose )
+	{
+		if ( _studio is null || _viewport is null )
+			return;
+
+		if ( _studio.Rig.Count == 0 )
+		{
+			SetPrompt( "Nothing to pose - load a Wearer or rig the body first." );
+			return;
+		}
+
+		if ( !_studio.Bodies.Any( b => b.IsGarment ) )
+		{
+			SetPrompt( "Nothing to test yet - add a Garment first." );
+			return;
+		}
+
+		// Any pose before this one comes off first, so poses do not stack. The bind snapshot is
+		// taken once, on the first pose, and kept until Relax.
+		if ( _testBind is not null )
+			RestoreTestBind();
+		else
+			_testBind = _studio.Rig.Clone();
+
+		var turned = GarmentPoses.Apply( _studio.Rig, pose );
+
+		if ( turned == 0 )
+		{
+			SetPrompt( $"{pose.Name}: nothing moved - Effigy does not recognise the bones this pose bends "
+				+ "(it reads names like arm_upper_L, spine_1, leg_upper_R)." );
+			return;
+		}
+
+		var bind = new Xform[_testBind.Count];
+		for ( var i = 0; i < bind.Length; i++ )
+			bind[i] = _testBind.WorldBind( i );
+
+		var posed = new Xform[_studio.Rig.Count];
+		for ( var i = 0; i < posed.Length; i++ )
+			posed[i] = _studio.Rig.WorldBind( i );
+
+		var shown = new PolyMesh();
+		var garments = new List<(string Name, PolyMesh Mesh)>();
+		var worn = new List<PolyMesh>();
+
+		foreach ( var body in _studio.Bodies )
+		{
+			if ( !body.Visible || _studio.HiddenBodyIds.Contains( body.Id ) )
+				continue;
+
+			var deformed = DeformForTest( body, bind, posed );
+
+			if ( body.IsGarment )
+				garments.Add( (body.Name, deformed) );
+			else
+				worn.Add( deformed );
+
+			MeshTransform.Append( shown, deformed );
+		}
+
+		_viewport.SetModel( BuildPreview( shown ), frameCamera: false );
+
+		var marks = new List<Vector3>();
+		var clipping = 0;
+		var deepest = 0f;
+
+		foreach ( var (name, mesh) in garments )
+		{
+			var report = GarmentCheck.Run( mesh, worn );
+
+			clipping += report.Clipping;
+			deepest = Math.Max( deepest, report.DeepestClip );
+			marks.AddRange( report.ClipPoints.Select( p => new Vector3( p.x, p.y, p.z ) ) );
+
+			if ( report.Clipping > 0 )
+				Log.Info( $"[Effigy] {pose.Name}: {name} - {report.Clipping} vertices clip, deepest {report.DeepestClip:0.##} in" );
+		}
+
+		_viewport.Markers = marks;
+		_viewport.Update();
+
+		SetPrompt( clipping == 0
+			? $"{pose.Name}: nothing clips. Try the others, then Relax."
+			: $"{pose.Name}: {clipping} {(clipping == 1 ? "vertex clips" : "vertices clip")} through the body, deepest "
+				+ $"{deepest:0.##} in - marked in red. More Looseness or Clearance there, or shrinkwrap it back out." );
+	}
+
+	/// <summary>A body deformed from the bind pose to the posed one. Its own weights when it has
+	/// them; a wearer read off a compiled model has none Effigy can read, so it gets a nearest-bone
+	/// bind, which is right enough to show where a shoulder goes.</summary>
+	private PolyMesh DeformForTest( Body body, Xform[] bind, Xform[] posed )
+	{
+		var mesh = body.Mesh;
+		SkinWeights weights;
+
+		if ( mesh.IsRigged )
+			weights = mesh.Skin;
+		else
+		{
+			if ( !_testWeights.TryGetValue( body.Id, out var cached ) || cached.Vertices != mesh.VertexCount )
+			{
+				cached = (mesh.VertexCount, SkinBinder.BindSmooth( mesh, _testBind ));
+				_testWeights[body.Id] = cached;
+			}
+
+			weights = cached.Weights;
+		}
+
+		if ( weights is null || weights.Count != mesh.VertexCount )
+			return mesh;
+
+		var result = mesh.Clone();
+		var moved = SkinBinder.Deform( mesh.Positions, weights, bind, posed );
+
+		for ( var i = 0; i < moved.Length; i++ )
+			result.Positions[i] = moved[i];
+
+		return result;
+	}
+
+	private void RestoreTestBind()
+	{
+		if ( _testBind is null || _studio is null )
+			return;
+
+		for ( var i = 0; i < _studio.Rig.Count; i++ )
+		{
+			var at = _testBind.IndexOf( _studio.Rig.Bones[i].Name );
+
+			if ( at < 0 )
+				continue;
+
+			_studio.Rig.Bones[i].Local = _testBind.Bones[at].Local;
+			_studio.Rig.Bones[i].Length = _testBind.Bones[at].Length;
+		}
+	}
+
+	/// <summary>
+	/// Put the rig back and take the marks off. Called by Relax, and by anything that is about to
+	/// rebuild or save: the rig is bent in place, and a garment cut on a bent rig, or a document
+	/// saved with one, would be the pose baked in.
+	/// </summary>
+	private void TestRelax( bool refresh )
+	{
+		if ( _testBind is null )
+		{
+			if ( refresh && _viewport is not null && _viewport.Markers.Count > 0 )
+			{
+				_viewport.Markers = Array.Empty<Vector3>();
+				_viewport.Update();
+			}
+
+			return;
+		}
+
+		RestoreTestBind();
+		_testBind = null;
+
+		if ( _viewport is not null )
+		{
+			_viewport.Markers = Array.Empty<Vector3>();
+			_viewport.Update();
+		}
+
+		if ( refresh )
+		{
+			RefreshPreview();
+			SetPrompt( "Relaxed - back to the bind pose." );
+		}
+	}
 
 	/// <summary>
 	/// Check: is this fit to publish?

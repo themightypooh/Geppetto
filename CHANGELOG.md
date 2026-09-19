@@ -36,6 +36,7 @@ forgotten.
 ## Unreleased
 
 ### Added
+- **Test a garment in the poses that break it.** Clothing's new **Test** stage bends the wearer into arms up, arms out, reach, bend, twist, sit, stride and crouch, with the garment on, and marks every vertex that ends up inside the body in red. **Relax** puts the rig back. `GarmentPoses`
 - **Select a ring.** Ctrl+Alt+click an edge in Model to select the ring around a limb, the edges a loop cut would cross.
 - **Select Linked (L).** Adds every piece your selection touches, so one click on an ear picks up the whole ear.
 - **Select Similar (Shift+L).** Adds every face pointing within 10 degrees of the faces you picked.

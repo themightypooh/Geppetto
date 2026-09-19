@@ -1545,6 +1545,7 @@ internal sealed partial class EffigyViewport : Widget
 		// not the pen is armed — see EffigyViewport.Notes.cs.
 		NoteFrame();
 		DrawNotes();
+		DrawMarkers();
 
 		// AFTER SketchFrame and outside it, because SketchFrame returns early when no sketch is
 		// open and "no sketch is open" is one of the answers the probe exists to give. Off unless

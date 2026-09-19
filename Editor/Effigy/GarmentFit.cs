@@ -995,6 +995,9 @@ public sealed class GarmentReport
 	/// resting on the surface; a quarter of an inch is a shoulder through a sleeve.</summary>
 	public float DeepestClip;
 
+	/// <summary>Where they are, one point per clipping vertex, so a viewport can mark them.</summary>
+	public List<Vec3> ClipPoints = new();
+
 	/// <summary>Faces with no area — invisible, and a source of broken normals and bad lighting
 	/// downstream. Always a fault.</summary>
 	public int Degenerate;
@@ -1096,6 +1099,7 @@ public static class GarmentCheck
 
 				report.Clipping++;
 				report.DeepestClip = Math.Max( report.DeepestClip, depth );
+				report.ClipPoints.Add( p );
 			}
 		}
 
