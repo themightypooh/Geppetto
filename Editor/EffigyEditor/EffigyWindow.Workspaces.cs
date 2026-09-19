@@ -1093,6 +1093,7 @@ public sealed partial class EffigyWindow
 	private EffigyStageTool _meshHideTool, _meshHideOthersTool, _meshUnhideTool, _meshRandomSelectTool, _meshTrianglesTool, _meshNgonsTool, _meshInteriorTool;
 	private EffigyStageTool _meshDeleteFacesTool, _meshDeleteEdgesTool, _meshMergeFirstTool, _meshMergeLastTool, _meshMergePivotTool, _meshRandomizeTool, _meshDecimateTool;
 	private EffigyStageTool _meshLoosePartsTool, _meshByMaterialTool, _meshCreaseTool, _meshUncreaseTool;
+	private readonly List<EffigyStageTool> _meshTypedTools = new();
 
 	/// <summary>Which fabric <see cref="StartMeshDrape"/> hangs the cloth as. Cycled by the Fabric tool.</summary>
 	private Fabric _meshFabric = Fabric.Cotton;
@@ -1690,6 +1691,7 @@ public sealed partial class EffigyWindow
 			Menu( "Vertex", "Merge", "Merge first", "Merge last", "Merge at pivot", "By distance", "Connect", "Bevel vertices", "-", "Vertex slide", "Clean up/Smooth", "Clean up/Relax", "Clean up/Flatten", "Loop circle", "Loop space", "To sphere", "Randomize" ),
 			Menu( "Edge", "Edge slide", "Rip", "-", "Loop circle", "Loop space", "-", "Make hard", "Harden creases", "Crease", "Clear crease", "-", "Mark seam", "Clear seam", "-", "Delete edges" ),
 			Menu( "Face", "Triangulate", "Tris to quads", "Poke faces", "-", "Split", "Separate", "Loose parts", "By material", "Extract", "-", "Flip", "Fix normals", "-", "Solidify", "-", "Delete faces only" ),
+			Menu( "Transform", "Move X", "Move Y", "Move Z", "-", "Rotate X", "Rotate Y", "Rotate Z", "-", "Scale by", "Flatten X", "Flatten Y", "Flatten Z" ),
 			Menu( "Mesh", "Move", "Rotate", "Scale", "Soft", "Connected", "Falloff shape", "-", "Shrink/Fatten", "Shear", "Bend", "-", "Symmetrize", "Mirror X", "Snap", "Shrinkwrap", "-", "Dissolve", "Limited dissolve", "Decimate", "Delete", "Delete loose", "-", "Unwrap" ),
 			Menu( "Modifiers", "Modifiers/Live mirror", "Modifiers/Array", "Modifiers/Smooth", "Crease", "Clear crease", "Modifiers/Thickness" ),
 			Menu( "Retopo", "Retopo/Retopo", "Even quads", "Strip brush", "Relax", "Finish retopo" ),
@@ -1829,6 +1831,20 @@ public sealed partial class EffigyWindow
 		_meshMoveTool = MeshTool( move, EffigyIcon.Transform, "Move", "Move handle (G)", () => SetMeshHandle( EffigyViewport.BodyDragMode.Move ), checkable: true );
 		_meshRotateTool = MeshTool( move, EffigyIcon.CircularPattern, "Rotate", "Rotate handle (R)", () => SetMeshHandle( EffigyViewport.BodyDragMode.Rotate ), checkable: true );
 		_meshScaleTool = MeshTool( move, EffigyIcon.Primitive, "Scale", "Scale handle (S)", () => SetMeshHandle( EffigyViewport.BodyDragMode.Scale ), checkable: true );
+
+		// Typed transforms: the number on the bar is the whole gesture, for when "up by exactly
+		// two" matters more than a drag. Hold Ctrl while dragging a handle to snap it instead.
+		_meshTypedTools.Clear();
+		_meshTypedTools.Add( MeshTool( move, EffigyIcon.Transform, "Move X", "Move the selection along X by exactly this much. Type the number", () => StartMeshOp( "Move X", MeshSize() * 0.05f, ( s, v ) => s.Move( new Vec3( v, 0, 0 ) ) ) ) );
+		_meshTypedTools.Add( MeshTool( move, EffigyIcon.Transform, "Move Y", "Move the selection along Y by exactly this much", () => StartMeshOp( "Move Y", MeshSize() * 0.05f, ( s, v ) => s.Move( new Vec3( 0, v, 0 ) ) ) ) );
+		_meshTypedTools.Add( MeshTool( move, EffigyIcon.Transform, "Move Z", "Move the selection along Z by exactly this much", () => StartMeshOp( "Move Z", MeshSize() * 0.05f, ( s, v ) => s.Move( new Vec3( 0, 0, v ) ) ) ) );
+		_meshTypedTools.Add( MeshTool( move, EffigyIcon.CircularPattern, "Rotate X", "Turn the selection about X through its centre by this many degrees. Shift-click turns about the pivot", () => StartMeshOp( "Rotate X", 15f, ( s, v ) => s.Rotate( new Vec3( 1, 0, 0 ), v, Editor.Application.IsKeyDown( KeyCode.Shift ) ) ) ) );
+		_meshTypedTools.Add( MeshTool( move, EffigyIcon.CircularPattern, "Rotate Y", "Turn the selection about Y through its centre by this many degrees. Shift-click turns about the pivot", () => StartMeshOp( "Rotate Y", 15f, ( s, v ) => s.Rotate( new Vec3( 0, 1, 0 ), v, Editor.Application.IsKeyDown( KeyCode.Shift ) ) ) ) );
+		_meshTypedTools.Add( MeshTool( move, EffigyIcon.CircularPattern, "Rotate Z", "Turn the selection about Z through its centre by this many degrees. Shift-click turns about the pivot", () => StartMeshOp( "Rotate Z", 15f, ( s, v ) => s.Rotate( new Vec3( 0, 0, 1 ), v, Editor.Application.IsKeyDown( KeyCode.Shift ) ) ) ) );
+		_meshTypedTools.Add( MeshTool( move, EffigyIcon.Primitive, "Scale by", "Scale the selection about its centre by this factor: 2 doubles it, 0.5 halves it. Shift-click scales about the pivot", () => StartMeshOp( "Scale", 1.5f, ( s, v ) => s.Scale( new Vec3( v, v, v ), Editor.Application.IsKeyDown( KeyCode.Shift ) ) ) ) );
+		_meshTypedTools.Add( MeshTool( move, EffigyIcon.Primitive, "Flatten X", "Squash the selection flat along X, onto the plane through its centre — 0 on that axis, the rest untouched", () => RunMeshOp( "Scale", s => s.Scale( new Vec3( 0, 1, 1 ) ) ) ) );
+		_meshTypedTools.Add( MeshTool( move, EffigyIcon.Primitive, "Flatten Y", "Squash the selection flat along Y", () => RunMeshOp( "Scale", s => s.Scale( new Vec3( 1, 0, 1 ) ) ) ) );
+		_meshTypedTools.Add( MeshTool( move, EffigyIcon.Primitive, "Flatten Z", "Squash the selection flat along Z", () => RunMeshOp( "Scale", s => s.Scale( new Vec3( 1, 1, 0 ) ) ) ) );
 		_meshSoftTool = MeshTool( move, EffigyIcon.SculptSmooth, "Soft", "Soft falloff: moving pulls nearby vertices along too. [ and ] change its reach (O)", ToggleMeshSoft, checkable: true );
 		_meshSoftConnectedTool = MeshTool( move, EffigyIcon.SculptSmooth, "Connected", "Soft falloff along the surface only, so a lip moves without the other lip and a finger without the one beside it (Alt+O)", ToggleMeshSoftConnected, checkable: true );
 		_meshSoftShapeTool = MeshTool( move, EffigyIcon.SculptSmooth, "Falloff shape", "Cycle the soft falloff's curve: Smooth, Sphere, Root, Inverse Square, Sharp, Linear, Constant", CycleMeshSoftShape );
@@ -2658,6 +2674,8 @@ public sealed partial class EffigyWindow
 			Need( _meshInteriorTool, session is { Mesh.FaceCount: > 0 }, "There are no faces" );
 			Need( _meshLoosePartsTool, session is { Mesh.FaceCount: > 0 }, "There is nothing to split" );
 			Need( _meshCreaseTool, edges > 0 || faces > 0, "Select the edges (2) that should stay sharp when smoothed (Shift+E)" );
+			foreach ( var typed in _meshTypedTools )
+				Need( typed, verts > 0, "Select what to move" );
 			Need( _meshUncreaseTool, edges > 0 || faces > 0 || session is { Creases.Count: > 0 }, "There are no creases" );
 			Need( _meshByMaterialTool, session is { Mesh.FaceCount: > 0 }, "There is nothing to split" );
 			Need( _meshWrapTool, session is not null && _studio.Bodies.Count > 1, "Needs another body to wrap onto" );

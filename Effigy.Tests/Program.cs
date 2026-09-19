@@ -1591,6 +1591,30 @@ public static class Program
 		try { new MeshEditSession( Primitives.Box( 2, 2, 2 ) ).Crease( 1f ); } catch ( InvalidOperationException ) { refused = true; }
 		Check( "crease with nothing selected is refused", refused );
 
+		// Typed transforms: exact, one step each, scrubbable like any other operation.
+		var t = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		t.SetMode( EditElement.Face );
+		var topFace = Enumerable.Range( 0, t.Mesh.FaceCount ).First( f => t.Mesh.FaceNormal( t.Mesh.Faces[f] ).z > 0.9f );
+		t.SelectFace( topFace );
+		t.Move( new Vec3( 0, 0, 2 ) );
+		Check( "a typed move lands exactly", t.Mesh.Positions.Count( p => MathF.Abs( p.z - 3f ) < 1e-5f ) == 4 && t.UndoCount == 1 && t.LastLabel == "Move" );
+		t.Scale( new Vec3( 0.5f, 0.5f, 1f ) );
+		Check( "a typed scale is about the selection's centre", t.Mesh.Positions.Count( p => MathF.Abs( p.z - 3f ) < 1e-5f && MathF.Abs( MathF.Abs( p.x ) - 0.5f ) < 1e-5f ) == 4, $"{t.UndoCount}" );
+		t.Rotate( new Vec3( 0, 0, 1 ), 90f );
+		Check( "a typed rotate turns about the centre", t.Mesh.Positions.Count( p => MathF.Abs( p.z - 3f ) < 1e-5f && MathF.Abs( MathF.Abs( p.x ) - 0.5f ) < 1e-4f ) == 4 && t.UndoCount == 3 );
+		t.Preview( "Move", x => x.Move( new Vec3( 0, 0, 1 ) ) );
+		t.Preview( "Move", x => x.Move( new Vec3( 0, 0, 5 ) ) );
+		t.Accept();
+		Check( "a scrubbed move applies only the last value", t.Mesh.Positions.Max( p => p.z ) > 7.99f && t.UndoCount == 4, $"{t.Mesh.Positions.Max( p => p.z )} / {t.UndoCount}" );
+		t.Undo();
+		t.Undo();
+		t.Undo();
+		t.Undo();
+		Check( "and it all undoes", MathF.Abs( t.Mesh.Positions.Max( p => p.z ) - 1f ) < 1e-5f && t.UndoCount == 0 );
+		refused = false;
+		try { new MeshEditSession( Primitives.Box( 2, 2, 2 ) ).Move( new Vec3( 1, 0, 0 ) ); } catch ( InvalidOperationException ) { refused = true; }
+		Check( "a typed move with nothing selected is refused", refused );
+
 		// Committing hands them to the feature, which saves and reloads them.
 		var studio = new PartStudio();
 		var prim = studio.Add( new PrimitiveFeature() );

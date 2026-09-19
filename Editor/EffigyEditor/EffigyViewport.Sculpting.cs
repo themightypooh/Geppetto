@@ -656,7 +656,13 @@ internal sealed partial class EffigyViewport
 					if ( sin > 1e-6f )
 					{
 						var axis = new Vec3( rotation.x, rotation.y, rotation.z ) / sin;
-						session.DragRotate( ToVec( _meshEditDragAnchor ), axis, 2f * MathF.Acos( w ).RadianToDegree() );
+						var degrees = 2f * MathF.Acos( w ).RadianToDegree();
+
+						// Ctrl snaps the turn to 5° steps, as in Blender.
+						if ( Editor.Application.IsKeyDown( KeyCode.Control ) )
+							degrees = MathF.Round( degrees / 5f ) * 5f;
+
+						session.DragRotate( ToVec( _meshEditDragAnchor ), axis, degrees );
 					}
 
 					return;
@@ -671,6 +677,11 @@ internal sealed partial class EffigyViewport
 						return;
 
 					var f = scale.Clamp( 0.01f, 100f );
+
+					// Ctrl snaps the factor to tenths.
+					if ( Editor.Application.IsKeyDown( KeyCode.Control ) )
+						f = MathF.Max( 0.1f, MathF.Round( f * 10f ) / 10f );
+
 					session.DragScale( ToVec( _meshEditDragAnchor ), new Vec3( f, f, f ) );
 					return;
 				}
@@ -684,7 +695,16 @@ internal sealed partial class EffigyViewport
 						return;
 
 					_meshEditDragDelta += delta;
-					session.Drag( new Vec3( _meshEditDragDelta.x, _meshEditDragDelta.y, _meshEditDragDelta.z ) );
+					var moved = _meshEditDragDelta;
+
+					// Ctrl snaps the move to the grid: whole units, or tenths on a small model.
+					if ( Editor.Application.IsKeyDown( KeyCode.Control ) )
+					{
+						var step = MeshSnapStep( session );
+						moved = new Vector3( MathF.Round( moved.x / step ) * step, MathF.Round( moved.y / step ) * step, MathF.Round( moved.z / step ) * step );
+					}
+
+					session.Drag( new Vec3( moved.x, moved.y, moved.z ) );
 					return;
 				}
 			}
@@ -697,6 +717,10 @@ internal sealed partial class EffigyViewport
 	}
 
 	private Vector3 _meshEditDragAnchor;
+
+	/// <summary>The grid a Ctrl-drag snaps to: one unit on anything bigger than a hand, a tenth
+	/// on something small enough that a unit would be most of it.</summary>
+	private static float MeshSnapStep( MeshEditSession session ) => session.Mesh.BoundsDiagonal >= 10f ? 1f : 0.1f;
 
 	/// <summary>Which handle Edit mode shows: move, rotate or scale. G / R / S, as in Blender.</summary>
 	public BodyDragMode MeshHandleMode { get; set; } = BodyDragMode.Move;

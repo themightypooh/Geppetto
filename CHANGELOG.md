@@ -218,6 +218,10 @@ forgotten.
   Subdivide: 1 holds the fold through one level, 2 through two, a fraction softens it. Creases
   show as purple edges, follow the live mirror and array, and are saved with the edit.
   `Editor/Effigy/CatmullClark.cs`, `Editor/Effigy/MeshAdjacency.cs`
+- **Typed transforms.** A Transform menu with Move X/Y/Z, Rotate X/Y/Z, Scale by and Flatten
+  X/Y/Z: type the exact amount instead of dragging for it. Shift-click rotates or scales about
+  the pivot. **Hold Ctrl while dragging a handle** to snap: whole units for a move, 5° for a turn,
+  tenths for a scale.
 
 ### Improved
 - **Model's Edit mode is laid out like a modeller now, not like CAD.**

@@ -3734,12 +3734,18 @@ public sealed class MeshEditSession
 	/// <summary>Start moving the selection. Snapshots for one undo step.</summary>
 	public bool BeginDrag()
 	{
-		var verts = AffectedVertices();
-
-		if ( verts.Count == 0 )
+		if ( AffectedVertices().Count == 0 )
 			return false;
 
 		Push( "Move" );
+		BeginDragCore();
+		return true;
+	}
+
+	/// <summary>The drag set-up without the undo step — for a typed transform that is its own step.</summary>
+	void BeginDragCore()
+	{
+		var verts = AffectedVertices();
 
 		var list = new List<int>( verts );
 		var weights = new List<float>();
@@ -3769,8 +3775,49 @@ public sealed class MeshEditSession
 			_dragFrom[i] = Mesh.Positions[_dragVerts[i]];
 			_dragMirror[i] = MirrorX ? MirrorPartner( _dragVerts[i] ) : -1;
 		}
+	}
 
-		return true;
+	// --- typed transforms --------------------------------------------------------------------
+
+	/// <summary>Move the selection by <paramref name="offset"/> — a typed move, with the same
+	/// soft falloff, mirror and snapping as a dragged one. One undo step; scrubbable.</summary>
+	public void Move( Vec3 offset ) => Typed( "Move", () => Drag( offset ) );
+
+	/// <summary>Turn the selection <paramref name="degrees"/> about <paramref name="axis"/> through
+	/// its centre (or the pivot, with <paramref name="aboutPivot"/>).</summary>
+	public void Rotate( Vec3 axis, float degrees, bool aboutPivot = false )
+	{
+		if ( axis.LengthSquared < 1e-12f )
+			throw new ArgumentException( "Rotate needs an axis.", nameof( axis ) );
+
+		var centre = aboutPivot ? Pivot : SelectionCentre();
+		Typed( "Rotate", () => DragRotate( centre, axis, degrees ) );
+	}
+
+	/// <summary>Scale the selection by <paramref name="factor"/> per axis about its centre (or the
+	/// pivot). 1 is no change; 0 flattens that axis.</summary>
+	public void Scale( Vec3 factor, bool aboutPivot = false )
+	{
+		var centre = aboutPivot ? Pivot : SelectionCentre();
+		Typed( "Scale", () => DragScale( centre, factor ) );
+	}
+
+	void Typed( string label, Action apply )
+	{
+		if ( AffectedVertices().Count == 0 )
+			throw new InvalidOperationException( $"{label} needs something selected." );
+
+		if ( _dragVerts is not null )
+			EndDrag();
+
+		Step( label, () =>
+		{
+			BeginDragCore();
+			apply();
+			_dragVerts = null;
+			_dragFrom = null;
+			_dragMirror = null;
+		} );
 	}
 
 	/// <summary>Move the dragged vertices to where they started plus <paramref name="offset"/>.
