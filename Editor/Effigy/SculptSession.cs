@@ -268,6 +268,33 @@ public sealed class SculptSession
 	/// then paint free the part you want to work on.</summary>
 	public void ProtectAll() => MaskFor( Level ).Protect();
 
+	/// <summary>Push the held region out one ring, or with <paramref name="shrink"/> pull it in.</summary>
+	public void GrowMask( bool shrink = false ) => MaskFor( Level ).Grow( _sculpt.Evaluate( Level ), shrink );
+
+	/// <summary>Hold everything but the connected piece under <paramref name="point"/> — the
+	/// nearest vertex of the face the cursor is over.</summary>
+	public void ProtectAllButLinked( Vec3 point, int face )
+	{
+		var mesh = _sculpt.Evaluate( Level );
+		if ( face < 0 || face >= mesh.FaceCount )
+			return;
+
+		var best = -1;
+		var bestD = float.MaxValue;
+		foreach ( var v in mesh.Faces[face].Indices )
+		{
+			var d = (mesh.Positions[v] - point).LengthSquared;
+			if ( d < bestD )
+			{
+				bestD = d;
+				best = v;
+			}
+		}
+
+		if ( best >= 0 )
+			MaskFor( Level ).ProtectAllButLinked( mesh, best );
+	}
+
 	/// <summary>Vertex and face count at a level, for the slider that has to warn before the click.</summary>
 	public (int Vertices, int Faces) Cost( int level ) => _sculpt.Cost( level );
 

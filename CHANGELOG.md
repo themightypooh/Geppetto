@@ -266,6 +266,9 @@ forgotten.
 - **Snap to a vertex while dragging.** Hold Ctrl+Shift while dragging the move handle in Edit
   mode and the selection's centre lands on the nearest vertex that is not moving — on this part,
   or on the surface Snap is set to.
+- **Sculpt mask by piece, and grow/shrink.** Edit ▸ Sculpt Mask ▸ Mask All But the Piece Under
+  the Cursor holds everything except the connected piece you are pointing at — an ear, a hand, an
+  eye — so it can be sculpted on its own. Grow and Shrink push the held region out or in one ring.
 
 ### Improved
 - **Check shows you where.** Clipping vertices are marked on the model, yellow for a graze through red for the deepest, instead of only a count in the console. **Push out** next to it gives each clipping garment exactly the Clearance it needs and rebuilds, as one undo step. **Clear marks** takes them off.

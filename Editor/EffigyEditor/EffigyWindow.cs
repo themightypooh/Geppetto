@@ -408,6 +408,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		mask.AddOption( "Invert", "flip", InvertSculptMask );
 		mask.AddOption( "Clear", "layers_clear", ClearSculptMask );
 		mask.AddOption( "Mask Everything", "select_all", ProtectAllSculpt );
+		mask.AddOption( "Mask All But the Piece Under the Cursor", "touch_app", MaskAllButLinked );
+		mask.AddOption( "Grow Mask", "open_in_full", () => GrowSculptMask( false ) );
+		mask.AddOption( "Shrink Mask", "close_fullscreen", () => GrowSculptMask( true ) );
 		mask.AddSeparator();
 		mask.AddOption( "Switch Between Painting and Erasing", "brush", ToggleSculptMaskErase );
 		mask.AddOption( "Hide / Show Held Geometry", "visibility_off", ToggleHideMasked );
@@ -2659,6 +2662,36 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		SetPrompt( "Everything is masked - invert, or paint to release the part you want to work on." );
 	}
 
+	/// <summary>Face sets by topology: everything but the connected piece the cursor was last over
+	/// is held, so an ear or a hand can be sculpted without the rest catching the brush.</summary>
+	private void MaskAllButLinked()
+	{
+		if ( !SculptingOrSaySo( out var session ) )
+			return;
+
+		if ( _viewport?.SculptCursorHit is not { } hit )
+		{
+			SetPrompt( "Point at the piece you want to keep, then choose this again — it masks everything but the part under the cursor." );
+			return;
+		}
+
+		session.ProtectAllButLinked( hit.Point, hit.FaceIndex );
+		_viewport.RefreshSculptPreview();
+		_sculptBar?.Refresh();
+		SetPrompt( $"Everything but that piece is held — {session.MaskFor( session.Level ).ProtectedFraction:P0} masked. Invert to swap." );
+	}
+
+	private void GrowSculptMask( bool shrink )
+	{
+		if ( !SculptingOrSaySo( out var session ) )
+			return;
+
+		session.GrowMask( shrink );
+		_viewport.RefreshSculptPreview();
+		_sculptBar?.Refresh();
+		SetPrompt( $"Mask {(shrink ? "shrunk" : "grown")} one ring — {session.MaskFor( session.Level ).ProtectedFraction:P0} held." );
+	}
+
 	private void ClearSculptMask()
 	{
 		if ( !SculptingOrSaySo( out var session ) )
@@ -3306,7 +3339,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		Remesh,
 		Draft, Hole, Sculpt, Mirror, LinearPattern, CircularPattern, Transform, UVProject, FaceMaterial,
 		MoveFace, Paint, Boolean,
-		Garment, Fur, Trim,
+		Garment, Fur, Trim, Fabric,
 	}
 
 	/// <summary>Build one, and apply the variant chosen from its dropdown where it has one.</summary>
@@ -3340,6 +3373,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		ToolKind.Garment => new GarmentFeature(),
 		ToolKind.Fur => new FurFeature(),
 		ToolKind.Trim => new TrimFeature(),
+		ToolKind.Fabric => new FabricFeature(),
 		_ => throw new ArgumentOutOfRangeException( nameof( kind ), kind, "no feature for this tool" )
 	};
 
@@ -4987,6 +5021,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			_rebuildCost = RealTime.Now - started;
 
 		SyncFurMaterials();
+		SyncFabricMaterials();
 		_featureTree?.Rebuild();
 		_partsPanel?.Refresh();
 		_materialsPanel?.Refresh();

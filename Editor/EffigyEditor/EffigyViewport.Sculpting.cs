@@ -44,6 +44,11 @@ internal sealed partial class EffigyViewport
 	/// model.</summary>
 	private MeshHit? _sculptCursor;
 
+	/// <summary>Where the sculpt cursor last sat on the model, for a menu command that acts on
+	/// "the piece under the cursor" after the mouse has left for the menu.</summary>
+	public MeshHit? SculptCursorHit => _sculptCursor ?? _sculptCursorLast;
+	private MeshHit? _sculptCursorLast;
+
 	// The floating number bar, held for the same reason the result strip is: the frame loop has to
 	// keep camera drags out of it, or dragging the radius slider also flies the view.
 	private Widget _sculptBarOverlay;
@@ -137,6 +142,8 @@ internal sealed partial class EffigyViewport
 			var direction = new Vec3( ray.Forward.x, ray.Forward.y, ray.Forward.z );
 
 			_sculptCursor = SculptSession.Hover( origin, direction );
+			if ( _sculptCursor is not null )
+				_sculptCursorLast = _sculptCursor;
 
 			if ( !stroking && Gizmo.WasLeftMousePressed )
 			{

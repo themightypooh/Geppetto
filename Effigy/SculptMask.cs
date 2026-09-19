@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace Effigy;
 
@@ -68,6 +69,87 @@ public sealed class SculptMask
 	{
 		for ( var i = 0; i < _values.Length; i++ )
 			_values[i] = 1f - _values[i];
+
+		Revision++;
+	}
+
+	/// <summary>
+	/// Push the held region out by one ring of vertices (Blender's Grow Mask), or with
+	/// <paramref name="shrink"/> pull it in by one. Each vertex takes the most-held (or least-held)
+	/// value among itself and its neighbours, so a soft edge stays soft.
+	/// </summary>
+	public void Grow( PolyMesh mesh, bool shrink = false )
+	{
+		if ( mesh is null || mesh.VertexCount != _values.Length )
+			return;
+
+		var next = (float[])_values.Clone();
+		foreach ( var face in mesh.Faces )
+		{
+			var n = face.Indices.Length;
+			for ( var i = 0; i < n; i++ )
+			{
+				var a = face.Indices[i];
+				var b = face.Indices[(i + 1) % n];
+				if ( shrink )
+				{
+					next[a] = MathF.Max( next[a], _values[b] );
+					next[b] = MathF.Max( next[b], _values[a] );
+				}
+				else
+				{
+					next[a] = MathF.Min( next[a], _values[b] );
+					next[b] = MathF.Min( next[b], _values[a] );
+				}
+			}
+		}
+
+		Array.Copy( next, _values, _values.Length );
+		Revision++;
+	}
+
+	/// <summary>
+	/// Hold everything except the connected piece <paramref name="seed"/> is on — a face set by
+	/// topology: an ear, a hand, a separate eye, whatever the cursor is over, isolated for
+	/// sculpting without a mask brush ever being picked up.
+	/// </summary>
+	public void ProtectAllButLinked( PolyMesh mesh, int seed )
+	{
+		if ( mesh is null || mesh.VertexCount != _values.Length || seed < 0 || seed >= _values.Length )
+			return;
+
+		var neighbours = new List<int>[mesh.VertexCount];
+		foreach ( var face in mesh.Faces )
+		{
+			var n = face.Indices.Length;
+			for ( var i = 0; i < n; i++ )
+			{
+				var a = face.Indices[i];
+				var b = face.Indices[(i + 1) % n];
+				(neighbours[a] ??= new List<int>()).Add( b );
+				(neighbours[b] ??= new List<int>()).Add( a );
+			}
+		}
+
+		Array.Fill( _values, 0f );
+		var stack = new Stack<int>();
+		stack.Push( seed );
+		_values[seed] = 1f;
+		while ( stack.Count > 0 )
+		{
+			var v = stack.Pop();
+			if ( neighbours[v] is null )
+				continue;
+
+			foreach ( var w in neighbours[v] )
+			{
+				if ( _values[w] >= 1f )
+					continue;
+
+				_values[w] = 1f;
+				stack.Push( w );
+			}
+		}
 
 		Revision++;
 	}

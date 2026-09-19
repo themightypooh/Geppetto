@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using Effigy;
 using static Effigy.Tests.Report;
 
@@ -107,6 +108,7 @@ public static class SculptTests
 		TestHideByMaskDropsOnlyFullyMaskedFaces();
 		TestEachLevelHasItsOwnMask();
 		TestHidingMaskedGeometryIsAViewOnly();
+		TestMaskGrowsShrinksAndIsolatesAPiece();
 
 		Section( "sculpt: reprojecting onto a cage it was not made on" );
 		TestReprojectionCarriesTheShapeToANewCage();
@@ -1218,6 +1220,31 @@ public static class SculptTests
 
 		Check( $"a level-3 evaluation on {mesh.VertexCount} verts finishes in under two seconds",
 			sw.ElapsedMilliseconds < 2000, $"{sw.ElapsedMilliseconds} ms" );
+	}
+
+	static void TestMaskGrowsShrinksAndIsolatesAPiece()
+	{
+		// A grid with one vertex held: grow takes the ring round it, shrink gives it back.
+		var grid = Primitives.Plane( 8f, 8f, 8, 8 );
+		var mask = new SculptMask( grid.VertexCount );
+		var centre = grid.Positions.FindIndex( p => p.Length < 1e-4f );
+		mask[centre] = 0f;
+		Check( "one vertex is held", mask.Any && mask.Values.Count( v => v < 0.5f ) == 1 );
+
+		mask.Grow( grid );
+		Check( "growing holds its edge neighbours: five vertices on a grid", mask.Values.Count( v => v < 0.5f ) == 5, $"{mask.Values.Count( v => v < 0.5f )}" );
+		mask.Grow( grid );
+		Check( "growing again takes the next ring: a diamond of thirteen", mask.Values.Count( v => v < 0.5f ) == 13, $"{mask.Values.Count( v => v < 0.5f )}" );
+		mask.Grow( grid, shrink: true );
+		Check( "shrinking gives a ring back", mask.Values.Count( v => v < 0.5f ) == 5, $"{mask.Values.Count( v => v < 0.5f )}" );
+
+		// Two boxes in one mesh: all but the piece a seed is on is held.
+		var two = Primitives.Box( 2, 2, 2 );
+		MeshTransform.Append( two, MeshTransform.Transformed( Primitives.Box( 2, 2, 2 ), Xform.Translate( new Vec3( 10, 0, 0 ) ) ) );
+		var pieces = new SculptMask( two.VertexCount );
+		pieces.ProtectAllButLinked( two, 9 );
+		Check( "mask all but linked frees the seed's box and holds the other",
+			Enumerable.Range( 0, 8 ).All( v => pieces[v] < 0.5f ) && Enumerable.Range( 8, 8 ).All( v => pieces[v] > 0.5f ) );
 	}
 
 	static void TestAFreshMaskChangesNothing()
