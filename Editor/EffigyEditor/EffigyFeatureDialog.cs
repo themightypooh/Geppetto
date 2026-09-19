@@ -254,10 +254,17 @@ internal sealed class EffigyFeatureDialog : Widget
 	/// c + D·(q − c), which is the same form with R = D·R₀ and T = c + D·(T₀ − c) — so the drag
 	/// composes onto whatever rotation was already typed, rather than replacing it.
 	/// </summary>
+	/// <summary>The grid a Ctrl-dragged body snaps to, in units. 16 is Hammer's default.</summary>
+	public static float BodyGridStep = 16f;
+
 	private void OnBodyRotateDragged( Vec3 axis, float degrees )
 	{
 		if ( _feature is not TransformFeature move )
 			return;
+
+		// Ctrl turns in 15° steps, so a quarter turn is a quarter turn.
+		if ( Editor.Application.IsKeyDown( KeyCode.Control ) )
+			degrees = MathF.Round( degrees / 15f ) * 15f;
 
 		var drag = Rotation.FromAxis( ToVector3( axis.Normal ), degrees );
 		var rotation = drag * _rotationAtDragStart;
@@ -296,6 +303,10 @@ internal sealed class EffigyFeatureDialog : Widget
 		if ( _feature is not TransformFeature move )
 			return;
 
+		// Ctrl scales in quarters: 0.5, 0.75, 1.25, 2.
+		if ( Editor.Application.IsKeyDown( KeyCode.Control ) )
+			factor = MathF.Max( 0.25f, MathF.Round( factor * 4f ) / 4f );
+
 		move.Scale.Value = _scaleAtDragStart * factor;
 		move.Translate.Value = _bodyDragPivot - (_bodyDragPivot - _translateAtDragStart) * factor;
 
@@ -317,7 +328,18 @@ internal sealed class EffigyFeatureDialog : Widget
 		if ( _feature is not TransformFeature move )
 			return;
 
-		move.Translate.Value = _translateAtDragStart + displacement;
+		var to = _translateAtDragStart + displacement;
+
+		// Ctrl snaps the part onto the grid, the way a kit piece wants to land: whole grid steps
+		// of 16 units, or 4 with Shift held too — Hammer's grid, so what is built here lines up
+		// with what is built there.
+		if ( Editor.Application.IsKeyDown( KeyCode.Control ) )
+		{
+			var step = Editor.Application.IsKeyDown( KeyCode.Shift ) ? BodyGridStep / 4f : BodyGridStep;
+			to = new Vec3( MathF.Round( to.x / step ) * step, MathF.Round( to.y / step ) * step, MathF.Round( to.z / step ) * step );
+		}
+
+		move.Translate.Value = to;
 
 		// Rebuilds the rows as well as the model, so the numbers in the fields count under the
 		// cursor rather than being a stale copy of what they were before the drag. The window takes

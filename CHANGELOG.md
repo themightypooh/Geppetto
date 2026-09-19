@@ -238,6 +238,9 @@ forgotten.
   twist, ends are capped, closed loops make rings.
 - **Scatter.** Scatter copies of another body over the selected faces: stood on the surface,
   turned and sized at random, nothing on slopes over 45°. The copies become a body of their own.
+- **Kit snapping.** Hold Ctrl while dragging a Transform's handle to land the part on Hammer's
+  16-unit grid (Shift+Ctrl for 4), turn in 15° steps, or scale in quarters. **Snap to grid** in
+  Edit mode puts the selected vertices on a grid, so a wall piece's edges meet the next piece.
 
 ### Improved
 - **Live cloth stays on the character.** The shirt used to trail behind a walking character and clip into their back; it now rides along with them, and **Inertia** on the Garment Cloth component sets how much swing a walk still gives it.

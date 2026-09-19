@@ -1814,6 +1814,13 @@ public static class Program
 		stp.Pivot = new Vec3( 0, 0, 5 );
 		stp.SelectionToPivot();
 		Check( "selection to pivot moves the face's centre onto the pivot", (stp.SelectionCentre() - new Vec3( 0, 0, 5 )).Length < 1e-5f && stp.UndoCount == 1 );
+
+		// Snap to grid.
+		var grid16 = new MeshEditSession( Primitives.Box( 30, 30, 30 ) );
+		grid16.SetMode( EditElement.Vertex );
+		grid16.SelectAll();
+		grid16.SnapToGrid( 16f );
+		Check( "snap to grid lands every corner on a 16", grid16.Mesh.Positions.All( p => MathF.Abs( MathF.Abs( p.x ) - 16f ) < 1e-5f && MathF.Abs( MathF.Abs( p.y ) - 16f ) < 1e-5f && MathF.Abs( MathF.Abs( p.z ) - 16f ) < 1e-5f ) );
 	}
 
 	static void TestEditSessionMappingTools()

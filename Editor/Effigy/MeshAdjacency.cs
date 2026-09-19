@@ -4043,6 +4043,27 @@ public sealed class MeshEditSession
 			throw new InvalidOperationException( "There are no loose vertices." );
 	}
 
+	/// <summary>Snap every selected vertex onto a grid of <paramref name="step"/> units — Blender's
+	/// Selection to Grid. What makes a wall piece's edges land on 16s so the next piece meets it.</summary>
+	public void SnapToGrid( float step )
+	{
+		if ( step <= 0f )
+			throw new InvalidOperationException( "The grid step has to be above zero." );
+
+		var verts = AffectedVertices();
+		if ( verts.Count == 0 )
+			throw new InvalidOperationException( "Select the vertices to snap to the grid." );
+
+		Step( "Snap to grid", () =>
+		{
+			foreach ( var v in verts )
+			{
+				var p = Mesh.Positions[v];
+				Mesh.Positions[v] = new Vec3( MathF.Round( p.x / step ) * step, MathF.Round( p.y / step ) * step, MathF.Round( p.z / step ) * step );
+			}
+		} );
+	}
+
 	/// <summary>Move the selection so its centre lands on the pivot — Blender's Selection to
 	/// Cursor. The other half of Pivot here.</summary>
 	public void SelectionToPivot()
