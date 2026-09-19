@@ -189,6 +189,11 @@ forgotten.
 - **Save your panel layout in Effigy.** View ▸ Set Default Panel View keeps the arrangement
   you like, and Reset Default Panel View puts it back after a stray drag.
   `Editor/EffigyEditor/EffigyWindow.cs`
+- **Tris to Quads (Alt+J).** Join neighbouring selected triangles back into quads, the undo
+  for a triangulated import. Pairs that would fold over an edge or make a lopsided quad are
+  left alone. `Editor/Effigy/MeshAdjacency.cs`
+- **Bevel Vertices (Ctrl+Shift+B).** Cut the corner off the selected vertices and cap each
+  notch with a flat face, in Vertex mode. `Editor/Effigy/MeshAdjacency.cs`
 
 ### Improved
 - **Model's Edit mode is laid out like a modeller now, not like CAD.**
@@ -216,6 +221,9 @@ forgotten.
   `Editor/EffigyEditor/EffigyTutorialPanel.cs`
 
 ### Fixed
+- **Extrude (E) now leaves the new walls selected**, so pressing E again keeps going. Before, nothing was selected after an extrude.
+- **Fill after a Delete closed the wrong hole.** Deleting faces silently renumbered every vertex, so a selection made before the delete pointed at the wrong ring afterwards.
+- **A full 360° Spin no longer leaves its seam edge shared by three faces.** The seam now closes on its own copy of the first ring, so the result is a clean solid.
 - A Garment on a dense or hard-surface wearer no longer freezes the editor for minutes. The drape is about five times faster, loaded wearers are welded so the cloth holds together, and it no longer blows up into giant spikes.
 - Solidify no longer grows long spikes out of tight creases in draped cloth.
 - **The house tutorial no longer skips the door.** The door step ticked itself off as soon

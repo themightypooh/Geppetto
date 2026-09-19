@@ -105,6 +105,8 @@ internal sealed class EffigyMeshEditPanel : Widget
 			{
 				Action( "Triangulate (Ctrl+T)", "Triangulate", s => s.TriangulateFaces() );
 				Action( "Poke faces (Alt+P)", "Poke", s => s.PokeFaces() );
+				if ( selFaces > 1 )
+					Action( "Tris to quads (Alt+J)", "Quads", s => s.TrisToQuads() );
 			}
 
 			Action( "Relax surface", "Relax", s => s.Relax() );

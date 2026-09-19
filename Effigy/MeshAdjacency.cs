@@ -2747,6 +2747,302 @@ public sealed class MeshEditSession
 		} );
 	}
 
+	/// <summary>
+	/// Join pairs of neighbouring selected triangles into quads, Blender's Tris to Quads (Alt+J).
+	/// Two triangles pair when the angle between them is under <paramref name="maxFaceAngle"/> and the
+	/// quad's corners stray from 90° by less than <paramref name="maxShapeAngle"/>, both in degrees.
+	/// The best-looking pairs go first, so a triangulated grid comes back as the grid it was.
+	/// </summary>
+	public void TrisToQuads( float maxFaceAngle = 40f, float maxShapeAngle = 40f )
+	{
+		var faces = RequireFaces( "Tris to Quads" );
+
+		Step( "Tris to Quads", () =>
+		{
+			var m = Mesh.Clone();
+			var selected = new HashSet<int>();
+			foreach ( var f in faces )
+			{
+				if ( m.Faces[f].Indices.Length == 3 )
+					selected.Add( f );
+			}
+
+			var faceCos = MathF.Cos( maxFaceAngle * MathF.PI / 180f );
+			var shapeLimit = maxShapeAngle * MathF.PI / 180f;
+
+			// Every edge shared by two selected triangles of one material is a candidate, scored by
+			// how flat the pair is and how square the quad would be. Lower is better.
+			var candidates = new List<(float score, int a, int b, int[] quad, Vec2[] uvs)>();
+			foreach ( var (key, owners) in m.BuildEdgeFaces() )
+			{
+				if ( owners.Count != 2 || !selected.Contains( owners[0] ) || !selected.Contains( owners[1] ) )
+					continue;
+
+				var fa = m.Faces[owners[0]];
+				var fb = m.Faces[owners[1]];
+				if ( fa.Material != fb.Material )
+					continue;
+
+				var na = m.FaceNormal( fa );
+				var nb = m.FaceNormal( fb );
+				var cos = Vec3.Dot( na, nb );
+				if ( cos < faceCos )
+					continue;
+
+				// Walk A, and where its shared edge starts slip in B's far corner. B runs the edge
+				// the other way, so the quad keeps A's winding.
+				var quad = new int[4];
+				var uvs = new Vec2[4];
+				var n = 0;
+				for ( var i = 0; i < 3; i++ )
+				{
+					var u = fa.Indices[i];
+					var v = fa.Indices[(i + 1) % 3];
+					quad[n] = u;
+					uvs[n++] = fa.UVs[i];
+
+					if ( !new EdgeKey( u, v ).Equals( key ) )
+						continue;
+
+					for ( var j = 0; j < 3; j++ )
+					{
+						var w = fb.Indices[j];
+						if ( w == u || w == v )
+							continue;
+
+						quad[n] = w;
+						uvs[n++] = fb.UVs[j];
+					}
+				}
+
+				if ( n != 4 )
+					continue;
+
+				var worst = 0f;
+				var convex = true;
+				var normal = (na + nb).Normal;
+				for ( var i = 0; i < 4; i++ )
+				{
+					var p = m.Positions[quad[i]];
+					var before = (m.Positions[quad[(i + 3) % 4]] - p).Normal;
+					var after = (m.Positions[quad[(i + 1) % 4]] - p).Normal;
+					var angle = MathF.Acos( Math.Clamp( Vec3.Dot( before, after ), -1f, 1f ) );
+					worst = MathF.Max( worst, MathF.Abs( angle - MathF.PI / 2f ) );
+
+					// A reflex corner turns the wrong way round the quad's normal.
+					if ( Vec3.Dot( Vec3.Cross( after, before ), normal ) < 0f )
+						convex = false;
+				}
+
+				if ( !convex || worst > shapeLimit )
+					continue;
+
+				candidates.Add( (worst + (1f - cos), owners[0], owners[1], quad, uvs) );
+			}
+
+			candidates.Sort( ( x, y ) => x.score.CompareTo( y.score ) );
+
+			var consumed = new HashSet<int>();
+			var quads = new Dictionary<int, (int[] quad, Vec2[] uvs)>();
+			foreach ( var c in candidates )
+			{
+				if ( consumed.Contains( c.a ) || consumed.Contains( c.b ) )
+					continue;
+
+				consumed.Add( c.a );
+				consumed.Add( c.b );
+				quads[Math.Min( c.a, c.b )] = (c.quad, c.uvs);
+			}
+
+			if ( quads.Count == 0 )
+				throw new InvalidOperationException( "No two selected triangles could join into a quad. Select neighbouring triangles that lie roughly flat against each other." );
+
+			var newFaces = new List<Face>( m.Faces.Count );
+			var newSelection = new HashSet<int>();
+			for ( var i = 0; i < m.Faces.Count; i++ )
+			{
+				if ( quads.TryGetValue( i, out var q ) )
+				{
+					newSelection.Add( newFaces.Count );
+					newFaces.Add( new Face( q.quad, q.uvs, m.Faces[i].Material ) );
+				}
+				else if ( !consumed.Contains( i ) )
+				{
+					if ( SelectedFaces.Contains( i ) )
+						newSelection.Add( newFaces.Count );
+					newFaces.Add( m.Faces[i] );
+				}
+			}
+
+			m.Faces = newFaces;
+			Mesh = m;
+			ClearSelection();
+			SelectedFaces.UnionWith( newSelection );
+		} );
+	}
+
+	/// <summary>
+	/// Cut the corner off each selected vertex, Blender's Bevel Vertices (Ctrl+Shift+B). Every edge
+	/// into the vertex is shortened by <paramref name="width"/> and the notch is capped with one
+	/// flat face. Vertices on an open boundary are left alone. The caps become the selection.
+	/// </summary>
+	public void BevelVertices( float width )
+	{
+		var verts = AffectedVertices();
+		if ( verts.Count == 0 )
+			throw new InvalidOperationException( "Bevel Vertices needs vertices selected. Switch to Vertex mode (1) and pick the corners to cut." );
+
+		if ( width <= 0f )
+			throw new InvalidOperationException( "Bevel Vertices needs a width above zero." );
+
+		Step( "Bevel Vertices", () =>
+		{
+			var m = Mesh.Clone();
+			var edgeFaces = m.BuildEdgeFaces();
+			var normals = m.ComputeVertexNormals();
+
+			// Every edge leaving each vertex, its material, and whether the vertex sits on a boundary.
+			var spokes = new Dictionary<int, HashSet<int>>();
+			var materials = new Dictionary<int, int>();
+			var boundary = new HashSet<int>();
+			foreach ( var (key, owners) in edgeFaces )
+			{
+				foreach ( var v in new[] { key.A, key.B } )
+				{
+					if ( !verts.Contains( v ) )
+						continue;
+
+					if ( !spokes.TryGetValue( v, out var set ) )
+						spokes[v] = set = new HashSet<int>();
+					set.Add( key.A == v ? key.B : key.A );
+					materials[v] = m.Faces[owners[0]].Material;
+
+					if ( owners.Count != 2 )
+						boundary.Add( v );
+				}
+			}
+
+			// One new vertex per spoke, pulled along it. Never past the middle, or two bevelled ends
+			// of one edge would cross.
+			var cuts = new Dictionary<(int v, int w), int>();
+			var cutT = new Dictionary<(int v, int w), float>();
+			var capped = new List<int>();
+			foreach ( var (v, others) in spokes )
+			{
+				if ( boundary.Contains( v ) || others.Count < 3 )
+					continue;
+
+				capped.Add( v );
+				var p = m.Positions[v];
+				foreach ( var w in others )
+				{
+					var len = (m.Positions[w] - p).Length;
+					if ( len < 1e-6f )
+						continue;
+
+					var t = MathF.Min( width / len, 0.49f );
+					cuts[(v, w)] = m.Positions.Count;
+					cutT[(v, w)] = t;
+					m.Positions.Add( Vec3.Lerp( p, m.Positions[w], t ) );
+					m.Skin?.Vertices.Add( (BoneWeight[])m.Skin.Vertices[v].Clone() );
+				}
+			}
+
+			if ( capped.Count == 0 )
+				throw new InvalidOperationException( "None of the selected vertices can be bevelled: each needs three or more edges and no open boundary." );
+
+			if ( m.VertexColors is not null )
+			{
+				var was = m.VertexColors.Length;
+				Array.Resize( ref m.VertexColors, m.Positions.Count );
+				foreach ( var ((v, _), i) in cuts )
+				{
+					if ( i >= was )
+						m.VertexColors[i] = m.VertexColors[v];
+				}
+			}
+
+			// Each face round a cut vertex trades that corner for the two cut points on its edges.
+			var newFaces = new List<Face>( m.Faces.Count + capped.Count );
+			foreach ( var f in m.Faces )
+			{
+				var idx = new List<int>( f.Indices.Length + 2 );
+				var uvs = new List<Vec2>( f.Indices.Length + 2 );
+				var count = f.Indices.Length;
+				for ( var i = 0; i < count; i++ )
+				{
+					var v = f.Indices[i];
+					var prevAt = (i + count - 1) % count;
+					var nextAt = (i + 1) % count;
+
+					if ( cuts.TryGetValue( (v, f.Indices[prevAt]), out var a ) && cuts.TryGetValue( (v, f.Indices[nextAt]), out var b ) )
+					{
+						idx.Add( a );
+						uvs.Add( f.UVs[i] + (f.UVs[prevAt] - f.UVs[i]) * cutT[(v, f.Indices[prevAt])] );
+						idx.Add( b );
+						uvs.Add( f.UVs[i] + (f.UVs[nextAt] - f.UVs[i]) * cutT[(v, f.Indices[nextAt])] );
+					}
+					else
+					{
+						idx.Add( v );
+						uvs.Add( f.UVs[i] );
+					}
+				}
+
+				newFaces.Add( new Face( idx.ToArray(), uvs.ToArray(), f.Material ) );
+			}
+
+			// The cap: the cut points in order round the vertex normal, wound to face outward.
+			var capFaces = new List<int>();
+			foreach ( var v in capped )
+			{
+				var n = normals[v];
+				var p = m.Positions[v];
+				var ring = new List<int>();
+				foreach ( var w in spokes[v] )
+				{
+					if ( cuts.TryGetValue( (v, w), out var i ) )
+						ring.Add( i );
+				}
+
+				if ( ring.Count < 3 )
+					continue;
+
+				var refDir = m.Positions[ring[0]] - p;
+				refDir -= n * Vec3.Dot( refDir, n );
+				refDir = refDir.Normal;
+				var side = Vec3.Cross( n, refDir );
+
+				ring.Sort( ( x, y ) =>
+				{
+					var dx = m.Positions[x] - p;
+					var dy = m.Positions[y] - p;
+					return MathF.Atan2( Vec3.Dot( dx, side ), Vec3.Dot( dx, refDir ) )
+						.CompareTo( MathF.Atan2( Vec3.Dot( dy, side ), Vec3.Dot( dy, refDir ) ) );
+				} );
+
+				var capUVs = new Vec2[ring.Count];
+				capFaces.Add( newFaces.Count );
+				newFaces.Add( new Face( ring.ToArray(), capUVs, materials[v] ) );
+			}
+
+			m.Faces = newFaces;
+
+			// Compaction only drops the bevelled vertices, so every face keeps its index.
+			Mesh = RemoveUnusedVertices( m );
+			ClearSelection();
+			if ( Mode == EditElement.Vertex )
+			{
+				foreach ( var f in capFaces )
+					SelectedVertices.UnionWith( Mesh.Faces[f].Indices );
+			}
+			else
+			{
+				SelectedFaces.UnionWith( capFaces );
+			}
+		} );
+	}
+
 	/// <summary>Inset the selected faces as one region. The inner faces stay selected.</summary>
 	public void Inset( float distance )
 	{

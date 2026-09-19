@@ -1089,6 +1089,7 @@ public sealed partial class EffigyWindow
 	private EffigyStageTool _meshSplitEdgeTool, _meshSharpenTool;
 	private EffigyStageTool _meshTriangulateTool, _meshPokeFacesTool, _meshLimitedDissolveTool, _meshFlattenTool;
 	private EffigyStageTool _meshConnectTool, _meshLoopCircleTool, _meshLoopSpaceTool, _meshOrganicRelaxTool;
+	private EffigyStageTool _meshTrisToQuadsTool, _meshBevelVerticesTool;
 
 	/// <summary>Which fabric <see cref="StartMeshDrape"/> hangs the cloth as. Cycled by the Fabric tool.</summary>
 	private Fabric _meshFabric = Fabric.Cotton;
@@ -1107,6 +1108,8 @@ public sealed partial class EffigyWindow
 	private const char MeshKeyTriangulate = (char)31;
 	private const char MeshKeyPokeFaces = (char)28;
 	private const char MeshKeyLimitedDissolve = (char)29;
+	private const char MeshKeyTrisToQuads = (char)16;
+	private const char MeshKeyBevelVertices = (char)22;
 
 	private void ToggleMeshKnife()
 	{
@@ -1809,7 +1812,7 @@ public sealed partial class EffigyWindow
 		_meshMergeTool = MeshTool( clean, EffigyIcon.Merge, "Merge", "Merge the selected vertices at their centre (M)", () => RunMeshOp( "Merge", s => s.MergeAtCentre() ) );
 		MeshTool( clean, EffigyIcon.Merge, "By distance", "Weld vertices that sit on top of each other", () => StartMeshOp( "Merge by distance", MeshSize() * 0.001f, ( s, v ) => s.MergeByDistance( v ) ) );
 		_meshDissolveTool = MeshTool( clean, EffigyIcon.Dissolve, "Dissolve", "Remove the selected edges or vertices and join the faces around them", () => RunMeshOp( "Dissolve", s => s.Dissolve() ) );
-		_meshLimitedDissolveTool = MeshTool( clean, EffigyIcon.Dissolve, "Limited dissolve", "Merge coplanar faces across the entire mesh to simplify it (Alt+J)", () => RunMeshOp( "Limited dissolve", s => s.LimitedDissolve() ) );
+		_meshLimitedDissolveTool = MeshTool( clean, EffigyIcon.Dissolve, "Limited dissolve", "Merge coplanar faces across the entire mesh to simplify it", () => RunMeshOp( "Limited dissolve", s => s.LimitedDissolve() ) );
 		MeshTool( clean, EffigyIcon.DeleteGeometry, "Delete loose", "Remove vertices no face uses — invisible, but still exported", () => RunMeshOp( "Delete loose", s => s.DeleteLoose() ) );
 		_meshDeleteTool = MeshTool( clean, EffigyIcon.DeleteGeometry, "Delete", "Delete what is selected, leaving a hole (X)", () => RunMeshOp( "Delete", s => s.Delete() ) );
 		_meshSplitEdgeTool = MeshTool( clean, EffigyIcon.Boolean, "Make hard", "Make the selected edges shade hard, by unwelding the model along them. Merge by distance puts it back", SplitMeshEdges );
@@ -1825,6 +1828,8 @@ public sealed partial class EffigyWindow
 		MeshTool( clean, EffigyIcon.Mirror, "Flip", "Turn the selected faces (or all of them) inside out", () => RunMeshOp( "Flip normals", s => s.FlipNormals() ) );
 		_meshTriangulateTool = MeshTool( clean, EffigyIcon.SelectFace, "Triangulate", "Split the selected faces into triangles (Ctrl+T)", () => RunMeshOp( "Triangulate", s => s.TriangulateFaces() ) );
 		_meshPokeFacesTool = MeshTool( clean, EffigyIcon.SelectVertex, "Poke faces", "Add a vertex in the center of the selected faces and triangulate them (Alt+P)", () => RunMeshOp( "Poke Faces", s => s.PokeFaces() ) );
+		_meshTrisToQuadsTool = MeshTool( clean, EffigyIcon.SelectFace, "Tris to quads", "Join neighbouring selected triangles back into quads — the undo for a triangulated import (Alt+J)", () => RunMeshOp( "Tris to Quads", s => s.TrisToQuads() ) );
+		_meshBevelVerticesTool = MeshTool( clean, EffigyIcon.Chamfer, "Bevel vertices", "Cut the corner off the selected vertices and cap each notch with a flat face. The number is how far down each edge to cut (Ctrl+Shift+B)", () => StartMeshOp( "Bevel Vertices", MeshSize() * 0.02f, ( s, v ) => s.BevelVertices( v ) ) );
 
 		var surface = new EffigyStage { Name = "Surface" };
 
@@ -2582,6 +2587,8 @@ public sealed partial class EffigyWindow
 			Need( _meshFillTool, verts >= 3, "Select the vertices or edges round a hole" );
 			Need( _meshTriangulateTool, faces > 0, "Select faces (3) to triangulate (Ctrl+T)" );
 			Need( _meshPokeFacesTool, faces > 0, "Select faces (3) to poke (Alt+P)" );
+			Need( _meshTrisToQuadsTool, faces > 1, "Select neighbouring triangles (3) to join (Alt+J)" );
+			Need( _meshBevelVerticesTool, verts > 0, "Select the vertices (1) whose corners to cut (Ctrl+Shift+B)" );
 			Need( _meshLimitedDissolveTool, session is { Mesh.FaceCount: > 0 }, "There are no faces to dissolve" );
 			Need( _meshFlattenTool, verts >= 3, "Select 3 or more vertices to flatten" );
 			Need( _meshConnectTool, verts == 2, "Select exactly two vertices sharing a face to connect (J)" );
@@ -2670,6 +2677,8 @@ public sealed partial class EffigyWindow
 			case MeshKeyTriangulate: RunMeshOp( "Triangulate", s => s.TriangulateFaces() ); return true;
 			case MeshKeyPokeFaces: RunMeshOp( "Poke Faces", s => s.PokeFaces() ); return true;
 			case MeshKeyLimitedDissolve: RunMeshOp( "Limited dissolve", s => s.LimitedDissolve() ); return true;
+			case MeshKeyTrisToQuads: RunMeshOp( "Tris to Quads", s => s.TrisToQuads() ); return true;
+			case MeshKeyBevelVertices: _meshBevelVerticesTool?.Clicked?.Invoke(); return true;
 			case MeshKeyEscape when _viewport.MeshCircle: ToggleMeshCircle(); return true;
 			case MeshKeyInvert: RunMeshOp( "Invert", s => s.InvertSelection() ); return true;
 			case MeshKeyRecalculate: RunMeshOp( "Recalculate normals", s => s.RecalculateNormals() ); return true;
@@ -2746,8 +2755,11 @@ public sealed partial class EffigyWindow
 	[Shortcut( "effigy.mesh.poke_faces", "ALT+P", typeof( EffigyViewport ) )]
 	private void ShortcutMeshPokeFaces() => MeshEditKey( MeshKeyPokeFaces );
 
-	[Shortcut( "effigy.mesh.limited_dissolve", "ALT+J", typeof( EffigyViewport ) )]
-	private void ShortcutMeshLimitedDissolve() => MeshEditKey( MeshKeyLimitedDissolve );
+	[Shortcut( "effigy.mesh.tris_to_quads", "ALT+J", typeof( EffigyViewport ) )]
+	private void ShortcutMeshTrisToQuads() => MeshEditKey( MeshKeyTrisToQuads );
+
+	[Shortcut( "effigy.mesh.bevel_vertices", "CTRL+SHIFT+B", typeof( EffigyViewport ) )]
+	private void ShortcutMeshBevelVertices() => MeshEditKey( MeshKeyBevelVertices );
 
 	[Shortcut( "effigy.mesh.split", "Y", typeof( EffigyViewport ) )]
 	private void ShortcutMeshSplit() => MeshEditKey( MeshKeySplit );

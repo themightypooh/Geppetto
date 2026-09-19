@@ -139,6 +139,7 @@ public static class Program
 		TestEditSessionShrinkFattenAndGrow();
 		TestEditSessionEdgeSplit();
 		TestEditSessionSelectionTools();
+		TestEditSessionTrisToQuadsAndBevelVertices();
 
 		Section( "an edit session duplicates, separates, extracts a garment and bridges uneven loops" );
 		TestEditSessionPieces();
@@ -1163,6 +1164,102 @@ public static class Program
 	/// Edge Split — making an edge shade hard by unwelding it. The claim to prove is that the two
 	/// sides stop sharing a normal, which is what the exporter reads, and that nothing else moves.
 	/// </summary>
+	static void TestEditSessionTrisToQuadsAndBevelVertices()
+	{
+		Section( "edit session: tris to quads and bevel vertices" );
+
+		// Triangulating a grid and joining it back must give the grid: every triangle pair shares
+		// its diagonal, and the diagonals are the only edges that make square quads.
+		var grid = new MeshEditSession( Primitives.Plane( 8f, 8f, 4, 4 ) );
+		grid.SetMode( EditElement.Face );
+		grid.SelectAll();
+		grid.TriangulateFaces();
+		Check( "triangulating a 4x4 grid gives 32 triangles", grid.Mesh.FaceCount == 32, $"{grid.Mesh.FaceCount}" );
+
+		grid.SelectAll();
+		grid.TrisToQuads();
+		Check( "tris to quads brings back 16 faces", grid.Mesh.FaceCount == 16, $"{grid.Mesh.FaceCount}" );
+		Check( "all of them quads", grid.Mesh.Faces.All( f => f.Indices.Length == 4 ) );
+		Check( "every quad has the grid's area, so no pair joined across a corner",
+			grid.Mesh.Faces.All( f => MathF.Abs( grid.Mesh.FaceArea( f ) - 4f ) < 1e-3f ) );
+		Check( "and the grid is still valid", MeshValidator.Validate( grid.Mesh ).IsValid, MeshValidator.Validate( grid.Mesh ).ToString() );
+		Check( "the new quads are the selection", grid.SelectedFaces.Count == 16, $"{grid.SelectedFaces.Count}" );
+		Check( "vertex count is untouched", grid.Mesh.VertexCount == 25, $"{grid.Mesh.VertexCount}" );
+		Check( "it is one undo step", grid.LastLabel == "Tris to Quads" );
+
+		// A box's corner: two triangles at 90° to each other never join.
+		var box = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		box.SetMode( EditElement.Face );
+		box.SelectAll();
+		box.TriangulateFaces();
+		box.SelectAll();
+		box.TrisToQuads();
+		Check( "a triangulated box comes back as six quads, never folding over an edge",
+			box.Mesh.FaceCount == 6 && box.Mesh.Faces.All( f => f.Indices.Length == 4 ), $"{box.Mesh.FaceCount}" );
+		Check( "and is a closed solid again", MeshValidator.Validate( box.Mesh ) is { IsValid: true, IsClosed: true } );
+		Check( "with its volume", MathF.Abs( box.Mesh.SignedVolume() - 8f ) < 1e-3f, $"{box.Mesh.SignedVolume()}" );
+
+		var refused = false;
+		try { box.TrisToQuads(); } catch ( InvalidOperationException ) { refused = true; }
+		Check( "tris to quads with nothing to join is refused", refused );
+
+		// Bevelling one corner of a box: the corner vertex goes, three cut points arrive, and the
+		// three faces at the corner each gain a corner while one triangle caps the notch.
+		var cut = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		cut.SetMode( EditElement.Vertex );
+		var corner = -1;
+		for ( var i = 0; i < cut.Mesh.VertexCount; i++ )
+		{
+			var p = cut.Mesh.Positions[i];
+			if ( p.x > 0 && p.y > 0 && p.z > 0 )
+				corner = i;
+		}
+
+		cut.SelectVertex( corner );
+		cut.BevelVertices( 0.5f );
+		Check( "bevelling a corner adds two vertices and one face", cut.Mesh.VertexCount == 10 && cut.Mesh.FaceCount == 7,
+			$"{cut.Mesh.VertexCount}v/{cut.Mesh.FaceCount}f" );
+		Check( "the result is a valid closed solid", MeshValidator.Validate( cut.Mesh ) is { IsValid: true, IsClosed: true },
+			MeshValidator.Validate( cut.Mesh ).ToString() );
+		Check( "the cap is a triangle", cut.Mesh.Faces.Count( f => f.Indices.Length == 3 ) == 1 );
+		Check( "three faces became pentagons", cut.Mesh.Faces.Count( f => f.Indices.Length == 5 ) == 3 );
+
+		// A 0.5 cut off a unit-edge corner removes a tetrahedron of 0.5³/6.
+		Check( "and the volume lost is the corner's tetrahedron",
+			MathF.Abs( cut.Mesh.SignedVolume() - (8f - 0.125f / 6f) ) < 1e-3f, $"{cut.Mesh.SignedVolume()}" );
+		Check( "the corner itself is gone", !cut.Mesh.Positions.Any( p => p.x > 0.99f && p.y > 0.99f && p.z > 0.99f ) );
+		Check( "the cut points are 0.5 down each edge",
+			cut.Mesh.Positions.Count( p => MathF.Abs( p.x - 0.5f ) < 1e-4f || MathF.Abs( p.y - 0.5f ) < 1e-4f || MathF.Abs( p.z - 0.5f ) < 1e-4f ) == 3 );
+		Check( "the cap's vertices are the selection", cut.SelectedVertices.Count == 3, $"{cut.SelectedVertices.Count}" );
+		Check( "it is one undo step", cut.UndoCount == 1 && cut.LastLabel == "Bevel Vertices" );
+
+		cut.Undo();
+		Check( "undo brings the corner back", cut.Mesh.VertexCount == 8 && cut.Mesh.FaceCount == 6 );
+
+		// Every corner at once, wide: a cuboctahedron-ish, still closed, and the width is clamped
+		// so cuts from both ends of an edge never cross.
+		cut.SelectAll();
+		cut.BevelVertices( 5f );
+		Check( "bevelling every corner with a huge width still gives a closed solid",
+			MeshValidator.Validate( cut.Mesh ) is { IsValid: true, IsClosed: true }, MeshValidator.Validate( cut.Mesh ).ToString() );
+		Check( "with 8 caps and 6 squeezed faces", cut.Mesh.FaceCount == 14 && cut.Mesh.VertexCount == 24,
+			$"{cut.Mesh.VertexCount}v/{cut.Mesh.FaceCount}f" );
+
+		// A boundary vertex of an open sheet is left alone; an interior one is cut.
+		var sheet = new MeshEditSession( Primitives.Plane( 8f, 8f, 4, 4 ) );
+		sheet.SetMode( EditElement.Vertex );
+		sheet.SelectAll();
+		sheet.BevelVertices( 0.5f );
+		Check( "on an open sheet only the 9 interior vertices get bevelled: 9 caps",
+			sheet.Mesh.FaceCount == 16 + 9, $"{sheet.Mesh.FaceCount}" );
+		Check( "and the sheet's corners are untouched", sheet.Mesh.Positions.Count( p => MathF.Abs( MathF.Abs( p.x ) - 4f ) < 1e-4f && MathF.Abs( MathF.Abs( p.y ) - 4f ) < 1e-4f ) == 4 );
+		Check( "the sheet is still valid", MeshValidator.Validate( sheet.Mesh ).IsValid, MeshValidator.Validate( sheet.Mesh ).ToString() );
+
+		refused = false;
+		try { new MeshEditSession( Primitives.Box( 2, 2, 2 ) ).BevelVertices( 0.5f ); } catch ( InvalidOperationException ) { refused = true; }
+		Check( "bevel vertices with no selection is refused", refused );
+	}
+
 	static void TestEditSessionEdgeSplit()
 	{
 		Section( "edit session: splitting edges makes them shade hard" );
