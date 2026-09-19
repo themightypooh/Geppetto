@@ -48,6 +48,28 @@ public static class DocumentTests
 
 		Report.Section( "document: a part with no rig is unchanged by the rig block existing" );
 		TestUnriggedUntouched();
+
+		Report.Section( "document: reference images survive the round trip" );
+		TestReferenceImages();
+	}
+
+	static void TestReferenceImages()
+	{
+		var studio = new PartStudio();
+		studio.ReferenceImages.Add( new ReferenceImage { Path = "models/effigy/reference/hero front.png", View = "front", Height = 70f, Offset = new Vec2( 1.5f, -2f ), Depth = 30f, Opacity = 0.35f, Visible = true } );
+		studio.ReferenceImages.Add( new ReferenceImage { Path = "ref/side.jpg", View = "side", Height = 64f, Visible = false } );
+
+		var text = StudioDocument.Write( studio );
+		Report.Check( "a picture is one refimage line, path last", text.Contains( "refimage front 70 1.5 -2 30 0.35 1 models/effigy/reference/hero front.png" ), text );
+
+		var back = StudioDocument.Read( text );
+		Report.Check( "both pictures come back", back.ReferenceImages.Count == 2 );
+		var front = back.ReferenceImages[0];
+		Report.Check( "with every field, spaces in the path included",
+			front.View == "front" && front.Path == "models/effigy/reference/hero front.png" && front.Height == 70f && front.Offset.x == 1.5f && front.Offset.y == -2f && front.Depth == 30f && MathF.Abs( front.Opacity - 0.35f ) < 1e-6f && front.Visible );
+		Report.Check( "a hidden one stays hidden", !back.ReferenceImages[1].Visible && back.ReferenceImages[1].View == "side" );
+
+		Report.Check( "a document with no pictures has no refimage line", !StudioDocument.Write( new PartStudio() ).Contains( "refimage" ) );
 	}
 
 	/// <summary>

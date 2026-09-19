@@ -118,6 +118,18 @@ public static class StudioDocument
 				sb.Append( "bodycollision " ).Append( id ).Append( ' ' ).Append( kind.Trim() ).Append( '\n' );
 		}
 
+		// The path goes last because it may have spaces in it; everything before it is a number.
+		foreach ( var image in studio.ReferenceImages )
+		{
+			if ( image is null || string.IsNullOrWhiteSpace( image.Path ) )
+				continue;
+
+			sb.Append( "refimage " ).Append( image.View ).Append( ' ' ).Append( Num( image.Height ) ).Append( ' ' )
+				.Append( Num( image.Offset.x ) ).Append( ' ' ).Append( Num( image.Offset.y ) ).Append( ' ' )
+				.Append( Num( image.Depth ) ).Append( ' ' ).Append( Num( image.Opacity ) ).Append( ' ' )
+				.Append( image.Visible ? 1 : 0 ).Append( ' ' ).Append( OneLine( image.Path ) ).Append( '\n' );
+		}
+
 		// Same rule as origin: a document with no variables must not grow a line. Names sorted so
 		// two saves of the same table are the same bytes.
 		foreach ( var variable in studio.Variables
@@ -599,6 +611,27 @@ public static class StudioDocument
 
 				if ( !string.IsNullOrWhiteSpace( id ) && !string.IsNullOrWhiteSpace( kind ) )
 					studio.BodyCollision[id.Trim()] = kind.Trim();
+
+				continue;
+			}
+
+			if ( line.StartsWith( "refimage " ) )
+			{
+				var parts = line[9..].Split( ' ', 8, StringSplitOptions.RemoveEmptyEntries );
+
+				if ( parts.Length == 8 )
+				{
+					studio.ReferenceImages.Add( new ReferenceImage
+					{
+						View = parts[0],
+						Height = ParseFloat( parts[1] ),
+						Offset = new Vec2( ParseFloat( parts[2] ), ParseFloat( parts[3] ) ),
+						Depth = ParseFloat( parts[4] ),
+						Opacity = ParseFloat( parts[5] ),
+						Visible = parts[6] != "0",
+						Path = parts[7].Trim(),
+					} );
+				}
 
 				continue;
 			}

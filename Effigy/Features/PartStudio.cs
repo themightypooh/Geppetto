@@ -107,6 +107,12 @@ public sealed class PartStudio
 	public Dictionary<string, string> BodyCollision = new();
 
 	/// <summary>
+	/// Pictures to model against — a front, a side and a top drawing of the character. Document
+	/// state like the pivot: nothing in the rebuild reads them, they are only drawn.
+	/// </summary>
+	public List<ReferenceImage> ReferenceImages = new();
+
+	/// <summary>
 	/// THE MODEL'S PIVOT, in the same coordinates every feature builds in.
 	///
 	/// Everything the kernel makes is built where the features put it; this says which point of

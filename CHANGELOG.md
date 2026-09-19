@@ -248,6 +248,10 @@ forgotten.
 - **Collision per part.** Right-click a part ▸ Collision: Auto, Box, Hull or None. Foliage and
   cables get None, crates get a box, rocks a hull. Saved with the document; the Collision Report
   shows the result. `Editor/Effigy/CollisionBuilder.cs`
+- **Reference images.** View ▸ Reference Images stands a front, side or top drawing in the
+  viewport to model against, behind the model in that view. Size, position, depth and opacity
+  are adjusted from the same menu, and the pictures are saved with the document.
+  `Editor/EffigyEditor/EffigyViewport.ReferenceImages.cs`
 
 ### Improved
 - **Publish puts the garment on the character for you.** Make live cloth and Make clothing now find the wearer in the open scene (the model the document was dressed on, or the selected character) and put the Garment Cloth or the .clothing on it, undoably. If they cannot tell which character, they say so and leave the file ready.

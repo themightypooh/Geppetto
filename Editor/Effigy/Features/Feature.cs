@@ -7,6 +7,29 @@ using System.Reflection;
 namespace Effigy;
 
 /// <summary>One solid in the studio. Onshape calls these parts; a Part Studio holds several.</summary>
+/// <summary>
+/// A picture stood in the viewport to model against. <see cref="View"/> is which way it faces:
+/// "front" stands in the XZ plane facing the Front view, "side" in the YZ plane facing Right,
+/// "top" lies flat facing Top. <see cref="Height"/> is its size in units (width follows the
+/// picture); <see cref="Offset"/> slides it in its own plane; <see cref="Depth"/> pushes it back
+/// away from the viewer, so it sits behind the model rather than through it.
+/// </summary>
+public sealed class ReferenceImage
+{
+	public string Path = "";
+	public string View = "front";
+	public float Height = 72f;
+	public Vec2 Offset;
+	public float Depth = 0f;
+	public float Opacity = 0.5f;
+	public bool Visible = true;
+
+	public ReferenceImage Clone() => new()
+	{
+		Path = Path, View = View, Height = Height, Offset = Offset, Depth = Depth, Opacity = Opacity, Visible = Visible,
+	};
+}
+
 public sealed class Body
 {
 	public string Id;

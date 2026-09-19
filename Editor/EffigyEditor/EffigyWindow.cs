@@ -449,6 +449,36 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		_tutorialDockOption = AddDockOption( view, "Tutorial", "school", "Tutorial" );
 		_variablesDockOption = AddDockOption( view, "Variables", "tag", "Variables" );
 		view.AddOption( "Section View", "content_cut", ToggleSectionView );
+
+		// Pictures to model against. One entry per view to add, then the list to adjust or drop.
+		var reference = view.AddMenu( "Reference Images", "image" );
+		reference.AddOption( "Add Front Image...", "add_photo_alternate", () => AddReferenceImage( "front" ) );
+		reference.AddOption( "Add Side Image...", "add_photo_alternate", () => AddReferenceImage( "side" ) );
+		reference.AddOption( "Add Top Image...", "add_photo_alternate", () => AddReferenceImage( "top" ) );
+
+		if ( _studio.ReferenceImages.Count > 0 )
+		{
+			reference.AddSeparator();
+			foreach ( var image in _studio.ReferenceImages )
+			{
+				var captured = image;
+				var name = $"{captured.View}: {System.IO.Path.GetFileName( captured.Path )}";
+				var one = reference.AddMenu( name, captured.Visible ? "image" : "hide_image" );
+				one.AddOption( captured.Visible ? "Hide" : "Show", captured.Visible ? "visibility_off" : "visibility", () => EditReferenceImage( captured, i => i.Visible = !i.Visible ) );
+				one.AddOption( "Bigger (+25%)", "zoom_in", () => EditReferenceImage( captured, i => i.Height *= 1.25f ) );
+				one.AddOption( "Smaller (-20%)", "zoom_out", () => EditReferenceImage( captured, i => i.Height *= 0.8f ) );
+				one.AddOption( "Fainter", "opacity", () => EditReferenceImage( captured, i => i.Opacity = MathF.Max( 0.1f, i.Opacity - 0.15f ) ) );
+				one.AddOption( "Stronger", "opacity", () => EditReferenceImage( captured, i => i.Opacity = MathF.Min( 1f, i.Opacity + 0.15f ) ) );
+				one.AddOption( "Up", "arrow_upward", () => EditReferenceImage( captured, i => i.Offset = new Vec2( i.Offset.x, i.Offset.y + i.Height * 0.05f ) ) );
+				one.AddOption( "Down", "arrow_downward", () => EditReferenceImage( captured, i => i.Offset = new Vec2( i.Offset.x, i.Offset.y - i.Height * 0.05f ) ) );
+				one.AddOption( "Left", "arrow_back", () => EditReferenceImage( captured, i => i.Offset = new Vec2( i.Offset.x - i.Height * 0.05f, i.Offset.y ) ) );
+				one.AddOption( "Right", "arrow_forward", () => EditReferenceImage( captured, i => i.Offset = new Vec2( i.Offset.x + i.Height * 0.05f, i.Offset.y ) ) );
+				one.AddOption( "Further back", "flip_to_back", () => EditReferenceImage( captured, i => i.Depth += i.Height * 0.25f ) );
+				one.AddOption( "Closer", "flip_to_front", () => EditReferenceImage( captured, i => i.Depth -= i.Height * 0.25f ) );
+				one.AddSeparator();
+				one.AddOption( "Remove", "delete", () => EditReferenceImage( captured, null ) );
+			}
+		}
 		_consoleDockOption = AddDockOption( view, "Console", "terminal", "Console" );
 
 		// The whole panel arrangement as a first-class, saved thing. s&box remembers the last layout
@@ -5070,6 +5100,92 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		_variablesPanel?.Rebuild();
 	}
 
+	/// <summary>
+	/// View ▸ Reference Images ▸ Add: pick a picture and stand it in the viewport facing the named
+	/// view. The file has to live under the project's Assets folder, because that is what the
+	/// engine's texture loader can see; one picked from anywhere else is copied in.
+	/// </summary>
+	private void AddReferenceImage( string viewName )
+	{
+		var fd = new FileDialog( null )
+		{
+			Title = $"Add {viewName} reference image",
+			Directory = Project.Current?.GetAssetsPath() ?? "",
+		};
+
+		fd.SetFindFile();
+		fd.SetNameFilter( "Images (*.png *.jpg *.jpeg *.tga)" );
+
+		if ( !fd.Execute() || string.IsNullOrWhiteSpace( fd.SelectedFile ) )
+			return;
+
+		string relative;
+		try
+		{
+			var root = EffigyAssetFolder.AssetsRoot();
+			var full = System.IO.Path.GetFullPath( fd.SelectedFile );
+
+			if ( root is not null && full.StartsWith( root, StringComparison.OrdinalIgnoreCase ) )
+			{
+				relative = full[root.Length..].TrimStart( '\\', '/' ).Replace( '\\', '/' );
+			}
+			else
+			{
+				var folder = EffigyAssetFolder.ResolveAssetFolder( "models/effigy/reference" );
+				System.IO.Directory.CreateDirectory( folder );
+				var target = System.IO.Path.Combine( folder, System.IO.Path.GetFileName( full ) );
+				System.IO.File.Copy( full, target, true );
+				EffigyAssetFolder.Register( folder );
+				relative = $"models/effigy/reference/{System.IO.Path.GetFileName( full )}";
+				Log.Info( $"[Effigy] copied the picture into the project as {relative}, where the engine can load it" );
+			}
+		}
+		catch ( Exception e )
+		{
+			Log.Error( $"[Effigy] could not use that picture: {e.Message}" );
+			return;
+		}
+
+		RecordUndo();
+
+		// Sized to the size reference when it is up, else to the model, else a person.
+		var height = _viewport?.SizeReferenceHeight > 0f ? _viewport.SizeReferenceHeight
+			: _studio.Bodies.Count > 0 ? MathF.Max( _studio.ToMesh().BoundsDiagonal * 0.6f, 1f ) : 72f;
+
+		_studio.ReferenceImages.Add( new ReferenceImage { Path = relative, View = viewName, Height = height, Depth = height * 0.5f } );
+		SyncReferenceImages();
+		BuildMenuBar();
+		_viewport?.SetStandardView( viewName switch { "side" => EffigyViewport.StandardView.Right, "top" => EffigyViewport.StandardView.Top, _ => EffigyViewport.StandardView.Front } );
+		Log.Info( $"[Effigy] {viewName} reference image added. View ▸ Reference Images adjusts it; it is saved with the document." );
+	}
+
+	/// <summary>Change one picture (or remove it, with a null change), as one undo step.</summary>
+	private void EditReferenceImage( ReferenceImage image, Action<ReferenceImage> change )
+	{
+		RecordUndo();
+
+		if ( change is null )
+			_studio.ReferenceImages.Remove( image );
+		else
+			change( image );
+
+		SyncReferenceImages();
+		BuildMenuBar();
+	}
+
+	/// <summary>Push the document's pictures into the viewport. Called after any change to the
+	/// list and whenever the document is swapped or restored.</summary>
+	private void SyncReferenceImages()
+	{
+		_viewport?.SetReferenceImages( _studio?.ReferenceImages );
+
+		if ( !_dirty )
+		{
+			_dirty = true;
+			UpdateTitle();
+		}
+	}
+
 	private void ToggleSectionView()
 	{
 		if ( _viewport is null )
@@ -5416,6 +5532,8 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		_variablesPanel?.Bind( _studio );
 		_rigPanel?.SetStudio( _studio );
 		_dialog?.Close();
+		_viewport?.ClearReferenceImages();
+		BuildMenuBar();
 
 		// The handle has to show the pivot the document carries, or opening a file would leave the
 		// marker at zero while the export used the saved value. SetOrigin raises OriginMoved and so
@@ -5902,6 +6020,8 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		_variablesPanel?.Bind( _studio );
 		_rigPanel?.SetStudio( _studio );
 		_dialog?.Close();
+		_viewport?.SetReferenceImages( _studio.ReferenceImages );
+		BuildMenuBar();
 
 		// The handle has to show the pivot the document carries, or opening a file would leave the
 		// marker at zero while the export used the saved value. SetOrigin raises OriginMoved and so

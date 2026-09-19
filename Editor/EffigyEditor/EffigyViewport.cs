@@ -1516,6 +1516,7 @@ internal sealed partial class EffigyViewport : Widget
 
 		// The stand-in follows the origin handle, so it moves in the same frame the handle does.
 		PlaceSizeReference();
+		PlaceReferenceImages();
 
 		// Draw planes first (behind everything else)
 		DrawReferencePlanes();
