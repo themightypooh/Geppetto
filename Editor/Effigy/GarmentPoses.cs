@@ -134,10 +134,14 @@ public static class GarmentPoses
 	/// twice bends twice. Returns how many bones were turned, so a rig Effigy cannot read (no
 	/// arm it recognises) reports "nothing moved" rather than showing the bind pose as the answer.
 	/// </summary>
-	public static int Apply( Skeleton skeleton, Pose pose )
+	/// <param name="amount">How far into the pose, 0 the bind pose to 1 the whole thing. A scrub
+	/// through the middle finds where a sleeve first catches, which the extreme alone does not.</param>
+	public static int Apply( Skeleton skeleton, Pose pose, float amount = 1f )
 	{
 		if ( skeleton is null || pose?.Turns is null )
 			return 0;
+
+		amount = Math.Clamp( amount, 0f, 1f );
 
 		var turned = 0;
 
@@ -168,7 +172,7 @@ public static class GarmentPoses
 			foreach ( var root in roots )
 			{
 				var side = SideOf( skeleton.Bones[root].Name );
-				var degrees = turn.Mirror && side < 0 ? -turn.Degrees : turn.Degrees;
+				var degrees = (turn.Mirror && side < 0 ? -turn.Degrees : turn.Degrees) * amount;
 
 				// The torso is a chain that should curve: spread the bend down the links. A limb
 				// hinges at its root and its twist bones ride along.

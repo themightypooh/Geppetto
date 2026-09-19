@@ -3847,6 +3847,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			VisibilityToggled = OnPartVisibilityToggled,
 			CommandRequested = OnPartCommand,
 			DeleteRequested = DeleteParts,
+			JoinRequested = JoinParts,
 			RenameCommitted = OnPartRenamed,
 			SelectionChanged = OnPartTreeSelectionChanged,
 			BoneAssigned = OnBodyBoneAssigned,
@@ -4354,7 +4355,49 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	/// made) exactly the way the feature tree does. Batched so selecting several parts and
 	/// deleting them is one Ctrl+Z rather than one per part.
 	/// </summary>
-	private void DeleteParts( IReadOnlyList<string> bodyIds )
+	private void DeleteParts( IReadOnlyList<string> bodyIds ) => DeleteParts( bodyIds, recordUndo: true );
+
+	/// <summary>
+	/// Join several parts into one — Blender's Ctrl+J. The meshes are appended into one Import
+	/// kept beside the document, and the parts they came from are deleted, all as one undo step.
+	/// Materials come through by slot name; skin weights and paint do not, so join before rigging
+	/// and painting, which is when joining is wanted anyway.
+	/// </summary>
+	private void JoinParts( IReadOnlyList<string> bodyIds )
+	{
+		if ( _studio is null || bodyIds is null || bodyIds.Count < 2 )
+			return;
+
+		var joined = new PolyMesh();
+		var names = new List<string>();
+		foreach ( var id in bodyIds )
+		{
+			var body = _studio.Bodies.FirstOrDefault( b => b.Id == id );
+			if ( body?.Mesh is not { FaceCount: > 0 } )
+				continue;
+
+			MeshTransform.Append( joined, body.Mesh );
+			names.Add( body.Name );
+		}
+
+		if ( names.Count < 2 )
+		{
+			SetPrompt( "Join needs two or more parts with faces." );
+			return;
+		}
+
+		var import = new ImportFeature { Name = $"Joined {names[0]}" };
+		import.LoadMesh( System.Text.Encoding.UTF8.GetBytes( ObjWriter.Write( joined, "joined", materialName: _studio.NameForSlot ) ) );
+
+		RecordUndo();
+		DeleteParts( bodyIds, recordUndo: false );
+		InsertAtRollback( import );
+		RebuildStudio();
+		_featureTree?.Select( import );
+		SetPrompt( $"Joined {names.Count} parts into one: {string.Join( ", ", names )}. Merge by distance in Edit mode welds the seams if they touch." );
+	}
+
+	private void DeleteParts( IReadOnlyList<string> bodyIds, bool recordUndo )
 	{
 		if ( _studio is null || bodyIds is null || bodyIds.Count == 0 )
 			return;
@@ -4394,7 +4437,8 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		if ( features.Count == 0 && piecesByImport.Count == 0 )
 			return;
 
-		RecordUndo();
+		if ( recordUndo )
+			RecordUndo();
 
 		foreach ( var feature in features )
 		{
@@ -9150,6 +9194,9 @@ internal sealed class EffigyPartsPanel : Widget
 	/// them all in one undo step.</summary>
 	public Action<IReadOnlyList<string>> DeleteRequested { get; set; }
 
+	/// <summary>Join these parts into one. Raised with two or more ids.</summary>
+	public Action<IReadOnlyList<string>> JoinRequested { get; set; }
+
 	/// <summary>The row highlight changed. Body ids of the selected parts, empty for none.</summary>
 	public Action<IReadOnlyList<string>> SelectionChanged { get; set; }
 
@@ -9439,6 +9486,12 @@ internal sealed class EffigyPartsPanel : Widget
 		var deleteSet = _selectedBodyIds.Count > 1 && _selectedBodyIds.Contains( bodyId )
 			? _selectedBodyIds.ToList()
 			: new List<string> { bodyId };
+
+		if ( deleteSet.Count > 1 )
+		{
+			var join = menu.AddOption( $"Join {deleteSet.Count} parts", "merge_type", () => JoinRequested?.Invoke( deleteSet ) );
+			join.StatusTip = "Makes one part of the selected ones, as a new Import. Ctrl+Z brings them back.";
+		}
 
 		var delete = menu.AddOption(
 			deleteSet.Count > 1 ? $"Delete {deleteSet.Count} parts" : "Delete", "delete",

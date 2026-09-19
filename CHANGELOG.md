@@ -261,8 +261,12 @@ forgotten.
   and Pack do the rest. **Stretch** tints each face red where the texture is stretched and blue
   where it is squashed — what an unwrap gets wrong that you cannot see until you paint. Every
   change is an undo step in the edit. `Editor/EffigyEditor/EffigyUVPanel.cs`, `Editor/Effigy/UVIslands.cs`
+- **Join parts.** Select two or more parts in the Parts list and right-click ▸ Join to make one
+  part of them, as one undo step. Materials come through; rig and paint the joined part after.
 
 ### Improved
+- **Check shows you where.** Clipping vertices are marked on the model, yellow for a graze through red for the deepest, instead of only a count in the console. **Push out** next to it gives each clipping garment exactly the Clearance it needs and rebuilds, as one undo step. **Clear marks** takes them off.
+- **Scrub into a test pose.** A bar under the viewport slides the wearer from the bind pose into the chosen test pose, so you can see where a sleeve first catches rather than only where it ends up.
 - **Clean hems, cuffs and collars.** A garment's openings are now cut straight across the limb where the recipe says, instead of a sawtooth of whole faces one face deep. Length, Sleeve and Neckline land exactly where the sliders put them.
 - **Sleeves and trouser legs are textured along the limb.** A garment's UVs wrap round each limb's own bone, scaled to its girth, so fabric on a sleeve is the same size and direction as fabric on the chest instead of being smeared along the arm. Seams fall where region meets region, as on a real garment. `GarmentFit.LimbUVs`
 - **Publish puts the garment on the character for you.** Make live cloth and Make clothing now find the wearer in the open scene (the model the document was dressed on, or the selected character) and put the Garment Cloth or the .clothing on it, undoably. If they cannot tell which character, they say so and leave the file ready.

@@ -113,8 +113,17 @@ public sealed partial class EffigyWindow
 		return stage;
 	}
 
+	/// <summary>The pose on the rig now, for the scrub to re-apply at another amount.</summary>
+	private GarmentPoses.Pose _testPose;
+
+	private void OnTestScrubbed( float amount )
+	{
+		if ( _testPose is not null )
+			TestPose( _testPose, amount );
+	}
+
 	/// <summary>Bend the rig into a pose, show everything deformed by it, and mark what clips.</summary>
-	private void TestPose( GarmentPoses.Pose pose )
+	private void TestPose( GarmentPoses.Pose pose, float amount = 1f )
 	{
 		if ( _studio is null || _viewport is null )
 			return;
@@ -138,7 +147,7 @@ public sealed partial class EffigyWindow
 		else
 			_testBind = _studio.Rig.Clone();
 
-		var turned = GarmentPoses.Apply( _studio.Rig, pose );
+		var turned = GarmentPoses.Apply( _studio.Rig, pose, amount );
 
 		if ( turned == 0 )
 		{
@@ -146,6 +155,9 @@ public sealed partial class EffigyWindow
 				+ "(it reads names like arm_upper_L, spine_1, leg_upper_R)." );
 			return;
 		}
+
+		_testPose = pose;
+		_testBar?.Show( pose.Name, amount );
 
 		var bind = new Xform[_testBind.Count];
 		for ( var i = 0; i < bind.Length; i++ )
@@ -176,29 +188,55 @@ public sealed partial class EffigyWindow
 
 		_viewport.SetModel( BuildPreview( shown ), frameCamera: false );
 
-		var marks = new List<Vector3>();
+		var (clipping, deepest) = MarkClipping( garments, worn, $"{pose.Name} {amount:P0}" );
+
+		SetPrompt( clipping == 0
+			? $"{pose.Name}: nothing clips. Scrub the bar to see where it starts; try the others, then Relax."
+			: $"{pose.Name}: {clipping} {(clipping == 1 ? "vertex clips" : "vertices clip")} through the body, deepest "
+				+ $"{deepest:0.##} in - marked yellow to red. Push out on Check fixes it, or more Looseness there." );
+	}
+
+	/// <summary>
+	/// Check every garment against what it is worn over and mark what clips in the viewport,
+	/// yellow for a graze and red for the deepest. Returns the count and the depth for the prompt;
+	/// the per-garment detail goes to the console. Shared by Test and Check: the picture is the
+	/// same, only the pose differs.
+	/// </summary>
+	private (int Clipping, float Deepest) MarkClipping( List<(string Name, PolyMesh Mesh)> garments, List<PolyMesh> worn, string label )
+	{
+		var marks = new List<(Vector3, float)>();
 		var clipping = 0;
 		var deepest = 0f;
+		var reports = new List<(string Name, GarmentReport Report)>();
 
 		foreach ( var (name, mesh) in garments )
 		{
 			var report = GarmentCheck.Run( mesh, worn );
-
+			reports.Add( (name, report) );
 			clipping += report.Clipping;
 			deepest = Math.Max( deepest, report.DeepestClip );
-			marks.AddRange( report.ClipPoints.Select( p => new Vector3( p.x, p.y, p.z ) ) );
+		}
+
+		// Heat is depth against the worst in this check, so the picture always has a red end
+		// to read from, and a garment that grazes everywhere is not painted all-red for it.
+		var scale = deepest > 1e-4f ? 1f / deepest : 0f;
+
+		foreach ( var (name, report) in reports )
+		{
+			for ( var i = 0; i < report.ClipPoints.Count; i++ )
+			{
+				var p = report.ClipPoints[i];
+				marks.Add( (new Vector3( p.x, p.y, p.z ), report.ClipDepths[i] * scale) );
+			}
 
 			if ( report.Clipping > 0 )
-				Log.Info( $"[Effigy] {pose.Name}: {name} - {report.Clipping} vertices clip, deepest {report.DeepestClip:0.##} in" );
+				Log.Info( $"[Effigy] {label}: {name} - {report.Clipping} vertices clip, deepest {report.DeepestClip:0.##} in" );
 		}
 
 		_viewport.Markers = marks;
 		_viewport.Update();
 
-		SetPrompt( clipping == 0
-			? $"{pose.Name}: nothing clips. Try the others, then Relax."
-			: $"{pose.Name}: {clipping} {(clipping == 1 ? "vertex clips" : "vertices clip")} through the body, deepest "
-				+ $"{deepest:0.##} in - marked in red. More Looseness or Clearance there, or shrinkwrap it back out." );
+		return (clipping, deepest);
 	}
 
 	/// <summary>A body deformed from the bind pose to the posed one. Its own weights when it has
@@ -262,7 +300,7 @@ public sealed partial class EffigyWindow
 		{
 			if ( refresh && _viewport is not null && _viewport.Markers.Count > 0 )
 			{
-				_viewport.Markers = Array.Empty<Vector3>();
+				_viewport.Markers = Array.Empty<(Vector3, float)>();
 				_viewport.Update();
 			}
 
@@ -271,10 +309,14 @@ public sealed partial class EffigyWindow
 
 		RestoreTestBind();
 		_testBind = null;
+		_testPose = null;
+
+		if ( _testBar is not null )
+			_testBar.Visible = false;
 
 		if ( _viewport is not null )
 		{
-			_viewport.Markers = Array.Empty<Vector3>();
+			_viewport.Markers = Array.Empty<(Vector3, float)>();
 			_viewport.Update();
 		}
 
@@ -308,11 +350,78 @@ public sealed partial class EffigyWindow
 			Icon = EffigyIcon.ProfileInspectorTool,
 			Label = "Check",
 			Tip = "Check every garment before you export it: does it clip through the body, has it got "
-				+ "UVs and skin weights, how many triangles, how many openings. Reported in the console.",
+				+ "UVs and skin weights, how many triangles, how many openings. Clipping is marked on the "
+				+ "model, yellow to red by depth; the rest is in the console.",
 			Clicked = CheckGarments,
 		} );
 
+		stage.Add( new EffigyStageTool
+		{
+			Icon = EffigyIcon.Shrinkwrap,
+			Label = "Push out",
+			Tip = "Fix the clipping the last Check found: each garment that clips gets enough more "
+				+ "Clearance to clear its deepest point, and is rebuilt. One undo step.",
+			Clicked = PushOutClipping,
+		} );
+
+		stage.Add( new EffigyStageTool
+		{
+			Icon = EffigyIcon.SoftRest,
+			Label = "Clear marks",
+			Tip = "Take the clipping marks off the model.",
+			Clicked = () => TestRelax( true ),
+		} );
+
 		return stage;
+	}
+
+	/// <summary>What the last Check found clipping, per garment feature, for Push out.</summary>
+	private readonly Dictionary<string, float> _lastClipDepth = new();
+
+	/// <summary>
+	/// Push out: the one-click answer to a red mark.
+	///
+	/// A mark says where; it does not say what to do, and "more Clearance" is a slider three
+	/// panels away. So this reads the depths the last Check measured and gives each clipping
+	/// garment exactly that much more room, plus a hair, then rebuilds. It is the fix a person
+	/// would make, made for them, and it is one undo step because that is what it would be by hand.
+	/// </summary>
+	private void PushOutClipping()
+	{
+		if ( _studio is null )
+			return;
+
+		if ( _lastClipDepth.Count == 0 )
+		{
+			SetPrompt( "Nothing to push out - run Check first, or the last Check found no clipping." );
+			return;
+		}
+
+		var targets = _lastClipDepth
+			.Select( kv => (Garment: _studio.Features.FirstOrDefault( f => f.Id == kv.Key ) as GarmentFeature, Depth: kv.Value) )
+			.Where( t => t.Garment is not null )
+			.ToList();
+
+		_lastClipDepth.Clear();
+
+		if ( targets.Count == 0 )
+		{
+			SetPrompt( "The garments that clipped are no longer in the document." );
+			return;
+		}
+
+		// The snapshot goes on the stack BEFORE the change, the way every other edit here does.
+		RecordUndo();
+
+		foreach ( var (garment, depth) in targets )
+		{
+			garment.Clearance.Value = MathF.Round( garment.Clearance.Clamped + depth + 0.05f, 2 );
+			garment.Clearance.Expr = null;
+			_studio.MarkDirty( garment );
+		}
+
+		RebuildStudio();
+		CheckGarments();
 	}
 
 	/// <summary>Run GarmentCheck over every garment in the document and report it.</summary>
@@ -336,22 +445,54 @@ public sealed partial class EffigyWindow
 		var worn = _studio.Bodies.Where( b => !b.IsGarment ).Select( b => b.Mesh ).ToList();
 
 		var faults = 0;
+		var marks = new List<(Vector3, float)>();
+		var deepest = 0f;
+		var reports = new List<(Body Body, GarmentReport Report)>();
+
+		_lastClipDepth.Clear();
 
 		foreach ( var garment in garments )
 		{
 			var report = GarmentCheck.Run( garment.Mesh, worn );
 			report.Name = garment.Name;
+			reports.Add( (garment, report) );
+			deepest = Math.Max( deepest, report.DeepestClip );
 
 			if ( !report.Clean )
 				faults++;
+
+			if ( report.Clipping > 0 && garment.FeatureId is { } id )
+				_lastClipDepth[id] = Math.Max( _lastClipDepth.GetValueOrDefault( id ), report.DeepestClip );
 
 			foreach ( var line in report.Lines() )
 				Log.Info( $"[Effigy] {garment.Name}: {line}" );
 		}
 
+		// THE ANSWER IS ON THE MODEL, not only in the console: a count says how much, a mark says
+		// where, and where is the thing you need to know to fix it. Heat is depth against the
+		// worst found, so there is always a red end to read the scale from.
+		var scale = deepest > 1e-4f ? 1f / deepest : 0f;
+
+		foreach ( var (_, report) in reports )
+			for ( var i = 0; i < report.ClipPoints.Count; i++ )
+			{
+				var p = report.ClipPoints[i];
+				marks.Add( (new Vector3( p.x, p.y, p.z ), report.ClipDepths[i] * scale) );
+			}
+
+		if ( _viewport is not null )
+		{
+			_viewport.Markers = marks;
+			_viewport.Update();
+		}
+
+		var clipping = reports.Sum( r => r.Report.Clipping );
+
 		SetPrompt( faults == 0
 			? $"Checked {garments.Count} garment{(garments.Count == 1 ? "" : "s")}: nothing wrong. Details in the console."
-			: $"{faults} of {garments.Count} garments have something to fix - see the console." );
+			: clipping > 0
+				? $"{clipping} vertices clip, deepest {deepest:0.##} in - marked yellow to red. Push out fixes it; the rest is in the console."
+				: $"{faults} of {garments.Count} garments have something to fix - see the console." );
 	}
 
 	/// <summary>

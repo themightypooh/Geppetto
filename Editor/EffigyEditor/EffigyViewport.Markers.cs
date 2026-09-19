@@ -1,3 +1,4 @@
+using Editor;
 using Sandbox;
 using System;
 using System.Collections.Generic;
@@ -14,10 +15,20 @@ namespace Marionette.EditorTools;
 
 internal sealed partial class EffigyViewport
 {
-	/// <summary>World points to mark. Empty draws nothing.</summary>
-	public IReadOnlyList<Vector3> Markers { get; set; } = Array.Empty<Vector3>();
+	/// <summary>World points to mark, each with a heat 0..1 that colours it from yellow (barely)
+	/// to red (badly). Empty draws nothing.</summary>
+	public IReadOnlyList<(Vector3 P, float Heat)> Markers { get; set; } = Array.Empty<(Vector3, float)>();
 
-	public Color MarkerColor { get; set; } = new( 1f, 0.25f, 0.2f );
+	public Color MarkerCool { get; set; } = new( 1f, 0.85f, 0.2f );
+	public Color MarkerHot { get; set; } = new( 1f, 0.15f, 0.1f );
+
+	/// <summary>The clothing test bar, parked under the other overlays. Shown and hidden by the
+	/// window with the test pose.</summary>
+	public void AddTestOverlay( Widget bar )
+	{
+		bar.Position = OverlayMargin + new Vector2( 0f, 46f );
+		bar.Visible = false;
+	}
 
 	private void DrawMarkers()
 	{
@@ -29,10 +40,12 @@ internal sealed partial class EffigyViewport
 		var radius = MathF.Max( 0.05f, UnitsPerPixel() * 3.5f );
 
 		Gizmo.Draw.IgnoreDepth = true;
-		Gizmo.Draw.Color = MarkerColor;
 
-		foreach ( var p in Markers )
-			Gizmo.Draw.SolidSphere( p, radius, 6, 6 );
+		foreach ( var (p, heat) in Markers )
+		{
+			Gizmo.Draw.Color = Color.Lerp( MarkerCool, MarkerHot, Math.Clamp( heat, 0f, 1f ) );
+			Gizmo.Draw.SolidSphere( p, radius * (0.8f + 0.5f * heat), 6, 6 );
+		}
 
 		Gizmo.Draw.IgnoreDepth = false;
 	}
