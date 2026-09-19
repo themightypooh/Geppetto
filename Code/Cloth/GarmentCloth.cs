@@ -35,6 +35,9 @@ public sealed class GarmentCloth : Component, Component.ExecuteInEditor
 	/// <summary>What it is drawn with. Empty uses the material the garment was given in Effigy.</summary>
 	[Property] public Material Material { get; set; }
 
+	/// <summary>Use the fabric the garment was given in Effigy. Off, the sliders below are used.</summary>
+	[Property] public bool FabricFromFile { get; set; } = true;
+
 	/// <summary>1 holds its length like canvas; low values let it stretch like jersey.</summary>
 	[Property, Range( 0.05f, 1f )] public float Stiffness { get; set; } = 0.9f;
 
@@ -50,10 +53,22 @@ public sealed class GarmentCloth : Component, Component.ExecuteInEditor
 	/// <summary>How far any bit of cloth may swing from where it was fitted, in inches.</summary>
 	[Property, Range( 0.5f, 24f )] public float Leash { get; set; } = 6f;
 
+	/// <summary>How much of the wearer walking and turning the cloth feels. 0 is carried along
+	/// as if sewn on and only swings with the limbs; 1 is left standing in the world and dragged
+	/// after them by the leash.</summary>
+	[Property, Range( 0f, 1f )] public float Inertia { get; set; } = 0.2f;
+
 	/// <summary>How far off the capsules the cloth sits, so it does not z-fight the body.</summary>
 	[Property, Range( 0f, 2f )] public float Skin { get; set; } = 0.25f;
 
+	/// <summary>How much of a slide a contact takes away. High is a shirt that rests on a shoulder instead of sliding off it.</summary>
+	[Property, Range( 0f, 1f )] public float Friction { get; set; } = 0.6f;
+
 	[Property, Range( 1, 16 )] public int Iterations { get; set; } = 6;
+
+	/// <summary>Hold the collar and the yoke on the body, the way Effigy marked them. Off, the
+	/// whole garment is free cloth on a leash.</summary>
+	[Property] public bool Pins { get; set; } = true;
 
 	/// <summary>Draw the capsules the cloth hangs on.</summary>
 	[Property] public bool ShowColliders { get; set; }
@@ -61,11 +76,21 @@ public sealed class GarmentCloth : Component, Component.ExecuteInEditor
 	sealed class ClothData
 	{
 		public string Material { get; set; }
+		public FabricData Fabric { get; set; }
+		public float[] Pins { get; set; }
 		public float[] Positions { get; set; }
 		public float[] UVs { get; set; }
 		public int[] Triangles { get; set; }
 		public string[] VertexBones { get; set; }
 		public CapsuleData[] Capsules { get; set; }
+	}
+
+	sealed class FabricData
+	{
+		public float Stiffness { get; set; } = 0.9f;
+		public float Bend { get; set; } = 0.15f;
+		public float Damping { get; set; } = 0.03f;
+		public float Friction { get; set; } = 0.6f;
 	}
 
 	sealed class CapsuleData
@@ -80,6 +105,8 @@ public sealed class GarmentCloth : Component, Component.ExecuteInEditor
 	string _loaded;
 	string[] _bones;
 	int[] _vertexBone;
+	float[] _pins;
+	FabricData _fabric;
 	Vector3[] _local;
 	Vector2[] _uv;
 	int[] _triangles;
@@ -91,6 +118,7 @@ public sealed class GarmentCloth : Component, Component.ExecuteInEditor
 	Vector3[] _prev;
 	Transform[] _boneWorld;
 	(Vector3 A, Vector3 B, float Radius)[] _capsWorld;
+	Transform? _frame;
 
 	// The drawing.
 	GameObject _drawn;
@@ -109,9 +137,12 @@ public sealed class GarmentCloth : Component, Component.ExecuteInEditor
 		_drawn = null;
 		_mesh = null;
 		_loaded = null;
+		_frame = null;
 	}
 
-	protected override void OnUpdate()
+	// Pre-render, not update: the animation has posed the bones by then, so the capsules are where
+	// the body is drawn this frame rather than where it was drawn last frame.
+	protected override void OnPreRender()
 	{
 		if ( !Wearer.IsValid() || Wearer.Model is null || string.IsNullOrEmpty( Cloth ) )
 			return;
@@ -120,6 +151,7 @@ public sealed class GarmentCloth : Component, Component.ExecuteInEditor
 			return;
 
 		ReadBones();
+		Carry();
 
 		// A frame hitch in the editor can be a second long. Stepping a second of cloth at once is
 		// how cloth explodes; stepping a thirtieth and letting the leash catch the rest is not.
@@ -217,6 +249,8 @@ public sealed class GarmentCloth : Component, Component.ExecuteInEditor
 
 		_bones = bones.ToArray();
 		_triangles = data.Triangles;
+		_fabric = data.Fabric;
+		_pins = data.Pins is { } p && p.Length == count ? p : null;
 		_links = BuildLinks( data.Positions, _triangles );
 
 		if ( Material is null && !string.IsNullOrEmpty( data.Material ) )
@@ -301,10 +335,45 @@ public sealed class GarmentCloth : Component, Component.ExecuteInEditor
 		}
 	}
 
+	/// <summary>
+	/// Move the cloth with the wearer before it is stepped. A simulation in world space knows
+	/// nothing about the character walking off: the body slides forward through the shirt, the
+	/// front is shoved along by the chest and the back is left hanging in the air behind them,
+	/// clipping into the body. So the particles are carried in the wearer's frame, and Inertia is
+	/// the fraction of the wearer's motion that is left out, which is the swing a walk gives it.
+	/// </summary>
+	void Carry()
+	{
+		var now = Wearer.WorldTransform;
+
+		if ( _frame is { } was )
+		{
+			var carry = 1f - Inertia;
+
+			for ( var i = 0; i < _x.Length; i++ )
+			{
+				var to = now.PointToWorld( was.PointToLocal( _x[i] ) );
+				_x[i] += (to - _x[i]) * carry;
+
+				to = now.PointToWorld( was.PointToLocal( _prev[i] ) );
+				_prev[i] += (to - _prev[i]) * carry;
+			}
+		}
+
+		_frame = now;
+	}
+
+	// The fabric in use: the file's when it has one and FabricFromFile is on, else the sliders.
+	float StiffnessNow => FabricFromFile && _fabric is { } f ? f.Stiffness : Stiffness;
+	float BendNow => FabricFromFile && _fabric is { } f ? f.Bend : Bend;
+	float DampingNow => FabricFromFile && _fabric is { } f ? f.Damping : Damping;
+	float FrictionNow => FabricFromFile && _fabric is { } f ? f.Friction : Friction;
+
 	void Step( float h )
 	{
 		var gravity = Vector3.Down * Gravity * h * h;
-		var keep = 1f - Damping;
+		var keep = 1f - DampingNow;
+		var stiffness = StiffnessNow;
 
 		for ( var i = 0; i < _x.Length; i++ )
 		{
@@ -313,7 +382,7 @@ public sealed class GarmentCloth : Component, Component.ExecuteInEditor
 			_x[i] += velocity + gravity;
 		}
 
-		var bend = Bend * Bend;
+		var bend = BendNow * BendNow;
 
 		for ( var it = 0; it < Iterations; it++ )
 		{
@@ -325,7 +394,7 @@ public sealed class GarmentCloth : Component, Component.ExecuteInEditor
 				if ( len < 1e-6f )
 					continue;
 
-				var k = isBend ? bend : Stiffness;
+				var k = isBend ? bend : stiffness;
 				var correction = d * ((len - rest) / len * 0.5f * k);
 				_x[a] -= correction;
 				_x[b] += correction;
@@ -336,10 +405,38 @@ public sealed class GarmentCloth : Component, Component.ExecuteInEditor
 		// be off the body, and doing it per iteration was most of the frame.
 		Collide();
 		Tether();
+		Pin();
+	}
+
+	/// <summary>
+	/// Hold the pinned band where the garment was fitted, relative to its bone. A weight of 1 is
+	/// sewn to the bone; in between is a soft pull, so the yoke of a shirt stays on the shoulders
+	/// and the body of it hangs free from there. The velocity goes with it, or the band jitters
+	/// between the pin and the fall.
+	/// </summary>
+	void Pin()
+	{
+		if ( !Pins || _pins is null )
+			return;
+
+		for ( var i = 0; i < _x.Length; i++ )
+		{
+			var w = _pins[i];
+
+			if ( w <= 0f )
+				continue;
+
+			var home = _boneWorld[_vertexBone[i]].PointToWorld( _local[i] );
+			var pull = (home - _x[i]) * w;
+			_x[i] += pull;
+			_prev[i] += pull;
+		}
 	}
 
 	void Collide()
 	{
+		var friction = FrictionNow;
+
 		for ( var i = 0; i < _x.Length; i++ )
 		{
 			foreach ( var (a, b, radius) in _capsWorld )
@@ -362,7 +459,7 @@ public sealed class GarmentCloth : Component, Component.ExecuteInEditor
 				// on a shoulder instead of sliding off it.
 				var moved = pushed - _prev[i];
 				var slide = moved - normal * Vector3.Dot( moved, normal );
-				_x[i] = pushed - slide * 0.6f;
+				_x[i] = pushed - slide * friction;
 			}
 		}
 	}

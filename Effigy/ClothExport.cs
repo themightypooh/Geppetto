@@ -25,9 +25,69 @@ namespace Effigy;
 /// </summary>
 public static class ClothExport
 {
+	/// <summary>
+	/// How the cloth behaves at runtime, in the component's own terms (0..1 sliders, not
+	/// compliances), so the file is the fabric the garment was given and the component has
+	/// nothing to be set up on. See GarmentCloth.
+	/// </summary>
+	public sealed class Settings
+	{
+		public float Stiffness = 0.9f;
+		public float Bend = 0.15f;
+		public float Damping = 0.03f;
+		public float Friction = 0.6f;
+	}
+
+	/// <summary>The Garment's Fabric and Stiffness as runtime settings. The numbers match the
+	/// drape presets in ClothSim.WithFabric in spirit - denim holds its panels, stretch gives,
+	/// leather is heavy - and are what looked right on a T-shirt, not measured anything.</summary>
+	public static Settings FabricSettings( Fabric fabric, float stiffness )
+	{
+		stiffness = Math.Clamp( stiffness, 0f, 1f );
+
+		return fabric switch
+		{
+			Fabric.Denim => new Settings { Stiffness = 0.6f + 0.4f * stiffness, Bend = 0.4f, Damping = 0.06f, Friction = 0.5f },
+			Fabric.Leather => new Settings { Stiffness = 0.7f + 0.3f * stiffness, Bend = 0.6f, Damping = 0.1f, Friction = 0.4f },
+			Fabric.Stretch => new Settings { Stiffness = 0.2f + 0.5f * stiffness, Bend = 0.05f, Damping = 0.02f, Friction = 0.75f },
+			_ => new Settings { Stiffness = 0.4f + 0.6f * stiffness, Bend = 0.15f, Damping = 0.03f, Friction = 0.6f },
+		};
+	}
+
+	/// <summary>
+	/// Pin weights for a garment: 1 rides its bone exactly, 0 is free cloth. The top band of the
+	/// garment - the collar and the shoulder yoke of a shirt, the waistband of trousers - is what
+	/// holds a garment on a body, and free cloth there slides down the chest or bunches at the
+	/// neck the moment the wearer runs. The band fades from pinned at the top to free at
+	/// <paramref name="fraction"/> of the garment's height, so there is no crease where it ends.
+	/// </summary>
+	public static float[] PinTop( PolyMesh garment, float fraction )
+	{
+		var pins = new float[garment.VertexCount];
+
+		if ( garment.VertexCount == 0 || fraction <= 0f )
+			return pins;
+
+		var top = garment.Positions.Max( p => p.z );
+		var bottom = garment.Positions.Min( p => p.z );
+		var band = MathF.Max( (top - bottom) * fraction, 1e-3f );
+
+		for ( var i = 0; i < pins.Length; i++ )
+		{
+			var down = top - garment.Positions[i].z;
+			var t = Math.Clamp( 1f - down / band, 0f, 1f );
+			pins[i] = t * t * (3f - 2f * t);
+		}
+
+		return pins;
+	}
+
 	/// <param name="garment">The finished garment, in the wearer's model space.</param>
 	/// <param name="capsules">What it hangs on - see BoneCapsules. Their Bone indexes <paramref name="skeleton"/>.</param>
-	public static string Write( PolyMesh garment, IReadOnlyList<Capsule> capsules, Skeleton skeleton, string material )
+	/// <param name="settings">The fabric. Null writes none, and the component uses its own.</param>
+	/// <param name="pins">Per-vertex pin weight, see <see cref="PinTop"/>. Null pins nothing.</param>
+	public static string Write( PolyMesh garment, IReadOnlyList<Capsule> capsules, Skeleton skeleton, string material,
+		Settings settings = null, float[] pins = null )
 	{
 		string Name( int bone ) => bone >= 0 && bone < skeleton.Count ? skeleton.Bones[bone].Name : "";
 
@@ -39,6 +99,17 @@ public static class ClothExport
 
 		sb.Append( "{\n" );
 		sb.Append( $"  \"Material\": \"{Escape( material ?? "" )}\",\n" );
+
+		if ( settings is not null )
+			sb.Append( $"  \"Fabric\": {{\"Stiffness\":{F( settings.Stiffness )},\"Bend\":{F( settings.Bend )},"
+				+ $"\"Damping\":{F( settings.Damping )},\"Friction\":{F( settings.Friction )}}},\n" );
+
+		if ( pins is not null && pins.Length == garment.VertexCount && pins.Any( w => w > 0f ) )
+		{
+			sb.Append( "  \"Pins\": [" );
+			sb.Append( string.Join( ",", pins.Select( F ) ) );
+			sb.Append( "],\n" );
+		}
 
 		// Per vertex: its bind position, a UV (the first corner that names one - a seam's two
 		// sides differ, and cloth is simulated per vertex, not per corner) and the bone it is

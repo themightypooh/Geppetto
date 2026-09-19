@@ -4053,6 +4053,390 @@ public sealed class MeshEditSession
 		Move( Pivot - SelectionCentre() );
 	}
 
+	// --- mapping: world-scale UVs, trims, pipes, scatter -----------------------------------------
+
+	/// <summary>
+	/// Give the selected faces (or every face) texture coordinates at a world scale, so a tiling
+	/// material repeats every <paramref name="unitsPerTile"/> units on them — the mapping every map
+	/// prop wants, and the same one on every prop. Box projection picks the axis plane each face most
+	/// faces; a <paramref name="direction"/> projects everything along it instead, for a floor or a
+	/// sign that wants one continuous texture.
+	/// </summary>
+	public void ProjectUVs( float unitsPerTile, Vec3? direction = null )
+	{
+		if ( unitsPerTile <= 0f )
+			throw new InvalidOperationException( "Units per tile has to be above zero: how many units one repeat of the texture covers." );
+
+		var faces = SelectedFaces.Count > 0 ? new List<int>( SelectedFaces ) : null;
+
+		Step( "Project UVs", () =>
+		{
+			var m = Mesh.Clone();
+			var piece = new PolyMesh { Positions = m.Positions };
+			var chosen = faces ?? AllFaces( m.FaceCount );
+			foreach ( var f in chosen )
+				piece.Faces.Add( m.Faces[f] );
+
+			if ( direction is { } d )
+				UVProjection.PlanarProject( piece, d, unitsPerTile );
+			else
+				UVProjection.BoxProject( piece, unitsPerTile );
+
+			Mesh = m;
+		} );
+	}
+
+	/// <summary>
+	/// Map the selected faces onto a strip of the texture, the way a trim sheet is used: each face
+	/// is box-projected along its length at <paramref name="unitsPerTile"/> and squashed across so it
+	/// fills the band from <paramref name="v0"/> to <paramref name="v1"/> (0 to 1, top to bottom of
+	/// the texture). Run it once per trim: pick the faces, pick the band.
+	/// </summary>
+	public void MapToTrim( float v0, float v1, float unitsPerTile )
+	{
+		if ( unitsPerTile <= 0f )
+			throw new InvalidOperationException( "Units per tile has to be above zero." );
+
+		if ( MathF.Abs( v1 - v0 ) < 1e-6f )
+			throw new InvalidOperationException( "The trim band has no height. Give it two different edges, as fractions of the texture." );
+
+		var faces = RequireFaces( "Map to trim" );
+
+		Step( "Map to trim", () =>
+		{
+			var m = Mesh.Clone();
+			var piece = new PolyMesh { Positions = m.Positions };
+			foreach ( var f in faces )
+				piece.Faces.Add( m.Faces[f] );
+			UVProjection.BoxProject( piece, unitsPerTile );
+
+			// Across the face is whichever projected axis spans it less; that axis is squashed
+			// into the band and the other keeps its world scale, so the trim runs along the face.
+			foreach ( var f in faces )
+			{
+				var face = m.Faces[f];
+				float uMin = float.MaxValue, uMax = float.MinValue, vMin = float.MaxValue, vMax = float.MinValue;
+				foreach ( var uv in face.UVs )
+				{
+					uMin = MathF.Min( uMin, uv.x ); uMax = MathF.Max( uMax, uv.x );
+					vMin = MathF.Min( vMin, uv.y ); vMax = MathF.Max( vMax, uv.y );
+				}
+
+				var acrossU = (uMax - uMin) < (vMax - vMin);
+				var lo = acrossU ? uMin : vMin;
+				var hi = acrossU ? uMax : vMax;
+				var span = MathF.Max( hi - lo, 1e-6f );
+
+				for ( var i = 0; i < face.UVs.Length; i++ )
+				{
+					var uv = face.UVs[i];
+					var t = ((acrossU ? uv.x : uv.y) - lo) / span;
+					var band = v0 + (v1 - v0) * t;
+					face.UVs[i] = acrossU ? new Vec2( uv.y, band ) : new Vec2( uv.x, band );
+				}
+			}
+
+			Mesh = m;
+		} );
+	}
+
+	/// <summary>
+	/// Build tubes along the selected edges — cables, pipes, rails, railings, tree branches. Each
+	/// chain of edges gets a ring of <paramref name="sides"/> vertices at every vertex, turned so the
+	/// rings never twist against each other, and the tubes are capped at open ends. The edges stay
+	/// where they were as a guide; delete them after, or keep them as the wire's centre line. The
+	/// new faces become the selection.
+	/// </summary>
+	public void Pipe( float radius, int sides = 8 )
+	{
+		if ( radius <= 0f )
+			throw new InvalidOperationException( "Pipe needs a radius above zero." );
+
+		if ( sides < 3 )
+			throw new InvalidOperationException( "A pipe needs at least three sides." );
+
+		var edges = new HashSet<EdgeKey>( SelectedEdges );
+		if ( edges.Count == 0 )
+			throw new InvalidOperationException( "Pipe needs edges selected. Switch to Edge mode (2) and pick the run of edges to build a tube along." );
+
+		Step( "Pipe", () =>
+		{
+			var m = Mesh.Clone();
+			var material = 0;
+			foreach ( var (key, owners) in m.BuildEdgeFaces() )
+			{
+				if ( edges.Contains( key ) && owners.Count > 0 )
+				{
+					material = m.Faces[owners[0]].Material;
+					break;
+				}
+			}
+
+			var chains = EdgeChains( edges );
+			var newFaces = new List<int>();
+
+			foreach ( var chain in chains )
+			{
+				var closedLoop = chain.Count > 2 && chain[0] == chain[^1];
+				var pts = new List<int>( chain );
+				if ( closedLoop )
+					pts.RemoveAt( pts.Count - 1 );
+				var n = pts.Count;
+				if ( n < 2 )
+					continue;
+
+				// Tangents: the average of the edges into and out of each vertex.
+				var tangents = new Vec3[n];
+				for ( var i = 0; i < n; i++ )
+				{
+					var prev = i > 0 ? pts[i - 1] : closedLoop ? pts[n - 1] : -1;
+					var next = i < n - 1 ? pts[i + 1] : closedLoop ? pts[0] : -1;
+					var t = Vec3.Zero;
+					if ( prev >= 0 ) t += (m.Positions[pts[i]] - m.Positions[prev]).Normal;
+					if ( next >= 0 ) t += (m.Positions[next] - m.Positions[pts[i]]).Normal;
+					tangents[i] = t.LengthSquared > 1e-12f ? t.Normal : new Vec3( 0, 0, 1 );
+				}
+
+				// Rotation-minimising frames: carry the first normal along by projecting it off
+				// each new tangent, so the tube never twists.
+				var seed = MathF.Abs( tangents[0].z ) < 0.9f ? new Vec3( 0, 0, 1 ) : new Vec3( 1, 0, 0 );
+				var normal = Vec3.Cross( tangents[0], seed ).Normal;
+				var rings = new int[n][];
+				for ( var i = 0; i < n; i++ )
+				{
+					normal -= tangents[i] * Vec3.Dot( normal, tangents[i] );
+					if ( normal.LengthSquared < 1e-12f )
+						normal = Vec3.Cross( tangents[i], seed );
+					normal = normal.Normal;
+					var binormal = Vec3.Cross( tangents[i], normal );
+
+					rings[i] = new int[sides];
+					var centre = m.Positions[pts[i]];
+					for ( var k = 0; k < sides; k++ )
+					{
+						var a = k * MathF.PI * 2f / sides;
+						rings[i][k] = m.Positions.Count;
+						m.Positions.Add( centre + (normal * MathF.Cos( a ) + binormal * MathF.Sin( a )) * radius );
+						if ( m.Skin is not null )
+							m.Skin.Vertices.Add( (BoneWeight[])m.Skin.Vertices[pts[i]].Clone() );
+					}
+				}
+
+				if ( m.VertexColors is not null )
+				{
+					var was = m.VertexColors.Length;
+					Array.Resize( ref m.VertexColors, m.Positions.Count );
+					for ( var i = 0; i < n; i++ )
+						foreach ( var v in rings[i] )
+							if ( v >= was )
+								m.VertexColors[v] = m.VertexColors[pts[i]];
+				}
+
+				var segments = closedLoop ? n : n - 1;
+				for ( var i = 0; i < segments; i++ )
+				{
+					var a = rings[i];
+					var b = rings[(i + 1) % n];
+					var along = i / (float)segments;
+					var alongNext = (i + 1) / (float)segments;
+					for ( var k = 0; k < sides; k++ )
+					{
+						var k2 = (k + 1) % sides;
+						newFaces.Add( m.FaceCount );
+						m.AddFace( new[] { a[k], a[k2], b[k2], b[k] },
+							new[] { new Vec2( along, k / (float)sides ), new Vec2( along, (k + 1) / (float)sides ), new Vec2( alongNext, (k + 1) / (float)sides ), new Vec2( alongNext, k / (float)sides ) },
+							material );
+					}
+				}
+
+				if ( !closedLoop )
+				{
+					// Caps: the first ring reversed faces back down the tube, the last as wound faces on.
+					var first = (int[])rings[0].Clone();
+					Array.Reverse( first );
+					newFaces.Add( m.FaceCount );
+					m.AddFace( first, null, material );
+					newFaces.Add( m.FaceCount );
+					m.AddFace( (int[])rings[n - 1].Clone(), null, material );
+				}
+			}
+
+			if ( newFaces.Count == 0 )
+				throw new InvalidOperationException( "The selected edges do not make a run to pipe along." );
+
+			Mesh = m;
+			ClearSelection();
+			Mode = EditElement.Face;
+			SelectedFaces.UnionWith( newFaces );
+		} );
+	}
+
+	static List<int> AllFaces( int count )
+	{
+		var all = new List<int>( count );
+		for ( var f = 0; f < count; f++ )
+			all.Add( f );
+		return all;
+	}
+
+	/// <summary>Walk a set of edges into chains: each is a list of vertices, and a closed loop
+	/// repeats its first vertex at the end. A vertex with three or more of the edges ends chains.</summary>
+	static List<List<int>> EdgeChains( HashSet<EdgeKey> edges )
+	{
+		var around = new Dictionary<int, List<int>>();
+		foreach ( var e in edges )
+		{
+			(around.TryGetValue( e.A, out var la ) ? la : around[e.A] = new List<int>()).Add( e.B );
+			(around.TryGetValue( e.B, out var lb ) ? lb : around[e.B] = new List<int>()).Add( e.A );
+		}
+
+		var used = new HashSet<EdgeKey>();
+		var chains = new List<List<int>>();
+
+		void WalkFrom( int start )
+		{
+			foreach ( var next in around[start] )
+			{
+				var key = new EdgeKey( start, next );
+				if ( used.Contains( key ) )
+					continue;
+
+				var chain = new List<int> { start };
+				var at = start;
+				var to = next;
+				while ( true )
+				{
+					used.Add( new EdgeKey( at, to ) );
+					chain.Add( to );
+					if ( to == start || around[to].Count != 2 )
+						break;
+
+					var onward = around[to][0] == at ? around[to][1] : around[to][0];
+					if ( used.Contains( new EdgeKey( to, onward ) ) )
+						break;
+
+					at = to;
+					to = onward;
+				}
+
+				chains.Add( chain );
+			}
+		}
+
+		// Ends and junctions first, so open chains are walked from an end; then whatever is left
+		// is a closed loop, started anywhere.
+		var ordered = new List<int>( around.Keys );
+		ordered.Sort();
+		foreach ( var v in ordered )
+			if ( around[v].Count != 2 )
+				WalkFrom( v );
+		foreach ( var v in ordered )
+			WalkFrom( v );
+
+		return chains;
+	}
+
+	/// <summary>
+	/// Scatter copies of <paramref name="prop"/> over the selected faces (or the whole surface):
+	/// rocks over ground, tufts over a field, debris down a corridor. Points are spread by area, a
+	/// copy stands on each with its up along the surface normal (or straight up), a random turn
+	/// about that and a random size between the two scales; faces steeper than
+	/// <paramref name="maxSlopeDegrees"/> get nothing. The copies leave as a body of their own —
+	/// see <see cref="Separated"/> — so the ground stays the ground. Same seed, same scatter.
+	/// </summary>
+	public int Scatter( PolyMesh prop, int count, int seed = 0, float minScale = 1f, float maxScale = 1f, bool alignToSurface = true, float maxSlopeDegrees = 90f )
+	{
+		if ( prop is null || prop.FaceCount == 0 )
+			throw new InvalidOperationException( "Scatter needs another body to scatter: the rock, the tuft, the crate." );
+
+		if ( count < 1 )
+			throw new InvalidOperationException( "Scatter needs a count above zero." );
+
+		var faces = SelectedFaces.Count > 0 ? new List<int>( SelectedFaces ) : AllFaces( Mesh.FaceCount );
+		if ( faces.Count == 0 )
+			throw new InvalidOperationException( "There is no surface to scatter onto." );
+
+		var placed = 0;
+		Step( "Scatter", () =>
+		{
+			var slopeCos = MathF.Cos( Math.Clamp( maxSlopeDegrees, 0f, 180f ) * MathF.PI / 180f );
+			var eligible = new List<(int face, float area)>();
+			var total = 0f;
+			foreach ( var f in faces )
+			{
+				var face = Mesh.Faces[f];
+				if ( Mesh.FaceNormal( face ).z < slopeCos )
+					continue;
+
+				var area = Mesh.FaceArea( face );
+				if ( area <= 0f )
+					continue;
+
+				eligible.Add( (f, area) );
+				total += area;
+			}
+
+			if ( eligible.Count == 0 )
+				throw new InvalidOperationException( "Every face here is too steep to scatter onto. Raise the slope limit or pick flatter ground." );
+
+			var h = unchecked( (uint)(seed * 2654435761u) + 0x9E3779B9u );
+			float Next()
+			{
+				h ^= h << 13;
+				h ^= h >> 17;
+				h ^= h << 5;
+				return (h & 0xFFFFFF) / (float)0x1000000;
+			}
+
+			var result = new PolyMesh();
+			for ( var i = 0; i < count; i++ )
+			{
+				// Pick a face by area, then a point uniformly on it — via a fan triangle for an n-gon.
+				var pick = Next() * total;
+				var chosen = eligible[^1].face;
+				foreach ( var (face, area) in eligible )
+				{
+					pick -= area;
+					if ( pick <= 0f )
+					{
+						chosen = face;
+						break;
+					}
+				}
+
+				var poly = Mesh.Faces[chosen];
+				var corner = 1 + (int)(Next() * (poly.Indices.Length - 2));
+				corner = Math.Min( corner, poly.Indices.Length - 2 );
+				var a = Mesh.Positions[poly.Indices[0]];
+				var b = Mesh.Positions[poly.Indices[corner]];
+				var c = Mesh.Positions[poly.Indices[corner + 1]];
+				var r1 = MathF.Sqrt( Next() );
+				var r2 = Next();
+				var at = a * (1f - r1) + b * (r1 * (1f - r2)) + c * (r1 * r2);
+
+				var up = alignToSurface ? Mesh.FaceNormal( poly ) : new Vec3( 0, 0, 1 );
+				if ( up.LengthSquared < 1e-12f )
+					up = new Vec3( 0, 0, 1 );
+				up = up.Normal;
+				var seedAxis = MathF.Abs( up.z ) < 0.9f ? new Vec3( 0, 0, 1 ) : new Vec3( 1, 0, 0 );
+				var side = Vec3.Cross( seedAxis, up ).Normal;
+				var forward = Vec3.Cross( up, side );
+				var yaw = Next() * MathF.PI * 2f;
+				var x = side * MathF.Cos( yaw ) + forward * MathF.Sin( yaw );
+				var y = Vec3.Cross( up, x );
+				var scale = minScale + (maxScale - minScale) * Next();
+
+				var copy = MeshTransform.Transformed( prop, new Xform( x * scale, y * scale, up * scale, at ) );
+				MeshTransform.Append( result, copy );
+				placed++;
+			}
+
+			Separated.Add( result );
+		} );
+
+		return placed;
+	}
+
 	/// <summary>Dissolve the selected edges (Edge mode) or vertices (Vertex mode) — they go, and the
 	/// faces around them merge into one, unlike Delete, which leaves a hole.</summary>
 	public void Dissolve()

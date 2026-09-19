@@ -232,6 +232,9 @@ forgotten.
 - **Select sharp edges, mirror and loose**, and **To pivot** (move the selection onto the pivot).
 
 ### Improved
+- **Live cloth stays on the character.** The shirt used to trail behind a walking character and clip into their back; it now rides along with them, and **Inertia** on the Garment Cloth component sets how much swing a walk still gives it.
+- **Live cloth knows its fabric.** Make live cloth writes the Garment's Fabric and Stiffness into the file, so denim, leather and stretch behave differently in the game without touching the component. **Fabric from file** turns it off if you would rather use the sliders.
+- **Live cloth holds its collar.** The collar and yoke of a top and the waistband of trousers are pinned to the body, so the garment hangs from the shoulders instead of sliding down the chest when the character runs. Beanies, gloves and socks are held everywhere.
 - **Model's Edit mode is laid out like a modeller now, not like CAD.**
   - **A toolbar and menus.** The ten tabs of tools that ran off the edge of the window are now a toolbar of the tools you use all the time, and menus for everything else.
   - **Right-click the model** for what you can do with your selection. **Space** finds any tool by name.

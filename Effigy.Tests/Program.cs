@@ -143,6 +143,7 @@ public static class Program
 		TestEditSessionHideAndExtras();
 		TestEdgeCreases();
 		TestEditSessionTopologyTools();
+		TestEditSessionMappingTools();
 
 		Section( "an edit session duplicates, separates, extracts a garment and bridges uneven loops" );
 		TestEditSessionPieces();
@@ -1813,6 +1814,116 @@ public static class Program
 		stp.Pivot = new Vec3( 0, 0, 5 );
 		stp.SelectionToPivot();
 		Check( "selection to pivot moves the face's centre onto the pivot", (stp.SelectionCentre() - new Vec3( 0, 0, 5 )).Length < 1e-5f && stp.UndoCount == 1 );
+	}
+
+	static void TestEditSessionMappingTools()
+	{
+		Section( "edit session: world-scale UVs, trims, pipes and scatter" );
+
+		// Project UVs at 32 units per tile: a 64-unit box face spans exactly two tiles.
+		var box = new MeshEditSession( Primitives.Box( 64, 64, 64 ) );
+		box.ProjectUVs( 32f );
+		Check( "box projection at 32 units per tile spans two tiles on a 64-unit face",
+			box.Mesh.Faces.All( f => MathF.Abs( f.UVs.Max( uv => uv.x ) - f.UVs.Min( uv => uv.x ) - 2f ) < 1e-4f && MathF.Abs( f.UVs.Max( uv => uv.y ) - f.UVs.Min( uv => uv.y ) - 2f ) < 1e-4f ) );
+		Check( "it is one undo step", box.UndoCount == 1 && box.LastLabel == "Project UVs" );
+
+		box.SetMode( EditElement.Face );
+		var top = Enumerable.Range( 0, 6 ).First( f => box.Mesh.FaceNormal( box.Mesh.Faces[f] ).z > 0.9f );
+		var side = Enumerable.Range( 0, 6 ).First( f => box.Mesh.FaceNormal( box.Mesh.Faces[f] ).x > 0.9f );
+		box.SelectFace( top );
+		box.ProjectUVs( 16f );
+		Check( "projecting a selection only touches those faces",
+			MathF.Abs( box.Mesh.Faces[top].UVs.Max( uv => uv.x ) - box.Mesh.Faces[top].UVs.Min( uv => uv.x ) - 4f ) < 1e-4f
+			&& MathF.Abs( box.Mesh.Faces[side].UVs.Max( uv => uv.x ) - box.Mesh.Faces[side].UVs.Min( uv => uv.x ) - 2f ) < 1e-4f );
+
+		box.SelectFace( side );
+		box.ProjectUVs( 32f, new Vec3( 0, 0, 1 ) );
+		Check( "a planar projection along Z squashes a vertical face to a line", box.Mesh.Faces[side].UVs.Max( uv => uv.y ) - box.Mesh.Faces[side].UVs.Min( uv => uv.y ) < 1e-4f || box.Mesh.Faces[side].UVs.Max( uv => uv.x ) - box.Mesh.Faces[side].UVs.Min( uv => uv.x ) < 1e-4f );
+
+		var refused = false;
+		try { box.ProjectUVs( 0f ); } catch ( InvalidOperationException ) { refused = true; }
+		Check( "zero units per tile is refused", refused );
+
+		// Map to trim: a long thin face fills the band 0.25..0.5 across and runs along at world scale.
+		var plank = new MeshEditSession( Primitives.Plane( 128f, 8f, 1, 1 ) );
+		plank.SetMode( EditElement.Face );
+		plank.SelectAll();
+		plank.MapToTrim( 0.25f, 0.5f, 64f );
+		var uvs = plank.Mesh.Faces[0].UVs;
+		Check( "map to trim squashes the short way into the band", MathF.Abs( uvs.Min( uv => uv.y ) - 0.25f ) < 1e-4f && MathF.Abs( uvs.Max( uv => uv.y ) - 0.5f ) < 1e-4f, $"{uvs.Min( uv => uv.y )}..{uvs.Max( uv => uv.y )}" );
+		Check( "and keeps world scale along the plank: 128 units at 64 per tile is two tiles", MathF.Abs( uvs.Max( uv => uv.x ) - uvs.Min( uv => uv.x ) - 2f ) < 1e-4f, $"{uvs.Max( uv => uv.x ) - uvs.Min( uv => uv.x )}" );
+		refused = false;
+		try { plank.MapToTrim( 0.3f, 0.3f, 64f ); } catch ( InvalidOperationException ) { refused = true; }
+		Check( "a band with no height is refused", refused );
+
+		// Pipe: a straight run of three edges becomes a capped tube of the right length and volume.
+		var wire = new PolyMesh();
+		for ( var i = 0; i < 4; i++ )
+			wire.Positions.Add( new Vec3( i * 10f, 0, 0 ) );
+		wire.Positions.Add( new Vec3( 0, 50, 0 ) );
+		wire.Positions.Add( new Vec3( 30, 50, 0 ) );
+		// A thin face so the edges exist in a face-based mesh, plus the guide run along its bottom.
+		wire.AddFace( new[] { 0, 1, 2, 3, 5, 4 } );
+		var pipe = new MeshEditSession( wire );
+		pipe.SetMode( EditElement.Edge );
+		for ( var i = 0; i < 3; i++ )
+			pipe.SelectEdge( new EdgeKey( i, i + 1 ), MeshEditSession.Combine.Add );
+		pipe.Pipe( 2f, 8 );
+		Check( "a run of three edges makes 3 x 8 wall quads and two caps", pipe.Mesh.FaceCount == 1 + 24 + 2, $"{pipe.Mesh.FaceCount}" );
+		Check( "on four rings of eight", pipe.Mesh.VertexCount == 6 + 32 );
+		Check( "the tube's faces are the selection", pipe.SelectedFaces.Count == 26 && pipe.Mode == EditElement.Face );
+		Check( "every ring vertex is the radius from the wire", Enumerable.Range( 6, 32 ).All( v => MathF.Abs( MathF.Sqrt( pipe.Mesh.Positions[v].y * pipe.Mesh.Positions[v].y + pipe.Mesh.Positions[v].z * pipe.Mesh.Positions[v].z ) - 2f ) < 1e-4f ) );
+
+		// The tube alone is a closed solid with the volume of an octagonal prism 30 long.
+		var tube = new PolyMesh { Positions = new List<Vec3>( pipe.Mesh.Positions ) };
+		foreach ( var f in pipe.SelectedFaces )
+			tube.AddFace( (int[])pipe.Mesh.Faces[f].Indices.Clone() );
+		var tv = MeshValidator.Validate( MeshEditSession.RemoveUnusedVertices( tube ) );
+		Check( "the tube is a closed solid", tv.IsValid && tv.IsClosed, tv.ToString() );
+		var octagon = 8f * 0.5f * 2f * 2f * MathF.Sin( MathF.PI * 2f / 8f );
+		Check( "with the volume of an octagonal prism, wound outward", MathF.Abs( tube.SignedVolume() - octagon * 30f ) < 1e-2f, $"{tube.SignedVolume()} vs {octagon * 30f}" );
+
+		// A closed loop of edges makes a ring with no caps.
+		var ringMesh = Primitives.Plane( 20f, 20f, 1, 1 );
+		var ring = new MeshEditSession( ringMesh );
+		ring.SetMode( EditElement.Edge );
+		ring.SelectAll();
+		ring.Pipe( 1f, 6 );
+		Check( "a closed loop pipes into a ring of 4 x 6 quads with no caps", ring.Mesh.FaceCount == 1 + 24 && ring.Mesh.VertexCount == 4 + 24, $"{ring.Mesh.FaceCount}f {ring.Mesh.VertexCount}v" );
+		refused = false;
+		try { new MeshEditSession( Primitives.Box( 2, 2, 2 ) ).Pipe( 1f ); } catch ( InvalidOperationException ) { refused = true; }
+		Check( "pipe with no edges selected is refused", refused );
+
+		// Scatter: 50 pebbles over a 100x100 ground, each a separate piece in one new body, on the
+		// surface, sized between 1 and 2, and the same again with the same seed.
+		var ground = new MeshEditSession( Primitives.Plane( 100f, 100f, 4, 4 ) );
+		// A prop stands on its origin, so the pebble's base is lifted to it.
+		var pebble = MeshTransform.Transformed( Primitives.Box( 1, 1, 1 ), Xform.Translate( new Vec3( 0, 0, 0.5f ) ) );
+		var placed = ground.Scatter( pebble, 50, seed: 3, minScale: 1f, maxScale: 2f );
+		Check( "scatter places every copy", placed == 50 && ground.Separated.Count == 1 && ground.Separated[0].FaceCount == 300 );
+		Check( "the ground itself is untouched", ground.Mesh.FaceCount == 16 && ground.Mesh.VertexCount == 25 );
+		var pieces = MeshSplit.ConnectedPieces( ground.Separated[0] );
+		Check( "as 50 separate pieces", pieces.Count == 50, $"{pieces.Count}" );
+		Check( "each standing on the ground within the field",
+			pieces.All( p => { var c = Vec3.Zero; foreach ( var q in p.Positions ) c += q; c /= p.VertexCount; return MathF.Abs( c.x ) <= 50f && MathF.Abs( c.y ) <= 50f && c.z > 0.49f && c.z < 1.01f; } ) );
+		Check( "sized between 1 and 2", pieces.All( p => { var s = p.Positions.Max( q => q.z ) - p.Positions.Min( q => q.z ); return s > 0.99f && s < 2.01f; } ) );
+		var again = new MeshEditSession( Primitives.Plane( 100f, 100f, 4, 4 ) );
+		again.Scatter( pebble, 50, seed: 3, minScale: 1f, maxScale: 2f );
+		Check( "the same seed scatters the same", Enumerable.Range( 0, ground.Separated[0].VertexCount ).All( v => (ground.Separated[0].Positions[v] - again.Separated[0].Positions[v]).Length < 1e-5f ) );
+		var other = new MeshEditSession( Primitives.Plane( 100f, 100f, 4, 4 ) );
+		other.Scatter( pebble, 50, seed: 4, minScale: 1f, maxScale: 2f );
+		Check( "another seed scatters differently", Enumerable.Range( 0, ground.Separated[0].VertexCount ).Any( v => (ground.Separated[0].Positions[v] - other.Separated[0].Positions[v]).Length > 1e-3f ) );
+
+		// Aligned to the surface on a box, nothing lands on the walls with a 30° slope limit.
+		var hill = new MeshEditSession( Primitives.Box( 10, 10, 10 ) );
+		hill.Scatter( pebble, 20, seed: 1, maxSlopeDegrees: 30f );
+		Check( "a slope limit keeps the pebbles off the walls and the underside", hill.Separated[0].Positions.All( p => p.z > 4.99f ) );
+		refused = false;
+		try { hill.Scatter( pebble, 5, maxSlopeDegrees: 30f ); hill.SetMode( EditElement.Face ); hill.SelectFace( Enumerable.Range( 0, 6 ).First( f => hill.Mesh.FaceNormal( hill.Mesh.Faces[f] ).x > 0.9f ) ); hill.Scatter( pebble, 5, maxSlopeDegrees: 30f ); } catch ( InvalidOperationException ) { refused = true; }
+		Check( "a selection that is all too steep is refused", refused );
+		Check( "scatter undoes as one step", hill.UndoCount == 2 );
+		hill.Undo();
+		Check( "and the scattered body goes with it", hill.Separated.Count == 1 );
 	}
 
 	static void TestEditSessionEdgeSplit()

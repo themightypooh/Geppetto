@@ -196,6 +196,8 @@ public sealed partial class EffigyWindow
 		}
 
 		var mesh = new PolyMesh();
+		var pins = new List<float>();
+		ClothExport.Settings fabric = null;
 
 		foreach ( var body in garments )
 		{
@@ -206,6 +208,13 @@ public sealed partial class EffigyWindow
 
 			foreach ( var face in body.Mesh.Faces )
 				mesh.AddFace( face.Indices.Select( i => i + offset ).ToArray(), face.UVs, face.Material );
+
+			// The feature that made it says what it is made of and where it is held on. One fabric
+			// per file - the first garment's - because the component has one set of sliders; a
+			// jacket over a shirt is two files and two components.
+			var feature = _studio.Features.OfType<GarmentFeature>().FirstOrDefault( g => g.Id == body.FeatureId );
+			fabric ??= feature is null ? null : ClothExport.FabricSettings( feature.FabricValue, feature.Stiffness.Clamped );
+			pins.AddRange( ClothExport.PinTop( body.Mesh, feature?.LivePinFraction ?? 0.12f ) );
 		}
 
 		var map = new BodyRegions.Map( _studio.Rig );
@@ -231,7 +240,7 @@ public sealed partial class EffigyWindow
 			Directory.CreateDirectory( folder );
 
 			var file = Path.Combine( folder, $"{name}.cloth.json" );
-			File.WriteAllText( file, ClothExport.Write( mesh, capsules, _studio.Rig, material ) );
+			File.WriteAllText( file, ClothExport.Write( mesh, capsules, _studio.Rig, material, fabric, pins.ToArray() ) );
 
 			Log.Info( $"[Effigy] wrote {file} - {mesh.VertexCount} cloth vertices on {capsules.Count} capsules" );
 			SetPrompt( $"models/effigy/{name}.cloth.json is ready - add a Garment Cloth component to the character and point it at this file." );

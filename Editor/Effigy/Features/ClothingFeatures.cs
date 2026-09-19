@@ -90,6 +90,24 @@ public sealed class GarmentFeature : Feature
 
 	public readonly FloatParam Stiffness = new( "Stiffness", 0.8f, 0f, 1f );
 
+	public Effigy.Fabric FabricValue => Fabric.Index switch
+	{
+		1 => Effigy.Fabric.Denim,
+		2 => Effigy.Fabric.Leather,
+		3 => Effigy.Fabric.Stretch,
+		_ => Effigy.Fabric.Cotton,
+	};
+
+	/// <summary>How much of the garment's height live cloth holds on its bones, from the top:
+	/// the collar and yoke of a top, the waistband of a bottom. Hats and gloves and socks are
+	/// held everywhere - they are fitted, and have nothing to swing.</summary>
+	public float LivePinFraction => BuildRecipe().Name switch
+	{
+		"Trousers" or "Shorts" => 0.1f,
+		"Beanie" or "Gloves" or "Socks" => 1f,
+		_ => 0.14f,
+	};
+
 	/// <summary>Weight the garment so it moves with the body. On by default — see the block in
 	/// Execute for why this is not something to be opted into.</summary>
 	public readonly BoolParam Weights = new( "Move with the body", true );
@@ -214,13 +232,7 @@ public sealed class GarmentFeature : Feature
 			Flare = Flare.Clamped,
 			Thickness = preview ? 0f : Thickness.Clamped,
 			Drape = Drape.Value && !preview,
-			Fabric = Fabric.Index switch
-			{
-				1 => Effigy.Fabric.Denim,
-				2 => Effigy.Fabric.Leather,
-				3 => Effigy.Fabric.Stretch,
-				_ => Effigy.Fabric.Cotton,
-			},
+			Fabric = FabricValue,
 			DrapeSteps = DrapeSteps.Clamped,
 			Passes = preview ? 2 : 4,
 			Stiffness = Stiffness.Clamped,
