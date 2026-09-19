@@ -376,6 +376,10 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		file.AddOption( "Make Player", "sports_esports", MakePlayer );
 		file.AddOption( "Animation Clips...", "movie", OpenAnimClips );
 		file.AddOption( "Collision Report", "fitness_center", ReportCollision );
+		var lods = file.AddOption( "Export with LODs", "layers" );
+		lods.Checkable = true;
+		lods.Checked = _exportLods;
+		lods.Toggled += on => { _exportLods = on; Log.Info( on ? "[Effigy] Compile .vmdl will write half- and quarter-detail LODs for a static model, switching with distance" : "[Effigy] Compile .vmdl writes one level of detail" ); };
 		file.AddSeparator();
 		file.AddOption( "Close", "close", Close );
 
@@ -6385,6 +6389,10 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	/// did not get that far. Publish as clothing reads it; nothing else should.</summary>
 	private string _lastSkinnedVmdl;
 
+	/// <summary>File ▸ Export with LODs: a static compile also writes decimated copies and a
+	/// distance switch. Off by default — a character or a one-off prop does not need them.</summary>
+	private bool _exportLods;
+
 	private void CompileVmdl()
 	{
 		_lastSkinnedVmdl = null;
@@ -6497,8 +6505,34 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			materialName: _studio.NameForSlot );
 
 		var staticVmdlPath = Path.Combine( folder, $"{name}.vmdl" );
-		File.WriteAllText( staticVmdlPath, BuildVmdl( $"models/effigy/{name}.obj",
-			BuildPhysics( rigged: false ), VmdlMaterials.GroupList( _studio, staticMesh ) ) );
+		var staticPhysics = BuildPhysics( rigged: false );
+		var staticMaterials = VmdlMaterials.GroupList( _studio, staticMesh );
+
+		if ( _exportLods && Decimate.TriangleCount( staticMesh ) >= 64 )
+		{
+			// Half and a quarter of the triangles, switching at six and fifteen times the model's
+			// size away — far enough that the coarser mesh is a few pixels' difference.
+			var files = new List<string> { $"models/effigy/{name}.obj" };
+			var distances = new List<float> { 0f };
+			var size = MathF.Max( staticMesh.BoundsDiagonal, 1f );
+			var levels = new[] { (0.5f, 6f), (0.25f, 15f) };
+			for ( var i = 0; i < levels.Length; i++ )
+			{
+				var (ratio, far) = levels[i];
+				var lod = Decimate.ToRatio( staticMesh, ratio );
+				var lodPath = Path.Combine( folder, $"{name}_lod{i + 1}.obj" );
+				ObjWriter.WriteFile( lod, lodPath, $"{name}_lod{i + 1}", materialName: _studio.NameForSlot );
+				files.Add( $"models/effigy/{name}_lod{i + 1}.obj" );
+				distances.Add( size * far );
+			}
+
+			File.WriteAllText( staticVmdlPath, VmdlDocument.StaticWithLods( files, distances, staticPhysics, staticMaterials ) );
+			Log.Info( $"[Effigy] {name}: LODs written at half and a quarter detail" );
+		}
+		else
+		{
+			File.WriteAllText( staticVmdlPath, BuildVmdl( $"models/effigy/{name}.obj", staticPhysics, staticMaterials ) );
+		}
 
 		var staticResult = EffigyAssetFolder.Register( folder );
 		Log.Info( $"[Effigy] wrote {staticObjPath} and {staticVmdlPath} — {staticResult.Registered} registered" );

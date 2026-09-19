@@ -241,6 +241,9 @@ forgotten.
 - **Kit snapping.** Hold Ctrl while dragging a Transform's handle to land the part on Hammer's
   16-unit grid (Shift+Ctrl for 4), turn in 15° steps, or scale in quarters. **Snap to grid** in
   Edit mode puts the selected vertices on a grid, so a wall piece's edges meet the next piece.
+- **Export with LODs.** Tick it under File and Compile .vmdl also writes half- and quarter-detail
+  copies of a static model and switches to them with distance — what every map prop wants.
+  Rigged models are unchanged. `Editor/Effigy/VmdlDocument.cs`
 
 ### Improved
 - **Live cloth stays on the character.** The shirt used to trail behind a walking character and clip into their back; it now rides along with them, and **Inertia** on the Garment Cloth component sets how much swing a walk still gives it.

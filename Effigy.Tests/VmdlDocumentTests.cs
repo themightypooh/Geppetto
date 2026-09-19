@@ -25,6 +25,26 @@ public static class VmdlDocumentTests
 		Section( "vmdl document: the nodes each kind of model needs" );
 		TestStaticHasOneMeshFile();
 		TestSkinnedCarriesTheBindPose();
+		TestStaticWithLods();
+	}
+
+	static void TestStaticWithLods()
+	{
+		var vmdl = VmdlDocument.StaticWithLods(
+			new[] { "models/effigy/rock.obj", "models/effigy/rock_lod1.obj", "models/effigy/rock_lod2.obj" },
+			new[] { 0f, 300f, 750f } );
+
+		Check( "a model with LODs has one render mesh per level", CountOf( vmdl, "_class = \"RenderMeshFile\"" ) == 3 );
+		Check( "named Body_LOD0..2", vmdl.Contains( "name = \"Body_LOD0\"" ) && vmdl.Contains( "name = \"Body_LOD1\"" ) && vmdl.Contains( "name = \"Body_LOD2\"" ) );
+		Check( "and one LOD group per level", vmdl.Contains( "_class = \"LODGroupList\"" ) && CountOf( vmdl, "_class = \"LODGroup\"" ) == 3 );
+		Check( "the first group switches at zero and the rest at their distances",
+			vmdl.Contains( "switch_threshold = 0.0\n" ) && vmdl.Contains( "switch_threshold = 300.0\n" ) && vmdl.Contains( "switch_threshold = 750.0\n" ) );
+		Check( "each group names its mesh", vmdl.Contains( "\"Body_LOD2\"," ) );
+		Check( "every level gets the OBJ correction", CountOf( vmdl, "import_rotation = [ -90.0, -90.0, 0.0 ]" ) == 3 );
+
+		var threw = false;
+		try { VmdlDocument.StaticWithLods( new[] { "a.obj", "b.obj" }, new[] { 0f } ); } catch ( ArgumentException ) { threw = true; }
+		Check( "a distance count that does not match the meshes is refused", threw );
 	}
 
 	static void TestObjGetsTheCorrection()

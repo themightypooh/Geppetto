@@ -1,4 +1,6 @@
 ﻿using System;
+using System.Collections.Generic;
+using System.Text;
 
 namespace Effigy;
 
@@ -80,6 +82,85 @@ public static class VmdlDocument
 		+ "\t\t\t\t\t},\n"
 		+ "\t\t\t\t]\n"
 		+ "\t\t\t},\n";
+
+	/// <summary>The RenderMeshList node with one RenderMeshFile per level of detail, named
+	/// Body_LOD0, Body_LOD1 and so on in the order given.</summary>
+	static string RenderMeshList( IReadOnlyList<string> meshFilenames )
+	{
+		var sb = new StringBuilder();
+		sb.Append( "\t\t\t{\n" );
+		sb.Append( "\t\t\t\t_class = \"RenderMeshList\"\n" );
+		sb.Append( "\t\t\t\tchildren = \n" );
+		sb.Append( "\t\t\t\t[\n" );
+
+		for ( var i = 0; i < meshFilenames.Count; i++ )
+		{
+			sb.Append( "\t\t\t\t\t{\n" );
+			sb.Append( "\t\t\t\t\t\t_class = \"RenderMeshFile\"\n" );
+			sb.Append( $"\t\t\t\t\t\tname = \"Body_LOD{i}\"\n" );
+			sb.Append( "\t\t\t\t\t\tchildren = \n" );
+			sb.Append( "\t\t\t\t\t\t[\n" );
+			sb.Append( "\t\t\t\t\t\t]\n" );
+			sb.Append( $"\t\t\t\t\t\tfilename = \"{meshFilenames[i]}\"\n" );
+			sb.Append( "\t\t\t\t\t\timport_translation = [ 0.0, 0.0, 0.0 ]\n" );
+			sb.Append( $"\t\t\t\t\t\timport_rotation = [ {ImportRotation( meshFilenames[i] )} ]\n" );
+			sb.Append( "\t\t\t\t\t\timport_scale = 1.0\n" );
+			sb.Append( "\t\t\t\t\t\talign_origin_x_type = \"None\"\n" );
+			sb.Append( "\t\t\t\t\t\talign_origin_y_type = \"None\"\n" );
+			sb.Append( "\t\t\t\t\t\talign_origin_z_type = \"None\"\n" );
+			sb.Append( "\t\t\t\t\t\tparent_bone = \"\"\n" );
+			sb.Append( "\t\t\t\t\t},\n" );
+		}
+
+		sb.Append( "\t\t\t\t]\n" );
+		sb.Append( "\t\t\t},\n" );
+		return sb.ToString();
+	}
+
+	/// <summary>
+	/// The LODGroupList node: which mesh shows at which distance. The first group is always at
+	/// zero (the full model, up close); each further one names the distance, in units, past
+	/// which its mesh takes over. One group per mesh, in order.
+	/// </summary>
+	static string LodGroupList( IReadOnlyList<float> switchDistances )
+	{
+		var sb = new StringBuilder();
+		sb.Append( "\t\t\t{\n" );
+		sb.Append( "\t\t\t\t_class = \"LODGroupList\"\n" );
+		sb.Append( "\t\t\t\tchildren = \n" );
+		sb.Append( "\t\t\t\t[\n" );
+
+		for ( var i = 0; i < switchDistances.Count; i++ )
+		{
+			var threshold = i == 0 ? 0f : switchDistances[i];
+			sb.Append( "\t\t\t\t\t{\n" );
+			sb.Append( "\t\t\t\t\t\t_class = \"LODGroup\"\n" );
+			sb.Append( $"\t\t\t\t\t\tswitch_threshold = {threshold.ToString( "0.0##", System.Globalization.CultureInfo.InvariantCulture )}\n" );
+			sb.Append( "\t\t\t\t\t\tmeshes = \n" );
+			sb.Append( "\t\t\t\t\t\t[\n" );
+			sb.Append( $"\t\t\t\t\t\t\t\"Body_LOD{i}\",\n" );
+			sb.Append( "\t\t\t\t\t\t]\n" );
+			sb.Append( "\t\t\t\t\t},\n" );
+		}
+
+		sb.Append( "\t\t\t\t]\n" );
+		sb.Append( "\t\t\t},\n" );
+		return sb.ToString();
+	}
+
+	/// <summary>
+	/// A static model with levels of detail: one mesh file per level, the first shown up close and
+	/// each next one from its switch distance out. Same physics and materials as <see cref="Static"/>.
+	/// </summary>
+	public static string StaticWithLods( IReadOnlyList<string> meshFilenames, IReadOnlyList<float> switchDistances, string physics = "", string materials = "" )
+	{
+		if ( meshFilenames is null || meshFilenames.Count == 0 )
+			throw new ArgumentException( "at least one mesh", nameof( meshFilenames ) );
+		if ( switchDistances is null || switchDistances.Count != meshFilenames.Count )
+			throw new ArgumentException( "one switch distance per mesh", nameof( switchDistances ) );
+
+		return Wrap( materials + RenderMeshList( meshFilenames ) + LodGroupList( switchDistances ) + physics );
+	}
 
 	static string Wrap( string children, string animGraph = "" ) =>
 		Header
