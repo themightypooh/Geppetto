@@ -47,8 +47,7 @@ internal static class RigPoseCapture
 	private const int SettleTicks = 180;
 
 	/// <summary>How many ticks to give the renderer to build its bone array before giving up. It
-	/// is usually one; how many it really takes is an engine detail and clearly differs per model
-	/// (see RigWaveBuilder.WaitForBones).</summary>
+	/// is usually one; how many it really takes is an engine detail and clearly differs per model.</summary>
 	private const int MaxSetupTicks = 64;
 
 	/// <summary>How still the skeleton has to be, in inches of total movement across every bone
@@ -99,9 +98,9 @@ internal static class RigPoseCapture
 			var renderer = new GameObject( true, "capture" ).GetOrAddComponent<SkinnedModelRenderer>( false );
 			renderer.Model = model;
 
-			// The whole point: the graph is what holds the pose. RigSampleBuilder and
-			// RigWaveBuilder both turn this OFF, because they author poses themselves and a graph
-			// would fight them for the skeleton. Here it is the source.
+			// The whole point: the graph is what holds the pose. RigSampleBuilder turns this OFF,
+			// because it authors poses itself and a graph would fight it for the skeleton. Here it
+			// is the source.
 			renderer.UseAnimGraph = true;
 			renderer.Enabled = true;
 
