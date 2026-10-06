@@ -10,6 +10,7 @@
 #   tools/effigy.sh fix      doc.effigy loose,doubles,holes,normals|all [out.effigy]
 #   tools/effigy.sh parts    out.png
 #   tools/effigy.sh new      out.effigy
+#   tools/effigy.sh wardrobe outdir [recipe] [size] [nodrape]   every garment on a Citizen-shaped body
 #
 # The commands live in Effigy.Tests/EffigyCli.cs and run on the canonical kernel in Effigy/,
 # so this needs no editor and no s&box. Landmarks: a body name, Body.top/.bottom/.front/.back/

@@ -18,11 +18,12 @@ namespace Effigy.Tests;
 ///   effigy fix     doc.effigy <fixes> [out.effigy]     loose, doubles, holes, normals, all
 ///   effigy parts   out.png                             the part library on one sheet
 ///   effigy new     out.effigy                          an empty document
+///   effigy wardrobe outdir [recipe] [size] [nodrape]   every garment recipe, rendered and checked
 /// </summary>
 public static class EffigyCli
 {
 	public static bool Handles( string verb ) =>
-		verb is "render" or "describe" or "measure" or "match" or "script" or "fix" or "parts" or "new" or "crop";
+		verb is "render" or "describe" or "measure" or "match" or "script" or "fix" or "parts" or "new" or "crop" or "wardrobe";
 
 	public static int Run( string[] args )
 	{
@@ -39,6 +40,7 @@ public static class EffigyCli
 				"parts" => Parts( args ),
 				"new" => New( args ),
 				"crop" => Crop( args ),
+				"wardrobe" => Wardrobe( args ),
 				_ => Usage(),
 			};
 		}
@@ -236,6 +238,79 @@ public static class EffigyCli
 
 		outRaster.SavePng( a[2] );
 		Console.WriteLine( $"{a[2]} {cw}x{ch}" );
+		return 0;
+	}
+
+	/// <summary>
+	/// Every garment recipe at its defaults, on a smooth Citizen-proportioned body (the Citizen
+	/// skeleton under <see cref="SkinBlockout"/>), one sheet each plus a front-view overview, with
+	/// the Check report and build time per recipe. The way to look at the whole clothing kernel
+	/// without the editor: effigy wardrobe outdir [recipe] [size] [nodrape]
+	/// </summary>
+	static int Wardrobe( string[] a )
+	{
+		if ( a.Length < 2 ) { Console.Error.WriteLine( "effigy wardrobe outdir [recipe name] [size] [nodrape]" ); return 1; }
+
+		var outDir = Path.GetFullPath( a[1] );
+		Directory.CreateDirectory( outDir );
+
+		var only = a.Length > 2 && !int.TryParse( a[2], out _ ) && a[2] != "nodrape" ? a[2] : null;
+		var size = a.Skip( 2 ).Select( x => int.TryParse( x, out var n ) ? n : 0 ).FirstOrDefault( n => n > 0 );
+		if ( size == 0 ) size = 512;
+		var drape = !a.Contains( "nodrape" );
+
+		var rig = CitizenSkeleton.Build();
+		var skin = SkinBlockout.Build( rig );
+		var objBytes = System.Text.Encoding.UTF8.GetBytes( ObjWriter.Write( skin, "wearer" ) );
+
+		var tile = 260;
+		var names = GarmentRecipe.Names.Where( n => only is null || n.Equals( only, StringComparison.OrdinalIgnoreCase ) ).ToList();
+		var overview = new Raster( tile * Math.Min( 5, names.Count ), tile * ((names.Count + 4) / 5) );
+
+		for ( var k = 0; k < names.Count; k++ )
+		{
+			var index = Array.IndexOf( GarmentRecipe.Names, names[k] );
+			var studio = new PartStudio { Rig = rig.Clone() };
+			var import = studio.Add( new ImportFeature { Name = "Wearer" } );
+			import.LoadMesh( objBytes );
+
+			var garment = studio.Add( new GarmentFeature() );
+			garment.Recipe.Index = index;
+			var (length, sleeve) = GarmentRecipe.Defaults( index );
+			garment.Length.Value = length;
+			garment.Sleeve.Value = sleeve;
+			garment.Drape.Value = drape;
+
+			var clock = System.Diagnostics.Stopwatch.StartNew();
+			studio.Rebuild();
+			clock.Stop();
+
+			var made = studio.Bodies.FirstOrDefault( b => b.IsGarment );
+			var problem = garment.Diagnostic?.Problem;
+
+			if ( made is null )
+			{
+				Console.WriteLine( $"{names[k],-12} NOTHING BUILT {problem}" );
+				continue;
+			}
+
+			var wornOver = studio.Bodies.Where( b => !b.IsGarment ).Select( b => b.Mesh ).ToList();
+			var report = GarmentCheck.Run( made.Mesh, wornOver );
+			Console.WriteLine( $"{names[k],-12} {clock.ElapsedMilliseconds,6} ms  {made.Mesh.VertexCount,6} v  {report}{(problem is null ? "" : "  [" + problem + "]")}" );
+
+			var file = names[k].ToLowerInvariant().Replace( ' ', '_' ).Replace( "-", "" );
+			ModelRender.Named( studio.Bodies, "sheet", size, new RenderOptions { Wireframe = true, Labels = false }, null ).SavePng( Path.Combine( outDir, file + ".png" ) );
+
+			var front = ModelRender.Render( studio.Bodies, RenderView.Turn( 25f, 10f ), tile, new RenderOptions { Grid = false, Axes = false, Labels = false } );
+			var ox = (k % 5) * tile;
+			var oy = (k / 5) * tile;
+			for ( var y = 0; y < tile; y++ )
+				Array.Copy( front.Pixels, y * tile, overview.Pixels, (oy + y) * overview.Width + ox, tile );
+		}
+
+		var overviewPath = Path.Combine( outDir, "wardrobe.png" );
+		overview.SavePng( overviewPath );
+		Console.WriteLine( overviewPath );
 		return 0;
 	}
 
