@@ -35,6 +35,8 @@ forgotten.
 
 ## Unreleased
 
+## v411088 — 2026-10-06
+
 ### Added
 - **Effigy can be driven and seen from outside the editor.** For agents and scripts, and for looking at a model without opening it.
   - **Render.** `tools/effigy.sh render doc.effigy out.png` draws front, side, top and iso views on one sheet — fitted, with a ground grid, the axes, the wire and each body's name. In the editor the same picture comes from the `effigy_snapshot` MCP tool.
