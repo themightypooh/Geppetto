@@ -478,6 +478,65 @@ public sealed class Skeleton
 		return newRootIndex;
 	}
 
+	/// <summary>
+	/// Each bone's mirror partner, by name: <c>arm_upper_L</c> is <c>arm_upper_R</c>'s and back, and
+	/// the same with digits after the side letter (<c>finger_L1</c>). A bone whose partner is not in
+	/// the rig maps to itself, which is the right answer for a spine and a visible-enough wrong one
+	/// for a limb that was named by hand. <paramref name="pairs"/> is how many left/right pairs
+	/// were found.
+	/// </summary>
+	public int[] MirrorPartners( out int pairs )
+	{
+		var byName = new Dictionary<string, int>( StringComparer.OrdinalIgnoreCase );
+
+		for ( var i = 0; i < Bones.Count; i++ )
+			if ( !string.IsNullOrEmpty( Bones[i].Name ) )
+				byName[Bones[i].Name] = i;
+
+		var map = new int[Bones.Count];
+		var found = 0;
+
+		for ( var i = 0; i < Bones.Count; i++ )
+		{
+			map[i] = i;
+
+			var name = Bones[i].Name;
+
+			if ( string.IsNullOrEmpty( name ) )
+				continue;
+
+			if ( FlipSideSuffix( name ) is { } flipped && byName.TryGetValue( flipped, out var other ) )
+			{
+				map[i] = other;
+				found++;
+			}
+		}
+
+		pairs = found / 2;
+		return map;
+	}
+
+	/// <summary>`..._L` becomes `..._R` and back, including when digits follow the side letter.
+	/// Null when the name does not name a side.</summary>
+	public static string FlipSideSuffix( string name )
+	{
+		for ( var i = name.Length - 1; i >= 1; i-- )
+		{
+			if ( char.IsDigit( name[i] ) )
+				continue;
+
+			var c = name[i];
+
+			if ( (c != 'L' && c != 'R' && c != 'l' && c != 'r') || name[i - 1] != '_' )
+				return null;
+
+			var swapped = c switch { 'L' => 'R', 'R' => 'L', 'l' => 'r', _ => 'l' };
+			return name[..i] + swapped + name[(i + 1)..];
+		}
+
+		return null;
+	}
+
 	static string MirroredName( string name )
 	{
 		if ( name.EndsWith( "_L" ) ) return name[..^2] + "_R";

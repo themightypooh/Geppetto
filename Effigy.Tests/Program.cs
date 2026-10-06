@@ -2929,6 +2929,45 @@ public static class Program
 		feature.SubdivideLevels.Value = 0;
 		feature.SolidifyThickness.Value = 0f;
 		Check( "switched off, it is the mesh again", !feature.HasModifiers && feature.ApplyModifiers( half ).FaceCount == 5 );
+
+		// Mirroring a weighted half: the left arm's weights must land on the right arm, not stay
+		// on the left one. The spine has no partner and keeps its own bone.
+		var rig = new Skeleton();
+		var spine = rig.AddBoneFromPoints( "spine", -1, new Vec3( 0, 0, 0 ), new Vec3( 0, 0, 2 ) );
+		var armL = rig.AddBoneFromPoints( "arm_L", spine, new Vec3( 0, 0, 1 ), new Vec3( 2, 0, 1 ) );
+		var armR = rig.AddBoneFromPoints( "arm_R", spine, new Vec3( 0, 0, 1 ), new Vec3( -2, 0, 1 ) );
+		var finger = rig.AddBoneFromPoints( "finger_L1", armL, new Vec3( 2, 0, 1 ), new Vec3( 3, 0, 1 ) );
+		rig.AddBoneFromPoints( "finger_R1", armR, new Vec3( -2, 0, 1 ), new Vec3( -3, 0, 1 ) );
+
+		var partners = rig.MirrorPartners( out var pairCount );
+		Check( "arm_L and finger_L1 pair with their right sides", partners[armL] == armR && partners[armR] == armL && rig.Bones[partners[finger]].Name == "finger_R1" && pairCount == 2, $"{pairCount} pairs" );
+		Check( "the spine is its own partner", partners[spine] == spine );
+
+		var weighted = half.Clone();
+		weighted.Skin = new SkinWeights();
+		for ( var v = 0; v < weighted.VertexCount; v++ )
+			weighted.Skin.Vertices.Add( MathF.Abs( weighted.Positions[v].x ) < 1e-4f
+				? new[] { new BoneWeight( spine, 1f ) }
+				: new[] { new BoneWeight( armL, 0.75f ), new BoneWeight( spine, 0.25f ) } );
+
+		var mirrorOnly = new MeshEditFeature();
+		mirrorOnly.MirrorX.Value = true;
+		var both = mirrorOnly.ApplyModifiers( weighted, null, rig );
+
+		var leftOk = true;
+		var rightOk = true;
+		for ( var v = 0; v < both.VertexCount; v++ )
+		{
+			var x = both.Positions[v].x;
+			var bones = both.Skin[v].Select( w => w.Bone ).ToArray();
+
+			if ( x > 1e-4f && !bones.Contains( armL ) ) leftOk = false;
+			if ( x < -1e-4f && (bones.Contains( armL ) || !bones.Contains( armR )) ) rightOk = false;
+		}
+
+		Check( "Mirror keeps the +X half on arm_L", leftOk );
+		Check( "and puts the mirrored half on arm_R", rightOk );
+		Check( "without touching the source's weights", weighted.Skin[weighted.Positions.FindIndex( p => p.x > 1e-4f )][0].Bone == armL );
 	}
 
 	/// <summary>Seams on the session: marked from the selection, undoable, pruned when the edge they
@@ -4896,6 +4935,38 @@ public static class Program
 			File.Exists( Path.Combine( outDir, "sample_static.fbx" ) )
 			&& File.Exists( Path.Combine( outDir, "sample_rigged.fbx" ) ) );
 
+		// Binary FBX, what File > Export FBX writes for Blender. A column with two bones split at
+		// its middle, so moving the upper bone in Blender visibly bends it:
+		//
+		//   blender -b --python-expr "import bpy; bpy.ops.import_scene.fbx(filepath='out/sample_bend_bin.fbx')"
+		var column = PartLibrary.Lathe( Enumerable.Range( 0, 9 ).Select( i => (1f, (float)i) ).ToList(), 12, 0 );
+		var bend = new Skeleton();
+		var lower = bend.AddBoneFromPoints( "lower", -1, new Vec3( 0, 0, 0 ), new Vec3( 0, 0, 4 ) );
+		var upper = bend.AddBoneFromPoints( "upper", lower, new Vec3( 0, 0, 4 ), new Vec3( 0, 0, 8 ) );
+		column.Skin = new SkinWeights();
+		foreach ( var p in column.Positions )
+		{
+			var t = Math.Clamp( (p.z - 3f) / 2f, 0f, 1f );
+			column.Skin.Vertices.Add( t <= 0f ? new[] { new BoneWeight( lower, 1f ) }
+				: t >= 1f ? new[] { new BoneWeight( upper, 1f ) }
+				: new[] { new BoneWeight( lower, 1f - t ), new BoneWeight( upper, t ) } );
+		}
+
+		var binPath = Path.Combine( outDir, "sample_bend_bin.fbx" );
+		FbxWriter.WriteBinaryFile( column, binPath, bend, modelName: "sample_bend" );
+		FbxWriter.WriteFile( column, Path.Combine( outDir, "sample_bend.fbx" ), bend, modelName: "sample_bend" );
+		FbxWriter.WriteBinaryFile( box, Path.Combine( outDir, "sample_static_bin.fbx" ), modelName: "sample_static" );
+
+		var bytes = File.ReadAllBytes( binPath );
+		Check( "binary FBX starts with the Kaydara header", bytes.Length > 27
+			&& System.Text.Encoding.ASCII.GetString( bytes, 0, 18 ) == "Kaydara FBX Binary"
+			&& BitConverter.ToUInt32( bytes, 23 ) == 7400 );
+
+		var top = FbxBinaryTree( bytes, out var walked );
+		Check( "and every record's end offset lands where its contents end", walked, string.Join( ",", top ) );
+		Check( "with the sections a reader looks for", top.Contains( "FBXHeaderExtension" ) && top.Contains( "GlobalSettings" )
+			&& top.Contains( "Objects" ) && top.Contains( "Connections" ), string.Join( ",", top ) );
+
 		// The .vmdl that wraps the rigged DMX, so the bind pose and the bone markup can be put in
 		// front of the compiler. Same skeleton, so the bone count the file claims is the one the DMX
 		// actually carries.
@@ -4905,6 +4976,55 @@ public static class Program
 		// two together. Same skeleton object as the mesh, deliberately — a clip written against a
 		// different rig compiles and animates nothing.
 		DmxAnimTests.WriteSample( outDir, skeleton );
+	}
+
+	/// <summary>Walks a binary FBX's node records the way a reader does, checking each one's end
+	/// offset against what it actually contains. Returns the top-level names.</summary>
+	static List<string> FbxBinaryTree( byte[] b, out bool ok )
+	{
+		var names = new List<string>();
+		var good = true;
+		var pos = 27;
+
+		bool Node( ref int at, bool top )
+		{
+			var end = (int)BitConverter.ToUInt32( b, at );
+			if ( end == 0 ) { at += 13; return false; }
+
+			var props = (int)BitConverter.ToUInt32( b, at + 4 );
+			var propLen = (int)BitConverter.ToUInt32( b, at + 8 );
+			var nameLen = b[at + 12];
+			var name = System.Text.Encoding.ASCII.GetString( b, at + 13, nameLen );
+			if ( top ) names.Add( name );
+
+			var p = at + 13 + nameLen;
+			var propsEnd = p + propLen;
+
+			for ( var i = 0; i < props; i++ )
+			{
+				var type = (char)b[p++];
+				p += type switch
+				{
+					'C' => 1, 'Y' => 2, 'I' or 'F' => 4, 'L' or 'D' => 8,
+					'S' or 'R' => 4 + (int)BitConverter.ToUInt32( b, p ),
+					_ => 12 + (int)BitConverter.ToUInt32( b, p + 8 ),
+				};
+			}
+
+			if ( p != propsEnd ) good = false;
+
+			while ( p < end - 13 && Node( ref p, false ) ) { }
+			if ( p < end ) p += 13;
+			if ( p != end ) good = false;
+
+			at = end;
+			return true;
+		}
+
+		while ( pos < b.Length && Node( ref pos, true ) ) { }
+
+		ok = good;
+		return names;
 	}
 
 	/// <summary>

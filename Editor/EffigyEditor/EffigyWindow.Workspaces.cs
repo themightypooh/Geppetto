@@ -1254,7 +1254,7 @@ public sealed partial class EffigyWindow
 		if ( !feature.HasModifiers )
 			return null;
 
-		return mesh => feature.ApplyModifiers( mesh, _viewport?.MeshEditSession?.Creases ?? feature.Creases );
+		return mesh => feature.ApplyModifiers( mesh, _viewport?.MeshEditSession?.Creases ?? feature.Creases, _studio.Rig );
 	}
 
 	private void SetMeshModifier( string what, Action<MeshEditFeature> change )
@@ -2519,65 +2519,13 @@ public sealed partial class EffigyWindow
 	}
 
 	/// <summary>
-	/// Each bone's mirror partner, by name. The Citizen names its sides with an `_L`/`_R` suffix
-	/// (`arm_upper_L`), which is the convention this follows; a bone whose partner is not in the rig
-	/// maps to itself, which is the right answer for a spine and a visible-enough wrong one for a
-	/// limb that was named by hand.
+	/// Each bone's mirror partner, by name — see <see cref="Skeleton.MirrorPartners"/>, which the
+	/// Mirror modifier uses too, so the tool and the modifier pair bones the same way.
 	/// </summary>
 	private Func<int, int> BoneMirrorMap( out int pairs )
 	{
-		var bones = _studio.Rig.Bones;
-		var byName = new Dictionary<string, int>( StringComparer.OrdinalIgnoreCase );
-
-		for ( var i = 0; i < bones.Count; i++ )
-			if ( !string.IsNullOrEmpty( bones[i].Name ) )
-				byName[bones[i].Name] = i;
-
-		var map = new int[bones.Count];
-		var found = 0;
-
-		for ( var i = 0; i < bones.Count; i++ )
-		{
-			map[i] = i;
-
-			var name = bones[i].Name;
-
-			if ( string.IsNullOrEmpty( name ) )
-				continue;
-
-			// `arm_upper_L` <-> `arm_upper_R`, and the same with a trailing number (`finger_L1`).
-			var flipped = FlipSideSuffix( name );
-
-			if ( flipped is not null && byName.TryGetValue( flipped, out var other ) )
-			{
-				map[i] = other;
-				found++;
-			}
-		}
-
-		pairs = found / 2;
+		var map = _studio.Rig.MirrorPartners( out pairs );
 		return bone => bone >= 0 && bone < map.Length ? map[bone] : bone;
-	}
-
-	/// <summary>`..._L` becomes `..._R` and back, including when digits follow the side letter.
-	/// Null when the name does not name a side.</summary>
-	private static string FlipSideSuffix( string name )
-	{
-		for ( var i = name.Length - 1; i >= 1; i-- )
-		{
-			if ( char.IsDigit( name[i] ) )
-				continue;
-
-			var c = name[i];
-
-			if ( (c != 'L' && c != 'R' && c != 'l' && c != 'r') || name[i - 1] != '_' )
-				return null;
-
-			var swapped = c switch { 'L' => 'R', 'R' => 'L', 'l' => 'r', _ => 'l' };
-			return name[..i] + swapped + name[(i + 1)..];
-		}
-
-		return null;
 	}
 
 	/// <summary>Split, saying how many edges genuinely came apart — which is not always all of them,

@@ -35,6 +35,12 @@ forgotten.
 
 ## Unreleased
 
+### Added
+- **Export FBX.** File ▸ Export FBX writes a binary FBX that Blender and other tools open directly, at its real size. A rigged model brings its bones and skin weights, and bends when a bone is moved; a static one comes in as a plain mesh with no armature. `FbxBinary`, `FbxWriter.WriteBinaryFile`
+
+### Fixed
+- **The Mirror modifier mirrors skin weights to the other side.** A weighted half mirrored with the modifier on put the new half on the same bones, so the right arm followed the left. The mirrored half now uses each bone's left/right partner by name (`_L`/`_R`, with digits after), the same pairing Mirror weights uses. `Skeleton.MirrorPartners`
+
 ## v411088 — 2026-10-06
 
 ### Added

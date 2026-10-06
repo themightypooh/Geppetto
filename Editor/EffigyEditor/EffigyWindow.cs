@@ -373,6 +373,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		file.AddOption( "Save As...", "save_alt", SaveAs );
 		file.AddSeparator();
 		file.AddOption( "Export OBJ", "file_download", ExportObj );
+		file.AddOption( "Export FBX", "file_download", ExportFbx );
 		file.AddOption( "Compile .vmdl", "build", CompileVmdl );
 		file.AddOption( "Compile Playermodel", "directions_walk", CompilePlayermodel );
 		file.AddOption( "Make Player", "sports_esports", MakePlayer );
@@ -6715,6 +6716,60 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		ObjWriter.WriteFile( mesh, objPath, name,
 			materialName: _studio.NameForSlot );
 		Log.Info( $"[Effigy] exported {objPath}" );
+	}
+
+	/// <summary>
+	/// File ▸ Export FBX: binary FBX for Blender and other tools, with the skeleton and skin weights
+	/// when the model is rigged. A separate command from Export OBJ on purpose — OBJ is the
+	/// weightless one, and a single Export that dropped the bones depending on a dropdown would
+	/// only be found out on the far side of an import.
+	/// </summary>
+	private void ExportFbx()
+	{
+		var report = RebuildForExport( "FBX export" );
+		if ( report.HasErrors || _studio.Bodies.Count == 0 )
+		{
+			Log.Warning( "[Effigy] cannot export — studio has errors or no bodies" );
+			return;
+		}
+
+		var name = ExportBaseName();
+		if ( name is null )
+			return;
+
+		var folder = EffigyAssetFolder.ResolveAssetFolder( "models/effigy" );
+		Directory.CreateDirectory( folder );
+
+		var fbxPath = Path.Combine( folder, $"{name}.fbx" );
+
+		if ( _rigPanel is { HasBones: true } rig )
+		{
+			// The same bind as CompileVmdl, in the same order: weights from the unpivoted mesh and
+			// bones, then both pivoted together, so the weights still say what they said.
+			var (mesh, ranges) = _studio.ToMeshWithBodies();
+			var skeleton = rig.Skeleton;
+
+			var weights = SkinBinder.BindBodies( mesh, ranges, rig.BodyBoneMap, skeleton );
+			weights = SkinBinder.SmoothWeights( mesh, weights );
+
+			if ( _studio.WeightPaint is { Count: > 0 } )
+				_studio.WeightPaint.Apply( mesh, weights, skeleton, out _ );
+
+			mesh.Skin = weights;
+
+			ApplyPivot( mesh );
+			skeleton = PivotedSkeleton( skeleton );
+
+			FbxWriter.WriteBinaryFile( mesh, fbxPath, skeleton, _studio.NameForSlot, name );
+			Log.Info( $"[Effigy] exported {fbxPath} - {skeleton.Count} bones, {mesh.VertexCount} vertices" );
+			return;
+		}
+
+		var staticMesh = _studio.ToMesh();
+		ApplyPivot( staticMesh );
+
+		FbxWriter.WriteBinaryFile( staticMesh, fbxPath, materialName: _studio.NameForSlot, modelName: name );
+		Log.Info( $"[Effigy] exported {fbxPath}" );
 	}
 
 	/// <summary>The skinned model the last CompileVmdl produced, as an asset path, or null when it

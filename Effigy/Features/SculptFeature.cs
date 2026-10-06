@@ -218,10 +218,23 @@ public sealed class MeshEditFeature : Feature
 	public PolyMesh ApplyModifiers( PolyMesh mesh ) => ApplyModifiers( mesh, Creases );
 
 	/// <summary>The modifiers with creases from elsewhere — the live edit's, which are ahead of
-	/// the ones committed here until the edit finishes.</summary>
-	public PolyMesh ApplyModifiers( PolyMesh mesh, IReadOnlyDictionary<EdgeKey, float> creases ) => HasModifiers
-		? MeshModifiers.Apply( mesh, MirrorX.Value, ArrayCount.Clamped, ArrayGap.Value, SubdivideLevels.Clamped, SolidifyThickness.Value, creases )
-		: mesh.Clone();
+	/// the ones committed here until the edit finishes. With a <paramref name="rig"/>, the Mirror
+	/// modifier puts the mirrored half's weights on the opposite side's bones.</summary>
+	public PolyMesh ApplyModifiers( PolyMesh mesh, IReadOnlyDictionary<EdgeKey, float> creases, Skeleton rig = null )
+	{
+		if ( !HasModifiers )
+			return mesh.Clone();
+
+		System.Func<int, int> partner = null;
+
+		if ( MirrorX.Value && mesh.IsRigged && rig is { Count: > 0 } )
+		{
+			var map = rig.MirrorPartners( out _ );
+			partner = bone => bone >= 0 && bone < map.Length ? map[bone] : bone;
+		}
+
+		return MeshModifiers.Apply( mesh, MirrorX.Value, ArrayCount.Clamped, ArrayGap.Value, SubdivideLevels.Clamped, SolidifyThickness.Value, creases, bonePartner: partner );
+	}
 
 	PolyMesh _edited;
 	List<PolyMesh> _pieces = new();
@@ -325,7 +338,7 @@ public sealed class MeshEditFeature : Feature
 			_pending = null;
 		}
 
-		var body = new Body( ctx.NewBodyId(), Name ?? "Mesh", ApplyModifiers( _edited ?? new PolyMesh() ) );
+		var body = new Body( ctx.NewBodyId(), Name ?? "Mesh", ApplyModifiers( _edited ?? new PolyMesh(), Creases, ctx.Rig ) );
 		LastBodyId = body.Id;
 		ctx.Bodies.Add( body );
 
@@ -407,7 +420,7 @@ public sealed class MeshEditFeature : Feature
 			// Nothing committed yet: pass the body through. A freshly added edit must not change
 			// anything until somebody actually edits — beyond the modifiers somebody switched on.
 			if ( HasModifiers )
-				body.Mesh = ApplyModifiers( body.Mesh );
+				body.Mesh = ApplyModifiers( body.Mesh, Creases, ctx.Rig );
 
 			_builtRevision = _revision;
 			return;
@@ -431,7 +444,7 @@ public sealed class MeshEditFeature : Feature
 				"Delete this feature and edit again to pick the changes up" );
 		}
 
-		body.Mesh = ApplyModifiers( _edited );
+		body.Mesh = ApplyModifiers( _edited, Creases, ctx.Rig );
 
 		// Separated pieces come out as bodies of their own, named after the one they came from.
 		// Ids come from the context, so they are the same ids on every rebuild.

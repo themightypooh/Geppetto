@@ -63,19 +63,48 @@ public static class FbxWriter
 		File.WriteAllText( path, Write( mesh, skeleton, smoothingAngleDegrees, materialName, modelName ) );
 	}
 
+	/// <summary>
+	/// The same scene as binary FBX, for Blender — whose importer refuses ASCII. See
+	/// <see cref="FbxBinary"/>. <paramref name="unitScale"/> is centimetres per unit: s&amp;box
+	/// units are inches, so 2.54 makes a model come into Blender at its real size. With no
+	/// <paramref name="skeleton"/> the file has no armature at all, rather than the engine's
+	/// one-bone stand-in.
+	/// </summary>
+	public static void WriteBinaryFile(
+		PolyMesh mesh,
+		string path,
+		Skeleton skeleton = null,
+		Func<int, string> materialName = null,
+		string modelName = null,
+		double unitScale = InchesToCentimetres )
+	{
+		var ascii = Write( mesh, skeleton, MeshNormals.DefaultSmoothingAngleDegrees, materialName, modelName, unitScale,
+			skeletonless: skeleton is null );
+		FbxBinary.WriteFile( ascii, path );
+	}
+
+	/// <summary>FBX measures in centimetres (UnitScaleFactor 1); an s&amp;box unit is an inch.</summary>
+	public const double InchesToCentimetres = 2.54;
+
 	public static string Write(
 		PolyMesh mesh,
 		Skeleton skeleton = null,
 		float smoothingAngleDegrees = MeshNormals.DefaultSmoothingAngleDegrees,
 		Func<int, string> materialName = null,
-		string modelName = null )
+		string modelName = null,
+		double unitScale = 1,
+		bool skeletonless = false )
 	{
 		if ( mesh is null )
 			throw new ArgumentNullException( nameof( mesh ) );
 
-		skeleton ??= Skeleton.SingleRoot();
+		// No skeleton at all is for other tools (Blender), which would otherwise import a static
+		// prop with a one-bone armature it does not need. The engine's importer wants the root bone,
+		// so everything else still gets one.
+		var rigged = !skeletonless;
+		skeleton = skeletonless ? new Skeleton() : skeleton ?? Skeleton.SingleRoot();
 
-		if ( skeleton.Count == 0 )
+		if ( rigged && skeleton.Count == 0 )
 			throw new InvalidOperationException( "FBX needs at least one bone; use Skeleton.SingleRoot for a static model" );
 
 		var skin = mesh.IsRigged ? mesh.Skin : SkinWeights.AllTo( mesh.VertexCount, 0 );
@@ -116,9 +145,9 @@ public static class FbxWriter
 		var idPose = w.NextId();
 
 		WriteHeader( w );
-		WriteGlobalSettings( w );
+		WriteGlobalSettings( w, unitScale );
 		WriteDocuments( w );
-		WriteDefinitions( w, slots.Count, skeleton.Count );
+		WriteDefinitions( w, slots.Count, skeleton.Count, rigged );
 
 		w.Open( "Objects: " );
 		{
@@ -134,19 +163,22 @@ public static class FbxWriter
 				WriteLimbModel( w, boneModelIds[i], skeleton.Bones[i] );
 			}
 
-			WriteSkinDeformer( w, idSkin, modelName );
+			if ( rigged )
+			{
+				WriteSkinDeformer( w, idSkin, modelName );
 
-			var clusterVertices = ClusterVertices( mesh, skin, skeleton );
+				var clusterVertices = ClusterVertices( mesh, skin, skeleton );
 
-			for ( var i = 0; i < skeleton.Count; i++ )
-				WriteCluster( w, clusterIds[i], skeleton, i, clusterVertices[i] );
+				for ( var i = 0; i < skeleton.Count; i++ )
+					WriteCluster( w, clusterIds[i], skeleton, i, clusterVertices[i] );
 
-			WriteBindPose( w, idPose, idMeshModel, boneModelIds, skeleton );
+				WriteBindPose( w, idPose, idMeshModel, boneModelIds, skeleton );
+			}
 		}
 		w.Close();
 
 		WriteConnections( w, idGeometry, idMeshModel, materialIds, boneModelIds, boneAttrIds,
-			idSkin, clusterIds, skeleton );
+			idSkin, clusterIds, skeleton, rigged );
 
 		return w.ToString();
 	}
@@ -190,7 +222,7 @@ public static class FbxWriter
 	/// is Z (axis 2) and front is -Y. Declaring it means fbx2dmx converts if it wants a different
 	/// handedness, instead of silently reading the numbers as though they were already its own.
 	/// </summary>
-	static void WriteGlobalSettings( FbxText w )
+	static void WriteGlobalSettings( FbxText w, double unitScale )
 	{
 		w.Open( "GlobalSettings: " );
 		w.Line( "Version: 1000" );
@@ -203,8 +235,9 @@ public static class FbxWriter
 		w.Line( "P: \"CoordAxisSign\", \"int\", \"Integer\", \"\",1" );
 		w.Line( "P: \"OriginalUpAxis\", \"int\", \"Integer\", \"\",2" );
 		w.Line( "P: \"OriginalUpAxisSign\", \"int\", \"Integer\", \"\",1" );
-		w.Line( "P: \"UnitScaleFactor\", \"double\", \"Number\", \"\",1" );
-		w.Line( "P: \"OriginalUnitScaleFactor\", \"double\", \"Number\", \"\",1" );
+		var unit = unitScale.ToString( "0.######", CultureInfo.InvariantCulture );
+		w.Line( $"P: \"UnitScaleFactor\", \"double\", \"Number\", \"\",{unit}" );
+		w.Line( $"P: \"OriginalUnitScaleFactor\", \"double\", \"Number\", \"\",{unit}" );
 		w.Close();
 		w.Close();
 		w.Raw( "" );
@@ -246,11 +279,14 @@ public static class FbxWriter
 	/// wrong, but a file whose Definitions disagree with its Objects is the kind of thing that
 	/// loads in one importer and not the next, so it is written honestly.
 	/// </summary>
-	static void WriteDefinitions( FbxText w, int materialCount, int boneCount )
+	static void WriteDefinitions( FbxText w, int materialCount, int boneCount, bool rigged = true )
 	{
 		// One Model per bone plus the mesh's; one NodeAttribute per bone; one Skin plus one
-		// Cluster per bone; one Geometry; one Pose; GlobalSettings itself.
-		var total = 1 + (boneCount + 1) + boneCount + materialCount + (1 + boneCount) + 1 + 1;
+		// Cluster per bone; one Geometry; one Pose; GlobalSettings itself. Unrigged, no skin and
+		// no pose.
+		var deformers = rigged ? boneCount + 1 : 0;
+		var poses = rigged ? 1 : 0;
+		var total = 1 + (boneCount + 1) + boneCount + materialCount + deformers + 1 + poses;
 
 		w.Open( "Definitions: " );
 		w.Line( "Version: 100" );
@@ -261,8 +297,11 @@ public static class FbxWriter
 		ObjectType( w, "NodeAttribute", boneCount );
 		ObjectType( w, "Geometry", 1 );
 		ObjectType( w, "Material", materialCount );
-		ObjectType( w, "Deformer", boneCount + 1 );
-		ObjectType( w, "Pose", 1 );
+		if ( rigged )
+		{
+			ObjectType( w, "Deformer", deformers );
+			ObjectType( w, "Pose", poses );
+		}
 
 		w.Close();
 		w.Raw( "" );
@@ -466,9 +505,12 @@ public static class FbxWriter
 	/// lists, per bone, which vertices it moves. The pruning happens before either, so both formats
 	/// describe the same rig.
 	///
-	/// TransformLink is the bone's world transform at bind time; Transform is the mesh's, which is
-	/// identity here because the mesh model sits at the origin. The importer derives the inverse
-	/// bind from the pair, so writing one and not the other silently bakes the bind pose in.
+	/// TransformLink is the bone's world transform at bind time. Transform is NOT the mesh's world
+	/// transform, whatever the name suggests: it is mesh-to-bone, inverse(TransformLink) times the
+	/// mesh's world — the inverse bind matrix. That is what Blender's and Maya's exporters write and
+	/// what ufbx reads it as (`geometry_to_bone`). The mesh model sits at the origin, so it is just
+	/// the bone's inverse. Writing identity here was invisible for a bone at the origin with no turn,
+	/// which is all the old sample had, and moved the whole mesh into a bone's frame for any other.
 	/// </summary>
 	static void WriteCluster( FbxText w, long id, Skeleton skeleton, int bone, List<(int Vertex, float Weight)> influences )
 	{
@@ -490,8 +532,9 @@ public static class FbxWriter
 
 		w.IndexArray( "Indexes", indices );
 		w.NumberArray( "Weights", weights );
-		w.NumberArray( "Transform", MatrixValues( Xform.Identity ) );
-		w.NumberArray( "TransformLink", MatrixValues( skeleton.WorldBind( bone ) ) );
+		var bind = skeleton.WorldBind( bone );
+		w.NumberArray( "Transform", MatrixValues( bind.Inverse ) );
+		w.NumberArray( "TransformLink", MatrixValues( bind ) );
 
 		w.Close();
 	}
@@ -592,7 +635,7 @@ public static class FbxWriter
 	/// a pair is exactly as silent.
 	/// </summary>
 	static void WriteConnections( FbxText w, long geometryId, long meshModelId, long[] materialIds,
-		long[] boneModelIds, long[] boneAttrIds, long skinId, long[] clusterIds, Skeleton skeleton )
+		long[] boneModelIds, long[] boneAttrIds, long skinId, long[] clusterIds, Skeleton skeleton, bool rigged = true )
 	{
 		w.Open( "Connections: " );
 
@@ -610,6 +653,12 @@ public static class FbxWriter
 
 			var parent = skeleton.Bones[i].Parent;
 			Connect( w, boneModelIds[i], parent < 0 ? 0 : boneModelIds[parent], "Model -> parent" );
+		}
+
+		if ( !rigged )
+		{
+			w.Close();
+			return;
 		}
 
 		// The skin sits on the GEOMETRY, not the model, and each cluster on the skin.

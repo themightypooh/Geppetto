@@ -358,14 +358,16 @@ public static class MeshModifiers
 
 	/// <summary>The modifiers with edge creases for the subdivide. Creases follow the mesh through
 	/// the mirror and the array: a crease on the left is a crease on the right.</summary>
-	public static PolyMesh Apply( PolyMesh mesh, bool mirrorX, int arrayCount, float arrayGap, int subdivide, float solidify, IReadOnlyDictionary<EdgeKey, float> creases, float seam = 1e-3f )
+	/// <param name="bonePartner">Each bone's left/right partner (see <see cref="Skeleton.MirrorPartners"/>),
+	/// so the mirrored half of a weighted mesh follows the other arm. Null copies weights as they are.</param>
+	public static PolyMesh Apply( PolyMesh mesh, bool mirrorX, int arrayCount, float arrayGap, int subdivide, float solidify, IReadOnlyDictionary<EdgeKey, float> creases, float seam = 1e-3f, Func<int, int> bonePartner = null )
 	{
 		var result = mesh.Clone();
 		var live = creases is null || creases.Count == 0 ? null : new Dictionary<EdgeKey, float>( creases );
 
 		if ( mirrorX )
 		{
-			result = MirrorX( result, seam, out var map );
+			result = MirrorX( result, seam, out var map, bonePartner );
 			if ( live is not null )
 			{
 				foreach ( var (key, weight) in creases )
@@ -398,14 +400,15 @@ public static class MeshModifiers
 	/// <summary>
 	/// The mesh plus its mirror image across x = 0. Vertices on the plane (within
 	/// <paramref name="seam"/>) are shared by both halves, so a half-model joins up down the middle
-	/// instead of leaving a crack. Skin weights are copied as they are, not swapped left for right:
-	/// mirror, then rig.
+	/// instead of leaving a crack. A mirrored vertex takes its source's skin weights with each bone
+	/// swapped for its <paramref name="bonePartner"/> — the left arm's weights become the right
+	/// arm's. With no partner map the weights are copied as they are.
 	/// </summary>
-	public static PolyMesh MirrorX( PolyMesh mesh, float seam = 1e-3f ) => MirrorX( mesh, seam, out _ );
+	public static PolyMesh MirrorX( PolyMesh mesh, float seam = 1e-3f, Func<int, int> bonePartner = null ) => MirrorX( mesh, seam, out _, bonePartner );
 
 	/// <summary>Mirror, and say where each vertex's reflection landed: <paramref name="map"/>[v]
 	/// is the mirrored copy of v, or v itself on the plane.</summary>
-	public static PolyMesh MirrorX( PolyMesh mesh, float seam, out int[] map )
+	public static PolyMesh MirrorX( PolyMesh mesh, float seam, out int[] map, Func<int, int> bonePartner = null )
 	{
 		var result = mesh.Clone();
 		var n = mesh.VertexCount;
@@ -427,7 +430,15 @@ public static class MeshModifiers
 			result.Positions.Add( new Vec3( -p.x, p.y, p.z ) );
 
 			if ( result.Skin is not null && result.Skin.Count > v )
-				result.Skin.Vertices.Add( result.Skin[v] );
+			{
+				var source = result.Skin[v];
+				var copy = new BoneWeight[source.Length];
+
+				for ( var i = 0; i < source.Length; i++ )
+					copy[i] = bonePartner is null ? source[i] : new BoneWeight( bonePartner( source[i].Bone ), source[i].Weight );
+
+				result.Skin.Vertices.Add( copy );
+			}
 
 			colours?.Add( colours[v] );
 		}
