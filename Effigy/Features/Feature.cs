@@ -255,6 +255,12 @@ public sealed class FeatureContext
 	/// upstream and rebuilding feeds the new geometry through without any wiring to keep in sync.</summary>
 	public Dictionary<string, Sketch> Sketches = new();
 
+	/// <summary>Splines published by SplineFeature, keyed by that feature's id, and the id of the
+	/// one published last — what a curve deform or a sweep means by "the spline" when it names
+	/// none. Same arrangement as Sketches, for the same reason.</summary>
+	public Dictionary<string, Spline3> Splines = new();
+	public string LastSplineId;
+
 	/// <summary>
 	/// For a sketch drawn on a face, the id of the body that face belongs to. Keyed by sketch
 	/// feature id, same as Sketches.

@@ -1,0 +1,18 @@
+# a goblin block-out, ~40 units tall, standing on the ground
+# legs: stack up z from the ground, mirrored; the leg is at y=4 so its mirror lands at y=-4
+add Profile name=Leg front=0,2.2;3,2.5;14,2.2;18,2.8;22,2.6 side=0,2.4;3,2.6;14,2.3;18,3;22,2.8 curve=0,0.6,0;10,0,0;22,-0.6,0 sides=12 squareness=0.2 position=0,4,0 mirror=1
+add Primitive name=Foot_L shape=Box sizex=8 sizey=4 sizez=1.6 position=@Leg_L.bottom+1.5,0,0.8
+add Primitive name=Foot_R shape=Box sizex=8 sizey=4 sizez=1.6 position=@Leg_R.bottom+1.5,0,0.8
+# torso: wide hips, narrow waist, big chest, sits on the legs
+add Profile name=Torso front=0,6;4,7;9,5.5;16,7.5;20,8;23,6 side=0,4.5;4,5;9,4;16,5.5;20,5.5;23,4 curve=0,0,0;12,0.8,0;23,-0.6,0 sides=16 squareness=0.35 position=0,0,21
+# arms: stack along y, from the shoulder outward, curving down and forward; mirrored
+add Profile name=Arm front=0,2.4;3,2.6;12,2;20,1.8;24,1.6 side=0,2.4;3,2.6;12,2;20,1.8;24,1.6 curve=0,0,0;8,1,-2;16,3,-8;24,5,-14 along=Left sides=10 squareness=0.1 position=0,7,41 mirror=1
+add Primitive name=Hand_L shape=Box sizex=3.5 sizey=2.2 sizez=4 position=@Arm_L.left+0.5,0.5,-3
+add Primitive name=Hand_R shape=Box sizex=3.5 sizey=2.2 sizez=4 position=@Arm_R.right+0.5,-0.5,-3
+# neck and head: a big head with a pointed chin and ears
+add Primitive name=Neck shape=Cylinder radius=2.2 sizez=4 position=@Torso.top+0.5,0,1.5
+add Profile name=Head front=0,2;3,6;9,7.5;14,6.5;16,3 side=0,2.5;3,6;9,7;14,6;16,3 sides=16 squareness=0.25 position=@Neck.top+1,0,-0.5
+add Profile name=Ear front=0,1.2;5,2;10,0.6 side=0,0.5;5,0.8;10,0.3 curve=0,0,0;10,-1,3 along=Left sides=8 position=@Head.left+-1,-0.5,1 mirror=1
+add Primitive name=Nose shape=Box sizex=3 sizey=1.6 sizez=2 position=@Head.front+0.8,0,-1
+describe
+symmetry

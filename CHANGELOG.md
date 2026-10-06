@@ -36,6 +36,18 @@ forgotten.
 ## Unreleased
 
 ### Added
+- **Effigy can be driven and seen from outside the editor.** For agents and scripts, and for looking at a model without opening it.
+  - **Render.** `tools/effigy.sh render doc.effigy out.png` draws front, side, top and iso views on one sheet — fitted, with a ground grid, the axes, the wire and each body's name. In the editor the same picture comes from the `effigy_snapshot` MCP tool.
+  - **Describe and measure.** The model in words with a number on every line, and what is at any landmark: `Torso.top`, `Hand_L.front`, a bone, the ground, or `@Head.back+2,0,0`.
+  - **Match a drawing.** `effigy match doc.effigy front drawing.png` scores the silhouette against a reference — overlap, proportions, and which bands are wider or narrower — with a diff picture.
+  - **Build scripts.** One text file of `add`, `set`, `fix`, `render`, `describe` lines, with landmarks resolved as the model grows. Runs headlessly or on the open studio (`effigy_run`), as one undo step. A failing feature stops it with its own cause and remedies.
+  - **Fix by name.** `fix Torso loose doubles holes normals` (or `all`), headless, in a script, or `effigy_fix`.
+- **A part library.** Model ▸ Add ▸ Part from the library: cog, bolt, hex bolt, rivet, knob, hinge, panel, pipe elbow, strap, buckle — each from Size, Length, Thickness, Count and Angle, placed with Position and Rotation. Bolts, rivets, knobs and cogs are single closed solids.
+- **Profile body.** Model ▸ Add ▸ Profile body: a front outline and a side outline as `height,half-width;…` pairs, stacked into a body. A torso is eight numbers; Squareness rounds or boxes the section.
+- **Splines.** Model ▸ Add ▸ Spline (or Spline on the CAD Solid tab): click points in the viewport — on a body, or in the air — and a smooth curve runs through them. Drag a point to move it, Backspace takes the last one back, Enter finishes. The curve is saved with the document and stays editable from its History row.
+  - **A tube along it.** Radius, end radius (taper a horn or a tail to a point), sides, twist, and a closed loop for a ring or a hose. Off, the spline is a bare path for the two below.
+  - **Bend along curve.** Model ▸ Mesh ▸ Bend along curve (CAD: Bend on the Repeat tab): the selected body's length follows the spline above it. A straight tail becomes a curled one; fit the length to the curve or keep the body's own.
+  - **Sweep follows a spline.** A Sweep with one sketch and a spline takes the spline as its path, so the path can be clicked out in 3D instead of drawn flat.
 - **Fabric: a real material for a garment.** Clothing's new **Material** stage gives a garment jersey, rib knit, fleece, denim, corduroy, leather, satin, canvas, plaid, gingham or quilting - a tiling weave with normal and roughness maps, in your colours, at your weave size, with the Complex cloth or anisotropic switch that kind of cloth needs. It is a feature, so recolouring rewrites the material. `FabricFeature`, `FabricMaterial`
 - **Test a garment in the poses that break it.** Clothing's new **Test** stage bends the wearer into arms up, arms out, reach, bend, twist, sit, stride and crouch, with the garment on, and marks every vertex that ends up inside the body in red. **Relax** puts the rig back. `GarmentPoses`
 - **Select a ring.** Ctrl+Alt+click an edge in Model to select the ring around a limb, the edges a loop cut would cross.
@@ -281,6 +293,14 @@ forgotten.
   feature, saved like any other.
 
 ### Improved
+- **Model no longer runs on the CAD bar.** The two-row bar of tabs and named buttons is gone from Model, in every mode. What replaces it sits on the viewport itself:
+  - **A header strip:** Object | Edit | Sculpt | Retopo as pills at the left; Vertex / Edge / Face with their counts while editing; X-ray, Mirror, Snap and Soft as chips at the right; a **mesh check badge** (green is clean, yellow or red names the problem, click it for the fixes); and a search box.
+  - **A palette down the left:** icon tiles for the tools you hold — circle and lasso select, move, rotate, scale, extrude, inset, bevel, loop cut, knife — with the key in the corner and the name on hover. Brushes in Sculpt; poly build, strip and relax in Retopo; move, rotate, scale, duplicate, edit and sculpt in Object.
+  - **One catalog instead of menus.** Space, or the search box, opens every tool in the mode, grouped, with search on top. Typing filters; Enter runs the first match. The twelve menus that ran off the edge are gone.
+  - **Right-click** is still the menu for what is under the mouse — a face, an edge, a vertex, or a whole body in Object mode. Ctrl+right-click on a second body keeps the first selected, so two can be joined.
+  - **Picking a mode is how you leave the last one.** The edit or sculpt is kept. There are no Finish buttons in Model.
+  - **The left dock is an outliner and a history.** Bodies (click to select, right-click for the menu) and the steps taken (click one to edit it). The CAD tree, the datum planes, the Citizen ruler and the grid switch stay in CAD.
+  - **Object mode has real tools now.** Move, Rotate and Scale put the body handle up (saved as a Transform); Duplicate is a Linear pattern of two so the copy stays editable; Mirror, Join, Hide, Delete and every primitive are in the catalog.
 - **Check shows you where.** Clipping vertices are marked on the model, yellow for a graze through red for the deepest, instead of only a count in the console. **Push out** next to it gives each clipping garment exactly the Clearance it needs and rebuilds, as one undo step. **Clear marks** takes them off.
 - **Scrub into a test pose.** A bar under the viewport slides the wearer from the bind pose into the chosen test pose, so you can see where a sleeve first catches rather than only where it ends up.
 - **Clean hems, cuffs and collars.** A garment's openings are now cut straight across the limb where the recipe says, instead of a sawtooth of whole faces one face deep. Length, Sleeve and Neckline land exactly where the sliders put them.
@@ -323,6 +343,9 @@ forgotten.
 - **The house tutorial no longer skips the door.** The door step ticked itself off as soon
   as the second window was drilled. It now waits for a third opening.
   `Editor/EffigyEditor/EffigyTutorial.cs`
+
+### Removed
+- The `rig_build_wave` console command. It built a wave for a character from another project, and did nothing for a model of yours. `rig_build_sample` stays.
 
 ### Known Issues
 - **Live cloth has no self-collision.** It collides with the body only: a fold can pass through itself, and a jacket over a shirt passes through the shirt.

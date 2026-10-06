@@ -585,6 +585,7 @@ public static class DocumentTests
 			case List<int> ints: ints.Add( 4 ); ints.Add( 7 ); break;
 			case List<string> texts: texts.Add( "sk0001" ); texts.Add( "sk0002" ); break;
 			case List<Vec2> vecs: vecs.Add( new Vec2( 0.75f, -0.25f ) ); vecs.Add( new Vec2( 1.25f, 2f ) ); break;
+			case List<Vec3> vec3s: vec3s.Add( new Vec3( 0.75f, -0.25f, 1.5f ) ); vec3s.Add( new Vec3( 1.25f, 2f, -3f ) ); break;
 			case List<FaceRef> list: list.Add( new FaceRef( "someb0", new Vec3( 1, 2, 3 ), new Vec3( 0, 0, 1 ) ) ); break;
 			case List<EdgeRef> edges: edges.Add( new EdgeRef( "someb0", new Vec3( 1, 0, 1 ), new Vec3( 0, 1, 0 ) ) ); break;
 
@@ -626,6 +627,8 @@ public static class DocumentTests
 			(List<string> p, List<string> q) => p.SequenceEqual( q ),
 			(List<Vec2> p, List<Vec2> q) => p.Count == q.Count
 				&& p.Zip( q ).All( pair => pair.First.x == pair.Second.x && pair.First.y == pair.Second.y ),
+			(List<Vec3> p, List<Vec3> q) => p.Count == q.Count
+				&& p.Zip( q ).All( pair => pair.First.x == pair.Second.x && pair.First.y == pair.Second.y && pair.First.z == pair.Second.z ),
 			(List<FaceRef> p, List<FaceRef> q) => p.Count == q.Count && p.Zip( q ).All( pair => SameFace( pair.First, pair.Second ) ),
 			(List<EdgeRef> p, List<EdgeRef> q) => p.Count == q.Count && p.Zip( q ).All( pair => SameEdge( pair.First, pair.Second ) ),
 			(Sketch p, Sketch q) => SameSketch( p, q ),

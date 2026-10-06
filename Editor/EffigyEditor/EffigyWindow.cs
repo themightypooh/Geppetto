@@ -666,6 +666,10 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		_viewport.CompleteLayout( _workspaceBar, _stageBar, _resultStrip );
 
+		// Model's own chrome, on the canvas; the stage bar hides while it is up. See
+		// EffigyWindow.ModelChrome.cs.
+		BuildModelChrome();
+
 		// The sculpt number bar keeps its floating spot - it belongs to the stroke you are making,
 		// not to the tool you picked, and it wants to be near the model rather than up in chrome.
 		_sculptBar = new EffigySculptBar( _viewport.Canvas ) { Changed = OnSculptBarChanged };
@@ -814,6 +818,17 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		_rigStages = BuildRigStages();
 		_meshEditStages = BuildMeshEditStages();
 
+		// Object mode's tools cache themselves; dropping the cache is what makes the next
+		// ShowObjectModeBar build them against this assembly.
+		_objectCoreStage = null;
+		_objectMenus = null;
+		BindModelDock();
+		BindModelChrome();
+
+		// A spline half-drawn across a hotload keeps its viewport delegates pointing at this assembly.
+		if ( _viewport?.SplineFeature is { } drawing )
+			BeginSplineDraw( drawing );
+
 		// Same reason as StageChanged below: a lambda compiled into the dead assembly is a rig tool
 		// that still highlights and calls nothing.
 		if ( _rigPanel is not null )
@@ -856,8 +871,11 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			case EffigyBarMode.Sculpt:
 				if ( _viewport is { IsSculpting: true } )
 				{
-					_stageBar.SetFinish( "Finish", FinishSculpt );
+					_stageBar.Mode = null;
+					_stageBar.SetFinish( null, null );
 					_stageBar.SetStages( _sculptStages, stage );
+					UpdateModelModeSwitch( "Sculpt" );
+					ShowModelChrome( "Sculpt" );
 
 					UpdateSculptChecks();
 				}
@@ -1718,9 +1736,14 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		// parameter list, so leaving one open would be two controls claiming the same feature.
 		BarMode = EffigyBarMode.Sculpt;
 
-		_stageBar.Mode = "SCULPT";
-		_stageBar.SetFinish( "Finish", FinishSculpt );
+		_stageBar.Mode = null;
+		_stageBar.SetFinish( null, null );
 		_stageBar.SetStages( _sculptStages );
+
+		// The same Object | Edit | Sculpt | Retopo switch the rest of Model has, with Sculpt lit.
+		// Picking Object is what Finish used to do. See EffigyWindow.ObjectMode.cs.
+		UpdateModelModeSwitch( "Sculpt" );
+		ShowModelChrome( "Sculpt" );
 
 		_dialog?.Close();
 
@@ -2451,6 +2474,8 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			_symmetryTool.Checked = session is not null && session.Mirror != MirrorAxis.None;
 
 		_stageBar?.Refresh();
+
+		RefreshModelChrome();
 	}
 
 	/// <summary>
@@ -3340,6 +3365,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		Draft, Hole, Sculpt, Mirror, LinearPattern, CircularPattern, Transform, UVProject, FaceMaterial,
 		MoveFace, Paint, Boolean,
 		Garment, Fur, Trim, Fabric,
+		Spline, CurveDeform, Part, Profile,
 	}
 
 	/// <summary>Build one, and apply the variant chosen from its dropdown where it has one.</summary>
@@ -3353,6 +3379,10 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		ToolKind.Revolve => AwaitingPick( NewRevolve() ),
 		ToolKind.Sweep => new SweepFeature(),
 		ToolKind.Loft => new LoftFeature(),
+		ToolKind.Spline => new SplineFeature(),
+		ToolKind.CurveDeform => new CurveDeformFeature(),
+		ToolKind.Part => new PartFeature(),
+		ToolKind.Profile => new ProfileFeature(),
 		ToolKind.Chamfer => new ChamferFeature(),
 		ToolKind.Fillet => new FilletFeature(),
 		ToolKind.Shell => new ShellFeature(),
@@ -3541,6 +3571,15 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		new() { Icon = EffigyIcon.Loft, Label = "Loft", Stage = StageSolid,
 			Tip = "Add a Loft — skin a surface between two or more sketches",
 			Kind = ToolKind.Loft },
+		new() { Icon = EffigyIcon.SplineTool, Label = "Spline", Stage = StageSolid, MenuIcon = "gesture",
+			Tip = "Add a Spline — click points in the viewport for a curve, and a tube along it. A Sweep or a Bend can follow it too",
+			Kind = ToolKind.Spline },
+		new() { Icon = EffigyIcon.Primitive, Label = "Part", Stage = StageSketch, MenuIcon = "settings",
+			Tip = "Add a Part from the library — cog, bolt, rivet, hinge, pipe elbow, strap, buckle — with a few dials",
+			Kind = ToolKind.Part },
+		new() { Icon = EffigyIcon.Loft, Label = "Profile", Stage = StageSketch, MenuIcon = "accessibility_new",
+			Tip = "Add a Profile body — a front outline and a side outline, stacked into a body. A torso is eight numbers",
+			Kind = ToolKind.Profile },
 
 		// LAST ON SOLID, because it is the tool that turns several solids back into one and there
 		// have to be several first. Not on Repeat with Mirror and the patterns: those COPY bodies
@@ -3591,6 +3630,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		new() { Icon = EffigyIcon.Transform, Label = "Transform", Stage = StageRepeat,
 			Tip = "Add a Transform — move, rotate or scale bodies",
 			Kind = ToolKind.Transform },
+		new() { Icon = EffigyIcon.Drape, Label = "Bend", Stage = StageRepeat, MenuIcon = "gesture",
+			Tip = "Add a Bend along curve — a body's length follows the spline above it",
+			Kind = ToolKind.CurveDeform },
 
 		// --- Finish: what is left on the CAD bar after the other workspaces took theirs ---------
 		// Subdivide and Sculpt live in the Sculpt workspace, and UV Project and Paint in the Paint
@@ -3875,6 +3917,10 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			{
 				UpdatePickTargets( f );
 				_resultStrip?.Bind( f, SketchHostBodyId );
+
+				// A spline is drawn, not typed: its dialog opening is what arms the viewport.
+				if ( f is SplineFeature spline )
+					BeginSplineDraw( spline );
 			},
 			MaterialLookup = SlotMaterial,
 			MaterialChanged = SetSlotMaterial,
@@ -3969,7 +4015,8 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		// Edit mode's own column — scene, mesh check, history — shown in place of the tree and the
 		// parts while a mesh is being edited. See EffigyMeshEditPanel.
-		_meshPanel = new EffigyMeshEditPanel( this ) { RunOp = RunMeshOp, UndoTo = UndoMeshTo };
+		_meshPanel = new EffigyMeshEditPanel( this );
+		BindModelDock();
 		_leftPanel.Layout.Add( _meshPanel, 1 );
 
 		_viewport.SketchEdited = OnSketchEdited;
@@ -4092,6 +4139,13 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		_syncingSelection = false;
 		DescribeGeometrySelection();
 		UpdateRigChecks();
+
+		// Object mode's tools and its Scene list both follow the selection.
+		if ( InObjectMode )
+		{
+			UpdateObjectChecks();
+			RefreshMeshEditPanel();
+		}
 	}
 
 	/// <summary>
@@ -5024,6 +5078,8 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		SyncFabricMaterials();
 		_featureTree?.Rebuild();
 		_partsPanel?.Refresh();
+		RefreshMeshEditPanel();
+		UpdateObjectChecks();
 		_materialsPanel?.Refresh();
 		_variablesPanel?.Rebuild();
 		_rigPanel?.RefreshBodyNames();
@@ -8222,6 +8278,14 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		{
 			_viewport.SelectBodies( new[] { hit.Body.Id } );
 			_partsPanel.OpenPartMenu( hit.Body );
+			return;
+		}
+
+		// In Model with nothing open, a right-click is about the body, not its material: the
+		// Object menu, the way Edit mode's right-click is the menu for the element under the mouse.
+		if ( InObjectMode )
+		{
+			OpenObjectMenu( hit.Body );
 			return;
 		}
 

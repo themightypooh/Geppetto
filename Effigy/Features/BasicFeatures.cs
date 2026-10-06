@@ -49,18 +49,24 @@ public sealed class PrimitiveFeature : Feature
 
 	public readonly IntParam Material = new( "Material slot", 0, 0, 63 ) { Slider = false };
 
+	/// <summary>A turn about an axis through the primitive's own origin, applied before Position —
+	/// a cylinder lying along x is an axle, a wedge on its side is a roof. Folded away: most
+	/// primitives stand as they come.</summary>
+	public readonly Vec3Param RotationAxis = new( "Rotation axis", new Vec3( 0, 0, 1 ) );
+	public readonly FloatParam RotationAngle = new( "Rotation", 0f, unit: "deg" );
+
 	/// <summary>The slot, folded away with the other features' — a primitive is placed and sized,
 	/// and painted later from the Materials panel.</summary>
-	public override IReadOnlyList<IParam> AdvancedParameters => new IParam[] { Material };
+	public override IReadOnlyList<IParam> AdvancedParameters => new IParam[] { RotationAxis, RotationAngle, Material };
 
 	public override IReadOnlyList<IParam> Parameters => Shape.Value switch
 	{
-		"Box" => new IParam[] { Shape, SizeX, SizeY, SizeZ, Position, Scale, UniformScale, Material },
-		"Cylinder" => new IParam[] { Shape, Radius, SizeZ, Segments, Position, Scale, UniformScale, Material },
-		"Sphere" => new IParam[] { Shape, Radius, Divisions, Position, Scale, UniformScale, Material },
-		"Wedge" => new IParam[] { Shape, SizeX, SizeY, SizeZ, Position, Scale, UniformScale, Material },
-		"Tube" => new IParam[] { Shape, Radius, InnerRadius, SizeZ, Segments, Position, Scale, UniformScale, Material },
-		"Plane" => new IParam[] { Shape, SizeX, SizeY, Segments, Position, Scale, UniformScale, Material },
+		"Box" => new IParam[] { Shape, SizeX, SizeY, SizeZ, Position, Scale, UniformScale, RotationAxis, RotationAngle, Material },
+		"Cylinder" => new IParam[] { Shape, Radius, SizeZ, Segments, Position, Scale, UniformScale, RotationAxis, RotationAngle, Material },
+		"Sphere" => new IParam[] { Shape, Radius, Divisions, Position, Scale, UniformScale, RotationAxis, RotationAngle, Material },
+		"Wedge" => new IParam[] { Shape, SizeX, SizeY, SizeZ, Position, Scale, UniformScale, RotationAxis, RotationAngle, Material },
+		"Tube" => new IParam[] { Shape, Radius, InnerRadius, SizeZ, Segments, Position, Scale, UniformScale, RotationAxis, RotationAngle, Material },
+		"Plane" => new IParam[] { Shape, SizeX, SizeY, Segments, Position, Scale, UniformScale, RotationAxis, RotationAngle, Material },
 		_ => new IParam[] { Shape }
 	};
 
@@ -97,6 +103,9 @@ public sealed class PrimitiveFeature : Feature
 		// the number in the Position field would stop meaning where the box is.
 		if ( scale.x != 1f || scale.y != 1f || scale.z != 1f )
 			MeshTransform.Apply( mesh, Xform.Scale( scale ) );
+
+		if ( RotationAngle.Value != 0f && RotationAxis.Value.LengthSquared > 1e-8f )
+			MeshTransform.Apply( mesh, Xform.Rotate( RotationAxis.Value.Normal, RotationAngle.Value * MathF.PI / 180f ) );
 
 		if ( Position.Value.LengthSquared > 0f )
 			MeshTransform.Apply( mesh, Xform.Translate( Position.Value ) );

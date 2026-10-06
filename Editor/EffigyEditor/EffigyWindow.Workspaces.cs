@@ -103,7 +103,15 @@ public sealed partial class EffigyWindow
 			SyncViewportMode();
 
 			if ( before != after )
+			{
 				ApplyWorkspaceDocks( before, after );
+
+				// The Features dock's contents follow the workspace too: the Model panel in Model,
+				// the CAD tree everywhere else. Here for the same reason the docks are — six
+				// methods assign the mode, and this cannot be forgotten by any of them.
+				SyncModelDock();
+				SyncModelChrome();
+			}
 
 			if ( _workspaceBar is not null )
 				_workspaceBar.Selected = after;
@@ -339,13 +347,13 @@ public sealed partial class EffigyWindow
 
 		BarMode = EffigyBarMode.Sculpt;
 
-		_stageBar.Mode = "MODEL";
-		_stageBar.SetFinish( null, null );
-		_stageBar.SetStages( _sculptHomeStages );
+		// Object mode's bar — toolbar, menus and the mode switch — in place of the two stage tabs
+		// that used to land here. See EffigyWindow.ObjectMode.cs.
+		ShowObjectModeBar();
 
 		SetPrompt( _studio.Bodies.Count == 0
-			? "Model: press Edit mesh to start a new mesh from nothing (Shift+A adds a cube), or add a primitive or extrude a sketch first."
-			: "Model: Edit mesh to move vertices, edges and faces, or add a Sculpt to brush detail on." );
+			? "Model: Add ▸ Cube to start with a body, or press Edit to start a mesh from nothing (Shift+A adds a cube inside)."
+			: "Model: click a body, then Move, Rotate or Scale it, press Edit to move its vertices, or Sculpt to brush detail on. Right-click a body for everything else." );
 	}
 
 	/// <summary>The Paint workspace's home — UV Project and Paint — with no feature open.</summary>
@@ -1524,28 +1532,31 @@ public sealed partial class EffigyWindow
 		ShowMeshEditPanel( true );
 	}
 
-	/// <summary>Swap the left dock between the CAD tree and Edit mode's own column.</summary>
+	/// <summary>
+	/// The left dock is the Model panel for the whole workspace now, not only while editing —
+	/// the CAD tree coming back between edits was what kept Model reading as CAD. The flag is
+	/// kept for the callers that meant "an edit started or ended": both are a refresh.
+	/// </summary>
 	private void ShowMeshEditPanel( bool editing )
 	{
-		if ( _meshPanel is null )
-			return;
-
-		_meshPanel.Visible = editing;
-
-		if ( _featureTree is not null )
-			_featureTree.Visible = !editing;
-
-		if ( _partsPanel is not null )
-			_partsPanel.Visible = !editing;
-
-		if ( editing )
-			RefreshMeshEditPanel();
+		_ = editing;
+		SyncModelDock();
 	}
 
+	/// <summary>Fill the Model panel from the edit session while one is open, from the studio
+	/// otherwise. Nothing happens while the panel is hidden — in CAD, say.</summary>
 	private void RefreshMeshEditPanel()
 	{
-		if ( _meshPanel is { Visible: true } )
-			_meshPanel.Refresh( _viewport?.MeshEditSession, _studio.Bodies, _meshEditFeature?.LastBodyId );
+		if ( _meshPanel is not { Visible: true } || _studio is null )
+			return;
+
+		if ( _viewport?.MeshEditSession is { } session )
+			_meshPanel.Refresh( session, _studio.Bodies, _meshEditFeature?.LastBodyId );
+		else
+			_meshPanel.RefreshObject( _studio.Bodies, _viewport?.IdleBodyIds, _studio.Features, _studio.RollbackIndex );
+
+		// The badge in the header reads the same mesh.
+		RefreshModelCheck();
 	}
 
 	/// <summary>Undo until the step at <paramref name="index"/> in the history is gone too.</summary>
@@ -1571,12 +1582,10 @@ public sealed partial class EffigyWindow
 	{
 		var retopo = _viewport?.MeshEditSession is { IsRetopologizing: true };
 
-		_stageBar.SetSegments( new[]
-		{
-			new EffigyModeSegment { Label = "Object", Tip = "Stop editing. Your edit is kept, and Ctrl+Z still undoes it", Clicked = FinishMeshEdit },
-			new EffigyModeSegment { Label = "Edit", Tip = "Edit vertices, edges and faces", Active = !retopo, Clicked = () => { if ( _viewport?.MeshEditSession is { IsRetopologizing: true } ) ToggleMeshRetopo(); UpdateMeshModeSwitch(); } },
-			new EffigyModeSegment { Label = "Retopo", Tip = "Draw a clean, light mesh over this body", Active = retopo, Clicked = () => { if ( _viewport?.MeshEditSession is { IsRetopologizing: false } ) ToggleMeshRetopo(); UpdateMeshModeSwitch(); } },
-		} );
+		// The workspace-wide switch — Object | Edit | Sculpt | Retopo — lit for where we are, and
+		// the chrome for the mode: Retopo has its own palette.
+		UpdateModelModeSwitch( retopo ? "Retopo" : "Edit" );
+		ShowModelChrome( retopo ? "Retopo" : "Edit" );
 	}
 
 	/// <summary>
@@ -1586,6 +1595,14 @@ public sealed partial class EffigyWindow
 	/// </summary>
 	private void OpenMeshToolSearch()
 	{
+		// The catalog is the search now, whenever Model's chrome is up; the menu below is what it
+		// was before, and what the bar still gets if the chrome is ever taken down.
+		if ( _modelHeader is { Visible: true } )
+		{
+			OpenModelCatalog();
+			return;
+		}
+
 		if ( _viewport?.MeshEditSession is null )
 			return;
 
@@ -2868,6 +2885,8 @@ public sealed partial class EffigyWindow
 		}
 
 		_stageBar?.Refresh();
+
+		RefreshModelChrome();
 	}
 
 	private static void Need( EffigyStageTool tool, bool ok, string reason )
@@ -3003,7 +3022,15 @@ public sealed partial class EffigyWindow
 	private void ShortcutMeshCircle() => MeshEditKey( 'C' );
 
 	[Shortcut( "effigy.mesh.search", "SPACE", typeof( EffigyViewport ) )]
-	private void ShortcutMeshSearch() => MeshEditKey( MeshKeySearch );
+	private void ShortcutMeshSearch()
+	{
+		if ( MeshEditKey( MeshKeySearch ) )
+			return;
+
+		// Object mode and sculpt have a catalog too.
+		if ( _modelHeader is { Visible: true } )
+			OpenModelCatalog();
+	}
 
 	[Shortcut( "effigy.mesh.extrude_normals", "ALT+E", typeof( EffigyViewport ) )]
 	private void ShortcutMeshExtrudeNormals() => MeshEditKey( MeshKeyExtrudeNormals );

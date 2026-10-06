@@ -245,6 +245,13 @@ public sealed class SweepFeature : SketchConsumingFeature
 	/// </summary>
 	public string PathSketchId = "";
 
+	/// <summary>
+	/// A 3D spline to sweep along instead of a sketch — a SplineFeature's id. Empty means: use the
+	/// path sketch, or, when there is no second sketch but a spline has been drawn, the spline
+	/// published last. A curve you can click out in space is the path most sweeps actually want.
+	/// </summary>
+	public string PathSplineId = "";
+
 	public readonly FloatParam Twist = new( "Twist", 0f, unit: "deg" );
 	public readonly IntParam Material = new( "Material slot", 0, 0, 63 ) { Slider = false };
 
@@ -414,7 +421,15 @@ public sealed class SweepFeature : SketchConsumingFeature
 	/// </summary>
 	List<Vec3> ResolvePath( FeatureContext ctx, Sketch profileSketch )
 	{
+		if ( !string.IsNullOrEmpty( PathSplineId ) && ctx.Splines.TryGetValue( PathSplineId, out var named ) )
+			return SplinePath( named );
+
 		var pathSketch = ResolvePathSketch( ctx, profileSketch );
+
+		// No second sketch, but a spline: that is the path. Drawn in space, it is the more natural
+		// way to describe where a sweep goes than a flat sketch ever was.
+		if ( pathSketch is null && ctx.LastSplineId is not null && ctx.Splines.TryGetValue( ctx.LastSplineId, out var last ) )
+			return SplinePath( last );
 
 		if ( pathSketch is null )
 		{
@@ -446,6 +461,18 @@ public sealed class SweepFeature : SketchConsumingFeature
 		}
 
 		return chain.Select( pathSketch.Plane.ToWorld ).ToList();
+	}
+
+	/// <summary>A spline as a sweep path. A closed spline gets its first point repeated at the end,
+	/// which is how Execute recognises a closed path.</summary>
+	static List<Vec3> SplinePath( Spline3 spline )
+	{
+		var path = spline.Sample( 8 );
+
+		if ( spline.Closed && path.Count > 2 )
+			path.Add( path[0] );
+
+		return path;
 	}
 
 	/// <summary>

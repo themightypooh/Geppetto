@@ -125,6 +125,19 @@ public static class AllFeaturesTests
 			return;
 		}
 
+		// A SPLINE IS DRAWN, NOT TYPED: its points come from clicks and a fresh one has none, which
+		// is a curve in progress rather than a broken one. Give it a path so the tube actually builds,
+		// and give Bend along curve a spline to follow, since it refuses with none above it.
+		if ( feature is SplineFeature drawn )
+			drawn.Points.AddRange( new[] { new Vec3( -2, 0, 2 ), new Vec3( 0, 1, 2.5f ), new Vec3( 2, 0, 3 ), new Vec3( 3, -1, 2 ) } );
+
+		if ( feature is CurveDeformFeature )
+		{
+			var path = studio.Add( new SplineFeature() );
+			path.Tube.Value = false;
+			path.Points.AddRange( new[] { new Vec3( -2, 0, 0 ), new Vec3( 0, 1, 0 ), new Vec3( 2, 0, 0 ) } );
+		}
+
 		// Import is the one feature that needs a FILE rather than a body or a sketch. Bytes in
 		// memory, not a temp path: the harness has no document to sit a sidecar next to, and a
 		// path would leave a file behind.

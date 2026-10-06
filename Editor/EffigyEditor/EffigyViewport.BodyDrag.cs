@@ -57,6 +57,9 @@ internal sealed partial class EffigyViewport
 
 	private BodyDragMode _bodyDragMode = BodyDragMode.Move;
 
+	/// <summary>Which handle is up, for the Object toolbar to tick the matching tool.</summary>
+	public BodyDragMode CurrentBodyDragMode => _bodyDragMode;
+
 	/// <summary>
 	/// Switch the body handle, or do nothing when there is no body handle — W/E/R call this beside
 	/// <see cref="SetBoneDragMode"/>, so the three keys mean one thing whichever handle is up.

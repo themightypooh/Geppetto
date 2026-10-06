@@ -267,6 +267,11 @@ internal sealed class EffigyStageTool
 	/// as ordinary chrome.</summary>
 	public Color? IconColor;
 
+	/// <summary>The key that runs this, as the Model palette and catalog print it in the corner —
+	/// "E", "Ctrl+R", "Shift+D". Null for none. The tips carry it in prose too; this is the
+	/// short form for the tile.</summary>
+	public string Key;
+
 	/// <summary>What a plain click does. Ignored when there are variants, UNLESS
 	/// <see cref="VariantsAreSettings"/> says otherwise: those carry their own.</summary>
 	public Action Clicked;

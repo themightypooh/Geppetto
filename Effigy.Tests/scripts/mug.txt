@@ -1,0 +1,4 @@
+# a coffee mug: 4 units across, 4.5 tall, handle on the right (-y)
+add Profile name=Body front=0,1.7;0.3,1.9;4.2,2.0;4.5,1.95 sides=24 squareness=0
+add Spline name=Handle points=@Body.right+-0.3,0,-0.9;-0.1,-3.5,1.3;-0.1,-3.6,3.4;@Body.right+-0.3,0,1.3 radius=0.34 sides=10
+describe

@@ -222,13 +222,20 @@ public sealed class PartStudio
 
 		public Dictionary<string, string> PlaneHostBodies;
 
+		/// <summary>Splines, carried for the reason the sketches are: a bend or a sweep resuming
+		/// from the cache has to find the curve drawn above it.</summary>
+		public Dictionary<string, Spline3> Splines;
+		public string LastSplineId;
+
 		public static Snapshot Of( FeatureContext ctx ) => new()
 		{
 			Bodies = ctx.Bodies.Select( b => b.Clone() ).ToList(),
 			Sketches = ctx.Sketches.ToDictionary( kv => kv.Key, kv => kv.Value.Clone() ),
 			SketchHostBodies = new Dictionary<string, string>( ctx.SketchHostBodies ),
 			Planes = ctx.Planes.ToDictionary( kv => kv.Key, kv => kv.Value.Clone() ),
-			PlaneHostBodies = new Dictionary<string, string>( ctx.PlaneHostBodies )
+			PlaneHostBodies = new Dictionary<string, string>( ctx.PlaneHostBodies ),
+			Splines = ctx.Splines.ToDictionary( kv => kv.Key, kv => new Spline3 { Points = new List<Vec3>( kv.Value.Points ), Closed = kv.Value.Closed, Smooth = kv.Value.Smooth } ),
+			LastSplineId = ctx.LastSplineId,
 		};
 
 		public void RestoreInto( FeatureContext ctx )
@@ -238,6 +245,8 @@ public sealed class PartStudio
 			ctx.SketchHostBodies = new Dictionary<string, string>( SketchHostBodies );
 			ctx.Planes = Planes.ToDictionary( kv => kv.Key, kv => kv.Value.Clone() );
 			ctx.PlaneHostBodies = new Dictionary<string, string>( PlaneHostBodies );
+			ctx.Splines = Splines.ToDictionary( kv => kv.Key, kv => new Spline3 { Points = new List<Vec3>( kv.Value.Points ), Closed = kv.Value.Closed, Smooth = kv.Value.Smooth } );
+			ctx.LastSplineId = LastSplineId;
 		}
 	}
 

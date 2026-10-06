@@ -183,3 +183,58 @@ asset or the compiled model renders in the bright red missing-material shader.
 `sh tools/test.sh` runs the suite and also writes sample OBJ/DMX/VMDL files and SVG previews into
 `Effigy.Tests/out/`. `PngPreview` renders a mesh to a PNG so you can look at what you built without
 opening the editor — `PaintGen` uses it. Use it; a model you have not looked at is a guess.
+
+## Modelling as an agent: see, measure, script
+
+Everything above builds a model by hand in C#. The faster loop is the one a person has —
+look, adjust, look — and the kernel now has the eyes and the ruler for it, headless
+(`tools/effigy.sh`) and in the editor (the `effigy` MCP toolset: `effigy_snapshot`,
+`effigy_describe`, `effigy_measure`, `effigy_run`, `effigy_match`, `effigy_fix`, `effigy_help`,
+`effigy_parts`, `effigy_open`, `effigy_save`).
+
+**See.** `tools/effigy.sh render doc.effigy out.png` writes a sheet of four orthographic views —
+front, side, top, iso — fitted to the model, with a ground grid whose step is printed, the axes
+(x red forward, y green left, z blue up), the wire, and a label per body. One view:
+`render doc.effigy out.png front 600`. `plain` drops the grid, wire and labels for a clean
+silhouette. Read the PNG; it is a drawing you can hold a ruler to.
+
+**Measure.** `describe` says the model in words with a number on every line: overall size, whether
+it stands on the ground, each body's size and centre and where it sits (upper left front…),
+open edges, the rig, the history and what failed. `measure doc.effigy Torso.top` says what is at
+a place; `measure doc.effigy Hand_L Hand_R` the distance between two. A place is a **landmark**:
+a body name (its centre), `Body.top/.bottom/.front/.back/.left/.right/.min/.max`, a bone name
+(its head; `.tail`, `.mid`), `ground`, `origin`, a literal `x,y,z`, or `@landmark+dx,dy,dz`.
+
+**Match.** `match doc.effigy front drawing.png diff.png` scores the model's silhouette against a
+reference drawing from the same view — dark ink on paper, a cut-out on transparency, or a light
+model on a dark ground — as an overlap percentage, whether the proportions agree, and which
+bands of height are wider or narrower than the drawing. The diff PNG is orange where only the
+model is and blue where only the drawing is.
+
+**Script.** A build script is the model as a list of moves, one per line, that runs headlessly
+(`script build.txt`) or on the open studio (`effigy_run`), with landmarks resolved against the
+model as built so far:
+
+    add Profile name=Torso front=0,5;8,9;22,10;30,8;34,5 side=0,4;8,6;22,6;34,4 position=0,0,20
+    add Primitive name=Head shape=Box sizex=9 sizey=10 sizez=9 position=@Torso.top+0,0,6
+    add Part name=Cog part=Cog size=4 thickness=1.5 count=10 position=@Torso.front+1,0,0 rotationaxis=0,1,0 rotation=90
+    add Spline name=Cable points=@Torso.back;-10,4,40;@Head.back radius=0.6
+    add Primitive name=Tail shape=Box sizex=20 sizey=2 sizez=2 position=0,0,30
+    add Spline name=TailPath tube=0 points=@Torso.back;-12,0,24;-24,0,4
+    add CurveDeform bodies=Tail
+    set Torso sizez=32
+    fix Torso all
+    describe
+    render out/robot.png
+    save out/robot.effigy
+
+`add TYPE key=value…` takes any feature type (`effigy_help` lists them; `effigy_help Spline` its
+parameters) with keys by label or field name — a `ChoiceParam` by option, a body list by body
+names, a point list as `a;b;c`. A feature that fails stops the script with its own cause and
+remedies, which is what to change. `fix BODY|all loose doubles holes normals` cleans by name.
+
+**Parts and profiles.** `PartFeature` (`add Part part=Cog|Bolt|Hex bolt|Rivet|Knob|Hinge|Panel|Pipe
+elbow|Strap|Buckle`) is the kitbash shelf — `effigy_parts` says what Size, Length, Thickness,
+Count and Angle mean for each; every part stands on z = 0 at the origin and takes Position and
+Rotation. `ProfileFeature` builds a body from a front outline and a side outline — `height,half-
+width;…` — which is how a limb or a torso is actually described, and eight numbers is a torso.

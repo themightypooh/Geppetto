@@ -698,7 +698,16 @@ internal sealed class EffigyFeatureDialog : Widget
 		_viewport.BodyScaleDragged = null;
 
 		_viewport.SetPickPrompt( "" );
+
+		// A spline is drawn in the viewport for as long as its dialog is open, and not a frame
+		// longer — every way out of the dialog comes through here.
+		if ( _viewport.IsSplineEditing )
+			_viewport.EndSplineEdit();
 	}
+
+	/// <summary>Accept from outside the dialog — Enter in the viewport while drawing a spline is
+	/// the same as the tick.</summary>
+	public void AcceptNow() => Accept();
 
 	private void Accept()
 	{

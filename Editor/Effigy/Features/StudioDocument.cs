@@ -381,6 +381,17 @@ public static class StudioDocument
 				sb.Append( '\n' );
 				return;
 
+			case List<Vec3> vec3s:
+				// A spline's control points. Triples on one line, like vec2s: a path is a dozen points,
+				// and a line each would bury the feature's parameters under them.
+				sb.Append( "\tvec3s " ).Append( field.Name );
+
+				foreach ( var v in vec3s )
+					sb.Append( ' ' ).Append( Vec( v ) );
+
+				sb.Append( '\n' );
+				return;
+
 			case List<FaceRef> faces:
 				foreach ( var f in faces )
 					sb.Append( "\tfacelist " ).Append( field.Name ).Append( ' ' ).Append( Face( f ) ).Append( '\n' );
@@ -1020,6 +1031,21 @@ public static class StudioDocument
 
 				for ( var n = 0; n + 1 < parts.Length; n += 2 )
 					vecs.Add( new Vec2( ParseFloat( parts[n] ), ParseFloat( parts[n + 1] ) ) );
+
+				return;
+			}
+
+			case "vec3s":
+			{
+				if ( current is not List<Vec3> vec3s )
+					return;
+
+				vec3s.Clear();
+
+				var parts = value.Split( ' ', StringSplitOptions.RemoveEmptyEntries );
+
+				for ( var n = 0; n + 2 < parts.Length; n += 3 )
+					vec3s.Add( new Vec3( ParseFloat( parts[n] ), ParseFloat( parts[n + 1] ), ParseFloat( parts[n + 2] ) ) );
 
 				return;
 			}

@@ -1,0 +1,13 @@
+# an oil lantern, 14 units tall: base, glass, cap, bail handle
+add Part name=Base part=Knob size=3.2 length=2.4 count=16
+add Primitive name=Tank shape=Cylinder radius=3 sizez=3 position=@Base.top+0,0,1.5
+add Primitive name=Glass shape=Cylinder radius=2.2 sizez=6 position=@Tank.top+0,0,3
+add Part name=Cap part=Rivet size=3.4 thickness=2.2 count=16 position=@Glass.top
+add Part name=Chimney part=Pipe_elbow size=0.6 length=1.2 angle=90 count=8 position=@Cap.top+0,0,-0.4
+add Part name=Cage1 part=Strap size=0.35 length=6.4 thickness=0.35 position=@Glass.centre+0,2.3,-3.2 rotationaxis=0,1,0 rotation=90
+add Part name=Cage2 part=Strap size=0.35 length=6.4 thickness=0.35 position=@Glass.centre+0,-2.3,-3.2 rotationaxis=0,1,0 rotation=90
+add Part name=Cage3 part=Strap size=0.35 length=6.4 thickness=0.35 position=@Glass.centre+2.3,0,-3.2 rotationaxis=0,1,0 rotation=90
+add Part name=Cage4 part=Strap size=0.35 length=6.4 thickness=0.35 position=@Glass.centre+-2.3,0,-3.2 rotationaxis=0,1,0 rotation=90
+add Spline name=Bail points=@Tank.left+0,0.4,1.5;0,4.5,12;0,0,16;0,-4.5,12;@Tank.right+0,-0.4,1.5 radius=0.3 sides=8
+add Part name=Knob part=Knob size=0.9 length=1.8 count=10 position=@Tank.front+0,0,0 rotationaxis=0,1,0 rotation=90
+describe

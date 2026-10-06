@@ -392,6 +392,74 @@ internal sealed partial class EffigyViewport : Widget
 	/// <summary>Inset of a floating overlay from the canvas's top-left corner.</summary>
 	private static readonly Vector2 OverlayMargin = new( 10f, 10f );
 
+	// --- Model's chrome -----------------------------------------------------------------------
+
+	private Widget _modelHeader, _modelPalette, _modelCatalog;
+
+	/// <summary>
+	/// Model's header, palette and catalog, all children of the canvas. Placed every frame by
+	/// <see cref="PlaceModelChrome"/> because the canvas is the one that knows its own size, and
+	/// counted as overlays so a camera drag cannot start under them. See EffigyModelChrome.cs.
+	/// </summary>
+	public void AddModelChrome( Widget header, Widget palette, Widget catalog )
+	{
+		_modelHeader = header;
+		_modelPalette = palette;
+		_modelCatalog = catalog;
+
+		foreach ( var w in new[] { header, palette, catalog } )
+			if ( w is not null )
+				w.Visible = false;
+
+		PlaceModelChrome();
+	}
+
+	/// <summary>Whether Model's chrome is up, which moves the floating bars off the palette.</summary>
+	public bool ModelChromeShown => _modelHeader?.IsValid() == true && _modelHeader.Visible;
+
+	private void PlaceModelChrome()
+	{
+		var size = _canvas.Size;
+
+		if ( _modelHeader?.IsValid() == true )
+		{
+			if ( MathF.Abs( _modelHeader.Width - size.x ) > 0.5f )
+				_modelHeader.FixedWidth = size.x;
+
+			if ( _modelHeader.Position.Length > 0.5f )
+				_modelHeader.Position = Vector2.Zero;
+		}
+
+		if ( _modelPalette?.IsValid() == true )
+		{
+			var at = new Vector2( OverlayMargin.x, EffigyModelChrome.HeaderHeight + OverlayMargin.y );
+			if ( (_modelPalette.Position - at).Length > 0.5f )
+				_modelPalette.Position = at;
+		}
+
+		if ( _modelCatalog?.IsValid() == true )
+		{
+			var at = new Vector2( 0f, EffigyModelChrome.HeaderHeight );
+			var want = new Vector2( size.x, MathF.Max( size.y - EffigyModelChrome.HeaderHeight, 1f ) );
+
+			if ( (_modelCatalog.Position - at).Length > 0.5f )
+				_modelCatalog.Position = at;
+
+			if ( (_modelCatalog.Size - want).Length > 0.5f )
+			{
+				_modelCatalog.FixedWidth = want.x;
+				_modelCatalog.FixedHeight = want.y;
+			}
+		}
+	}
+
+	/// <summary>Where a floating bar goes: under the header and right of the palette while
+	/// Model's chrome is up, the old top-left corner otherwise.</summary>
+	private Vector2 FloatingBarOrigin =>
+		ModelChromeShown
+			? new Vector2( OverlayMargin.x + (_modelPalette?.Width ?? 0f) + 8f, EffigyModelChrome.HeaderHeight + OverlayMargin.y )
+			: OverlayMargin + new Vector2( 0f, 46f );
+
 	/// <summary>
 	/// The grid switch that lives at the end of the tool row, so the frame loop can show it only
 	/// while a sketch is open.
@@ -1481,7 +1549,16 @@ internal sealed partial class EffigyViewport : Widget
 			}
 		}
 
+		PlaceModelChrome();
+
+		// The sculpt bar keeps its floating spot, but not on top of the palette.
+		if ( _sculptBarOverlay?.IsValid() == true && (_sculptBarOverlay.Position - FloatingBarOrigin).Length > 0.5f )
+			_sculptBarOverlay.Position = FloatingBarOrigin;
+
 		var overAnyOverlay = (_resultOverlay?.IsUnderMouse ?? false)
+			|| (_modelHeader?.IsValid() == true && _modelHeader.Visible && _modelHeader.IsUnderMouse)
+			|| (_modelPalette?.IsValid() == true && _modelPalette.Visible && _modelPalette.IsUnderMouse)
+			|| (_modelCatalog?.IsValid() == true && _modelCatalog.Visible)
 			|| (_sculptBarOverlay?.IsUnderMouse ?? false)
 			|| (_meshEditBarOverlay?.IsValid() == true && _meshEditBarOverlay.IsUnderMouse)
 			|| (_weightBarOverlay?.IsValid() == true && _weightBarOverlay.IsUnderMouse)
@@ -1534,6 +1611,7 @@ internal sealed partial class EffigyViewport : Widget
 		BoneToolFrame();
 
 		SketchFrame();
+		SplineFrame();
 		SculptFrame();
 		MeshEditFrame();
 		PaintFrame();
@@ -2167,6 +2245,21 @@ internal sealed partial class EffigyViewport : Widget
 		// out of the tool you are drawing with.
 		if ( HandleDimensionKey( e ) )
 			return;
+
+		// Drawing a 3D spline: Backspace takes the last point back, Enter finishes.
+		if ( IsSplineEditing && (e.Key == KeyCode.Backspace || e.Key == KeyCode.Delete) )
+		{
+			RemoveLastSplinePoint();
+			e.Accepted = true;
+			return;
+		}
+
+		if ( IsSplineEditing && (e.Key == KeyCode.Enter || e.Key == KeyCode.Return) )
+		{
+			SplineFinishRequested?.Invoke();
+			e.Accepted = true;
+			return;
+		}
 
 		// The spline is the one tool with no fixed number of clicks, so Enter is how it ends. After
 		// the dimension box, which owns Enter whenever it is up.

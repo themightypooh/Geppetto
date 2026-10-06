@@ -43,6 +43,10 @@ public static class Program
 		// sample set into a folder literally named `--nologo`. Drop flags we do not own.
 		var args = rawArgs.Where( a => !a.StartsWith( "--" ) || a == "--tree" || a == "--tentacle" || a == "--paint" || a == "--remesh" || a == "--playermodels" ).ToArray();
 
+		// The headless Effigy commands — render, describe, measure, match, script, fix — see EffigyCli.
+		if ( rawArgs.Length > 0 && EffigyCli.Handles( rawArgs[0] ) )
+			return EffigyCli.Run( rawArgs );
+
 		if ( args.Length > 0 && args[0] == "--tree" )
 			return TreeGen.Run( args.Length > 1 ? args[1] : DefaultOutDir() );
 
@@ -254,6 +258,8 @@ public static class Program
 
 		MergeTests.Run();
 		AtlasIdTests.Run();
+		SplineTests.Run();
+		AgentToolsTests.Run();
 
 		FaceMaterialTests.Run();
 		FaceMenuTests.Run();
