@@ -40,6 +40,7 @@ forgotten.
 
 ### Fixed
 - **The Mirror modifier mirrors skin weights to the other side.** A weighted half mirrored with the modifier on put the new half on the same bones, so the right arm followed the left. The mirrored half now uses each bone's left/right partner by name (`_L`/`_R`, with digits after), the same pairing Mirror weights uses. `Skeleton.MirrorPartners`
+- **Fix all no longer fails on a body that needs no fixing.** A build script's `fix Body all`, `tools/effigy.sh fix`, and the `effigy_fix` tool stopped with "There are no open holes" on any watertight body, which is most of them. A body with no holes now just reports zero closed. `MeshFix.Apply`
 
 ## v411088 — 2026-10-06
 

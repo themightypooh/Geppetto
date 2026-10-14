@@ -54,7 +54,13 @@ public static class MeshFix
 
 		if ( wanted.Contains( "holes" ) )
 		{
-			var closed = session.FillHoles( 6 );
+			// Fill Holes is an Edit-mode button and refuses when there is nothing to fill, which is
+			// right for a click and wrong here: a watertight body is the result `fix all` wants, not
+			// a failure. The refusal rolls its step back, so the mesh is untouched.
+			int closed;
+			try { closed = session.FillHoles( 6 ); }
+			catch ( InvalidOperationException ) { closed = 0; }
+
 			done.Add( $"holes: closed {closed} (up to six sides; bigger openings were left)" );
 		}
 

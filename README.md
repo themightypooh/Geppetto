@@ -1,415 +1,213 @@
-# Toolshed
+# Geppetto
 
-Two s&box editor tools that share one thesis: **make a usable, rigged, animated
-model without leaving the editor.**
+Two s&box editor tools for making a rigged, animated model without leaving the editor.
 
-| Tool | What it is | Where |
-|---|---|---|
-| **Marionette** | A control-rig animation editor. Pose bones, keyframe them, solve IK. | `Code/RigControl`, `Editor/RigControlEditor` |
-| **Effigy** | A parametric CAD modeller. Sketch, extrude, boolean, rig, export. | `Effigy`, `Editor/EffigyEditor` |
+| Tool | What it does |
+|---|---|
+| **Effigy** | A parametric modeller. Sketch, extrude, boolean, sculpt, paint, rig, dress, and export a real `.vmdl`. |
+| **Marionette** | An animation editor. Pose a skinned model's bones, keyframe them, solve IK, and play it back in game. |
 
-Both ship together as one s&box library, **Geppetto**, which is the whole of
-``. This repo is that library plus the project that mounts it —
-so the tools are developed exactly as a consumer gets them.
-
-They are meant to run as a pipeline, and each stage feeds the next:
+They're built to be used in order: make the model in Effigy, compile it, open it in Marionette,
+animate it, and either bake the clips back into the model or play them with a component.
 
 ```
-Effigy: CAD → subdivide → sculpt → bake → bones
-                                            └→ Marionette: pose, keyframe, play back
+Effigy:  sketch → solid → sculpt / paint → rig → Compile .vmdl
+                                                     └→ Marionette: pose → keyframe → export / play
 ```
-
-**The low-poly cage the CAD stage produces is the spine of the whole thing.** It
-carries the UVs, it receives baked sculpt detail, it is what gets skinned, and
-it is what Marionette ends up posing. Nothing downstream works if the cage is
-not clean — which is the entire reason the modeller starts parametric rather
-than starting with a sculpt.
-
-Rig Control is usable — open it and run the tutorial. Effigy's kernel is
-covered by a headless test suite. Issues and PRs welcome; see
-[CONTRIBUTING.md](CONTRIBUTING.md).
-
-For how to work in this repo, see `HANDOFF.md` in the dev notes, which live in a
-`geppetto-docs/dev/` folder beside this checkout rather than inside it — an s&box
-package ships whatever sits in the project directory, so private notes kept here
-went out to everyone who installed it.
-
----
 
 ## Install
 
-**1. Get the files.**
+**From sbox.game:** add the **Geppetto** library (`pooh.geppetto`) to your project.
 
-```
-git clone https://github.com/themightypooh/Geppetto.git
-```
+**From source:** clone this repo into your project's `Libraries/` folder:
 
-You can open `geppetto.sbproj` in s&box and use this project as-is.
-
-**2. Or drop Geppetto into your own s&box project.** Copy one folder:
-
-```
-  →  YourProject/
+```sh
+git clone https://github.com/themightypooh/Geppetto.git YourProject/Libraries/geppetto
 ```
 
-That one folder, not the clone. Dropping the whole repo into `Libraries/` gives
-you this project's own host code as well, which references dev-only files that
-are not published, and the editor build fails.
-
-s&box compiles every library under `Libraries/` alongside your project and
-mounts it, so both tools appear in the Tools menu with nothing else to wire up.
-You get Marionette and Effigy together — they share the mesh kernel and are not
-separable.
-
-**3. Open your project.** It compiles on load and the tools appear in the Tools
-menu. Plain C# against the editor API, no dependencies.
-
-<details>
-<summary>Why a copied folder rather than a package reference</summary>
-
-s&box can reference published packages — Project Settings → Packages — and in
-principle you'd add `pooh.geppetto` there and be done. As of writing, that
-screen carries Facepunch's own warning:
-
-> This stuff hasn't been properly end to end tested - please don't expect it to work just yet!
-
-The unknown that matters for an editor tool is whether a referenced package's
-`Editor/` code compiles into the consuming project's editor assembly at all. A
-library folder copied into `Libraries/` definitely does, which is why that is
-the documented route. Try the package reference by all means; fall back to the
-copy if the Tools menu comes up empty.
-
-</details>
-
-### Optional sample content
-
-Only needed for Rig Control's bundled example clip and tutorial. The tools work
-without it.
-
-```
-Assets/models/lightswitch/     →  YourProject/Assets/models/lightswitch/
-Assets/materials/lightswitch/  →  YourProject/Assets/materials/lightswitch/
-Assets/animations/             →  YourProject/Assets/animations/
-```
-
-The first-person arms the tutorial uses come from the **citizen** addon, which
-ships with s&box.
-
----
-
-## Marionette
-
-Open it from the Tools menu, or double-click a `.riganim` asset. It starts with
-the Citizen's first-person arms loaded and a tutorial panel offering to walk you
-through building a reach-and-flip-a-switch animation. Skip it if you'd rather
-poke around.
-
-- **Pose bones directly in a 3D viewport.** Click a bone's dot, drag to rotate.
-  Hold `E` to move instead. The skeleton draws x-ray over the mesh, so bones
-  buried inside the model stay visible and clickable.
-- **Keyframe timeline**, one lane per bone, with the interpolation curve drawn
-  between keys — sampled from the real easing function, not an approximation of
-  it.
-- **Three interpolation modes** — Smooth (eased, the default), Linear, Stepped
-  (hold + snap). The keyframe's *shape* tells you which: circle, diamond, square.
-- **IK and rotation limits.** Two-bone IK solves in closed form; drag a hand and
-  the elbow and shoulder follow. Limits clamp a joint so it can't bend backwards.
-- **Undo/redo** with labelled steps. One drag is one undo step.
-- **First person view** — frames the model off its own camera bone, so viewmodel
-  arms are judged the way the player will actually see them.
-- **Reference props** — drop a model in the viewport and pose against it. A
-  dragged bone stops at a prop's surface instead of clipping through it; untick
-  **Collide** when a pose needs to reach inside something.
-- **Lights and cameras, saved on the clip.** The **Lights** tab (View → Lights)
-  adds directional, point, spot and ambient lights, so a pose can be judged by
-  its shadows. The **Cameras** tab keeps the framing of a shot. Both stay in the
-  window unless you tick **Export With Clip**. A ticked one is spawned beside the
-  model by `RigAnimPlayerComponent` when the clip plays, and ticked cameras are
-  also written to a `.vdmx` next to the exported animation.
-- **Whole parts animate too.** Drag a reference prop and it gets its own timeline
-  lane, keyed exactly like a bone — so a door, a lever or a magazine moves on the
-  same playhead as the hand that works it, instead of being a static stand-in you
-  have to animate somewhere else.
-- **Several objects at once, each with its own skeleton.** A prop that is a rigged
-  model gets bone handles like the main model does: pose the hand, the weapon it
-  holds, and that weapon's bolt in one clip, on one playhead. Tracks are named
-  `object/bone`, so two objects can each have a bone called `root`. The main
-  model's bones keep their bare names, so every clip you have already made reads
-  back unchanged.
-- **Objects, with parts.** A clip holds objects that are not the main model — a
-  door, a weapon, a fridge — and each one is made of parts. Move the object and
-  everything in it goes; move a part and it moves within the object. Every one of
-  them records to the timeline exactly as a bone does: drag it, and there is a key
-  at the playhead. They live in their own **Objects** tree under the bone tree,
-  each object collapsible so a forty-part import doesn't bury the arm you're
-  posing.
-- **Import an OBJ, split into its parts.** File → Import OBJ loads a Wavefront
-  file and makes one object with one part per `o`/`g` group in it, so a door
-  exported with its handle and hinge kept separate arrives as one door you can
-  place and three pieces you can animate — no compiling a `.vmdl` per piece first.
-  The mesh is copied beside the `.riganim` so the clip keeps working when the
-  original moves.
-- Play it all back with `RigAnimPlayerComponent`'s **Parts** list: object name on
-  the left, the GameObject it drives on the right. That one row both places the
-  object and hosts its bones. `.vmdl` export is still the main model's bones only
-  — it is a model animation, and the rest of the scene is not in it.
-- **Numeric inspector**, so exact values can be typed rather than eyeballed off
-  a drag.
-- **Bone hiding** — right-click a bone to hide it and its children.
-- **Prop-attach events** — spawn a model on a bone for a frame range.
-
-### Getting started
-
-1. Set **Source Model** in the BonesObject tab to any skinned model.
-2. Click a bone in the viewport, drag to pose it.
-3. Press `K` (or the diamond button on the timeline) to key it at the playhead.
-4. Move the playhead, pose again, and play it back.
-
-The status bar explains whatever you're hovering, and **Help → Start Animation
-Tutorial** walks through building one real animation.
-
-### Assets
-
-Two asset types, deliberately separate so several clips can share one rig:
-
-| Type | Extension | Holds |
-|---|---|---|
-| Rig Animation | `.riganim` | keyframes, anim events, frame rate |
-| Control Rig | `.ctrlrig` | the model reference and its IK/Limit constraints |
-
-### Design decisions
-
-- **Dragging rotates by default**, not translates. Joints pivot; they don't
-  slide. Translating a bone stretches the skin and is the most common way a
-  first pose ends up looking broken.
-- **Constraints bake into keyframes** rather than being re-solved at playback,
-  so a clip plays identically in the editor, in game, and anywhere else that
-  reads a keyframe — no solver involved. The trade is that changing a constraint
-  doesn't retroactively change existing poses.
-- **Smooth is the default easing.** Linear interpolation moves at constant speed
-  and stops dead, which reads as robotic no matter how good the poses are.
+Either way, open the project. s&box compiles the library with it, and **Effigy** and
+**Marionette** appear in the **Tools** menu. You can also open `geppetto.sbproj` on its own to
+work on the tools themselves.
 
 ---
 
 ## Effigy
 
-A parametric CAD modeller, built on an **engine-free kernel** — `Effigy/`
-contains no reference to any engine type anywhere in it, and compiles under
-s&box, Godot's C#, or a bare console runner. That is not tidiness; it is what
-makes the whole thing testable without an engine in front of you, and 2700+
-headless checks are the payoff.
+Open it from **Tools ▸ Effigy**, or double-click a `.effigy` file. **Help** has four guided
+tutorials (a house, a rigged signpost, a hand, and a playermodel), which are the quickest way to
+learn it.
 
-### The loop
+### Workspaces
 
-Sketch on a plane (or on a face of an existing solid), then turn the sketch into
-a solid:
+The bar along the top switches between five workspaces:
 
-```csharp
-var studio = new PartStudio();
+- **CAD**: sketches, solids, and the feature tree. Every step is a feature you can go back and
+  edit, and everything after it rebuilds. Tools are grouped into Sketch, Solid, Detail, Repeat
+  and Finish.
+- **Model**: shape a body by hand, Blender-style. Object, Edit, Sculpt and Retopo modes. Edit
+  has vertex/edge/face selection, extrude, inset, bevel, loop cut, knife, bridge, live
+  modifiers (mirror, array, subdivide, thickness), UV tools and weight painting. Sculpt has
+  multires brushes and masks. Retopo traces a clean cage over a dense sculpt.
+- **Paint**: paint colour onto a body's texture.
+- **Rig**: place bones, bind parts to them, paint weights, make bones soft, and preview a pose.
+- **Clothing**: load a rigged model, cut garments to fit it, add trim, fabric and fur, and
+  publish them as clothing or live cloth.
 
-var sketch = studio.Add( new SketchFeature() );
-sketch.Sketch.AddRectangle( new Vec2( 0, 0 ), new Vec2( 4, 2 ) );
+### Saving
 
-studio.Add( new ExtrudeFeature() ).Distance.Value = 1f;
-studio.Rebuild();
-```
-
-- **An ordered feature history** with rollback and incremental rebuild —
-  modelled on Onshape's Part Studio, because that structure is what makes a
-  modeller parametric rather than a stack of bakes.
-- **A sketcher** with lines, arcs, circles, ellipses and splines; closed regions
-  found rather than declared; trim, extend, fillet and offset as in-place edits.
-- **A constraint solver** — Levenberg-Marquardt over seventeen constraint kinds,
-  reporting degrees of freedom from the Jacobian's rank so a sketch is
-  diagnosable rather than mysterious.
-- **Solids** — extrude, revolve, sweep, loft, shell, bevel, mirror, linear and
-  circular pattern, subdivide, transform, UV project, per-face materials.
-- **Direct modelling**, Blender-style, in the Model workspace. Select vertices, edges or
-  faces by box, lasso, circle, loop, ring, linked, similar or shortest path. Extrude, inset,
-  bevel, loop cut, knife, bisect, bridge, fill, grid fill, rip, spin, screw, array, bend and shear. Merge,
-  dissolve, split, flip and fix normals. Mirror editing, and snapping to other bodies.
-  Live modifiers (mirror, array, subdivide, thickness) show the finished shape while you edit the cage.
-- **Retopology** — trace a clean, light mesh over a dense sculpt by clicking quads onto its
-  surface, or dragging strips across it. A ghost of the next face shows before you click and
-  refuses twisted, inward-facing or overlapping faces. There's mirroring across the centre,
-  and Relax to even it out. The sculpt is never changed.
-- **Booleans that actually cut**, through s&box's own `PolygonMesh`.
-- **Rigging** — a skeleton, auto-weighting, and export as a real skinned `.vmdl`
-  that Rig Control then opens and poses.
+Your work saves as a `.effigy` file. It's plain text, one line per feature, so git can show
+exactly what changed. Imported meshes, sculpts and hand edits are saved in folders next to it
+(`name.import/`, `name.sculpt/`, `name.meshedit/`). Keep them with the file.
 
 ### Exporting
 
-Everything you need is on the **File** menu.
+Everything is on the **File** menu, and everything goes to **`Assets/models/effigy/`**, named
+after your document.
 
-**Use `Compile .vmdl`.** That's the one that gives you a model you can actually
-drop into a scene. It saves the model, builds it, and shows you the result in
-the viewport.
-
-**Use `Export OBJ`** only if you want the raw shape to open in Blender or
-similar. It's just geometry — no bones, no animation.
-
-Files go to **`Assets/models/effigy/`** in your project. Nothing gets written
-anywhere else.
-
-#### If your model has bones
-
-`Compile .vmdl` notices and does the extra work: it figures out which bones move
-which parts of the model, then builds it so it can be posed and animated.
-
-You get `export.vmdl` (the model), plus `export.dmx` and `export.smd` — those two
-are the same thing in two formats, kept around so other 3D programs can open your
-model too. You can ignore them.
-
-#### If something goes wrong
-
-**"cannot compile — studio has errors or no bodies"** means a feature is broken.
-Look at the feature list on the left; the bad one is marked. Fix it and try again.
-
-**The build failed** — the error in the console says why. Your exported files are
-still on disk, so nothing is lost.
-
-#### Making a playermodel
-
-A playermodel is a character you can walk around in, using the animations s&box
-already ships. You don't animate it yourself — you borrow the built-in
-character's walk, run, jump, crouch and the rest.
-
-The quickest way in is **Help → Start Playermodel Tutorial**, which walks you
-through it in the editor and offers an example robot to practise on. This is the
-same thing in writing.
-
-**Your model keeps its own shape.** Effigy slides the built-in character's
-skeleton *inside* your model rather than reshaping your model to match its body.
-So the animations only ever say how far each joint bends — never how long your
-arms are, or how broad your shoulders. A stocky robot stays stocky and still
-walks. This is the whole trick, and it's why you don't have to model to
-somebody else's proportions.
-
-There are three things you do have to get right.
-
-**1. Stand it the way the built-in character stands.**
-
-- Feet flat on the floor — the lowest point of the model at zero.
-- Facing forward, along the red arrow.
-- Arms out to the sides, legs straight down.
-- Hips about **31 units** off the floor.
-
-The hips are the one measurement that matters. The walk decides how high they
-ride, so a model much taller or shorter at the hips will float or sink. Legs a
-little shorter than the built-in character's leave the knees looking slightly
-straight. Everything else about your proportions is yours to choose.
-
-**2. Build the model as separate parts, one per bone.** A palm and three finger
-joints, not one merged hand. Each part needs to be **longer along its bone than
-it is across** — Effigy works out where a bone goes by measuring which way the
-part is longest, so a torso that's wider than it is tall gets a bone across the
-chest instead of up the spine. A perfect cube has no longest direction at all
-and gets skipped.
-
-**3. Name the bones what the animations call them, hanging off the right
-parent.** This is the part that has to be exact. A bone spelled any other way is
-a bone the animations can't find, and it just holds still.
-
-| | Bones, each hanging off the one before it |
+| Command | Gives you |
 |---|---|
-| Body | `pelvis` → `spine_01` → `spine_02` → `chest` → `neck` → `head` |
-| Each arm | `chest` → `clavicle_L` → `upperarm_L` → `forearm_L` → `hand_L` |
-| Each leg | `pelvis` → `thigh_L` → `calf_L` → `foot_L` (→ `toe_L`, optional) |
-| Optional | fingers `index_01_L` … `ring_03_L`, `pinky_*`, `thumb_01_L`, `thumb_02_L` |
+| **Compile .vmdl** | A model you can drop into a scene. If the model has bones, it's skinned, and it includes any animation clips you've added. |
+| **Compile Playermodel** | A model on the Citizen skeleton that walks with s&box's own animations. |
+| **Make Player** | The playermodel, plus a test scene at `Assets/scenes/<name>_walk.scene` with a floor, a light and a player wearing it. |
+| **Export OBJ** | Just the shape, for other 3D programs. |
+| **Export FBX** | The shape with its bones and skin weights, for Blender. |
 
-`_L` is the **model's** left — the side on your left when you stand behind it.
-Swap `_L` for `_R` for the other side. If your rig already uses the built-in
-character's own bone names (`arm_upper_L`, `leg_upper_L`, `spine_0`), those work
-too — you don't have to rename anything.
+Tick **Export with LODs** to also write half- and quarter-detail versions with a static model.
+**Collision Report** prints the model's collision hulls to the console.
 
-The order you make bones in is the order they hang in: select a bone, then press
-**Bone from Part**, and the new bone hangs off the selected one. So start at the
-hips and work outwards. You can select two parts — both shoulders, both thighs —
-and press it once.
+If the compile says the studio has errors, a feature in the tree is marked red. Fix it and
+compile again. If the engine's build fails, the console says why, and your exported files are
+still on disk.
 
-**Then build it.** **File → Make Player** compiles the model and writes a small
-scene next to it with a floor, a light and a player wearing your model. Open
-that scene and press Play. **File → Compile Playermodel** does just the model,
-for when you have a scene of your own.
+### Making a playermodel
 
-**To use it on a player in your own scene**, rather than in the test scene
-`Make Player` writes:
+A playermodel borrows the Citizen's walk, run, jump and crouch. Effigy fits the Citizen's
+skeleton *inside* your model, so your model keeps its own proportions. **Help ▸ Start Playermodel
+Tutorial** walks you through it. Three things matter:
 
-1. Open your scene and select the object with a **Player Controller** on it.
-2. Open up its **Body** child and find the **Skinned Model Renderer**.
-3. Set that renderer's **Model** to your model, in `models/effigy/`.
-4. Leave **Use Anim Graph** ticked — that's what lets the animations drive it.
+1. **Stand it like the Citizen:** feet on the floor at zero, facing forward along the red arrow,
+   arms out, legs straight, hips about **31 units** up. The hip height matters most; too far off
+   and the model floats or sinks.
+2. **Build it from separate parts, one per bone,** each longer along its bone than across. In the
+   Rig workspace, select a part and press **Bone from Part**; the new bone hangs off whichever
+   bone is selected, so start at the hips and work outwards.
+3. **Name the bones the way the animations expect:**
 
-If there's no Body child, the Player Controller has a **Create Body** button
-that makes one for you. Two things to check if it looks wrong: the Body child
-should sit at local `0,0,0`, so its feet are at the player's own origin, and the
-Player Controller's **Renderer** box should point at that Skinned Model
-Renderer.
+   | | Chain |
+   |---|---|
+   | Body | `pelvis` → `spine_01` → `spine_02` → `chest` → `neck` → `head` |
+   | Each arm | `chest` → `clavicle_L` → `upperarm_L` → `forearm_L` → `hand_L` |
+   | Each leg | `pelvis` → `thigh_L` → `calf_L` → `foot_L` (→ `toe_L`) |
+   | Optional | fingers `index_01_L`…, `thumb_01_L`… |
 
-**Read the console afterwards.** It lists any bone whose name the animations
-didn't recognise. That isn't an error — the bone just holds still — but it's
-almost always a typo, and it's the only place you'll be told.
+   `_L` is the model's own left. The Citizen's own names (`arm_upper_L`, `leg_upper_L`,
+   `spine_0`) work too.
 
-Two things that catch people out:
+Then **File ▸ Make Player**, open the scene it wrote, and press Play. To use the model in your
+own scene, set the **Skinned Model Renderer** on your Player Controller's **Body** to it, and
+leave **Use Anim Graph** ticked.
 
-- **A limb that stays rigid is a naming problem, not a weighting problem.**
-  Check the spelling first, then check what it hangs off.
-- **Don't set a pivot for a playermodel.** Its origin has to be between its
-  feet, so `Make Player` and `Compile Playermodel` ignore the pivot handle. The
-  ordinary `Compile .vmdl` still uses it.
+A limb that stays rigid is almost always a misspelled bone name. The console lists every bone
+the animations didn't recognise.
 
-#### Getting animation into your game
+### Clothing
 
-Make the model in Effigy, animate it in Marionette, then get it into your game.
-There are two ways to do that last part, and they suit different things.
+In the **Clothing** workspace, load the model to dress (it's a reference and is never
+exported), then add a **Garment**: T-shirt, long sleeve, tank top, trousers, shorts, beanie,
+gloves, socks or bodysuit. A garment is a recipe cut from the body's bones, not a fixed mesh,
+so it refits when the body changes. Adjust the fit, length and drape; add **Trim** (frill,
+ribbon, pleats, fringe), a **Fabric** (denim, leather, plaid, and more) or **Fur**.
 
-**Bake the animation into the model.** The model file carries its own
-animations, so it behaves like any other animated model you'd use — nothing
-extra to add in the scene, and it works even if you later remove these tools
-from your project.
+**Make clothing** compiles it as a clothing item for a Citizen or Dresser. **Make live cloth**
+writes a `.cloth.json` for the **Garment Cloth** component, which simulates it on the wearer
+in game.
 
-1. Model and rig it in Effigy, then **Compile .vmdl**.
-2. Open that model in Marionette, pose it, and save.
-3. Back in Effigy: **File → Animation Clips...** → **Add Clip** → pick what you
-   saved.
-4. **Compile .vmdl** again.
+### Effigy from code
 
-Your model now has the animation inside it, under whatever name you typed in the
-clip list — that's the name you use to play it. Each clip has a **Looping**
-switch for whether it repeats or plays once. Add as many clips as you want.
-
-**Or play the animation file directly.** Add the `RigAnimPlayerComponent` to
-your object, point it at your animation and at the model, and it plays. No
-recompiling, so it's quicker while you're still changing the animation a lot.
-The trade is that your project keeps needing these tools installed, and that
-component drives the bones itself — so don't use it on something you also want
-animated the normal way.
-
-Rule of thumb: **use the component while you're iterating, bake it in when
-you're done.**
-
-Two things that catch people out:
-
-- **An animation only works on the model it was made for.** Bones are matched by
-  name, so a clip made for a different character does nothing at all. Effigy
-  checks before exporting and tells you which bones didn't match — check the
-  console if a clip seems to be ignored.
-- **The clip list is forgotten when you close Effigy.** It's an export setting
-  rather than part of your model, so you'll need to add the clips again next
-  time. Your animation files themselves are untouched.
-
-> **Heads up:** baking clips in is new. The file format is confirmed working
-> against the engine's own model compiler, but the menu and dialog haven't had a
-> real workout yet. If they give you trouble, the component route above is the
-> well-trodden one.
-
-### Your saved file
-
-Your work saves as an `.effigy` file. It's plain text, one line per thing you
-made, so it works properly with git — you can see exactly what changed between
-two versions instead of getting "binary file differs".
+The modelling kernel is plain C# with no engine dependency, so models can be built from code,
+from a build script, or from the shell with `tools/effigy.sh`. See
+[EFFIGY-API.md](EFFIGY-API.md).
 
 ---
+
+## Marionette
+
+Open it from **Tools ▸ Marionette**, or double-click a `.riganim` file. It starts with the
+Citizen's first-person arms loaded and the animation tutorial open.
+
+### Getting started
+
+1. Set **Source Model** in the **BonesObject** panel to any skinned model.
+2. Click a bone in the viewport and drag to rotate it. Hold **E** to move it instead.
+3. Press **K** to key the bone at the playhead.
+4. Move the playhead, pose again, and press play.
+
+The status bar explains whatever you hover over.
+
+### What it does
+
+- **Posing:** drag rotates by default; the toolbar cycles Rotate, Move and Scale. The skeleton
+  draws over the mesh so buried bones stay clickable. Right-click a bone to hide it and its
+  children. The **Inspector** panel takes typed values.
+- **Timeline:** one lane per bone. The keyframe shapes show the easing (Smooth, Linear,
+  Stepped, Ease In, Ease Out). Copy, cut and paste keys, even between clips. Turn on **Auto-Key**
+  to key as you drag.
+- **IK and limits:** two-bone IK and joint angle limits, added in the **Constraints** panel.
+  They bake into keyframes, so a clip plays back identically anywhere.
+- **Props and objects:** drop in a model to pose against. With **Collide** on, a dragged bone
+  stops at its surface. A prop, or an OBJ imported with one part per group, can be keyed like a
+  bone, so a door, lever or weapon moves on the same timeline as the hand that works it. A rigged
+  prop gets its own bone handles.
+- **First Person View** frames the model from its own camera bone.
+- **Lights and cameras** in their own panels, to judge a pose by its shadows or keep a shot's
+  framing. Tick **Export With Clip** to have them spawn when the clip plays.
+- **Events:** spawn a model on a bone for a range of frames, or fire a morph event.
+- **Undo and redo**: one drag is one step.
+
+### Files
+
+| Type | Extension | Holds |
+|---|---|---|
+| Rig Animation | `.riganim` | Keyframes, events, props, objects, lights, cameras, frame rate. |
+| Control Rig | `.ctrlrig` | A model and its IK and limit constraints. Several clips can share one. |
+| Marionette Grip | `.grip` | Hand poses for holding a prop, for `RigGripComponent`. |
+
+### Getting animation into your game
+
+**Play the clip with a component.** Add **RigAnimPlayerComponent** to your object, set
+**Anim** to the `.riganim` and **Target** to the model's renderer. It plays on start, loops by
+default, and can blend as an overlay or additive layer with a bone mask. Its **Parts** list
+connects the clip's objects to GameObjects in your scene. There's no recompiling, which suits
+iterating, but your project keeps needing Geppetto installed.
+
+**Or bake it into the model.** In Effigy, **File ▸ Animation Clips… ▸ Add Clip**, pick the
+`.riganim`, name it, set **Looping**, and **Compile .vmdl** again. The model then carries the
+animation like any other, under the name you gave it.
+
+**Or export it on its own.** Marionette's **File ▸ Export Animation…** writes an
+animation-only `.vmdl` for the source model.
+
+A clip only works on the model it was made for. Bones are matched by name; when you compile,
+the console lists any bones in the clip that the model doesn't have.
+
+---
+
+## Known issues
+
+- **Effigy forgets the Animation Clips list when you close it.** Add the clips again in the same
+  session you compile in. Your `.riganim` files are not affected.
+- **Live cloth has no self-collision.** It collides with the wearer's body only, so a fold can
+  pass through itself, and a jacket passes through a shirt under it.
+- **Marionette's tutorial asks for a lightswitch model that no longer ships** with the package.
+  Use any model as a stand-in for that step.
+- Cameras exported with a clip are also written to a `.vdmx`, and that file hasn't been
+  confirmed to load in the engine yet.
+
+## Contributing
+
+Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the layout,
+how to run the tests, and how the kernel is kept in sync. [CHANGELOG.md](CHANGELOG.md) lists
+what changed in each release.
 
 ## License
 

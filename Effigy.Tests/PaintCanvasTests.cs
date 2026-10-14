@@ -180,9 +180,16 @@ public static class PaintCanvasTests
 		var now = PngWriter.ToBytes( map.Rgb, map.Width, map.Height );
 		var before = Convert.FromBase64String( ReferenceRgbPng );
 
+		// Header and decompressed scanlines, not the file bytes: the deflate underneath is the
+		// runtime's zlib, and Windows and Linux builds of it pack the same data a byte or two
+		// differently. What the writer controls - the header, the filter bytes, the pixels - is
+		// what has to match.
+		var nowRaw = PngTests.Inflate( Chunk( now, "IDAT" ) );
+		var beforeRaw = PngTests.Inflate( Chunk( before, "IDAT" ) );
+
 		Check( "an RGB bake is byte-identical to before the RGBA change",
-			now.Length == before.Length && Equal( now, before ),
-			$"{now.Length} bytes vs {before.Length} reference bytes" );
+			Equal( Chunk( now, "IHDR" ), Chunk( before, "IHDR" ) ) && Equal( nowRaw, beforeRaw ),
+			$"{nowRaw.Length} raw bytes vs {beforeRaw.Length} reference raw bytes" );
 	}
 
 	/// <summary>The 32x32 RGB bake captured before the writer learned alpha.</summary>

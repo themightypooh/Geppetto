@@ -1,66 +1,92 @@
 # Contributing
 
-You do not need write access. Fork the repo, make a branch, open a pull request.
-Nothing lands on `main` unless the owner merges it.
+Fork, branch, open a pull request. Nothing lands on `main` unless the owner merges it.
 
-## Run it
+## Layout
 
-Clone this repo and open `geppetto.sbproj` in s&box. The tools show up under
-**Tools**. Or copy `` into your own project's `Libraries/`.
+| Folder | What it is | Compiled by |
+|---|---|---|
+| `Effigy/` | The modelling kernel. Plain C#, no engine types. **The canonical copy.** | `Effigy.Tests` |
+| `Editor/Effigy/` | A mirror of `Effigy/`. **Never edit it by hand.** | s&box editor assembly |
+| `Code/Effigy/` | The few kernel files the game assembly also needs (`Vec`, `Xform`, `Rig/Skeleton`, `Rig/SoftBone`). | s&box game assembly |
+| `Editor/EffigyEditor/` | Effigy's window, viewport, panels and exporters. | s&box editor assembly |
+| `Code/RigControl/` | Marionette's runtime: asset types, playback components, solvers. | s&box game assembly |
+| `Editor/RigControlEditor/` | Marionette's window. | s&box editor assembly |
+| `Code/Cloth/` | Live garment cloth for clothing made in Effigy. | s&box game assembly |
+| `Effigy.Tests/` | The headless kernel suite, plus the generators and CLI behind `tools/effigy.sh`. | `dotnet` |
+| `tools/` | Test, sync, ship, publish and changelog scripts. | - |
 
-## Kernel tests
+The kernel has two copies because s&box only compiles `Code/` and `Editor/`, and the kernel
+can't live in `Code/`: its writers call `File.WriteAllText`, which the game sandbox forbids.
+`Effigy/` stays outside both so it can be tested without the engine.
+
+## Edit the kernel in `Effigy/`, then sync
+
+`tools/sync-kernel.sh` copies `Effigy/` over `Editor/Effigy/`. `tools/test.sh` runs it first, so
+testing is usually enough. `KernelSyncTests` fails the suite if the two copies differ, and the
+sync script refuses to run if the mirror holds a file the canonical copy doesn't have. That
+means somebody wrote it on the wrong side: move it into `Effigy/`.
+
+## Run the tests
+
+You need the **.NET 8 SDK**. Nothing else; s&box is not involved.
 
 ```sh
-export PATH="/c/Program Files/dotnet:$PATH" && ./tools/test.sh
+sh tools/test.sh
 ```
 
-Do this before a PR that touches `Effigy/`.
+That syncs the mirror, lints the editor sources for a missing `using Editor;` (which the engine
+would otherwise report as hundreds of identical errors), then builds and runs `Effigy.Tests`.
+It prints `N passed, M failed` and writes sample models and previews to `Effigy.Tests/out/`.
+On a Debian-family machine with no SDK it installs one through `apt`; anywhere else, install
+.NET 8 yourself first.
 
-## Do not edit `Editor/Effigy/`
+Run it before any PR that touches `Effigy/`. Editor code (`Editor/`, `Code/`) can only be
+checked by opening the project in s&box; the suite never compiles it.
 
-That folder is a **mirror** of `Effigy/`. Edit the canonical copy, then run
-`tools/sync-kernel.sh` (or just `tools/test.sh`, which syncs first).
-`KernelSyncTests` fails the suite if they diverge.
+## Look at what you built
 
-## Shipping
+`tools/effigy.sh` drives the kernel from the shell, with no editor:
 
-One command, and it is the whole thing:
-
+```sh
+tools/effigy.sh render model.effigy out.png
+tools/effigy.sh describe model.effigy
 ```
+
+`render`, `describe`, `measure`, `match`, `script`, `fix`, `parts`, `new` and `wardrobe` are all
+listed at the top of the script. See [EFFIGY-API.md](EFFIGY-API.md) for building models from code.
+
+## The changelog
+
+Write `CHANGELOG.md` entries as you go, under **Unreleased**, using the five headings the
+sbox.game changelist form asks for: **Added, Improved, Fixed, Removed, Known Issues**. Write them
+for someone who installed the package, not for someone working on the repo.
+`tools/changelist.sh` prints Unreleased box by box, ready to paste; `tools/changelist.sh <revision>`
+prints one that has already shipped.
+
+## Shipping (owner only)
+
+```sh
 tools/ship.sh -m "what changed"
 ```
 
-That syncs the kernel mirror, commits, runs the suite, pushes, publishes the
-s&box package, stamps `CHANGELOG.md`'s **Unreleased** section with the revision
-the publish created, and pushes that too.
+One command does it all: sync, commit, run the suite, push, publish the s&box package, stamp the
+changelog with the new revision, and print the changelist text.
 
-Two things to know:
-
-- **The s&box editor has to be open on Geppetto**, because the package upload is
-  the editor's, driven over its MCP bridge on `127.0.0.1:7269`. If it is not
-  open, the git push still happens and the script says to run
+- **Publishing needs the s&box editor open on this project.** The upload is the editor's, driven
+  over its MCP bridge on `127.0.0.1:7269`. If the editor is closed, the push still happens; run
   `tools/publish.sh --commit` later.
-- **The changelist is the one manual step.** The engine's package API can read
-  changelists and has no method that writes one, so no script outside a browser
-  can post one. `ship.sh` finishes by printing the finished text, box by box —
-  paste it into sbox.game → the package → Edit changelist, assigned to the
-  revision it names.
-
-Write `CHANGELOG.md` entries as you go, under the five headings the changelist
-form uses: **Added, Improved, Fixed, Removed, Known Issues**. Write them for
-whoever installed the package, not for whoever works on the repo.
-`tools/changelist.sh` prints Unreleased; `tools/changelist.sh 367356` prints a
-revision already published, for the site's "Assign to a revision" list.
+- **The changelist is pasted by hand.** The package API can read changelists and can't write
+  them, so paste what `ship.sh` prints into sbox.game ▸ the package ▸ Edit changelist.
 
 ## Pull requests
 
-- One change per PR. "Fix sketch mode" is a PR. "Rewrite Effigy" is not.
-- **Editor code is unsandboxed.** s&box editor tools can do anything on the
-  machine. PRs that touch an `Editor/` folder get read before they merge.
-- Say what you ran. "2099 checks pass" and "I clicked it in the editor" are
-  different claims; both matter here.
+- One change per PR.
+- **Editor code is unsandboxed.** s&box editor tools can do anything on the machine, so a PR
+  that touches `Editor/` gets read line by line before it merges.
+- Say what you ran. "The suite passes" and "I clicked through it in the editor" are different
+  claims, and both matter.
 
 ## Bugs and ideas
 
-Open a GitHub Issue. If you have the private working tree, start at
-`HANDOFF.md`, in the `geppetto-docs/dev/` folder beside this checkout.
+Open a GitHub issue.

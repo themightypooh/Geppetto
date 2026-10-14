@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using Effigy;
@@ -159,5 +160,17 @@ describe
 
 		Check( "fix all removes the loose vertex", mesh.VertexCount == 8, $"{mesh.VertexCount}" );
 		Check( "and closes the hole", check.IsClosed, string.Join( " | ", done ) );
+
+		// The common case: nothing is wrong. `fix all` on a clean box used to throw out of the hole
+		// step ("no open holes"), which stopped a build script dead on a body that was fine.
+		var clean = Primitives.Box( 2, 2, 2 );
+		List<string> cleanDone = null;
+		var threw = false;
+		try { cleanDone = MeshFix.Apply( clean, new[] { "all" } ); }
+		catch ( InvalidOperationException ) { threw = true; }
+
+		Check( "fix all on a clean box is a no-op, not an error",
+			!threw && clean.FaceCount == 6 && MeshValidator.Validate( clean ).IsClosed,
+			threw ? "threw" : string.Join( " | ", cleanDone ) );
 	}
 }

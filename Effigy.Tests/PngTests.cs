@@ -204,7 +204,7 @@ public static class PngTests
 	}
 
 	/// <summary>Strip the two-byte zlib header and the Adler-32, and inflate what is between.</summary>
-	static byte[] Inflate( byte[] zlib )
+	internal static byte[] Inflate( byte[] zlib )
 	{
 		using var input = new MemoryStream( zlib, 2, zlib.Length - 6 );
 		using var deflate = new DeflateStream( input, CompressionMode.Decompress );
