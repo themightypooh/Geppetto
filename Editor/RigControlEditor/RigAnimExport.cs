@@ -40,6 +40,10 @@ internal static class RigAnimExport
 		public int Cameras;
 		public bool Compiled;
 
+		/// <summary>Animation-only .vmdls written for props and parts that carry their own skeleton -
+		/// a weapon's bolt, a door's hinge - one per object, each based on that object's model.</summary>
+		public List<string> PropVmdlAssetPaths = new();
+
 		/// <summary>Something the export could not carry, said out loud. Not an error - the
 		/// export worked - but the difference between "it does not do that" and "it silently
 		/// dropped my work" is entirely whether anybody was told.</summary>
@@ -60,7 +64,10 @@ internal static class RigAnimExport
 		// Skeleton tracks only. A .vmdl animation is bone channels, so a clip whose keys are all
 		// on whole parts has nothing to write here - and saying "nothing to export" about a clip
 		// you can plainly see keyframes in would read as the exporter being broken.
-		if ( doc.BoneTracks is null || !doc.SkeletonTracks.Any( t => t.Keyframes.Count > 0 ) )
+		// An IK goal moves bones too - a clip posed entirely by live IK has goal keys and no others.
+		var hasGoals = doc.IkGoalTracks.Any( t => t.Keyframes.Count > 0 );
+
+		if ( doc.BoneTracks is null || (!doc.SkeletonTracks.Any( t => t.Keyframes.Count > 0 ) && !hasGoals) )
 		{
 			return Fail( doc.PartTracks.Any( t => t.Keyframes.Count > 0 )
 				? "This clip only keys whole parts, which a .vmdl animation can't carry — play it with a RigAnimPlayerComponent instead, or key some bones."
@@ -107,7 +114,7 @@ internal static class RigAnimExport
 			return Fail( $"Could not sample the clip: {e.Message}" );
 		}
 
-		if ( matched == 0 )
+		if ( matched == 0 && !hasGoals )
 		{
 			return Fail( "This clip names none of the model's bones, so it would compile and animate "
 				+ "nothing. It was probably authored against a different model." );
@@ -187,6 +194,9 @@ internal static class RigAnimExport
 				+ (unmatched.Count > 8 ? " ..." : "") );
 		}
 
+		// Props with skeletons of their own get their own animation .vmdl - see ExportProps.
+		var propVmdls = ExportProps( doc, folder, relativeFolder, fileStem, name, looping, out var propNote );
+
 		EffigyAssetFolder.Register( folder );
 
 		var asset = AssetSystem.FindByPath( vmdlAsset ) ?? AssetSystem.RegisterFile( vmdlAbs );
@@ -223,9 +233,157 @@ internal static class RigAnimExport
 			SkeletonBones = skeleton.Count,
 			Cameras = exportedCameras.Count,
 			Compiled = compiled,
-			Note = JoinNote( LightNote( doc ), CameraNote( doc, vdmxAsset ) ),
+			PropVmdlAssetPaths = propVmdls,
+			Note = JoinNote( JoinNote( JoinNote( LightNote( doc ), CameraNote( doc, vdmxAsset ) ),
+				JoinNote( PartNote( doc ), MorphNote( doc ) ) ), JoinNote( ScaleNote( clip ), propNote ) ),
 		};
 	}
+
+	/// <summary>
+	/// An animation-only .vmdl for each prop or part in the clip that has a compiled model and keyed
+	/// bones of its own - "magazine/latch", "door/handle/hinge".
+	///
+	/// These used to be dropped without a word: the export took the main model's bones and nothing
+	/// else, so the bolt that racks in the editor stood still in game. Each goes out exactly as the
+	/// main model does - Base Model is the prop's own .vmdl, the clip is a sequence of the same name -
+	/// so the game plays it on the prop with the same call. An object drawn from an OBJ has no model to
+	/// extend, and is named in the note instead.
+	/// </summary>
+	static List<string> ExportProps( RigAnimDocument doc, string folder, string relativeFolder,
+		string fileStem, string clipName, bool looping, out string note )
+	{
+		var written = new List<string>();
+		var skipped = new List<string>();
+		note = null;
+
+		// Every object that can own bone tracks, with its model when it has one.
+		var owners = new List<(string Subject, Model Model)>();
+
+		foreach ( var prop in doc.ReferenceProps ?? new List<ReferenceProp>() )
+		{
+			if ( prop is not null && !string.IsNullOrWhiteSpace( prop.Name ) )
+				owners.Add( (prop.Name, prop.Model) );
+		}
+
+		foreach ( var obj in doc.Objects ?? new List<RigObject>() )
+		{
+			if ( obj is null )
+				continue;
+
+			owners.Add( (obj.Name, null) );
+
+			foreach ( var part in obj.Parts ?? new List<RigObjectPart>() )
+			{
+				if ( part is not null )
+					owners.Add( (RigTrackName.Qualify( obj.Name, part.Name ), part.Model) );
+			}
+		}
+
+		// Longest owner first, so "door/handle/hinge" is the handle's hinge and not a bone of the door.
+		owners = owners.OrderByDescending( o => o.Subject.Length ).ToList();
+
+		var bySubject = new Dictionary<string, Model>();
+
+		foreach ( var track in doc.SkeletonTracks.Where( t => t.Keyframes.Count > 0 ) )
+		{
+			if ( RigTrackName.SubjectOf( track.BoneName ) == RigTrackName.RootSubject )
+				continue;
+
+			var owner = owners.FirstOrDefault( o => track.BoneName.StartsWith( o.Subject + RigTrackName.Separator, StringComparison.Ordinal ) );
+
+			if ( owner.Subject is null )
+				continue;
+
+			bySubject.TryAdd( owner.Subject, owner.Model );
+		}
+
+		foreach ( var (subject, model) in bySubject )
+		{
+			var modelPath = PathOf( model );
+
+			if ( modelPath is null )
+			{
+				skipped.Add( subject );
+				continue;
+			}
+
+			try
+			{
+				var skeleton = SkeletonFromModel( model );
+				var clip = EffigyAnimExport.ToClip( doc, skeleton, clipName, looping, subject, out var matched, out _ );
+
+				if ( matched == 0 )
+				{
+					skipped.Add( subject );
+					continue;
+				}
+
+				var stem = $"{fileStem}_{Sanitise( subject )}";
+				var dmxFile = $"{stem}.dmx";
+				var vmdlFile = $"{stem}.vmdl";
+				var dmxAsset = string.IsNullOrEmpty( relativeFolder ) ? dmxFile : $"{relativeFolder}/{dmxFile}";
+				var vmdlAsset = string.IsNullOrEmpty( relativeFolder ) ? vmdlFile : $"{relativeFolder}/{vmdlFile}";
+
+				DmxAnimWriter.WriteFile( Path.Combine( folder, dmxFile ), skeleton, clip, Path.GetFileNameWithoutExtension( modelPath ) );
+				File.WriteAllText( Path.Combine( folder, vmdlFile ), AnimationOnlyVmdl( modelPath, new VmdlAnimation.ClipEntry( clipName, dmxAsset, looping ) ) );
+
+				var asset = AssetSystem.FindByPath( vmdlAsset ) ?? AssetSystem.RegisterFile( Path.Combine( folder, vmdlFile ) );
+				asset?.Compile( true );
+
+				written.Add( vmdlAsset );
+				Log.Info( $"[Marionette] exported {vmdlAsset} for '{subject}' - {matched}/{skeleton.Count} bone(s), compiled={asset is not null && !asset.IsCompileFailed}" );
+			}
+			catch ( Exception e )
+			{
+				Log.Warning( $"[Marionette] could not export the bones of '{subject}': {e.Message}" );
+				skipped.Add( subject );
+			}
+		}
+
+		var lines = new List<string>();
+
+		if ( written.Count > 0 )
+			lines.Add( $"Props with skeletons of their own were exported beside it, one .vmdl each: {string.Join( ", ", written )}." );
+
+		if ( skipped.Count > 0 )
+			lines.Add( $"The keyed bones of {string.Join( ", ", skipped )} were not exported - an object needs a compiled model (not an OBJ) whose skeleton has those bones." );
+
+		note = lines.Count > 0 ? string.Join( " ", lines ) : null;
+		return written;
+	}
+
+	/// <summary>Whole-part tracks move objects, not bones, and a .vmdl animation is bone channels.</summary>
+	static string PartNote( RigAnimDocument doc )
+	{
+		var parts = doc.PartTracks.Count( t => t.Keyframes.Count > 0 );
+
+		if ( parts == 0 )
+			return null;
+
+		return $"This clip moves {parts} whole object(s) or part(s). A .vmdl animation is bone channels and "
+			+ "has nowhere to put an object's own transform, so those are not in it. RigAnimPlayerComponent "
+			+ "plays them - bind each object under Parts.";
+	}
+
+	/// <summary>Morph events are not bone channels either.</summary>
+	static string MorphNote( RigAnimDocument doc )
+	{
+		var morphs = doc.MorphEvents?.Count( m => m is not null ) ?? 0;
+
+		if ( morphs == 0 )
+			return null;
+
+		return $"This clip has {morphs} morph event(s). They are not in the .vmdl - a morph in a compiled "
+			+ "animation needs the model's own flex controllers, which this export does not author. "
+			+ "RigAnimPlayerComponent applies them on the same clock as the bones.";
+	}
+
+	/// <summary>Scale is the one channel built rather than copied from a reference export - say so.</summary>
+	static string ScaleNote( AnimClip clip ) =>
+		clip.Scales is null ? null
+			: "Some bones scale in this clip. Scale goes out as a third channel per scaled bone, alongside "
+			+ "position and rotation; check it in game, since every other channel here was copied from a "
+			+ "reference export and this one could not be.";
 
 	/// <summary>
 	/// What to say about a clip's lights, which a .vmdl animation cannot carry.
@@ -258,9 +416,15 @@ internal static class RigAnimExport
 		if ( exported == 0 )
 			return null;
 
+		var keyed = doc.Cameras.Count( c => c is not null && c.Export && c.Enabled && doc.FindCameraTrack( c.Name ) is { Keyframes.Count: > 0 } );
+
 		return $"This clip has {exported} camera(s) marked Export With Clip. They are not in the "
 			+ ".vmdl - that file is bone channels - so they were written to "
-			+ $"{vdmxAsset} instead.";
+			+ $"{vdmxAsset} instead."
+			+ (keyed > 0
+				? $" {keyed} of them move, and the shot file holds each one where it sits unkeyed; the move "
+					+ "plays through RigAnimPlayerComponent, which follows the keys."
+				: "");
 	}
 
 	static string JoinNote( string a, string b )

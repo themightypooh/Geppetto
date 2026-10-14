@@ -85,6 +85,13 @@ public sealed class RigAnimPlayerComponent : Component
 	/// <summary>Fires once when a non-looping clip hits its last keyed frame.</summary>
 	public Action Finished { get; set; }
 
+	/// <summary>
+	/// Fires as playback crosses one of the clip's marks (RigAnimDocument.Marks) - the cue for a
+	/// footstep, a latch clicking, a line of dialogue. Once per crossing, in frame order, including
+	/// across a loop's wrap. Seeking does not fire it: a jump is not the moment arriving.
+	/// </summary>
+	public Action<RigMark> MarkReached { get; set; }
+
 	private RigEventPlayerComponent _events;
 	private bool _rigReady;
 	private bool _notifiedFinish;
@@ -104,6 +111,9 @@ public sealed class RigAnimPlayerComponent : Component
 	/// <summary>The camera objects this component put up, so it can take down its own and only
 	/// its own. See SpawnCameras.</summary>
 	private readonly List<GameObject> _cameras = new();
+
+	/// <summary>Which shot each spawned camera is, so a keyed one can follow its track.</summary>
+	private readonly Dictionary<GameObject, RigCamera> _cameraShots = new();
 
 	/// <summary>
 	/// Last keyed frame, not FrameCount.
@@ -273,6 +283,7 @@ public sealed class RigAnimPlayerComponent : Component
 			cam.ZFar = camera.ZFar;
 
 			_cameras.Add( go );
+			_cameraShots[go] = camera;
 		}
 	}
 
@@ -284,6 +295,7 @@ public sealed class RigAnimPlayerComponent : Component
 			camera?.Destroy();
 
 		_cameras.Clear();
+		_cameraShots.Clear();
 	}
 
 	protected override void OnUpdate()
@@ -295,13 +307,23 @@ public sealed class RigAnimPlayerComponent : Component
 
 		if ( IsPlaying )
 		{
+			// A clip that has just started from 0 has not "passed" frame 0 yet, so a mark there fires
+			// on this first tick - the cue that goes with the clip starting.
+			var before = _fromStart ? -1f : Frame;
+			_fromStart = false;
 			Frame += Time.Delta * FrameRate;
+
+			FireMarks( before, MathF.Min( Frame, LastFrame ) );
 
 			if ( Frame > LastFrame )
 			{
 				if ( Loop )
 				{
 					Frame %= MathF.Max( LastFrame, 0.0001f );
+
+					// The wrap starts the clip again: a mark on frame 0 has arrived, and so has
+					// everything up to where this tick landed.
+					FireMarks( -1f, Frame );
 				}
 				else
 				{
@@ -341,6 +363,23 @@ public sealed class RigAnimPlayerComponent : Component
 		ApplyFrame( Frame );
 	}
 
+	/// <summary>Set by Play() from frame 0, so the first tick includes a mark ON frame 0.</summary>
+	private bool _fromStart;
+
+	/// <summary>Marks in (from, to]. Ordered, so two cues a frame apart arrive in the right order
+	/// even on a long tick.</summary>
+	private void FireMarks( float from, float to )
+	{
+		if ( MarkReached is null || Anim?.Marks is not { Count: > 0 } || to <= from )
+			return;
+
+		foreach ( var mark in Anim.MarksInOrder )
+		{
+			if ( mark.Frame > from && mark.Frame <= to )
+				MarkReached( mark );
+		}
+	}
+
 	/// <summary>Starts the clip. A finished one-shot restarts from frame 0 — that's what "open
 	/// the fridge again" has to mean. Pause() then Play() resumes if you have not hit the end.</summary>
 	public void Play()
@@ -348,9 +387,12 @@ public sealed class RigAnimPlayerComponent : Component
 		if ( Frame >= LastFrame || (Mode != RigAnimMode.Exclusive && !_active && _blend <= 0f) )
 			Frame = 0f;
 
+		_fromStart = Frame <= 0f;
+
 		// Resolve afresh: Parts may have been bound, or the model swapped, since last time.
 		ReleaseBones();
 		_driven.Clear();
+		_ikChains.Clear();
 
 		_notifiedFinish = false;
 		IsPlaying = true;
@@ -451,9 +493,212 @@ public sealed class RigAnimPlayerComponent : Component
 					Vector3.Lerp( anim.Scale, clip.Scale, weight ) );
 		}
 
+		ApplyIk( frame );
 		ApplyParts( frame );
+		ApplyMorphs( frame );
+		ApplyCameras( frame );
 
 		_events?.SetFrame( frame );
+	}
+
+	/// <summary>
+	/// Keyed cameras follow their tracks: a dolly, a push-in, a rack to a tighter lens. A camera with
+	/// no keys stays where SpawnCameras put it. Still the game's call which one is live - this only
+	/// moves them.
+	/// </summary>
+	private void ApplyCameras( float frame )
+	{
+		foreach ( var (go, camera) in _cameraShots )
+		{
+			if ( !go.IsValid() || Anim.FindCameraTrack( camera.Name ) is not { Keyframes.Count: > 0 } )
+				continue;
+
+			var (world, fov) = Anim.CameraAt( camera, frame );
+			go.LocalPosition = world.Position;
+			go.LocalRotation = world.Rotation;
+
+			if ( go.GetComponent<CameraComponent>() is { } cam )
+				cam.FieldOfView = fov;
+		}
+	}
+
+	/// <summary>Each live constraint's chain, resolved once. Null values are remembered too - a
+	/// constraint whose bones this model does not have. Cleared on Play().</summary>
+	private readonly Dictionary<IkConstraint, IkChain> _ikChains = new();
+
+	/// <summary>
+	/// The rig's live IK constraints, solved toward the clip's keyed goals - after the keyframes,
+	/// so the chain starts from the pose the clip gives it.
+	///
+	/// EVERY CHAIN BONE IS PUT BACK FIRST: to its keyframe if the clip keys it (already done by the
+	/// loop above), otherwise to its bind pose, or in a layered mode to what the graph has. Solving
+	/// from wherever last frame's solve left the arm would make the result depend on its own
+	/// history - a longer chain's iterated solve would creep - and a clip has to look the same on
+	/// every frame it is played, scrubbed or exported.
+	///
+	/// The goal is in the model's space (see TrackTarget.IkGoal), so it travels with the character.
+	/// </summary>
+	private void ApplyIk( float frame )
+	{
+		if ( Anim.RigAsset?.IkConstraints is not { Count: > 0 } constraints || !Target.IsValid() )
+			return;
+
+		var layered = Mode != RigAnimMode.Exclusive;
+
+		foreach ( var ik in constraints )
+		{
+			if ( ik is null || !ik.Enabled || !ik.Live )
+				continue;
+
+			if ( Anim.FindIkGoalTrack( ik.TargetBone ) is not { Keyframes.Count: > 0 } goalTrack )
+				continue;
+
+			if ( !_ikChains.TryGetValue( ik, out var chain ) )
+				_ikChains[ik] = chain = ResolveChain( ik );
+
+			if ( chain is null || !chain.Objects.All( o => o.IsValid() ) )
+				continue;
+
+			if ( layered && !InMask( chain.Objects[^1] ) )
+				continue;
+
+			var world = new Transform[chain.Objects.Length];
+
+			for ( var k = 0; k < world.Length; k++ )
+			{
+				var bone = chain.Objects[k];
+
+				if ( !bone.Flags.Contains( GameObjectFlags.ProceduralBone ) )
+				{
+					bone.Flags |= GameObjectFlags.ProceduralBone;
+					chain.Flagged[k] = true;
+				}
+
+				if ( !chain.Keyed[k] )
+				{
+					bone.LocalTransform = layered
+						? AnimatedLocal( new DrivenBone { Object = bone, Renderer = Target, Bone = chain.Bones[k] } )
+						: chain.Bind[k];
+				}
+
+				world[k] = bone.WorldTransform;
+			}
+
+			var goal = Target.WorldTransform.ToWorld( goalTrack.Evaluate( frame ) );
+			var weight = ik.Weight * (layered ? (Weight * _blend).Clamp( 0f, 1f ) : 1f);
+
+			if ( !RigConstraintSolver.SolveChain( world, goal.Position, ik.GoalRotation ? goal.Rotation : null,
+				Target.WorldRotation * ik.PoleDirection, ik.Iterations, weight ) )
+				continue;
+
+			// Top-down, so each bone is written under a parent that is already where it belongs.
+			for ( var k = 0; k < world.Length; k++ )
+				chain.Objects[k].WorldTransform = world[k];
+		}
+	}
+
+	private IkChain ResolveChain( IkConstraint ik )
+	{
+		var length = Math.Max( ik.ChainLength, 1 );
+		var end = FindBone( Target.GameObject, ik.TargetBone );
+
+		if ( !end.IsValid() )
+			return null;
+
+		var chain = new IkChain
+		{
+			Objects = new GameObject[length + 1],
+			Bones = new BoneCollection.Bone[length + 1],
+			Bind = new Transform[length + 1],
+			Keyed = new bool[length + 1],
+			Flagged = new bool[length + 1],
+		};
+
+		var go = end;
+
+		for ( var k = length; k >= 0; k-- )
+		{
+			if ( !go.IsValid() || !IsBone( go ) )
+				return null;
+
+			var bone = Target.Model?.Bones.GetBone( go.Name );
+
+			chain.Objects[k] = go;
+			chain.Bones[k] = bone;
+			chain.Keyed[k] = Anim.FindTrack( go.Name ) is { Keyframes.Count: > 0 };
+
+			// Bone.LocalTransform is MODEL space despite its name; the parent's undoes it.
+			chain.Bind[k] = bone is null ? go.LocalTransform
+				: bone.Parent is { } parent ? parent.LocalTransform.ToLocal( bone.LocalTransform )
+				: bone.LocalTransform;
+
+			go = go.Parent;
+		}
+
+		return chain;
+	}
+
+	private sealed class IkChain
+	{
+		/// <summary>Top bone first, the constraint's end last.</summary>
+		public GameObject[] Objects;
+		public BoneCollection.Bone[] Bones;
+		public Transform[] Bind;
+		public bool[] Keyed;
+		public bool[] Flagged;
+	}
+
+	/// <summary>The morphs this player has an override on right now, so a morph whose event has
+	/// ended is handed back - and only ours are, never one the game set itself.</summary>
+	private readonly HashSet<string> _morphsDriven = new();
+	private readonly Dictionary<string, float> _morphScratch = new();
+
+	/// <summary>
+	/// The clip's morph events, on the same clock as the bones.
+	///
+	/// These were authored in the clip and saved with it, and then nothing ever read them: an
+	/// "eat" morph keyed over frames 10-30 never moved a vertex in game. A morph is held at its
+	/// value for its frame range and released outside it, so the face goes back to whatever the
+	/// game (or a viseme) had it at.
+	///
+	/// Overlay and Additive scale by the fade like everything else, so a layered clip's mouth
+	/// eases in with its arms instead of snapping.
+	/// </summary>
+	private void ApplyMorphs( float frame )
+	{
+		if ( !Target.IsValid() )
+			return;
+
+		Anim.MorphWeightsAt( frame, _morphScratch );
+
+		var weight = Mode == RigAnimMode.Exclusive ? 1f : (Weight * _blend).Clamp( 0f, 1f );
+
+		foreach ( var (name, value) in _morphScratch )
+		{
+			Target.Morphs.Set( name, value * weight );
+			_morphsDriven.Add( name );
+		}
+
+		_morphsDriven.RemoveWhere( name =>
+		{
+			if ( _morphScratch.ContainsKey( name ) )
+				return false;
+
+			Target.Morphs.Clear( name );
+			return true;
+		} );
+	}
+
+	/// <summary>Drop every morph override this player set.</summary>
+	private void ReleaseMorphs()
+	{
+		if ( Target.IsValid() )
+		{
+			foreach ( var name in _morphsDriven )
+				Target.Morphs.Clear( name );
+		}
+
+		_morphsDriven.Clear();
 	}
 
 	/// <summary>
@@ -575,6 +820,22 @@ public sealed class RigAnimPlayerComponent : Component
 	/// <summary>Give every bone this player flagged back to the graph.</summary>
 	private void ReleaseBones()
 	{
+		ReleaseMorphs();
+
+		foreach ( var chain in _ikChains.Values )
+		{
+			if ( chain is null )
+				continue;
+
+			for ( var k = 0; k < chain.Objects.Length; k++ )
+			{
+				if ( chain.Flagged[k] && chain.Objects[k].IsValid() )
+					chain.Objects[k].Flags &= ~GameObjectFlags.ProceduralBone;
+
+				chain.Flagged[k] = false;
+			}
+		}
+
 		foreach ( var driven in _driven.Values )
 		{
 			if ( driven is null || !driven.Flagged )

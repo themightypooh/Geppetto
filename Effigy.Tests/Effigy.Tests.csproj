@@ -27,6 +27,9 @@
       Sandbox and cannot be.
     -->
     <Compile Include="../Code/RigControl/RigTrackName.cs" />
+
+    <!-- Marionette's cubic curve, so the kernel's copy can be checked against it. Engine-free for that reason. -->
+    <Compile Include="../Code/RigControl/RigCurve.cs" />
   </ItemGroup>
 
 </Project>

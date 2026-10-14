@@ -36,7 +36,7 @@ internal enum BoneDragMode
 /// only ever worked as an intermediate step MovieMaker's *own* internal baking read from, never
 /// as a live "move this and the mesh follows" control on its own.
 /// </summary>
-internal sealed class RigViewport : Widget
+internal sealed partial class RigViewport : Widget
 {
 	private readonly SceneRenderingWidget _canvas;
 	private readonly CameraComponent _camera;
@@ -104,6 +104,11 @@ internal sealed class RigViewport : Widget
 	/// BoneTrack.SetKeyframe overwriting the same frame repeatedly is harmless and there's no
 	/// confirmed "drag finished" signal from Gizmo.Control itself to hook instead.</summary>
 	public Action<string, Transform> BonePosed { get; set; }
+
+	/// <summary>A live IK constraint's goal was dragged: the end bone's name, and where it was asked
+	/// to be in the main model's space. The window keys it on the clip's goal track
+	/// (TrackTarget.IkGoal) rather than keying the chain.</summary>
+	public Action<string, Transform> IkGoalPosed { get; set; }
 
 	/// <summary>Fired once when a bone drag begins, before anything has moved, and once when it
 	/// ends. Undo hangs off these: BonePosed fires every frame of a drag, so recording there would
@@ -571,6 +576,8 @@ internal sealed class RigViewport : Widget
 		};
 		_showTwistToggle.Toggled = () => SetViewMode( () => ShowTwistBones = _showTwistToggle.Value );
 		bar.Add( _showTwistToggle );
+
+		BuildOverlayToggles( bar );
 
 		bar.AddSpacingCell( 12 );
 
@@ -2176,12 +2183,15 @@ internal sealed class RigViewport : Widget
 			if ( camera is null || !camera.Enabled )
 				continue;
 
-			var rot = camera.Rotation.ToRotation();
+			// Where this camera is at the playhead - its keys when it has any. See ShowCameraFrame.
+			var (placed, keyedFov) = CameraPlacement( camera );
+			var position = placed.Position;
+			var rot = placed.Rotation;
 			var forward = rot.Forward;
 			var right = rot.Right;
 			var up = rot.Up;
 
-			var fov = camera.FieldOfView.Clamp( 1f, 179f );
+			var fov = keyedFov.Clamp( 1f, 179f );
 			var far = MathF.Max( camera.ZFar, camera.ZNear + 1f );
 			var aspect = 16f / 9f;
 
@@ -2190,7 +2200,7 @@ internal sealed class RigViewport : Widget
 			var tan = MathF.Tan( fov * 0.5f * MathF.PI / 180f );
 
 			Vector3 Corner( float d, float sx, float sy ) =>
-				camera.Position + forward * d
+				position + forward * d
 				+ right * (sx * d * tan * aspect)
 				+ up * (sy * d * tan);
 
@@ -2203,7 +2213,7 @@ internal sealed class RigViewport : Widget
 			// The four rays from the camera to the far corners - the shape of the shot.
 			for ( var i = 0; i < 4; i++ )
 			{
-				Gizmo.Draw.Line( camera.Position, Far[i] );
+				Gizmo.Draw.Line( position, Far[i] );
 				Gizmo.Draw.Line( Near[i], Far[i] );
 			}
 
@@ -2217,9 +2227,9 @@ internal sealed class RigViewport : Widget
 
 			// The camera itself: a dot where it sits, and a short spine into the shot.
 			Gizmo.Draw.Color = Color.White;
-			Gizmo.Draw.SolidSphere( camera.Position, HandleRadius * 0.5f, 8, 8 );
+			Gizmo.Draw.SolidSphere( position, HandleRadius * 0.5f, 8, 8 );
 			Gizmo.Draw.Color = Theme.Blue.WithAlpha( 0.9f );
-			Gizmo.Draw.Line( camera.Position, camera.Position + forward * 8f );
+			Gizmo.Draw.Line( position, position + forward * 8f );
 		}
 
 		Gizmo.Draw.IgnoreDepth = false;
@@ -2370,7 +2380,7 @@ internal sealed class RigViewport : Widget
 		}
 	}
 
-	public void EvaluatePose( Func<string, Transform?> poseForBone )
+	public void EvaluatePose( Func<string, Transform?> poseForBone, Func<string, Transform?> goalForBone = null )
 	{
 		_poseLookup = poseForBone;
 		_suppressAutoKey = true;
@@ -2408,6 +2418,8 @@ internal sealed class RigViewport : Widget
 			// So world transforms are accumulated in a local map as the loop walks down: a bone's
 			// parent is whatever THIS pass computed, not whatever the renderer last drew.
 			var resolved = new Dictionary<string, Transform>();
+			var locals = new Dictionary<string, Transform>();
+			var order = new List<(RigBone Bone, bool Dragged)>();
 
 			foreach ( var (bone, world) in LiveBones() )
 			{
@@ -2416,6 +2428,7 @@ internal sealed class RigViewport : Widget
 				if ( _draggingBone && _selectedBones.Contains( bone.Key ) )
 				{
 					resolved[bone.Key] = world;
+					order.Add( (bone, true) );
 					continue;
 				}
 
@@ -2433,15 +2446,145 @@ internal sealed class RigViewport : Widget
 					? (resolved.TryGetValue( parent.Key, out var computed ) ? computed : ParentWorld( bone ))
 					: bone.Renderer.WorldTransform;
 
-				var worldPose = parentWorld.ToWorld( clamped );
+				locals[bone.Key] = clamped;
+				resolved[bone.Key] = parentWorld.ToWorld( clamped );
+				order.Add( (bone, false) );
+			}
 
-				resolved[bone.Key] = worldPose;
-				ApplyWorldTransform( bone, worldPose );
+			// LIVE IK, AFTER THE KEYFRAMES AND BEFORE ANYTHING IS WRITTEN - the same order the game
+			// plays it in (RigAnimPlayerComponent.ApplyIk), so a scrub shows what the game will.
+			var solvedChain = goalForBone is null ? null : SolveLiveIk( goalForBone, resolved, poseForBone );
+
+			foreach ( var (bone, dragged) in order )
+			{
+				if ( !dragged && solvedChain?.Contains( bone.Key ) != true && bone.Parent is { } parent
+					&& resolved.TryGetValue( parent.Key, out var parentWorld ) && locals.TryGetValue( bone.Key, out var local ) )
+				{
+					// Carried by a chain that moved - or simply recomputed to the same answer.
+					resolved[bone.Key] = parentWorld.ToWorld( local );
+				}
+
+				if ( !dragged )
+					ApplyWorldTransform( bone, resolved[bone.Key] );
 			}
 		}
 		finally
 		{
 			_suppressAutoKey = false;
+		}
+	}
+
+	private readonly HashSet<string> _morphsShown = new();
+
+	/// <summary>
+	/// Show the clip's morphs at the playhead on the main model - the same values
+	/// RigAnimPlayerComponent applies in game (RigAnimDocument.MorphWeightsAt). A morph whose event
+	/// has ended is cleared, so scrubbing out of an "eat" range closes the mouth again.
+	/// </summary>
+	public void ApplyMorphs( IReadOnlyDictionary<string, float> weights )
+	{
+		if ( !_renderer.IsValid() )
+		{
+			_morphsShown.Clear();
+			return;
+		}
+
+		foreach ( var (name, value) in weights )
+		{
+			_renderer.Morphs.Set( name, value );
+			_morphsShown.Add( name );
+		}
+
+		_morphsShown.RemoveWhere( name =>
+		{
+			if ( weights.ContainsKey( name ) )
+				return false;
+
+			_renderer.Morphs.Clear( name );
+			return true;
+		} );
+	}
+
+	/// <summary>
+	/// The rig's live IK constraints, solved toward the clip's goals into <paramref name="resolved"/>
+	/// (world transforms by bone key, already holding the keyframed pose). Returns the keys of every
+	/// bone a solve placed, so the caller carries their children but leaves them alone.
+	///
+	/// Main model only: a goal is stored in the main model's space and names one of its bones. A
+	/// chain with a bone under the mouse is skipped - the drag owns it this frame.
+	/// </summary>
+	private HashSet<string> SolveLiveIk( Func<string, Transform?> goalForBone, Dictionary<string, Transform> resolved, Func<string, Transform?> poseForBone )
+	{
+		if ( Rig?.IkConstraints is not { Count: > 0 } constraints || !_renderer.IsValid() )
+			return null;
+
+		HashSet<string> placed = null;
+
+		foreach ( var ik in constraints )
+		{
+			if ( ik is null || !ik.Enabled || !ik.Live || goalForBone( ik.TargetBone ) is not { } goalLocal )
+				continue;
+
+			if ( FindBone( ik.TargetBone ) is not { Subject: RigTrackName.RootSubject } end )
+				continue;
+
+			var chain = new List<RigBone> { end };
+
+			for ( var k = 0; k < Math.Max( ik.ChainLength, 1 ) && chain[0].Parent is { } up; k++ )
+				chain.Insert( 0, up );
+
+			if ( chain.Count != Math.Max( ik.ChainLength, 1 ) + 1 )
+				continue;
+
+			if ( chain.Any( b => !resolved.ContainsKey( b.Key ) || (_draggingBone && _selectedBones.Contains( b.Key )) ) )
+				continue;
+
+			var world = chain.Select( b => resolved[b.Key] ).ToArray();
+			var goal = _renderer.WorldTransform.ToWorld( goalLocal );
+
+			if ( !RigConstraintSolver.SolveChain( world, goal.Position, ik.GoalRotation ? goal.Rotation : null,
+				_renderer.WorldRotation * ik.PoleDirection, ik.Iterations, ik.Weight ) )
+				continue;
+
+			placed ??= new HashSet<string>();
+
+			for ( var k = 0; k < chain.Count; k++ )
+			{
+				resolved[chain[k].Key] = world[k];
+				placed.Add( chain[k].Key );
+			}
+
+			// Anything under the chain is carried before the next constraint reads it - a finger IK
+			// solved after the arm's has to start from the hand where the arm put it.
+			CarryDescendants( chain, resolved, poseForBone );
+		}
+
+		return placed;
+	}
+
+	/// <summary>Recompute every bone below a solved chain from its parent's new world transform and
+	/// its own local pose as it stood before the solve.</summary>
+	private void CarryDescendants( List<RigBone> chain, Dictionary<string, Transform> resolved, Func<string, Transform?> poseForBone )
+	{
+		var inChain = chain.Select( b => b.Key ).ToHashSet();
+		var moved = new HashSet<string>( inChain );
+
+		foreach ( var (bone, _) in LiveBones() )
+		{
+			if ( bone.Subject != RigTrackName.RootSubject || inChain.Contains( bone.Key ) )
+				continue;
+
+			if ( bone.Parent is not { } parent || !moved.Contains( parent.Key ) )
+				continue;
+
+			if ( !resolved.ContainsKey( bone.Key ) || (_draggingBone && _selectedBones.Contains( bone.Key )) )
+				continue;
+
+			// The bone's own keyed (or bind) pose - what this pass placed it from before its parent moved.
+			var local = RigConstraintSolver.ClampToLimits( Rig, bone.Key, poseForBone?.Invoke( bone.Key ) ?? BindPoseFor( bone ) );
+
+			resolved[bone.Key] = resolved[parent.Key].ToWorld( local );
+			moved.Add( bone.Key );
 		}
 	}
 
@@ -2544,6 +2687,8 @@ internal sealed class RigViewport : Widget
 			Gizmo.Draw.Grid( 0, Gizmo.GridAxis.XY );
 
 		DrawPlayerReference();
+		DrawOnionSkin();
+		DrawMotionTrail();
 		DrawBoneHandles();
 		DrawMovables();
 		DrawCameras();
@@ -3142,11 +3287,20 @@ internal sealed class RigViewport : Widget
 		}
 
 		// IK first: if this bone is an enabled IK target, dragging it should bend the chain
-		// behind it rather than tear the effector off its parent.
+		// behind it rather than tear the effector off its parent. ChainLength picks how far up
+		// the solve reaches - see RigConstraintSolver.SolveChain.
+		//
+		// A LIVE constraint keys its GOAL instead of the chain: the bones are moved here so the
+		// drag looks right, but what is recorded is where the hand was asked to be, and the scrub
+		// solves toward it from then on. Main model only - a goal lives in its space.
+		var live = RigConstraintSolver.FindIkFor( Rig, bone.Key ) is { Live: true } && bone.Subject == RigTrackName.RootSubject;
+
 		if ( RigConstraintSolver.FindIkFor( Rig, bone.Key ) is { } ik
-			&& RigConstraintSolver.TrySolveTwoBone( bone.Renderer, bone.Bone, newWorld.Position, ik.PoleDirection, out var chain ) )
+			&& RigConstraintSolver.TrySolve( bone.Renderer, bone.Bone, ik, newWorld.Position,
+				live ? newWorld.Rotation : null, out var chain ) )
 		{
-			var weight = ik.Weight.Clamp( 0f, 1f );
+			// SolveChain has already blended by Weight against the pose it started from.
+			var weight = 1f;
 
 			// What this pass actually wrote, keyed by bone. THE WHOLE CHAIN MOVES IN THIS ONE
 			// FRAME, and bone writes don't land until the next tick - so a chain bone's keyframe
@@ -3186,11 +3340,22 @@ internal sealed class RigViewport : Widget
 				// it. For an arm IK that's the hand and every finger under the wrist.
 				PropagateToDescendants( chainBone, blended );
 
-				NotifyPosed( chainBone, blended,
-					chainBone.Parent is { } chainParent && solved.TryGetValue( chainParent.Key, out var solvedParent )
-						? solvedParent
-						: null );
+				// Live: the chain is the solve's, so only the goal is keyed - except the end bone when the
+				// goal does not carry its rotation. Then the end's own keys are where a turned hand lives,
+				// and skipping them would show the rotation during the drag and lose it on the next scrub.
+				var keyEnd = live && !ik.GoalRotation && chainBone.Key == bone.Key;
+
+				if ( !live || keyEnd )
+				{
+					NotifyPosed( chainBone, blended,
+						chainBone.Parent is { } chainParent && solved.TryGetValue( chainParent.Key, out var solvedParent )
+							? solvedParent
+							: null );
+				}
 			}
+
+			if ( live && !_suppressAutoKey && AutoKeyEnabled )
+				IkGoalPosed?.Invoke( bone.Key, bone.Renderer.WorldTransform.ToLocal( newWorld ) );
 
 			return;
 		}

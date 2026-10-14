@@ -38,6 +38,9 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 	private RigLightsPanel _lights;
 	private RigCamerasPanel _cameras;
 	private RigInspectorPanel _inspector;
+	private RigGripPanel _grip;
+	private RigTakeCheckPanel _takeCheck;
+	private RigGraphEditor _graph;
 	private DockWidget _centralDock;
 
 	private Option _saveOption;
@@ -221,6 +224,142 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		edit.AddSeparator();
 		edit.AddOption( "Clear Keyframes on Selection", "clear_all", ClearSelectedBoneKeyframes )
 			.StatusTip = "Remove every keyframe from whichever bone or part is selected in the viewport, so it can be re-posed from scratch";
+
+		edit.AddSeparator();
+		edit.AddOption( "Mirror Pose", "flip", () => MirrorPose( true ), "rig.mirrorpose" )
+			.StatusTip = "Swap left and right at the playhead - the selected bones and their partners, or the whole body if nothing is selected - and key the result";
+		edit.AddOption( "Copy Pose to Other Side", "compare_arrows", () => MirrorPose( false ), "rig.mirrorcopy" )
+			.StatusTip = "Pose one side, get the other: each selected bone's partner (hand_L for hand_R) takes its mirror image, keyed at the playhead";
+
+		edit.AddSeparator();
+		edit.AddOption( "Add Mark at Playhead", "bookmark_add", AddMark, "rig.addmark" )
+			.StatusTip = "A named frame saved in the clip - contact, release, a sound cue. Drawn on the timeline ruler; RigAnimPlayerComponent.MarkReached fires on it in game";
+	}
+
+	[Shortcut( "rig.mirrorpose", "CTRL+M", ShortcutType.Window )]
+	private void MirrorPoseShortcut() => MirrorPose( true );
+
+	[Shortcut( "rig.addmark", "M", ShortcutType.Window )]
+	private void AddMarkShortcut() => AddMark();
+
+	/// <summary>
+	/// Mirror the pose at the playhead and key it. See RigViewport.MirroredLocals for how a side is
+	/// mirrored onto the other without assuming the two were rigged with the same axes.
+	///
+	/// ONLY WHAT CHANGED IS KEYED. Mirroring a symmetric spine gives the spine back; keying it
+	/// anyway would litter every untouched bone with a key it never needed.
+	///
+	/// Live IK goals are mirrored too. Without that a mirrored arm would be pulled straight back to
+	/// where its goal still says it is, the moment the scrub solved it.
+	/// </summary>
+	private void MirrorPose( bool flip )
+	{
+		if ( _anim is null )
+			return;
+
+		var selected = _viewport.SelectedBones.Where( b => RigTrackName.SubjectOf( b ) == RigTrackName.RootSubject ).ToList();
+
+		if ( !flip && selected.Count == 0 )
+		{
+			RigStatusBar.Show( "Select the bones to copy across first - their partners on the other side take the mirror" );
+			return;
+		}
+
+		var locals = _viewport.MirroredLocals( selected.Count > 0 ? selected : null, flip );
+
+		if ( locals.Count == 0 )
+		{
+			RigStatusBar.Show( "Nothing to mirror - no bone in the selection has a partner on the other side" );
+			return;
+		}
+
+		var frame = (int)MathF.Round( _timeline.Playhead );
+		var keyed = 0;
+
+		foreach ( var (bone, local) in locals )
+		{
+			_viewport.TryGetLocalTransform( bone, out var current );
+
+			if ( _anim.FindTrack( bone ) is null && current.Position.AlmostEqual( local.Position, 0.001f ) && current.Rotation.Distance( local.Rotation ) < 0.01f )
+				continue;
+
+			_anim.GetOrAddTrack( bone ).SetKeyframe( frame, local );
+			keyed++;
+		}
+
+		keyed += MirrorIkGoals( locals.Keys, frame );
+
+		OnScrub( _timeline.Playhead );
+		_timeline.Refresh();
+		MarkDirty( flip ? "Mirror Pose" : "Copy Pose to Other Side" );
+
+		RigStatusBar.Show( $"Mirrored {keyed} key(s) at frame {frame}" );
+	}
+
+	/// <summary>Each mirrored end bone's live goal takes its partner's goal, reflected the same way
+	/// its bone was. Returns how many goals were keyed.</summary>
+	private int MirrorIkGoals( IEnumerable<string> targets, int frame )
+	{
+		if ( _rig?.IkConstraints is null || _viewport.Renderer?.Model?.Bones is not { } bones )
+			return 0;
+
+		// Every source read BEFORE anything is written: a flip swaps two goals, and writing hand_L
+		// first would hand hand_R its own pose back.
+		var writes = new List<(string Target, Transform Goal)>();
+
+		foreach ( var target in targets )
+		{
+			if ( RigConstraintSolver.FindIkFor( _rig, target ) is not { Live: true } )
+				continue;
+
+			var source = Effigy.Skeleton.FlipSideSuffix( target ) ?? target;
+
+			if ( bones.GetBone( source ) is not { } sourceBone || bones.GetBone( target ) is not { } targetBone )
+				continue;
+
+			Transform sourceGoal;
+
+			if ( _anim.FindIkGoalTrack( source ) is { Keyframes.Count: > 0 } goalTrack )
+				sourceGoal = goalTrack.Evaluate( frame );
+			else if ( _anim.FindIkGoalTrack( target ) is { Keyframes.Count: > 0 } )
+				// The partner is not goal-driven, but this side is: its goal has to follow the mirrored
+				// bone, or the next scrub pulls the arm straight back. Where the partner's end bone is
+				// IS the goal it would have had.
+				sourceGoal = _viewport.Renderer.WorldTransform.ToLocal(
+					_viewport.TryGetWorldTransform( source, out var world ) ? world : _viewport.Renderer.WorldTransform );
+			else
+				continue;
+
+			writes.Add( (target, RigViewport.MirrorModelTransform( sourceGoal, sourceBone.LocalTransform, targetBone.LocalTransform )) );
+		}
+
+		foreach ( var (target, goal) in writes )
+			_anim.GetOrAddIkGoalTrack( target ).SetKeyframe( frame, goal );
+
+		return writes.Count;
+	}
+
+	/// <summary>A mark at the playhead, named for its place in the clip until someone names it.
+	/// Renamed and moved on the timeline ruler.</summary>
+	private void AddMark()
+	{
+		if ( _anim is null )
+			return;
+
+		var frame = (int)MathF.Round( _timeline.Playhead );
+		_anim.Marks ??= new List<RigMark>();
+
+		if ( _anim.Marks.Any( m => m is not null && m.Frame == frame ) )
+		{
+			RigStatusBar.Show( $"Frame {frame} already has a mark" );
+			return;
+		}
+
+		_anim.Marks.Add( new RigMark { Name = $"mark {_anim.Marks.Count + 1}", Frame = frame } );
+		_timeline.Refresh();
+		MarkDirty( "Add Mark" );
+
+		RigStatusBar.Show( $"Marked frame {frame} - right-click it on the ruler to rename" );
 	}
 
 	/// <summary>Wipes one bone's whole track - the fast way to redo a bone that was posed wrong
@@ -236,10 +375,18 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 			return;
 
 		var track = _viewport.SelectedBone is not null ? _anim.FindTrack( bone ) : _anim.FindPartTrack( bone );
-		if ( track is null || track.Keyframes.Count == 0 )
+
+		// A bone's IK goal goes too: cleared to be re-posed from scratch, a hand still pulled to its
+		// old goal has not been cleared at all.
+		var goal = _viewport.SelectedBone is not null ? _anim.FindIkGoalTrack( bone ) : null;
+
+		if ( (track is null || track.Keyframes.Count == 0) && (goal is null || goal.Keyframes.Count == 0) )
 			return;
 
-		track.Keyframes.Clear();
+		track?.Keyframes.Clear();
+		goal?.Keyframes.Clear();
+
+		OnScrub( _timeline.Playhead );
 
 		_timeline.Refresh();
 		MarkDirty( $"Clear Keyframes on {bone}" );
@@ -733,6 +880,7 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 			RefreshTutorial();
 		};
 		_viewport.BonePosed += OnBonePosed;
+		_viewport.IkGoalPosed += OnIkGoalPosed;
 		_viewport.BoneDragStarted += OnBoneDragStarted;
 		_viewport.BoneDragEnded += OnBoneDragEnded;
 
@@ -833,7 +981,57 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 			Changed = label =>
 			{
 				_viewport.SetCameras( _anim?.Cameras );
+				_viewport.ShowCameraFrame( _anim, _timeline.Playhead );
+				_timeline.Refresh();
 				MarkDirty( label );
+			},
+			Playhead = () => (int)MathF.Round( _timeline.Playhead ),
+		};
+
+		// The grip is its own asset and saves itself; the panel tracks its own unsaved state. Only
+		// keying the fingers touches the clip, so only that is a clip edit with an undo step.
+		_grip = new RigGripPanel( this, _viewport )
+		{
+			Changed = label =>
+			{
+				if ( label != "Key Grip Fingers" )
+					return;
+
+				_timeline.Refresh();
+				MarkDirty( label );
+			},
+		};
+
+		// Edits a drag at a time like the viewport: Changing on every step (the pose follows, no undo
+		// yet), Edited once at the end (one undo step for the whole drag, from the baseline).
+		_graph = new RigGraphEditor( this )
+		{
+			TrackSource = () => _timeline?.SelectedTrack,
+			Playhead = () => _timeline?.Playhead ?? 0f,
+			Scrubbed = frame =>
+			{
+				_timeline.Playhead = frame;
+				OnScrub( frame );
+			},
+			Changing = () =>
+			{
+				OnScrub( _timeline.Playhead );
+				_timeline.Refresh();
+				MarkDirtyOnly();
+			},
+			Edited = label =>
+			{
+				_timeline.Refresh();
+				MarkDirty( label );
+			},
+		};
+
+		_takeCheck = new RigTakeCheckPanel( this, _viewport )
+		{
+			ScrubTo = frame =>
+			{
+				_timeline.Playhead = frame;
+				OnScrub( frame );
 			},
 		};
 
@@ -866,6 +1064,9 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		DockManager.RegisterDock( new() { Title = "Inspector", Icon = "tune", Area = DockArea.Hidden, CreateAction = () => _inspector } );
 		DockManager.RegisterDock( new() { Title = "Lights", Icon = "lightbulb", Area = DockArea.Hidden, CreateAction = () => _lights } );
 		DockManager.RegisterDock( new() { Title = "Cameras", Icon = "videocam", Area = DockArea.Hidden, CreateAction = () => _cameras } );
+		DockManager.RegisterDock( new() { Title = "Grip", Icon = "pan_tool", Area = DockArea.Hidden, CreateAction = () => _grip } );
+		DockManager.RegisterDock( new() { Title = "TakeCheck", Icon = "rule", Area = DockArea.Hidden, CreateAction = () => _takeCheck } );
+		DockManager.RegisterDock( new() { Title = "Graph", Icon = "show_chart", Area = DockArea.Hidden, CreateAction = () => _graph } );
 
 		// THE EDITOR'S OWN CONSOLE, not one of ours.
 		//
@@ -899,7 +1100,10 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		// splitter proportions. Both live entirely in the saved layout, so a restored Marionette3
 		// layout would keep the old arrangement and BuildDefaultLayout would never run again.
 		// Bumped again for the taller timeline row, and again for the Console dock.
-		StateCookie = "Marionette6";
+		// Bumped again for the Graph dock, tabbed beside the Timeline - a dock that only exists in
+		// BuildDefaultLayout never appears for anyone with a saved layout. Grip and Take Check are
+		// left to the View menu and need no bump.
+		StateCookie = "Marionette7";
 
 		_lastModel = _anim.SourceModel;
 		_viewport.SetModel( _lastModel );
@@ -954,6 +1158,10 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		// gone wrong or a builder command has been run - worth one click, not worth permanent
 		// space next to the thing you use every second.
 		DockManager.OpenDock( "Console", DockArea.Center, timeline );
+
+		// The graph is the timeline's other view of the same keys, so it shares the timeline's
+		// space rather than taking more of the viewport's.
+		DockManager.OpenDock( "Graph", DockArea.Center, timeline );
 		DockManager.RaiseDock( "Timeline" );
 	}
 
@@ -972,6 +1180,8 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		_lights?.SetAnim( _anim );
 		_viewport.SetCameras( _anim?.Cameras );
 		_cameras?.SetAnim( _anim );
+		_grip?.SetAnim( _anim );
+		_takeCheck?.SetAnim( _anim, _asset );
 
 		// SourceModel on the clip itself wins; the rig's own model is only a fallback for a clip
 		// that hasn't set one yet. Previously this only ever updated the viewport in the fallback
@@ -1064,13 +1274,38 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		// hand that opened it is on, or the clip is only half scrubbed.
 		_viewport.ApplyPartPose( part => _anim.FindPartTrack( part ) is { } track && track.Keyframes.Count > 0 ? track.Evaluate( frame ) : null );
 
-		_viewport.EvaluatePose( bone => _anim.FindTrack( bone ) is { } track && track.Keyframes.Count > 0 ? track.Evaluate( frame ) : null );
+		_viewport.EvaluatePose(
+			bone => _anim.FindTrack( bone ) is { } track && track.Keyframes.Count > 0 ? track.Evaluate( frame ) : null,
+			bone => _anim.FindIkGoalTrack( bone ) is { } goal && goal.Keyframes.Count > 0 ? goal.Evaluate( frame ) : null );
+
+		_anim.MorphWeightsAt( frame, _morphScratch );
+		_viewport.ApplyMorphs( _morphScratch );
+		_viewport.ShowCameraFrame( _anim, frame );
+		_viewport.UpdateOnionSkin( _anim, frame );
 
 		// Scrubbing changes the pose without any drag, so nothing else would update the fields.
 		_inspector?.Refresh();
+		_graph?.Refresh();
 	}
 
+	private readonly Dictionary<string, float> _morphScratch = new();
+
 	private void Scrub( float frame ) => _timeline.Playhead = frame;
+
+	/// <summary>A live IK goal dragged in the viewport is keyed on its own track, the same frame and
+	/// the same one-undo-step-per-drag rule as a bone. See TrackTarget.IkGoal.</summary>
+	private void OnIkGoalPosed( string bone, Transform goal )
+	{
+		if ( _anim is null )
+			return;
+
+		_anim.GetOrAddIkGoalTrack( bone ).SetKeyframe( (int)MathF.Round( _timeline.Playhead ), goal );
+
+		_timeline.Refresh();
+		_inspector?.Refresh();
+
+		MarkDirtyOnly();
+	}
 
 	// UNDO
 	//
@@ -1133,8 +1368,11 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 	{
 		snapshot.RestoreTo( _anim, _rig );
 
-		// The document changed underneath every panel, so all of them are stale.
+		// The document changed underneath every panel, so all of them are stale - including the
+		// timeline's selected keys, which belong to tracks the snapshot just replaced.
+		_timeline.DropSelection();
 		_timeline.Refresh();
+		_graph?.Refresh();
 		_events.SetAsset( _anim );
 		_bones.SetAsset( _asset, _anim );
 		_bones.Rebuild();
@@ -1146,6 +1384,11 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		_viewport.SetObjects( _anim?.Objects );
 		_viewport.SetLights( _anim?.Lights );
 		_lights?.Rebuild();
+
+		// Cameras are cloned by the snapshot like lights - and can be keyed now - so the panel has
+		// to let go of the objects it was holding.
+		_viewport.SetCameras( _anim?.Cameras );
+		_cameras?.SetAnim( _anim );
 
 		// And the viewport is still showing the pose from before the undo.
 		OnScrub( _timeline.Playhead );
@@ -1200,6 +1443,9 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 
 		if ( _saveOption is not null )
 			_saveOption.Enabled = true;
+
+		// Onion skin and the motion trail are drawn from the document, so any edit to it moves them.
+		_viewport?.InvalidateOverlays();
 
 		RefreshTutorial();
 	}

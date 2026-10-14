@@ -21,6 +21,7 @@ internal sealed class RigSnapshot
 	private List<BoneTrack> _tracks;
 	private List<RigEvent> _events;
 	private List<MorphEvent> _morphs;
+	private List<RigMark> _marks;
 	private List<ReferenceProp> _references;
 	private int _frameCount;
 	private int _animationSpeed;
@@ -43,6 +44,7 @@ internal sealed class RigSnapshot
 			snap._tracks = anim.BoneTracks.Select( Clone ).ToList();
 			snap._events = anim.Events.Select( Clone ).ToList();
 			snap._morphs = anim.MorphEvents.Select( Clone ).ToList();
+			snap._marks = (anim.Marks ?? new List<RigMark>()).Where( m => m is not null ).Select( Clone ).ToList();
 			snap._references = anim.ReferenceProps.Select( Clone ).ToList();
 
 			// Objects are a document edit like any other - importing one, moving a part, renaming
@@ -86,6 +88,7 @@ internal sealed class RigSnapshot
 			anim.BoneTracks = _tracks.Select( Clone ).ToList();
 			anim.Events = _events.Select( Clone ).ToList();
 			anim.MorphEvents = _morphs.Select( Clone ).ToList();
+			anim.Marks = (_marks ?? new List<RigMark>()).Select( Clone ).ToList();
 			anim.ReferenceProps = _references.Select( Clone ).ToList();
 			anim.Objects = (_objects ?? new List<RigObject>()).Select( Clone ).ToList();
 			anim.Lights = (_lights ?? new List<RigLight>()).Select( Clone ).ToList();
@@ -140,7 +143,12 @@ internal sealed class RigSnapshot
 		{
 			Frame = k.Frame,
 			Local = k.Local,
-			Interpolation = k.Interpolation
+			Interpolation = k.Interpolation,
+
+			// A graph-editor tangent is part of the key. Left out, any undo at all would quietly
+			// put every hand-set tangent back to automatic.
+			TangentIn = k.TangentIn is null ? null : new List<float>( k.TangentIn ),
+			TangentOut = k.TangentOut is null ? null : new List<float>( k.TangentOut ),
 		} ).ToList()
 	};
 
@@ -208,6 +216,13 @@ internal sealed class RigSnapshot
 		Value = m.Value
 	};
 
+	private static RigMark Clone( RigMark m ) => new()
+	{
+		Name = m.Name,
+		Frame = m.Frame,
+		Note = m.Note
+	};
+
 	private static IkConstraint Clone( IkConstraint c ) => new()
 	{
 		Name = c.Name,
@@ -216,7 +231,9 @@ internal sealed class RigSnapshot
 		Enabled = c.Enabled,
 		ChainLength = c.ChainLength,
 		PoleDirection = c.PoleDirection,
-		Iterations = c.Iterations
+		Iterations = c.Iterations,
+		Live = c.Live,
+		GoalRotation = c.GoalRotation
 	};
 
 	private static LimitConstraint Clone( LimitConstraint c ) => new()

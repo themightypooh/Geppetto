@@ -26,12 +26,18 @@ internal sealed class EffigyAnimClipsWindow : Window
 {
 	private readonly List<EffigyAnimExport.ClipSource> _clips;
 
+	/// <summary>Raised after any edit to the list — add, remove, rename, looping — so the owner can
+	/// dirty its document. The list is saved beside the .effigy (AnimClipsSidecar), so an edit here
+	/// is an unsaved change like any other.</summary>
+	private readonly Action _changed;
+
 	private Widget _list;
 	private Editor.Label _empty;
 
-	public EffigyAnimClipsWindow( Widget owner, List<EffigyAnimExport.ClipSource> clips )
+	public EffigyAnimClipsWindow( Widget owner, List<EffigyAnimExport.ClipSource> clips, Action changed = null )
 	{
 		_clips = clips;
+		_changed = changed;
 
 		// Owned by Effigy, for the reason EffigySettingsWindow spells out: parenting a dialog to a
 		// different top-level window hands focus to that window's group and drops Effigy behind it.
@@ -130,7 +136,11 @@ internal sealed class EffigyAnimClipsWindow : Window
 
 		// TextEdited rather than EditingFinished: the dialog can be closed with the caret still in
 		// the box, and a name typed but not committed would export under the old one.
-		name.TextEdited += text => clip.Name = text;
+		name.TextEdited += text =>
+		{
+			clip.Name = text;
+			_changed?.Invoke();
+		};
 
 		top.Add( name, 1 );
 
@@ -141,6 +151,7 @@ internal sealed class EffigyAnimClipsWindow : Window
 			Clicked = () =>
 			{
 				_clips.Remove( clip );
+				_changed?.Invoke();
 				Rebuild();
 			},
 		};
@@ -150,16 +161,20 @@ internal sealed class EffigyAnimClipsWindow : Window
 		var bottom = row.Layout.AddRow();
 		bottom.Spacing = 6;
 
-		var path = new Editor.Label( clip.Asset?.Path ?? "(missing)" )
+		var path = new Editor.Label( clip.Asset?.Path ?? $"(missing) {clip.MissingPath}" )
 		{
-			ToolTip = clip.Asset?.Path,
+			ToolTip = clip.Asset?.Path ?? clip.MissingPath,
 		};
 
 		bottom.Add( path, 1 );
 		bottom.Add( new Editor.Label( "Looping" ) );
 
 		var looping = new EffigyToggleSwitch( row, clip.Looping );
-		looping.ValueChanged = value => clip.Looping = value;
+		looping.ValueChanged = value =>
+		{
+			clip.Looping = value;
+			_changed?.Invoke();
+		};
 
 		bottom.Add( looping );
 
@@ -178,6 +193,8 @@ internal sealed class EffigyAnimClipsWindow : Window
 
 		picker.OnAssetPicked = assets =>
 		{
+			var added = false;
+
 			foreach ( var asset in assets ?? Enumerable.Empty<Asset>() )
 			{
 				if ( asset is null )
@@ -185,7 +202,7 @@ internal sealed class EffigyAnimClipsWindow : Window
 
 				// Adding the same file twice would write one .dmx and list it twice, so the model
 				// would carry two identical animations under two names.
-				if ( _clips.Any( c => c.Asset?.Path == asset.Path ) )
+				if ( _clips.Any( c => (c.Asset?.Path ?? c.MissingPath) == asset.Path ) )
 					continue;
 
 				_clips.Add( new EffigyAnimExport.ClipSource
@@ -193,7 +210,12 @@ internal sealed class EffigyAnimClipsWindow : Window
 					Asset = asset,
 					Name = UniqueName( EffigyAnimExport.ClipSource.NameOf( asset ) ),
 				} );
+
+				added = true;
 			}
+
+			if ( added )
+				_changed?.Invoke();
 
 			Rebuild();
 		};
@@ -219,5 +241,112 @@ internal sealed class EffigyAnimClipsWindow : Window
 		}
 
 		return wanted;
+	}
+}
+
+/// <summary>
+/// Where the Animation Clips list lives next to a document.
+///
+/// One JSON file beside the .effigy: `model.effigy` keeps its clips in `model.animclips.json`. Not
+/// in the document itself, for the reason on EffigyWindow._animClips — a .riganim references a
+/// model, so a model referencing its .riganims is a loop StudioDocument would have to break. A
+/// side-car is editor-only, so the kernel never sees it and the loop never forms.
+///
+/// Each clip is stored by its project-relative asset path (Asset.Path) and resolved again with
+/// AssetSystem.FindByPath on load, the same way the rest of the editor finds models and materials.
+/// A path nothing answers to is kept as MissingPath rather than dropped, so a clip whose addon is
+/// not mounted today is not erased by the next save.
+///
+/// UNLIKE SculptSidecar and ImportSidecar, saving an EMPTY list deletes the file. Theirs are keyed
+/// by feature id, so a stale blob is simply never claimed; this one is the whole list, so a stale
+/// file would put back every clip the user had just removed.
+/// </summary>
+internal static class AnimClipsSidecar
+{
+	public const string Suffix = ".animclips.json";
+
+	public static string PathFor( string documentPath )
+	{
+		if ( string.IsNullOrWhiteSpace( documentPath ) )
+			throw new ArgumentException( "A document path is needed to find its animation clips.", nameof( documentPath ) );
+
+		var dir = Path.GetDirectoryName( documentPath ) ?? "";
+		return Path.Combine( dir, Path.GetFileNameWithoutExtension( documentPath ) + Suffix );
+	}
+
+	sealed class ClipsData
+	{
+		public int Version { get; set; } = 1;
+		public ClipData[] Clips { get; set; }
+	}
+
+	sealed class ClipData
+	{
+		public string Asset { get; set; }
+		public string Name { get; set; }
+		public bool Looping { get; set; } = true;
+	}
+
+	/// <summary>Write the list, or delete the file if the list is empty. Returns how many it wrote.</summary>
+	public static int Save( IReadOnlyList<EffigyAnimExport.ClipSource> clips, string documentPath )
+	{
+		var path = PathFor( documentPath );
+
+		var entries = (clips ?? Array.Empty<EffigyAnimExport.ClipSource>())
+			.Where( c => c is not null && !string.IsNullOrWhiteSpace( c.Asset?.Path ?? c.MissingPath ) )
+			.Select( c => new ClipData { Asset = c.Asset?.Path ?? c.MissingPath, Name = c.Name, Looping = c.Looping } )
+			.ToArray();
+
+		if ( entries.Length == 0 )
+		{
+			if ( File.Exists( path ) )
+				File.Delete( path );
+
+			return 0;
+		}
+
+		File.WriteAllText( path, Json.Serialize( new ClipsData { Clips = entries } ) );
+		return entries.Length;
+	}
+
+	/// <summary>
+	/// Replace <paramref name="clips"/> with what is saved beside the document. No file is an empty
+	/// list. A file that will not parse throws, and the list is left empty rather than half-filled.
+	/// </summary>
+	public static int Load( List<EffigyAnimExport.ClipSource> clips, string documentPath )
+	{
+		if ( clips is null )
+			throw new ArgumentNullException( nameof( clips ) );
+
+		clips.Clear();
+
+		var path = PathFor( documentPath );
+
+		if ( !File.Exists( path ) )
+			return 0;
+
+		var data = Json.Deserialize<ClipsData>( File.ReadAllText( path ) )
+			?? throw new InvalidDataException( "The clip list is empty or not JSON." );
+
+		foreach ( var entry in data.Clips ?? Array.Empty<ClipData>() )
+		{
+			if ( entry is null || string.IsNullOrWhiteSpace( entry.Asset ) )
+				continue;
+
+			var asset = AssetSystem.FindByPath( entry.Asset );
+
+			if ( asset is null )
+				Log.Warning( $"[Effigy] clip '{entry.Name}' points at {entry.Asset}, which is not in the project - kept, but it will not export" );
+
+			clips.Add( new EffigyAnimExport.ClipSource
+			{
+				Asset = asset,
+				MissingPath = asset is null ? entry.Asset : null,
+				Name = string.IsNullOrWhiteSpace( entry.Name ) ? Path.GetFileNameWithoutExtension( entry.Asset ) : entry.Name,
+				Looping = entry.Looping,
+			} );
+		}
+
+		return clips.Count;
 	}
 }

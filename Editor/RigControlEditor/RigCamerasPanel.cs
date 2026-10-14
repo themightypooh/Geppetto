@@ -39,6 +39,9 @@ internal sealed class RigCamerasPanel : Widget
 	/// rebuilds, marks dirty and records the undo step.</summary>
 	public Action<string> Changed { get; set; }
 
+	/// <summary>The frame a Key button keys at - the timeline's playhead.</summary>
+	public Func<int> Playhead { get; set; }
+
 	public RigCamerasPanel( Widget parent, RigViewport viewport ) : base( parent )
 	{
 		_viewport = viewport;
@@ -60,6 +63,12 @@ internal sealed class RigCamerasPanel : Widget
 					"looking, with the viewport's own field of view. Fly to where the shot " +
 					"should be, click the button. That is the whole workflow - find the framing, " +
 					"then save it." ),
+
+				RigHelpBox.S( "Key / Key From View",
+					"A camera can move. Key stores its placement and lens at the playhead; Key From " +
+					"View places it at the viewport camera first. Keys show on the Timeline as the " +
+					"camera's own row, and ease, curve and copy like any other. Look Through puts you " +
+					"at the shot as it is on this frame." ),
 
 				RigHelpBox.S( "Export With Clip",
 					"Off means the camera is workspace - this window only, never in a game. On " +
@@ -156,6 +165,19 @@ internal sealed class RigCamerasPanel : Widget
 		header.Add( chip );
 		header.Add( new Editor.Label( camera.Name ) { Enabled = false }, 1 );
 
+		// A keyed camera's fields are where it sits with no keys; on screen it is where its track
+		// puts it. Saying so is the difference between "my edit did nothing" and knowing why.
+		if ( _anim?.FindCameraTrack( camera.Name ) is { Keyframes.Count: > 0 } keyed )
+		{
+			var badge = new Editor.Label( $"{keyed.Keyframes.Count} key(s)" )
+			{
+				Color = Theme.Yellow,
+				ToolTip = "This camera moves: its track places it, so the fields below only matter where it has no keys"
+			};
+			badge.SetStyles( "font-weight: bold;" );
+			header.Add( badge );
+		}
+
 		// The one badge worth having on the header: whether this camera leaves the window. It is
 		// the difference between a working shot and something that will show up in a game.
 		if ( camera.Export )
@@ -166,9 +188,16 @@ internal sealed class RigCamerasPanel : Widget
 		}
 
 		var serialized = EditorTypeLibrary.GetSerializedObject( camera );
+		var nameBefore = camera.Name;
 
 		serialized.OnPropertyChanged += _ =>
 		{
+			// A camera's keys are stored under its name, so a rename takes them along rather than
+			// leaving them behind on a track nothing answers to.
+			if ( camera.Name != nameBefore && _anim?.FindCameraTrack( nameBefore ) is { } track && _anim.FindCameraTrack( camera.Name ) is null )
+				track.BoneName = camera.Name;
+
+			nameBefore = camera.Name;
 			Changed?.Invoke( "Edit Camera" );
 			Rebuild();
 		};
@@ -213,6 +242,12 @@ internal sealed class RigCamerasPanel : Widget
 			}
 		} );
 
+		row.Layout.Add( new Button( "Look Through", "visibility" )
+		{
+			ToolTip = "Put the viewport camera at this shot as it is on the current frame",
+			Clicked = () => _viewport?.LookThrough( camera )
+		} );
+
 		row.Layout.AddStretchCell();
 
 		row.Layout.Add( new Button( "Delete", "delete" )
@@ -220,12 +255,84 @@ internal sealed class RigCamerasPanel : Widget
 			Clicked = () =>
 			{
 				Cameras.Remove( camera );
+
+				// Its keys go with it - a track for a camera that no longer exists is a row on the
+				// timeline nobody can explain.
+				_anim?.BoneTracks.RemoveAll( t => t.Target == TrackTarget.Camera && t.BoneName == camera.Name );
+
 				Rebuild();
 				Changed?.Invoke( "Delete Camera" );
 			}
 		} );
 
-		return row;
+		var keys = new Widget { Layout = Layout.Column() };
+		keys.Layout.Spacing = 4;
+		keys.Layout.Add( row );
+
+		var keyRow = keys.Layout.AddRow();
+		keyRow.Spacing = 4;
+
+		keyRow.Add( new Button( "Key", "key" )
+		{
+			ToolTip = "Key this camera's placement and lens at the playhead",
+			Clicked = () => Key( camera, false )
+		} );
+
+		keyRow.Add( new Button( "Key From View", "photo_camera" )
+		{
+			ToolTip = "Place this camera at the viewport camera, then key it at the playhead - fly, key, scrub, fly, key",
+			Clicked = () => Key( camera, true )
+		} );
+
+		keyRow.AddStretchCell();
+
+		if ( _anim?.FindCameraTrack( camera.Name ) is { Keyframes.Count: > 0 } )
+		{
+			keyRow.Add( new Button( "Clear Keys", "clear_all" )
+			{
+				ToolTip = "Remove every key from this camera, so it sits still where its fields put it",
+				Clicked = () =>
+				{
+					_anim.BoneTracks.RemoveAll( t => t.Target == TrackTarget.Camera && t.BoneName == camera.Name );
+					Rebuild();
+					Changed?.Invoke( "Clear Camera Keys" );
+				}
+			} );
+		}
+
+		return keys;
+	}
+
+	/// <summary>
+	/// Key a camera at the playhead. The fields are updated as well, so a camera keyed once and then
+	/// cleared stays where it was last keyed rather than jumping back.
+	/// </summary>
+	private void Key( RigCamera camera, bool fromView )
+	{
+		if ( _anim is null )
+			return;
+
+		var frame = Playhead?.Invoke() ?? 0;
+
+		if ( fromView )
+		{
+			PlaceAtCamera( camera );
+		}
+		else
+		{
+			// Where the shot IS on this frame - between two keys, that is the move, not wherever the
+			// fields were last left. Keying the fields here would put the last key's framing mid-move.
+			var (world, fov) = _anim.CameraAt( camera, frame );
+			camera.Position = world.Position;
+			camera.Rotation = world.Rotation.Angles();
+			camera.FieldOfView = fov;
+		}
+
+		_anim.GetOrAddCameraTrack( camera.Name ).SetKeyframe( frame,
+			RigAnimDocument.CameraKey( camera.Position, camera.Rotation.ToRotation(), camera.FieldOfView ) );
+
+		Rebuild();
+		Changed?.Invoke( "Key Camera" );
 	}
 
 	/// <summary>Where you are looking from, aimed where you are looking, with the viewport's own

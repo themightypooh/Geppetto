@@ -41,6 +41,30 @@ public sealed class AnimClip
 	public int FrameCount => Frames.Count;
 
 	/// <summary>
+	/// Scales[frame][bone]: each bone's uniform scale, or null - the usual case - when nothing in
+	/// the clip scales. Kept apart from <see cref="Frames"/> because a pose's rotation goes into the
+	/// file as a quaternion read off the basis, and a scale folded into that basis would come out as
+	/// a skew. Uniform because a Source 2 bone scales in one number.
+	/// </summary>
+	public List<float[]> Scales;
+
+	/// <summary>The bones whose scale is anything but 1 on some frame - the ones a scale channel is
+	/// worth writing for.</summary>
+	public bool Scaled( int bone )
+	{
+		if ( Scales is null )
+			return false;
+
+		foreach ( var frame in Scales )
+		{
+			if ( frame is not null && MathF.Abs( frame[bone] - 1f ) > 1e-5f )
+				return true;
+		}
+
+		return false;
+	}
+
+	/// <summary>
 	/// Length in seconds.
 	///
 	/// N frames span N-1 intervals, not N — a two-frame clip at 30fps lasts a thirtieth of a
@@ -59,7 +83,36 @@ public sealed class AnimClip
 			throw new ArgumentNullException( nameof( pose ) );
 
 		Frames.Add( pose );
+		Scales?.Add( null );
 	}
+
+	/// <summary>A frame with its bones' uniform scales. The first scaled frame starts the
+	/// <see cref="Scales"/> list, back-filling earlier frames at 1.</summary>
+	public void AddFrame( Xform[] pose, float[] scales )
+	{
+		if ( pose is null )
+			throw new ArgumentNullException( nameof( pose ) );
+
+		if ( scales is null )
+		{
+			AddFrame( pose );
+			return;
+		}
+
+		if ( Scales is null )
+		{
+			Scales = new List<float[]>();
+
+			for ( var f = 0; f < Frames.Count; f++ )
+				Scales.Add( null );
+		}
+
+		Frames.Add( pose );
+		Scales.Add( scales );
+	}
+
+	/// <summary>A bone's scale on a frame - 1 where the clip does not scale.</summary>
+	public float ScaleAt( int frame, int bone ) => Scales?[frame] is { } s ? s[bone] : 1f;
 
 	/// <summary>
 	/// Check the clip against the skeleton it claims to animate, and say what is wrong rather than
@@ -87,6 +140,9 @@ public sealed class AnimClip
 
 			if ( Frames[f].Length != skeleton.Count )
 				return $"frame {f} has {Frames[f].Length} pose(s) for a skeleton of {skeleton.Count} bone(s)";
+
+			if ( Scales?[f] is { } scales && scales.Length != skeleton.Count )
+				return $"frame {f} has {scales.Length} scale(s) for a skeleton of {skeleton.Count} bone(s)";
 		}
 
 		return null;

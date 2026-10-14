@@ -34,6 +34,14 @@ namespace Effigy;
 ///   - the log layer's `curvetypes` array is present and EMPTY, which is what "no per-key curve
 ///     override" looks like. Omitting the array is a different statement.
 ///
+/// SCALE IS THE ONE PART NOT COPIED FROM THE REFERENCE, because the reference clip never scales a
+/// bone. A bone that does gets a third channel, `_s`, built on exactly the pattern of the other two:
+/// it targets the same DmeTransform's `scale` attribute - a float, which DmxWriter already writes on
+/// every bind transform - through a DmeFloatLog, the float sibling of the vector and quaternion logs
+/// above. It is written ONLY for bones whose scale is not 1 somewhere in the clip, so every clip that
+/// does not scale is byte-identical to before. Whether ModelDoc honours it has to be seen in s&box:
+/// compile a clip that scales a bone and watch it.
+///
 /// WHAT IS DELIBERATELY LEFT OUT. The reference also carries a `compressed` binary blob on each
 /// log layer — empty in every layer of it. An empty blob says nothing its absence does not, and
 /// KeyValues2's binary literal is a multi-line quoted form with no second example to check a guess
@@ -137,6 +145,10 @@ public static class DmxAnimWriter
 			{
 				WritePositionChannel( w, skeleton, clip, i, boneTransformIds[i] );
 				WriteOrientationChannel( w, skeleton, clip, i, boneTransformIds[i] );
+
+				// Only where it scales - see the header.
+				if ( clip.Scaled( i ) )
+					WriteScaleChannel( w, skeleton, clip, i, boneTransformIds[i] );
 			}
 
 			w.CloseArray();
@@ -196,6 +208,33 @@ public static class DmxAnimWriter
 
 		w.Attribute( "usedefaultvalue", "bool", "0" );
 		w.Attribute( "defaultvalue", "quaternion", "0 0 0 1" );
+		w.CloseElement();
+
+		w.CloseElement();
+	}
+
+	static void WriteScaleChannel( DmxText w, Skeleton skeleton, AnimClip clip, int bone, string targetId )
+	{
+		w.OpenArrayElement( "DmeChannel", w.NextId(), $"{skeleton.Bones[bone].Name}_s" );
+		WriteChannelTarget( w, targetId, "scale" );
+
+		w.OpenAttributeElement( "log", "DmeFloatLog", w.NextId(), "float log" );
+		w.OpenArray( "layers", "element_array" );
+		w.OpenArrayElement( "DmeFloatLogLayer", w.NextId(), "float log" );
+
+		WriteTimes( w, clip );
+
+		w.OpenArray( "values", "float_array" );
+
+		for ( var f = 0; f < clip.FrameCount; f++ )
+			w.ArrayValue( DmxText.Number( clip.ScaleAt( f, bone ) ) );
+
+		w.CloseArray();
+		w.CloseElement();
+		w.CloseArray();
+
+		w.Attribute( "usedefaultvalue", "bool", "0" );
+		w.Attribute( "defaultvalue", "float", "1" );
 		w.CloseElement();
 
 		w.CloseElement();

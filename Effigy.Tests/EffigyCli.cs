@@ -327,7 +327,11 @@ public static class EffigyCli
 	///   effigy take dump.json clip.riganim [substeps=4] [from=F] [to=F] [noself] [nopairs] [noprops]
 	///                [depth=0] [allow=glob:glob@depth,...] [gap=8] [stills=N | frames=a,b,c]
 	///                [camera=bone | eye=x,y,z [look=x,y,z] | eyetrack=take.json [eyekey=Eye]]
-	///                [fov=80] [size=640x360] [out=dir]
+	///                [fov=80] [size=640x360] [out=dir] [rig=arms.ctrlrig]
+	///
+	/// rig= is the clip's Control Rig, for a clip posed with live IK goals: its constraints say how
+	/// each goal is solved (chain length, pole, weight). Without it a goal is solved as a two-bone
+	/// chain bending up, and the report says so.
 	///
 	/// Prints the report and exits 0 when the take is clear, 3 when anything crosses. Stills go to
 	/// out/take_sheet.png (and one PNG per frame), from the model's origin looking down +x - the
@@ -337,13 +341,19 @@ public static class EffigyCli
 	/// </summary>
 	static int Take( string[] a )
 	{
-		if ( a.Length < 3 ) { Console.Error.WriteLine( "effigy take dump.json clip.riganim [substeps=4] [from=F] [to=F] [noself] [nopairs] [noprops] [depth=0] [allow=glob:glob@depth,...] [gap=8] [stills=N|frames=a,b,c] [camera=bone | eye=x,y,z [look=x,y,z] | eyetrack=take.json [eyekey=Eye]] [fov=80] [size=640x360] [out=dir]" ); return 1; }
+		if ( a.Length < 3 ) { Console.Error.WriteLine( "effigy take dump.json clip.riganim [substeps=4] [from=F] [to=F] [noself] [nopairs] [noprops] [depth=0] [allow=glob:glob@depth,...] [gap=8] [stills=N|frames=a,b,c] [camera=bone | eye=x,y,z [look=x,y,z] | eyetrack=take.json [eyekey=Eye]] [fov=80] [size=640x360] [out=dir] [rig=arms.ctrlrig]" ); return 1; }
 
 		string Opt( string key ) => a.Skip( 3 ).FirstOrDefault( x => x.StartsWith( key + "=" ) )?[(key.Length + 1)..];
 		float? Num( string key ) => Opt( key ) is { } v ? float.Parse( v, System.Globalization.CultureInfo.InvariantCulture ) : null;
 
 		var dump = ModelDump.ReadFile( a[1] );
 		var clip = RigAnimFile.ReadFile( a[2] );
+
+		if ( Opt( "rig" ) is { } rigPath )
+			clip.Ik = RigIk.ReadRig( File.ReadAllText( rigPath ) );
+		else if ( clip.IkGoalTracks.Any() )
+			Console.WriteLine( "clip keys IK goals but no rig= was given - solving them as two-bone chains bending up" );
+
 		var audit = new TakeAudit( dump, clip );
 		var options = new TakeAudit.Options
 		{

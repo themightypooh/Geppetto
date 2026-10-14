@@ -18,7 +18,27 @@ public enum RigEase
 	Linear,
 	Stepped,
 	EaseIn,
-	EaseOut
+	EaseOut,
+
+	/// <summary>Hermite through the keys, Catmull-Rom tangents. See <see cref="RigHermite"/>.</summary>
+	Cubic,
+
+	/// <summary>Hermite through the keys, Fritsch-Carlson tangents - never overshoots.</summary>
+	Monotone
+}
+
+/// <summary>What a track drives. THE ORDER IS MARIONETTE'S TrackTarget AND MUST STAY IT, for the
+/// same reason as <see cref="RigEase"/>.</summary>
+public enum RigTrackKind
+{
+	Bone,
+	Part,
+
+	/// <summary>An IK constraint's goal, in model space, named for the constraint's end bone.</summary>
+	IkGoal,
+
+	/// <summary>A camera's shot; the key's scale carries the field of view.</summary>
+	Camera
 }
 
 /// <summary>One bone's local transform: what a keyframe stores and what a track evaluates to.</summary>
@@ -43,6 +63,10 @@ public sealed class RigKey
 	/// <summary>Governs the segment LEAVING this key.</summary>
 	public RigEase Ease = RigEase.Smooth;
 
+	/// <summary>The key's own Cubic/Monotone tangents over <see cref="RigHermite"/>'s ten channels,
+	/// or null for automatic. In arrives, Out leaves.</summary>
+	public float[] TangentIn, TangentOut;
+
 	/// <summary>
 	/// Remap a 0..1 position in this key's outgoing segment. The curves are s&box's
 	/// Easing.QuadraticInOut / QuadraticIn / QuadraticOut, written out, because those are what
@@ -54,6 +78,9 @@ public sealed class RigKey
 		RigEase.EaseIn => t * t,
 		RigEase.EaseOut => 1f - (1f - t) * (1f - t),
 		RigEase.Stepped => 0f,
+
+		// Cubic and Monotone curve through the neighbouring keys rather than remapping t, and
+		// RigTrack.Evaluate sends them to RigHermite before this is reached - as Marionette does.
 		_ => t
 	};
 }
@@ -63,8 +90,11 @@ public sealed class RigTrack
 	/// <summary>The bone's name, or the qualified name of a part for a part track.</summary>
 	public string Name = "";
 
+	/// <summary>Bone, whole part, IK goal or camera.</summary>
+	public RigTrackKind Kind;
+
 	/// <summary>True for a whole-part track rather than a skeleton bone.</summary>
-	public bool IsPart;
+	public bool IsPart => Kind == RigTrackKind.Part;
 
 	/// <summary>Sorted by frame.</summary>
 	public List<RigKey> Keys = new();
@@ -93,6 +123,9 @@ public sealed class RigTrack
 			if ( frame < a.Frame || frame > b.Frame )
 				continue;
 
+			if ( a.Ease is RigEase.Cubic or RigEase.Monotone )
+				return EvaluateCubic( i, frame );
+
 			var span = b.Frame - a.Frame;
 			var t = span > 0 ? (frame - a.Frame) / span : 0f;
 
@@ -100,6 +133,187 @@ public sealed class RigTrack
 		}
 
 		return Keys[0].Local;
+	}
+
+	RigPose EvaluateCubic( int i, float frame )
+	{
+		var a = Keys[i];
+		var b = Keys[i + 1];
+		var hasPrev = i > 0;
+		var hasNext = i + 2 < Keys.Count;
+
+		Span<float> va = stackalloc float[RigHermite.Channels];
+		Span<float> vb = stackalloc float[RigHermite.Channels];
+		Span<float> vp = stackalloc float[RigHermite.Channels];
+		Span<float> vn = stackalloc float[RigHermite.Channels];
+		Span<float> result = stackalloc float[RigHermite.Channels];
+
+		RigHermite.Pack( a.Local, va );
+		RigHermite.Pack( b.Local, vb );
+
+		if ( hasPrev )
+			RigHermite.Pack( Keys[i - 1].Local, vp );
+
+		if ( hasNext )
+			RigHermite.Pack( Keys[i + 2].Local, vn );
+
+		RigHermite.Evaluate( a.Ease == RigEase.Monotone, frame,
+			a.Frame, va, Tangent( a.TangentOut ),
+			b.Frame, vb, Tangent( b.TangentIn ),
+			hasPrev ? Keys[i - 1].Frame : null, vp,
+			hasNext ? Keys[i + 2].Frame : null, vn,
+			result );
+
+		return RigHermite.Unpack( result );
+	}
+
+	static ReadOnlySpan<float> Tangent( float[] t ) => t is { Length: RigHermite.Channels } ? t : ReadOnlySpan<float>.Empty;
+}
+
+/// <summary>
+/// Hermite segments for the Cubic and Monotone modes. A copy of Marionette's RigCurve - the kernel
+/// cannot reference the game assembly - and Effigy.Tests compiles that file beside this one to keep
+/// the two in agreement. RigCurve's header has the reasoning; in brief: a transform is ten channels
+/// (position xyz, rotation xyzw, scale xyz), each curved on its own with neighbouring rotations
+/// flipped onto one hemisphere and renormalised after; tangents are value per frame, automatic
+/// ones Catmull-Rom (Cubic) or Fritsch-Carlson held to the alpha,beta &lt;= 3 box (Monotone).
+/// </summary>
+public static class RigHermite
+{
+	public const int Channels = 10;
+
+	const int RotationStart = 3;
+
+	public static void Pack( RigPose pose, Span<float> into )
+	{
+		into[0] = pose.Position.x; into[1] = pose.Position.y; into[2] = pose.Position.z;
+		into[3] = pose.Rotation.x; into[4] = pose.Rotation.y; into[5] = pose.Rotation.z; into[6] = pose.Rotation.w;
+		into[7] = pose.Scale.x; into[8] = pose.Scale.y; into[9] = pose.Scale.z;
+	}
+
+	public static RigPose Unpack( ReadOnlySpan<float> v ) =>
+		new( new Vec3( v[0], v[1], v[2] ), new Quat( v[3], v[4], v[5], v[6] ), new Vec3( v[7], v[8], v[9] ) );
+
+	public static void Evaluate( bool monotone, float frame,
+		float fa, ReadOnlySpan<float> va, ReadOnlySpan<float> outA,
+		float fb, ReadOnlySpan<float> vb, ReadOnlySpan<float> inB,
+		float? fp, ReadOnlySpan<float> vp,
+		float? fn, ReadOnlySpan<float> vn,
+		Span<float> result )
+	{
+		Span<float> a = stackalloc float[Channels];
+		Span<float> b = stackalloc float[Channels];
+		Span<float> p = stackalloc float[Channels];
+		Span<float> n = stackalloc float[Channels];
+
+		va.CopyTo( a );
+		vb.CopyTo( b );
+
+		var signB = Align( a, b );
+
+		if ( fp is not null )
+		{
+			vp.CopyTo( p );
+			Align( a, p );
+		}
+
+		if ( fn is not null )
+		{
+			vn.CopyTo( n );
+			Align( b, n );
+		}
+
+		var span = fb - fa;
+		var t = span > 0f ? Math.Clamp( (frame - fa) / span, 0f, 1f ) : 0f;
+
+		var t2 = t * t;
+		var t3 = t2 * t;
+		var h00 = 2f * t3 - 3f * t2 + 1f;
+		var h10 = t3 - 2f * t2 + t;
+		var h01 = -2f * t3 + 3f * t2;
+		var h11 = t3 - t2;
+
+		for ( var c = 0; c < Channels; c++ )
+		{
+			var rotation = c >= RotationStart && c < RotationStart + 4;
+
+			var mA = outA.Length == Channels
+				? outA[c]
+				: Slope( monotone, fp, fp is null ? 0f : p[c], fa, a[c], fb, b[c] );
+
+			var mB = inB.Length == Channels
+				? inB[c] * (rotation ? signB : 1f)
+				: Slope( monotone, fa, a[c], fb, b[c], fn, fn is null ? 0f : n[c] );
+
+			result[c] = h00 * a[c] + h10 * span * mA + h01 * b[c] + h11 * span * mB;
+		}
+
+		Normalise( result );
+	}
+
+	public static float Slope( bool monotone, float? f0, float v0, float f1, float v1, float? f2, float v2 )
+	{
+		float? before = f0 is { } a && f1 - a > 0f ? (v1 - v0) / (f1 - a) : null;
+		float? after = f2 is { } b && b - f1 > 0f ? (v2 - v1) / (b - f1) : null;
+
+		if ( before is null && after is null )
+			return 0f;
+
+		if ( before is null )
+			return after.Value;
+
+		if ( after is null )
+			return before.Value;
+
+		if ( !monotone )
+			return (v2 - v0) / (f2.Value - f0.Value);
+
+		var d0 = before.Value;
+		var d1 = after.Value;
+
+		if ( d0 * d1 <= 0f )
+			return 0f;
+
+		var m = (d0 + d1) * 0.5f;
+		var limit = 3f * MathF.Min( MathF.Abs( d0 ), MathF.Abs( d1 ) );
+
+		return MathF.Sign( m ) * MathF.Min( MathF.Abs( m ), limit );
+	}
+
+	public static float Align( ReadOnlySpan<float> reference, Span<float> v )
+	{
+		var dot = 0f;
+
+		for ( var c = RotationStart; c < RotationStart + 4; c++ )
+			dot += reference[c] * v[c];
+
+		if ( dot >= 0f )
+			return 1f;
+
+		for ( var c = RotationStart; c < RotationStart + 4; c++ )
+			v[c] = -v[c];
+
+		return -1f;
+	}
+
+	public static void Normalise( Span<float> v )
+	{
+		var length = 0f;
+
+		for ( var c = RotationStart; c < RotationStart + 4; c++ )
+			length += v[c] * v[c];
+
+		length = MathF.Sqrt( length );
+
+		if ( length < 1e-6f )
+		{
+			v[RotationStart] = v[RotationStart + 1] = v[RotationStart + 2] = 0f;
+			v[RotationStart + 3] = 1f;
+			return;
+		}
+
+		for ( var c = RotationStart; c < RotationStart + 4; c++ )
+			v[c] /= length;
 	}
 }
 
@@ -122,7 +336,22 @@ public sealed class RigAnimFile
 	public int FrameCount;
 	public List<RigTrack> Tracks = new();
 
-	public IEnumerable<RigTrack> BoneTracks => Tracks.Where( t => !t.IsPart );
+	public IEnumerable<RigTrack> BoneTracks => Tracks.Where( t => t.Kind == RigTrackKind.Bone );
+
+	/// <summary>The keyed IK goals. They only move bones when <see cref="Ik"/> says how - see
+	/// <see cref="SampleLocal"/>.</summary>
+	public IEnumerable<RigTrack> IkGoalTracks => Tracks.Where( t => t.Kind == RigTrackKind.IkGoal && t.Keys.Count > 0 );
+
+	/// <summary>
+	/// The rig's IK constraints (<see cref="RigIk.ReadRig"/> on the clip's .ctrlrig), which say how
+	/// to solve the clip's goal tracks. Null means the rig was not read: a goal is then solved the
+	/// way a new Marionette constraint would be - two bones, pole up, full weight - because ignoring
+	/// it would check a pose the clip never plays.
+	/// </summary>
+	public List<RigIk> Ik;
+
+	/// <summary>The .ctrlrig the clip names, as written in the file - empty when there is none.</summary>
+	public string RigAsset = "";
 
 	/// <summary>The last frame any track has a key on.</summary>
 	public int LastKeyFrame => Tracks.Count == 0 ? 0 : Tracks.Max( t => t.Keys.Count == 0 ? 0 : t.Keys[^1].Frame );
@@ -133,7 +362,7 @@ public sealed class RigAnimFile
 	/// </summary>
 	public int LastFrame => Math.Min( LastKeyFrame, Math.Max( FrameCount - 1, 0 ) );
 
-	public RigTrack Find( string boneName ) => Tracks.FirstOrDefault( t => !t.IsPart && t.Name == boneName );
+	public RigTrack Find( string boneName ) => Tracks.FirstOrDefault( t => t.Kind == RigTrackKind.Bone && t.Name == boneName );
 
 	public static RigAnimFile ReadFile( string path ) => Read( File.ReadAllText( path ) );
 
@@ -144,6 +373,7 @@ public sealed class RigAnimFile
 		var clip = new RigAnimFile
 		{
 			SourceModel = Str( root, "SourceModel" ) ?? "",
+			RigAsset = Str( root, "RigAsset" ) ?? "",
 			FrameRate = root.TryGetProperty( "AnimationSpeed", out var speed ) && speed.ValueKind == JsonValueKind.Number ? (int)MathF.Round( speed.GetSingle() ) : 30,
 			FrameCount = root.TryGetProperty( "FrameCount", out var count ) && count.ValueKind == JsonValueKind.Number ? count.GetInt32() : 0,
 		};
@@ -156,7 +386,7 @@ public sealed class RigAnimFile
 			var track = new RigTrack
 			{
 				Name = Str( t, "BoneName" ) ?? "",
-				IsPart = t.TryGetProperty( "Target", out var target ) && IsPartTarget( target ),
+				Kind = t.TryGetProperty( "Target", out var target ) ? ParseKind( target ) : RigTrackKind.Bone,
 			};
 
 			if ( t.TryGetProperty( "Keyframes", out var keys ) && keys.ValueKind == JsonValueKind.Array )
@@ -171,6 +401,9 @@ public sealed class RigAnimFile
 
 					if ( k.TryGetProperty( "Local", out var local ) )
 						key.Local = ParsePose( local );
+
+					key.TangentIn = ParseTangent( k, "TangentIn" );
+					key.TangentOut = ParseTangent( k, "TangentOut" );
 
 					track.Keys.Add( key );
 				}
@@ -199,16 +432,75 @@ public sealed class RigAnimFile
 			pose[b] = track is { Keys.Count: > 0 } ? track.Evaluate( frame ).ToXform() : skeleton.Bones[b].Local;
 		}
 
-		return pose;
+		return SolveIk( skeleton, pose, frame );
 	}
 
-	/// <summary>Bake to a flat clip at every whole frame from 0 to <see cref="LastFrame"/>.</summary>
+	/// <summary>
+	/// The clip's live IK goals, solved onto a local pose - Marionette's playback order: the
+	/// keyframes first, then each constraint in rig order toward its goal at this frame. Returns the
+	/// pose unchanged when the clip keys no goals, which is every clip that bakes its IK.
+	/// </summary>
+	public Xform[] SolveIk( Skeleton skeleton, Xform[] local, float frame )
+	{
+		var goals = IkGoalTracks.ToList();
+
+		if ( goals.Count == 0 )
+			return local;
+
+		var constraints = Ik is not null
+			? Ik.Where( c => c.Enabled && c.Live ).ToList()
+			: goals.Select( g => new RigIk { Name = g.Name, EndBone = g.Name } ).ToList();
+
+		var world = ModelSpace( skeleton, local );
+		var moved = false;
+
+		foreach ( var ik in constraints )
+		{
+			if ( goals.FirstOrDefault( g => g.Name == ik.EndBone ) is not { } goal )
+				continue;
+
+			if ( ChainIk.Apply( skeleton, world, ik, goal.Evaluate( frame ) ) is { } solved )
+			{
+				world = solved;
+				moved = true;
+			}
+		}
+
+		return moved ? LocalSpace( skeleton, world ) : local;
+	}
+
+	/// <summary>
+	/// Bake to a flat clip at every whole frame from 0 to <see cref="LastFrame"/>, live IK solved.
+	///
+	/// Scale is split out of each pose into <see cref="AnimClip.Scales"/> - a bone's uniform scale,
+	/// the mean of its three axes - and the rotation written unscaled, because the DMX writer reads
+	/// the quaternion off the basis and a scaled basis is not a rotation. A clip that never scales
+	/// a bone gets no Scales at all, and bakes exactly as it did.
+	/// </summary>
 	public AnimClip ToClip( Skeleton skeleton, string name = "anim", bool looping = false )
 	{
 		var clip = new AnimClip { Name = name, FrameRate = FrameRate, Looping = looping };
 
 		for ( var f = 0; f <= LastFrame; f++ )
-			clip.AddFrame( SampleLocal( skeleton, f ) );
+		{
+			var pose = SampleLocal( skeleton, f );
+			float[] scales = null;
+
+			for ( var b = 0; b < pose.Length; b++ )
+			{
+				var s = Quat.ScaleOf( pose[b] );
+				var uniform = (s.x + s.y + s.z) / 3f;
+
+				if ( MathF.Abs( uniform - 1f ) <= 1e-5f )
+					continue;
+
+				scales ??= Enumerable.Repeat( 1f, pose.Length ).ToArray();
+				scales[b] = uniform;
+				pose[b] = Quat.FromXform( pose[b] ).ToXform( pose[b].Origin );
+			}
+
+			clip.AddFrame( pose, scales );
+		}
 
 		return clip;
 	}
@@ -247,17 +539,34 @@ public sealed class RigAnimFile
 	static string Str( JsonElement e, string name ) =>
 		e.TryGetProperty( name, out var v ) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 
-	static bool IsPartTarget( JsonElement target ) => target.ValueKind switch
+	/// <summary>A kind this reader does not know - a newer Marionette's - is not a bone. Reading it as
+	/// one would pose a skeleton bone from whatever the new kind stores.</summary>
+	static RigTrackKind ParseKind( JsonElement target )
 	{
-		JsonValueKind.String => string.Equals( target.GetString(), "Part", StringComparison.OrdinalIgnoreCase ),
-		JsonValueKind.Number => target.GetInt32() == 1,
-		_ => false
-	};
+		if ( target.ValueKind == JsonValueKind.Number )
+		{
+			var n = target.GetInt32();
+			return n >= 0 && n <= (int)RigTrackKind.Camera ? (RigTrackKind)n : (RigTrackKind)(-1);
+		}
+
+		if ( target.ValueKind == JsonValueKind.String )
+			return Enum.TryParse<RigTrackKind>( target.GetString(), true, out var kind ) ? kind : (RigTrackKind)(-1);
+
+		return RigTrackKind.Bone;
+	}
+
+	static float[] ParseTangent( JsonElement key, string name )
+	{
+		if ( !key.TryGetProperty( name, out var e ) || e.ValueKind != JsonValueKind.Array || e.GetArrayLength() != RigHermite.Channels )
+			return null;
+
+		return e.EnumerateArray().Select( v => v.GetSingle() ).ToArray();
+	}
 
 	static RigEase ParseEase( JsonElement e )
 	{
 		if ( e.ValueKind == JsonValueKind.Number )
-			return (RigEase)Math.Clamp( e.GetInt32(), 0, 4 );
+			return (RigEase)Math.Clamp( e.GetInt32(), 0, (int)RigEase.Monotone );
 
 		var text = (e.GetString() ?? "").Replace( " ", "" );
 		return Enum.TryParse<RigEase>( text, true, out var ease ) ? ease : RigEase.Smooth;

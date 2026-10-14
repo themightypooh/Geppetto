@@ -38,12 +38,46 @@ public sealed class IkConstraint
 	[Property] public float Weight { get; set; } = 1f;
 	[Property] public bool Enabled { get; set; } = true;
 
-	// How many bones up the chain from TargetBone the solve is allowed to move - 2 reaches the
-	// target's parent and grandparent (e.g. wrist -> elbow -> shoulder for an arm IK).
-	[Property, Title( "Chain Length" )] public int ChainLength { get; set; } = 2;
+	/// <summary>
+	/// How many bones up the chain from TargetBone the solve is allowed to move - 2 reaches the
+	/// target's parent and grandparent (wrist -> elbow -> shoulder for an arm).
+	///
+	/// 1 aims the one bone above the end; 2 is the exact two-bone solve, bending toward the pole;
+	/// 3 or more is iterated (see Iterations). These used to be stored and ignored - every chain was
+	/// solved as two bones whatever this said. See RigConstraintSolver.SolveChain.
+	/// </summary>
+	[Property, Title( "Chain Length" ), Range( 1, 8 )] public int ChainLength { get; set; } = 2;
 
+	/// <summary>Which way the middle joint bends, in the model's own space. Two-bone chains only -
+	/// a longer chain has no single middle joint for it to mean.</summary>
 	[Property, Title( "Pole Direction" )] public Vector3 PoleDirection { get; set; } = Vector3.Up;
+
+	/// <summary>Passes of the solve for a chain of three or more. One- and two-bone chains have an
+	/// exact answer and do not iterate.</summary>
 	[Property] public int Iterations { get; set; } = 10;
+
+	/// <summary>
+	/// Solve at playback from an animated goal, rather than once while dragging.
+	///
+	/// ON: dragging the target bone keys the constraint's GOAL (an IK goal track on the clip) and
+	/// the chain is solved toward it every frame - in the editor, in game, and in the export. Change
+	/// the constraint later and every pose authored under it follows.
+	///
+	/// OFF: the old behaviour. The drag runs the solve once and bakes the chain into ordinary
+	/// keyframes; playback needs no solver.
+	///
+	/// ON FOR EVERY CONSTRAINT ADDED NOW, OFF FOR ONE LOADED FROM A RIG THAT PREDATES IT. A rig made
+	/// before this existed was authored by baking, and its clips are full of baked arm keys; turning
+	/// it live would make the next drag write a goal that then overrides those keys on every frame,
+	/// including the ones already finished. So the property's default is off (what an old file reads
+	/// back as) and RigConstraintsPanel switches it on when it adds a constraint. Tick it on an old
+	/// rig to opt in.
+	/// </summary>
+	[Property, Title( "Solve At Playback" )] public bool Live { get; set; }
+
+	/// <summary>Whether the end bone takes the goal's rotation as well as its position - one control
+	/// that places the wrist and turns the palm. Off, the end keeps the rotation its keys give it.</summary>
+	[Property, Title( "Match Goal Rotation" ), ShowIf( nameof( Live ), true )] public bool GoalRotation { get; set; } = true;
 }
 
 public sealed class LimitConstraint

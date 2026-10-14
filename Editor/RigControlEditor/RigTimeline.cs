@@ -176,7 +176,13 @@ internal sealed class RigTimeline : Widget
 
 		// Frame numbers below the tracks, timecode above - the tracks sit between the two units
 		// so neither has to be converted in your head.
-		_frameRuler = new RigTimelineRuler( this, _lanes ) { Scrubbed = ScrubTo, ShowTimecode = false };
+		_frameRuler = new RigTimelineRuler( this, _lanes )
+		{
+			Scrubbed = ScrubTo,
+			ShowTimecode = false,
+			MarksEdited = () => Edited?.Invoke(),
+			CurrentFrame = () => Playhead,
+		};
 		Layout.Add( _frameRuler );
 
 		// ONE view range, three widgets. Each holds the same object rather than its own copy, so
@@ -296,10 +302,18 @@ internal sealed class RigTimeline : Widget
 		menu.OpenAtCursor();
 	}
 
+	/// <summary>
+	/// The track the graph editor shows: the one the most recently selected key is on, else the
+	/// row selected by name. By key first, because a bone and its IK goal share a name and only the
+	/// key says which of the two you meant.
+	/// </summary>
+	public BoneTrack SelectedTrack => _lanes.SelectedTrack;
+
 	public void SetAsset( RigAnimDocument anim )
 	{
 		_anim = anim;
 		_lanes.Anim = anim;
+		_frameRuler.Anim = anim;
 		Playhead = 0f;
 
 		// Back to the start of the clip at the standard zoom. Carrying the previous clip's scroll
@@ -418,6 +432,9 @@ internal sealed class RigTimeline : Widget
 	public bool HasKeyframeClipboard => _lanes.HasClipboard;
 
 	public void DeleteSelectedKeyframe() => _lanes.DeleteSelectedKeyframe();
+
+	/// <summary>See RigTimelineLanes.DropSelection.</summary>
+	public void DropSelection() => _lanes.DropSelection();
 
 	/// <summary>Selected keys if any, otherwise the pose at the playhead. Static clipboard, so it
 	/// survives opening a different clip - that's the whole point of copy.</summary>
@@ -1120,6 +1137,13 @@ internal sealed class RigTimelineLanes : Widget
 	/// <summary>Which bone the viewport has selected, so the matching row can be highlighted.</summary>
 	public string SelectedBone { get; set; }
 
+	/// <summary>Only a track still in the clip. Undo replaces every track with a copy, and a key
+	/// selected before it belongs to a track nothing plays any more - editing that would look like
+	/// it worked and be lost.</summary>
+	public BoneTrack SelectedTrack => (Primary?.Track is { } held && Anim?.BoneTracks.Contains( held ) == true ? held : null)
+		?? Anim?.BoneTracks.FirstOrDefault( t => t.BoneName == SelectedBone && t.Target == TrackTarget.Bone )
+		?? Anim?.BoneTracks.FirstOrDefault( t => t.BoneName == SelectedBone );
+
 	/// <summary>Raised when a bone's name is clicked in the gutter.</summary>
 	public Action<string> BoneRowSelected { get; set; }
 
@@ -1272,6 +1296,11 @@ internal sealed class RigTimelineLanes : Widget
 				KeyInterpolation.EaseIn => Theme.Green.WithAlpha( 0.5f ),
 				KeyInterpolation.EaseOut => Theme.Green.WithAlpha( 0.5f ),
 				KeyInterpolation.Linear => Theme.Blue.WithAlpha( 0.7f ),
+
+				// Curves THROUGH keys are their own family: they are not an ease of one segment,
+				// and the graph editor is where their shape is seen and set.
+				KeyInterpolation.Cubic => Theme.Yellow.WithAlpha( 0.6f ),
+				KeyInterpolation.Monotone => Theme.Yellow.WithAlpha( 0.45f ),
 				_ => Theme.TextControl.WithAlpha( 0.4f )
 			};
 
@@ -1362,6 +1391,8 @@ internal sealed class RigTimelineLanes : Widget
 	{
 		KeyInterpolation.EaseIn => "Ease In",
 		KeyInterpolation.EaseOut => "Ease Out",
+		KeyInterpolation.Cubic => "Cubic (through keys)",
+		KeyInterpolation.Monotone => "Monotone (no overshoot)",
 		_ => mode.ToString()
 	};
 
@@ -1376,6 +1407,24 @@ internal sealed class RigTimelineLanes : Widget
 					center + new Vector2( 0f, radius ),
 					center + new Vector2( -radius, 0f ) );
 				return;
+
+			case KeyInterpolation.Cubic:
+			case KeyInterpolation.Monotone:
+			{
+				// A hexagon: round enough to read as smooth, angular enough not to be mistaken for
+				// an ease. Monotone is the squatter one - the curve that never overshoots its keys.
+				var squash = interpolation == KeyInterpolation.Monotone ? 0.7f : 1f;
+				var points = new Vector2[6];
+
+				for ( var i = 0; i < 6; i++ )
+				{
+					var angle = MathF.PI / 3f * i;
+					points[i] = center + new Vector2( MathF.Cos( angle ) * radius, MathF.Sin( angle ) * radius * squash );
+				}
+
+				Paint.DrawPolygon( points );
+				return;
+			}
 
 			case KeyInterpolation.Stepped:
 				// Slightly tucked in - a square at the same radius reads noticeably bigger than a
@@ -1583,6 +1632,9 @@ internal sealed class RigTimelineLanes : Widget
 		public int FrameOffset;
 		public Transform Local;
 		public KeyInterpolation Interpolation;
+
+		/// <summary>Graph-editor tangents travel with the key, or a pasted curve loses its shape.</summary>
+		public List<float> TangentIn, TangentOut;
 	}
 
 	public bool HasClipboard => _clipboard.Count > 0;
@@ -1648,6 +1700,8 @@ internal sealed class RigTimelineLanes : Widget
 					KeyInterpolation.Linear => "Constant speed, no easing - for mechanical motion",
 					KeyInterpolation.EaseIn => "Start slow, arrive at full speed - the wind-up half of an action",
 					KeyInterpolation.EaseOut => "Leave fast, settle slowly - what makes a movement land with weight",
+					KeyInterpolation.Cubic => "A smooth curve through the keys - speed carries across a key instead of stopping at it. Can overshoot; bend its tangents in the Graph editor",
+					KeyInterpolation.Monotone => "A smooth curve through the keys that never overshoots them - for dense, solver-written takes and anything that must not wobble past a hold",
 					_ => "Hold this pose until the next key, then snap"
 				};
 			}
@@ -1814,7 +1868,9 @@ internal sealed class RigTimelineLanes : Widget
 				Target = entry.Track.Target,
 				FrameOffset = entry.Key.Frame - origin,
 				Local = entry.Key.Local,
-				Interpolation = entry.Key.Interpolation
+				Interpolation = entry.Key.Interpolation,
+				TangentIn = entry.Key.TangentIn is null ? null : new List<float>( entry.Key.TangentIn ),
+				TangentOut = entry.Key.TangentOut is null ? null : new List<float>( entry.Key.TangentOut ),
 			} );
 		}
 
@@ -1886,9 +1942,8 @@ internal sealed class RigTimelineLanes : Widget
 		foreach ( var item in _clipboard )
 		{
 			var frame = Math.Max( origin + item.FrameOffset, 0 );
-			var track = item.Target == TrackTarget.Part
-				? Anim.GetOrAddPartTrack( item.BoneName )
-				: Anim.GetOrAddTrack( item.BoneName );
+			// Back onto the same KIND of track - a part's keys onto a part, an IK goal's onto a goal.
+			var track = Anim.GetOrAddTrack( item.BoneName, item.Target );
 
 			track.SetKeyframe( frame, item.Local );
 
@@ -1896,6 +1951,8 @@ internal sealed class RigTimelineLanes : Widget
 				continue;
 
 			pasted.Interpolation = item.Interpolation;
+			pasted.TangentIn = item.TangentIn is null ? null : new List<float>( item.TangentIn );
+			pasted.TangentOut = item.TangentOut is null ? null : new List<float>( item.TangentOut );
 			_selection.Add( (track, pasted) );
 		}
 
@@ -1907,6 +1964,13 @@ internal sealed class RigTimelineLanes : Widget
 	}
 
 	public bool HasSelectedKeyframe => _selection.Count > 0;
+
+	/// <summary>Forget the selected keys - the document under them was replaced (undo, redo).</summary>
+	public void DropSelection()
+	{
+		_selection.Clear();
+		Update();
+	}
 
 	public void DeleteSelectedKeyframe()
 	{
@@ -1935,6 +1999,16 @@ internal sealed class RigTimelineLanes : Widget
 internal sealed class RigTimelineRuler : Widget
 {
 	private readonly Widget _lanes;
+
+	/// <summary>The clip whose marks this ruler shows. Only the frame ruler is given one - the
+	/// marks sit between the tracks and the frame numbers they are placed by.</summary>
+	public RigAnimDocument Anim { get; set; }
+
+	/// <summary>A mark was renamed, moved or deleted here.</summary>
+	public Action MarksEdited { get; set; }
+
+	/// <summary>The playhead, for "Move to Playhead".</summary>
+	public Func<float> CurrentFrame { get; set; }
 
 	public int FrameCount { get; set; } = 30;
 	public float Playhead { get; set; }
@@ -2093,7 +2167,99 @@ internal sealed class RigTimelineRuler : Widget
 			new Vector2( 0f, ShowTimecode ? Height - 1f : 0f ),
 			new Vector2( Width, ShowTimecode ? Height - 1f : 0f ) );
 
+		PaintMarks( layout );
 		PaintPlayhead( layout );
+	}
+
+	/// <summary>
+	/// The clip's marks: a small flag on its frame and its name beside it, in the colour of the
+	/// playhead's opposite so the two never read as one another. See RigAnimDocument.Marks.
+	/// </summary>
+	private void PaintMarks( RigTimelineLayout layout )
+	{
+		if ( Anim?.Marks is not { Count: > 0 } )
+			return;
+
+		Paint.SetDefaultFont( 7 );
+
+		foreach ( var mark in Anim.MarksInOrder )
+		{
+			var x = layout.FrameToX( mark.Frame );
+
+			if ( x < RigTimelineLayout.DividerX || x > layout.LaneArea.Right + 8f )
+				continue;
+
+			Paint.ClearPen();
+			Paint.SetBrush( Theme.Pink );
+			Paint.DrawPolygon(
+				new Vector2( x, Height - 1f ),
+				new Vector2( x - 4f, Height - 8f ),
+				new Vector2( x + 4f, Height - 8f ) );
+
+			Paint.SetPen( Theme.Pink.WithAlpha( 0.9f ) );
+			Paint.DrawText( new Rect( x + 5f, Height - 13f, 120f, 12f ), mark.Name ?? "", TextFlag.LeftCenter );
+		}
+	}
+
+	/// <summary>The mark under the cursor, within a few pixels.</summary>
+	private RigMark HitMark( Vector2 position )
+	{
+		if ( Anim?.Marks is not { Count: > 0 } )
+			return null;
+
+		var layout = Geometry;
+
+		return Anim.MarksInOrder
+			.Select( m => (Mark: m, Distance: MathF.Abs( layout.FrameToX( m.Frame ) - position.x )) )
+			.Where( m => m.Distance <= 5f )
+			.OrderBy( m => m.Distance )
+			.Select( m => m.Mark )
+			.FirstOrDefault();
+	}
+
+	protected override void OnContextMenu( ContextMenuEvent e )
+	{
+		if ( HitMark( e.LocalPosition ) is not { } mark )
+			return;
+
+		var menu = new Menu( this );
+		menu.AddHeading( $"{mark.Name} — frame {mark.Frame}" );
+
+		var name = new LineEdit( menu ) { Text = mark.Name ?? "", PlaceholderText = "name" };
+		name.EditingFinished += () =>
+		{
+			mark.Name = name.Text;
+			Update();
+			MarksEdited?.Invoke();
+		};
+		menu.AddWidget( name );
+
+		var note = new LineEdit( menu ) { Text = mark.Note ?? "", PlaceholderText = "note" };
+		note.EditingFinished += () =>
+		{
+			mark.Note = note.Text;
+			MarksEdited?.Invoke();
+		};
+		menu.AddWidget( note );
+
+		menu.AddSeparator();
+
+		menu.AddOption( "Move to Playhead", "start", () =>
+		{
+			mark.Frame = (int)MathF.Round( CurrentFrame?.Invoke() ?? mark.Frame );
+			Update();
+			MarksEdited?.Invoke();
+		} );
+
+		menu.AddOption( "Delete Mark", "delete", () =>
+		{
+			Anim.Marks.Remove( mark );
+			Update();
+			MarksEdited?.Invoke();
+		} );
+
+		menu.OpenAtCursor();
+		e.Accepted = true;
 	}
 
 	/// <summary>A flag pointing at the lanes, matching MovieMaker's - the top ruler's points down,
@@ -2134,6 +2300,15 @@ internal sealed class RigTimelineRuler : Widget
 	{
 		if ( !e.LeftMouseButton || e.LocalPosition.x < RigTimelineLayout.Gutter )
 			return;
+
+		// Clicking a mark lands exactly on it - the point of a mark is to get back to its frame.
+		if ( HitMark( e.LocalPosition ) is { } mark )
+		{
+			Scrubbed?.Invoke( mark.Frame );
+			ToolTip = string.IsNullOrWhiteSpace( mark.Note ) ? mark.Name : $"{mark.Name}: {mark.Note}";
+			e.Accepted = true;
+			return;
+		}
 
 		_scrubbing = true;
 		Scrub( e.LocalPosition );

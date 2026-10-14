@@ -103,7 +103,7 @@ internal sealed class RigConstraintsPanel : Widget
 			return;
 
 		var menu = new Menu( this );
-		menu.AddOption( "IK Constraint", "swap_calls", () => Add( new IkConstraint { Name = UniqueName( "IK" ) } ) );
+		menu.AddOption( "IK Constraint", "swap_calls", () => Add( new IkConstraint { Name = UniqueName( "IK" ), Live = true } ) );
 		menu.AddOption( "Limit Constraint", "block", () => Add( new LimitConstraint { Name = UniqueName( "Limit" ) } ) );
 		menu.OpenAtCursor();
 	}

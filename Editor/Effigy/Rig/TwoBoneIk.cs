@@ -130,11 +130,11 @@ public static class TwoBoneIk
 	}
 
 	/// <summary>A rotation applied about a point rather than the origin.</summary>
-	static Xform About( Vec3 point, Xform rotation ) =>
+	internal static Xform About( Vec3 point, Xform rotation ) =>
 		Xform.Translate( point ) * rotation * Xform.Translate( -point );
 
 	/// <summary>Shortest rotation taking one direction onto another.</summary>
-	static Xform DeltaBetween( Vec3 from, Vec3 to )
+	internal static Xform DeltaBetween( Vec3 from, Vec3 to )
 	{
 		if ( from.Length < 0.001f || to.Length < 0.001f )
 			return Xform.Identity;

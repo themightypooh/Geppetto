@@ -43,6 +43,11 @@ internal static class EffigyAnimExport
 		public string Name;
 		public bool Looping = true;
 
+		/// <summary>The project path a saved clip pointed at when no asset answers to it any more —
+		/// moved, renamed, or in an addon not mounted right now. Kept so saving again writes the
+		/// entry back rather than quietly dropping it; see AnimClipsSidecar.</summary>
+		public string MissingPath;
+
 		/// <summary>The clip's own file name, which is what a person recognises in a list. The
 		/// activity name inside the model defaults to it for the same reason.</summary>
 		public static string NameOf( Asset asset ) =>
@@ -76,9 +81,9 @@ internal static class EffigyAnimExport
 	/// pose and the frames come through here, so nothing downstream had a correct value to
 	/// disagree with.
 	///
-	/// SCALE IS DROPPED, deliberately. A DmeChannel writes position and orientation and nothing
-	/// else, so a scaled keyframe has nowhere to go in the format; carrying it into the basis
-	/// vectors instead would bake a scale into the bone's rotation and read as a skew.
+	/// SCALE IS NOT IN HERE, deliberately: carried in the basis vectors it would bake into the bone's
+	/// rotation and read as a skew. It travels beside the pose instead, as AnimClip.Scales, and goes
+	/// out as its own channel - see ToClip and DmxAnimWriter.
 	/// </summary>
 	public static Xform ToXform( Transform t )
 	{
@@ -135,7 +140,23 @@ internal static class EffigyAnimExport
 	/// one that says so.
 	/// </summary>
 	public static AnimClip ToClip( RigAnimDocument doc, Skeleton skeleton, string name,
-		bool looping, out int matched, out List<string> unmatched )
+		bool looping, out int matched, out List<string> unmatched ) =>
+		ToClip( doc, skeleton, name, looping, RigTrackName.RootSubject, out matched, out unmatched );
+
+	/// <summary>
+	/// The clip as above, for one object in it: the main model (<paramref name="subject"/> empty),
+	/// or a prop or part that carries its own skeleton - a weapon's bolt, a door's hinge - whose
+	/// tracks are "subject/bone". That is how the export gives a rigged prop its own animation.
+	///
+	/// SCALE goes into AnimClip.Scales (a bone's uniform scale, the mean of its axes), only when some
+	/// bone actually scales, so a clip that does not bakes exactly as before.
+	///
+	/// LIVE IK is solved into the main model's frames the way playback solves it - keyframes first,
+	/// then each live constraint toward its goal - by the kernel's ChainIk, so the exported motion is
+	/// the motion the viewport showed. A prop's skeleton has no goals; goals are the main model's.
+	/// </summary>
+	public static AnimClip ToClip( RigAnimDocument doc, Skeleton skeleton, string name,
+		bool looping, string subject, out int matched, out List<string> unmatched )
 	{
 		if ( doc is null )
 			throw new ArgumentNullException( nameof( doc ) );
@@ -149,10 +170,14 @@ internal static class EffigyAnimExport
 		// other objects in the scene (a weapon's bolt, a door's hinge) - none of which exist in
 		// THIS skeleton. Left in, every one of them would be reported as a bone the model is
 		// missing, which reads as the clip being authored against the wrong model.
+		var prefix = string.IsNullOrEmpty( subject ) ? null : subject + RigTrackName.Separator;
+
 		var tracks = doc.SkeletonTracks
 			.Where( t => !string.IsNullOrWhiteSpace( t.BoneName ) && t.Keyframes.Count > 0 )
-			.Where( t => RigTrackName.SubjectOf( t.BoneName ) == RigTrackName.RootSubject )
-			.GroupBy( t => t.BoneName )
+			.Where( t => prefix is null
+				? RigTrackName.SubjectOf( t.BoneName ) == RigTrackName.RootSubject
+				: t.BoneName.StartsWith( prefix, StringComparison.Ordinal ) && t.BoneName.Length > prefix.Length )
+			.GroupBy( t => prefix is null ? t.BoneName : t.BoneName[prefix.Length..] )
 			.ToDictionary( g => g.Key, g => g.First() );
 
 		matched = skeleton.Bones.Count( b => tracks.ContainsKey( b.Name ) );
@@ -172,23 +197,87 @@ internal static class EffigyAnimExport
 			Looping = looping,
 		};
 
+		var ik = prefix is null ? LiveIk( doc ) : null;
+
 		// A single-frame clip is a pose, and the writer accepts one: N frames span N-1 intervals,
 		// so one frame is a zero-length clip rather than an error.
 		for ( var f = 0; f <= span; f++ )
 		{
 			var pose = new Xform[skeleton.Count];
+			float[] scales = null;
 
 			for ( var b = 0; b < skeleton.Count; b++ )
 			{
-				pose[b] = tracks.TryGetValue( skeleton.Bones[b].Name, out var track )
-					? ToXform( track.Evaluate( f ) )
-					: skeleton.Bones[b].Local;
+				if ( !tracks.TryGetValue( skeleton.Bones[b].Name, out var track ) )
+				{
+					pose[b] = skeleton.Bones[b].Local;
+					continue;
+				}
+
+				var local = track.Evaluate( f );
+				pose[b] = ToXform( local );
+
+				var uniform = (local.Scale.x + local.Scale.y + local.Scale.z) / 3f;
+
+				if ( MathF.Abs( uniform - 1f ) > 1e-5f )
+				{
+					scales ??= Enumerable.Repeat( 1f, skeleton.Count ).ToArray();
+					scales[b] = uniform;
+				}
 			}
 
-			clip.AddFrame( pose );
+			if ( ik is not null )
+				pose = SolveIk( doc, skeleton, pose, ik, f );
+
+			clip.AddFrame( pose, scales );
 		}
 
 		return clip;
+	}
+
+	/// <summary>The rig's live constraints that have a keyed goal in this clip, as the kernel's
+	/// RigIk - or null when there is nothing to solve, which is every clip that bakes its IK.</summary>
+	static List<RigIk> LiveIk( RigAnimDocument doc )
+	{
+		if ( doc.RigAsset?.IkConstraints is not { Count: > 0 } constraints )
+			return null;
+
+		var live = constraints
+			.Where( c => c is not null && c.Enabled && c.Live && doc.FindIkGoalTrack( c.TargetBone ) is { Keyframes.Count: > 0 } )
+			.Select( c => new RigIk
+			{
+				Name = c.Name,
+				EndBone = c.TargetBone,
+				ChainLength = c.ChainLength,
+				Pole = new Vec3( c.PoleDirection.x, c.PoleDirection.y, c.PoleDirection.z ),
+				Weight = c.Weight,
+				Iterations = c.Iterations,
+				Enabled = true,
+				Live = true,
+				GoalRotation = c.GoalRotation,
+			} )
+			.ToList();
+
+		return live.Count > 0 ? live : null;
+	}
+
+	/// <summary>One frame's live IK: to model space, each constraint toward its goal, back to local.
+	/// The goal is in the model's space already (TrackTarget.IkGoal).</summary>
+	static Xform[] SolveIk( RigAnimDocument doc, Skeleton skeleton, Xform[] local, List<RigIk> constraints, int frame )
+	{
+		var world = RigAnimFile.ModelSpace( skeleton, local );
+
+		foreach ( var ik in constraints )
+		{
+			var goal = doc.FindIkGoalTrack( ik.EndBone ).Evaluate( frame );
+			var r = goal.Rotation;
+			var pose = new RigPose( new Vec3( goal.Position.x, goal.Position.y, goal.Position.z ), new Quat( r.x, r.y, r.z, r.w ), Vec3.One );
+
+			if ( ChainIk.Apply( skeleton, world, ik, pose ) is { } solved )
+				world = solved;
+		}
+
+		return RigAnimFile.LocalSpace( skeleton, world );
 	}
 
 	// --- export -------------------------------------------------------------------------------

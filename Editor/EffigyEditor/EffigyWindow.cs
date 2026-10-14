@@ -5679,6 +5679,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	{
 		RecordUndo();
 		_studio = new PartStudio();
+		if ( _animClipsWindow.IsValid() )
+			_animClipsWindow.Close();
+		_animClips.Clear();
 		_featureTree?.SetStudio( _studio );
 		_partsPanel?.SetStudio( _studio );
 		_materialsPanel?.SetStudio( _studio );
@@ -5711,6 +5714,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	{
 		RecordUndo();
 		_studio = HumanoidSample.Build();
+		if ( _animClipsWindow.IsValid() )
+			_animClipsWindow.Close();
+		_animClips.Clear();
 		_featureTree?.SetStudio( _studio );
 		_partsPanel?.SetStudio( _studio );
 		_materialsPanel?.SetStudio( _studio );
@@ -6064,6 +6070,18 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			Log.Error( $"[Effigy] saved {path} but could NOT write its mesh edits: {e.Message}" );
 		}
 
+		try
+		{
+			var clips = AnimClipsSidecar.Save( _animClips, path );
+
+			if ( clips > 0 )
+				Log.Info( $"[Effigy] wrote {clips} animation clip(s) beside {path}" );
+		}
+		catch ( Exception e )
+		{
+			Log.Error( $"[Effigy] saved {path} but could NOT write its animation clips: {e.Message}" );
+		}
+
 		_documentPath = path;
 		MarkClean();
 
@@ -6201,6 +6219,22 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		catch ( Exception e )
 		{
 			Log.Error( $"[Effigy] opened {path} but could not read its mesh edits: {e.Message}" );
+		}
+
+		// The clip list belongs to the document now, so the previous one's clips must not survive
+		// into this one. The dialog holds the same list object; closing it is simpler than teaching
+		// it to notice the list was refilled under it.
+		if ( _animClipsWindow.IsValid() )
+			_animClipsWindow.Close();
+
+		try
+		{
+			AnimClipsSidecar.Load( _animClips, path );
+		}
+		catch ( Exception e )
+		{
+			_animClips.Clear();
+			Log.Error( $"[Effigy] opened {path} but could not read its animation clips: {e.Message}" );
 		}
 
 		_studio = loaded;
@@ -6603,11 +6637,10 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	/// The clips queued for the next compile.
 	///
 	/// Held on the window rather than in the document, because they are an EXPORT setting and the
-	/// .effigy document is the parametric model. That is a real trade and worth naming: the list
-	/// does not survive closing the tool, and a clip added yesterday has to be added again. Putting
-	/// it in the document means a saved model referencing a .riganim that references a model, which
-	/// is a loop the loader would have to break; that is a bigger decision than this one and is not
-	/// made here.
+	/// .effigy document is the parametric model. Putting it in the document means a saved model
+	/// referencing a .riganim that references a model, which is a loop the loader would have to
+	/// break. So it is saved BESIDE the document instead, in an editor-only side-car the kernel never
+	/// reads (AnimClipsSidecar): written by Save, read back by LoadDocument, cleared by New.
 	/// </summary>
 	private readonly List<EffigyAnimExport.ClipSource> _animClips = new();
 
@@ -6623,10 +6656,19 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			return;
 		}
 
-		// No dirty mark. The clip list is not saved into the .effigy (see _animClips), so putting a
-		// * in the title would promise a save that does not carry it.
-		_animClipsWindow = new EffigyAnimClipsWindow( this, _animClips );
+		// Every edit dirties the document: the list is saved beside the .effigy (see _animClips), so
+		// an added clip is an unsaved change and closing should ask about it.
+		_animClipsWindow = new EffigyAnimClipsWindow( this, _animClips, OnAnimClipsChanged );
 		_animClipsWindow.Show();
+	}
+
+	private void OnAnimClipsChanged()
+	{
+		if ( !_dirty )
+		{
+			_dirty = true;
+			UpdateTitle();
+		}
 	}
 
 	/// <summary>

@@ -40,28 +40,11 @@ public static class EffigyModelDump
 			return;
 		}
 
-		var dump = new ModelDump { Model = modelPath, Sequence = sequence ?? "" };
-
-		// Bones in the engine's order, binds in model space (the same reading arms_pose_dump uses).
-		var engineBones = model.Bones.AllBones.ToList();
-		var index = new Dictionary<string, int>();
-		var bind = new List<Xform>();
-
-		foreach ( var bone in engineBones )
-		{
-			var world = ToXform( bone.LocalTransform );
-			var parent = bone.Parent is { } p && index.TryGetValue( p.Name, out var pi ) ? pi : -1;
-			var local = parent >= 0 ? bind[parent].Inverse * world : world;
-			index[bone.Name] = dump.Skeleton.AddBone( bone.Name, parent, local );
-			bind.Add( world );
-		}
-
-		dump.BindWorld = bind.ToArray();
-
-		dump.Meshes.AddRange( ReadMeshes( model, modelPath ) );
+		var dump = FromModel( model, modelPath );
+		dump.Sequence = sequence ?? "";
 
 		if ( !string.IsNullOrWhiteSpace( sequence ) && !string.IsNullOrWhiteSpace( times ) )
-			SamplePoses( model, sequence, times, dump, index );
+			SamplePoses( model, sequence, times, dump );
 
 		var scene = SceneEditorSession.Active?.Scene;
 
@@ -109,6 +92,83 @@ public static class EffigyModelDump
 
 		Log.Info( $"[dump] {modelPath}: {dump.Skeleton.Count} bones, {dump.Meshes.Count} draw call(s), "
 			+ $"{dump.Meshes.Sum( m => m.TriangleCount )} triangles, {dump.Poses.Count} pose(s), {dump.Props.Count} prop(s) -> {output}" );
+	}
+
+	/// <summary>
+	/// A loaded model's bind skeleton and LOD-0 meshes, in model space - everything of a dump that
+	/// comes from the compiled model itself. No weights (see <see cref="SourceFbx"/> and
+	/// <see cref="ModelDump.AttachWeights"/>), no poses, no props, no placement: the console command
+	/// adds those, and so does Marionette's Take Check, each from its own place.
+	/// </summary>
+	public static ModelDump FromModel( Model model, string label = null )
+	{
+		label ??= model?.ResourcePath ?? "model";
+		var dump = new ModelDump { Model = label };
+
+		if ( model?.Bones is null )
+			return dump;
+
+		// Bones in the engine's order, binds in model space (the same reading arms_pose_dump uses).
+		var index = new Dictionary<string, int>();
+		var bind = new List<Xform>();
+
+		foreach ( var bone in model.Bones.AllBones )
+		{
+			var world = ToXform( bone.LocalTransform );
+			var parent = bone.Parent is { } p && index.TryGetValue( p.Name, out var pi ) ? pi : -1;
+			var local = parent >= 0 ? bind[parent].Inverse * world : world;
+			index[bone.Name] = dump.Skeleton.AddBone( bone.Name, parent, local );
+			bind.Add( world );
+		}
+
+		dump.BindWorld = bind.ToArray();
+		dump.Meshes.AddRange( ReadMeshes( model, label ) );
+		return dump;
+	}
+
+	/// <summary>A model as a dump prop: its LOD-0 meshes, placed by <paramref name="toModel"/>
+	/// (the prop's transform in the dumped model's space).</summary>
+	public static ModelDump.Prop PropFromModel( string name, Model model, Xform toModel )
+	{
+		var prop = new ModelDump.Prop { Name = name, Model = model?.ResourcePath ?? "", Transform = toModel };
+
+		if ( model is not null )
+			prop.Meshes.AddRange( ReadMeshes( model, name ) );
+
+		return prop;
+	}
+
+	/// <summary>A kernel mesh (an OBJ lump, say) as a dump part: every face triangulated, nothing
+	/// renumbered. Null for a mesh with no faces.</summary>
+	public static ModelDump.Part PartFromMesh( string name, PolyMesh mesh )
+	{
+		if ( mesh is null || mesh.FaceCount == 0 )
+			return null;
+
+		var triangles = new List<int>();
+
+		foreach ( var face in mesh.Faces )
+		{
+			var ix = face.Indices;
+
+			if ( ix.Length == 3 )
+			{
+				triangles.AddRange( ix );
+				continue;
+			}
+
+			if ( ix.Length < 3 )
+				continue;
+
+			foreach ( var (a, b, c) in Effigy.Triangulate.Face( ix.Select( i => mesh.Positions[i] ).ToList() ) )
+			{
+				triangles.Add( ix[a] );
+				triangles.Add( ix[b] );
+				triangles.Add( ix[c] );
+			}
+		}
+
+		return new ModelDump.Part { Name = name, Positions = mesh.Positions.ToArray(), Triangles = triangles.ToArray() };
 	}
 
 	/// <summary>
@@ -186,7 +246,7 @@ public static class EffigyModelDump
 	}
 
 	/// <summary>The model's pose at moments of a sequence, in model space - arms_pose_dump's method.</summary>
-	static void SamplePoses( Model model, string sequence, string times, ModelDump dump, Dictionary<string, int> index )
+	static void SamplePoses( Model model, string sequence, string times, ModelDump dump )
 	{
 		var scene = Scene.CreateEditorScene();
 
@@ -212,7 +272,7 @@ public static class EffigyModelDump
 
 				var pose = dump.BindWorld.ToArray();
 				foreach ( var bone in model.Bones.AllBones )
-					if ( index.TryGetValue( bone.Name, out var b ) && renderer.TryGetBoneTransform( bone, out var world ) )
+					if ( dump.Skeleton.IndexOf( bone.Name ) is var b and >= 0 && renderer.TryGetBoneTransform( bone, out var world ) )
 						pose[b] = ToXform( world );
 
 				dump.Poses[text.Trim()] = pose;
@@ -241,22 +301,12 @@ public static class EffigyModelDump
 			}
 
 			foreach ( var r in renderers )
-			{
-				var prop = new ModelDump.Prop
-				{
-					Name = name,
-					Model = r.Model.ResourcePath,
-					Transform = toModel * ToXform( r.WorldTransform ),
-				};
-
-				prop.Meshes.AddRange( ReadMeshes( r.Model, name ) );
-				dump.Props.Add( prop );
-			}
+				dump.Props.Add( PropFromModel( name, r.Model, toModel * ToXform( r.WorldTransform ) ) );
 		}
 	}
 
 	/// <summary>The .fbx a .vmdl's render mesh was compiled from, on disk, or null.</summary>
-	static string SourceFbx( string modelPath )
+	public static string SourceFbx( string modelPath )
 	{
 		var vmdl = AssetSystem.FindByPath( modelPath )?.AbsolutePath;
 
@@ -285,7 +335,7 @@ public static class EffigyModelDump
 	static bool SamePath( string a, string b ) =>
 		string.Equals( (a ?? "").Replace( '\\', '/' ).Trim(), (b ?? "").Replace( '\\', '/' ).Trim(), StringComparison.OrdinalIgnoreCase );
 
-	static Xform ToXform( Transform t ) =>
+	public static Xform ToXform( Transform t ) =>
 		new Quat( t.Rotation.x, t.Rotation.y, t.Rotation.z, t.Rotation.w ).ToXform(
 			new Vec3( t.Position.x, t.Position.y, t.Position.z ),
 			new Vec3( t.Scale.x, t.Scale.y, t.Scale.z ) );

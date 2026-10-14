@@ -1,5 +1,6 @@
 using Sandbox;
 using Sandbox.Utility;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -103,6 +104,49 @@ public sealed class RigAnimDocument : GameResource
 	[Property] public List<RigEvent> Events { get; set; } = new();
 	[Property] public List<MorphEvent> MorphEvents { get; set; } = new();
 
+	/// <summary>
+	/// Named frames on the clip's own timeline - "contact", "release", "sound: click", "cut".
+	///
+	/// A MARK IS A NOTE WITH A TIME, NOT AN EVENT. It attaches nothing and moves nothing; it is the
+	/// place you agreed the hand touches the switch, kept in the file so the next person to open
+	/// the clip (or the script checking it) sees the same beats you timed against. Saved in the
+	/// clip rather than in an editor cookie for exactly that reason.
+	///
+	/// The game can read them too: RigAnimPlayerComponent raises MarkReached as the playhead
+	/// crosses one, which is the cue a footstep sound or a door latch wants.
+	/// </summary>
+	[Property] public List<RigMark> Marks { get; set; } = new();
+
+	/// <summary>
+	/// Every morph the clip drives at <paramref name="frame"/>, by morph name, into
+	/// <paramref name="into"/> (cleared first).
+	///
+	/// A morph event is a value held over a frame range. Two events on the same morph that overlap
+	/// resolve to the LATER one in the list, which is the one added last - the same rule a second
+	/// key on a frame follows. An event with no Morph Name falls back to its Name, because the
+	/// row's title is the only name most people ever type.
+	///
+	/// The one place this is decided, so the editor's viewport and the game's player agree.
+	/// </summary>
+	public void MorphWeightsAt( float frame, Dictionary<string, float> into )
+	{
+		into.Clear();
+
+		if ( MorphEvents is null )
+			return;
+
+		foreach ( var morph in MorphEvents )
+		{
+			if ( morph is null || !morph.IsActive( frame ) )
+				continue;
+
+			var name = string.IsNullOrWhiteSpace( morph.MorphName ) ? morph.Name : morph.MorphName;
+
+			if ( !string.IsNullOrWhiteSpace( name ) )
+				into[name] = morph.Value;
+		}
+	}
+
 	public RigObject FindObject( string name ) =>
 		Objects?.FirstOrDefault( o => o is not null && o.Name == name );
 
@@ -136,7 +180,22 @@ public sealed class RigAnimDocument : GameResource
 
 	public BoneTrack GetOrAddPartTrack( string part ) => GetOrAddTrack( part, TrackTarget.Part );
 
-	private BoneTrack GetOrAddTrack( string name, TrackTarget target )
+	/// <summary>The animated goal of the IK constraint whose end is <paramref name="bone"/>, if
+	/// the clip keys one. See TrackTarget.IkGoal.</summary>
+	public BoneTrack FindIkGoalTrack( string bone ) =>
+		BoneTracks.FirstOrDefault( t => t.Target == TrackTarget.IkGoal && t.BoneName == bone );
+
+	public BoneTrack GetOrAddIkGoalTrack( string bone ) => GetOrAddTrack( bone, TrackTarget.IkGoal );
+
+	/// <summary>The keyed shot of a camera, by the camera's name. See TrackTarget.Camera.</summary>
+	public BoneTrack FindCameraTrack( string camera ) =>
+		BoneTracks.FirstOrDefault( t => t.Target == TrackTarget.Camera && t.BoneName == camera );
+
+	public BoneTrack GetOrAddCameraTrack( string camera ) => GetOrAddTrack( camera, TrackTarget.Camera );
+
+	/// <summary>Any kind of track, by kind and name - for code that carries a track's identity
+	/// around (copy/paste, undo) and has to put a key back where it came from.</summary>
+	public BoneTrack GetOrAddTrack( string name, TrackTarget target )
 	{
 		var track = BoneTracks.FirstOrDefault( t => t.Target == target && t.BoneName == name );
 
@@ -156,6 +215,33 @@ public sealed class RigAnimDocument : GameResource
 
 	/// <summary>Only the whole-part tracks.</summary>
 	public IEnumerable<BoneTrack> PartTracks => BoneTracks.Where( t => t.Target == TrackTarget.Part );
+
+	/// <summary>Only the IK goal tracks.</summary>
+	public IEnumerable<BoneTrack> IkGoalTracks => BoneTracks.Where( t => t.Target == TrackTarget.IkGoal );
+
+	/// <summary>
+	/// A camera's shot at <paramref name="frame"/>: its keys when it has any, otherwise where it
+	/// was placed. Field of view rides in the key's scale - see TrackTarget.Camera.
+	/// </summary>
+	public (Transform World, float FieldOfView) CameraAt( RigCamera camera, float frame )
+	{
+		if ( camera is not null && FindCameraTrack( camera.Name ) is { Keyframes.Count: > 0 } track )
+		{
+			var keyed = track.Evaluate( frame );
+			var fov = keyed.Scale.x > 0f ? keyed.Scale.x : camera.FieldOfView;
+			return (new Transform( keyed.Position, keyed.Rotation ), fov);
+		}
+
+		return camera is null ? (Transform.Zero, 80f) : (camera.World, camera.FieldOfView);
+	}
+
+	/// <summary>The key a camera's track stores for this placement - see TrackTarget.Camera.</summary>
+	public static Transform CameraKey( Vector3 position, Rotation rotation, float fieldOfView ) =>
+		new( position, rotation, fieldOfView );
+
+	/// <summary>The marks in frame order. A list kept in the order they were added would make
+	/// "next mark" mean "the one added after this one".</summary>
+	public IEnumerable<RigMark> MarksInOrder => (Marks ?? new List<RigMark>()).Where( m => m is not null ).OrderBy( m => m.Frame );
 
 	/// <summary>A part's own transform, relative to whatever it follows: its keyframes at
 	/// <paramref name="frame"/> when it has any, otherwise where it was placed. A null frame means
@@ -207,7 +293,41 @@ public enum TrackTarget
 	Bone,
 
 	/// <summary>A named entry in ReferenceProps, moved as one whole object.</summary>
-	Part
+	Part,
+
+	/// <summary>
+	/// The goal of an IK constraint, keyed over time and solved at playback.
+	///
+	/// Named for the constraint's end bone (its TargetBone), and stored in the MAIN MODEL'S SPACE -
+	/// relative to the model's root, not to any bone - because a goal is where the hand should be in
+	/// the world the model stands in, not where it is on the arm. Rotation is kept as well: with
+	/// GoalRotation on, the end bone takes it, so one control places the wrist and turns the palm.
+	///
+	/// A clip without goal keys plays exactly as before - the solve only runs where there is a goal
+	/// to reach.
+	/// </summary>
+	IkGoal,
+
+	/// <summary>
+	/// A camera's shot, keyed over time. Named for the camera (RigCamera.Name), in the main model's
+	/// space like the camera itself.
+	///
+	/// THE KEY'S SCALE CARRIES THE FIELD OF VIEW, in degrees. A camera has no scale, and giving
+	/// cameras their own key type would have meant a second timeline, a second clipboard and a
+	/// second undo path to key one extra number. Through the scale it eases, curves and copies like
+	/// every other track.
+	/// </summary>
+	Camera
+}
+
+/// <summary>A named frame on the clip's timeline. See RigAnimDocument.Marks.</summary>
+public sealed class RigMark
+{
+	[Property] public string Name { get; set; } = "mark";
+	[Property] public int Frame { get; set; }
+
+	/// <summary>Free text - what happens here, what to listen for, who asked for it.</summary>
+	[Property] public string Note { get; set; } = "";
 }
 
 /// <summary>One static model in the viewport to pose against. See RigAnimDocument.ReferenceProps.</summary>
@@ -408,7 +528,12 @@ public sealed class BoneTrack
 	/// <summary>What the timeline shows in the gutter: the thing's own name, with whatever owns it
 	/// in brackets. Whether a row drives a bone or a whole object is carried by colour instead -
 	/// the gutter paints parts green, matching their handles in the viewport.</summary>
-	public string DisplayName => RigTrackName.Display( BoneName );
+	public string DisplayName => Target switch
+	{
+		TrackTarget.IkGoal => $"{RigTrackName.Display( BoneName )} (IK goal)",
+		TrackTarget.Camera => $"{BoneName} (camera)",
+		_ => RigTrackName.Display( BoneName )
+	};
 	[Property] public List<BoneKeyframe> Keyframes { get; set; } = new();
 
 	/// <summary>The bone's local (parent-space) transform at a given frame, interpolated between
@@ -437,6 +562,9 @@ public sealed class BoneTrack
 			if ( frame < a.Frame || frame > b.Frame )
 				continue;
 
+			if ( a.IsCubic )
+				return EvaluateCubic( i, frame );
+
 			var span = b.Frame - a.Frame;
 			var t = span > 0 ? (frame - a.Frame) / span : 0f;
 
@@ -444,6 +572,107 @@ public sealed class BoneTrack
 		}
 
 		return Keyframes[0].Local;
+	}
+
+	/// <summary>The Cubic and Monotone modes: a Hermite segment from key i to key i+1 that knows
+	/// the keys beyond them. See RigCurve.</summary>
+	private Transform EvaluateCubic( int i, float frame )
+	{
+		var a = Keyframes[i];
+		var b = Keyframes[i + 1];
+		var hasPrev = i > 0;
+		var hasNext = i + 2 < Keyframes.Count;
+
+		Span<float> va = stackalloc float[RigCurve.Channels];
+		Span<float> vb = stackalloc float[RigCurve.Channels];
+		Span<float> vp = stackalloc float[RigCurve.Channels];
+		Span<float> vn = stackalloc float[RigCurve.Channels];
+		Span<float> result = stackalloc float[RigCurve.Channels];
+
+		Pack( a.Local, va );
+		Pack( b.Local, vb );
+
+		if ( hasPrev )
+			Pack( Keyframes[i - 1].Local, vp );
+
+		if ( hasNext )
+			Pack( Keyframes[i + 2].Local, vn );
+
+		RigCurve.Evaluate( a.Interpolation == KeyInterpolation.Monotone, frame,
+			a.Frame, va, BoneKeyframe.TangentSpan( a.TangentOut ),
+			b.Frame, vb, BoneKeyframe.TangentSpan( b.TangentIn ),
+			hasPrev ? Keyframes[i - 1].Frame : null, vp,
+			hasNext ? Keyframes[i + 2].Frame : null, vn,
+			result );
+
+		return Unpack( result );
+	}
+
+	/// <summary><paramref name="q"/>, negated if that puts it on <paramref name="reference"/>'s
+	/// side - the same rotation, written the way a neighbouring tangent expects.</summary>
+	public static Rotation SameHemisphere( Rotation reference, Rotation q ) =>
+		reference.x * q.x + reference.y * q.y + reference.z * q.z + reference.w * q.w >= 0f
+			? q
+			: new Rotation( -q.x, -q.y, -q.z, -q.w );
+
+	/// <summary>A transform as RigCurve's ten channels.</summary>
+	public static void Pack( Transform t, Span<float> into )
+	{
+		into[0] = t.Position.x; into[1] = t.Position.y; into[2] = t.Position.z;
+		into[3] = t.Rotation.x; into[4] = t.Rotation.y; into[5] = t.Rotation.z; into[6] = t.Rotation.w;
+		into[7] = t.Scale.x; into[8] = t.Scale.y; into[9] = t.Scale.z;
+	}
+
+	public static Transform Unpack( ReadOnlySpan<float> v ) => new(
+		new Vector3( v[0], v[1], v[2] ),
+		new Rotation( v[3], v[4], v[5], v[6] ),
+		new Vector3( v[7], v[8], v[9] ) );
+
+	/// <summary>
+	/// The automatic tangent at key <paramref name="index"/>, in RigCurve's channels - what the
+	/// curve uses when the key has none of its own. The graph editor draws handles from this and
+	/// writes it into the key the moment a handle is grabbed, so a tangent starts where the curve
+	/// already was rather than jumping.
+	/// </summary>
+	public float[] AutoTangent( int index, bool monotone )
+	{
+		EnsureSorted();
+
+		var tangent = new float[RigCurve.Channels];
+
+		if ( index < 0 || index >= Keyframes.Count )
+			return tangent;
+
+		Span<float> v = stackalloc float[RigCurve.Channels];
+		Span<float> p = stackalloc float[RigCurve.Channels];
+		Span<float> n = stackalloc float[RigCurve.Channels];
+
+		Pack( Keyframes[index].Local, v );
+
+		var hasPrev = index > 0;
+		var hasNext = index + 1 < Keyframes.Count;
+
+		if ( hasPrev )
+		{
+			Pack( Keyframes[index - 1].Local, p );
+			RigCurve.Align( v, p );
+		}
+
+		if ( hasNext )
+		{
+			Pack( Keyframes[index + 1].Local, n );
+			RigCurve.Align( v, n );
+		}
+
+		for ( var c = 0; c < RigCurve.Channels; c++ )
+		{
+			tangent[c] = RigCurve.Slope( monotone,
+				hasPrev ? Keyframes[index - 1].Frame : null, p[c],
+				Keyframes[index].Frame, v[c],
+				hasNext ? Keyframes[index + 1].Frame : null, n[c] );
+		}
+
+		return tangent;
 	}
 
 	/// <summary>Evaluate walks the list in order, so it has to be in order. This used to be an
@@ -469,7 +698,10 @@ public sealed class BoneTrack
 
 		if ( existing is not null )
 		{
-			existing.Local = local;
+			// Kept on the old key's quaternion sign. Its own tangents (TangentIn/Out) were drawn
+			// against that sign, and q and -q being the same rotation is no comfort to a curve that
+			// leaves the key along a slope meant for the other one.
+			existing.Local = new Transform( local.Position, SameHemisphere( existing.Local.Rotation, local.Rotation ), local.Scale );
 			return;
 		}
 
@@ -520,7 +752,17 @@ public enum KeyInterpolation
 	/// <summary>Leave at full speed, settle slowly. The half you want arriving at a pose, and the
 	/// one that makes a movement look like it has weight rather than being switched off.</summary>
 	[Title( "Ease Out" )]
-	EaseOut
+	EaseOut,
+
+	/// <summary>A smooth curve THROUGH the keys rather than a stop at each one: velocity carries
+	/// across a key. Can overshoot a little, the way a swung arm does. Tangents are automatic
+	/// (Catmull-Rom) until the graph editor sets them. See RigCurve.</summary>
+	Cubic,
+
+	/// <summary>Like Cubic, but never overshoots: the curve stays between the two keys it joins
+	/// (Fritsch-Carlson). Right for dense, solver-written takes and for anything that must not
+	/// wobble past a hold. See RigCurve.</summary>
+	Monotone
 }
 
 public sealed class BoneKeyframe
@@ -530,6 +772,28 @@ public sealed class BoneKeyframe
 
 	/// <summary>Governs the segment LEAVING this key, not arriving at it.</summary>
 	[Property] public KeyInterpolation Interpolation { get; set; } = KeyInterpolation.Smooth;
+
+	/// <summary>
+	/// This key's own tangents for the Cubic and Monotone modes, as slopes in value per frame over
+	/// RigCurve's ten channels (position xyz, rotation xyzw, scale xyz). Null - the default, and
+	/// what every older clip reads back as - means automatic.
+	///
+	/// In is the slope arriving, Out the slope leaving. They are equal unless the graph editor
+	/// broke them apart, which is how a key gets a sharp turn inside a smooth curve.
+	/// </summary>
+	[Property] public List<float> TangentIn { get; set; }
+
+	[Property] public List<float> TangentOut { get; set; }
+
+	/// <summary>Whether the segment leaving this key is a Hermite curve rather than an ease.</summary>
+	public bool IsCubic => Interpolation is KeyInterpolation.Cubic or KeyInterpolation.Monotone;
+
+	/// <summary>A stored tangent as RigCurve wants it: ten channels, or empty for automatic. A list
+	/// of any other length is a hand-edited file, and automatic is safer than half a tangent.
+	/// Copied rather than viewed in place - the game's API whitelist is the judge of what game code
+	/// may touch, and a ten-float copy on the rare key that has its own tangent costs nothing.</summary>
+	public static ReadOnlySpan<float> TangentSpan( List<float> tangent ) =>
+		tangent is { Count: RigCurve.Channels } ? tangent.ToArray() : ReadOnlySpan<float>.Empty;
 
 	/// <summary>
 	/// Remap a 0..1 position within this key's outgoing segment.
@@ -550,6 +814,10 @@ public sealed class BoneKeyframe
 		KeyInterpolation.EaseIn => Easing.QuadraticIn( t ),
 		KeyInterpolation.EaseOut => Easing.QuadraticOut( t ),
 		KeyInterpolation.Stepped => 0f,
+
+		// Cubic and Monotone are not a remap of t - they curve through the neighbouring keys, and
+		// BoneTrack.Evaluate routes them to RigCurve before this is reached. Linear is the honest
+		// answer for anything that asks this anyway.
 		_ => t
 	};
 }

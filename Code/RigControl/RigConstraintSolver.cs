@@ -8,17 +8,17 @@ namespace Marionette;
 /// <summary>
 /// Solves the constraints authored on a RigDocument.
 ///
-/// CONSTRAINTS ACT WHILE POSING, AND BAKE INTO KEYFRAMES. Dragging a hand runs the IK solve and
-/// writes ordinary FK keyframes for the whole chain, rather than storing "there is IK here" and
-/// re-solving it at playback. That's a deliberate trade:
+/// AN IK CONSTRAINT WORKS ONE OF TWO WAYS, chosen per constraint by IkConstraint.Live:
 ///
-///   - Playback needs no solver at all, so a clip plays identically in the editor, in game, and
-///     anywhere else that can read a keyframe. Nothing to keep in sync.
-///   - The cost is that changing a constraint later doesn't retroactively change poses already
-///     authored under the old one. Re-drag the effector to re-solve.
+///   - LIVE (the default): dragging the target bone keys the constraint's goal - a track of its
+///     own on the clip (TrackTarget.IkGoal) - and the chain is solved toward that goal every frame,
+///     by RigAnimPlayerComponent in game, by the viewport in the editor, and by the export when it
+///     bakes. Change the constraint and every pose authored under it follows.
+///   - BAKED: the drag runs the solve once and writes ordinary FK keyframes for the whole chain.
+///     Playback needs no solver at all, and a clip plays identically anywhere that can read a
+///     keyframe; the cost is that changing a constraint later does not touch poses already made.
 ///
-/// The alternative - live constraints evaluated every frame - needs the IK goal to be its own
-/// animatable object, which is a bigger change to the asset format than this pass is making.
+/// Limits are applied to keyframes as they are read, either way.
 /// </summary>
 public static class RigConstraintSolver
 {
@@ -61,14 +61,56 @@ public static class RigConstraintSolver
 	public readonly record struct SolvedBone( BoneCollection.Bone Bone, Transform World );
 
 	/// <summary>
-	/// Two-bone IK, closed form. Given a chain end (hand), its parent (elbow) and grandparent
-	/// (shoulder), rotate the two upper bones so the end lands on <paramref name="target"/>.
+	/// Solve a constraint from a renderer's current pose: walk ChainLength bones up from
+	/// <paramref name="end"/>, solve toward <paramref name="target"/>, and hand back the chain
+	/// root-first as world transforms to write. See SolveChain for what the length means.
 	///
-	/// Closed form rather than iterative because two bones have an exact answer - the law of
-	/// cosines gives the elbow angle directly. FABRIK and CCD exist for chains longer than this;
-	/// they're iterative, and for the arm/leg case they'd be a slower way to get a worse result.
-	///
-	/// Returns false when the chain isn't three bones deep, or is degenerate (zero-length bones).
+	/// <paramref name="goalRotation"/> is the end bone's new rotation, or null to keep the one it
+	/// has. The pole is in the MODEL'S space and is turned with the renderer here, so a constraint
+	/// bends the same way whichever way the character faces.
+	/// </summary>
+	public static bool TrySolve( SkinnedModelRenderer renderer, BoneCollection.Bone end, IkConstraint ik,
+		Vector3 target, Rotation? goalRotation, out List<SolvedBone> solved )
+	{
+		solved = null;
+
+		if ( !renderer.IsValid() || end is null || ik is null )
+			return false;
+
+		var length = Math.Max( ik.ChainLength, 1 );
+		var bones = new BoneCollection.Bone[length + 1];
+		bones[length] = end;
+
+		for ( var k = length - 1; k >= 0; k-- )
+		{
+			bones[k] = bones[k + 1].Parent;
+
+			if ( bones[k] is null )
+				return false;
+		}
+
+		var world = new Transform[bones.Length];
+
+		for ( var k = 0; k < bones.Length; k++ )
+		{
+			if ( !renderer.TryGetBoneTransform( bones[k], out world[k] ) )
+				return false;
+		}
+
+		if ( !SolveChain( world, target, goalRotation, renderer.WorldRotation * ik.PoleDirection, ik.Iterations, ik.Weight ) )
+			return false;
+
+		solved = new List<SolvedBone>( bones.Length );
+
+		for ( var k = 0; k < bones.Length; k++ )
+			solved.Add( new SolvedBone( bones[k], world[k] ) );
+
+		return true;
+	}
+
+	/// <summary>
+	/// Two-bone IK from a renderer's pose, bending toward a world-space pole. Kept for callers that
+	/// have no constraint to hand (the sample builders); a constraint goes through TrySolve.
 	/// </summary>
 	public static bool TrySolveTwoBone( SkinnedModelRenderer renderer, BoneCollection.Bone end,
 		Vector3 target, Vector3 poleDirection, out List<SolvedBone> solved )
@@ -82,6 +124,103 @@ public static class RigConstraintSolver
 			|| !renderer.TryGetBoneTransform( mid, out var midTx )
 			|| !renderer.TryGetBoneTransform( end, out var endTx ) )
 			return false;
+
+		var chain = new[] { rootTx, midTx, endTx };
+
+		if ( !SolveChain( chain, target, null, poleDirection, 1, 1f ) )
+			return false;
+
+		solved = new List<SolvedBone>
+		{
+			new( root, chain[0] ),
+			new( mid, chain[1] ),
+			new( end, chain[2] )
+		};
+
+		return true;
+	}
+
+	/// <summary>
+	/// IK on a chain of world transforms, solved in place: <paramref name="chain"/>[0] is the top
+	/// bone that turns, the last entry is the end that reaches. Every bone keeps its length.
+	///
+	/// THE LENGTH PICKS THE SOLVER - and until this existed, IkConstraint.ChainLength and Iterations
+	/// were saved in every rig and read by nothing:
+	///
+	///   - one bone: it turns to aim the end at the target. Exact.
+	///   - two bones: closed form. Two bones have an exact answer - the law of cosines gives the
+	///     elbow angle directly - so iterating would be a slower way to a worse result.
+	///   - three or more: cyclic coordinate descent, <paramref name="iterations"/> passes, each
+	///     turning every bone from the end upward to point the end at the target. There is no
+	///     closed form, and CCD, like the two-bone solve, works in deltas from where each bone
+	///     already points, so it never has to know which local axis a rig treats as "along the
+	///     bone" - a convention that varies per rig and is not safe to assume. The pole has no
+	///     single middle joint to mean here and is not used.
+	///
+	/// The end bone keeps its world rotation unless <paramref name="goalRotation"/> is given.
+	/// <paramref name="weight"/> blends every chain bone between where it was and the solve.
+	///
+	/// Effigy's kernel has the same solve on its own types (ChainIk), which is what a headless take
+	/// check and the .vmdl export use - keep the two alike.
+	/// </summary>
+	public static bool SolveChain( Transform[] chain, Vector3 target, Rotation? goalRotation, Vector3 pole, int iterations, float weight )
+	{
+		if ( chain is null || chain.Length < 2 )
+			return false;
+
+		var original = (Transform[])chain.Clone();
+		var n = chain.Length - 1;
+
+		if ( n == 2 )
+		{
+			if ( !SolveTwoBone( chain, target, pole ) )
+				return false;
+		}
+		else
+		{
+			// One bone is one step, and exact; more are iterated.
+			var passes = n == 1 ? 1 : Math.Max( iterations, 1 );
+
+			for ( var pass = 0; pass < passes; pass++ )
+			{
+				for ( var j = n - 1; j >= 0; j-- )
+				{
+					var pivot = chain[j].Position;
+					var delta = DeltaBetween( chain[n].Position - pivot, target - pivot );
+
+					for ( var k = j; k <= n; k++ )
+						chain[k] = new Transform( pivot + delta * (chain[k].Position - pivot), delta * chain[k].Rotation, chain[k].Scale );
+				}
+
+				if ( chain[n].Position.Distance( target ) < 0.01f )
+					break;
+			}
+
+			// The end only moves; the rotation it was carried through is put back.
+			chain[n] = new Transform( chain[n].Position, original[n].Rotation, original[n].Scale );
+		}
+
+		if ( goalRotation is { } turn )
+			chain[n] = new Transform( chain[n].Position, turn, chain[n].Scale );
+
+		weight = weight.Clamp( 0f, 1f );
+
+		if ( weight < 1f )
+		{
+			for ( var k = 0; k <= n; k++ )
+				chain[k] = Transform.Lerp( original[k], chain[k], weight, true );
+		}
+
+		return true;
+	}
+
+	/// <summary>The closed-form two-bone solve on a three-entry chain, in place. False when the
+	/// chain is degenerate (zero-length bones, target on the root).</summary>
+	private static bool SolveTwoBone( Transform[] chain, Vector3 target, Vector3 poleDirection )
+	{
+		var rootTx = chain[0];
+		var midTx = chain[1];
+		var endTx = chain[2];
 
 		var a = rootTx.Position;
 		var b = midTx.Position;
@@ -134,12 +273,9 @@ public static class RigConstraintSolver
 		var upperDelta = DeltaBetween( b - a, newMidPosition - a );
 		var lowerDelta = DeltaBetween( c - b, clampedTarget - newMidPosition );
 
-		solved = new List<SolvedBone>
-		{
-			new( root, new Transform( a, upperDelta * rootTx.Rotation, rootTx.Scale ) ),
-			new( mid, new Transform( newMidPosition, lowerDelta * midTx.Rotation, midTx.Scale ) ),
-			new( end, new Transform( clampedTarget, endTx.Rotation, endTx.Scale ) )
-		};
+		chain[0] = new Transform( a, upperDelta * rootTx.Rotation, rootTx.Scale );
+		chain[1] = new Transform( newMidPosition, lowerDelta * midTx.Rotation, midTx.Scale );
+		chain[2] = new Transform( clampedTarget, endTx.Rotation, endTx.Scale );
 
 		return true;
 	}
