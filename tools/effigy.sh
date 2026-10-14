@@ -11,6 +11,9 @@
 #   tools/effigy.sh parts    out.png
 #   tools/effigy.sh new      out.effigy
 #   tools/effigy.sh wardrobe outdir [recipe] [size] [nodrape]   every garment on a Citizen-shaped body
+#   tools/effigy.sh take     dump.json clip.riganim [options]   a clip on a dumped model: crossings, gaps, stills
+#   tools/effigy.sh fbxdump  bones.json source.fbx out.json   a model dump from its source FBX, on an engine skeleton
+#   tools/effigy.sh fbxskin  dump.json source.fbx [out.json]  skin weights for an editor dump, from the source FBX
 #
 # The commands live in Effigy.Tests/EffigyCli.cs and run on the canonical kernel in Effigy/,
 # so this needs no editor and no s&box. Landmarks: a body name, Body.top/.bottom/.front/.back/

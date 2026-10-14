@@ -19,11 +19,14 @@ namespace Effigy.Tests;
 ///   effigy parts   out.png                             the part library on one sheet
 ///   effigy new     out.effigy                          an empty document
 ///   effigy wardrobe outdir [recipe] [size] [nodrape]   every garment recipe, rendered and checked
+///   effigy take    dump.json clip.riganim [options]    play a clip on a dumped model, count crossings, render stills
+///   effigy fbxdump bones.json source.fbx out.json      a model dump from its source FBX, on an engine skeleton
+///   effigy fbxskin dump.json source.fbx [out.json]     give a dump's render meshes the FBX's skin weights
 /// </summary>
 public static class EffigyCli
 {
 	public static bool Handles( string verb ) =>
-		verb is "render" or "describe" or "measure" or "match" or "script" or "fix" or "parts" or "new" or "crop" or "wardrobe";
+		verb is "render" or "describe" or "measure" or "match" or "script" or "fix" or "parts" or "new" or "crop" or "wardrobe" or "take" or "fbxdump" or "fbxskin";
 
 	public static int Run( string[] args )
 	{
@@ -41,6 +44,9 @@ public static class EffigyCli
 				"new" => New( args ),
 				"crop" => Crop( args ),
 				"wardrobe" => Wardrobe( args ),
+				"take" => Take( args ),
+				"fbxdump" => FbxDump( args ),
+				"fbxskin" => FbxSkin( args ),
 				_ => Usage(),
 			};
 		}
@@ -53,7 +59,7 @@ public static class EffigyCli
 
 	static int Usage()
 	{
-		Console.WriteLine( "effigy render|describe|measure|match|script|fix|parts|new … — see EffigyCli.cs" );
+		Console.WriteLine( "effigy render|describe|measure|match|script|fix|parts|new|wardrobe|take|fbxdump|fbxskin … — see EffigyCli.cs" );
 		return 1;
 	}
 
@@ -312,6 +318,135 @@ public static class EffigyCli
 		overview.SavePng( overviewPath );
 		Console.WriteLine( overviewPath );
 		return 0;
+	}
+
+	/// <summary>
+	/// A take's sign-off without Blender or the editor: a model dumped by the editor's
+	/// effigy_model_dump, a Marionette clip, and <see cref="TakeAudit"/> between them.
+	///
+	///   effigy take dump.json clip.riganim [substeps=4] [from=F] [to=F] [noself] [nopairs] [noprops]
+	///                [depth=0] [gap=8] [stills=N | frames=a,b,c] [camera=bone | eye=x,y,z [look=x,y,z]]
+	///                [fov=80] [size=640x360] [out=dir]
+	///
+	/// Prints the report and exits 0 when the take is clear, 3 when anything crosses. Stills go to
+	/// out/take_sheet.png (and one PNG per frame), from the model's origin looking down +x - the
+	/// first-person eye of a view model - unless a camera bone or an eye point is given. A still
+	/// with nothing in it says so, rather than leaving an empty sheet to puzzle over.
+	/// </summary>
+	static int Take( string[] a )
+	{
+		if ( a.Length < 3 ) { Console.Error.WriteLine( "effigy take dump.json clip.riganim [substeps=4] [from=F] [to=F] [noself] [nopairs] [noprops] [depth=0] [gap=8] [stills=N|frames=a,b,c] [camera=bone | eye=x,y,z [look=x,y,z]] [fov=80] [size=640x360] [out=dir]" ); return 1; }
+
+		string Opt( string key ) => a.Skip( 3 ).FirstOrDefault( x => x.StartsWith( key + "=" ) )?[(key.Length + 1)..];
+		float? Num( string key ) => Opt( key ) is { } v ? float.Parse( v, System.Globalization.CultureInfo.InvariantCulture ) : null;
+
+		var dump = ModelDump.ReadFile( a[1] );
+		var clip = RigAnimFile.ReadFile( a[2] );
+		var audit = new TakeAudit( dump, clip );
+		var options = new TakeAudit.Options
+		{
+			Substeps = (int)(Num( "substeps" ) ?? 4),
+			From = Num( "from" ),
+			To = Num( "to" ),
+			Self = !a.Contains( "noself" ),
+			PartPairs = !a.Contains( "nopairs" ),
+			Props = !a.Contains( "noprops" ),
+			GapRange = Num( "gap" ) ?? 8f,
+			DepthTolerance = Num( "depth" ) ?? 0f,
+		};
+
+		Console.WriteLine( $"model {dump.Model}: {dump.Skeleton.Count} bones, {dump.Meshes.Count} part(s), {dump.Meshes.Sum( m => m.TriangleCount )} triangles, {dump.Props.Count} prop(s)" );
+		Console.WriteLine( $"clip {Path.GetFileName( a[2] )}: {clip.BoneTracks.Count()} bone tracks, frames 0..{clip.LastFrame} at {clip.FrameRate} fps (made on {clip.SourceModel})" );
+
+		var watch = System.Diagnostics.Stopwatch.StartNew();
+		var result = audit.Run( options );
+		Console.WriteLine( result );
+		Console.WriteLine( $"checked in {watch.ElapsedMilliseconds} ms" );
+
+		// Stills: every listed frame, or N spread evenly over the clip.
+		var frames = Opt( "frames" ) is { } list
+			? list.Split( ',' ).Select( f => float.Parse( f, System.Globalization.CultureInfo.InvariantCulture ) ).ToList()
+			: Num( "stills" ) is { } n && n > 0
+				? Enumerable.Range( 0, (int)n ).Select( i => n <= 1 ? 0f : MathF.Round( i * clip.LastFrame / (n - 1f) * 4f ) / 4f ).ToList()
+				: new System.Collections.Generic.List<float>();
+
+		if ( frames.Count > 0 )
+		{
+			var outDir = Opt( "out" ) ?? Path.GetDirectoryName( Path.GetFullPath( a[2] ) );
+			Directory.CreateDirectory( outDir );
+
+			var size = (Opt( "size" ) ?? "640x360").Split( 'x' );
+			var width = int.Parse( size[0] );
+			var height = size.Length > 1 ? int.Parse( size[1] ) : width * 9 / 16;
+			var fov = Num( "fov" ) ?? 80f;
+			var bone = Opt( "camera" );
+			Vec3? eye = Opt( "eye" ) is { } e && ModelMeasure.TryParseVec3( e, out var ev ) ? ev : null;
+			Vec3? look = Opt( "look" ) is { } l && ModelMeasure.TryParseVec3( l, out var lv ) ? lv : null;
+			var tiles = new System.Collections.Generic.List<Raster>();
+			var empty = new System.Collections.Generic.List<float>();
+
+			foreach ( var f in frames )
+			{
+				var camera = bone is not null ? audit.BoneCamera( bone, f, fov )
+					: eye is { } at ? EyeCamera.LookAt( at, look ?? at + new Vec3( 1, 0, 0 ), fov )
+					: EyeCamera.At( Xform.Identity, fov );
+
+				if ( camera is null ) { Console.Error.WriteLine( $"no bone called '{bone}' in the model" ); return 1; }
+
+				var still = audit.Still( f, camera, width, height );
+				if ( still.Pixels.All( p => p == still.Pixels[0] ) )
+					empty.Add( f );
+				var name = Path.Combine( outDir, $"take_{f.ToString( "0.##", System.Globalization.CultureInfo.InvariantCulture )}.png" );
+				still.SavePng( name );
+				tiles.Add( still );
+			}
+
+			var sheet = EyeRender.Sheet( tiles, Math.Min( 4, tiles.Count ), frames.Select( f => $"frame {f:0.##}" ).ToList() );
+			var sheetPath = Path.Combine( outDir, "take_sheet.png" );
+			sheet.SavePng( sheetPath );
+			Console.WriteLine( $"stills: {frames.Count} frame(s), sheet {sheetPath}" );
+
+			if ( empty.Count > 0 )
+				Console.WriteLine( $"  nothing in view at frame(s) {string.Join( ", ", empty )} - the model is outside the camera. Name a camera bone, or place the eye with eye=x,y,z look=x,y,z" );
+		}
+
+		return result.Clear ? 0 : 3;
+	}
+
+	/// <summary>
+	/// A model dump with no editor: the skeleton (and any poses) from a dump that has bones -
+	/// arms_pose_dump's output is enough - and the meshes and skin weights from the FBX the model
+	/// was compiled from, lined up with the engine's model space by the bones the two share.
+	/// </summary>
+	static int FbxDump( string[] a )
+	{
+		if ( a.Length < 4 ) { Console.Error.WriteLine( "effigy fbxdump bones.json source.fbx out.json" ); return 1; }
+
+		var bones = ModelDump.ReadFile( a[1] );
+		var fbx = FbxScene.ReadFile( a[2] );
+		var dump = ModelDump.FromFbx( bones, fbx, out var fit );
+
+		dump.WriteFile( a[3] );
+		Console.WriteLine( $"fbx {Path.GetFileName( a[2] )}: {fbx.Meshes.Count} mesh(es), {fbx.BoneBind.Count} bone(s); {fit}" );
+		foreach ( var part in dump.Meshes )
+			Console.WriteLine( $"  {part.Name}: {part.Positions.Length} vertices, {part.TriangleCount} triangles{(part.Weights is null ? ", not skinned" : part.Weights.Vertices.Count( w => w.Length == 0 ) is > 0 and var bare ? $", {bare} vertices on no bone the model has" : "")}" );
+		Console.WriteLine( a[3] );
+		return fit.BoneError < 0.05f ? 0 : 3;
+	}
+
+	/// <summary>Skin weights for a dump the editor wrote, from the model's source FBX.</summary>
+	static int FbxSkin( string[] a )
+	{
+		if ( a.Length < 3 ) { Console.Error.WriteLine( "effigy fbxskin dump.json source.fbx [out.json]" ); return 1; }
+
+		var dump = ModelDump.ReadFile( a[1] );
+		var fit = dump.AttachWeights( FbxScene.ReadFile( a[2] ) );
+		var output = a.Length > 3 ? a[3] : a[1];
+
+		dump.WriteFile( output );
+		Console.WriteLine( fit );
+		Console.WriteLine( output );
+		return fit.BoneError < 0.05f && fit.WorstVertex < 0.05f ? 0 : 3;
 	}
 
 	static int New( string[] a )

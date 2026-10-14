@@ -310,6 +310,48 @@ document: `effigy_snapshot`, `effigy_describe`, `effigy_measure`, `effigy_symmet
 `effigy_run`, `effigy_help`, `effigy_parts`, `effigy_match`, `effigy_fix`, `effigy_open`,
 `effigy_save`.
 
+## Animated takes
+
+The kernel can play a Marionette clip on a real model and check it, with no editor running.
+That needs the model as a **dump**: its skeleton, its triangles with skin weights, and
+optionally props. The editor writes one (`effigy_model_dump <model.vmdl> <out.json>
+[sequence] [times] [props]`), or `tools/effigy.sh fbxdump bones.json source.fbx out.json` builds
+one from the model's source FBX on any dump that has the bones.
+
+| Command | What it does |
+|---|---|
+| `take dump.json clip.riganim [substeps=4] [depth=0] [noself] [nopairs] [noprops] [stills=N \| frames=a,b,c] [camera=bone \| eye=x,y,z look=x,y,z] [fov=80] [out=dir]` | Play the clip, count crossings and gaps, render stills. Exits 3 when anything crosses. |
+| `fbxdump bones.json source.fbx out.json` | A dump from an FBX, lined up with the engine's model space by the bones the two share. |
+| `fbxskin dump.json source.fbx [out.json]` | Give a dump's meshes the FBX's skin weights. |
+
+The pieces are there to call directly:
+
+```csharp
+var dump = ModelDump.ReadFile( "arms_dump.json" );
+var clip = RigAnimFile.ReadFile( "switch_throw.riganim" );
+
+var local = clip.SampleLocal( dump.Skeleton, 12.5f );         // any frame, fractional too
+var world = RigAnimFile.ModelSpace( dump.Skeleton, local );
+var skin = dump.Deform( dump.Meshes[0], world );
+
+// The chain is the bone, its parent and its grandparent; null when it is not three deep.
+var solved = TwoBoneIk.Apply( dump.Skeleton, world, dump.Skeleton.IndexOf( "hand_R" ),
+	target: new Vec3( 20, -6, -10 ), pole: new Vec3( 0, -1, -1 ), softness: 1f );
+
+var glove = TriangleSet.From( skin, dump.Meshes[0].Triangles );
+var report = MeshClash.Self( glove );                           // or Between( a, b ), Nearest( a, b )
+
+var result = new TakeAudit( dump, clip ).Run( new TakeAudit.Options { Substeps = 4, DepthTolerance = 0.4f } );
+```
+
+- `RigAnimFile` evaluates a track the way Marionette's playback does: held before the first
+  key and after the last, eased by the key that starts each segment. It matches s&box's own
+  `Transform.Lerp` to float precision.
+- `MeshClash` counts proper crossings only. Surfaces resting flat on each other are contact,
+  not a crossing. Depth is measured to the nearest surface, so it is the way out, not the way in.
+- `TakeAudit` leaves out pairs that already cross at the bind pose, so a cuff modelled into its
+  sleeve never fails a take.
+
 ## Traps
 
 - **`ChoiceParam.Value` is read-only.** Set `.Index`.

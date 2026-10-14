@@ -174,6 +174,7 @@ public static class Program
 		TestWeld();
 
 		DecimateTests.Run();
+		TakeToolsTests.Run();
 		GarmentPosesTests.Run();
 		GarmentCutTests.Run();
 		FabricMaterialTests.Run();
