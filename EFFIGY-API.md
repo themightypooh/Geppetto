@@ -320,7 +320,7 @@ one from the model's source FBX on any dump that has the bones.
 
 | Command | What it does |
 |---|---|
-| `take dump.json clip.riganim [substeps=4] [depth=0] [noself] [nopairs] [noprops] [stills=N \| frames=a,b,c] [camera=bone \| eye=x,y,z look=x,y,z] [fov=80] [out=dir]` | Play the clip, count crossings and gaps, render stills. Exits 3 when anything crosses. |
+| `take dump.json clip.riganim [substeps=4] [depth=0] [allow=a:b@depth,…] [noself] [nopairs] [noprops] [stills=N \| frames=a,b,c] [camera=bone \| eye=x,y,z look=x,y,z \| eyetrack=take.json] [fov=80] [out=dir]` | Play the clip, count crossings and gaps, render stills. Exits 3 when anything crosses. |
 | `fbxdump bones.json source.fbx out.json` | A dump from an FBX, lined up with the engine's model space by the bones the two share. |
 | `fbxskin dump.json source.fbx [out.json]` | Give a dump's meshes the FBX's skin weights. |
 
@@ -350,7 +350,10 @@ var result = new TakeAudit( dump, clip ).Run( new TakeAudit.Options { Substeps =
 - `MeshClash` counts proper crossings only. Surfaces resting flat on each other are contact,
   not a crossing. Depth is measured to the nearest surface, so it is the way out, not the way in.
 - `TakeAudit` leaves out pairs that already cross at the bind pose, so a cuff modelled into its
-  sleeve never fails a take.
+  sleeve never fails a take. Pairs meant to overlap further as the arm moves get an
+  `Allowance` (globbed part names, a depth) and are reported as set-in while within it.
+- `EyeTrack` reads a take file's per-frame eye (rows of position/forward/up, or position and
+  s&box pitch/yaw/roll) and gives the camera at any time, for stills from the moving eye.
 
 ## Traps
 

@@ -325,17 +325,19 @@ public static class EffigyCli
 	/// effigy_model_dump, a Marionette clip, and <see cref="TakeAudit"/> between them.
 	///
 	///   effigy take dump.json clip.riganim [substeps=4] [from=F] [to=F] [noself] [nopairs] [noprops]
-	///                [depth=0] [gap=8] [stills=N | frames=a,b,c] [camera=bone | eye=x,y,z [look=x,y,z]]
+	///                [depth=0] [allow=glob:glob@depth,...] [gap=8] [stills=N | frames=a,b,c]
+	///                [camera=bone | eye=x,y,z [look=x,y,z] | eyetrack=take.json [eyekey=Eye]]
 	///                [fov=80] [size=640x360] [out=dir]
 	///
 	/// Prints the report and exits 0 when the take is clear, 3 when anything crosses. Stills go to
 	/// out/take_sheet.png (and one PNG per frame), from the model's origin looking down +x - the
-	/// first-person eye of a view model - unless a camera bone or an eye point is given. A still
+	/// first-person eye of a view model - unless a camera bone, an eye point, or a take file's eye
+	/// track (followed frame by frame, see <see cref="EyeTrack"/>) is given. A still
 	/// with nothing in it says so, rather than leaving an empty sheet to puzzle over.
 	/// </summary>
 	static int Take( string[] a )
 	{
-		if ( a.Length < 3 ) { Console.Error.WriteLine( "effigy take dump.json clip.riganim [substeps=4] [from=F] [to=F] [noself] [nopairs] [noprops] [depth=0] [gap=8] [stills=N|frames=a,b,c] [camera=bone | eye=x,y,z [look=x,y,z]] [fov=80] [size=640x360] [out=dir]" ); return 1; }
+		if ( a.Length < 3 ) { Console.Error.WriteLine( "effigy take dump.json clip.riganim [substeps=4] [from=F] [to=F] [noself] [nopairs] [noprops] [depth=0] [allow=glob:glob@depth,...] [gap=8] [stills=N|frames=a,b,c] [camera=bone | eye=x,y,z [look=x,y,z] | eyetrack=take.json [eyekey=Eye]] [fov=80] [size=640x360] [out=dir]" ); return 1; }
 
 		string Opt( string key ) => a.Skip( 3 ).FirstOrDefault( x => x.StartsWith( key + "=" ) )?[(key.Length + 1)..];
 		float? Num( string key ) => Opt( key ) is { } v ? float.Parse( v, System.Globalization.CultureInfo.InvariantCulture ) : null;
@@ -353,6 +355,12 @@ public static class EffigyCli
 			Props = !a.Contains( "noprops" ),
 			GapRange = Num( "gap" ) ?? 8f,
 			DepthTolerance = Num( "depth" ) ?? 0f,
+			// allow=glove_*:hard_*/hab_rubber@0.5,... or allow=@rules.txt (one rule per line, # comments).
+			Allow = Opt( "allow" ) is { } rules
+				? TakeAudit.Allowance.ParseList( rules.StartsWith( '@' )
+					? string.Join( ",", File.ReadAllLines( rules[1..] ).Select( r => r.Split( '#' )[0].Trim() ).Where( r => r.Length > 0 ) )
+					: rules )
+				: new System.Collections.Generic.List<TakeAudit.Allowance>(),
 		};
 
 		Console.WriteLine( $"model {dump.Model}: {dump.Skeleton.Count} bones, {dump.Meshes.Count} part(s), {dump.Meshes.Sum( m => m.TriangleCount )} triangles, {dump.Props.Count} prop(s)" );
@@ -382,6 +390,7 @@ public static class EffigyCli
 			var bone = Opt( "camera" );
 			Vec3? eye = Opt( "eye" ) is { } e && ModelMeasure.TryParseVec3( e, out var ev ) ? ev : null;
 			Vec3? look = Opt( "look" ) is { } l && ModelMeasure.TryParseVec3( l, out var lv ) ? lv : null;
+			var track = Opt( "eyetrack" ) is { } trackPath ? EyeTrack.ReadFile( trackPath, Opt( "eyekey" ) ?? "Eye" ) : null;
 			var tiles = new System.Collections.Generic.List<Raster>();
 			var empty = new System.Collections.Generic.List<float>();
 
@@ -389,6 +398,7 @@ public static class EffigyCli
 			{
 				var camera = bone is not null ? audit.BoneCamera( bone, f, fov )
 					: eye is { } at ? EyeCamera.LookAt( at, look ?? at + new Vec3( 1, 0, 0 ), fov )
+					: track is not null ? track.At( f / Math.Max( 1, clip.FrameRate ), fov )
 					: EyeCamera.At( Xform.Identity, fov );
 
 				if ( camera is null ) { Console.Error.WriteLine( $"no bone called '{bone}' in the model" ); return 1; }

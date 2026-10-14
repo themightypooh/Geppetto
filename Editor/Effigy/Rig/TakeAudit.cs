@@ -48,11 +48,54 @@ public sealed class TakeAudit
 		/// </summary>
 		public float DepthTolerance;
 
+		/// <summary>
+		/// Pairs that are MEANT to overlap - a glove under its cuff hardware, a sleeve clamped under
+		/// a band - and how deep they may go. A matching check is judged by its own depth instead
+		/// of <see cref="DepthTolerance"/>, and reported as set-in rather than crossing while it
+		/// stays within it. The bind baseline does not cover these: a set-in deepens when the arm
+		/// moves, which is the design, not a fault.
+		/// </summary>
+		public List<Allowance> Allow = new();
+
 		/// <summary>Only report the gap to a prop when it is nearer than this.</summary>
 		public float GapRange = 8f;
 
 		/// <summary>First and last frame to check; null for the clip's own span.</summary>
 		public float? From, To;
+	}
+
+	/// <summary>
+	/// A pair of parts allowed to overlap up to a depth. Names are globs (<c>*</c>, <c>?</c>), so
+	/// <c>glove_*</c> and <c>hard_*/hab_rubber</c> cover both hands with one rule, and the pair
+	/// matches either way round. A prop's parts are named <c>prop/mesh</c>.
+	/// </summary>
+	public sealed record Allowance( string A, string B, float Depth )
+	{
+		/// <summary><c>glove_*:hard_*/hab_rubber@0.5</c>; no <c>@depth</c> means any depth.</summary>
+		public static Allowance Parse( string text )
+		{
+			var at = text.LastIndexOf( '@' );
+			var depth = at >= 0 ? float.Parse( text[(at + 1)..], CultureInfo.InvariantCulture ) : float.MaxValue;
+			var pair = (at >= 0 ? text[..at] : text).Split( ':' );
+
+			if ( pair.Length != 2 || pair[0].Length == 0 || pair[1].Length == 0 )
+				throw new FormatException( $"an allowance is a:b@depth, not '{text}'" );
+
+			return new Allowance( pair[0].Trim(), pair[1].Trim(), depth );
+		}
+
+		/// <summary>A comma-separated list of <see cref="Parse"/>'s form.</summary>
+		public static List<Allowance> ParseList( string text ) =>
+			(text ?? "").Split( ',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries ).Select( Parse ).ToList();
+
+		public bool Matches( string a, string b ) => (Glob( a, A ) && Glob( b, B )) || (Glob( a, B ) && Glob( b, A ));
+
+		static bool Glob( string name, string pattern ) =>
+			System.Text.RegularExpressions.Regex.IsMatch( name,
+				"^" + System.Text.RegularExpressions.Regex.Escape( pattern ).Replace( "\\*", ".*" ).Replace( "\\?", "." ) + "$",
+				System.Text.RegularExpressions.RegexOptions.IgnoreCase );
+
+		public override string ToString() => Depth == float.MaxValue ? $"{A}:{B}" : Invariant( $"{A}:{B}@{Depth:0.###}" );
 	}
 
 	/// <summary>One check (a part against itself, a part against a part, a part against a prop)
@@ -63,6 +106,13 @@ public sealed class TakeAudit
 
 		/// <summary>A part against itself, which has crossings but no depth.</summary>
 		public bool IsSelf;
+
+		/// <summary>The rule this pair is allowed to overlap under, or null.</summary>
+		public Allowance Allowed;
+
+		/// <summary>For an allowed pair: the deepest it went while staying within the allowance.</summary>
+		public float SetInDepth;
+		public float SetInFrame = -1;
 
 		/// <summary>Triangle pairs that already cross at the bind pose. A sample only counts the
 		/// pairs NOT in here, so a cuff modelled into its sleeve, or two rigid pieces bolted
@@ -106,11 +156,14 @@ public sealed class TakeAudit
 
 			foreach ( var c in Checks )
 			{
-				var line = c.Clear
+				var line = c.Clear && c.Allowed is not null && c.SetInFrame >= 0
+					? Invariant( $"  setin {c.Name}: within allowance {c.Allowed}" ) + (c.SetInDepth > 0f ? Invariant( $", deepest {c.SetInDepth:0.###} at frame {c.SetInFrame:0.##}" ) : "")
+					: c.Clear
 					? $"  ok    {c.Name}"
-					: Invariant( $"  CROSS {c.Name}: {c.FramesOver.Count} sample(s), worst {c.WorstCrossings} new crossing(s) at frame {c.WorstFrame:0.##}" )
+					: Invariant( $"  {(c.Allowed is null ? "CROSS" : "BEYOND")} {c.Name}: {c.FramesOver.Count} sample(s), worst {c.WorstCrossings} new crossing(s) at frame {c.WorstFrame:0.##}" )
 						+ (c.WorstDepthFrame >= 0 ? Invariant( $", deepest {c.WorstDepth:0.###} at frame {c.WorstDepthFrame:0.##}" ) : "")
-						+ $" ({Ranges( c.FramesOver )})";
+						+ $" ({Ranges( c.FramesOver )})"
+						+ (c.Allowed is null ? "" : $" [beyond allowance {c.Allowed}]");
 
 				if ( c.Baseline > 0 )
 					line += $" [{c.Baseline} already crossing at bind, not counted]";
@@ -208,6 +261,12 @@ public sealed class TakeAudit
 				}
 		}
 
+		foreach ( var (check, _, _) in checks )
+		{
+			var (a, b) = check.IsSelf ? (check.Name[..^" x itself".Length], check.Name[..^" x itself".Length]) : SplitName( check.Name );
+			check.Allowed = options.Allow.FirstOrDefault( rule => rule.Matches( a, b ) );
+		}
+
 		result.Checks = checks.Select( c => c.Check ).ToList();
 
 		// Baseline: the bind pose.
@@ -236,8 +295,18 @@ public sealed class TakeAudit
 
 				var fresh = report.Pairs.Count( p => !check.BaselinePairs.Contains( (p.TriangleA, p.TriangleB) ) );
 
-				// Self checks have no depth, so the tolerance cannot pass them; any new self crossing counts.
-				var fails = fresh > 0 && (check.IsSelf || options.DepthTolerance <= 0f || report.Depth > options.DepthTolerance);
+				// Self checks have no depth, so the tolerance cannot pass them; any new self crossing
+				// counts, unless the part is allowed to overlap itself. An allowed pair is judged by
+				// its own depth instead of the take-wide one.
+				var tolerance = check.Allowed?.Depth ?? options.DepthTolerance;
+				var fails = fresh > 0 && (check.Allowed is null || !check.IsSelf)
+					&& (check.IsSelf || tolerance <= 0f && check.Allowed is null || report.Depth > tolerance);
+
+				if ( fresh > 0 && check.Allowed is not null && !fails && (check.SetInFrame < 0 || report.Depth > check.SetInDepth) )
+				{
+					check.SetInDepth = report.Depth;
+					check.SetInFrame = frame;
+				}
 
 				if ( fails )
 				{
@@ -294,6 +363,13 @@ public sealed class TakeAudit
 	{
 		var index = Dump.Skeleton.IndexOf( bone );
 		return index < 0 ? null : EyeCamera.At( Pose( frame )[index], fieldOfView );
+	}
+
+	/// <summary>"glove_R x hard_R/hab_rubber" back into its two names.</summary>
+	static (string, string) SplitName( string name )
+	{
+		var at = name.IndexOf( " x ", StringComparison.Ordinal );
+		return at < 0 ? (name, name) : (name[..at], name[(at + 3)..]);
 	}
 
 	string PartName( int i ) => string.IsNullOrEmpty( Dump.Meshes[i].Name ) ? $"part{i}" : Dump.Meshes[i].Name;

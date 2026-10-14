@@ -42,6 +42,8 @@ public static class TakeToolsTests
 		TestDumpReadsSkeletonAndSkin();
 		TestEyeRender();
 		TestAuditFindsAFingerThroughAProp();
+		TestAllowanceForDesignedOverlaps();
+		TestEyeTrack();
 	}
 
 	// --- clash -----------------------------------------------------------------------------------
@@ -395,6 +397,48 @@ public static class TakeToolsTests
 		var gap = clear.Checks.Single( c => c.Name == "finger x plate/body" );
 		Check( "a take that keeps clear is clear", clear.Clear, clear.ToString() );
 		Check( "and reports its nearest approach", MathF.Abs( gap.NearestGap - 2f ) < 1e-3f, gap.NearestGap.ToString() );
+	}
+
+	static void TestAllowanceForDesignedOverlaps()
+	{
+		var plate = Primitives.Box( 3, 2, 4 );
+		var plateTris = plate.Faces.SelectMany( f => new[] { f.Indices[0], f.Indices[1], f.Indices[2], f.Indices[0], f.Indices[2], f.Indices[3] } );
+		var props = ",\"Props\":[{\"Name\":\"plate\",\"Model\":\"models/plate.vmdl\",\"Transform\":[3,3.5,0,0,0,0,1],"
+			+ "\"Meshes\":[{\"Name\":\"body\",\"Positions\":[" + string.Join( ",", plate.Positions.SelectMany( p => new[] { F( p.x ), F( p.y ), F( p.z ) } ) ) + "],"
+			+ "\"Triangles\":[" + string.Join( ",", plateTris ) + "]}]}]";
+		var dump = ModelDump.Read( FingerDump( props ) );
+		var turn = Quat.FromAxisAngle( new Vec3( 0, 0, 1 ), MathF.PI / 2 );
+		var clip = RigAnimFile.Read( Clip( ("tip", "Bone", new[] { Key( 0, new Vec3( 3, 0, 0 ), Quat.Identity, "Linear" ), Key( 8, new Vec3( 3, 0, 0 ), turn, "Linear" ) }) ) );
+
+		var rule = TakeAudit.Allowance.Parse( "fing*:plate/*@5" );
+		Check( "an allowance parses a glob pair and a depth", rule.A == "fing*" && rule.B == "plate/*" && rule.Depth == 5f );
+		Check( "and matches either way round", rule.Matches( "plate/body", "finger" ) && !rule.Matches( "finger", "wall/body" ) );
+		Check( "a list splits on commas", TakeAudit.Allowance.ParseList( "a:b@1, c_*:d" ).Count == 2 && TakeAudit.Allowance.ParseList( "a:b@1, c_*:d" )[1].Depth == float.MaxValue );
+
+		var within = new TakeAudit( dump, clip ).Run( new TakeAudit.Options { Substeps = 2, Allow = { rule } } );
+		var c = within.Checks.Single( x => x.Name == "finger x plate/body" );
+		Check( "a designed overlap within its allowance passes the take", within.Clear && c.Allowed == rule && c.SetInDepth > 0.1f, within.ToString() );
+		Check( "and is reported as set-in, not hidden", within.ToString().Contains( "setin finger x plate/body" ), within.ToString() );
+
+		var beyond = new TakeAudit( dump, clip ).Run( new TakeAudit.Options { Substeps = 2, Allow = { TakeAudit.Allowance.Parse( "finger:plate/body@0.1" ) } } );
+		Check( "past its allowance it fails, marked beyond", !beyond.Clear && beyond.ToString().Contains( "BEYOND finger x plate/body" ), beyond.ToString() );
+	}
+
+	static void TestEyeTrack()
+	{
+		// Row 0 looks down +x, row 1 (one frame later at 10 fps) looks along +y.
+		var json = "{\"Fps\":10,\"Eye\":[[0,0,0, 1,0,0, 0,0,1],[10,0,0, 0,1,0, 0,0,1]]}";
+		var track = EyeTrack.Read( json );
+		var half = track.At( 0.05f );
+		Check( "an eye track interpolates position between rows", half.Position.AlmostEquals( new Vec3( 5, 0, 0 ) ), half.Position.ToString() );
+		Check( "and direction", half.Forward.AlmostEquals( new Vec3( 1, 1, 0 ).Normal, 1e-4f ), half.Forward.ToString() );
+		Check( "and holds past its end", track.At( 9f ).Position.AlmostEquals( new Vec3( 10, 0, 0 ) ) );
+
+		// 6-number rows: s&box Rotation.From( pitch, yaw, roll ). Pitch down is positive.
+		var angles = EyeTrack.Read( "{\"Fps\":30,\"Eye\":[[1,2,3, 90,0,0],[0,0,0, 0,90,0]]}" );
+		Check( "pitch 90 looks straight down", angles.Rows[0].Forward.AlmostEquals( new Vec3( 0, 0, -1 ), 1e-4f ) && angles.Rows[0].Position.AlmostEquals( new Vec3( 1, 2, 3 ) ), angles.Rows[0].Forward.ToString() );
+		Check( "yaw 90 looks along +y", angles.Rows[1].Forward.AlmostEquals( new Vec3( 0, 1, 0 ), 1e-4f ) && angles.Rows[1].Up.AlmostEquals( new Vec3( 0, 0, 1 ), 1e-4f ), angles.Rows[1].Forward.ToString() );
+		Check( "10-number rows read their first nine", EyeTrack.Read( "{\"Eye\":[[0,0,0, 0,1,0, 0,0,1, 45]]}" ).Rows[0].Forward.AlmostEquals( new Vec3( 0, 1, 0 ) ) );
 	}
 
 	static bool Near( float a, float b ) => MathF.Abs( a - b ) < 1e-5f;
