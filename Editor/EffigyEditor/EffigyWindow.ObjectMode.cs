@@ -93,6 +93,9 @@ public sealed partial class EffigyWindow
 		foreach ( var tool in new[] { _objMoveTool, _objRotateTool, _objScaleTool, null, _objDuplicateTool, _objMirrorTool, _objJoinTool, null, _objHideTool, _objIsolateTool, _objShowAllTool, null, _objDeleteTool } )
 			objectMenu.Add( tool );
 
+		// Set Origin — see EffigyWindow.OriginTurnaround.cs.
+		AddOriginTools( objectMenu );
+
 		// Add: a body from nothing. The primitive shapes come off the feature, as the CAD strip's
 		// Primitive dropdown does, so a shape the kernel grows appears here without a second list.
 		var add = new EffigyStage { Name = "Add" };
@@ -375,6 +378,7 @@ public sealed partial class EffigyWindow
 		_objMoveTool.Checked = handle && mode == EffigyViewport.BodyDragMode.Move;
 		_objRotateTool.Checked = handle && mode == EffigyViewport.BodyDragMode.Rotate;
 		_objScaleTool.Checked = handle && mode == EffigyViewport.BodyDragMode.Scale;
+		UpdateOriginChecks();
 
 		_stageBar?.Refresh();
 		RefreshModelChrome();

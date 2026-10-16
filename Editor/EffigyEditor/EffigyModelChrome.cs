@@ -102,6 +102,9 @@ internal sealed class EffigyViewportHeader : Widget
 	public Func<(int Level, string Text)> Check { get; set; }
 	public Action CheckClicked { get; set; }
 
+	/// <summary>The badge's tooltip; null keeps the plain one.</summary>
+	public Func<string> CheckTip { get; set; }
+
 	public Action SearchClicked { get; set; }
 
 	private readonly List<(Rect Rect, Action Run, string Tip, bool Enabled)> _hits = new();
@@ -237,7 +240,7 @@ internal sealed class EffigyViewportHeader : Widget
 			var w = 12f + 8f + Paint.MeasureText( text ).x + 10f;
 			var rect = new Rect( rx - w, cy - 13f, w, 26f );
 			var index = _hits.Count;
-			_hits.Add( (rect, CheckClicked, "The mesh check. Click for the list and the fixes", true) );
+			_hits.Add( (rect, CheckClicked, CheckTip?.Invoke() ?? "The mesh check. Click for the list and the fixes", true) );
 
 			EffigyModelChrome.PaintPanel( rect, 5f, _hovered == index ? EffigyModelChrome.ControlHi : EffigyModelChrome.Control );
 

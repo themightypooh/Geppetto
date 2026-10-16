@@ -34,9 +34,14 @@ public sealed partial class EffigyWindow
 			? Path.GetDirectoryName( Path.GetFullPath( _documentPath ) )
 			: Project.Current?.GetAssetsPath() ?? Directory.GetCurrentDirectory();
 
+		var originBefore = _studio.Origin;
 		var result = BuildScript.Run( _studio, script, baseDir );
 
 		RebuildStudio();
+
+		// `pivot model` moves the model's origin: the handle has to follow, and the document is dirty.
+		if ( (_studio.Origin - originBefore).Length > 1e-6f )
+			SyncOriginFromStudio();
 		SetPrompt( result.Ok ? "Script ran." : $"Script stopped at line {result.ErrorLine}: {result.Error}" );
 
 		return result.ToString();

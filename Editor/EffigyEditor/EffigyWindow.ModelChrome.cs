@@ -61,6 +61,7 @@ public sealed partial class EffigyWindow
 
 		_modelHeader.Check = () => _modelCheck;
 		_modelHeader.CheckClicked = OpenModelCheckMenu;
+		_modelHeader.CheckTip = ModelCheckTip;
 		_modelHeader.SearchClicked = OpenModelCatalog;
 
 		_modelCatalog.Opening = () =>
@@ -129,7 +130,7 @@ public sealed partial class EffigyWindow
 					Group( "Object", _objDuplicateTool, _objSplineTool ),
 					Group( "Mesh", _objEditTool, _objSculptTool ),
 				};
-				catalog = _objectMenus;
+				catalog = ObjectCatalog();
 				break;
 		}
 
@@ -222,6 +223,7 @@ public sealed partial class EffigyWindow
 	private void RefreshModelCheck()
 	{
 		_modelCheckFixes.Clear();
+		_modelSymmetry = null;
 
 		PolyMesh mesh = null;
 		var editing = _viewport?.MeshEditSession is { } session;
@@ -263,7 +265,8 @@ public sealed partial class EffigyWindow
 		if ( loose > 0 ) parts.Add( $"{loose:N0} loose" );
 
 		var level = check.NonManifoldEdges > 0 ? 2 : parts.Count > 0 ? 1 : 0;
-		_modelCheck = (level, parts.Count == 0 ? "Mesh is clean" : string.Join( " · ", parts ));
+		var symmetry = MeasureBadgeSymmetry( mesh );
+		_modelCheck = (level, (parts.Count == 0 ? "Mesh is clean" : string.Join( " · ", parts )) + (symmetry is null ? "" : $" · {symmetry}"));
 
 		if ( check.BoundaryEdges > 0 || check.NonManifoldEdges > 0 )
 			_modelCheckFixes.Add( ("Show the open and non-manifold edges", () => RunObjectFix( "Non-manifold" )) );
@@ -287,6 +290,8 @@ public sealed partial class EffigyWindow
 
 		foreach ( var (label, run) in _modelCheckFixes )
 			menu.AddOption( label, null, run );
+
+		AddSymmetryToCheckMenu( menu );
 
 		menu.OpenAtCursor();
 	}

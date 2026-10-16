@@ -405,6 +405,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		file.AddOption( "Animation Clips...", "movie", OpenAnimClips );
 		file.AddOption( "Run Build Script...", "description", RunBuildScriptFile ).ToolTip = "Run an Effigy build script (.txt) on this studio as one undo step — the same scripts Claude writes";
 		file.AddOption( "Collision Report", "fitness_center", ReportCollision ).ToolTip = "List each part's physics shape, and which feature turned it into one hull instead of boxes";
+		BuildRenderTools();
+		file.AddOption( "Render Turnaround...", "photo_camera", _renderTurnaroundTool.Clicked ).ToolTip = _renderTurnaroundTool.Tip;
+		file.AddOption( "Render Turnaround with Materials...", "photo_camera", _renderTurnaroundMaterialTool.Clicked ).ToolTip = _renderTurnaroundMaterialTool.Tip;
 		var lods = file.AddOption( "Export with LODs", "layers" );
 		lods.ToolTip = "When on, Compile .vmdl also writes half- and quarter-detail copies that switch with distance. Rigged models get skinned copies on the same bones, with their shape keys";
 		lods.Checkable = true;
@@ -449,6 +452,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		mask.AddOption( "Hide / Show Held Geometry", "visibility_off", ToggleHideMasked );
 
 		edit.AddSeparator();
+		AddOriginMenu( edit );
 		edit.AddOption( "Settings...", "settings", OpenSettings );
 
 		// The Help menu exists for exactly one thing, and that is fine. Until it was added there
@@ -469,9 +473,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		view.AddOption( "Show Sketch Constraints", "rule", ToggleConstraintMarks );
 		view.AddOption( "Add Point Light", "wb_incandescent", AddViewportLight );
 
-		// "restart_alt" is a Material SYMBOLS name and s&box ships classic Material Icons, so it
-		// was drawing nothing at all - see EffigyIcons for why that whole class of name is unsafe.
-		view.AddOption( "Reset Origin", "settings_backup_restore", () => _viewport?.ResetOrigin() );
+		// View ▸ Reset Origin moved to Edit ▸ Set Origin ▸ Origin to World Centre (and Model's Object
+		// menu; EffigyWindow.OriginTurnaround.cs): the origin is the model's export pivot, not a view
+		// setting, and it now sits beside the other three ways to place it.
 
 		// EVERY DOCK GETS A LINE HERE, and the Material Browser was the one that did not have one.
 		// It is registered, it is wired up, and until now the only way to see it was a default
