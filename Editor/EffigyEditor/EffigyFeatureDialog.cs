@@ -357,6 +357,10 @@ internal sealed class EffigyFeatureDialog : Widget
 	/// <summary>The name was typed over, so the tree needs redrawing.</summary>
 	public Action Renamed { get; set; }
 
+	/// <summary>An Import's browse button picked a new file - the window takes an FBX's skeleton
+	/// from here, since the rig is document state this dialog cannot reach.</summary>
+	public Action<ImportFeature> ImportSourcePicked { get; set; }
+
 	/// <summary>Fires when a Sketch feature's dialog wants the viewport to enter sketch mode.</summary>
 	public Action<SketchFeature> SketchRequested { get; set; }
 
@@ -1858,7 +1862,7 @@ internal sealed class EffigyFeatureDialog : Widget
 		{
 			layout.Add( new IconButton( "folder_open", () => BrowseImport( import, edit ) )
 			{
-				ToolTip = "Browse for an OBJ",
+				ToolTip = "Browse for an OBJ or FBX file",
 				IconSize = 16,
 				Background = Color.Transparent,
 			} );
@@ -1930,7 +1934,7 @@ internal sealed class EffigyFeatureDialog : Widget
 		};
 
 		fd.SetFindFile();
-		fd.SetNameFilter( "Wavefront OBJ (*.obj)" );
+		fd.SetNameFilter( EffigyWindow.ImportNameFilter );
 
 		if ( !fd.Execute() )
 			return;
@@ -1948,6 +1952,7 @@ internal sealed class EffigyFeatureDialog : Widget
 		if ( edit.IsValid() )
 			edit.Text = path;
 
+		ImportSourcePicked?.Invoke( import );
 		RaiseEdited();
 		Renamed?.Invoke();
 	}

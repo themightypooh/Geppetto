@@ -15,7 +15,7 @@ public sealed partial class EffigyWindow
 	private const string ImportMenuLabel = "Import Mesh...";
 
 	/// <summary>The formats ImportFeature actually reads, as the right-click pie shows them.</summary>
-	private const string ImportFormats = ".obj";
+	private const string ImportFormats = ".obj .fbx";
 
-	private const string ImportTip = "Bring in a mesh file as a body — a sculpt, a scan, a kitbash piece. Reads Wavefront " + ImportFormats + " files";
+	private const string ImportTip = "Bring in a mesh file as a body — a sculpt, a scan, a kitbash piece. Reads " + ImportFormats + " files, one body per object or mesh; an FBX skeleton fills an empty rig";
 }

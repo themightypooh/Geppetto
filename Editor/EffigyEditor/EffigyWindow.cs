@@ -391,7 +391,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		file.Clear();
 		file.AddOption( "New Studio", "common/new.png", NewStudio );
 		file.AddOption( "Open...", "folder_open", Open );
-		file.AddOption( "Import OBJ...", "file_open", ImportObj ).ToolTip = "Bring in a Wavefront .obj as a body";
+		file.AddOption( ImportMenuLabel, "file_open", ImportObj ).ToolTip = ImportTip;
 		file.AddOption( "Body from Bones", "accessibility_new", BodyFromBones );
 		file.AddSeparator();
 		file.AddOption( "Save", "common/save.png", Save, "editor.save" );
@@ -3862,7 +3862,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		// BESIDE PRIMITIVE because both start a part from nothing. This one is a mesh that already
 		// exists — a sculpt, a scan — and the kernel has no other way to make a body out of one.
 		new() { Icon = EffigyIcon.Primitive, Label = "Import", Stage = StageSketch, MenuIcon = "file_open",
-			Tip = "Add an Import — load a Wavefront OBJ as a body",
+			Tip = "Add an Import — load an OBJ or FBX file as bodies, one per object or mesh",
 			Kind = ToolKind.Import },
 
 		// --- Solid: profiles become bodies ------------------------------------------------------
@@ -4095,6 +4095,8 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		// IMPORT ASKS FOR THE FILE FIRST. An empty Source is a refusal, and adding the feature
 		// then making you browse from the dialog is a dead button until you notice the red row.
 		// Cancel the picker and nothing is added, same as Subdivide with nothing selected.
+		string importNote = null;
+
 		if ( feature is ImportFeature import
 			&& string.IsNullOrWhiteSpace( import.Source.Value )
 			&& !import.HasPendingMesh )
@@ -4106,6 +4108,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 			if ( string.IsNullOrWhiteSpace( import.Name ) )
 				import.Name = Path.GetFileNameWithoutExtension( path );
+
+			// An FBX's skeleton becomes the rig before the first build, so its weights land on it.
+			importNote = TakeImportedSkeleton( import );
 		}
 
 		// Pressing the same button again while the last one is still sitting there unanswered and
@@ -4199,6 +4204,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		// an edit. Reopening marks it as new, which is what makes Cancel delete it rather than
 		// leaving a half-configured feature behind.
 		_dialog?.Open( feature, isNew: true );
+
+		if ( importNote is not null )
+			SetPrompt( importNote );
 	}
 
 	// --- docks (viewport, feature tree, parameter panel) -----------------------------------
@@ -4229,6 +4237,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			Edited = OnFeatureEdited,
 			BodyDragBegan = OnBodyDragBegan,
 			Renamed = () => _featureTree?.Rebuild(),
+			ImportSourcePicked = OnImportSourcePicked,
 			Accepted = OnDialogAccepted,
 			Cancelled = OnDialogCancelled,
 			SketchRequested = EnterSketch,
@@ -6617,7 +6626,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		return saved;
 	}
 
-	/// <summary>Pick a Wavefront OBJ to import. False if the dialog was cancelled.</summary>
+	/// <summary>Pick an OBJ or FBX to import. False if the dialog was cancelled.</summary>
 	private static bool TryPickImportFile( out string path )
 	{
 		path = null;
@@ -6630,7 +6639,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		};
 
 		fd.SetFindFile();
-		fd.SetNameFilter( "Wavefront OBJ (*.obj)" );
+		fd.SetNameFilter( ImportNameFilter );
 
 		if ( !fd.Execute() )
 			return false;
@@ -6638,6 +6647,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		path = fd.SelectedFile;
 		return !string.IsNullOrWhiteSpace( path );
 	}
+
+	/// <summary>The import picker's filter: both formats Import reads, then each on its own.</summary>
+	internal const string ImportNameFilter = "Meshes (*.obj *.fbx);;Wavefront OBJ (*.obj);;FBX (*.fbx)";
 
 	/// <summary>Import a mesh as a body into the current studio, same as the Import tool button.</summary>
 	private void ImportObj() => AddFeature( new ImportFeature() );
