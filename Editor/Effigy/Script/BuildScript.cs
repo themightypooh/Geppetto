@@ -545,7 +545,11 @@ public static partial class BuildScript
 			}
 
 			default:
-				return Fail( r, $"Unknown command '{verb}'. Commands: add, edit, set, remove, rebuild, fix, render, turnaround, describe, measure, distance, symmetry, topology, section, flex, match, material, pivot, export, corrective, bake, paintmaps, save, echo." );
+				// Rig verbs (bone, chain, rig, bind, skin, twist, mirror bones, subdivide) - BuildScriptRig.cs.
+				if ( RigCommand( studio, verb, args, baseDir, r, out var handled ) )
+					return handled;
+
+				return Fail( r, $"Unknown command '{verb}'. Commands: add, edit, set, remove, rebuild, fix, render, turnaround, describe, measure, distance, symmetry, topology, section, flex, match, material, pivot, export, corrective, bake, paintmaps, save, echo, {RigVerbs}." );
 		}
 	}
 
