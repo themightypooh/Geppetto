@@ -37,8 +37,14 @@ public sealed class ShadeMaterial
 	/// <summary>Multiplies the albedo map (a vmat's colour tint).</summary>
 	public Vec3 MapTint = Vec3.One;
 	/// <summary>Repeats of every map across 0..1 UV: (8, 8) tiles a leather grain eight times each way.
-	/// Anything but (1, 1) also wraps v, so the maps tile; at (1, 1) v clamps, as an atlas wants.</summary>
+	/// A vmat's g_vTexCoordScale.</summary>
 	public Vec2 MapScale = new( 1f, 1f );
+	/// <summary>Added to the UVs after <see cref="MapScale"/>, in tiles: a vmat's g_vTexCoordOffset.</summary>
+	public Vec2 MapOffset;
+	/// <summary>On, v clamps at 0..1 instead of repeating, so an atlas's top and bottom rows never bleed into
+	/// each other. Off (the default, as s&amp;box's samplers are), UVs past 0..1 repeat the map: a garment's
+	/// foot-per-unit UVs, a strip longer than one tile.</summary>
+	public bool ClampMaps;
 	/// <summary>Where the maps come from: UVs, a triplanar projection, or each where it fits.</summary>
 	public ShadeMapping Mapping = ShadeMapping.Auto;
 	/// <summary>Model units per tile of the triplanar projection; 0 turns it off for <see cref="ShadeMapping.Auto"/>.
@@ -545,9 +551,9 @@ public static class ShadedRender
 						{
 							var (ua, ub, uc) = triUv[tri];
 							var u = ua * w.x + ub * w.y + uc * w.z;
-							u = new Vec2( u.x * m.MapScale.x, u.y * m.MapScale.y );
+							u = new Vec2( u.x * m.MapScale.x + m.MapOffset.x, u.y * m.MapScale.y + m.MapOffset.y );
 							var lod = triLod[tri];
-							var wrap = m.MapScale.x != 1f || m.MapScale.y != 1f;
+							var wrap = !m.ClampMaps;
 							var normalVar = 0f;
 							if ( m.AlbedoMap is { } am ) albedo = Mul( MapMips.Get( am, m.MapSize, MapKind.Srgb ).Sample( u, lod, wrap ), m.MapTint );
 							if ( m.RoughnessMap is { } rm ) rough = MapMips.Get( rm, m.MapSize, MapKind.Linear ).Sample( u, lod, wrap ).x;

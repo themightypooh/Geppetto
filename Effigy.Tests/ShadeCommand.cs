@@ -236,7 +236,7 @@ public static class ShadeCommand
 	}
 
 	/// <summary>The parts of a complex.shader vmat this renderer can draw. Null when it binds no PNG.</summary>
-	static ShadeMaterial VmatMaterial( string assets, string vmatPath )
+	internal static ShadeMaterial VmatMaterial( string assets, string vmatPath )
 	{
 		var kv = new Dictionary<string, string>( StringComparer.OrdinalIgnoreCase );
 		foreach ( var raw in File.ReadLines( vmatPath ) )
@@ -248,6 +248,7 @@ public static class ShadeCommand
 			if ( end > q ) kv[key] = line[(q + 1)..end];
 		}
 		static Vec3 Vec( string s ) { var p = s.Trim( '[', ']', ' ' ).Split( ' ', StringSplitOptions.RemoveEmptyEntries ); return new Vec3( F( p[0] ), F( p[1] ), F( p[2] ) ); }
+		static Vec2 Vec2Of( string s ) { var p = s.Trim( '[', ']', ' ' ).Split( ' ', StringSplitOptions.RemoveEmptyEntries ); return new Vec2( F( p[0] ), F( p[1] ) ); }
 		static float F( string s ) => float.Parse( s, CultureInfo.InvariantCulture );
 
 		(byte[] Rgba, int W, int H)? Load( string key )
@@ -313,6 +314,9 @@ public static class ShadeCommand
 		}
 		if ( !textured ) return null;
 		m.MapSize = size;
+		// s&box tiles every map by these; its samplers wrap, so UVs past 0..1 repeat (ClampMaps stays off).
+		if ( kv.TryGetValue( "g_vTexCoordScale", out var ts ) ) m.MapScale = Vec2Of( ts );
+		if ( kv.TryGetValue( "g_vTexCoordOffset", out var to ) ) m.MapOffset = Vec2Of( to );
 		if ( m.AlbedoMap is not null ) m.MapTint = tint; else m.Albedo = new Vec3( m.Albedo.x * tint.x, m.Albedo.y * tint.y, m.Albedo.z * tint.z );
 		if ( kv.TryGetValue( "F_SELF_ILLUM", out var si ) && si.Trim() == "1" )
 		{

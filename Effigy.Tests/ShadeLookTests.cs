@@ -28,6 +28,7 @@ public static class ShadeLookTests
 
 		Section( "shaded render: maps" );
 		TestTiling();
+		TestUvsPastOneRepeat();
 		TestTriplanar();
 		TestNormalMap();
 
@@ -166,6 +167,52 @@ public static class ShadeLookTests
 		var fine = Lit( Dark().Add( Card(), new ShadeMaterial { UseVertexColours = false, MapSize = 64, AlbedoMap = Checker( 64, 16 ), MapScale = new Vec2( 16, 16 ) } ) );
 		var far = ShadedRender.Render( fine, Front( 1f, 60f ), 80, 80, 1 );
 		Check( "a texture far finer than a pixel is filtered (mips), not aliased", Transitions( far, 40 ) <= 2, $"{Transitions( far, 40 )} colour changes across the far card" );
+	}
+
+	static int ColumnTransitions( Raster r, int col )
+	{
+		var n = 0; bool? last = null;
+		for ( var y = 0; y < r.Height; y++ )
+		{
+			var red = ((r.Pixels[y * r.Width + col] >> 16) & 255) > 90;
+			if ( last is bool l && l != red ) n++;
+			last = red;
+		}
+		return n;
+	}
+
+	static void TestUvsPastOneRepeat()
+	{
+		// A strip whose v runs 0..1.5, like a garment's foot-per-unit UVs or a velcro strip longer than one
+		// tile. s&box's samplers wrap, so the checker's two rows repeat into a third; clamping smears the
+		// last row over the top third instead: one band fewer, so two fewer edges up the card.
+		var tall = Card();
+		foreach ( var f in tall.Faces ) f.UVs = f.UVs.Select( u => new Vec2( u.x, u.y * 1.5f ) ).ToArray();
+		var map = Checker( 64, 2 );
+		Raster Shot( PolyMesh mesh, ShadeMaterial m ) => ShadedRender.Render( Lit( Dark().Add( mesh, m ) ), Front( 1f, 6f ), 160, 160, 1 );
+		var wrapped = ColumnTransitions( Shot( tall, new ShadeMaterial { UseVertexColours = false, MapSize = 64, AlbedoMap = map } ), 66 );
+		var clamped = ColumnTransitions( Shot( tall, new ShadeMaterial { UseVertexColours = false, MapSize = 64, AlbedoMap = map, ClampMaps = true } ), 66 );
+		Check( "UVs past 1 repeat the map by default; ClampMaps (an atlas) clamps them", wrapped >= clamped + 2, $"{wrapped} colour changes up the card wrapped, {clamped} clamped" );
+
+		// The vmat reader takes g_vTexCoordScale/Offset, so `effigy shade` tiles what s&box tiles.
+		var tmp = Path.Combine( Path.GetTempPath(), "effigy_vmat_scale_" + Guid.NewGuid().ToString( "N" ) );
+		var assets = Path.Combine( tmp, "Assets" );
+		Directory.CreateDirectory( Path.Combine( assets, "materials" ) );
+		PngWriter.WriteFileRgba( Path.Combine( assets, "materials", "checker.png" ), map, 64, 64 );
+		var vmat = Path.Combine( assets, "materials", "checker.vmat" );
+		File.WriteAllText( vmat, "Layer0\n{\n\tshader \"shaders/complex.shader\"\n\tTextureColor \"materials/checker.png\"\n" +
+			"\tg_vTexCoordOffset \"[0.250 0.500]\"\n\tg_vTexCoordScale \"[1.000 1.500]\"\n}\n" );
+		var read = ShadeCommand.VmatMaterial( assets, vmat );
+		Directory.Delete( tmp, true );
+		Check( "the vmat reader takes g_vTexCoordScale and g_vTexCoordOffset", read is not null
+			&& read.MapScale.x == 1f && read.MapScale.y == 1.5f && read.MapOffset.x == 0.25f && read.MapOffset.y == 0.5f && !read.ClampMaps,
+			read is null ? "no material" : $"scale ({read.MapScale.x}, {read.MapScale.y}), offset ({read.MapOffset.x}, {read.MapOffset.y})" );
+		if ( read is not null )
+		{
+			read.MapOffset = default;
+			var viaVmat = ColumnTransitions( Shot( Card(), read ), 66 );
+			Check( "a vmat scaled 1.5 in v tiles a 0..1 card as the 0..1.5 strip does", viaVmat == wrapped, $"{viaVmat} colour changes via the vmat, {wrapped} via the UVs" );
+		}
 	}
 
 	static void TestTriplanar()
