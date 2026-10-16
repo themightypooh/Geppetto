@@ -341,12 +341,13 @@ save out/robot.effigy
 
 | Verb | Form |
 |---|---|
-| `add` | `add TYPE key=value…` (the class name, with or without `Feature`) |
+| `add` | `add TYPE key=value…` (the class name, with or without `Feature`). `inkey=name` puts it inside that finished shape key, just above its End Shape Key, so it is added to the key (`ShapeKeyEdit.AddToKey`) |
 | `edit` | `edit Body op [select=rule] [distance=] [segments=] [at=] [axis=] [side=] [element=]` (an `EditOpFeature`; see [Edit ops](#edit-ops)) |
 | `set` | `set Feature key=value…` |
 | `remove` | `remove Feature` |
 | `rebuild` | `rebuild` |
 | `fix` | `fix Body\|all loose doubles holes normals` |
+| `remedy` | `remedy Feature [n] [folder=path]`: press fix button `n` (default 1) on a feature's diagnostic, the same edit the editor's callout button makes (`FeatureRemedy.Apply`): insert the missing Subdivide or UV project above it, or set its Folder. Says whether the feature builds afterwards. |
 | `render` | `render path [view=sheet] [size=512] [wire=1] [bones=0] [labels=1] [grid=1] [focus=Body]` |
 | `render … shade=` | `render path shade=material\|clay [views=4] [size=512] [elevation=12] [preset=Wet gore] [focus=Body] [label=OURS]`: a lit, labelled turnaround (ShadedRender: wet coat, subsurface glow, oil film, baked maps). A body shows its Flesh Material; with none, `preset=` per vertex, else its vertex colours, else clay. |
 | `describe` | `describe` |
@@ -374,6 +375,13 @@ How values are read:
 - A point list is `a;b;c`. A body list is body names. A feature is named by its name, its id,
   or `#N` (1-based).
 - A failed feature stops the script and reports its own error, which tells you what to change.
+- A diagnostic can carry one-click fixes (`FeatureDiagnostic.Actions`, `RemedyAction`): insert a
+  feature above (`InsertFeatureAbove`, e.g. Subdivide under a stroke finer than the mesh, UV
+  project under a bake that had to unwrap), choose a folder (`ChooseFolder`), or open a workspace
+  (`OpenWorkspace`, editor only). `RemedyAction.ToText()`/`Parse` round-trip one as a line of text.
+- Editing a finished shape key: `ShapeKeyEdit.Reopen( studio, key )` moves the rollback bar just
+  above its End Shape Key (the model shows the key fully on), features added there go into the key,
+  and `ShapeKeyEdit.Close( studio )` puts the bar back; `ShapeKeyEdit.Runs`/`Editing` read the state.
 
 **Landmarks** name a place on the model as built so far: a body name (its centre),
 `Body.top`, `.bottom`, `.front`, `.back`, `.left`, `.right`, `.min`, `.max`, `.centre`; a bone
