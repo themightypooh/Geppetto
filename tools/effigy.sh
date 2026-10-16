@@ -3,6 +3,7 @@
 # Effigy headless: look at a document, measure it, match it to a drawing, run a build script.
 #
 #   tools/effigy.sh render   doc.effigy out.png [sheet|front|side|top|iso|back|left] [size] [nowire] [plain] [bones]
+#   tools/effigy.sh shade    model.obj outdir [size=] [views=] [turn=] [cam= look= lens=] [clay=1] [silhouette=0] [ground=0]   lit judging renders, no Blender
 #   tools/effigy.sh describe doc.effigy
 #   tools/effigy.sh measure  doc.effigy <landmark|x,y,z> [second landmark]
 #   tools/effigy.sh match    doc.effigy <view> ref.png [diff.png]

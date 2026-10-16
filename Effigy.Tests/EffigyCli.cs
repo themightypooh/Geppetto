@@ -11,6 +11,7 @@ namespace Effigy.Tests;
 /// build script, clean a mesh. `tools/effigy.sh` is the wrapper; this is what it calls.
 ///
 ///   effigy render  doc.effigy out.png [view] [size]   sheet (front/side/top/iso) or one view
+///   effigy shade   model.obj outdir [options]          lit judging renders + labelled sheet, no Blender (ShadeCommand)
 ///   effigy describe doc.effigy                         the model in words
 ///   effigy measure doc.effigy <landmark|x,y,z>         what is at a place
 ///   effigy match   doc.effigy <view> ref.png [out.png] silhouette against a drawing
@@ -26,7 +27,7 @@ namespace Effigy.Tests;
 public static class EffigyCli
 {
 	public static bool Handles( string verb ) =>
-		verb is "render" or "describe" or "measure" or "match" or "script" or "fix" or "parts" or "new" or "crop" or "wardrobe" or "take" or "fbxdump" or "fbxskin";
+		verb is "render" or "describe" or "measure" or "match" or "script" or "fix" or "parts" or "new" or "crop" or "wardrobe" or "take" or "fbxdump" or "fbxskin" or "shade";
 
 	public static int Run( string[] args )
 	{
@@ -47,6 +48,7 @@ public static class EffigyCli
 				"take" => Take( args ),
 				"fbxdump" => FbxDump( args ),
 				"fbxskin" => FbxSkin( args ),
+				"shade" => ShadeCommand.Run( args ),
 				_ => Usage(),
 			};
 		}
@@ -59,7 +61,7 @@ public static class EffigyCli
 
 	static int Usage()
 	{
-		Console.WriteLine( "effigy render|describe|measure|match|script|fix|parts|new|wardrobe|take|fbxdump|fbxskin … — see EffigyCli.cs" );
+		Console.WriteLine( "effigy render|shade|describe|measure|match|script|fix|parts|new|wardrobe|take|fbxdump|fbxskin … — see EffigyCli.cs" );
 		return 1;
 	}
 
