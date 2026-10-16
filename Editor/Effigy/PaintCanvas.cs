@@ -50,8 +50,35 @@ public sealed class PaintCanvas
 	{
 		var copy = new PaintCanvas( Width, Height );
 		Array.Copy( Rgba, copy.Rgba, Rgba.Length );
+		copy.RoughnessMap = RoughnessMap?.Clone();
+		copy.MetalnessMap = MetalnessMap?.Clone();
+		copy.HeightMap = HeightMap?.Clone();
 		return copy;
 	}
+
+	/// <summary>
+	/// The painted surface channels that travel with this colour canvas, or null where nothing was
+	/// painted on that channel. Each is a grey canvas of the same shape: value in R/G/B, coverage in
+	/// alpha, so every blend, erase and dilate above works on it unchanged.
+	///
+	/// WHY THEY HANG OFF THE COLOUR CANVAS rather than being three more fields on PolyMesh. A body's
+	/// paint is copied, cloned, merged and carried through decimation in a dozen places that all move
+	/// <c>mesh.Paint</c>; putting the channels here means every one of those already carries them,
+	/// where three new mesh fields would be three dozen edits and one forgotten copy away from a
+	/// roughness map that silently vanishes after a merge. See PaintLayers for how they composite.
+	/// </summary>
+	public PaintCanvas RoughnessMap, MetalnessMap, HeightMap;
+
+	/// <summary>The canvas for <paramref name="channel"/>: this one for colour, a companion otherwise,
+	/// null where that channel was never painted. The mask channel never lives on a body.</summary>
+	public PaintCanvas Channel( PaintChannel channel ) => channel switch
+	{
+		PaintChannel.Color => this,
+		PaintChannel.Roughness => RoughnessMap,
+		PaintChannel.Metalness => MetalnessMap,
+		PaintChannel.Height => HeightMap,
+		_ => null,
+	};
 
 	/// <summary>
 	/// Source-over composite of a solid colour at <paramref name="weight"/> coverage onto one texel.

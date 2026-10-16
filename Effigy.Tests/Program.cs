@@ -74,6 +74,10 @@ public static class Program
 		{
 			SkinShaderTests.Run( rawArgs.Length > 1 ? rawArgs[1] : DefaultOutDir() );
 			Console.WriteLine( $"\n{Report.Passed} passed, {Report.Failed} failed" );
+		// Just the paint layer/channel suite, for a quick loop while working on it: --paint-layers.
+		if ( rawArgs.Length > 0 && rawArgs[0] == "--paint-layers" )
+			PaintLayerTests.Run();
+			Console.WriteLine( $"  {Report.Passed} passed, {Report.Failed} failed" );
 			return Report.Failed == 0 ? 0 : 1;
 		}
 
@@ -277,6 +281,7 @@ public static class Program
 		PaintCanvasTests.Run();
 		PaintReplayTests.Run();
 		PaintMaterialTests.Run();
+		PaintLayerTests.Run();
 
 		BooleanFeatureTests.Run();
 

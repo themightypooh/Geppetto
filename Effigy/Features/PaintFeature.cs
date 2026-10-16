@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 
 namespace Effigy;
@@ -48,23 +49,67 @@ public sealed class PaintFeature : Feature
 	public readonly BodySelectionParam Bodies = new( "Body" );
 
 	/// <summary>
-	/// Whether the paint tints what is underneath it or stands in for it.
-	///
-	/// CARRIED FOR THE DOCUMENT FORMAT, NOT READ BY THE ATLAS. The vertex-colour path used it to pick
-	/// which material an unbound slot compiled to (tint keeps default.vmat, replace binds white.vmat);
-	/// a texture atlas is the surface colour itself, and telling tint from replace through a texture
-	/// needs a shader that combines the base material with the atlas, which nothing shipped provides.
-	/// The atlas covers. The choice stays on the feature so documents saved before the switch still
-	/// load and round-trip unchanged.
+	/// LEGACY, READ BY NOTHING. Tint/Replace from the vertex-colour era, kept as a field only so
+	/// documents saved with it still load and round-trip unchanged. A layer's real blend is
+	/// <see cref="Mode"/>; this name could not be reused because a ChoiceParam saves its INDEX, and an
+	/// old "Replace" (1) would have loaded as Multiply.
 	/// </summary>
 	public readonly ChoiceParam Blend = new( "Blend", new[] { "Tint", "Replace" } );
 
+	/// <summary>How this layer combines with the paint below it. See <see cref="PaintLayers"/>.</summary>
+	public readonly ChoiceParam Mode = new( "Blend Mode", Enum.GetNames<PaintBlendMode>() );
+
+	/// <summary>How much of the layer shows, 0..1, on top of its own coverage and mask.</summary>
+	public readonly FloatParam Opacity = new( "Opacity", 1f, 0f, 1f );
+
 	/// <summary>
-	/// Blend is carried for old documents and is not a parameter the dialog or the bar offer.
-	/// A texture atlas is the surface colour; tint-versus-replace needed a shader nothing ships.
-	/// Showing a combo that changes nothing is a bug report waiting to be filed.
+	/// Whether the layer starts fully covered with the fill values below, rather than empty. A fill
+	/// layer is how a whole surface gets one material — rust, dirt, wet sheen — that a mask then
+	/// confines; strokes on the layer still paint over the fill.
 	/// </summary>
-	public override IReadOnlyList<IParam> Parameters => new IParam[] { Bodies, Resolution };
+	public readonly BoolParam Fill = new( "Fill Layer", false );
+
+	public readonly BoolParam FillUseColor = new( "Use Color", true );
+	public readonly Vec3Param FillColor = new( "Color", new Vec3( 0.42f, 0.32f, 0.24f ) );
+	public readonly BoolParam FillUseRoughness = new( "Use Roughness", false );
+	public readonly FloatParam FillRoughness = new( "Roughness", 0.8f, 0f, 1f );
+	public readonly BoolParam FillUseMetalness = new( "Use Metallic", false );
+	public readonly FloatParam FillMetalness = new( "Metallic", 0f, 0f, 1f );
+	public readonly BoolParam FillUseHeight = new( "Use Height", false );
+	public readonly FloatParam FillHeight = new( "Height", 0.5f, 0f, 1f );
+
+	/// <summary>Where the layer's mask comes from, before mask painting. Option text matches
+	/// <see cref="PaintMaskGenerator"/>, spaced for reading.</summary>
+	public readonly ChoiceParam MaskGenerator = new( "Mask Generator", MaskOptions );
+
+	public static readonly string[] MaskOptions = { "None", "Edge Wear", "Dirt", "Gradient", "Material ID" };
+
+	/// <summary>Where the generated mask switches from hidden to shown, 0..1.</summary>
+	public readonly FloatParam MaskLevel = new( "Mask Level", 0.5f, 0f, 1f );
+
+	/// <summary>How wide the switch is: 0 is a hard edge, 1 a long fade.</summary>
+	public readonly FloatParam MaskSoftness = new( "Mask Softness", 0.3f, 0f, 1f );
+
+	/// <summary>Swap what the mask shows and hides.</summary>
+	public readonly BoolParam InvertMask = new( "Invert Mask", false );
+
+	/// <summary>The material slot the Material ID generator selects.</summary>
+	public readonly IntParam MaskSlot = new( "Mask Material Slot", 0, 0, 63 ) { Slider = false };
+
+	/// <summary>
+	/// Every layer setting, for the script and the feature dialog. Blend is carried for old documents
+	/// and deliberately absent: showing a combo that changes nothing is a bug report waiting to be filed.
+	/// </summary>
+	public override IReadOnlyList<IParam> Parameters => new IParam[]
+	{
+		Bodies, Resolution, Mode, Opacity,
+		Fill, FillUseColor, FillColor, FillUseRoughness, FillRoughness, FillUseMetalness, FillMetalness, FillUseHeight, FillHeight,
+		MaskGenerator, MaskLevel, MaskSoftness, InvertMask, MaskSlot,
+	};
+
+	public PaintBlendMode BlendMode => (PaintBlendMode)Math.Clamp( Mode.Index, 0, Enum.GetValues<PaintBlendMode>().Length - 1 );
+
+	public PaintMaskGenerator Generator => (PaintMaskGenerator)Math.Clamp( MaskGenerator.Index, 0, MaskOptions.Length - 1 );
 
 	/// <summary>
 	/// The strokes, in the order they were painted.
@@ -83,23 +128,57 @@ public sealed class PaintFeature : Feature
 	// the studio, so nothing calls MarkDirty and this is what catches it.
 	int _builtRevision = -1;
 
-	// The replay cache: the canvas last produced, and the topology + atlas + revision + resolution it
-	// was produced from. Keyed on topology (vertex count and face indices, deliberately not
-	// positions), the atlas (every corner UV, so a re-unwrap invalidates it), the revision (so a new
-	// stroke does) and the resolution (so changing it re-replays rather than serving a stale canvas
-	// at the old size). A parametric edit that moves geometry without changing structure, UVs or
-	// resolution reuses the canvas rather than re-replaying.
-	PaintCanvas _cachedCanvas;
+	// The replay cache: the layer's own maps last produced, and the topology + atlas + revision +
+	// resolution they were produced from. Keyed on topology (vertex count and face indices,
+	// deliberately not positions), the atlas (every corner UV, so a re-unwrap invalidates it), the
+	// revision (so a new stroke does) and the resolution (so changing it re-replays rather than serving
+	// a stale canvas at the old size). A parametric edit that moves geometry without changing
+	// structure, UVs or resolution reuses the maps rather than re-replaying.
+	PaintLayerMaps _strokeMaps;
 	long _topologyId;
 	long _atlasId;
 	int _canvasRevision = -1;
 	int _canvasResolution = -1;
 
+	// The layer with its fill under the strokes, keyed on the stroke maps and the fill settings.
+	PaintLayerMaps _layerMaps;
+	PaintLayerMaps _layerFrom;
+	string _fillKey;
+
+	// The generated mask, which is the expensive part (a bake), keyed on everything it reads —
+	// including positions, because curvature and occlusion move when the surface does.
+	float[] _generated;
+	string _generatedKey;
+
+	// The composite last put on the body, and what it was composited from. The backdrop is keyed by
+	// REFERENCE: the layer below hands back its own cached canvas while nothing below changed, and
+	// a new object whenever something did.
+	PaintCanvas _cachedCanvas;
+	PaintCanvas _compositeBelow;
+	PaintLayerMaps _compositeLayer;
+	string _compositeKey;
+
 	public override bool IsStale => Revision != _builtRevision;
 
-	/// <summary>The canvas last replayed by this feature, or null before a build. The editor reads it
-	/// to show paint after a rebuild — it is the same canvas <see cref="Execute"/> put on the body.</summary>
+	/// <summary>The paint this feature put on its body — the layers below with this one composited
+	/// over them — or null before a build. The editor shows it after a rebuild.</summary>
 	public PaintCanvas Canvas => _cachedCanvas;
+
+	/// <summary>The body's paint from the layers BELOW this one, as the last build found it. The live
+	/// paint session shows this under the layer being painted, so painting a layer in the middle of a
+	/// stack shows the stack.</summary>
+	public PaintCanvas Below { get; private set; }
+
+	/// <summary>This layer's own content (fill and strokes), before compositing, or null before a build.</summary>
+	public PaintLayerMaps Layer => _layerMaps;
+
+	/// <summary>The final mask (generator, mask paint, invert) the last build used, or null when
+	/// the layer shows everywhere.</summary>
+	public float[] Mask { get; private set; }
+
+	/// <summary>The generator's mask after Mask Level and Softness, without mask paint or invert —
+	/// what the live session combines with its own mask strokes. Null with no generator.</summary>
+	public float[] GeneratorMask { get; private set; }
 
 	/// <summary>Append a stroke and mark the feature stale, so the next rebuild replays it. The list
 	/// is lazily created here so a fresh feature never has to check for null before painting.</summary>
@@ -141,27 +220,193 @@ public sealed class PaintFeature : Feature
 				"Add a Paint per body rather than one Paint over all of them" );
 		}
 
-		if ( Strokes is { Count: > 0 } )
+		var mesh = targets[0].Mesh;
+		var below = mesh.Paint;
+		Below = below;
+
+		var hasStrokes = Strokes is { Count: > 0 };
+		var fill = Fill.Value && (FillUseColor.Value || FillUseRoughness.Value || FillUseMetalness.Value || FillUseHeight.Value);
+		var generator = Generator;
+
+		if ( Fill.Value && !fill )
 		{
-			var mesh = targets[0].Mesh;
-			var topology = MultiresSculpt.TopologyId( mesh );
-			var atlas = AtlasId.Of( mesh );
-			var resolution = Resolution.Clamped;
-
-			if ( _cachedCanvas is null || _topologyId != topology || _atlasId != atlas
-				|| _canvasRevision != Revision || _canvasResolution != resolution )
-			{
-				_cachedCanvas = PaintReplay.Replay( mesh, Strokes, resolution );
-				_topologyId = topology;
-				_atlasId = atlas;
-				_canvasRevision = Revision;
-				_canvasResolution = resolution;
-			}
-
-			mesh.Paint = _cachedCanvas;
+			Warn( "This fill layer fills nothing",
+				"Fill Layer is on but every channel (Use Color, Use Roughness, Use Metallic, Use Height) is off.",
+				"Turn on the channels the fill should write",
+				"Turn Fill Layer off if you meant to paint strokes only" );
 		}
+
+		if ( (fill || generator != PaintMaskGenerator.None) && !PaintMasks.HasUVs( mesh ) )
+		{
+			FailOn( fill ? "Fill Layer" : "Mask Generator",
+				"This paint layer has nowhere to go",
+				"The body has no UV layout, so no texel belongs to any face — a fill or a generated mask needs one.",
+				"Add a UV Project in Unwrap mode above this layer",
+				"Or enter Paint on the body once — it unwraps it for you" );
+		}
+
+		var resolution = Resolution.Clamped;
+		var topology = MultiresSculpt.TopologyId( mesh );
+		var atlas = AtlasId.Of( mesh );
+
+		// The generated mask is made even for a layer with nothing on it yet, so the live session
+		// can show it the moment the first stroke lands rather than after the next rebuild.
+		var generatedKey = generator == PaintMaskGenerator.None
+			? "none"
+			: $"{generator}|{MaskSlot.Clamped}|{resolution}|{topology}|{atlas}|{PositionHash( mesh )}";
+
+		if ( _generatedKey != generatedKey )
+		{
+			_generated = PaintMasks.Generate( mesh, resolution, generator, MaskSlot.Clamped );
+			_generatedKey = generatedKey;
+		}
+
+		var shaped = _generated is null ? null : PaintLayers.Shape( (float[])_generated.Clone(), MaskLevel.Clamped, MaskSoftness.Clamped );
+		GeneratorMask = shaped;
+
+		if ( !hasStrokes && !fill )
+		{
+			// A fresh layer with nothing on it yet. Not a failure — it is how every layer starts —
+			// and the body's paint passes through untouched.
+			_cachedCanvas = below;
+			Mask = null;
+			_builtRevision = Revision;
+			return;
+		}
+
+		if ( _strokeMaps is null || _topologyId != topology || _atlasId != atlas
+			|| _canvasRevision != Revision || _canvasResolution != resolution )
+		{
+			_strokeMaps = PaintLayers.Replay( mesh, Strokes, resolution );
+			_topologyId = topology;
+			_atlasId = atlas;
+			_canvasRevision = Revision;
+			_canvasResolution = resolution;
+		}
+
+		var fillKey = fill
+			? $"{FillUseColor.Value}|{FillColor.Value.x}|{FillColor.Value.y}|{FillColor.Value.z}|{FillUseRoughness.Value}|{FillRoughness.Clamped}|"
+				+ $"{FillUseMetalness.Value}|{FillMetalness.Clamped}|{FillUseHeight.Value}|{FillHeight.Clamped}"
+			: "none";
+
+		if ( _layerMaps is null || !ReferenceEquals( _layerFrom, _strokeMaps ) || _fillKey != fillKey )
+		{
+			_layerMaps = fill ? WithFill( _strokeMaps, resolution ) : _strokeMaps;
+			_layerFrom = _strokeMaps;
+			_fillKey = fillKey;
+		}
+
+		Mask = PaintLayers.FinalMask( shaped, _layerMaps.MaskPaint, InvertMask.Value, resolution, resolution );
+
+		if ( !_layerMaps.HasSurface )
+		{
+			Warn( "This layer only has mask paint",
+				"Every stroke on it was painted on the Layer Mask, so there is nothing for the mask to show.",
+				"Switch the channel to Base Color (or another surface channel) and paint",
+				"Or turn on Fill Layer so the mask confines a fill" );
+		}
+		else if ( Opacity.Clamped <= 0f )
+		{
+			Warn( "This layer is invisible",
+				"Its Opacity is 0, so it adds nothing to the surface.",
+				"Raise Opacity",
+				"Suppress the layer instead if you meant to hide it" );
+		}
+		else if ( Mask is not null && MaxOf( Mask ) < 1e-3f )
+		{
+			Warn( "The layer mask hides the whole layer", MaskEmptyCause( mesh ),
+				generator == PaintMaskGenerator.MaterialId ? "Pick a Mask Material Slot a face is on" : "Lower Mask Level or raise Mask Softness",
+				"Turn Invert Mask off (or on)",
+				"Paint white on the Layer Mask where it should show" );
+		}
+
+		var compositeKey = $"{BlendMode}|{Opacity.Clamped}|{MaskLevel.Clamped}|{MaskSoftness.Clamped}|{InvertMask.Value}|{generatedKey}";
+
+		if ( _cachedCanvas is null || !ReferenceEquals( _compositeBelow, below ) || !ReferenceEquals( _compositeLayer, _layerMaps )
+			|| _compositeKey != compositeKey )
+		{
+			_cachedCanvas = PaintLayers.CompositeSet( below, _layerMaps, BlendMode, Opacity.Clamped, Mask );
+			_compositeBelow = below;
+			_compositeLayer = _layerMaps;
+			_compositeKey = compositeKey;
+		}
+
+		mesh.Paint = _cachedCanvas;
 
 		// Last, so a failure above leaves the feature stale and the next rebuild tries again.
 		_builtRevision = Revision;
+	}
+
+	/// <summary>The layer's stroke maps over a solid fill for every channel the fill writes. The fill
+	/// is the layer's base; strokes on the same channel paint over it in Normal.</summary>
+	PaintLayerMaps WithFill( PaintLayerMaps strokes, int size )
+	{
+		var maps = new PaintLayerMaps { Size = size, MaskPaint = strokes.MaskPaint };
+
+		maps.Color = Over( FillUseColor.Value
+			? PaintLayers.Solid( size, size, Byte( FillColor.Value.x ), Byte( FillColor.Value.y ), Byte( FillColor.Value.z ) )
+			: null, strokes.Color );
+		maps.Roughness = Over( FillUseRoughness.Value ? Grey( FillRoughness.Clamped, size ) : null, strokes.Roughness );
+		maps.Metalness = Over( FillUseMetalness.Value ? Grey( FillMetalness.Clamped, size ) : null, strokes.Metalness );
+		maps.Height = Over( FillUseHeight.Value ? Grey( FillHeight.Clamped, size ) : null, strokes.Height );
+
+		return maps;
+	}
+
+	static PaintCanvas Over( PaintCanvas fill, PaintCanvas strokes ) =>
+		fill is null ? strokes : PaintLayers.Composite( fill, strokes, PaintBlendMode.Normal, 1f, null );
+
+	static PaintCanvas Grey( float value, int size )
+	{
+		var b = Byte( value );
+		return PaintLayers.Solid( size, size, b, b, b );
+	}
+
+	static byte Byte( float v ) => PaintReplay.ToByte( v );
+
+	static float MaxOf( float[] values )
+	{
+		var max = 0f;
+
+		foreach ( var v in values )
+			max = MathF.Max( max, v );
+
+		return max;
+	}
+
+	string MaskEmptyCause( PolyMesh mesh )
+	{
+		if ( Generator == PaintMaskGenerator.MaterialId )
+		{
+			foreach ( var face in mesh.Faces )
+			{
+				if ( face.Material == MaskSlot.Clamped )
+					return $"Mask Level {MaskLevel.Clamped:0.##} with Invert Mask on leaves nothing showing on slot {MaskSlot.Clamped}.";
+			}
+
+			return $"No face of this body is on material slot {MaskSlot.Clamped}, so Material ID selects nothing.";
+		}
+
+		return Generator == PaintMaskGenerator.None
+			? "The Layer Mask is painted black everywhere it covers, and Invert Mask hides the rest."
+			: $"Mask Level {MaskLevel.Clamped:0.##} is above every value the {MaskOptions[(int)Generator]} generator found on this body.";
+	}
+
+	/// <summary>A cheap hash of the vertex positions, so a generated mask follows a sculpt or a move.</summary>
+	static long PositionHash( PolyMesh mesh )
+	{
+		unchecked
+		{
+			long hash = 1469598103934665603;
+
+			foreach ( var p in mesh.Positions )
+			{
+				hash = (hash ^ BitConverter.SingleToInt32Bits( p.x )) * 1099511628211;
+				hash = (hash ^ BitConverter.SingleToInt32Bits( p.y )) * 1099511628211;
+				hash = (hash ^ BitConverter.SingleToInt32Bits( p.z )) * 1099511628211;
+			}
+
+			return hash;
+		}
 	}
 }

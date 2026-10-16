@@ -66,7 +66,12 @@ public static class PaintReplay
 	/// blending does not commute — and this preserves it exactly, compositing each stroke once from
 	/// its own coverage buffer so dabs within a stroke never accumulate.
 	/// </summary>
-	public static PaintCanvas Replay( PolyMesh mesh, IReadOnlyList<PaintStroke> strokes, int resolution )
+	public static PaintCanvas Replay( PolyMesh mesh, IReadOnlyList<PaintStroke> strokes, int resolution ) =>
+		Replay( mesh, strokes, resolution, null );
+
+	/// <summary>The same replay over a tree the caller already built — a layer replays one canvas per
+	/// channel over one mesh, and building the tree once per channel is waste.</summary>
+	internal static PaintCanvas Replay( PolyMesh mesh, IReadOnlyList<PaintStroke> strokes, int resolution, MeshBVH tree )
 	{
 		if ( mesh is null )
 			throw new ArgumentNullException( nameof( mesh ) );
@@ -78,7 +83,7 @@ public static class PaintReplay
 
 		if ( strokes is { Count: > 0 } )
 		{
-			var bvh = MeshBVH.Build( mesh );
+			var bvh = tree ?? MeshBVH.Build( mesh );
 			var faces = new List<int>();
 			var coverage = new float[resolution * resolution];
 
@@ -121,7 +126,22 @@ public static class PaintReplay
 		if ( stroke.Erase )
 			Erase( canvas, coverage );
 		else
-			Composite( canvas, coverage, ToByte( stroke.R ), ToByte( stroke.G ), ToByte( stroke.B ) );
+		{
+			var (r, g, b) = StrokeBytes( stroke );
+			Composite( canvas, coverage, r, g, b );
+		}
+	}
+
+	/// <summary>The bytes a stroke lays down. A scalar channel (roughness, metalness, height, mask)
+	/// reads its value from R and writes it as a grey, whatever G and B hold — so a hand-edited or
+	/// scripted stroke cannot put colour into a map that has none.</summary>
+	internal static (byte R, byte G, byte B) StrokeBytes( PaintStroke stroke )
+	{
+		if ( stroke.Channel == PaintChannel.Color )
+			return (ToByte( stroke.R ), ToByte( stroke.G ), ToByte( stroke.B ));
+
+		var v = ToByte( stroke.R );
+		return (v, v, v);
 	}
 
 	/// <summary>Note which texels this stroke touched, and whether it was an erase that touched them.

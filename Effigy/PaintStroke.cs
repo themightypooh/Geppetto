@@ -74,6 +74,19 @@ public sealed class PaintStroke
 	/// </summary>
 	public bool Erase;
 
+	/// <summary>
+	/// Which map this stroke paints: colour, one of the surface channels, or the layer's own mask.
+	///
+	/// A SCALAR CHANNEL READS <see cref="R"/> AS ITS VALUE. Roughness, metalness, height and the
+	/// mask are one number a texel; carrying that number in the colour's red keeps one replay path,
+	/// one canvas type and one writer for every channel. The session writes the value into all three
+	/// of R/G/B so a scalar canvas is a grey image, which is what it exports as.
+	///
+	/// Strokes on different channels never touch each other's canvas, so a layer's log can interleave
+	/// them freely; strokes on the same channel keep the log's order, which is what matters.
+	/// </summary>
+	public PaintChannel Channel = PaintChannel.Color;
+
 	/// <summary>The path, in the order it was painted, each point carrying a position and the
 	/// surface normal there. Order is the whole point: strokes are a log and colour blending does
 	/// not commute.</summary>

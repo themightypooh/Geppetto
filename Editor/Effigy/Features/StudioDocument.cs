@@ -1149,6 +1149,10 @@ public static class StudioDocument
 				}
 
 				var stroke = ParseStroke( value );
+
+				if ( stroke is null )
+					return;
+
 				stroke.Erase = key == "erase";
 				strokes.Add( stroke );
 				return;
@@ -1335,6 +1339,12 @@ public static class StudioDocument
 	{
 		var sb = new StringBuilder();
 
+		// A non-colour stroke leads with its channel tag (`@rough`). A tag is not a number, so it
+		// cannot be mistaken for the header, and a colour stroke writes none — every document saved
+		// before channels existed reads, and re-saves, byte for byte as it was.
+		if ( PaintChannels.Tag( s.Channel ) is { } tag )
+			sb.Append( '@' ).Append( tag ).Append( ' ' );
+
 		sb.Append( Num( s.R ) ).Append( ' ' ).Append( Num( s.G ) ).Append( ' ' ).Append( Num( s.B ) ).Append( ' ' ).Append( Num( s.A ) );
 		sb.Append( ' ' ).Append( Num( s.Radius ) );
 		sb.Append( ' ' ).Append( Num( s.Strength ) );
@@ -1376,9 +1386,23 @@ public static class StudioDocument
 	static PaintStroke ParseStroke( string value )
 	{
 		var p = value.Split( ' ', StringSplitOptions.RemoveEmptyEntries );
+		var channel = PaintChannel.Color;
+
+		if ( p.Length > 0 && p[0].StartsWith( '@' ) )
+		{
+			// A channel this build does not know is a newer document's. Dropping the stroke is the
+			// honest read: replaying it as colour would paint a height or a mask value as a grey
+			// smear on the albedo.
+			if ( PaintChannels.FromTag( p[0].Substring( 1 ) ) is not { } known )
+				return null;
+
+			channel = known;
+			p = p[1..];
+		}
 
 		var stroke = new PaintStroke
 		{
+			Channel = channel,
 			R = ParseFloat( p[0] ),
 			G = ParseFloat( p[1] ),
 			B = ParseFloat( p[2] ),
