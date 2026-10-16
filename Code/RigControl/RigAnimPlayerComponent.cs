@@ -25,7 +25,7 @@ namespace Marionette;
 /// Play() and back out on Stop() or when a one-shot ends, and hand the bones back to the graph
 /// once faded, so a reload is a thing that happens to the arms and then stops happening.
 /// </summary>
-public sealed class RigAnimPlayerComponent : Component
+public sealed partial class RigAnimPlayerComponent : Component
 {
 	[Property] public RigAnimDocument Anim { get; set; }
 	[Property] public SkinnedModelRenderer Target { get; set; }
@@ -385,6 +385,7 @@ public sealed class RigAnimPlayerComponent : Component
 					// A cycle plants its World-space goals afresh from wherever the body has got
 					// to - a haul that loops grips the next stretch of pipe, not the first one.
 					_worldAnchor = Target.WorldTransform;
+					_rootWrapped = true;
 
 					// The wrap starts the clip again: a mark on frame 0 has arrived, and so has
 					// everything up to where this tick landed.
@@ -411,6 +412,7 @@ public sealed class RigAnimPlayerComponent : Component
 		if ( Mode == RigAnimMode.Exclusive )
 		{
 			ApplyFrame( Frame );
+			ApplyRootMotion();
 			TickLayers( delta );
 			ApplySoft( delta, 1f );
 			return;
@@ -429,6 +431,7 @@ public sealed class RigAnimPlayerComponent : Component
 		}
 
 		ApplyFrame( Frame );
+		ApplyRootMotion();
 		TickLayers( delta );
 		ApplySoft( delta, (Weight * _blend).Clamp( 0f, 1f ) );
 	}
@@ -506,6 +509,7 @@ public sealed class RigAnimPlayerComponent : Component
 		_driven.Clear();
 		_ikChains.Clear();
 		_soft.Rest();
+		ResetRootMotion();
 
 		_notifiedFinish = false;
 		IsPlaying = true;
@@ -533,7 +537,9 @@ public sealed class RigAnimPlayerComponent : Component
 		Frame = frame.Clamp( 0f, LastFrame );
 		_notifiedFinish = false;
 		_soft.Rest();
+		ResetRootMotion();
 		ApplyFrame( Frame );
+		ApplyRootMotion();
 	}
 
 	private void EnsureRig()

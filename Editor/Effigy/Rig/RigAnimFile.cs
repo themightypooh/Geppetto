@@ -468,6 +468,15 @@ public sealed class RigAnimFile
 		return result;
 	}
 
+	/// <summary>The clip's root motion (Marionette's RigAnimDocument.RootMotion): which bone carries
+	/// the travel the game moves the character by. Null when it has none. See <see cref="Effigy.RootMotion"/>.</summary>
+	public RootMotionSettings RootMotion;
+
+	/// <summary>Sample the clip as it plays on a character the game moves by its root motion: the
+	/// root's travel taken out (<see cref="Effigy.RootMotion.InPlace"/>). Off by default - the export
+	/// keeps the travel on the root for ModelDoc to extract.</summary>
+	public bool PlayInPlace;
+
 	/// <summary>The .ctrlrig the clip names, as written in the file - empty when there is none.</summary>
 	public string RigAsset = "";
 
@@ -498,6 +507,7 @@ public sealed class RigAnimFile
 
 		ReadPlacements( root, clip );
 		ReadMorphEvents( root, clip );
+		clip.RootMotion = RootMotionSettings.Read( root );
 
 		if ( !root.TryGetProperty( "BoneTracks", out var tracks ) || tracks.ValueKind != JsonValueKind.Array )
 			return clip;
@@ -554,7 +564,8 @@ public sealed class RigAnimFile
 			pose[b] = RigLimit.Clamp( Limits, skeleton.Bones[b].Name, pose[b] );
 		}
 
-		return SolveIk( skeleton, pose, frame );
+		var solved = SolveIk( skeleton, pose, frame );
+		return PlayInPlace && RootMotion is { Enabled: true } ? Effigy.RootMotion.InPlace( this, skeleton, solved, frame ) : solved;
 	}
 
 	/// <summary>

@@ -668,7 +668,7 @@ public static class EffigyCli
 			Console.Error.WriteLine( "effigy sim clip.riganim [model=dump.json|tentacle|citizen] [rig=x.ctrlrig] [substeps=2] [from=F] [to=F] "
 				+ "[contacts=glob,..] [chain=prefix,..] [loop] [pop=25] [slide=0.25] [reach=0.25] [ignore=glob,..|none] "
 				+ "[layer=clip.riganim[:additive|overlay][:loop][:offset=F][:rate=R][:weight=W][:mask=glob;glob],..] "
-				+ "[bake=root:preset[:loop][:rope][:pin=bone],..] [collide=bone:radius,..] [ground=z] [thickness=t] [wave=root:preset[:loop][:amp=][:period=][:wavelength=],..] [write=out.riganim] [trail=out.png] [trace=bone,..] [take]" );
+				+ "[bake=root:preset[:loop][:rope][:pin=bone],..] [collide=bone:radius,..] [ground=z] [thickness=t] [wave=root:preset[:loop][:amp=][:period=][:wavelength=],..] [rootmotion=root:hips[:xy|xyyaw|full][:exact]] [write=out.riganim] [trail=out.png] [trace=bone,..] [take]" );
 			return 1;
 		}
 
@@ -796,6 +796,35 @@ public static class EffigyCli
 			if ( !waved.Ok ) { Console.Error.WriteLine( $"wave '{spec}': {waved.Error}" ); return 1; }
 
 			Console.WriteLine( $"waved {p[0]}: {waved.Bones} bone(s), {waved.Keys} key(s)" + (waved.SkippedForIk.Count > 0 ? $", skipped {waved.SkippedForIk.Count} posed by live IK" : "") );
+		}
+
+		// Root motion: root:hips[:xy|xyyaw|full][:exact] moves the hips' travel onto the root; the
+		// clip's own (RootMotion in the file) is used as it is. Either way the lint then judges the
+		// clip in place - as it plays on a character the game moves - and feet are reported both ways.
+		if ( Opt( "rootmotion" ) is { } rm )
+		{
+			var p = rm.Split( ':' );
+			var settings = new RootMotionSettings
+			{
+				Bone = p[0],
+				Source = p.Length > 1 ? p[1] : "",
+				Mode = p.Contains( "full" ) ? RootMotionMode.Full : p.Contains( "xyyaw" ) ? RootMotionMode.XYYaw : RootMotionMode.XY,
+				Linear = !p.Contains( "exact" ),
+			};
+			var extracted = RootMotion.Extract( clip, skeleton, settings );
+
+			if ( !extracted.Ok ) { Console.Error.WriteLine( $"rootmotion '{rm}': {extracted.Error}" ); return 1; }
+
+			Console.WriteLine( extracted );
+		}
+
+		if ( clip.RootMotion is { Enabled: true } )
+		{
+			foreach ( var foot in RootMotion.SlideReport( clip, skeleton, List( "contacts" ) ) )
+				Console.WriteLine( string.Create( System.Globalization.CultureInfo.InvariantCulture,
+					$"  foot slide {foot.Bone}: {foot.InPlace:0.##} units in place without root motion, {foot.WithRootMotion:0.##} with it ({foot.Spans} planted span(s))" ) );
+
+			clip.PlayInPlace = true;
 		}
 
 		if ( Opt( "write" ) is { } writePath )

@@ -128,6 +128,14 @@ public sealed class RigAnimDocument : GameResource
 	[Property, Group( "IK" ), Title( "IK Goal Spaces" )] public List<IkGoalAnchor> IkGoalAnchors { get; set; } = new();
 
 	/// <summary>
+	/// The clip's root motion - which bone carries the body's travel, so the game can move the
+	/// character by it while the body plays in place. Null (every clip made before this existed) is
+	/// none. Set by the timeline's bone row ▸ Extract Root Motion; read by RigAnimPlayerComponent
+	/// (Root Motion), the export (ModelDoc ExtractMotion on the root bone) and Effigy's sim.
+	/// </summary>
+	[Property, Group( "Root Motion" ), Title( "Root Motion" )] public RigRootMotion RootMotion { get; set; }
+
+	/// <summary>
 	/// Every morph the clip drives at <paramref name="frame"/>, by morph name, into
 	/// <paramref name="into"/> (cleared first).
 	///

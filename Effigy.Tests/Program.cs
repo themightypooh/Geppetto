@@ -229,6 +229,7 @@ public static class Program
 		RigCurveTests.Run();
 		ChainSpringTests.Run();
 		MarionetteSimTests.Run( outDir );
+		MarionetteGapTests.Run();
 		GarmentPosesTests.Run();
 		GarmentCutTests.Run();
 		ClothingTabTests.Run();

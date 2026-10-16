@@ -154,7 +154,7 @@ internal static class RigAnimExport
 		var dmxAsset = string.IsNullOrEmpty( relativeFolder ) ? dmxFile : $"{relativeFolder}/{dmxFile}";
 		var vmdlAsset = string.IsNullOrEmpty( relativeFolder ) ? vmdlFile : $"{relativeFolder}/{vmdlFile}";
 
-		var entry = new VmdlAnimation.ClipEntry( name, dmxAsset, looping );
+		var entry = new VmdlAnimation.ClipEntry( name, dmxAsset, looping, RigRootMotionTool.ToKernel( doc.RootMotion ) );
 
 		try
 		{

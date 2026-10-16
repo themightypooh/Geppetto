@@ -1267,6 +1267,37 @@ internal sealed class RigTimelineLanes : Widget
 			loop.Checkable = true;
 			loop.Checked = _bakeAsLoop;
 			loop.StatusTip = "Warm the springs up on one pass of the clip, so the last frame flows into the first";
+
+			// Root motion: this bone (the hips) gives its travel to the skeleton's top bone.
+			var rootMotion = menu.AddMenu( "Extract Root Motion", "directions_walk" );
+			rootMotion.AddHeading( "Move this bone's travel onto the root" );
+
+			foreach ( var mode in Enum.GetValues<RootMotionMode>() )
+			{
+				var chosen = mode;
+				rootMotion.AddOption( RootMotionLabel( chosen ), null, () => ExtractRootMotion( track.BoneName, chosen ) ).StatusTip = chosen switch
+				{
+					RootMotionMode.XY => "The travel along the ground becomes root motion; the bob and the turn stay in the body",
+					RootMotionMode.XYYaw => "The travel along the ground and the turn become root motion - for a walk that curves",
+					_ => "All the travel, height included, and the turn become root motion - for a jump or a climb",
+				};
+			}
+
+			rootMotion.AddSeparator();
+
+			var even = rootMotion.AddOption( "Even Speed", "linear_scale", () => _rootMotionEven = !_rootMotionEven );
+			even.Checkable = true;
+			even.Checked = _rootMotionEven;
+			even.StatusTip = "Glide the root at one speed from the first frame to the last, leaving the step-to-step surge in the body (best for loops). Off follows this bone exactly";
+
+			var clearRoot = rootMotion.AddOption( "Clear Root Motion Setting", "block", () =>
+			{
+				Anim.RootMotion = null;
+				Log.Info( "[Marionette] root motion: the clip is no longer marked - the root's keys are left as they are" );
+				Edited?.Invoke();
+			} );
+			clearRoot.Enabled = Anim?.RootMotion is not null;
+			clearRoot.StatusTip = "Stop treating the root's travel as root motion (the keys stay; the player and export play it as keyed)";
 		}
 
 		menu.AddSeparator();
@@ -1911,6 +1942,42 @@ internal sealed class RigTimelineLanes : Widget
 	}
 
 	private static bool _bakeAsLoop;
+
+	private static bool _rootMotionEven = true;
+
+	private static string RootMotionLabel( RootMotionMode mode ) => mode switch
+	{
+		RootMotionMode.XY => "Ground Travel",
+		RootMotionMode.XYYaw => "Ground Travel + Turn",
+		_ => "Full Travel",
+	};
+
+	private void ExtractRootMotion( string bone, RootMotionMode mode )
+	{
+		RigRootMotionTool.Result result;
+
+		try
+		{
+			result = RigRootMotionTool.Extract( Anim, bone, mode, _rootMotionEven );
+		}
+		catch ( Exception e )
+		{
+			Log.Warning( $"[Marionette] root motion failed: {e.Message}" );
+			return;
+		}
+
+		if ( !result.Ok )
+		{
+			Log.Warning( $"[Marionette] {result.Message}" );
+			return;
+		}
+
+		Log.Info( $"[Marionette] {result.Message}" );
+		_selection.Clear();
+		Update();
+		Scrubbed?.Invoke( Playhead );
+		Edited?.Invoke();
+	}
 
 	private void BakeSecondary( string bone, Effigy.ChainSpring.Preset preset, string pin = null )
 	{

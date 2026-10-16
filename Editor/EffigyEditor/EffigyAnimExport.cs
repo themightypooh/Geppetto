@@ -431,7 +431,7 @@ internal static class EffigyAnimExport
 			}
 
 			entries.Add( new VmdlAnimation.ClipEntry( name, $"{assetPrefix}/{fileName}",
-				source.Looping ) );
+				source.Looping, Marionette.Tools.RigRootMotionTool.ToKernel( doc.RootMotion ) ) );
 
 			Log.Info( $"[Effigy] wrote {fileName} - {clip.FrameCount} frame(s) at "
 				+ $"{clip.FrameRate}fps, {matched}/{skeleton.Count} bone(s) posed" );

@@ -42,6 +42,18 @@ public static class RigAnimWriter
 		root["AnimationSpeed"] = clip.FrameRate;
 		root["FrameCount"] = Math.Max( clip.FrameCount, clip.LastKeyFrame + 1 );
 
+		if ( clip.RootMotion is { } motion )
+		{
+			root["RootMotion"] = new JsonObject
+			{
+				["Enabled"] = motion.Enabled,
+				["Bone"] = motion.Bone ?? "",
+				["Source"] = motion.Source ?? "",
+				["Mode"] = motion.Mode.ToString(),
+				["Linear"] = motion.Linear,
+			};
+		}
+
 		var tracks = new JsonArray();
 
 		foreach ( var track in clip.Tracks )

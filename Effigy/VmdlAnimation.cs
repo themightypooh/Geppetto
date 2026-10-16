@@ -35,7 +35,7 @@ public static class VmdlAnimation
 	/// not a path on disk. A path that does not resolve is not an error at compile time; the clip
 	/// is simply not there afterwards.
 	/// </summary>
-	public readonly record struct ClipEntry( string Name, string SourceFilename, bool Looping = false );
+	public readonly record struct ClipEntry( string Name, string SourceFilename, bool Looping = false, RootMotionSettings RootMotion = null );
 
 	/// <summary>
 	/// The AnimationList node, indented to sit among a RootNode's children.
@@ -125,6 +125,7 @@ public static class VmdlAnimation
 		"\t\t\t\t\t{\n"
 		+ "\t\t\t\t\t\t_class = \"AnimFile\"\n"
 		+ $"\t\t\t\t\t\tname = \"{clip.Name}\"\n"
+		+ ExtractMotion( clip.RootMotion )
 		+ "\t\t\t\t\t\tactivity_name = \"\"\n"
 		+ "\t\t\t\t\t\tactivity_weight = 1\n"
 		+ "\t\t\t\t\t\tweight_list_name = \"\"\n"
@@ -145,6 +146,41 @@ public static class VmdlAnimation
 		+ "\t\t\t\t\t\ttake = 0\n"
 		+ "\t\t\t\t\t\treverse = false\n"
 		+ "\t\t\t\t\t},\n";
+
+	/// <summary>
+	/// The AnimFile's children list holding one ExtractMotion node, or nothing when the clip has no
+	/// root motion (so every clip without it writes exactly as before).
+	///
+	/// COPIED, NOT GUESSED, from the same `citizen_animationlist.vmdl_prefab` (Facepunch sbox-public,
+	/// `game/addons/citizen/Assets/models/citizen/prefabs/`), whose Roll_N clip carries exactly this:
+	/// a `children` list straight after `name`, holding `_class = "ExtractMotion"` with
+	/// extract_tx/ty/tz/rz, linear, quadratic, root_bone_name and motion_type = "Single". The compiler
+	/// takes the named root bone's travel out of the animation and turns it into the sequence's
+	/// movement - which is what a game reads as root motion. XY sets tx/ty, XY + Yaw adds rz, Full
+	/// adds tz as well; Linear is the settings' even-line choice.
+	/// </summary>
+	public static string ExtractMotion( RootMotionSettings motion )
+	{
+		if ( motion is not { Enabled: true } || string.IsNullOrWhiteSpace( motion.Bone ) )
+			return "";
+
+		static string B( bool v ) => v ? "true" : "false";
+
+		return "\t\t\t\t\t\tchildren = \n"
+			+ "\t\t\t\t\t\t[\n"
+			+ "\t\t\t\t\t\t\t{\n"
+			+ "\t\t\t\t\t\t\t\t_class = \"ExtractMotion\"\n"
+			+ "\t\t\t\t\t\t\t\textract_tx = true\n"
+			+ "\t\t\t\t\t\t\t\textract_ty = true\n"
+			+ $"\t\t\t\t\t\t\t\textract_tz = {B( motion.Mode == RootMotionMode.Full )}\n"
+			+ $"\t\t\t\t\t\t\t\textract_rz = {B( motion.Turns )}\n"
+			+ $"\t\t\t\t\t\t\t\tlinear = {B( motion.Linear )}\n"
+			+ "\t\t\t\t\t\t\t\tquadratic = false\n"
+			+ $"\t\t\t\t\t\t\t\troot_bone_name = \"{motion.Bone}\"\n"
+			+ "\t\t\t\t\t\t\t\tmotion_type = \"Single\"\n"
+			+ "\t\t\t\t\t\t\t},\n"
+			+ "\t\t\t\t\t\t]\n";
+	}
 
 	/// <summary>
 	/// Every bone marked do_not_discard, so ModelDoc keeps bones this export gives it no other
