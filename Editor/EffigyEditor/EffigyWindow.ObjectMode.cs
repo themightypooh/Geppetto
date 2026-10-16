@@ -106,6 +106,7 @@ public sealed partial class EffigyWindow
 		add.Add( _objSplineTool );
 		add.Add( _objPartTool );
 		add.Add( _objProfileTool );
+		add.Add( Tool( EffigyIcon.Paint, "Fur (creature)", "Shell fur on the selected body for s&box's fur shader — a pelt, a mane, a mossy back. Pick faces first to grow it only there", AddCreatureFur ) );
 		add.Add( Tool( EffigyIcon.Sculpt, "Blob (metaballs)", "Spheres, capsules, cones and tubes melted into one smooth skin — a heart, a gut pile, a creature block-out. Type the shapes in its settings; a shape starting with - cuts a hole", () => AddFeature( NewFeature( ToolKind.Blob, -1 ) ) ) );
 		add.Add( null );
 		add.Add( Tool( EffigyIcon.Primitive, "Import mesh...", "Bring in a Wavefront .obj as a body", () => AddFeature( NewFeature( ToolKind.Import, -1 ) ) ) );
@@ -122,7 +123,7 @@ public sealed partial class EffigyWindow
 		// Features that only a build script could add until the usability audit (2026-10-16).
 		mesh.Add( null );
 		mesh.Add( Tool( EffigyIcon.Sculpt, "Surface detail", "Skin grain, pustules, scattered bumps or pits, or sag folds over the selected body, kept to creases or ridges if you like. Needs enough mesh: subdivide first", () => AddFeature( NewFeature( ToolKind.SurfaceDetail, -1 ) ) ) );
-		mesh.Add( Tool( EffigyIcon.Sculpt, "Shape key", "Start a shape key (a morph: a sac swelling, a jaw gaping). Sculpt, edit or add detail after it, then add End shape key — what moved becomes the key and the body goes back. Exported with the model, animated in Marionette", () => AddFeature( NewFeature( ToolKind.ShapeKey, -1 ) ) ) );
+		mesh.Add( Tool( EffigyIcon.Sculpt, "Shape key", "Start a shape key (a morph: a sac swelling, a jaw gaping). Sculpt, edit or add detail after it, then add End shape key — what moved becomes the key and the body goes back. Exported with the model, animated in Marionette. The Shape Keys panel (View menu) does all of this for you", () => AddFeature( NewFeature( ToolKind.ShapeKey, -1 ) ) ) );
 		mesh.Add( Tool( EffigyIcon.Sculpt, "End shape key", "Finish the shape key opened by the last Shape key: everything since then becomes the key, and the body goes back to how it was", () => AddFeature( NewFeature( ToolKind.ShapeKeyEnd, -1 ) ) ) );
 
 		_objectMenus = new List<EffigyStage> { objectMenu, add, mesh };
@@ -468,5 +469,24 @@ public sealed partial class EffigyWindow
 			return;
 
 		MeshToolNamed( tool )?.Clicked?.Invoke();
+	}
+
+	/// <summary>
+	/// Fur from Model ▸ Add. The same Fur feature Clothing adds, but on a creature there is no
+	/// garment to fall back on, so with nothing picked it would add a feature that fails straight
+	/// away. Ask for the body instead, the way Subdivide does.
+	/// </summary>
+	private void AddCreatureFur()
+	{
+		var picked = _viewport is not null && (_viewport.IdleFaces.Count > 0 || _viewport.IdleBodyIds.Count > 0);
+		if ( !picked && !_studio.Bodies.Any( b => b.IsGarment ) )
+		{
+			SetPrompt( "Fur needs to know where to grow - click a part in the Parts list or in the "
+				+ "viewport (or pick faces), then press Fur again." );
+			Log.Info( "[Effigy] Fur needs a part selected - nothing was added." );
+			return;
+		}
+
+		AddFeature( NewFeature( ToolKind.Fur, -1 ) );
 	}
 }

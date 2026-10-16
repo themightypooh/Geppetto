@@ -90,6 +90,33 @@ public sealed class GarmentFeature : Feature
 
 	public readonly FloatParam Stiffness = new( "Stiffness", 0.8f, 0f, 1f );
 
+	/// <summary>
+	/// Which layer of an outfit it is: Base next to the skin, then Shirt, Jacket, Outer.
+	///
+	/// WHAT GOES OVER WHAT. A garment is fitted over every garment of a lower layer made before
+	/// it - its ease is measured over them, the way a tailor measures a jacket over a shirt - and
+	/// as live cloth it is kept outside them while it moves. Auto reads the garment: a bodysuit,
+	/// socks and gloves are Base, a leather top is a Jacket, everything else is a Shirt.
+	/// </summary>
+	public readonly ChoiceParam Layer = new( "Layer", LayerNames );
+
+	public static readonly string[] LayerNames = { "Auto", "Base", "Shirt", "Jacket", "Outer" };
+
+	/// <summary>The layer as a number, 0 Base to 3 Outer, with Auto worked out.</summary>
+	public int LayerValue => Layer.Index > 0
+		? Layer.Index - 1
+		: BuildRecipe().Name switch
+		{
+			"Bodysuit" or "Socks" or "Gloves" => 0,
+			"T-shirt" or "Long sleeve" or "Tank top" when FabricValue == Effigy.Fabric.Leather => 2,
+			"Beanie" => 3,
+			_ => 1,
+		};
+
+	/// <summary>The room this garment takes up under one worn over it, in inches: its own
+	/// thickness and the clearance it sits off what is under it. See GarmentFit.Options.Inner.</summary>
+	public float LayerAllowance => Thickness.Clamped + Clearance.Clamped;
+
 	public Effigy.Fabric FabricValue => Fabric.Index switch
 	{
 		1 => Effigy.Fabric.Denim,
@@ -132,7 +159,7 @@ public sealed class GarmentFeature : Feature
 	public override IReadOnlyList<IParam> Parameters => new IParam[]
 	{
 		Recipe, Bodies, Fit, FitTo, Length, Neckline, Sleeve, Sleeves, Flare, Puff, Cinch, Wrinkles,
-		Thickness, Drape, Fabric, Stiffness, Weights,
+		Thickness, Drape, Fabric, Stiffness, Layer, Weights,
 		Looseness, CinchReach, WrinkleScale, Clearance, DrapeSteps, PinTop, MaterialSlot,
 	};
 
@@ -140,6 +167,9 @@ public sealed class GarmentFeature : Feature
 	{
 		Looseness, CinchReach, WrinkleScale, Clearance, DrapeSteps, PinTop, MaterialSlot,
 	};
+
+	/// <summary>The room the last rebuild left for the garments under this one, in inches.</summary>
+	public float LastAllowance { get; private set; }
 
 	/// <summary>The slot the last rebuild put the garment on.</summary>
 	public int ResolvedSlot { get; private set; } = -1;
@@ -211,7 +241,16 @@ public sealed class GarmentFeature : Feature
 
 		// Hidden is a view. A jacket still has to clear a shirt that is hidden, or showing the
 		// shirt again reveals a garment that was fitted as if the shirt were not there.
-		var others = ctx.Bodies.Where( b => b.IsGarment ).Select( b => b.Mesh ).ToList();
+		//
+		// Not a garment of a HIGHER layer, though: a shirt made after the jacket that goes over it
+		// would be pushed out over the jacket. It is fitted as if the jacket were not there, and
+		// told to move up the tree so the jacket can be fitted over it.
+		var layer = LayerValue;
+		var earlier = ctx.Bodies.Where( b => b.IsGarment ).ToList();
+		var others = earlier.Where( b => b.Layer <= layer ).Select( b => b.Mesh ).ToList();
+		var inner = earlier.Where( b => b.Layer >= 0 && b.Layer < layer )
+			.Select( b => (b.Mesh, b.Layer, b.LayerAllowance) ).ToList();
+		var over = earlier.Where( b => b.Layer > layer ).Select( b => b.Name ).ToList();
 		var recipe = BuildRecipe();
 		var slot = MaterialSlot.Value >= 0
 			? MaterialSlot.Value
@@ -271,6 +310,7 @@ public sealed class GarmentFeature : Feature
 			// the chest - so it gets a longer leash than a garment lying on a skin.
 			Capsules = capsules,
 			Tether = capsules is null ? 0f : 6f,
+			Inner = inner,
 		}, others, cutRegions );
 
 		if ( result is null )
@@ -303,7 +343,23 @@ public sealed class GarmentFeature : Feature
 			ApplyWeights( ctx, result.Mesh, wearers );
 
 		ResolvedSlot = slot;
-		ctx.Bodies.Add( new Body( ctx.NewBodyId(), Name ?? recipe.Name, result.Mesh ) { IsGarment = true } );
+		LastAllowance = result.Allowance;
+		ctx.Bodies.Add( new Body( ctx.NewBodyId(), Name ?? recipe.Name, result.Mesh )
+		{
+			IsGarment = true,
+			Layer = layer,
+			LayerAllowance = preview ? Clearance.Clamped : LayerAllowance,
+		} );
+
+		if ( over.Count > 0 )
+		{
+			Warn(
+				$"{string.Join( ", ", over )} goes over this, but was made first",
+				$"This is a {LayerNames[layer + 1]} layer and {string.Join( ", ", over )} is worn over it, so it has to be fitted over this one - "
+				+ "and a garment is only fitted over the ones above it in the tree.",
+				"Drag this garment above it in the tree",
+				"Or set Layer on one of them" );
+		}
 
 		if ( result.SolidifyProblem is not null )
 		{

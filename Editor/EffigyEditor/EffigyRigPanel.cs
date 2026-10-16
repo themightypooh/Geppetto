@@ -190,7 +190,7 @@ internal sealed class EffigyRigPanel : Widget
 			Clicked = ToggleAssignBody,
 		};
 
-		_mirrorButton = new Button( "Mirror", "flip" )
+		_mirrorButton = new Button( "Mirror bones", "flip" )
 		{
 			ToolTip = "Mirror this bone (and everything under it) across Y=0 — this project's "
 				+ "left/right axis — onto the same parent it already hangs from.",

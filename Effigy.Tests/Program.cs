@@ -220,6 +220,7 @@ public static class Program
 		GarmentPosesTests.Run();
 		GarmentCutTests.Run();
 		ClothingTabTests.Run();
+		PaddingTests.Run();
 		FabricMaterialTests.Run();
 		GarmentDetailTests.Run();
 		FleshMaterialTests.Run( outDir );

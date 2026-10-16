@@ -480,6 +480,20 @@ public static class GarmentFit
 		/// <summary>How far off the body the garment sits, in model units (inches on the Citizen).</summary>
 		public float Offset = 0.4f;
 
+		/// <summary>
+		/// The garments worn UNDER this one, each with its layer and the room it takes up (its
+		/// thickness and the clearance it sits off what is under it). Null or empty fits on the
+		/// body alone, as before.
+		///
+		/// FITTED OVER THEM, NOT ONLY PUSHED OFF THEM. A jacket's ease is measured over a shirt -
+		/// a tailor takes the chest over a thin tee and adds four inches - so the jacket's offset is
+		/// the body's plus the stack under it: for each layer below, the biggest allowance of the
+		/// garments in that layer that actually lie under this one. Pushing out alone (what
+		/// otherGarments does, and still does) left a jacket the shirt's size wherever the shirt
+		/// was not in the way and dented it out wherever it was.
+		/// </summary>
+		public List<(PolyMesh Mesh, int Layer, float Allowance)> Inner;
+
 		/// <summary>The closest any part of the garment may come to any body, after collision.</summary>
 		public float Clearance = 0.15f;
 
@@ -582,6 +596,10 @@ public static class GarmentFit
 		public int DroppedInside;
 		public bool Solidified;
 		public string SolidifyProblem;
+
+		/// <summary>The room left for the garments under this one, in inches, added to the fit's
+		/// offset. 0 with nothing under it. See Options.Inner.</summary>
+		public float Allowance;
 	}
 
 	/// <summary>
@@ -825,7 +843,9 @@ public static class GarmentFit
 		// part - the body's on the body, a sleeve's on the sleeve. Given the body's ease everywhere
 		// first, a sleeve kept it (the hang only ever moves cloth out) and a size M's sleeve came
 		// out 16.7 inches round against a real one's 12.6.
-		var lift = recipe.Hangs ? o.Clearance : o.Offset;
+		var allowance = InnerAllowance( start, o.Inner );
+		result.Allowance = allowance;
+		var lift = (recipe.Hangs ? o.Clearance : o.Offset) + allowance;
 
 		for ( var i = 0; i < garment.VertexCount; i++ )
 			garment.Positions[i] = start[i] + normals[i] * (lift + o.Flare * flare[i]);
@@ -836,16 +856,16 @@ public static class GarmentFit
 
 		if ( recipe.Hangs )
 		{
-			resting = HangTorso( garment, start, normals, wearers, map, o.Offset, wearerRegions, extended );
+			resting = HangTorso( garment, start, normals, wearers, map, o.Offset + allowance, wearerRegions, extended );
 
 			foreach ( var side in new[] { 1, -1 } )
-				if ( HangSleeve( garment, start, wearers, map, side, o.Offset, wearerRegions ) is { } top )
+				if ( HangSleeve( garment, start, wearers, map, side, o.Offset + allowance, wearerRegions ) is { } top )
 					resting?.AddRange( top );
 		}
 
 		// 2. Collision against every body, with a relax between passes so a push does not leave a dent.
 		var neighbours = Neighbours( garment );
-		var reach = o.Offset + o.Flare + o.Clearance + 2f;
+		var reach = o.Offset + allowance + o.Flare + o.Clearance + 2f;
 
 		for ( var pass = 0; pass < Math.Max( 1, o.Passes ); pass++ )
 		{
@@ -906,6 +926,46 @@ public static class GarmentFit
 
 		result.Mesh = garment;
 		return result;
+	}
+
+	/// <summary>
+	/// The room the garments under this one take up, in inches: per layer below, the biggest
+	/// allowance among that layer's garments that lie under this one, summed over the layers. A
+	/// garment lies under this one when a quarter or more of this one's skin points have it within
+	/// three inches - so trousers do not make a jacket bigger round the chest, and a loose shirt
+	/// (which stands an inch or two off the skin) still counts.
+	/// </summary>
+	public static float InnerAllowance( IReadOnlyList<Vec3> skinPoints, IReadOnlyList<(PolyMesh Mesh, int Layer, float Allowance)> inner )
+	{
+		if ( inner is null || inner.Count == 0 || skinPoints.Count == 0 )
+			return 0f;
+
+		var perLayer = new Dictionary<int, float>();
+		var stride = Math.Max( 1, skinPoints.Count / 400 );
+
+		foreach ( var (mesh, layer, allowance) in inner )
+		{
+			if ( mesh is null || mesh.FaceCount == 0 || allowance <= 0f )
+				continue;
+
+			var tree = MeshBVH.Build( mesh );
+			int tried = 0, under = 0;
+
+			for ( var i = 0; i < skinPoints.Count; i += stride )
+			{
+				tried++;
+
+				if ( tree.NearestSurface( mesh, skinPoints[i], 3f ) is not null )
+					under++;
+			}
+
+			if ( under * 4 < tried )
+				continue;
+
+			perLayer[layer] = MathF.Max( perLayer.GetValueOrDefault( layer ), allowance );
+		}
+
+		return perLayer.Values.Sum();
 	}
 
 	/// <summary>
