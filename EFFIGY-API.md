@@ -146,7 +146,7 @@ sketch built that way follows the face when the part changes.
 | Feature | Parameters |
 |---|---|
 | `PrimitiveFeature` | `Shape.Index`: `0` Box, `1` Cylinder, `2` Sphere, `3` Wedge, `4` Tube, `5` Plane. Box/Wedge use `SizeX/Y/Z`; Cylinder `Radius`, `SizeZ`, `Segments`; Sphere `Radius`, `Divisions`; Tube adds `InnerRadius`; Plane `SizeX/Y`, `Segments`. All take `Position`, `Scale`, `RotationAxis`, `RotationAngle`, `Material`. |
-| `ImportFeature` | A Wavefront OBJ as bodies. `BindSource( path )` reads it and keeps the bytes, so a rebuild doesn't need the file to still exist. FBX and GLB are refused. |
+| `ImportFeature` | A Wavefront OBJ or an FBX (binary, or ASCII 7.x) as bodies, one per OBJ object or FBX mesh. `BindSource( path )` reads it and keeps the bytes, so a rebuild doesn't need the file to still exist. FBX meshes keep node placement, unit scale (to inches), up axis (to Z), UVs, vertex colours and material slots (`SourceMaterialNames`); skin weights land by bone name on the document's rig, and `ImportFeature.InstallSkeleton( studio, import, out msg )` makes the file's skeleton the rig when there is none (the editor and `add Import source=…` do this on pick). GLB/glTF is refused with a remedy. Conversion lives in `FbxImport.Read( bytes )`. |
 | `PartFeature` | A kitbash part: `Part.Index` over Cog, Bolt, Hex bolt, Rivet, Knob, Hinge, Panel, Pipe elbow, Strap, Buckle. `Size`, `Length`, `Thickness`, `Count`, `Angle` mean different things per part (table below). `Position`, `RotationAxis`, `RotationAngle`. |
 | `ProfileFeature` | A body from outlines (see below). |
 | `SplineFeature` | A 3D path through `Points` (a `List<Vec3>` field). `Tube` makes it a solid pipe with `Radius`, `Taper`, `Sides`, `Twist`. `Closed`, `Smooth`, `Resolution`. |
