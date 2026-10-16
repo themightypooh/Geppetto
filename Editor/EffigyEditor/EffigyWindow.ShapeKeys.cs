@@ -27,6 +27,8 @@ public sealed partial class EffigyWindow
 		_shapeKeysPanel = new EffigyShapeKeysPanel( this )
 		{
 			AddClicked = AddShapeKey,
+			CorrectiveClicked = AddCorrectiveShapeKey,
+			DrivenByClicked = EditShapeKeyDriver,
 			FinishClicked = FinishShapeKey,
 			RemoveClicked = RemoveShapeKey,
 			EditClicked = EditShapeKey,
@@ -49,8 +51,9 @@ public sealed partial class EffigyWindow
 		return _studio.Bodies.Count == 1 ? _studio.Bodies[0] : null;
 	}
 
-	/// <summary>Each Shape Key on the body, with the End Shape Key that closes it (null while recording).</summary>
-	private List<(ShapeKeyFeature Start, ShapeKeyEndFeature End)> ShapeKeyRuns( Body body ) =>
+	/// <summary>Each Shape Key or Corrective Shape Key on the body, with the End Shape Key that
+	/// closes it (null while recording).</summary>
+	private List<(IShapeKeyStart Start, ShapeKeyEndFeature End)> ShapeKeyRuns( Body body ) =>
 		ShapeKeyEdit.Runs( _studio, body ).Select( r => (r.Start, r.End) ).ToList();
 
 	private void RefreshShapeKeys()
@@ -72,19 +75,26 @@ public sealed partial class EffigyWindow
 		var editing = ShapeKeyEdit.Editing( _studio, body )?.Start;
 
 		foreach ( var (start, end) in ShapeKeyRuns( body ) )
-			rows.Add( new( start.KeyName, start.Id, end is null, Weight( body, start.KeyName ), ReferenceEquals( start, editing ) ) );
+		{
+			// A corrective that ran shows the angle its test pose measured, not the field's default.
+			var driver = start is CorrectiveShapeKeyFeature { Measured: { } measured } ? measured : start.Driver;
+			rows.Add( new( start.KeyName, ((Feature)start).Id, end is null, Weight( body, start.KeyName ),
+				Editing: ReferenceEquals( start, editing ), Driver: driver?.Describe(), Corrective: start is CorrectiveShapeKeyFeature ) );
+		}
 
 		// Keys that came in with the mesh (an imported model's morphs) rather than from this history.
 		foreach ( var morph in body.Mesh?.ValidMorphs ?? Enumerable.Empty<MeshMorph>() )
 		{
 			if ( rows.All( r => r.Name != morph.Name ) )
-				rows.Add( new( morph.Name, null, false, Weight( body, morph.Name ) ) );
+				rows.Add( new( morph.Name, null, false, Weight( body, morph.Name ), Driver: morph.Driver?.Describe() ) );
 		}
 
 		var recording = rows.FirstOrDefault( r => r.Recording );
 		var edited = rows.FirstOrDefault( r => r.Editing );
 		var status = recording.Name is not null
-			? $"Recording '{recording.Name}'. Sculpt, edit or add detail, then press Finish key."
+			? recording.Corrective
+				? $"Recording corrective '{recording.Name}'. The body is shown posed: sculpt the fix, then press Finish key."
+				: $"Recording '{recording.Name}'. Sculpt, edit or add detail, then press Finish key."
 			: edited.Name is not null
 			? $"Editing '{edited.Name}'. The model shows it fully on; what you sculpt now is added to it. Press Finish key when done."
 			: rows.Count == 0 ? "No shape keys yet. + New key starts one and opens Sculpt." : null;
@@ -141,6 +151,81 @@ public sealed partial class EffigyWindow
 		}
 
 		SetPrompt( $"Recording '{key.KeyName}': sculpt the shape, then press Finish key in Shape Keys." );
+	}
+
+	/// <summary>
+	/// + Corrective…: a Corrective Shape Key on the body, driven by the bone selected in the rig, and
+	/// a Sculpt below it so you are straight into fixing the posed joint. With no bone selected the
+	/// key's settings open instead, with Driven by bone marked - pick it there.
+	/// </summary>
+	private void AddCorrectiveShapeKey()
+	{
+		var body = ShapeKeyBody();
+
+		if ( body is null )
+		{
+			Refuse( "Click the body the corrective is for, then press + Corrective…." );
+			return;
+		}
+
+		if ( _studio.Rig is not { Count: > 0 } )
+		{
+			Refuse( "A corrective is sculpted in a pose and driven by a bone, and this part has no bones. Place them in the Rig workspace first." );
+			return;
+		}
+
+		if ( ShapeKeyRuns( body ).Any( r => r.End is null ) )
+		{
+			Refuse( "A key is already recording on this body. Press Finish key first: keys are recorded one at a time." );
+			return;
+		}
+
+		var taken = new HashSet<string>( ShapeKeyRuns( body ).Select( r => r.Start.KeyName ) );
+		var n = 1;
+		while ( taken.Contains( $"fix_{n}" ) )
+			n++;
+
+		var bone = _rigPanel is { HasSelectedBone: true } rig ? rig.SelectedBoneName : "";
+		var key = new CorrectiveShapeKeyFeature { Name = $"Corrective {n}" };
+		key.Key.Value = $"fix_{n}";
+		key.Bone.Value = bone ?? "";
+		key.Bodies.BodyIds.Add( body.Id );
+
+		RecordUndo();
+		InsertAtRollback( key );
+
+		if ( string.IsNullOrEmpty( bone ) )
+		{
+			RebuildStudio();
+			EditFeature( key );
+			_dialog?.ShowAdvanced();
+			SetPrompt( "Pick the bone whose angle fades the corrective in (Driven by bone), and the angle where the joint looks wrong (Target)." );
+			return;
+		}
+
+		if ( NewFeature( ToolKind.Sculpt, -1 ) is SculptFeature sculpt )
+		{
+			sculpt.Bodies.BodyIds.Clear();
+			sculpt.Bodies.BodyIds.Add( body.Id );
+			AddFeature( sculpt );
+		}
+		else
+		{
+			RebuildStudio();
+		}
+
+		SetPrompt( $"Recording corrective '{key.KeyName}': {bone} is turned {key.TargetAngle.Value:0.#}°. Sculpt the fix, then press Finish key. Change the pose in the key's settings." );
+	}
+
+	/// <summary>Driven by…: the key's settings, opened on its driver fields.</summary>
+	private void EditShapeKeyDriver( string startId )
+	{
+		if ( _studio.Features.FirstOrDefault( f => f.Id == startId ) is not { } feature || feature is not IShapeKeyStart )
+			return;
+
+		EditFeature( feature );
+		_dialog?.ShowAdvanced();
+		SetPrompt( "Driven by: the bone whose angle sets this key, the axis it turns about, and the angles where the key is off (Rest) and fully on (Target)." );
 	}
 
 	private void FinishShapeKey()
@@ -268,7 +353,7 @@ public sealed partial class EffigyWindow
 		for ( var j = from + 1; j < _studio.Features.Count; j++ )
 		{
 			if ( _studio.Features[j] is ShapeKeyEndFeature ) { to = j; break; }
-			if ( _studio.Features[j] is ShapeKeyFeature ) { to = j - 1; break; }
+			if ( _studio.Features[j] is IShapeKeyStart ) { to = j - 1; break; }
 		}
 
 		if ( _dialog?.Feature is { } editing && _studio.Features.IndexOf( editing ) is var at && at >= from && at <= to )
@@ -286,7 +371,7 @@ public sealed partial class EffigyWindow
 
 	private void RenameShapeKey( string startId, string name )
 	{
-		if ( _studio.Features.FirstOrDefault( f => f.Id == startId ) is not ShapeKeyFeature key )
+		if ( _studio.Features.FirstOrDefault( f => f.Id == startId ) is not IShapeKeyStart key )
 			return;
 
 		var clean = string.Join( "_", name.Replace( "\"", "" ).Split( ' ', StringSplitOptions.RemoveEmptyEntries ) );
@@ -295,7 +380,7 @@ public sealed partial class EffigyWindow
 			return;
 
 		RecordUndo();
-		key.Key.Value = clean;
+		key.KeyNameParam.Value = clean;
 		RebuildStudio();
 	}
 

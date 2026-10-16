@@ -221,8 +221,11 @@ internal sealed class RigEventProperties : Widget
 		header.Add( new Editor.Label( "Morph Curves" ) { Enabled = false }, 1 );
 
 		var model = _asset.SourceModel;
+		var drivers = _asset.RigAsset?.MorphDrivers?.Where( d => d is not null && d.Enabled && !string.IsNullOrWhiteSpace( d.Morph ) ).ToList()
+			?? new System.Collections.Generic.List<RigMorphDriver>();
 		var names = (model is null ? Enumerable.Empty<string>() : Enumerable.Range( 0, model.MorphCount ).Select( model.GetMorphName ))
 			.Concat( _asset.MorphTracks.Select( t => t.BoneName ) )
+			.Concat( drivers.Select( d => d.Morph ) )
 			.Where( n => !string.IsNullOrWhiteSpace( n ) )
 			.Distinct()
 			.ToList();
@@ -236,6 +239,22 @@ internal sealed class RigEventProperties : Widget
 		foreach ( var name in names )
 		{
 			var morph = name;
+
+			// Driven by the rig (a corrective): its weight comes from a bone's angle every frame, so
+			// it is shown, not keyed here. A key would override the driver on its frames.
+			if ( drivers.Where( d => d.Morph == morph ).ToList() is { Count: > 0 } drivenBy )
+			{
+				var drivenRow = _detail.Layout.AddRow();
+				drivenRow.Add( new Editor.Label( morph ), 1 );
+				drivenRow.Add( new Editor.Label( "driven by " + string.Join( " × ", drivenBy.Select( d => d.Describe() ) ) )
+				{
+					Enabled = false,
+					ToolTip = "This morph's weight is set by the rig's Morph Drivers from a bone's angle, in this viewport, in game and in the "
+						+ "export. Change the driver on the Control Rig asset (Correctives); keys here would override it.",
+				} );
+				continue;
+			}
+
 			var row = _detail.Layout.AddRow();
 			var frame = (int)MathF.Round( Playhead?.Invoke() ?? 0f );
 			var current = _asset.FindMorphTrack( morph ) is { Keyframes.Count: > 0 } track ? track.Evaluate( frame ).Scale.x : 0f;

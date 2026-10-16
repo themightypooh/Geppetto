@@ -1325,6 +1325,7 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 			bone => _anim.IkWeightAt( bone, frame ) );
 
 		_anim.MorphWeightsAt( frame, _morphScratch );
+		_viewport.AddDrivenMorphs( _morphScratch );
 		_viewport.ApplyMorphs( _morphScratch );
 		_viewport.ShowCameraFrame( _anim, frame );
 		_viewport.UpdateOnionSkin( _anim, frame );

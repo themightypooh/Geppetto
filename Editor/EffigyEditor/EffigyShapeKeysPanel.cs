@@ -21,9 +21,14 @@ internal sealed class EffigyShapeKeysPanel : Widget
 	/// <summary>One key. StartId is the Shape Key feature's id, null for a key that came in with the
 	/// mesh (an import) rather than from this document's history — those can be previewed only.
 	/// Editing: a finished key re-opened with Edit, so new sculpting goes into it.</summary>
-	public readonly record struct KeyRow( string Name, string StartId, bool Recording, float Weight, bool Editing = false );
+	/// <param name="Driver">What drives the key ("thigh_L rotation about Y, 0° → -85°"), or null when
+	/// it is keyed by hand only.</param>
+	/// <param name="Corrective">Sculpted in a pose (Corrective Shape Key) rather than at rest.</param>
+	public readonly record struct KeyRow( string Name, string StartId, bool Recording, float Weight, bool Editing = false, string Driver = null, bool Corrective = false );
 
 	public Action AddClicked { get; set; }
+	public Action CorrectiveClicked { get; set; }
+	public Action<string> DrivenByClicked { get; set; }
 	public Action FinishClicked { get; set; }
 	public Action<string> RemoveClicked { get; set; }
 	public Action<string> EditClicked { get; set; }
@@ -33,6 +38,7 @@ internal sealed class EffigyShapeKeysPanel : Widget
 	private readonly Editor.Label _title;
 	private readonly Editor.Label _status;
 	private readonly Button _add;
+	private readonly Button _corrective;
 	private readonly Button _finish;
 	private readonly Widget _list;
 
@@ -54,6 +60,14 @@ internal sealed class EffigyShapeKeysPanel : Widget
 		};
 		_add.Clicked = () => AddClicked?.Invoke();
 		header.Add( _add );
+
+		_corrective = new Button( "+ Corrective…", this )
+		{
+			ToolTip = "Fix how a joint bends: the body is posed with the selected bone turned, you sculpt the fix there, "
+				+ "and the key fades in by itself whenever the joint bends that far, in Marionette and in game",
+		};
+		_corrective.Clicked = () => CorrectiveClicked?.Invoke();
+		header.Add( _corrective );
 
 		_finish = new Button( "Finish key", this )
 		{
@@ -90,12 +104,29 @@ internal sealed class EffigyShapeKeysPanel : Widget
 		_status.Visible = !string.IsNullOrEmpty( status );
 		_add.Visible = !recording;
 		_add.Enabled = canAdd;
+		_corrective.Visible = !recording;
+		_corrective.Enabled = canAdd;
 		_finish.Visible = recording;
 
 		_list.Layout.Clear( true );
 
 		foreach ( var key in rows )
+		{
 			_list.Layout.Add( BuildRow( key ) );
+
+			// What drives it, read-only, under the row: the slider still previews by hand.
+			if ( key.Driver is { } driver )
+			{
+				_list.Layout.Add( new Editor.Label( $"   ↳ driven by {driver}" )
+				{
+					WordWrap = true,
+					Color = Theme.TextControl.WithAlpha( 0.6f ),
+					ToolTip = key.Corrective
+						? "A corrective: sculpted in this pose, and set by the bone's angle in Marionette, in game and in exported clips"
+						: "Set by the bone's angle in Marionette, in game and in exported clips",
+				} );
+			}
+		}
 	}
 
 	private Widget BuildRow( KeyRow key )
@@ -157,6 +188,17 @@ internal sealed class EffigyShapeKeysPanel : Widget
 					+ "is added to it. Press Finish key when you are done",
 				IconSize = 16,
 				Background = Color.Transparent,
+			} );
+		}
+
+		if ( key.StartId is { } driveId && !key.Recording )
+		{
+			row.Layout.Add( new Button( "Driven by…", row )
+			{
+				ToolTip = key.Corrective
+					? "Change the bone, axis and angles that fade this corrective in"
+					: "Have a bone's angle set this key: pick the bone, the axis it turns about, and the angles where the key is off and fully on",
+				Clicked = () => DrivenByClicked?.Invoke( driveId ),
 			} );
 		}
 

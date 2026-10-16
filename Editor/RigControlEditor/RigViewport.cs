@@ -2474,6 +2474,9 @@ internal sealed partial class RigViewport : Widget
 				if ( !dragged )
 					ApplyWorldTransform( bone, resolved[bone.Key] );
 			}
+
+			// What the rig's morph drivers read this frame - see RigViewport.Drivers.cs.
+			_poseWorlds = resolved;
 		}
 		finally
 		{

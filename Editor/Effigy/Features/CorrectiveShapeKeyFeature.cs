@@ -77,7 +77,7 @@ public static class ShapeKeyDriver
 /// bone turned to Target - or into one of the garment test poses (Sit, Crouch, …), measuring the
 /// angle from it - and opens a key. Everything until End Shape Key shapes the POSED body: a Stroke,
 /// Surface Detail, a Sculpt, a move. End Shape Key carries every sculpted vertex back to the bind
-/// pose through the inverse of its own skinning (<see cref="CorrectiveShape"/>), stores that as the
+/// pose through the inverse of its own skinning (<see cref="PoseSpaceCorrective"/>), stores that as the
 /// key, and puts the body back at bind. The key goes out with its driver: the DMX bake writes the
 /// driven weight on every frame of a clip, and the exported .ctrlrig tells Marionette's player to
 /// set it live.
@@ -166,7 +166,7 @@ public sealed class CorrectiveShapeKeyFeature : Feature, IShapeKeyStart
 			if ( MathF.Abs( driver.Target - driver.Rest ) < 1e-3f )
 				FailOn( TargetAngle.Label, "Rest and Target are the same angle", "The key is sculpted at Target and is off at Rest, so they must differ.", "Set Target to the angle where the joint looks wrong, e.g. 90" );
 
-			posed = CorrectiveShape.PosedFor( rig, driver );
+			posed = PoseSpaceCorrective.PosedFor( rig, driver );
 		}
 		else
 		{
@@ -178,8 +178,8 @@ public sealed class CorrectiveShapeKeyFeature : Feature, IShapeKeyStart
 
 			if ( driver.Channel == DriverChannel.Distance )
 			{
-				var bind = CorrectiveShape.World( rig );
-				var world = CorrectiveShape.World( posed );
+				var bind = PoseSpaceCorrective.World( rig );
+				var world = PoseSpaceCorrective.World( posed );
 				var other = rig.IndexOf( driver.OtherBone );
 
 				if ( other < 0 )
@@ -191,7 +191,7 @@ public sealed class CorrectiveShapeKeyFeature : Feature, IShapeKeyStart
 			}
 			else
 			{
-				var measured = CorrectiveShape.Measure( rig, posed, driver.Bone, name );
+				var measured = PoseSpaceCorrective.Measure( rig, posed, driver.Bone, name );
 
 				if ( measured is null )
 					FailOn( Bone.Label, $"{driver.Bone} does not turn in the {pose.Name} pose", "The key's weight is read off this bone, so it must move between bind and the pose.", "Pick a bone the pose bends (a thigh for Sit), or use Bone at target" );
@@ -204,8 +204,8 @@ public sealed class CorrectiveShapeKeyFeature : Feature, IShapeKeyStart
 		}
 
 		Measured = driver;
-		var bindWorld = CorrectiveShape.World( rig );
-		var poseWorld = CorrectiveShape.World( posed );
+		var bindWorld = PoseSpaceCorrective.World( rig );
+		var poseWorld = PoseSpaceCorrective.World( posed );
 
 		foreach ( var body in RequireBodies( ctx, Bodies ) )
 		{
@@ -222,7 +222,7 @@ public sealed class CorrectiveShapeKeyFeature : Feature, IShapeKeyStart
 			// Its own weights when it has them; otherwise the smooth bind the export and Test start
 			// from. Weights painted later than this are not seen by the un-skin.
 			var weights = mesh.IsRigged ? mesh.Skin : SkinBinder.BindSmooth( mesh, rig );
-			var result = CorrectiveShape.Pose( mesh.Positions, weights, bindWorld, poseWorld );
+			var result = PoseSpaceCorrective.Pose( mesh.Positions, weights, bindWorld, poseWorld );
 			var bindPositions = mesh.Positions.ToArray();
 
 			for ( var i = 0; i < result.Posed.Length; i++ )

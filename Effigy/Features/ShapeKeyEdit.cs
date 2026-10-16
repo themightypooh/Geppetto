@@ -21,7 +21,7 @@ namespace Effigy;
 public static class ShapeKeyEdit
 {
 	/// <summary>One key in the history. End is null, and EndIndex -1, while it is still being recorded.</summary>
-	public readonly record struct Run( ShapeKeyFeature Start, ShapeKeyEndFeature End, int StartIndex, int EndIndex )
+	public readonly record struct Run( IShapeKeyStart Start, ShapeKeyEndFeature End, int StartIndex, int EndIndex )
 	{
 		public bool Finished => End is not null;
 	}
@@ -37,7 +37,7 @@ public static class ShapeKeyEdit
 
 		for ( var i = 0; i < features.Count; i++ )
 		{
-			if ( features[i] is not ShapeKeyFeature start || (body is not null && !start.Bodies.Matches( body )) )
+			if ( features[i] is not IShapeKeyStart start || (body is not null && !start.KeyBodies.Matches( body )) )
 				continue;
 
 			var end = -1;
@@ -45,7 +45,7 @@ public static class ShapeKeyEdit
 			for ( var j = i + 1; j < features.Count; j++ )
 			{
 				if ( features[j] is ShapeKeyEndFeature ) { end = j; break; }
-				if ( features[j] is ShapeKeyFeature ) break;
+				if ( features[j] is IShapeKeyStart ) break;
 			}
 
 			runs.Add( new( start, end < 0 ? null : (ShapeKeyEndFeature)features[end], i, end ) );
@@ -106,7 +106,7 @@ public static class ShapeKeyEdit
 
 	/// <summary>Stop editing a reopened key: the bar goes back to the end and the key's End runs
 	/// again. Returns the key that was being edited, or null when none was.</summary>
-	public static ShapeKeyFeature Close( PartStudio studio )
+	public static IShapeKeyStart Close( PartStudio studio )
 	{
 		if ( Editing( studio ) is not { } run )
 			return null;
@@ -136,7 +136,7 @@ public static class ShapeKeyEdit
 	}
 
 	/// <inheritdoc cref="AddToKey(PartStudio, string, Feature, out string)"/>
-	public static bool AddToKey( PartStudio studio, ShapeKeyFeature start, Feature feature, out string why )
+	public static bool AddToKey( PartStudio studio, IShapeKeyStart start, Feature feature, out string why )
 	{
 		why = null;
 
@@ -146,7 +146,7 @@ public static class ShapeKeyEdit
 			return false;
 		}
 
-		if ( feature is ShapeKeyFeature or ShapeKeyEndFeature )
+		if ( feature is IShapeKeyStart or ShapeKeyEndFeature )
 		{
 			why = "A shape key cannot hold another Shape Key or End Shape Key. Add the sculpt, stroke or detail that shapes it.";
 			return false;

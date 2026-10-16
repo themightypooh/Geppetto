@@ -403,6 +403,10 @@ internal sealed class EffigyFeatureDialog : Widget
 	/// <summary>The Advanced header, kept so a diagnostic can unfold it — see RefreshState.</summary>
 	private EffigyDisclosure _advancedHeader;
 
+	/// <summary>Unfold the Advanced rows of the feature open now - where a shape key keeps its
+	/// Driven by fields. No-op when the feature has none.</summary>
+	public void ShowAdvanced() => _advancedHeader?.SetOpen( true );
+
 	public Feature Feature => _feature;
 	public bool IsOpen => _feature is not null;
 

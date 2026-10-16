@@ -22,7 +22,7 @@ namespace Effigy;
 /// research-sitting.md §8.4 is the first use: pose the wearer seated, drape the trousers there, and
 /// <see cref="SeatedGarment"/> turns the drape into one corrective per thigh.
 /// </summary>
-public static class CorrectiveShape
+public static class PoseSpaceCorrective
 {
 	/// <summary>Posed positions and the per-vertex un-skin matrices for one pose.</summary>
 	public sealed class Result

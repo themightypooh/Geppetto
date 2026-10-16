@@ -7636,7 +7636,14 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			// against. A clip sampled against the unpivoted rig would pose the model correctly
 			// relative to bones that had since moved, which is a whole-model offset that only
 			// appears once the clip plays.
-			var clips = EffigyAnimExport.WriteClips( _animClips, folder, "models/effigy", skeleton, out var skippedClips );
+			// Driven shape keys (Corrective Shape Key): their drivers go into the model's .ctrlrig for
+			// Marionette's player, and are baked into every clip's flex channels below.
+			var drivers = MorphDriver.FromMesh( mesh );
+
+			if ( MorphDriver.WriteRigFile( Path.Combine( folder, $"{name}.ctrlrig" ), drivers, $"models/effigy/{name}.vmdl" ) )
+				Log.Info( $"[Effigy] wrote {drivers.Count} morph driver(s) into {name}.ctrlrig" );
+
+			var clips = EffigyAnimExport.WriteClips( _animClips, folder, "models/effigy", skeleton, out var skippedClips, drivers );
 
 			var vmdlPath = Path.Combine( folder, $"{name}.vmdl" );
 			var skinnedPhysics = BuildPhysics( rigged: true );

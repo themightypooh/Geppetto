@@ -140,8 +140,8 @@ internal static class EffigyAnimExport
 	/// one that says so.
 	/// </summary>
 	public static AnimClip ToClip( RigAnimDocument doc, Skeleton skeleton, string name,
-		bool looping, out int matched, out List<string> unmatched ) =>
-		ToClip( doc, skeleton, name, looping, RigTrackName.RootSubject, out matched, out unmatched );
+		bool looping, out int matched, out List<string> unmatched, IReadOnlyList<MorphDriver> extraDrivers = null ) =>
+		ToClip( doc, skeleton, name, looping, RigTrackName.RootSubject, out matched, out unmatched, extraDrivers );
 
 	/// <summary>
 	/// The clip as above, for one object in it: the main model (<paramref name="subject"/> empty),
@@ -155,8 +155,10 @@ internal static class EffigyAnimExport
 	/// then each live constraint toward its goal - by the kernel's ChainIk, so the exported motion is
 	/// the motion the viewport showed. A prop's skeleton has no goals; goals are the main model's.
 	/// </summary>
+	/// <param name="extraDrivers">Morph drivers beyond the rig's own - the model's Corrective Shape
+	/// Keys, when Effigy exports it. One on the same morph as a rig driver replaces it.</param>
 	public static AnimClip ToClip( RigAnimDocument doc, Skeleton skeleton, string name,
-		bool looping, string subject, out int matched, out List<string> unmatched )
+		bool looping, string subject, out int matched, out List<string> unmatched, IReadOnlyList<MorphDriver> extraDrivers = null )
 	{
 		if ( doc is null )
 			throw new ArgumentNullException( nameof( doc ) );
@@ -205,6 +207,11 @@ internal static class EffigyAnimExport
 		var limits = prefix is null ? Limits( doc ) : null;
 		var morphs = new Dictionary<string, float>();
 
+		// Correctives: each driven morph's weight read off this frame's pose and written as a flex
+		// channel, so the compiled model plays the fix with no driver running in game.
+		var drivers = prefix is null ? Drivers( doc, extraDrivers ) : null;
+		var driven = new Dictionary<string, float>();
+
 		// A single-frame clip is a pose, and the writer accepts one: N frames span N-1 intervals,
 		// so one frame is a zero-length clip rather than an error.
 		for ( var f = 0; f <= span; f++ )
@@ -242,6 +249,16 @@ internal static class EffigyAnimExport
 			if ( prefix is null )
 			{
 				doc.MorphWeightsAt( f, morphs );
+
+				// The clip's own keys and events win on a morph they name, as the player layers them.
+				if ( drivers is not null )
+				{
+					MorphDriver.WeightsAt( drivers, skeleton, pose, driven );
+
+					foreach ( var (morph, value) in driven )
+						morphs.TryAdd( morph, value );
+				}
+
 				clip.SetMorphs( morphs );
 			}
 		}
@@ -276,6 +293,35 @@ internal static class EffigyAnimExport
 			.ToList();
 
 		return live.Count > 0 ? live : null;
+	}
+
+	/// <summary>The rig's morph drivers as the kernel's MorphDriver, plus <paramref name="extra"/>
+	/// (replacing a rig driver on the same morph) - null when there are none.</summary>
+	public static List<MorphDriver> Drivers( RigAnimDocument doc, IReadOnlyList<MorphDriver> extra = null )
+	{
+		var list = (doc?.RigAsset?.MorphDrivers ?? new List<RigMorphDriver>())
+			.Where( d => d is not null && d.Enabled && !string.IsNullOrWhiteSpace( d.Morph ) )
+			.Where( d => extra is null || extra.All( e => e.Morph != d.Morph ) )
+			.Select( d => new MorphDriver
+			{
+				Morph = d.Morph,
+				Bone = d.Bone,
+				Channel = (DriverChannel)(int)d.Channel,
+				Axis = (DriverAxis)(int)d.Axis,
+				OtherBone = d.OtherBone ?? "",
+				Rest = d.Rest,
+				Target = d.Target,
+				Ease = (RigEase)(int)d.Interpolation,
+				Clamp = d.Clamp,
+				Value = d.Value,
+				Enabled = true,
+			} )
+			.ToList();
+
+		if ( extra is not null )
+			list.AddRange( extra.Where( e => e is not null && e.Enabled ) );
+
+		return list.Count > 0 ? list : null;
 	}
 
 	/// <summary>The rig's Limit constraints as the kernel's RigLimit - null when it has none, which
@@ -342,8 +388,10 @@ internal static class EffigyAnimExport
 	/// <param name="skipped">Each clip left out, as "name (why)" - so the window can say
 	/// "Compiled, but 2 clips were left out" instead of a plain "Compiled" over a model that is
 	/// missing its walk.</param>
+	/// <param name="drivers">The model's own morph drivers (Corrective Shape Keys), baked into every
+	/// clip's flex channels beside the rig's. See ToClip.</param>
 	public static List<VmdlAnimation.ClipEntry> WriteClips( IEnumerable<ClipSource> sources,
-		string folder, string assetPrefix, Skeleton skeleton, out List<string> skipped )
+		string folder, string assetPrefix, Skeleton skeleton, out List<string> skipped, IReadOnlyList<MorphDriver> drivers = null )
 	{
 		var entries = new List<VmdlAnimation.ClipEntry>();
 		skipped = new List<string>();
@@ -388,7 +436,7 @@ internal static class EffigyAnimExport
 
 			try
 			{
-				clip = ToClip( doc, skeleton, name, source.Looping, out matched, out unmatched );
+				clip = ToClip( doc, skeleton, name, source.Looping, out matched, out unmatched, drivers );
 			}
 			catch ( Exception e )
 			{

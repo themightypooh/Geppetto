@@ -128,6 +128,7 @@ public sealed partial class EffigyWindow
 		mesh.Add( null );
 		mesh.Add( Tool( EffigyIcon.Sculpt, "Surface detail", "Skin grain, pustules, scattered bumps or pits, or sag folds over the selected body, kept to creases or ridges if you like. Needs enough mesh: subdivide first", () => AddFeature( NewFeature( ToolKind.SurfaceDetail, -1 ) ) ) );
 		mesh.Add( Tool( EffigyIcon.Sculpt, "Shape key", "Start a shape key (a morph: a sac swelling, a jaw gaping). Sculpt, edit or add detail after it, then add End shape key — what moved becomes the key and the body goes back. Exported with the model, animated in Marionette. The Shape Keys panel (View menu) does all of this for you", () => AddFeature( NewFeature( ToolKind.ShapeKey, -1 ) ) ) );
+		mesh.Add( Tool( EffigyIcon.Sculpt, "Corrective shape key", "Fix how a joint bends: the body is posed with the selected bone turned, you sculpt the fix there, and the key fades in by itself whenever the joint bends that far — in Marionette, in game and in exported clips", AddCorrectiveShapeKey ) );
 		mesh.Add( Tool( EffigyIcon.Sculpt, "End shape key", "Finish the shape key opened by the last Shape key: everything since then becomes the key, and the body goes back to how it was", () => AddFeature( NewFeature( ToolKind.ShapeKeyEnd, -1 ) ) ) );
 		mesh.Add( Tool( EffigyIcon.Sculpt, "Edit shape key", "Sculpt more into a finished shape key on the selected body. The model shows the key fully on and what you sculpt is added to it; press Finish key in Shape Keys when done", EditShapeKeyFromMenu ) );
 

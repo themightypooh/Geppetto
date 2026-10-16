@@ -64,11 +64,11 @@ public sealed class ShapeKeyFeature : Feature, IShapeKeyStart
 		// A Shape Key reused from the cache is not re-run, so it would keep the warning an earlier
 		// rebuild gave it (open while its key was being recorded) after its End is added. Executing
 		// one never warns, so a warning on it is always this one: clear it and decide afresh.
-		foreach ( var stale in evaluated.OfType<ShapeKeyFeature>().Where( k => k._warnedUnclosed ) )
+		foreach ( var stale in evaluated.Where( k => k is IShapeKeyStart && WarnedUnclosed.TryGetValue( k, out _ ) ).ToList() )
 		{
 			report.Warnings.RemoveAll( w => w.FeatureId == stale.Id && w.Message == stale.Warning );
 			stale.Warning = null;
-			stale._warnedUnclosed = false;
+			WarnedUnclosed.Remove( stale );
 		}
 
 		var open = ctx.Bodies.Where( b => b.Mesh?.RecordingMorph is not null ).ToList();
@@ -82,18 +82,19 @@ public sealed class ShapeKeyFeature : Feature, IShapeKeyStart
 			return;
 
 		if ( all is not null && all.SkipWhile( f => !ReferenceEquals( f, start ) ).Skip( 1 )
-			.TakeWhile( f => f is not ShapeKeyFeature ).Any( f => f is ShapeKeyEndFeature ) )
+			.TakeWhile( f => f is not IShapeKeyStart ).Any( f => f is ShapeKeyEndFeature ) )
 		{
 			return;
 		}
 
 		start.Warning = $"Shape key '{key}' is still open: nothing below it ends it, so {string.Join( ", ", open.Select( b => b.Name ) )} "
 			+ "show the shape and the key is not exported. Add End Shape Key after the features that shape it.";
-		start._warnedUnclosed = true;
+		WarnedUnclosed.AddOrUpdate( start, null );
 		report.Warnings.Add( (start.Id, start.Warning) );
 	}
 
-	bool _warnedUnclosed;
+	/// <summary>The key starts (plain or corrective) carrying this warning, so a later rebuild can take it back.</summary>
+	static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Feature, object> WarnedUnclosed = new();
 
 	protected override void Execute( FeatureContext ctx )
 	{
@@ -176,8 +177,8 @@ public sealed class ShapeKeyEndFeature : Feature
 			if ( morph.IsCorrective )
 			{
 				// Sculpted posed: carry each vertex back through its own skinning to bind space, and
-				// put the body back at bind rather than at the pose it was shown in. CorrectiveShape.
-				morph.Deltas = CorrectiveShape.Deltas( morph.BindBase, morph.Unskin, mesh.Positions );
+				// put the body back at bind rather than at the pose it was shown in. PoseSpaceCorrective.
+				morph.Deltas = PoseSpaceCorrective.Deltas( morph.BindBase, morph.Unskin, mesh.Positions );
 
 				for ( var i = 0; i < morph.BindBase.Length; i++ )
 					mesh.Positions[i] = morph.BindBase[i];
