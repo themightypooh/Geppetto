@@ -3,7 +3,7 @@
 Score each criterion 0–10. The ONLY passing bar is 9+ (would sit next to the reference artists); there is no "keepable".
 Be harsh and specific. Reference bar: Jef Wall's Still Wakes the Deep sculpts, Rob Bottin's
 The Thing, Sebastien Giroux's Dead Space Wheezer. The sheets are in
-~/.claude/skills/organic-modeling/references/swtd/ — LOOK at them before scoring. Judge the
+~/.claude/skills/geppetto/references/swtd/ — LOOK at them before scoring. Judge the
 sculpt only: colour is deliberately absent.
 
 1. **Silhouette** — one clear gesture from front, side and 3/4; still reads at thumbnail;

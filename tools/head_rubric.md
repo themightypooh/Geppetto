@@ -1,7 +1,7 @@
 # Head judging rubric — distorted human heads for body horror (clay)
 
 Score each criterion 0–10. The ONLY passing bar is 9+: would pass next to Jef Wall's Still Wakes the
-Deep heads (~/.claude/skills/organic-modeling/references/swtd/ — look at the faces first).
+Deep heads (~/.claude/skills/geppetto/references/swtd/ — look at the faces first).
 These heads get fused into creature flesh at the neck; judge everything above the neck cut.
 
 1. **Reads as a real person** — a believable human face, not a mannequin or a cartoon. Do NOT
