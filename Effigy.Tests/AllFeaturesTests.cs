@@ -109,7 +109,7 @@ public static class AllFeaturesTests
 		// exactly the input the garment's own guard is written to refuse. The model these need
 		// is a BODY WITH BONES: a spine inside the fixture box is enough for a T-shirt to cover
 		// it, and fur and trim both need the garment they attach to to already be there.
-		if ( feature is GarmentFeature or FurFeature or TrimFeature or FabricFeature )
+		if ( feature is GarmentFeature or FurFeature or TrimFeature or FabricFeature or PaddingFeature )
 		{
 			var rig = studio.Rig;
 			var root = rig.AddBoneFromPoints( "root", -1, new Vec3( 0, 0, -0.9f ), new Vec3( 0, 0, -0.5f ) );
@@ -118,7 +118,7 @@ public static class AllFeaturesTests
 
 			// Fur with nothing picked falls back to "every garment": give it one. The default
 			// T-shirt on the fixture box is exactly what the Clothing strip produces first.
-			if ( feature is FurFeature or TrimFeature or FabricFeature )
+			if ( feature is FurFeature or TrimFeature or FabricFeature or PaddingFeature )
 			{
 				var garment = studio.Add( new GarmentFeature() );
 				garment.Name = "Shirt";

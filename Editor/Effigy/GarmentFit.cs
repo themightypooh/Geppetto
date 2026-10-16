@@ -511,9 +511,12 @@ public static class BodyRegions
 /// 2. collision: any vertex closer than the clearance to ANY body - the chest pressing into an arm, a
 ///    collar into a cog - is pushed back out along that surface's normal, and smoothed, a few times,
 /// 3. the openings flare out if asked,
-/// 4. the sheet is given thickness with <see cref="MeshSolidify"/>.
+/// 4. it drapes: a short XPBD settle under gravity (<see cref="Options.Drape"/>, on by default) against
+///    the bodies or the bone capsules, then the shaping (puff, cinch, wrinkles),
+/// 5. the sheet is given thickness with <see cref="MeshSolidify"/>.
 ///
-/// It does not drape. Folds come from the flare and from sculpting until editor cloth arrives.
+/// The drape is a settle, not a live simulation: the garment is baked where it came to rest. Cloth
+/// that moves in the game is Make live cloth (ClothExport, GarmentCloth).
 /// </summary>
 public static class GarmentFit
 {
@@ -667,7 +670,15 @@ public static class GarmentFit
 		IReadOnlyList<PolyMesh> otherGarments = null, IReadOnlyList<BodyRegion> wearerRegions = null )
 	{
 		// Everything collides; only the wearers are cut from.
-		var bodies = wearers.Concat( otherGarments ?? Array.Empty<PolyMesh>() ).ToList();
+		//
+		// AN EARLIER GARMENT COLLIDES AS ITS OUTSIDE ONLY. A thickened garment is two walls, and
+		// its lining faces the body. Collided against the whole solid, a jacket vertex that started
+		// under a loose shirt found the lining nearest, read itself as "outside" it (the lining's
+		// normal points in), and stayed under the shirt: 538 of 1923 jacket vertices on the pilot
+		// outfit. Against the outer wall alone the same vertex is inside and is pushed out over the
+		// shirt. See MeshSolidify.OuterSheet; a garment with no thickness is its own sheet.
+		var bodies = wearers.Concat( (otherGarments ?? Array.Empty<PolyMesh>())
+			.Select( g => MeshSolidify.OuterSheet( g, out _ ) ?? g ) ).ToList();
 		var trees = bodies.Select( MeshBVH.Build ).ToList();
 		var closed = bodies.Select( b => MeshValidator.Validate( b ).IsClosed ).ToList();
 		var result = new Result { Mesh = new PolyMesh() };
@@ -1784,9 +1795,17 @@ public static class GarmentFit
 		return (x - MathF.Floor( x )) + (y - MathF.Floor( y )) - 1f;
 	}
 
-	static bool InsideOther( IReadOnlyList<PolyMesh> bodies, List<MeshBVH> trees, List<bool> closed, int self, Vec3 p, int count )
+	/// <summary>
+	/// Is <paramref name="p"/>, on wearer <paramref name="self"/>, buried inside another WEARER?
+	///
+	/// WEARERS ONLY, the first <paramref name="wearerCount"/> of <paramref name="bodies"/>. The
+	/// garments after them are worn over the skin by definition, so every skin face under a shirt
+	/// is "inside" it; asked about them too, a jacket cut over a tee dropped every face the tee
+	/// covered and came out full of holes.
+	/// </summary>
+	internal static bool InsideOther( IReadOnlyList<PolyMesh> bodies, List<MeshBVH> trees, List<bool> closed, int self, Vec3 p, int wearerCount )
 	{
-		for ( var bi = 0; bi < count; bi++ )
+		for ( var bi = 0; bi < Math.Min( wearerCount, bodies.Count ); bi++ )
 		{
 			if ( bi == self || !closed[bi] )
 				continue;
@@ -2888,6 +2907,10 @@ public static class ClothingDefinition
 	/// poking through it. Slots are about what else can be worn; this is about the body being drawn
 	/// inside the cloth. It is deliberately conservative - only whole groups the garment substantially
 	/// covers - because hiding a limb a garment only half covers leaves a character with no forearm.
+	///
+	/// WHOLE GROUPS IS THE ENGINE'S LIMIT, NOT A SHORTCUT: s&amp;box's body has five hideable
+	/// groups (Head, Chest, Legs, Hands, Feet), each hidden whole, and nothing finer. A garment
+	/// covering part of one leaves the body drawn, and its own clearance keeps the skin inside.
 	/// </summary>
 	public static IEnumerable<string> HideBodyFor( GarmentRecipe recipe )
 	{
@@ -2958,10 +2981,33 @@ public static class ClothingDefinition
 	/// </summary>
 	/// <param name="modelPath">The compiled model, as an asset path: models/effigy/shirt.vmdl.</param>
 	public static string Write( GarmentRecipe recipe, string modelPath, string title,
+		string subtitle = null ) =>
+		Write( new[] { (recipe, 1) }, modelPath, title, subtitle );
+
+	/// <summary>The Layer from which a garment's slots are SlotsOver rather than SlotsUnder:
+	/// Jacket and Outer. See GarmentFeature.Layer.</summary>
+	public const int OverLayer = 2;
+
+	/// <summary>
+	/// The `.clothing` for garments compiled into one model, each with its Layer.
+	///
+	/// UNDER OR OVER BY LAYER. s&amp;box lets an item in SlotsOver share a slot with one in
+	/// SlotsUnder, and refuses two that share either: that is the whole of its layering. A shirt's
+	/// slots are SlotsUnder; a jacket's, which must go on over the shirt without the shirt being
+	/// taken off, are SlotsOver - the stock jackets claim LeftArm|RightArm that way. Before, every
+	/// item was written SlotsUnder with SlotsOver 0, so a jacket made here took the shirt off.
+	/// </summary>
+	public static string Write( IReadOnlyList<(GarmentRecipe Recipe, int Layer)> garments, string modelPath, string title,
 		string subtitle = null )
 	{
-		var slots = string.Join( ", ", SlotsFor( recipe ) );
-		var hide = string.Join( ", ", HideBodyFor( recipe ) );
+		var all = Combine( garments.Select( g => g.Recipe ) ) ?? new GarmentRecipe();
+		var under = Combine( garments.Where( g => g.Layer < OverLayer ).Select( g => g.Recipe ) );
+		var overs = Combine( garments.Where( g => g.Layer >= OverLayer ).Select( g => g.Recipe ) );
+		var recipe = all;
+
+		var slots = under is null ? "" : string.Join( ", ", SlotsFor( under ) );
+		var over = overs is null ? "" : string.Join( ", ", SlotsFor( overs ) );
+		var hide = string.Join( ", ", HideBodyFor( all ) );
 
 		var sb = new StringBuilder();
 
@@ -2974,7 +3020,7 @@ public static class ClothingDefinition
 		// An empty flags enum serialises as 0, not as "". s&box writes it that way itself - see any
 		// shipped .clothing with no SlotsOver - and a "" here is read as an unknown flag name.
 		sb.Append( $"  \"SlotsUnder\": {(slots.Length > 0 ? Json( slots ) : "0")},\n" );
-		sb.Append( "  \"SlotsOver\": 0,\n" );
+		sb.Append( $"  \"SlotsOver\": {(over.Length > 0 ? Json( over ) : "0")},\n" );
 		sb.Append( $"  \"HideBody\": {(hide.Length > 0 ? Json( hide ) : "0")},\n" );
 		sb.Append( "  \"__references\": [],\n" );
 		sb.Append( "  \"__version\": 0\n" );

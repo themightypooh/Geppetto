@@ -22,9 +22,12 @@ namespace Effigy;
 /// QUILTING pinches the padding down along stitch lines - diamonds or channels - so it reads as
 /// quilted rather than as a lump. The lines are hinges in the live cloth too.
 ///
-/// LIVE CLOTH CARRIES IT. Make live cloth writes each particle's thickness, bend stiffness and mass
-/// from the padding over it (<see cref="Field"/>), so a quilted yoke is thicker, stiffer and heavier
-/// in the game, not only in the model. See ClothExport.
+/// FOR LIVE CLOTH, THE DATA IS KEPT. Each rebuild records, per garment, how much each vertex of
+/// its outer sheet was padded (<see cref="Fields"/>), and <see cref="PaddingParticles.For"/> turns
+/// every Padding on a garment into per-particle thickness, bend stiffness and mass - indexed the way
+/// Make live cloth numbers its particles. Writing those into the .cloth.json and stepping them in
+/// GarmentCloth is the live-cloth runtime's job; until it reads them, a padded garment is thicker
+/// in the model and moves in the game like the unpadded cloth.
 /// </summary>
 public sealed class PaddingFeature : Feature
 {
@@ -35,6 +38,10 @@ public sealed class PaddingFeature : Feature
 	public static readonly string[] RegionNames =
 	{
 		"Shoulder yoke", "Shoulder pad", "Elbow", "Collar band", "Cuffs", "Hem band", "Chest", "Back", "Whole garment",
+
+		// Appended, not in body order: Where is saved as an index, and documents made before it
+		// must keep the region they had.
+		"Knee",
 	};
 
 	/// <summary>Which part of the garment is padded.</summary>
@@ -86,12 +93,23 @@ public sealed class PaddingFeature : Feature
 	/// <summary>Vertices the last rebuild moved, over every garment.</summary>
 	public int PaddedVertices { get; private set; }
 
+	/// <summary>What the last rebuild did to each garment it padded, by body id. See PaddingField.</summary>
+	public IReadOnlyDictionary<string, PaddingField> Fields => _fields;
+
+	readonly Dictionary<string, PaddingField> _fields = new();
+
+	/// <summary>Over this share of a garment, padding counts towards the room a garment worn over
+	/// it leaves (Body.LayerAllowance). A smaller pad is a local bump, and the fit's collision
+	/// against the garment's outside walks the jacket over it there and nowhere else.</summary>
+	public const float AllowanceCoverage = 0.5f;
+
 	float FeatherValue => Placement.Index == 1 ? MathF.Min( Feather.Clamped, 0.2f ) : Feather.Clamped;
 
 	protected override void Execute( FeatureContext ctx )
 	{
 		PaddedBodies.Clear();
 		PaddedVertices = 0;
+		_fields.Clear();
 
 		if ( ctx.Rig is null || ctx.Rig.Count == 0 )
 		{
@@ -126,11 +144,12 @@ public sealed class PaddingFeature : Feature
 			if ( sheet == mesh )
 				offset = 0;
 
-			var pad = Field( sheet, map, out _ );
+			var pad = Field( sheet, map, out var weight );
 			// Smoothed: a vertex normal at a cut edge or in a drape crease points any which way, and
 			// a collar band pushed along those came out as a ragged rim.
 			var normals = SmoothNormals( mesh, mesh.ComputeVertexNormals(), 3 );
 			var moved = 0;
+			var deepest = 0f;
 
 			for ( var i = 0; i < pad.Length; i++ )
 			{
@@ -140,12 +159,19 @@ public sealed class PaddingFeature : Feature
 				var vi = i + offset;
 				mesh.Positions[vi] += normals[vi] * pad[i];
 				moved++;
+				deepest = MathF.Max( deepest, pad[i] );
 			}
 
 			if ( moved > 0 )
 			{
 				PaddedBodies.Add( body.Id );
 				PaddedVertices += moved;
+				_fields[body.Id] = new PaddingField( pad, weight, Stiffer.Clamped, Heavier.Clamped );
+
+				// A garment padded all over - a puffer, a gambeson - is thicker everywhere a jacket
+				// goes over it, so the jacket is fitted further out. See AllowanceCoverage.
+				if ( moved >= AllowanceCoverage * pad.Length )
+					body.LayerAllowance += deepest;
 			}
 		}
 
@@ -406,6 +432,27 @@ public sealed class PaddingFeature : Feature
 
 				break;
 			}
+
+			case "Knee":
+				foreach ( var side in sides )
+				{
+					if ( !map.Chain( BodyRegion.UpperLeg, side, out _, out var knee ) )
+						continue;
+
+					// On the kneecap, which is in front of the joint: a hard knee pad is about
+					// five inches tall and wraps the front half of the leg, not the hollow behind.
+					var centre = knee + forward * 1.5f;
+
+					for ( var i = 0; i < n; i++ )
+					{
+						var p = sheet.Positions[i];
+
+						if ( MathF.Sign( p.y ) == side )
+							Max( i, Fade( 3.2f * size - (p - centre).Length ) * Fade( p.x - knee.x + 0.5f ) );
+					}
+				}
+
+				break;
 
 			default:
 				for ( var i = 0; i < n; i++ )
