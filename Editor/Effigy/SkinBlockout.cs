@@ -10,8 +10,10 @@ namespace Effigy;
 /// already a closed solid with a clean flow along each limb. The block-out a character starts
 /// from, in one click, on the bones it will be rigged to.
 ///
-/// SIX BONES PER JOINT AT MOST: each takes one face of the joint's cube. A joint with more is
-/// how a real skeleton never looks, so the seventh bone is refused rather than fudged.
+/// SIX BONES PER JOINT AT MOST with cube joints: each takes one face of the joint's cube, and the
+/// seventh is refused rather than fudged. <see cref="Joints.Hull"/> lifts that: the joint is the
+/// convex hull of its bones' directions (<see cref="SkeletonCage"/>), so a hand with five fingers
+/// and a wrist, or a spider's body, builds.
 /// </summary>
 public static class SkinBlockout
 {
@@ -22,6 +24,58 @@ public static class SkinBlockout
 	/// </summary>
 	public static PolyMesh Build( Skeleton skeleton, Func<int, float> radiusOf = null, int smoothLevels = 2 )
 	{
+		Collect( skeleton, radiusOf, out var nodes, out var nodeRadius, out var bones );
+		return BuildCubes( nodes, nodeRadius, bones, smoothLevels );
+	}
+
+	/// <summary>How the joints are made. Cube is the original: a cube per joint, six bones at most,
+	/// and what every caller that does not ask gets, so its output never moves. Hull is the B-Mesh /
+	/// SQM joint — see <see cref="SkeletonCage"/>: any number of bones, rings carried along each
+	/// limb without twisting.</summary>
+	public enum Joints { Cube, Hull }
+
+	/// <summary>
+	/// Build the body with the chosen <paramref name="joints"/>. Hull joints take
+	/// <paramref name="sides"/> for limbs that touch no branching joint, and with
+	/// <paramref name="fit"/> the smoothed body is pulled onto the round-cone shape of the bones,
+	/// so each bone's radius is the thickness it ends up with.
+	/// </summary>
+	public static PolyMesh Build( Skeleton skeleton, Func<int, float> radiusOf, int smoothLevels, Joints joints, int sides = 8, bool fit = false )
+	{
+		Collect( skeleton, radiusOf, out var nodes, out var nodeRadius, out var bones );
+		if ( joints == Joints.Cube )
+			return BuildCubes( nodes, nodeRadius, bones, smoothLevels );
+
+		// A skeleton is a tree, but joints welded by position can close a loop (two bones that end
+		// on the same spot). The cage is built on the spanning tree; every joint is still in it.
+		var graph = new SkeletonCage.Graph();
+		for ( var i = 0; i < nodes.Count; i++ )
+		{
+			graph.Nodes.Add( nodes[i] );
+			graph.Radii.Add( nodeRadius[i] );
+		}
+
+		var root = new int[nodes.Count];
+		for ( var i = 0; i < root.Length; i++ )
+			root[i] = i;
+		int Find( int x ) { while ( root[x] != x ) x = root[x] = root[root[x]]; return x; }
+
+		foreach ( var (head, tail) in bones )
+		{
+			if ( head == tail || Find( head ) == Find( tail ) )
+				continue;
+
+			root[Find( head )] = Find( tail );
+			graph.AddEdge( head, tail );
+		}
+
+		return SkeletonCage.Build( graph, new SkeletonCage.Options { Sides = sides, SmoothLevels = smoothLevels, Fit = fit } );
+	}
+
+	/// <summary>The joints and the spans between them: one node per bone end, merged where a child's
+	/// head sits on its parent's tail.</summary>
+	static void Collect( Skeleton skeleton, Func<int, float> radiusOf, out List<Vec3> nodes, out List<float> nodeRadius, out List<(int head, int tail)> bones )
+	{
 		if ( skeleton is null || skeleton.Count == 0 )
 			throw new InvalidOperationException( "There are no bones to build a body on. Draw a rig first." );
 
@@ -30,22 +84,22 @@ public static class SkinBlockout
 		radiusOf ??= i => DefaultRadius( skeleton, i );
 
 		// Joints: heads and tails, merged where a child's head sits on its parent's tail.
-		var nodes = new List<Vec3>();
-		var nodeRadius = new List<float>();
+		var nodeList = new List<Vec3>();
+		var radiusList = new List<float>();
 		int NodeAt( Vec3 p, float r )
 		{
-			for ( var i = 0; i < nodes.Count; i++ )
+			for ( var i = 0; i < nodeList.Count; i++ )
 			{
-				if ( (nodes[i] - p).LengthSquared < 1e-4f )
+				if ( (nodeList[i] - p).LengthSquared < 1e-4f )
 				{
-					nodeRadius[i] = MathF.Max( nodeRadius[i], r );
+					radiusList[i] = MathF.Max( radiusList[i], r );
 					return i;
 				}
 			}
 
-			nodes.Add( p );
-			nodeRadius.Add( r );
-			return nodes.Count - 1;
+			nodeList.Add( p );
+			radiusList.Add( r );
+			return nodeList.Count - 1;
 		}
 
 		// One node index per bone end, so a child that does not sit on its parent's tail can
@@ -59,7 +113,7 @@ public static class SkinBlockout
 			tailNode[n] = -1;
 		}
 
-		var bones = new List<(int head, int tail)>();
+		var spans = new List<(int head, int tail)>();
 		for ( var b = 0; b < skeleton.Count; b++ )
 		{
 			if ( !skeleton.TryBodySpan( b, out var head, out var tail ) )
@@ -87,7 +141,7 @@ public static class SkinBlockout
 				continue;
 
 			tailNode[b] = NodeAt( tail, r );
-			bones.Add( (headNode[b], tailNode[b]) );
+			spans.Add( (headNode[b], tailNode[b]) );
 		}
 
 		for ( var b = 0; b < skeleton.Count; b++ )
@@ -100,13 +154,20 @@ public static class SkinBlockout
 				if ( headNode[c] < 0 || headNode[c] == headNode[b] || headNode[c] == tailNode[b] )
 					continue;
 
-				bones.Add( (headNode[b], headNode[c]) );
+				spans.Add( (headNode[b], headNode[c]) );
 			}
 		}
 
-		if ( bones.Count == 0 )
+		if ( spans.Count == 0 )
 			throw new InvalidOperationException( "Every bone has no length, so there is nothing to build along." );
 
+		nodes = nodeList;
+		nodeRadius = radiusList;
+		bones = spans;
+	}
+
+	static PolyMesh BuildCubes( List<Vec3> nodes, List<float> nodeRadius, List<(int head, int tail)> bones, int smoothLevels )
+	{
 		// A cube per joint: eight corners, six faces, each face free until a bone claims it.
 		var mesh = new PolyMesh();
 		var cubeCorner = new int[nodes.Count][];
@@ -155,7 +216,7 @@ public static class SkinBlockout
 			}
 
 			if ( best < 0 )
-				throw new InvalidOperationException( "A joint has more than six bones meeting at it, which is more than a body can be built round." );
+				throw new InvalidOperationException( "A joint has more than six bones meeting at it, which is more than a cube joint can take. Build it with hull joints instead, which take any number." );
 
 			faceTaken[node][best] = true;
 			return best;

@@ -108,6 +108,7 @@ public sealed partial class EffigyWindow
 		add.Add( _objProfileTool );
 		add.Add( Tool( EffigyIcon.Paint, "Fur (creature)", "Shell fur on the selected body for s&box's fur shader — a pelt, a mane, a mossy back. Pick faces first to grow it only there", AddCreatureFur ) );
 		add.Add( Tool( EffigyIcon.Sculpt, "Blob (metaballs)", "Spheres, capsules, cones and tubes melted into one smooth skin — a heart, a gut pile, a creature block-out. In its settings, use the place-shapes button and press-drag on the model to drop spheres; hold Shift to cut a hole", () => AddFeature( NewFeature( ToolKind.Blob, -1 ) ) ) );
+		add.Add( Tool( EffigyIcon.Bone, "Skin (stick figure)", "Type a stick figure - joints with a thickness each - and get one smooth all-quad body over it, with any number of limbs at a joint. A creature block-out from text", () => AddFeature( NewFeature( ToolKind.Skin, -1 ) ) ) );
 		add.Add( null );
 		add.Add( Tool( EffigyIcon.Primitive, ImportMenuLabel, ImportTip, ImportObj ) );
 		add.Add( Tool( EffigyIcon.Bone, "Body from Bones", "A skin block-out built on the rig, ready to edit", BodyFromBones ) );

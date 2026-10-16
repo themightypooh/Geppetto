@@ -393,6 +393,7 @@ public static class Program
 		SculptToolsTests.Run();
 		DeformTests.Run();
 		BrushOptionsTests.Run();
+		SkeletonCageTests.Run();
 
 		MenuIconTests.Run();
 

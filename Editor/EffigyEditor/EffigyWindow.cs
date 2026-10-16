@@ -3643,6 +3643,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		Blob, SurfaceDetail, FleshMaterial, ShapeKey, ShapeKeyEnd,
 		Pocket, Hardware, Wear, Glow,
 		SimpleDeform, Lattice,
+		Skin,
 	}
 
 	/// <summary>Build one, and apply the variant chosen from its dropdown where it has one.</summary>
@@ -3687,6 +3688,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		ToolKind.Wear => new WearFeature(),
 		ToolKind.Glow => new GlowFeature(),
 		ToolKind.Blob => new BlobFeature(),
+		ToolKind.Skin => new SkinFeature(),
 		ToolKind.SurfaceDetail => new DetailFeature(),
 		ToolKind.FleshMaterial => new FleshMaterialFeature(),
 		ToolKind.ShapeKey => new ShapeKeyFeature(),
@@ -6637,7 +6639,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		PolyMesh body;
 		try
 		{
-			body = SkinBlockout.Build( rig.Skeleton );
+			body = SkinBlockout.Build( rig.Skeleton, null, 2, SkinBlockout.Joints.Hull );
 		}
 		catch ( InvalidOperationException e )
 		{
