@@ -508,6 +508,7 @@ public sealed partial class RigAnimPlayerComponent : Component
 		ReleaseBones();
 		_driven.Clear();
 		_ikChains.Clear();
+		_driverBones.Clear();
 		_soft.Rest();
 		ResetRootMotion();
 
@@ -875,6 +876,31 @@ public sealed partial class RigAnimPlayerComponent : Component
 	/// ended is handed back - and only ours are, never one the game set itself.</summary>
 	private readonly HashSet<string> _morphsDriven = new();
 	private readonly Dictionary<string, float> _morphScratch = new();
+	private readonly Dictionary<string, float> _morphLayer = new();
+	private readonly Dictionary<string, GameObject> _driverBones = new();
+
+	/// <summary>
+	/// A driver bone's bind and current parent-space transforms and its model-space position, read off
+	/// the bone objects this frame - whatever wrote them (this clip, the IK, the graph underneath).
+	/// Null for a bone the model does not have.
+	/// </summary>
+	private (Transform Bind, Transform Local, Vector3 Model)? DriverPose( string name )
+	{
+		if ( string.IsNullOrEmpty( name ) || !Target.IsValid() || Target.Model?.Bones.GetBone( name ) is not { } bone )
+			return null;
+
+		if ( !_driverBones.TryGetValue( name, out var go ) || !go.IsValid() )
+			_driverBones[name] = go = FindBone( Target.GameObject, name );
+
+		if ( !go.IsValid() )
+			return null;
+
+		// Bone.LocalTransform is MODEL space despite its name; the parent's undoes it.
+		var bind = bone.Parent is { } parent ? parent.LocalTransform.ToLocal( bone.LocalTransform ) : bone.LocalTransform;
+		var model = Target.WorldTransform.PointToLocal( go.WorldPosition );
+
+		return (bind, go.LocalTransform, model);
+	}
 
 	/// <summary>
 	/// The clip's morph events, on the same clock as the bones.
@@ -892,7 +918,14 @@ public sealed partial class RigAnimPlayerComponent : Component
 		if ( !Target.IsValid() )
 			return;
 
-		Anim.MorphWeightsAt( frame, _morphScratch );
+		// The rig's correctives first, read off the pose this frame has just been given (keys, then
+		// IK), so the clip's own morph keys and events win on a morph they both name.
+		_morphScratch.Clear();
+		RigMorphDriver.WeightsAt( Anim.RigAsset, DriverPose, _morphScratch );
+		Anim.MorphWeightsAt( frame, _morphLayer );
+
+		foreach ( var (name, value) in _morphLayer )
+			_morphScratch[name] = value;
 
 		var weight = Mode == RigAnimMode.Exclusive ? 1f : (Weight * _blend).Clamp( 0f, 1f );
 

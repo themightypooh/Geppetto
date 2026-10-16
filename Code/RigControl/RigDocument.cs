@@ -31,6 +31,12 @@ public sealed class RigDocument : GameResource
 	public bool IsBoneHidden( string bone ) => HiddenBones.Contains( bone );
 
 	/// <summary>
+	/// Corrective shape keys: morphs whose weight is read off a bone's angle every frame. See
+	/// RigMorphDriver. Effigy's export fills these from its Corrective Shape Keys.
+	/// </summary>
+	[Property, Group( "Correctives" ), Title( "Morph Drivers" )] public List<RigMorphDriver> MorphDrivers { get; set; } = new();
+
+	/// <summary>
 	/// The body soft bones collide with: a capsule from each listed bone's head to its tail (first
 	/// child), Radius thick. Read by Bake Secondary Motion, the player's live Soft Chains and Effigy's
 	/// headless sim alike, so a cable hangs off the same body baked or live. A capsule on a bone that
