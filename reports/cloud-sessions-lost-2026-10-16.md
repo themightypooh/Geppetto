@@ -1,35 +1,49 @@
-# Cloud sessions archived 2026-10-16 — what to recover
+# Cloud sessions archived 2026-10-16: recovered
 
-Spawned by the cloud session "Geppetto workshop setup" (repo themightypooh/Geppetto-cloud-work).
-All ~29 were archived by "Session management cleanup" (claude.ai/code/session_01Cb6wmpvRayicNc24umz4vs).
-Archiving can be undone. Unpushed commits live only in each session's cloud VM, so unarchive
-each one and tell it "push your branch to origin", one at a time.
+Every work session's transcript was pulled from claude.ai (~/Downloads/geppetto-cloud-transcripts.json)
+and its file-writing commands were replayed onto Geppetto-cloud-work main (3fd6ebd) in ~/recovery-work.
+Each branch below was built and tested locally (Effigy.Tests). No cloud session was run.
 
-## Safe already
-- Mesh reports (topology/section/flex): cherry-picked onto local main (0433146, 88bd7e1, 3a7fc11).
-- Helmet kit: themightypooh/podracer claude/confident-newton-01wzzo 496d7f4.
-- Seated poses WIP: Geppetto-cloud-work claude/seated-poses-trouser-fit 7919e02.
-- Viewport material preview WIP: Geppetto-cloud-work viewport-material-preview 9e29d1d (not compiled).
-- Shape keys: already on main (42c3e36).
+Baseline on 3fd6ebd: 5939 passed, 1 failed (PaddingFeature needs a rig, known).
 
-## Committed in a cloud VM, NOT pushed (recover by unarchive + push)
-| Work | Branch | Commits |
+**Base warning:** these branches sit on Geppetto-cloud-work main, which includes the private
+`cloud-context/` commit (8ef0d8c). Cherry-pick the feature commits onto public main; do not
+merge the branches as-is.
+
+Skipped on purpose (user stopped them): body-horror sessions (tendrils, corruption, blob body shapes).
+Already safe before recovery: mesh reports (on main), helmet kit (podracer), seated poses and
+viewport preview (pushed to Geppetto-cloud-work).
+
+| Branch (local, `recovered/…`) | Commits | Tests |
 |---|---|---|
-| Simple deform, Lattice, multi-plane/radial symmetry | claude/deform-symmetry-masks-shell | 89d2806 d230a19 579c22f |
-| Shared ClothSolver (layering/maps/wind/seat) | claude/live-cloth-layering | 42c7da4 ce26057 |
-| Cuffs/rolls/gloves (WIP) | claude/cuffs-rolls-gloves | a14f02e |
-| Sparse LDLT solver, heat + voxel weights | claude/sparse-heat-arap | 539ea1f 195b22e |
-| Collars/necklines (design handoff only) | claude/collars-necklines | f8654e6 |
-| Profile upgrades, spline radii, primitives (WIP) | claude/profile-primitives-upgrades | a360dd8 |
-| Knots/cords, goggles, watches (untested) | feat/knots-goggles-watch | 74eb9f6 |
-| Export: skinned LODs, FBX blendshapes, wrinkle maps | claude/export-gaps-lods-blendshapes-wrinkles | 055ac5f d7df4bf d8a42eb 46296ac |
-| B-Mesh/SQM cage, Skin feature, Body from Bones | claude/kernel-bmesh-isoremesh-organics | aa4a1c0 |
-| Blob body shapes | claude/blob-body-shapes | ? |
-| Diagnostic fixes, Set Origin/turnaround, FBX import, bake | ? | reported committed |
+| effigy-bake-selected-to-active-ui-bake-maps-cage | 3 | 5990 passed, 1 failed |
+| effigy-brush-calibration-broken-brushes-filters (WIP, never committed by the session) | 1 | 5940 passed, 1 failed |
+| effigy-cloth-live-cloth-layering-per-particle-maps-wind | 2 | 5939 passed, 1 failed |
+| effigy-deformers-radial-symmetry-sculpt-masks-shell-options | 3 | 6004 passed, 1 failed |
+| effigy-editor-tooltip-label-cleanup | 2 | 5939 passed, 1 failed |
+| effigy-export-skinned-lods-fbx-blendshapes-wrinkle-maps | 4 | 6013 passed, 1 failed |
+| effigy-fbx-import | 4 | 5987 passed, 1 failed |
+| effigy-flesh-to-skin-shader-output-sss-material-stacks | 5 | 5985 passed, 1 failed |
+| effigy-garments-hems-cuffs-rolls-gloves | 1 | 5938 passed, 2 failed |
+| effigy-garments-jacket-vest-belt-boot-recipes-open-fronts-ho (WIP, never committed by the session) | 1 | 5936 passed, 4 failed |
+| effigy-garments-layering-fixes-clip-checks-padding-completio (WIP, never committed by the session) | 1 | 5998 passed, 1 failed |
+| effigy-garments-merge-worktree-backups-pockets-hardware-wear (WIP, never committed by the session) | 1 | 6156 passed, 1 failed |
+| effigy-garments-necklines-collars | 1 | 5939 passed, 1 failed |
+| effigy-gear-knots-cords-goggles-watches | 1 | 5940 passed, 1 failed |
+| effigy-kernel-sparse-solver-heat-weights-arap | 2 | 5999 passed, 1 failed |
+| effigy-one-click-fixes-in-diagnostics-shape-key-resculpt | 4 | 6003 passed, 1 failed |
+| effigy-paint-channels-composited-paint-layers | 4 | 6023 passed, 1 failed |
+| effigy-profile-upgrades-spline-radii-more-primitives | 1 | 5942 passed, 1 failed |
+| effigy-rigging-from-script-bones-rig-templates-skin-feature (WIP, never committed by the session) | 1 | 5957 passed, 5 failed (after tuple fix; new features not yet mirrored) |
+| effigy-set-origin-render-turnaround-symmetry-badge | 3 | 6003 passed, 1 failed |
+| effigy-skeleton-to-quad-cage-isotropic-remesh-tree-rock-feat | 1 | 5998 passed, 1 failed |
+| effigy-uv-toolset-seams-projections-pack-pins-uv2 | 6 | 5945 passed, 1 failed |
+| marionette-correctives-drivers-pose-space-morphs | 3 | 5952 passed, 2 failed |
+| marionette-root-motion-look-at-copy-constraints-multi-point | 1 | 5975 passed, 1 failed |
+| marionette-shape-keys-end-to-end-key-warning-test | 4 | 5981 passed, 1 failed |
 
-## Body-horror sessions — user stopped these on purpose, do NOT redo
-part generators (carpet/spikes/maw/webbing), tendril/ribbon/drip features, corruption-driven surface, blob body shapes.
-
-## Unknown
-~12 more sessions (garments, cloth, Marionette, UV …) never reported. Task list is in the
-"Geppetto workshop setup" session.
+Extra failures beyond the Padding one: garment recipes and rigging-from-script need
+`tools/sync-kernel.sh` (they stopped before mirroring); knee pad on both legs (layering fixes);
+a 10 s timing check on a 50k-face mesh (hems/cuffs, 10.5 s here); corrective shape key needs a rig
+in its defaults test (correctives). Rigging-from-script needed a one-word fix (tuple element
+`Rest` renamed `Remainder`) to compile.
