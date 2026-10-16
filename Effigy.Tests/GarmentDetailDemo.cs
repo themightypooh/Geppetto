@@ -25,13 +25,10 @@ public static class GarmentDetailDemo
 			g.Length.Value = length; g.Sleeve.Value = sleeve; g.Fit.Index = fit; g.Drape.Value = drape;
 			return g;
 		}
-		var only = Environment.GetEnvironmentVariable( "PUNK_ONLY" );
-		var fitOverride = Environment.GetEnvironmentVariable( "PUNK_FIT" );
-		var drapeOn = Environment.GetEnvironmentVariable( "PUNK_DRAPE" ) == "1";
-		var tee = only is null || only == "tee" ? Garment( "Band tee", "T-shirt", 0.7f, 0.3f, 1, drapeOn ) : null;
-		var jeans = only is null || only == "jeans" ? Garment( "Jeans", "Trousers", 1f, 0f, 1, drapeOn ) : null;
-		var jacket = only is null || only == "jacket" ? Garment( "Biker jacket", "Long sleeve", 0.5f, 1f, fitOverride is null ? 2 : int.Parse( fitOverride ), drapeOn ) : null;
-		if ( only is not null ) { tee ??= jacket ?? jeans; jeans ??= tee; jacket ??= tee; }
+		// Jeans first: a tee worn over them hangs untucked instead of bunching out of the fly.
+		var jeans = Garment( "Jeans", "Trousers", 1f, 0f, 1, false );
+		var tee = Garment( "Band tee", "T-shirt", 0.4f, 0.3f, 1, false );
+		var jacket = Garment( "Biker jacket", "Long sleeve", 0.5f, 1f, 2, false );
 		jacket.Fabric.Index = 2;
 		FabricFeature Cloth( GarmentFeature on, string preset, string colour )
 		{
@@ -44,12 +41,6 @@ public static class GarmentDetailDemo
 		var result = studio.Rebuild();
 		if ( result.HasErrors ) { Console.Error.WriteLine( string.Join( "; ", result.Errors.Select( e => e.Message ) ) ); return 1; }
 
-		foreach ( var b in studio.Bodies.Where( b => b.IsGarment ) )
-		{
-			var sheet = DetailEdges.Sheet( b.Mesh );
-			var loops = GarmentTrim.OrderedBoundaryLoops( sheet );
-			Console.WriteLine( $"DBG {b.Name}: outer={sheet != b.Mesh} {loops.Count} loops: " + string.Join( ", ", loops.Select( l => { var c = l.Aggregate( Vec3.Zero, ( s, v ) => s + sheet.Positions[v] ) / l.Count; return $"{l.Count}@({c.x:F0},{c.y:F0},{c.z:F0})"; } ) ) );
-		}
 		T On<T>( T f, GarmentFeature g, string spot, int side ) where T : GarmentDetailFeature
 		{
 			f.Bodies.BodyIds.Add( g.Id + "b0" ); f.Spot.Index = Array.IndexOf( DetailSpots.Names, spot ); f.Side.Index = side;
@@ -119,7 +110,13 @@ public static class GarmentDetailDemo
 			}
 			Text( rel + ".vmat", source ); studio.MaterialNames[m.Slot] = rel + ".vmat";
 		}
+		// The wearer is never exported, but a dressed figure is judged on a body.
 		var mesh = studio.ToMesh();
+		var body = skin.Clone();
+		foreach ( var face in body.Faces ) face.Material = 63;
+		studio.MaterialNames[63] = "materials/skin.vmat";
+		Text( "materials/skin.vmat", DetailMaterials.HardVmat( new DetailMaterial { Kind = "hard", Key = "skin", Slot = 63, Colour = new Vec3( 0.62f, 0.45f, 0.38f ), Roughness = 0.6f } ) );
+		MeshTransform.Append( mesh, body );
 		File.WriteAllText( Path.Combine( folder, "punk.obj" ), ObjWriter.Write( mesh, "punk",
 			materialName: slot => studio.MaterialNames.TryGetValue( slot, out var path ) ? path : "material_" + slot ) );
 		File.WriteAllText( Path.Combine( folder, "punk.effigy" ), StudioDocument.Write( studio ) );

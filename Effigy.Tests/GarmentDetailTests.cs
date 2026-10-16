@@ -46,8 +46,32 @@ public static class GarmentDetailTests
 		detail.Bodies.BodyIds.Add( body.Id );
 	}
 
+	/// <summary>A jacket over a tee kept every face of the wearer the tee hugged out of its cut,
+	/// so the jacket came out full of holes the tee showed through, and Hardware on "the rest"
+	/// of the openings studded each hole.</summary>
+	static void TestLayeringKeepsOpenings()
+	{
+		Report.Section( "garment details: a garment over another keeps only its own openings" );
+		int Loops( PartStudio studio, GarmentFeature g ) =>
+			GarmentTrim.OrderedBoundaryLoops( DetailEdges.Sheet( studio.Bodies.Single( b => b.FeatureId == g.Id ).Mesh ) ).Count;
+		var alone = new PartStudio();
+		var jacketAlone = PaddingTests.AddGarment( alone );
+		var expected = Loops( alone, jacketAlone );
+		var layered = new PartStudio();
+		var tee = PaddingTests.AddGarment( layered );
+		var jacket = layered.Add( new GarmentFeature { Name = "Jacket" } );
+		jacket.Bodies.BodyIds.AddRange( tee.Bodies.BodyIds );
+		jacket.Sleeve.Value = 1f; jacket.Length.Value = 0.8f; jacket.Fit.Index = 2; jacket.Drape.Value = false;
+		layered.Rebuild();
+		Report.Check( "the jacket builds over the tee", jacket.Error is null, jacket.Error );
+		if ( jacket.Error is not null ) return;
+		var got = Loops( layered, jacket );
+		Report.Check( $"same openings as on its own ({got} vs {expected})", got == expected );
+	}
+
 	public static void Run()
 	{
+		TestLayeringKeepsOpenings();
 		Report.Section( "garment details: surface frames and curved walking" );
 		var surface = new DetailSurface( Cloth() );
 		var f = new SurfaceFrame( new Vec3( 8, 0, 45 ), new Vec3( 1, 0, 0 ), new Vec3( 0, 0, 1 ) );

@@ -232,6 +232,11 @@ public sealed class GlowFeature : GarmentDetailFeature
 	public readonly FloatParam Brightness = new( "Brightness", 4f, 0f, 16f );
 	public readonly ChoiceParam Openings = new( "Wire along", new[] { "Body part", "All openings", "Hem (lowest)", "Collar (highest)", "Cuffs (the rest)" } );
 	public override IReadOnlyList<IParam> Parameters => Placement.Concat( new IParam[] { Style, Pattern, Text, Colour, Width, Height, Speed, Brightness, Openings } ).ToArray();
+
+	/// <summary>The LED cyan is a light's colour. Left at it, an armour plate is gunmetal and bright tape
+	/// silver-white; any colour picked on purpose is kept.</summary>
+	string SurfaceColour => Colour.Value?.Trim().ToLowerInvariant() != "#00ddff" ? Colour.Value
+		: Style.Index == 3 ? "#4a4f57" : Style.Index == 4 ? "#d8dde0" : Colour.Value;
 	protected override void Execute( FeatureContext ctx )
 	{
 		var targets = Targets( ctx );
@@ -241,7 +246,7 @@ public sealed class GlowFeature : GarmentDetailFeature
 		Materials.Add( new DetailMaterial
 		{
 			Kind = Style.Index == 3 || Style.Index == 4 ? "hard" : "glow", Key = Id + "_face", Slot = slot,
-			Colour = FurMaterial.ParseHex( Colour.Value, new Vec3( 0, 0.8f, 1 ) ),
+			Colour = FurMaterial.ParseHex( SurfaceColour, new Vec3( 0, 0.8f, 1 ) ),
 			Metalness = Style.Index == 3 ? 0.7f : 0f, Roughness = Style.Index == 4 ? 0.2f : 0.4f,
 			Pattern = Style.Index == 1 || Style.Index == 2 ? "Solid" : Pattern.Value,
 			Text = Text.Value, Speed = Speed.Clamped, Brightness = Brightness.Clamped, Aspect = Width.Clamped / Height.Clamped,

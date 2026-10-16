@@ -105,6 +105,9 @@ forgotten.
 - **Script export does what the editor's does.** `export` takes `lods=` (levels of detail), `collision=auto|hulls|render`, `skin=` (a skinned DMX model when the studio has bones, collision on the bones) and `fbx=1` (a binary FBX beside the model). `BuildScript.Export`
 
 ### Fixed
+- **Plain-colour materials show in `tools/effigy.sh shade`.** A vmat with only a tint, metalness or roughness (garment hardware: chrome studs, gunmetal chain) rendered as grey clay; it now renders in its own colour and finish.
+- **Armour plates and bright tape are no longer LED cyan.** Left at the default colour, a Glow armour plate is gunmetal and bright tape silver-white.
+- **A garment over another one no longer comes out full of holes.** A jacket over a T-shirt, or jeans after a tee, lost the patches where the garment underneath hugged the skin, so the shirt showed through and studs or piping set on the openings ringed every hole.
 - **Retopo ▸ Relax relaxed with the wrong tool.** The Retopo menu and the retopo right-click menu ran Clean up's LoopTools Relax instead of the retopo one. They now run the retopo Relax. The Import tooltip also no longer claims to read .fbx and .vmdl: the importer reads .obj.
 - **Voxel remesh keeps thick parts solid.** Remesh in Voxel mode on anything more than a few voxels thick came out as two skins, one inside the other: a 10 in box at 0.25 kept less than half its volume and counted as two parts. Closed parts now read as solid all the way through, so the box comes back as one piece at its full volume. Open patches behave as before. `SdfMesh`
 - **No more invisible specks in Blobs and voxel skins.** A lone sample just inside the surface came out as six faces of zero size on one point. It could not be seen, but it was exported, counted as a second part and made Shell refuse. Islands smaller than two voxels are now left out. `SurfaceNets`
@@ -149,6 +152,7 @@ forgotten.
 - **`tools/effigy.sh clothing outdir`** runs the whole Clothing bar on a Citizen-shaped body, with no editor: every garment through Wearer, Garment, Trim, Fur, Fabric, the Test poses, Check and Push out, Make live cloth and Make clothing, then steps the live cloth through the poses. It writes a pass/fail report and renders. `ClothingSim`
 
 ### Known Issues
+- **A short jacket over trousers can show the waistband through its lower back** when the trousers sit high: the jacket is pushed off the trousers but not fully clear of them there. A longer Length or a looser Fit hides it.
 - **Garment-detail limits:** rips follow whole mesh faces (subdivide for small tears), eyelets use dark inset centres rather than cutting the garment, and bright tape is not true retroreflection. Wear matches generated Fabric materials; custom materials currently use a jersey fallback. LED text/patterns scroll, but do not play GIFs or video.
 - Some sculpt tools don't yet match Blender's: Pinch Folds, Bend/Twist and Grab Cloth, Clay Thumb, Multiplane Scrape, and the Sphere, Relax and Sharpen filters. They work but behave differently.
 - **A T-shirt's hem is wider than a real size M's** on the s&box human (44.9 in against 40.6). He is 40.4 in round at his widest below the chest, and Effigy's cloth does not stretch, so the hem clears his hips where a real knit tee would stretch over them.

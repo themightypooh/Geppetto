@@ -736,8 +736,10 @@ public static class GarmentFit
 
 				// A face buried inside another part - an arm cylinder's end inside the torso block,
 				// the way CAD characters are built - would be pushed out onto the surface as a crumpled
-				// flap. It is not skin; skip it.
-				if ( InsideOther( bodies, trees, closed, bi, centroid ) )
+				// flap. It is not skin; skip it. Only the other WEARERS bury skin: a tee under this
+				// jacket is closed too, and asking it dropped every face the tee hugged, so the jacket
+				// came out with holes the tee showed through.
+				if ( InsideOther( bodies, trees, closed, bi, centroid, wearers.Count ) )
 				{
 					result.DroppedInside++;
 					continue;
@@ -1661,9 +1663,9 @@ public static class GarmentFit
 		return (x - MathF.Floor( x )) + (y - MathF.Floor( y )) - 1f;
 	}
 
-	static bool InsideOther( IReadOnlyList<PolyMesh> bodies, List<MeshBVH> trees, List<bool> closed, int self, Vec3 p )
+	static bool InsideOther( IReadOnlyList<PolyMesh> bodies, List<MeshBVH> trees, List<bool> closed, int self, Vec3 p, int count )
 	{
-		for ( var bi = 0; bi < bodies.Count; bi++ )
+		for ( var bi = 0; bi < count; bi++ )
 		{
 			if ( bi == self || !closed[bi] )
 				continue;

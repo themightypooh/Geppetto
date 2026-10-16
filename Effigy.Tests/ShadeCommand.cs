@@ -23,7 +23,7 @@ namespace Effigy.Tests;
 /// TEXTURES: each <c>usemtl</c> name is looked up as an s&amp;box .vmat under the project's Assets folder
 /// (found by walking up from the OBJ, or assets=). Its TextureColor / Roughness / Metalness / Normal /
 /// AmbientOcclusion PNGs, colour tint and self-illum are drawn on the OBJ's UVs, so the render shows the
-/// materials the engine will. A name with no vmat, or a .tga default, falls back to clay. tex=0 or
+/// materials the engine will. A vmat with no PNGs but a tint or metalness draws as that constant colour. A name with no vmat, or a .tga default, falls back to clay. tex=0 or
 /// clay=1 turns it off.
 ///
 /// Writes outdir/&lt;name&gt;_&lt;view&gt;.png per view, &lt;name&gt;_sil_&lt;view&gt;.png (black on white, front/side/quarter),
@@ -301,6 +301,14 @@ public static class ShadeCommand
 				case "TextureNormal": m.NormalMap = data; break;
 				case "TextureAmbientOcclusion": m.AoMap = data; break;
 			}
+			textured = true;
+		}
+		// A vmat with no maps at all but its own tint, metalness or roughness (Effigy's garment
+		// hardware: chrome studs, gunmetal chain) is a constant material, not clay.
+		if ( !textured && (kv.ContainsKey( "g_vColorTint" ) || kv.ContainsKey( "g_flMetalness" )) )
+		{
+			if ( kv.TryGetValue( "g_flMetalness", out var mt ) ) m.Metallic = F( mt );
+			if ( kv.TryGetValue( "g_flRoughnessScaleFactor", out var rs ) ) m.Roughness = Math.Clamp( F( rs ), 0.02f, 1f );
 			textured = true;
 		}
 		if ( !textured ) return null;
