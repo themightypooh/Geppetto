@@ -95,6 +95,11 @@ public static class AllFeaturesTests
 	/// </summary>
 	internal static void GivePickedInput( Feature feature, PartStudio studio )
 	{
+		if ( feature is PaddingFeature )
+		{
+			PaddingTests.AddGarment( studio );
+			return;
+		}
 		// GARMENT, FUR, TRIM AND FABRIC ARE THE CLOTHING TOOLS, and the fixture has no rig, which is
 		// exactly the input the garment's own guard is written to refuse. The model these need
 		// is a BODY WITH BONES: a spine inside the fixture box is enough for a T-shirt to cover
