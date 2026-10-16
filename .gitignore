@@ -149,3 +149,6 @@ Effigy.Tests/out/remesh-*/
 # code, they are restored by the editor rather than by us, and notpointless.chomnr_mcp
 # alone is a megabyte of docs and images.
 Libraries/
+
+# Claude Code local settings and worktrees - machine-local.
+.claude/
