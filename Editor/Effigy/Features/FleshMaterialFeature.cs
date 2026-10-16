@@ -245,8 +245,10 @@ public sealed class FleshMaterialFeature : Feature
 					"Set Shader to Complex (or Preset's) to keep them" );
 
 			if ( string.IsNullOrWhiteSpace( Folder.Value ) )
-				Warn( "No files written", "The skin shader's occlusion and light-through maps are baked with the .vmat, and no Folder is set.",
-					"Set Folder to write the textures and the .vmat" );
+				Warn( RemedyAction.ChooseFolder( "Choose folder", Folder.Label ),
+					"No texture files written",
+					"Folder is empty, so the maps are only shown here, and the skin shader's occlusion and light-through maps are baked with the .vmat. The exported model will not have this material.",
+					"Choose a folder for the PNGs and .vmat (inside your project's Assets)" );
 
 			foreach ( var (id, sm) in _shaderMaps )
 			{
