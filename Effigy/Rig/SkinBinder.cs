@@ -33,13 +33,11 @@ public readonly struct BodyRange
 /// <summary>
 /// Generating skin weights, so nobody has to paint them.
 ///
-/// WHAT THIS IS NOT: heat-diffusion binding. Real heat diffusion solves a Laplacian system over
-/// the mesh and is the right long-term answer — it respects the surface, so a weight cannot bleed
-/// across a gap that is near in space but far across the mesh. What is here instead is distance to
-/// the bone SEGMENT plus optional smoothing over mesh adjacency, which is cheap, has no solver,
-/// and is good enough for the hard-surface props this tool is aimed at. The failure case is honest
-/// and predictable: two limbs close together in space bleed into each other. That is the day to
-/// write the solver.
+/// TWO FAMILIES. This file holds the cheap ones: distance to the bone SEGMENT (BindRigid,
+/// BindSmooth) and smoothing over mesh adjacency (SmoothWeights), which need no solver and are
+/// right for hard-surface props, but let two limbs that are close in space bleed into each other.
+/// The shape-aware ones — bone heat over the cotangent Laplacian and geodesic voxel binding — are
+/// in <see cref="AutoWeights"/>, reached through <see cref="Bind"/> with a <see cref="BindMethod"/>.
 ///
 /// THE INTERESTING ONE IS BindBodies. Because the model is parametric, a bone can own a FEATURE
 /// rather than a set of vertices — "this cylinder is the forearm". Vertex indices die on every
@@ -47,7 +45,7 @@ public readonly struct BodyRange
 /// regenerated rather than invalidated. Blender cannot do this, because it has no history to bind
 /// against.
 /// </summary>
-public static class SkinBinder
+public static partial class SkinBinder
 {
 	/// <summary>Each vertex fully weighted to whichever bone segment is nearest. Blocky across
 	/// joints, and exactly right for a rigid mechanical part like a hinge or a piston.</summary>

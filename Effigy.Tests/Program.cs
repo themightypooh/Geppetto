@@ -248,6 +248,7 @@ public static class Program
 		RigTests.Run();
 
 		SparseSolverTests.Run();
+		AutoWeightTests.Run();
 
 		BoneFromBodyTests.Run();
 
