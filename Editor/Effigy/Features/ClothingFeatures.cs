@@ -109,6 +109,7 @@ public sealed class GarmentFeature : Feature
 		{
 			"Bodysuit" or "Socks" or "Gloves" => 0,
 			"T-shirt" or "Long sleeve" or "Tank top" when FabricValue == Effigy.Fabric.Leather => 2,
+			"Jacket" or "Vest" or "Belt" or "Boots" => 2,
 			"Beanie" => 3,
 			_ => 1,
 		};
@@ -131,7 +132,7 @@ public sealed class GarmentFeature : Feature
 	public float LivePinFraction => BuildRecipe().Name switch
 	{
 		"Trousers" or "Shorts" => 0.1f,
-		"Beanie" or "Gloves" or "Socks" => 1f,
+		"Beanie" or "Gloves" or "Socks" or "Belt" or "Boots" => 1f,
 		_ => 0.14f,
 	};
 
@@ -156,12 +157,84 @@ public sealed class GarmentFeature : Feature
 	/// fabric on the garment does not recolour the body.</summary>
 	public readonly IntParam MaterialSlot = new( "Material slot", -1, -1, 63 ) { Slider = false };
 
-	public override IReadOnlyList<IParam> Parameters => new IParam[]
+	/// <summary>A jacket or vest's front: done up, hanging open, or done up at the top only. Auto is
+	/// open for a jacket and closed for a vest. See GarmentFront.</summary>
+	public readonly ChoiceParam Front = new( "Front", new[] { "Auto", "Closed", "Open", "Open below the chest" } );
+
+	/// <summary>How far an open front hangs open, 0 just parted to 1 swung right back.</summary>
+	public readonly FloatParam OpenAmount = new( "Hang open", 0.6f, 0f, 1f );
+
+	/// <summary>What fastens the front; it decides the overlap past centre front.</summary>
+	public readonly ChoiceParam Closure = new( "Fastening", new[] { "Auto", "Zip", "Buttons", "Double-breasted", "Snaps", "Toggles" } );
+
+	/// <summary>Which front goes on top. Left over right is menswear, right over left womenswear.</summary>
+	public readonly ChoiceParam Lap = new( "Overlap", new[] { "Left over right", "Right over left" } );
+
+	/// <summary>A lining inside a jacket or vest, on its own material slot, with a facing strip of
+	/// the outer fabric along each front edge.</summary>
+	public readonly BoolParam Lining = new( "Lining", true );
+
+	/// <summary>Boots only: what the trousers worn under them do at the boot top.</summary>
+	public readonly ChoiceParam TrouserHem = new( "Trouser hem", new[] { "Bloused", "Tucked in", "Left alone" } );
+
+	public override IReadOnlyList<IParam> Parameters
 	{
-		Recipe, Bodies, Fit, FitTo, Length, Neckline, Sleeve, Sleeves, Flare, Puff, Cinch, Wrinkles,
-		Thickness, Drape, Fabric, Stiffness, Layer, Weights,
-		Looseness, CinchReach, WrinkleScale, Clearance, DrapeSteps, PinTop, MaterialSlot,
+		get
+		{
+			var list = new List<IParam>
+			{
+				Recipe, Bodies, Fit, FitTo, Length, Neckline, Sleeve, Sleeves, Flare, Puff, Cinch, Wrinkles,
+				Thickness, Drape, Fabric, Stiffness, Layer, Weights,
+			};
+
+			var recipe = BuildRecipe();
+
+			if ( recipe.FrontOpening )
+				list.AddRange( new IParam[] { Front, OpenAmount, Closure, Lap, Lining } );
+
+			if ( recipe.Name == "Boots" )
+				list.Add( TrouserHem );
+
+			list.AddRange( new IParam[] { Looseness, CinchReach, WrinkleScale, Clearance, DrapeSteps, PinTop, MaterialSlot } );
+			return list;
+		}
+	}
+
+	public FrontMode FrontValue => Front.Index switch
+	{
+		1 => FrontMode.Closed,
+		2 => FrontMode.Open,
+		3 => FrontMode.OpenBelowChest,
+		_ => BuildRecipe().Name == "Vest" ? FrontMode.Closed : FrontMode.Open,
 	};
+
+	public FrontClosure ClosureValue => Closure.Index switch
+	{
+		1 => FrontClosure.Zip,
+		2 => FrontClosure.Buttons,
+		3 => FrontClosure.DoubleBreasted,
+		4 => FrontClosure.Snaps,
+		5 => FrontClosure.Toggles,
+		_ => BuildRecipe().Name == "Vest" ? FrontClosure.Buttons : FrontClosure.Zip,
+	};
+
+	public TrouserHem TrouserHemValue => TrouserHem.Index switch
+	{
+		1 => Effigy.TrouserHem.Tucked,
+		2 => Effigy.TrouserHem.Leave,
+		_ => Effigy.TrouserHem.Bloused,
+	};
+
+	/// <summary>The front opening as the last rebuild left it. Null without one.</summary>
+	public GarmentFront.Result LastFront { get; private set; }
+
+	public int ResolvedLiningSlot { get; private set; } = -1;
+
+	public int LastTucked { get; private set; }
+	public int LastBloused { get; private set; }
+
+	/// <summary>A one-line account of what the last rebuild made.</summary>
+	public string Summary { get; private set; }
 
 	public override IReadOnlyList<IParam> AdvancedParameters => new IParam[]
 	{
@@ -204,11 +277,24 @@ public sealed class GarmentFeature : Feature
 		2 => 6f,
 		3 => 10f,
 		_ => Looseness.Clamped * 12f,
+	} + RecipeEase;
+
+	/// <summary>Extra chest ease a jacket (fitted 3.75-4.25, semi-fitted 4.4-5.4, Threads) or vest
+	/// is cut with over a shirt's. Custom is the number as typed.</summary>
+	float RecipeEase => Fit.Index == 4 ? 0f : BuildRecipe().Name switch
+	{
+		"Jacket" => 2f,
+		"Vest" => 1f,
+		_ => 0f,
 	};
 
 	protected override void Execute( FeatureContext ctx )
 	{
 		ResolvedSlot = -1;
+		ResolvedLiningSlot = -1;
+		LastFront = null;
+		LastTucked = LastBloused = 0;
+		Summary = null;
 
 		if ( ctx.Rig is null || ctx.Rig.Count == 0 )
 		{
@@ -266,6 +352,17 @@ public sealed class GarmentFeature : Feature
 			? PinTop.Value
 			: recipe.Name is "Trousers" or "Shorts" ? 0.06f : 0f;
 
+		// Boots tuck the trousers in BEFORE they are fitted, so the shaft goes on over a flat leg.
+		var bootTops = recipe.Name == "Boots" ? GarmentBoots.TopHeights( map, Length.Clamped ) : null;
+		var trouserBodies = recipe.Name == "Boots" && TrouserHemValue != Effigy.TrouserHem.Leave
+			? earlier.Where( b => b.Layer >= 0 && b.Layer < layer && b.Visible ).ToList()
+			: new List<Body>();
+
+		foreach ( var t in trouserBodies )
+			LastTucked += GarmentBoots.Tuck( t.Mesh, map, wearers.Select( w => w.Mesh ).ToList(), bootTops );
+
+		var liningSlot = recipe.FrontOpening && Lining.Value ? slot + 1 : -1;
+
 		// The two expensive steps, dropped while a slider is moving. The drape is DrapeSteps
 		// simulation steps and the thickness doubles the mesh and runs a solidify; neither changes
 		// the silhouette under the cursor, and together they are most of the cost of a rebuild.
@@ -299,7 +396,7 @@ public sealed class GarmentFeature : Feature
 			Clearance = Clearance.Clamped,
 			Flare = Flare.Clamped,
 			Thickness = preview ? 0f : Thickness.Clamped,
-			Drape = Drape.Value && !preview,
+			Drape = Drape.Value && !preview && !recipe.Rigid,
 			Fabric = FabricValue,
 			DrapeSteps = DrapeSteps.Clamped,
 			Passes = preview ? 2 : 4,
@@ -307,9 +404,23 @@ public sealed class GarmentFeature : Feature
 			Puff = Puff.Clamped,
 			Cinch = Cinch.Clamped,
 			CinchReach = CinchReach.Clamped,
-			Wrinkles = Wrinkles.Clamped,
+			Wrinkles = recipe.Rigid ? 0f : Wrinkles.Clamped,
 			WrinkleScale = WrinkleScale.Clamped,
 			PinTop = pin,
+			Front = recipe.FrontOpening
+				? new GarmentFront.Options
+				{
+					Mode = FrontValue,
+					Open = OpenAmount.Clamped,
+					Closure = ClosureValue,
+					Lap = Lap.Index == 1 ? -1 : 1,
+					Fabric = FabricValue,
+					Puff = Puff.Clamped,
+					Flare = Flare.Clamped,
+					Thickness = Thickness.Clamped,
+					LiningSlot = liningSlot,
+				}
+				: null,
 			MaterialSlot = slot,
 
 			// On capsules the cloth is free to actually hang - off the shoulders, loose round
@@ -327,6 +438,56 @@ public sealed class GarmentFeature : Feature
 				"Check the bones sit inside the body they belong to",
 				"Or raise Length / Sleeve" );
 		}
+
+		var summary = new List<string>();
+
+		if ( result.Front is { } front )
+		{
+			LastFront = front;
+
+			if ( front.EdgeVertices == 0 )
+				Warn( $"The {recipe.Name.ToLowerInvariant()}'s front could not be opened",
+					"No part of the garment's front crosses the body's centre line, so there was nothing to split.",
+					"Lower Neckline so the body of the garment reaches the front",
+					"Or check the rig's spine runs up the middle of the body" );
+			else
+			{
+				summary.Add( front.ToString() );
+
+				if ( front.LiningFaces > 0 )
+				{
+					ResolvedLiningSlot = liningSlot;
+					summary.Add( $"lined on slot {liningSlot}" );
+				}
+			}
+		}
+
+		if ( recipe.Name == "Belt" && !preview )
+		{
+			if ( GarmentBelt.AddBuckle( result.Mesh, slot, recipe.BandWidth ) is null )
+				Warn( "The belt has no front for a buckle", "The band came out too small to find its front.",
+					"Raise Length so the belt sits lower on the hips", "Or check the hips have bones" );
+
+			summary.Add( $"belt {GarmentBelt.Round( result.Mesh ):0.0} in round" );
+		}
+
+		if ( recipe.Name == "Boots" )
+		{
+			if ( !preview )
+				GarmentBoots.Sole( result.Mesh );
+
+			if ( TrouserHemValue == Effigy.TrouserHem.Bloused )
+				foreach ( var t in trouserBodies )
+					LastBloused += GarmentBoots.Blouse( t.Mesh, result.Mesh, map, bootTops );
+
+			if ( TrouserHemValue != Effigy.TrouserHem.Leave && trouserBodies.Count == 0 )
+				Warn( "No trousers to tuck into the boots",
+					"Trouser hem only acts on garments of a lower layer made before the boots, and there are none.",
+					"Add the trousers above the boots in the tree",
+					"Or set Trouser hem to Left alone" );
+		}
+
+		Summary = summary.Count > 0 ? string.Join( "; ", summary ) : null;
 
 		// WEIGHTED HERE, NOT LATER, AND ON BY DEFAULT.
 		//

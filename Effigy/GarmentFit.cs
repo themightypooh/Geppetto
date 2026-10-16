@@ -59,7 +59,21 @@ public sealed class GarmentRecipe
 	public static readonly string[] Names =
 	{
 		"T-shirt", "Long sleeve", "Tank top", "Trousers", "Shorts", "Beanie", "Gloves", "Socks", "Bodysuit",
+		// Appended, never inserted: a saved document stores the index.
+		"Jacket", "Vest", "Belt", "Boots",
 	};
+
+	/// <summary>The body is split down centre front into two fronts that can hang open - a jacket,
+	/// a vest. See GarmentFront.</summary>
+	public bool FrontOpening;
+
+	/// <summary>A band round the waist (a belt): how far below the waist its top edge sits and how
+	/// tall it is, in inches. 0 width for anything that is not a band.</summary>
+	public float BandDrop, BandWidth;
+
+	/// <summary>Holds its own shape - leather belts and boots - so it is fitted and thickened but
+	/// not draped or wrinkled.</summary>
+	public bool Rigid;
 
 	/// <summary>Which sleeves or legs a recipe keeps. Sides are the body's own - left is +y, the
 	/// way Source measures it - so "Left only" is the wearer's left, not the viewer's.</summary>
@@ -163,6 +177,37 @@ public sealed class GarmentRecipe
 				Arms( sleeve );
 				Legs( length );
 				break;
+
+			// A jacket is a long-sleeved top with a front opening; a vest the same with armholes.
+			// Length runs waist (0) to mid-thigh (1) like every top.
+			case "Jacket":
+			case "Vest":
+				r.Hangs = true;
+				r.CrewNeck = true;
+				r.FrontOpening = true;
+				r.HemLength = length;
+				r.Spans.Add( (BodyRegion.Neck, 0f, 1f, 0) );
+				r.Spans.Add( (BodyRegion.Torso, neckline, 1f, 0) );
+				r.Spans.Add( (BodyRegion.Hips, 0f, Math.Min( length, 0.92f ), 0) );
+				Arms( r.Name == "Vest" ? 0f : sleeve );
+				break;
+
+			// A belt: Length is how low it sits, 0 on the waist to 4 inches below it (low rise). 1.5
+			// inches tall, a jeans belt (a karate belt is 1.75).
+			case "Belt":
+				r.Rigid = true;
+				r.BandDrop = length * 4f;
+				r.BandWidth = 1.5f;
+				r.Spans.Add( (BodyRegion.Hips, 0f, 1f, 0) );
+				break;
+
+			// Boots: the foot and the shaft. Length is the shaft, a fraction of the lower leg: 0.15 a
+			// low shoe, 0.45 an 8-inch combat boot, 1 to the knee.
+			case "Boots":
+				r.Rigid = true;
+				r.Spans.Add( (BodyRegion.Foot, 0f, 1.01f, 0) );
+				r.Spans.Add( (BodyRegion.LowerLeg, 1f - Math.Max( 0.05f, length ), 1.01f, 0) );
+				break;
 		}
 
 		return r;
@@ -181,6 +226,11 @@ public sealed class GarmentRecipe
 		"Beanie" => (0.55f, 0f),
 		"Gloves" => (0.3f, 0f),
 		"Socks" => (0.4f, 0f),
+		// A hip-length jacket: 0.3 is about 2 inches below the hip bone.
+		"Jacket" => (0.3f, 1f),
+		"Vest" => (0.15f, 0f),
+		"Belt" => (0.25f, 0f),
+		"Boots" => (0.45f, 0f),
 		_ => (1f, 1f),
 	};
 
@@ -587,6 +637,10 @@ public static class GarmentFit
 		/// garment, not worth paying for on every drag.
 		/// </summary>
 		public bool SelfCollision;
+
+		/// <summary>For a recipe with a front opening (jacket, vest): how the front is split, lapped,
+		/// hung open and lined. Null leaves the garment a closed tube, as before. See GarmentFront.</summary>
+		public GarmentFront.Options Front;
 	}
 
 	public sealed class Result
@@ -600,6 +654,9 @@ public static class GarmentFit
 		/// <summary>The room left for the garments under this one, in inches, added to the fit's
 		/// offset. 0 with nothing under it. See Options.Inner.</summary>
 		public float Allowance;
+
+		/// <summary>The front opening's split, gaps and lining, when there is one.</summary>
+		public GarmentFront.Result Front;
 	}
 
 	/// <summary>
@@ -634,6 +691,15 @@ public static class GarmentFit
 
 			var t = (hipsTop.z - hemZ) / MathF.Max( hipsTop.z - hipsBottom.z, 1e-3f );
 			cutSpans = recipe.Spans.Select( sp => sp.Region == BodyRegion.Hips ? (sp.Region, sp.From, Math.Clamp( t, 0f, 0.92f ), sp.Side) : sp ).ToList();
+		}
+
+		// A band (a belt) is two heights below the waist, carried onto the hips' bone the same way.
+		if ( recipe.BandWidth > 0f && map.Chain( BodyRegion.Hips, 0, out var bandTop, out var bandBottom ) )
+		{
+			var run = MathF.Max( bandTop.z - bandBottom.z, 1e-3f );
+			var from = Math.Clamp( recipe.BandDrop / run, 0f, 0.9f );
+			var to = Math.Clamp( (recipe.BandDrop + recipe.BandWidth) / run, from + 0.02f, 0.95f );
+			cutSpans = cutSpans.Select( sp => sp.Region == BodyRegion.Hips ? (sp.Region, from, to, sp.Side) : sp ).ToList();
 		}
 
 		var crew = recipe.CrewNeck ? CrewNeck.Measure( wearers, map, recipe, wearerRegions ) : null;
@@ -912,14 +978,57 @@ public static class GarmentFit
 			PushOut( garment, bodies, trees, o.Clearance, reach );
 
 		CleanOpenings( garment, Neighbours( garment ) );
+		// THE FRONT OPENS LAST, after the drape and the shaping: the hang is a static solve of its
+		// own (GarmentFront), and a closed tube is what the drape and the hang both know how to fit.
+		float frontTop = 0f, frontWaist = 0f, frontHem = 0f;
+
+		if ( recipe.FrontOpening && o.Front is { } frontOptions )
+		{
+			var onBody = new bool[start.Length];
+
+			for ( var i = 0; i < start.Length; i++ )
+				onBody[i] = map.Locate( start[i] ).Region is BodyRegion.Torso or BodyRegion.Hips or BodyRegion.Neck or BodyRegion.UpperLeg;
+
+			var chestZ = float.NaN;
+			var armpitZ = new List<float>();
+
+			foreach ( var side in new[] { 1, -1 } )
+				if ( map.Chain( BodyRegion.UpperArm, side, out var shoulder, out var elbow ) )
+					armpitZ.Add( shoulder.z - (shoulder - elbow).Length * 0.25f );
+
+			if ( armpitZ.Count > 0 )
+				chestZ = armpitZ.Average() - 1.5f;
+
+			var waistZ = map.Chain( BodyRegion.Torso, 0, out _, out var waistEnd ) ? waistEnd.z : float.NaN;
+			var torsoZ = Enumerable.Range( 0, start.Length ).Where( i => onBody[i] ).Select( i => garment.Positions[i].z ).ToList();
+
+			if ( torsoZ.Count > 0 )
+			{
+				frontTop = torsoZ.Max();
+				frontHem = torsoZ.Min();
+
+				if ( float.IsNaN( chestZ ) ) chestZ = frontTop - (frontTop - frontHem) * 0.3f;
+				if ( float.IsNaN( waistZ ) ) waistZ = frontTop - (frontTop - frontHem) * 0.6f;
+
+				frontWaist = waistZ;
+				result.Front = GarmentFront.Build( garment, i => i < onBody.Length && onBody[i], chestZ, waistZ, frontOptions,
+					bodies, trees, o.Clearance );
+			}
+		}
+
 		LimbUVs( garment, map );
 
 		if ( o.Thickness > 0f )
 		{
 			try
 			{
+				var sheet = garment;
 				garment = MeshSolidify.Solidify( garment, o.Thickness, smooth: true );
 				result.Solidified = true;
+
+				if ( result.Front is { EdgeVertices: > 0 } front && o.Front.LiningSlot >= 0 )
+					(front.LiningFaces, front.FacingFaces) = GarmentFront.Line( garment, sheet, front, o.Front.LiningSlot,
+						frontTop, frontWaist, frontHem );
 			}
 			catch ( Exception e )
 			{
@@ -1352,7 +1461,7 @@ public static class GarmentFit
 	/// </summary>
 	sealed class CrewNeck
 	{
-		float _cx, _cy, _base, _front, _back, _radius, _sideRise;
+		float _cx, _cy, _base, _front, _back, _radius, _sideRise, _reachFront;
 
 		public static CrewNeck Measure( IReadOnlyList<PolyMesh> wearers, BodyRegions.Map map, GarmentRecipe recipe,
 			IReadOnlyList<BodyRegion> wearerRegions )
@@ -1415,6 +1524,15 @@ public static class GarmentFit
 			var scoop = recipe.Name == "Tank top" ? 1f : 0f;
 			var size = radius / 2.3f;
 
+			// A jacket closes higher up the throat than a tee (a zip runs up to a stand); a vest is a
+			// deep V, five inches or so below a crew.
+			var frontDrop = recipe.Name switch
+			{
+				"Jacket" => 1.4f * size,
+				"Vest" => 2.2f * size + 5f,
+				_ => 2.2f * size + scoop * 3f,
+			};
+
 			return new CrewNeck
 			{
 				_cx = root.x,
@@ -1427,7 +1545,9 @@ public static class GarmentFit
 				// flare into the shoulders stayed in the opening: 8.7 inches across against a size
 				// M's 6.5.
 				_sideRise = 0f,
-				_front = 2.2f * size + scoop * 3f,
+				_front = frontDrop,
+				// A V reaches out across the chest as far as it drops.
+				_reachFront = recipe.Name == "Vest" ? 4f : 0f,
 				_back = 0.5f * size + scoop * 1f,
 			};
 		}
@@ -1457,7 +1577,7 @@ public static class GarmentFit
 			// stands a little off it at the back, and reaches down the chest at the front.
 			// The scoop's reach is only down the middle of the front; to the sides the opening
 			// stays as wide as the neck, the way a crew neck is narrower than it is deep.
-			var reach = _radius + 0.25f + 2.6f * MathF.Pow( MathF.Max( 0f, c ), 3f ) + 0.6f * back;
+			var reach = _radius + 0.25f + (2.6f + _reachFront) * MathF.Pow( MathF.Max( 0f, c ), 3f ) + 0.6f * back;
 
 			// And nothing well above the base of the neck stays, however far out: the neck bone
 			// claims skin behind the ears too, and that came through as islands at head height.
@@ -2706,6 +2826,9 @@ public static class ClothingDefinition
 						Add( "Groin" );
 						Add( "Waist" );
 					}
+					// A belt is the waist and nothing else: trousers still go on under it.
+					else if ( recipe.Name == "Belt" )
+						Add( "Waist" );
 					break;
 
 				case BodyRegion.UpperArm:
@@ -2733,7 +2856,9 @@ public static class ClothingDefinition
 					break;
 
 				case BodyRegion.LowerLeg:
-					Sided( side, "LeftKnee", "RightKnee" );
+					// A boot's shaft that stops below the knee leaves the knee free for a pad.
+					if ( from < 0.2f )
+						Sided( side, "LeftKnee", "RightKnee" );
 					Sided( side, "LeftShin", "RightShin" );
 					break;
 
@@ -2814,6 +2939,12 @@ public static class ClothingDefinition
 		"Gloves" => "Gloves",
 		"Socks" => "Socks",
 		"Bodysuit" => "Fullbody",
+		// s&box's enum (engine/Sandbox.Engine/Game/Avatar/Clothing.cs) has Jacket, Gilet and Boots;
+		// it has no belt, and Bottoms is where one is looked for.
+		"Jacket" => "Jacket",
+		"Vest" => "Gilet",
+		"Belt" => "Bottoms",
+		"Boots" => "Boots",
 		_ => "Tops",
 	};
 
