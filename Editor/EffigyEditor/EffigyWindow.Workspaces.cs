@@ -480,7 +480,7 @@ public sealed partial class EffigyWindow
 		_boneMirrorTool = new EffigyStageTool
 		{
 			Icon = EffigyIcon.Mirror,
-			Label = "Mirror",
+			Label = "Mirror bones",
 			Tip = "Mirror the selected bone and everything under it across the centre line, "
 				+ "onto the same parent.",
 			Clicked = () =>
@@ -1829,7 +1829,7 @@ public sealed partial class EffigyWindow
 
 		var menus = new List<EffigyStage>
 		{
-			Menu( "Select", "All", "Invert", "Grow", "Shrink", "-", "Linked", "Similar", "Path", "Checker", "Random", "Select/Mirror", "-", "Save selection set", "Load selection set", "-", "Non-manifold", "Boundary loop", "Sharp edges", "Triangles", "N-gons", "Interior", "Loose", "-", "Lasso", "Circle", "X-ray", "-", "Hide", "Hide others", "Unhide" ),
+			Menu( "Select", "All", "Invert", "Grow", "Shrink", "-", "Linked", "Similar", "Path", "Checker", "Random", "Select/Select mirrored", "-", "Save selection set", "Load selection set", "-", "Non-manifold", "Boundary loop", "Sharp edges", "Triangles", "N-gons", "Interior", "Loose", "-", "Lasso", "Circle", "X-ray", "-", "Hide", "Hide others", "Unhide" ),
 			Menu( "Add", "Add Cube", "Add Sphere", "Add Cylinder", "Add Plane", "Add Tube", "Add Wedge", "-", "Extrude", "Extrude along normals", "Extrude individual", "Inset", "Bevel", "Loop cut", "Knife", "Bisect", "-", "Fill", "Grid fill", "Bridge", "-", "Add/Duplicate", "Add/Array", "Spin", "Screw", "Pivot to selection", "-", "Add/Subdivide" ),
 			Menu( "Vertex", "Merge", "Merge first", "Merge last", "Merge at pivot", "By distance", "Connect", "Bevel vertices", "-", "Vertex slide", "Clean up/Smooth", "Clean up/Relax", "Clean up/Flatten", "Loop circle", "Loop space", "To sphere", "Randomize" ),
 			Menu( "Edge", "Edge slide", "Rip", "Rotate edge", "Subdivide edges", "Pipe", "-", "Loop circle", "Loop space", "-", "Make hard", "Harden creases", "Crease", "Clear crease", "-", "Mark seam", "Clear seam", "-", "Delete edges" ),
@@ -1954,7 +1954,7 @@ public sealed partial class EffigyWindow
 		MeshTool( select, EffigyIcon.SelectEdge, "Non-manifold", "Select every open border and three-way junction — on something meant to be solid, each one is a hole or a bad join", () => RunMeshOp( "Non-manifold", s => s.SelectNonManifold() ) );
 		MeshTool( select, EffigyIcon.SelectEdge, "Boundary loop", "Swap the selected faces for the loop of edges round their edge — ready to bridge, extrude or mark as a seam", () => RunMeshOp( "Boundary loop", s => s.SelectBoundaryLoop() ) );
 		_meshSharpSelectTool = MeshTool( select, EffigyIcon.SelectEdge, "Sharp edges", "Select every edge where the faces meet at more than 30° — the edges to crease, harden or bevel", () => RunMeshOp( "Sharp edges", s => s.SelectSharpEdges( 30f ) ) );
-		_meshMirrorSelectTool = MeshTool( select, EffigyIcon.Mirror, "Mirror", "Add the selection's twin across X, so both sides get the same edit", () => RunMeshOp( "Mirror", s => s.SelectMirror() ) );
+		_meshMirrorSelectTool = MeshTool( select, EffigyIcon.Mirror, "Select mirrored", "Add the selection's twin across X, so both sides get the same edit", () => RunMeshOp( "Select mirrored", s => s.SelectMirror() ) );
 		MeshTool( select, EffigyIcon.SelectVertex, "Save selection set", "Keep this selection under a name, to get back with Load selection set — the ear, the fingers, the hem", SaveMeshSelection );
 		MeshTool( select, EffigyIcon.SelectVertex, "Load selection set", "Select a saved selection set again. Shift adds it, Ctrl takes it away", RecallMeshSelection );
 		_meshLooseSelectTool = MeshTool( select, EffigyIcon.SelectVertex, "Loose", "Select the vertices no face uses, to see what Delete loose would remove", () => RunMeshOp( "Loose", s => s.SelectLoose() ) );
