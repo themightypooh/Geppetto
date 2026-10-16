@@ -29,6 +29,7 @@ namespace Effigy.Tests;
 ///   effigy sim clip.riganim [model=dump.json|tentacle|citizen] [options]   play a clip headlessly and lint its motion
 ///   effigy simrig tentacle|citizen out.json [cables=5] [bones=12]        a stand-in model dump for take/sim
 ///   effigy key clip.riganim bone goal|fk "frame:x,y,z;.." [options]    key a clip from targets (MarionetteCli)
+///   effigy key clip.riganim morph=Name "frame:weight[:ease];.." [shapes=a,b]   key a shape key's weight curve (MarionetteCli)
 ///   effigy fbxdump bones.json source.fbx out.json      a model dump from its source FBX, on an engine skeleton
 ///   effigy fbxskin dump.json source.fbx [out.json]     give a dump's render meshes the FBX's skin weights
 /// </summary>

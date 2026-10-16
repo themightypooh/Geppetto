@@ -16,6 +16,8 @@ namespace Effigy;
 ///     chain written as ordinary FK keys - for a rig with no live constraint, or a pose to polish by
 ///     hand afterwards.
 ///
+/// <see cref="Morph"/> keys a shape key's weight curve (a Morph track) the same way.
+///
 /// Marionette's marionette_key MCP tool does the same to a RigAnimDocument; the headless
 /// <c>effigy.sh key</c> and the clip generators call this.
 /// </summary>
@@ -172,6 +174,85 @@ public static class ClipKeys
 
 		if ( ClipBake.LiveIkBones( clip, skeleton ).Overlaps( chain.Select( b => skeleton.Bones[b].Name ) ) )
 			result.Notes.Add( "a live IK constraint also poses this chain - it overrides these FK keys at playback" );
+
+		return result;
+	}
+
+	/// <summary>A morph (shape key) weight on a frame: 0 the base shape, 1 the full key.</summary>
+	public sealed record MorphTarget( int Frame, float Weight, RigEase Ease );
+
+	/// <summary>
+	/// Morph keys as text, ';' between them: <c>frame:weight[:ease]</c> - weight 0 (base shape) to 1
+	/// (the full shape key), ease a KeyInterpolation name. Null and an error on anything it cannot read.
+	/// </summary>
+	public static List<MorphTarget> ParseMorph( string text, RigEase defaultEase, out string error )
+	{
+		error = null;
+		var list = new List<MorphTarget>();
+
+		foreach ( var item in (text ?? "").Split( ';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries ) )
+		{
+			var parts = item.Split( ':' );
+
+			if ( parts.Length < 2 || parts.Length > 3 || !int.TryParse( parts[0], out var frame ) || frame < 0
+				|| !float.TryParse( parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var weight ) || !float.IsFinite( weight ) )
+			{
+				error = $"'{item}' is not frame:weight[:ease] (frame a whole number from 0, weight a number such as 0.5)";
+				return null;
+			}
+
+			var ease = defaultEase;
+
+			if ( parts.Length == 3 && !Enum.TryParse( parts[2].Replace( " ", "" ), true, out ease ) )
+			{
+				error = $"'{parts[2]}' in '{item}' is not an ease: Smooth, Linear, Stepped, EaseIn, EaseOut, Cubic or Monotone";
+				return null;
+			}
+
+			list.Add( new MorphTarget( frame, weight, ease ) );
+		}
+
+		if ( list.Count == 0 )
+			error = "no keys: give frame:weight[:ease], ';' between them, e.g. \"0:0;12:1:EaseOut;24:0\"";
+
+		return list.Count == 0 ? null : list.OrderBy( t => t.Frame ).ToList();
+	}
+
+	/// <summary>
+	/// Keys on <paramref name="morph"/>'s Morph track (TrackKind Morph: the weight rides in the key's
+	/// scale, as Marionette's RigAnimDocument.MorphKey stores it), replacing keys already on those
+	/// frames. <paramref name="modelMorphs"/>, when known, are the model's shape key names: a name
+	/// not among them is keyed anyway (the model may gain it) but said, since until then the keys
+	/// drive nothing. Marionette's marionette_key_morph does the same to a RigAnimDocument.
+	/// </summary>
+	public static Result Morph( RigAnimFile clip, string morph, IEnumerable<MorphTarget> keys, ICollection<string> modelMorphs = null )
+	{
+		var result = new Result();
+		morph = morph?.Trim();
+
+		if ( string.IsNullOrWhiteSpace( morph ) ) { result.Error = "no morph name: say which shape key, e.g. morph=sac_swell"; return result; }
+		if ( morph.Any( char.IsWhiteSpace ) ) { result.Error = $"'{morph}' has spaces; a shape key name has none, so nothing could match it"; return result; }
+
+		var list = keys?.ToList() ?? new List<MorphTarget>();
+
+		if ( list.Count == 0 ) { result.Error = "no keys"; return result; }
+
+		var track = Track( clip, morph, RigTrackKind.Morph );
+
+		foreach ( var k in list )
+		{
+			Set( track, k.Frame, new RigPose( Vec3.Zero, Quat.Identity, new Vec3( k.Weight, k.Weight, k.Weight ) ), k.Ease );
+			result.Keys++;
+		}
+
+		if ( list.Where( k => k.Weight < 0f || k.Weight > 1f ) is var outside && outside.Any() )
+			result.Notes.Add( $"weight(s) {string.Join( ", ", outside.Select( k => k.Weight.ToString( "0.###", CultureInfo.InvariantCulture ) ) )} are outside 0-1; a shape key is authored for 0 (base) to 1 (full), so check them in the engine" );
+
+		foreach ( var e in clip.MorphEvents.Where( e => e.Morph == morph && list.Any( k => k.Frame >= e.Start && k.Frame <= e.End ) ) )
+			result.Notes.Add( $"a morph event holds {morph} over frames {e.Start:0}-{e.End:0} and overrides these keys there" );
+
+		if ( modelMorphs is not null && !modelMorphs.Contains( morph ) )
+			result.Notes.Add( $"the model has no shape key '{morph}' ({(modelMorphs.Count == 0 ? "it has none" : "it has " + string.Join( ", ", modelMorphs.Take( 8 ) ))}) - these keys do nothing until it does" );
 
 		return result;
 	}

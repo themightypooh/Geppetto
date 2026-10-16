@@ -20,6 +20,7 @@
 #   tools/effigy.sh sim      clip.riganim [model=dump.json|tentacle|citizen] [options]   play a clip headlessly: pops, slides, reach, holds, loop, trail, bake
 #   tools/effigy.sh simrig   tentacle|citizen out.json [cables=5] [bones=12]   a stand-in model dump for take and sim
 #   tools/effigy.sh key      clip.riganim bone goal|fk "frame:x,y,z[:p,y,r][:ease][:w=];.." [rig=] [model=] [write=]   key from targets
+#   tools/effigy.sh key      clip.riganim morph=Name "frame:weight[:ease];.." [shapes=a,b] [write=]   key a shape key's weight curve
 #   tools/effigy.sh fbxdump  bones.json source.fbx out.json   a model dump from its source FBX, on an engine skeleton
 #   tools/effigy.sh fbxskin  dump.json source.fbx [out.json]  skin weights for an editor dump, from the source FBX
 #

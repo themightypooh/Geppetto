@@ -15,9 +15,13 @@ public static class MarionetteCli
 	/// </summary>
 	public static int Key( string[] a )
 	{
+		if ( a.Length > 2 && a[2].StartsWith( "morph=" ) )
+			return KeyMorph( a );
+
 		if ( a.Length < 5 )
 		{
 			Console.Error.WriteLine( "effigy key clip.riganim bone goal|fk \"frame:x,y,z[:p,y,r][:ease][:w=];..\" [rig=] [model=dump|tentacle|citizen] [chain=N] [solver=ccd|fabrik|spline] [ease=Smooth] [write=out.riganim]" );
+			Console.Error.WriteLine( "effigy key clip.riganim morph=Name \"frame:weight[:ease];..\" [shapes=a,b] [ease=Smooth] [write=out.riganim]" );
 			return 1;
 		}
 
@@ -71,6 +75,51 @@ public static class MarionetteCli
 
 		foreach ( var note in result.Notes.Where( n => n.Contains( "do nothing" ) ) )
 			Console.Error.WriteLine( $"warning: {note}" );
+
+		var path = Opt( "write" ) ?? a[1];
+		File.WriteAllText( path, RigAnimWriter.Write( clip, json ) );
+		Console.WriteLine( $"{result} -> {path}" );
+		return 0;
+	}
+
+	/// <summary>
+	/// effigy key clip.riganim morph=Name "frame:weight[:ease];.." [shapes=a,b (the model's shape keys,
+	/// to check the name against)] [ease=Smooth] [write=out.riganim] - ClipKeys.Morph: a keyed shape
+	/// key curve (a Morph track), the one Marionette's Morph Curves draws and the export writes as a
+	/// flex channel.
+	/// </summary>
+	public static int KeyMorph( string[] a )
+	{
+		if ( a.Length < 4 )
+		{
+			Console.Error.WriteLine( "effigy key clip.riganim morph=Name \"frame:weight[:ease];..\" [shapes=a,b] [ease=Smooth] [write=out.riganim]" );
+			return 1;
+		}
+
+		string Opt( string key ) => a.Skip( 4 ).FirstOrDefault( x => x.StartsWith( key + "=" ) )?[(key.Length + 1)..];
+
+		foreach ( var extra in a.Skip( 4 ).Where( x => !x.StartsWith( "shapes=" ) && !x.StartsWith( "ease=" ) && !x.StartsWith( "write=" ) ) )
+		{
+			Console.Error.WriteLine( $"key morph has no option '{extra}': shapes=, ease= and write= only" );
+			return 1;
+		}
+
+		if ( !File.Exists( a[1] ) ) { Console.Error.WriteLine( $"no clip at {a[1]}" ); return 1; }
+		if ( !Enum.TryParse<RigEase>( Opt( "ease" ) ?? "Smooth", true, out var ease ) ) { Console.Error.WriteLine( "ease: Smooth, Linear, Stepped, EaseIn, EaseOut, Cubic, Monotone" ); return 1; }
+		if ( ClipKeys.ParseMorph( a[3], ease, out var error ) is not { } keys ) { Console.Error.WriteLine( $"keys: {error}" ); return 1; }
+
+		var json = File.ReadAllText( a[1] );
+		var clip = RigAnimFile.Read( json );
+		var shapes = Opt( "shapes" )?.Split( ',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries );
+		var result = ClipKeys.Morph( clip, a[2]["morph=".Length..], keys, shapes );
+
+		if ( !result.Ok ) { Console.Error.WriteLine( result.Error ); return 1; }
+
+		foreach ( var note in result.Notes )
+			Console.Error.WriteLine( $"{(note.Contains( "do nothing" ) ? "warning" : "note")}: {note}" );
+
+		if ( shapes is null )
+			Console.Error.WriteLine( "note: not checked against the model's shape keys (pass shapes=a,b to check); the name must match one exactly to animate it" );
 
 		var path = Opt( "write" ) ?? a[1];
 		File.WriteAllText( path, RigAnimWriter.Write( clip, json ) );
