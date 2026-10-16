@@ -1511,7 +1511,7 @@ public enum EditElement
 /// as one step. Undo inside the session is the session's own stack; leaving the session hands the
 /// finished mesh to <see cref="MeshEditFeature.Commit"/>, which is one step on the document's stack.
 /// </summary>
-public sealed class MeshEditSession
+public sealed partial class MeshEditSession
 {
 	readonly struct Snapshot
 	{

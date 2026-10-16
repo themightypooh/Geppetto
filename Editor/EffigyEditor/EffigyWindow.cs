@@ -1929,7 +1929,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		{
 			Icon = EffigyIcon.UVProject,
 			Label = "UV Project",
-			Tip = "Add a UV Project — re-project UVs: box, planar, or Unwrap (flatten at seams)",
+			Tip = "Add a UV Project — re-project UVs: box, planar, cylinder, sphere, or Unwrap and Organic (flatten at seams)",
 			Clicked = () => AddFeature( NewFeature( ToolKind.UVProject, -1 ) ),
 		} );
 

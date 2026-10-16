@@ -20,6 +20,130 @@ public static class UVToolsTests
 
 		Section( "UV tools: unwrap the selected faces only, and Organic from Edit mode" );
 		TestUnwrapSelected();
+
+		Section( "UV tools: cylinder and sphere projection" );
+		TestCylinderProjection();
+		TestSphereProjection();
+	}
+
+	static float SignedArea( Vec2[] uv )
+	{
+		var a = 0f;
+		for ( var i = 0; i < uv.Length; i++ )
+		{
+			var p = uv[i];
+			var q = uv[(i + 1) % uv.Length];
+			a += p.x * q.y - q.x * p.y;
+		}
+
+		return a * 0.5f;
+	}
+
+	static void TestCylinderProjection()
+	{
+		const int segments = 16;
+		const float radius = 2f;
+		const float height = 6f;
+		var cyl = Primitives.Cylinder( radius, height, segments );
+		UVProjection.CylinderProject( cyl, new Vec3( 0, 0, 1 ) );
+
+		var wall = Enumerable.Range( 0, cyl.FaceCount ).Where( f => MathF.Abs( cyl.FaceNormal( cyl.Faces[f] ).z ) < 0.1f ).ToList();
+		Check( "a 16-sided cylinder has 16 wall quads", wall.Count == segments, $"{wall.Count}" );
+
+		// Each wall quad spans exactly 1/16 of U - including the one across the wrap.
+		var worstU = wall.Max( f => MathF.Abs( cyl.Faces[f].UVs.Max( u => u.x ) - cyl.Faces[f].UVs.Min( u => u.x ) - 1f / segments ) );
+		Check( "every wall quad spans one sixteenth of U, the wrap-seam quad too", worstU < 1e-4f, $"worst {worstU:0.######}" );
+
+		// U is the angle: the vertex at angle t sits at U = t / 2pi + 0.5 (mod 1).
+		var angleOk = true;
+		foreach ( var f in wall )
+		{
+			var face = cyl.Faces[f];
+			for ( var i = 0; i < face.Count; i++ )
+			{
+				var p = cyl.Positions[face.Indices[i]];
+				var want = MathF.Atan2( p.y, p.x ) / MathF.Tau + 0.5f;
+				var got = face.UVs[i].x;
+				var d = MathF.Abs( got - want );
+				angleOk &= MathF.Min( d, MathF.Abs( d - 1f ) ) < 1e-4f;
+			}
+		}
+
+		Check( "U is the angle round the axis", angleOk );
+
+		// V is height over the circumference: the 6-unit wall spans 6 / (2 pi 2).
+		var spanV = wall.Max( f => cyl.Faces[f].UVs.Max( u => u.y ) ) - wall.Min( f => cyl.Faces[f].UVs.Min( u => u.y ) );
+		Check( "V runs along the axis with square texels at the radius", MathF.Abs( spanV - height / (MathF.Tau * radius) ) < 1e-3f, $"{spanV}" );
+
+		// A wall quad's texels are square: its U span times the circumference matches its 3D width.
+		var f0 = cyl.Faces[wall[0]];
+		var du = (f0.UVs.Max( u => u.x ) - f0.UVs.Min( u => u.x )) * MathF.Tau * radius;
+		var chord = 2f * radius * MathF.Sin( MathF.PI / segments );
+		Check( "and along the wall a unit is a unit", MathF.Abs( du - chord ) / chord < 0.02f, $"{du} vs {chord}" );
+
+		var signs = wall.Select( f => MathF.Sign( SignedArea( cyl.Faces[f].UVs ) ) ).Distinct().ToList();
+		Check( "every wall quad winds the same way in UV as on the surface, none mirrored", signs.Count == 1 && signs[0] > 0, string.Join( ",", signs ) );
+
+		// The session form acts on the selection and is one undo step.
+		var session = new MeshEditSession( Primitives.Cylinder( radius, height, segments ) );
+		var before = CopyUVs( session.Mesh );
+		session.SetMode( EditElement.Face );
+		session.SelectFace( wall[0] );
+		session.ProjectCylinder();
+		var others = Enumerable.Range( 0, session.Mesh.FaceCount ).Where( f => f != wall[0] )
+			.All( f => session.Mesh.Faces[f].UVs.Zip( before[f], ( a, b ) => (a - b).Length < 1e-7f ).All( x => x ) );
+		Check( "Edit mode projects just the selected faces", others && session.LastLabel == "Cylinder projection" );
+		Check( "and picks the long axis of what is selected by default", UVProjection.LongestAxis( Primitives.Cylinder( 1, 10, 8 ) ).z == 1f );
+
+		var refused = false;
+		try { UVProjection.CylinderProject( Primitives.Box( 1, 1, 1 ), Vec3.Zero ); } catch ( InvalidOperationException ) { refused = true; }
+		Check( "an axis with no length is refused with a reason", refused );
+
+		var studio = new PartStudio();
+		studio.Add( new PrimitiveFeature() );
+		var project = studio.Add( new UVProjectFeature() );
+		project.Mode.Index = Array.IndexOf( project.Mode.Options, "Cylinder" );
+		studio.Rebuild();
+		Check( "the UV Project feature has a Cylinder mode that runs", project.Mode.Value == "Cylinder" && project.Error is null, project.Error );
+		project.Direction.Value = Vec3.Zero;
+		studio.MarkDirty( project );
+		studio.Rebuild();
+		Check( "and refuses a zero axis with a diagnostic", project.Error is not null );
+	}
+
+	static void TestSphereProjection()
+	{
+		var ball = Primitives.QuadSphere( 3f, 8 );
+		UVProjection.SphereProject( ball, new Vec3( 0, 0, 1 ) );
+
+		// V is latitude: a vertex at height z on a radius-3 ball sits at V = asin(z/3)/pi + 0.5,
+		// for every face that is not touching a pole.
+		var latOk = true;
+		var uSpanOk = true;
+		foreach ( var face in ball.Faces )
+		{
+			for ( var i = 0; i < face.Count; i++ )
+			{
+				var p = ball.Positions[face.Indices[i]];
+				var want = MathF.Asin( Math.Clamp( p.z / p.Length, -1f, 1f ) ) / MathF.PI + 0.5f;
+				latOk &= MathF.Abs( face.UVs[i].y - want ) < 1e-4f;
+			}
+
+			uSpanOk &= face.UVs.Max( u => u.x ) - face.UVs.Min( u => u.x ) < 0.5f;
+		}
+
+		Check( "sphere V is latitude, 0 at the bottom pole and 1 at the top", latOk );
+		Check( "no face is stretched backwards across the wrap", uSpanOk );
+		var vs = ball.Faces.SelectMany( f => f.UVs ).Select( u => u.y ).ToList();
+		Check( "and V covers the globe", vs.Min() >= -1e-5f && vs.Max() <= 1f + 1e-5f && vs.Max() - vs.Min() > 0.9f, $"{vs.Min()}..{vs.Max()}" );
+
+		var front = ball.Faces.Where( f => SignedArea( f.UVs ) > 1e-7f ).Count();
+		var back = ball.Faces.Where( f => SignedArea( f.UVs ) < -1e-7f ).Count();
+		Check( "every face reads the right way round from outside", back == 0 && front > 0, $"{front} / {back}" );
+
+		var session = new MeshEditSession( Primitives.QuadSphere( 3f, 8 ) );
+		session.ProjectSphere();
+		Check( "Edit mode's Sphere projection is one undo step", session.LastLabel == "Sphere projection" && session.UndoCount == 1 );
 	}
 
 	static void Section( string title ) => Report.Section( title );

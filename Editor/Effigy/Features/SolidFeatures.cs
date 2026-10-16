@@ -264,7 +264,7 @@ public sealed class UVProjectFeature : Feature
 	/// Appended rather than inserted: a ChoiceParam is saved by its option, but an older document
 	/// read back by index must still find "Unwrap" where it was.
 	/// </summary>
-	public readonly ChoiceParam Mode = new( "Mode", new[] { "Box", "Planar", "Unwrap", "Organic" } );
+	public readonly ChoiceParam Mode = new( "Mode", new[] { "Box", "Planar", "Unwrap", "Organic", "Cylinder", "Sphere" } );
 	public readonly Vec3Param Direction = new( "Direction", new Vec3( 0, 0, 1 ) );
 	public readonly FloatParam Scale = new( "Units per tile", 1f, 0.0001f, unit: "u" );
 
@@ -307,6 +307,7 @@ public sealed class UVProjectFeature : Feature
 	public override IReadOnlyList<IParam> Parameters => Mode.Value switch
 	{
 		"Planar" => new IParam[] { Bodies, Mode, Direction, Scale },
+		"Cylinder" or "Sphere" => new IParam[] { Bodies, Mode, Direction },
 		"Unwrap" => new IParam[] { Bodies, Mode, ChartAngle, Margin, Atlas },
 		"Organic" => new IParam[] { Bodies, Mode, Margin, Atlas },
 		_ => new IParam[] { Bodies, Mode, Scale },
@@ -317,12 +318,12 @@ public sealed class UVProjectFeature : Feature
 		LastUnwrap = null;
 		LastCoverage = null;
 
-		if ( Mode.Value == "Planar" && Direction.Value.LengthSquared < 1e-12f )
+		if ( Mode.Value is "Planar" or "Cylinder" or "Sphere" && Direction.Value.LengthSquared < 1e-12f )
 		{
 			FailOn( "Direction",
 				"Projection direction has no length",
-				"A planar projection needs a direction, and this one is (0, 0, 0).",
-				"Set Direction to the axis you want the texture to face" );
+				$"A {Mode.Value.ToLowerInvariant()} projection needs a direction, and this one is (0, 0, 0).",
+				Mode.Value == "Planar" ? "Set Direction to the axis you want the texture to face" : "Set Direction to the axis the shape runs along, such as 0,0,1" );
 		}
 
 		// Aggregated across every body the feature unwraps, so the panel reports one number rather
@@ -396,6 +397,21 @@ public sealed class UVProjectFeature : Feature
 			else if ( Mode.Value == "Planar" )
 			{
 				UVProjection.PlanarProject( body.Mesh, Direction.Value, Scale.Clamped );
+			}
+			else if ( Mode.Value is "Cylinder" or "Sphere" )
+			{
+				try
+				{
+					if ( Mode.Value == "Cylinder" )
+						UVProjection.CylinderProject( body.Mesh, Direction.Value );
+					else
+						UVProjection.SphereProject( body.Mesh, Direction.Value );
+				}
+				catch ( InvalidOperationException e )
+				{
+					FailOn( "Direction", $"{Mode.Value} projection could not run on {body.Name}", e.Message,
+						"Set Direction to the axis the shape runs along" );
+				}
 			}
 			else
 			{

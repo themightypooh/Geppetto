@@ -22,7 +22,7 @@ namespace Effigy;
 /// its texture mirrored — text reads backwards, and nothing else looks wrong enough to notice. The
 /// six pairs below are chosen for that property and there is a test that checks all six agree.
 /// </summary>
-public static class UVProjection
+public static partial class UVProjection
 {
 	/// <summary>
 	/// Project each face onto whichever axis plane it most faces.
