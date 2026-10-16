@@ -100,7 +100,7 @@ public enum UnwrapFlatten
 /// PER-CORNER UVs MAKE THE SEAMS FREE. A vertex on a chart boundary belongs to faces in two charts
 /// and simply gets a different UV in each, which is what a seam IS. Nothing has to be split.
 /// </summary>
-public static class UVUnwrap
+public static partial class UVUnwrap
 {
 	/// <summary>
 	/// Unwrap in place.

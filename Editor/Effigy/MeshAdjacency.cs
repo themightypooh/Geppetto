@@ -9370,15 +9370,24 @@ public sealed class MeshEditSession
 	/// Lay the mesh out flat in the unit square so it can be painted or baked, cutting it at
 	/// <see cref="Seams"/> and wherever the surface turns more than <paramref name="angleDegrees"/>.
 	/// Only the UVs change — no vertex moves and no face is added — so the selection survives.
+	///
+	/// With faces selected, only those faces are unwrapped (see <see cref="UVUnwrap.UnwrapFaces"/>):
+	/// every other face keeps its UVs, and the new islands land where the selection's old ones were.
+	/// <paramref name="mode"/> Organic cuts few long seams for a sculpted form and ignores the angle.
 	/// </summary>
 	/// <returns>What the unwrap produced: charts, faces laid out, and any it had to skip.</returns>
-	public UnwrapReport Unwrap( float angleDegrees = 66f, float margin = 0.01f )
+	public UnwrapReport Unwrap( float angleDegrees = 66f, float margin = 0.01f, UnwrapMode mode = UnwrapMode.Angle )
 	{
 		if ( Mesh.FaceCount == 0 )
 			throw new InvalidOperationException( "There is nothing to unwrap." );
 
+		var selected = Mode == EditElement.Face && SelectedFaces.Count > 0 ? new List<int>( SelectedFaces ) : null;
+		var label = mode == UnwrapMode.Organic ? "Organic unwrap" : "Unwrap";
+
 		UnwrapReport report = null;
-		Step( "Unwrap", () => report = UVUnwrap.Unwrap( Mesh, angleDegrees, margin, Seams ) );
+		Step( label, () => report = selected is null
+			? UVUnwrap.Unwrap( Mesh, angleDegrees, margin, Seams, mode )
+			: UVUnwrap.UnwrapFaces( Mesh, selected, angleDegrees, margin, Seams, mode ) );
 		return report;
 	}
 

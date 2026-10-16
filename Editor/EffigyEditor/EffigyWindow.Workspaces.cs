@@ -1122,7 +1122,7 @@ public sealed partial class EffigyWindow
 	private EffigyStageTool _meshLassoTool, _meshBisectTool, _meshDuplicateTool, _meshBridgeTool, _meshExtractTool, _meshSeparateTool;
 	private EffigyStageTool _meshXrayTool, _meshMoveTool, _meshRotateTool, _meshScaleTool, _meshSlideTool, _meshBevelTool;
 	private EffigyStageTool _meshDrapeTool, _meshFabricTool;
-	private EffigyStageTool _meshSeamTool, _meshUnseamTool, _meshUnwrapTool;
+	private EffigyStageTool _meshSeamTool, _meshUnseamTool, _meshUnwrapTool, _meshOrganicUnwrapTool;
 	private EffigyStageTool _meshVertexSlideTool;
 	private EffigyStageTool _meshSubdivideTool, _meshSmoothTool, _meshSymmetrizeTool;
 	private EffigyStageTool _meshNormalizeWeightsTool, _meshSmoothWeightsTool, _meshMirrorWeightsTool;
@@ -1836,7 +1836,7 @@ public sealed partial class EffigyWindow
 			Menu( "Face", "Triangulate", "Tris to quads", "Beautify", "Poke faces", "Fill holes", "Scatter", "-", "Split", "Separate", "Loose parts", "By material", "Extract", "-", "Flip", "Recalculate normals", "-", "Solidify", "-", "Delete faces only" ),
 			Menu( "Transform", "Move X", "Move Y", "Move Z", "-", "Rotate X", "Rotate Y", "Rotate Z", "-", "Scale by", "Flatten X", "Flatten Y", "Flatten Z", "-", "Pivot to selection", "To pivot", "Snap to grid" ),
 			Menu( "Mesh", "Move", "Rotate", "Scale", "Soft selection", "Connected only", "Falloff shape", "-", "Shrink/Fatten", "Shear", "Bend", "-", "Symmetrize", "Mirror X", "Snap to surface", "Shrinkwrap", "-", "Dissolve", "Limited dissolve", "Decimate", "Delete", "Delete loose" ),
-			Menu( "UV", "Unwrap", "Mark seam", "Clear seam", "-", "Project UVs", "Project from above", "-", "Trim row", "Trim rows" ),
+			Menu( "UV", "Unwrap", "Organic unwrap", "Mark seam", "Clear seam", "-", "Project UVs", "Project from above", "-", "Trim row", "Trim rows" ),
 			Menu( "Modifiers", "Modifiers/Live mirror", "Modifiers/Live array", "Modifiers/Live subdivision", "Crease", "Clear crease", "Modifiers/Thickness" ),
 			Menu( "Retopo", "Retopo/Retopo", "Even quads", "Strip brush", "Retopo/Relax", "Finish retopo" ),
 			Menu( "Skin", "Copy weights", "Smooth weights", "Mirror weights", "Fix weights" ),
@@ -2124,7 +2124,8 @@ public sealed partial class EffigyWindow
 		_meshPlanarUVsTool = MeshTool( uv, EffigyIcon.Unwrap, "Project from above", "Map the selected faces straight down at this many units per tile — one continuous texture for a floor, a road, a sign. Shift-click projects along X instead", () => StartMeshOp( "Project UVs", _meshUnitsPerTile, ( s, v ) => { _meshUnitsPerTile = Positive( "Units per tile", v ); s.ProjectUVs( _meshUnitsPerTile, Editor.Application.IsKeyDown( KeyCode.Shift ) ? new Vec3( 1, 0, 0 ) : new Vec3( 0, 0, 1 ) ); } ) );
 		_meshTrimRowTool = MeshTool( uv, EffigyIcon.Unwrap, "Trim row", "Map the selected faces onto one row of a trim sheet: the number is which row, counting from the top. Runs along the face at the Project UVs scale", () => StartMeshOp( "Trim row", 1f, ( s, v ) => { var row = (int)Within( "Trim row", MathF.Round( v ), 1f, _meshTrimRows, $" (the sheet has {_meshTrimRows} rows)" ); s.MapToTrim( (row - 1) / (float)_meshTrimRows, row / (float)_meshTrimRows, _meshUnitsPerTile ); } ) );
 		_meshTrimRowsTool = MeshTool( uv, EffigyIcon.Unwrap, "Trim rows", "How many rows the trim sheet has — set it once for the sheet you use", () => { _meshTrimRows = Math.Max( 1, _meshTrimRows == 8 ? 4 : _meshTrimRows == 4 ? 16 : 8 ); SetPrompt( $"Trim sheet: {_meshTrimRows} rows. Trim row picks one." ); } );
-		_meshUnwrapTool = MeshTool( uv, EffigyIcon.Unwrap, "Unwrap", "Lay the mesh out flat so it can be painted or baked (U), cutting at your seams and wherever the surface turns more than this angle", StartMeshUnwrap );
+		_meshUnwrapTool = MeshTool( uv, EffigyIcon.Unwrap, "Unwrap", "Lay the mesh out flat so it can be painted or baked (U), cutting at your seams and wherever the surface turns more than this angle. With faces selected, only those are unwrapped and the rest keep their UVs", StartMeshUnwrap );
+		_meshOrganicUnwrapTool = MeshTool( uv, EffigyIcon.Unwrap, "Organic unwrap", "Lay a rounded, sculpted form out flat with a few long seams through its creases, instead of cutting it wherever it curves. Uses your seams too. With faces selected, only those are unwrapped", StartMeshOrganicUnwrap );
 
 		// The toolbar: the tools you hold rather than look up, always on screen. Everything —
 		// these included — is also in the menus above it.
@@ -2815,13 +2816,27 @@ public sealed partial class EffigyWindow
 		var hint = session.Seams.Count == 0
 			? " No seams marked, so it cut on the angle alone: mark seams to choose where the texture may break."
 			: "";
+		var only = session.Mode == EditElement.Face && session.SelectedFaces.Count > 0 ? " (selected faces only; the rest kept their UVs)" : "";
 
 		StartMeshOp( "Unwrap", 66f, ( s, v ) =>
 		{
 			var angle = Within( "Unwrap angle", v, 1f, 179f, "°" );
 			var report = s.Unwrap( angle );
-			SetPrompt( $"Unwrap: {report}.{hint}" );
+			SetPrompt( $"Unwrap{only}: {report}.{hint}" );
 		} );
+	}
+
+	/// <summary>The Organic unwrap from Edit mode: no angle to scrub, so it runs once and says what
+	/// it made.</summary>
+	private void StartMeshOrganicUnwrap()
+	{
+		if ( _viewport?.MeshEditSession is not { } session )
+			return;
+
+		var only = session.Mode == EditElement.Face && session.SelectedFaces.Count > 0 ? " (selected faces only; the rest kept their UVs)" : "";
+		UnwrapReport report = null;
+		if ( TryRunMeshOp( "Organic unwrap", s => report = s.Unwrap( 66f, 0.01f, UnwrapMode.Organic ) ) && report is not null )
+			SetPrompt( $"Organic unwrap{only}: {report}." );
 	}
 
 	/// <summary>Scatter another body over this one. One other body is used as it is; more than one
@@ -3061,6 +3076,7 @@ public sealed partial class EffigyWindow
 			Need( _meshSeamTool, edges > 0, "Select the edges (2) to cut the texture along. Alt+click takes a whole loop" );
 			Need( _meshUnseamTool, session is { Seams.Count: > 0 }, "There are no seams to clear" );
 			Need( _meshUnwrapTool, session is { Mesh.FaceCount: > 0 }, "There is nothing to unwrap" );
+			Need( _meshOrganicUnwrapTool, session is { Mesh.FaceCount: > 0 }, "There is nothing to unwrap" );
 			Need( _meshDrapeTool, session is not null && (verts > 0 || _studio.Bodies.Count > 1),
 				"Select the vertices that pin the cloth up, or add the body it should land on" );
 		}

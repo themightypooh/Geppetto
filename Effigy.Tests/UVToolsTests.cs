@@ -17,6 +17,9 @@ public static class UVToolsTests
 		Section( "UV tools: seams are saved with the edit and steer the unwrap" );
 		TestSeamsRoundTrip();
 		TestSeamsThroughModifiers();
+
+		Section( "UV tools: unwrap the selected faces only, and Organic from Edit mode" );
+		TestUnwrapSelected();
 	}
 
 	static void Section( string title ) => Report.Section( title );
@@ -89,6 +92,65 @@ public static class UVToolsTests
 		// Format 3 blobs (no seams) still read.
 		var old = MeshEditBlob.Read( MeshEditBlob.Write( Primitives.Box( 1, 1, 1 ), 0 ), out _ );
 		Check( "a blob without seams reads with none", old.Seams.Count == 0 );
+	}
+
+	static Vec2[][] CopyUVs( PolyMesh mesh ) => mesh.Faces.Select( f => (Vec2[])f.UVs.Clone() ).ToArray();
+
+	static void TestUnwrapSelected()
+	{
+		var session = new MeshEditSession( Primitives.Cylinder( 1f, 3f, 16 ) );
+		session.Unwrap();
+		var before = CopyUVs( session.Mesh );
+		Check( "the whole cylinder unwraps first", NormalBake.Measure( session.Mesh ).CanBake, NormalBake.Measure( session.Mesh ).Problem );
+
+		// Pick the wall's first four quads and re-unwrap just those.
+		var mesh = session.Mesh;
+		var wall = Enumerable.Range( 0, mesh.FaceCount ).Where( f => mesh.Faces[f].Count == 4 ).Take( 4 ).ToList();
+		var (oldMin, oldMax) = UVIslands.Bounds( mesh, wall );
+		session.SetMode( EditElement.Face );
+		foreach ( var f in wall )
+			session.SelectFace( f, MeshEditSession.Combine.Add );
+		var report = session.Unwrap();
+
+		var untouched = true;
+		var changed = false;
+		for ( var f = 0; f < session.Mesh.FaceCount; f++ )
+		{
+			var same = session.Mesh.Faces[f].UVs.Zip( before[f], ( a, b ) => (a - b).Length < 1e-7f ).All( x => x );
+			if ( wall.Contains( f ) )
+				changed |= !same;
+			else
+				untouched &= same;
+		}
+
+		Check( "unwrapping a selection leaves every other face's UVs exactly as they were", untouched );
+		Check( "and does lay out the selected faces", changed && report.Faces == wall.Count, report.ToString() );
+
+		var (newMin, newMax) = UVIslands.Bounds( session.Mesh, wall );
+		Check( "the new islands land inside the box the old ones filled",
+			newMin.x >= oldMin.x - 1e-4f && newMin.y >= oldMin.y - 1e-4f && newMax.x <= oldMax.x + 1e-4f && newMax.y <= oldMax.y + 1e-4f,
+			$"old {oldMin}..{oldMax} new {newMin}..{newMax}" );
+		Check( "four flat-ish neighbouring quads come out as one island", UVIslands.Find( Sub( session.Mesh, wall ) ).Count == 1 );
+		Check( "it is one undo step", session.LastLabel == "Unwrap" );
+
+		// Organic, from the session, on the whole mesh.
+		session.ClearSelection();
+		var organic = session.Unwrap( 66f, 0.01f, UnwrapMode.Organic );
+		Check( "Organic unwrap runs from Edit mode", organic.Faces == session.Mesh.FaceCount && session.LastLabel == "Organic unwrap", organic.ToString() );
+		Check( "and leaves UVs a bake can use", NormalBake.Measure( session.Mesh ).CanBake, NormalBake.Measure( session.Mesh ).Problem );
+
+		var refused = false;
+		try { UVUnwrap.UnwrapFaces( session.Mesh, new int[0] ); } catch ( InvalidOperationException ) { refused = true; }
+		Check( "unwrapping no faces is refused with a reason", refused );
+	}
+
+	/// <summary>Just these faces, sharing the mesh's vertices.</summary>
+	static PolyMesh Sub( PolyMesh mesh, IEnumerable<int> faces )
+	{
+		var piece = new PolyMesh { Positions = mesh.Positions };
+		foreach ( var f in faces )
+			piece.Faces.Add( mesh.Faces[f] );
+		return piece;
 	}
 
 	static void TestSeamsThroughModifiers()
