@@ -482,6 +482,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		_tutorialDockOption = AddDockOption( view, "Tutorial", "school", "Tutorial" );
 		_variablesDockOption = AddDockOption( view, "Variables", "tag", "Variables" );
 		_uvDockOption = AddDockOption( view, "UV Editor", "texture", "UV" );
+		_shapeKeysDockOption = AddDockOption( view, "Shape Keys", "animation", "Shape Keys" );
 		view.AddOption( "Section View", "content_cut", ToggleSectionView );
 
 		// Transient on purpose. A saved dimension is an annotation, and this is a readout: click
@@ -618,6 +619,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			SetDockCheck( _consoleDockOption, "Console" );
 			SetDockCheck( _variablesDockOption, "Variables" );
 			SetDockCheck( _uvDockOption, "UV" );
+			SetDockCheck( _shapeKeysDockOption, "Shape Keys" );
 		}
 		finally
 		{
@@ -4234,6 +4236,8 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			Noted = why => _viewport?.ShowCallout( "variables", EffigyCalloutKind.Refusal, why, lifetime: 8f ),
 		};
 
+		BuildShapeKeysPanel();
+
 		// Built here with the rest so the dock's CreateAction has something to hand back. The
 		// engine's console widget goes inside it - see EffigyConsolePanel for why that takes any
 		// code at all.
@@ -4353,6 +4357,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		// Right, with the Materials it serves: the UV square is where a texture gets its layout.
 		DockManager.RegisterDock( new() { Title = "UV", Icon = "texture", Area = DockArea.Right, CreateAction = () => _uvPanel } );
 
+		// Right, with the other things you do to a body once it exists.
+		DockManager.RegisterDock( new() { Title = "Shape Keys", Icon = "animation", Area = DockArea.Right, CreateAction = () => _shapeKeysPanel } );
+
 		// Bottom, full width, and NOT tabbed behind anything. A tutorial that shares a tab strip
 		// is a tutorial you lose the moment you look at the thing it told you to look at — which
 		// is every step. Along the bottom it stays readable while both side docks are in use.
@@ -4415,6 +4422,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		_partsPanel.Select( _viewport.IdleBodyIds );
 		_syncingSelection = false;
 		DescribeGeometrySelection();
+		RefreshShapeKeys();
 		UpdateRigChecks();
 
 		// Object mode's tools and its Scene list both follow the selection.
@@ -5464,6 +5472,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		UpdateObjectChecks();
 		_materialsPanel?.Refresh();
 		_variablesPanel?.Rebuild();
+		RefreshShapeKeys();
 		_rigPanel?.RefreshBodyNames();
 
 		// Covers every other way the lock can change — undo back past the first sketch, deleting
@@ -5544,6 +5553,21 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	/// </summary>
 	private PolyMesh VisibleMeshForPreview()
 	{
+		// A shape key's preview slider is up: build from each body with its keys applied.
+		if ( AnyShapeKeyPreview )
+		{
+			var merged = new PolyMesh();
+			var visible = _studio.Bodies.Where( b => b.Visible ).ToList();
+
+			if ( visible.Count == 1 )
+				return WithShapeKeyPreview( visible[0] );
+
+			foreach ( var body in visible )
+				MeshTransform.Append( merged, WithShapeKeyPreview( body ) );
+
+			return merged;
+		}
+
 		PolyMesh single = null;
 		var count = 0;
 

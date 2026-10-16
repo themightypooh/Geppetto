@@ -122,7 +122,7 @@ public sealed partial class EffigyWindow
 		// Features that only a build script could add until the usability audit (2026-10-16).
 		mesh.Add( null );
 		mesh.Add( Tool( EffigyIcon.Sculpt, "Surface detail", "Skin grain, pustules, scattered bumps or pits, or sag folds over the selected body, kept to creases or ridges if you like. Needs enough mesh: subdivide first", () => AddFeature( NewFeature( ToolKind.SurfaceDetail, -1 ) ) ) );
-		mesh.Add( Tool( EffigyIcon.Sculpt, "Shape key", "Start a shape key (a morph: a sac swelling, a jaw gaping). Sculpt, edit or add detail after it, then add End shape key — what moved becomes the key and the body goes back. Exported with the model, animated in Marionette", () => AddFeature( NewFeature( ToolKind.ShapeKey, -1 ) ) ) );
+		mesh.Add( Tool( EffigyIcon.Sculpt, "Shape key", "Start a shape key (a morph: a sac swelling, a jaw gaping). Sculpt, edit or add detail after it, then add End shape key — what moved becomes the key and the body goes back. Exported with the model, animated in Marionette. The Shape Keys panel (View menu) does all of this for you", () => AddFeature( NewFeature( ToolKind.ShapeKey, -1 ) ) ) );
 		mesh.Add( Tool( EffigyIcon.Sculpt, "End shape key", "Finish the shape key opened by the last Shape key: everything since then becomes the key, and the body goes back to how it was", () => AddFeature( NewFeature( ToolKind.ShapeKeyEnd, -1 ) ) ) );
 
 		_objectMenus = new List<EffigyStage> { objectMenu, add, mesh };
