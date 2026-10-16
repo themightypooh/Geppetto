@@ -972,6 +972,14 @@ public static partial class BuildScript
 				continue;
 			}
 
+			if ( feature is IScriptValueReader reader && reader.HandlesScriptValue( key, value, out var readError ) )
+			{
+				if ( readError is not null )
+					return Fail( r, $"{key}: {readError}" );
+
+				continue;
+			}
+
 			var target = FindParam( feature, key, out var field );
 
 			if ( target is null && field is null )
