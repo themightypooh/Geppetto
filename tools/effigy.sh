@@ -7,6 +7,9 @@
 #   tools/effigy.sh describe doc.effigy
 #   tools/effigy.sh measure  doc.effigy <landmark|x,y,z> [second landmark]
 #   tools/effigy.sh match    doc.effigy <view> ref.png [diff.png]
+#   tools/effigy.sh topology doc.effigy|model.obj [Body] [poles=12]   quads/tris/n-gons, poles, edge CV, quad shape, manifold, symmetry, loops per joint
+#   tools/effigy.sh section  doc.effigy|model.obj Body|all z=10,20 | x=.. | y=.. | along=Bone [at=0,0.5,1]   width/depth/perimeter/area per slice (z=0..60:7 for a range)
+#   tools/effigy.sh flex     doc.effigy Body|all [bones=a,b] [angles=90,140] [axis=auto|x|y|z] [render=outdir]   bend each joint: local volume ratio, new self-crossings, stills
 #   tools/effigy.sh script   build.txt [doc.effigy|-] [outdir]
 #   tools/effigy.sh fix      doc.effigy loose,doubles,holes,normals|all [out.effigy]
 #   tools/effigy.sh parts    out.png

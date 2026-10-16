@@ -16,6 +16,9 @@ namespace Effigy.Tests;
 ///   effigy describe doc.effigy                         the model in words
 ///   effigy measure doc.effigy <landmark|x,y,z>         what is at a place
 ///   effigy match   doc.effigy <view> ref.png [out.png] silhouette against a drawing
+///   effigy topology doc.effigy|model.obj [Body] [poles=12]     faces, poles, edges, quads, symmetry, loops per joint
+///   effigy section  doc.effigy|model.obj Body|all z=… | along=Bone [at=…]   width, depth, perimeter, area per slice
+///   effigy flex     doc.effigy Body|all [bones=] [angles=90,140] [render=dir]   bend each joint: volume kept, new crossings
 ///   effigy script  build.txt [doc.effigy] [outdir]     run a build script, from a document or empty
 ///   effigy fix     doc.effigy <fixes> [out.effigy]     loose, doubles, holes, normals, all
 ///   effigy parts   out.png                             the part library on one sheet
@@ -32,7 +35,7 @@ namespace Effigy.Tests;
 public static class EffigyCli
 {
 	public static bool Handles( string verb ) =>
-		verb is "render" or "describe" or "measure" or "match" or "script" or "fix" or "parts" or "new" or "crop" or "wardrobe" or "clothing" or "take" or "sim" or "simrig" or "key" or "fbxdump" or "fbxskin" or "fbxinfo" or "shade";
+		verb is "render" or "describe" or "measure" or "match" or "topology" or "section" or "flex" or "script" or "fix" or "parts" or "new" or "crop" or "wardrobe" or "clothing" or "take" or "sim" or "simrig" or "key" or "fbxdump" or "fbxskin" or "fbxinfo" or "shade";
 
 	public static int Run( string[] args )
 	{
@@ -44,6 +47,7 @@ public static class EffigyCli
 				"describe" => Describe( args ),
 				"measure" => Measure( args ),
 				"match" => Match( args ),
+				"topology" or "section" or "flex" => MeshReport( args ),
 				"script" => Script( args ),
 				"fix" => Fix( args ),
 				"parts" => Parts( args ),
@@ -158,6 +162,41 @@ public static class EffigyCli
 		}
 
 		return 0;
+	}
+
+	/// <summary>
+	/// topology / section / flex: the build-script verb of the same name, run on a document or on
+	/// a bare .obj (imported as one body named after the file), printed.
+	/// </summary>
+	static int MeshReport( string[] a )
+	{
+		if ( a.Length < 2 )
+		{
+			Console.Error.WriteLine( a[0] switch
+			{
+				"topology" => "effigy topology doc.effigy|model.obj [Body|all] [poles=12]",
+				"section" => "effigy section doc.effigy|model.obj Body|all z=10,20 | x=… | y=… | along=Bone [at=0,0.5,1]   (a list may be a range: z=0..60:7)",
+				_ => "effigy flex doc.effigy Body|all [bones=a,b] [angles=90,140] [axis=auto|x|y|z] [render=outdir] [views=4] [size=320]",
+			} );
+			return 1;
+		}
+
+		PartStudio studio;
+		if ( a[1].EndsWith( ".obj", StringComparison.OrdinalIgnoreCase ) )
+		{
+			studio = new PartStudio();
+			var name = Path.GetFileNameWithoutExtension( a[1] ).Replace( ' ', '_' );
+			var import = BuildScript.Run( studio, $"add Import name={name} source={Path.GetFullPath( a[1] )}" );
+			if ( !import.Ok ) { Console.Error.WriteLine( import ); return 1; }
+		}
+		else
+		{
+			studio = Load( a[1] );
+		}
+
+		var result = BuildScript.Run( studio, string.Join( " ", a.Where( ( _, i ) => i != 1 ) ), Directory.GetCurrentDirectory() );
+		Console.WriteLine( result );
+		return result.Ok ? 0 : 1;
 	}
 
 	static int Script( string[] a )

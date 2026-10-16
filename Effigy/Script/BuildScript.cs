@@ -35,7 +35,7 @@ namespace Effigy;
 /// script with the feature's own diagnostic — its cause and its remedies — so what comes back
 /// is what to change, not a stack trace.
 /// </summary>
-public static class BuildScript
+public static partial class BuildScript
 {
 	public sealed class Result
 	{
@@ -287,8 +287,21 @@ public static class BuildScript
 				return true;
 			}
 
+			case "topology":
+				return Topology( studio, args, r );
+
+			case "section":
+				return Section( studio, args, r );
+
+			case "flex":
+				return Flex( studio, args, baseDir, r );
+
 			case "match":
 			{
+				// match front=ref_front.png side=ref_side.png [out=dir]: several views, one combined score.
+				if ( args.Count > 0 && args[0].Contains( '=' ) )
+					return MatchViews( studio, args, baseDir, r );
+
 				if ( args.Count < 2 )
 					return Fail( r, "match needs a view and a reference PNG: match front ref.png [out.png]" );
 
@@ -460,7 +473,7 @@ public static class BuildScript
 			}
 
 			default:
-				return Fail( r, $"Unknown command '{verb}'. Commands: add, edit, set, remove, rebuild, fix, render, describe, measure, distance, symmetry, match, material, pivot, export, corrective, bake, save, echo." );
+				return Fail( r, $"Unknown command '{verb}'. Commands: add, edit, set, remove, rebuild, fix, render, describe, measure, distance, symmetry, topology, section, flex, match, material, pivot, export, corrective, bake, save, echo." );
 		}
 	}
 

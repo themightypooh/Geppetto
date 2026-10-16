@@ -390,6 +390,8 @@ public static class Program
 
 		MenuIconTests.Run();
 
+		MeshReportTests.Run( outDir );
+
 		Section( "writing sample OBJs" );
 		WriteSamples( outDir );
 

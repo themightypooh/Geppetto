@@ -353,7 +353,10 @@ save out/robot.effigy
 | `measure` / `at` | `measure landmark` |
 | `distance` | `distance A B` |
 | `symmetry` | `symmetry [Body]` |
-| `match` | `match view ref.png [diff.png]` |
+| `topology` | `topology [Body\|all] [poles=12]`: welded face kinds (quad/tri/n-gon %), non-manifold and open edges, poles by valence with places as `@bone+dx,dy,dz` (or `@Body.side+…` without a rig) and their distance to the nearest joint in edge lengths, edge-length mean/CV, quad aspect and skew (mean, 90th percentile, max), smallest triangle angle, left-right Hausdorff across y = 0, and with a rig the edge loops within ±1 limb radius of each bone head. Each line carries its craft target; a miss starts with `!`. Also Object mode ▸ Mesh ▸ Topology report. (`TopologyReport`) |
+| `section` | `section Body\|all z=10,20 \| x=… \| y=… \| along=Bone [at=0,0.5,1]`: one line per slice with width (along y; across the bone along its X), depth, perimeter, area and centre, and each outline separately when the cut meets several (two legs) or a hole (a sleeve). A list may be a range, `z=0..60:7`. Fails only when every slice misses, and gives the body's span. (`SectionReport`) |
+| `flex` | `flex Body\|all [bones=a,b] [angles=90,140] [axis=auto\|x\|y\|z\|x,y,z] [render=dir] [views=4] [size=320]`: binds as `export` does (body→bone map, smoothing, weight paint), bends each bone about its hinge (across the chain's existing bend, else the bone's X) and reports the local volume ratio (cone volume from the joint over triangles within two limb radii; target ≥ 0.8) and self-crossings new against the bind pose (target 0). `render=` writes a clay still per bend, `OURS · bone angle`. Default bones: those with skin on both sides of the joint. (`FlexReport`) |
+| `match` | `match view ref.png [diff.png]`, or several views at once: `match front=ref_front.png side=ref_side.png [out=dir]` adds a combined line (mean overlap, worst view) and writes `match_<view>.png` diffs to `out=` |
 | `material` | `material slot path.vmat` |
 | `pivot` | `pivot Body @landmark` |
 | `export` | `export folder [split=1] [assets=root] [name=x] [lods=0\|1\|0.5,0.25] [loddistance=a,b] [collision=none\|auto\|hulls\|render] [surface=default] [skin=auto\|0\|1] [fbx=1]`. Static: `.obj` + `.vmdl` (+ `_lodN.obj` and a LOD list with `lods=`; `lods=1` is half and a quarter, switching at 6x and 15x the model's diagonal unless `loddistance=` says). Skinned (default when the studio has bones and `split` is off): `.dmx` + `.smd` + a skinned `.vmdl`, bound like the editor's export (body→bone map, smoothing, weight paint), skeleton moved with the pivot; no LODs. `collision=auto` is the editor's choice (exact shapes from the history, else a hull per body; on a skinned model a hull per body on its bone), `hulls` a hull per body, `render` physics from the render mesh; default none. `fbx=1` adds a binary `.fbx` (skinned when the model is) for Blender; the `.vmdl` still loads the `.obj`/`.dmx`. Reference bodies are left out. |
@@ -477,6 +480,9 @@ mouth 0.569 / 0.435 with a flat 0.552 roughness and a 0.263 second lobe, red AO 
 | `describe doc.effigy` | The model in words with a number on every line: size, whether it stands on the ground, each body's size and position, open edges, the rig, the history and what failed. |
 | `measure doc.effigy <landmark> [second]` | What is at a place, or the distance between two. |
 | `match doc.effigy <view> ref.png [diff.png]` | Score the silhouette against a reference drawing: overlap, proportions, and which heights are too wide or narrow. The diff is orange where only the model is and blue where only the drawing is. |
+| `topology doc.effigy\|model.obj [Body] [poles=12]` | The `topology` report (see the script verbs); an OBJ is imported as one body named after the file. |
+| `section doc.effigy\|model.obj Body\|all z=… \| along=Bone [at=…]` | The `section` report. |
+| `flex doc.effigy Body\|all [bones=] [angles=90,140] [render=dir]` | The `flex` bend test; needs a document with bones. |
 | `script build.txt [doc.effigy\|-] [outdir]` | Run a build script, starting from a document or empty. |
 | `fix doc.effigy loose,doubles,holes,normals\|all [out.effigy]` | Clean up meshes. |
 | `parts out.png` | A sheet of every kitbash part. |
