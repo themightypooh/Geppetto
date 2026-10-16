@@ -1,4 +1,7 @@
 using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 
 namespace Effigy;
 
@@ -40,5 +43,47 @@ public static class VmatMorph
 
 		var newline = lineEnd > 0 && vmat[lineEnd - 1] == '\r' ? "\r\n" : "\n";
 		return vmat.Insert( lineEnd + 1, $"{newline}\t//---- Animation ----{newline}\tF_MORPH_SUPPORTED 1{newline}" );
+	}
+
+	/// <summary>
+	/// Turn the flag on in every material file <paramref name="mesh"/>'s faces use, the same pass the
+	/// editor's Compile runs after writing a DMX with shape keys. <paramref name="pathFor"/> maps a
+	/// material name (what the slot exports as) to its file, or null when it has none. Returns one
+	/// line per material that needed something said: turned on, or why it could not be.
+	/// </summary>
+	public static List<string> EnableFiles( PolyMesh mesh, Func<int, string> nameForSlot, Func<string, string> pathFor )
+	{
+		var said = new List<string>();
+
+		if ( mesh is null || !mesh.HasMorphs )
+			return said;
+
+		foreach ( var slot in mesh.Faces.Select( f => f.Material ).Distinct().OrderBy( s => s ) )
+		{
+			var name = nameForSlot( slot );
+			var path = string.IsNullOrWhiteSpace( name ) ? null : pathFor( name );
+
+			if ( path is null || !File.Exists( path ) )
+			{
+				said.Add( $"slot {slot} ({name}) has no .vmat file at {path ?? "(no path)"}, so its shape keys will not show "
+					+ $"until its material sets F_MORPH_SUPPORTED 1 (Animation). Assign one with `material {slot} materials/x.vmat`." );
+				continue;
+			}
+
+			var text = File.ReadAllText( path );
+
+			if ( IsOn( text ) )
+				continue;
+
+			if ( Enable( text ) is { } on )
+			{
+				File.WriteAllText( path, on );
+				said.Add( $"{name}: F_MORPH_SUPPORTED on, for the shape keys" );
+			}
+			else
+				said.Add( $"{name} is not an Effigy-written material, so its shape keys will not show until it sets F_MORPH_SUPPORTED 1 (Animation)" );
+		}
+
+		return said;
 	}
 }

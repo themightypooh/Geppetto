@@ -639,6 +639,19 @@ public static partial class BuildScript
 			File.WriteAllText( vmdlPath, VmdlDocument.Skinned( $"{folder}/{safe}.dmx", skeleton, physics, VmdlMaterials.GroupList( studio, mesh ) ) );
 			r.Written.AddRange( new[] { dmxPath, smdPath, vmdlPath } );
 
+			// Shape keys went into the DMX (DmxMorphs); their materials need F_MORPH_SUPPORTED or the
+			// GPU never applies them - the editor's Compile does the same (EnableMorphMaterials).
+			if ( mesh.HasMorphs )
+			{
+				r.Log.Add( $"export: {mesh.ValidMorphs.Count()} shape key(s) written to the .dmx as flex controls" );
+
+				foreach ( var line in VmatMorph.EnableFiles( mesh, studio.NameForSlot, n => n.EndsWith( ".vmat", StringComparison.OrdinalIgnoreCase ) ? Path.Combine( root, n ) : null ) )
+					r.Log.Add( $"export: {line}" );
+
+				if ( fbx )
+					r.Log.Add( "export: note: the .fbx carries no shape keys; the .dmx the .vmdl loads does" );
+			}
+
 			if ( fbx )
 			{
 				var fbxPath = Path.Combine( dir, safe + ".fbx" );
@@ -738,6 +751,12 @@ public static partial class BuildScript
 		List<float> ratios, List<float> distances, bool fbx, Result r )
 	{
 		var objPath = Path.Combine( dir, name + ".obj" );
+
+		// OBJ has no shape keys. Say so rather than drop them without a word, as the editor does.
+		if ( mesh.HasMorphs )
+			r.Log.Add( $"export: warning: {mesh.ValidMorphs.Count()} shape key(s) on {name} were left out: a static model exports as OBJ, which has no morphs. "
+				+ "Export it skinned (add a bone, and no skin=0 or split=1) to keep them in the .dmx." );
+
 		ObjWriter.WriteFile( mesh, objPath, name, materialName: studio.NameForSlot );
 		r.Written.Add( objPath );
 
