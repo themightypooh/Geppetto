@@ -113,7 +113,7 @@ public static class EffigyMcpTools
 	/// Run a build script on the open studio, as one undo step. Lines like
 	/// `add Primitive name=Torso shape=Box sizex=20 sizey=12 sizez=30 position=@ground+0,0,15`,
 	/// `add Part part=Cog size=4 count=10 position=@Torso.front`, `add Spline points=…;… radius=1`,
-	/// `set Torso sizez=32`, `fix Torso all`, `describe`, `measure`, `distance`, `symmetry`. Call
+	/// `set Torso sizez=32`, `fix Torso all`, `describe`, `measure`, `distance`, `symmetry`, `topology`, `section`, `flex`. Call
 	/// effigy_help for the feature types and their parameters. A feature that fails stops the
 	/// script and says why and what to change.
 	/// </summary>
@@ -133,7 +133,7 @@ public static class EffigyMcpTools
 	{
 		if ( string.IsNullOrWhiteSpace( type ) )
 			return "Feature types: " + string.Join( ", ", BuildScript.FeatureTypeNames() )
-				+ "\nScript commands: add TYPE key=value…, set NAME key=value…, remove NAME, fix BODY|all loose|doubles|holes|normals|all, describe, measure PLACE, distance A B, symmetry, save PATH, echo…"
+				+ "\nScript commands: add TYPE key=value…, set NAME key=value…, remove NAME, fix BODY|all loose|doubles|holes|normals|all, describe, measure PLACE, distance A B, symmetry, topology [BODY], section BODY z=…|along=BONE [at=…], flex BODY [bones=…] [angles=90,140], match VIEW=ref.png…, save PATH, echo…"
 				+ "\nPoints: x,y,z, a landmark (Torso.top, spine.tail, ground, origin), or @landmark+dx,dy,dz. Body params take body names; list fields take a;b;c.";
 
 		return BuildScript.Describe( type );

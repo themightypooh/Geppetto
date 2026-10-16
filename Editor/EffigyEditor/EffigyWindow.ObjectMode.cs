@@ -126,6 +126,9 @@ public sealed partial class EffigyWindow
 		mesh.Add( Tool( EffigyIcon.Sculpt, "Shape key", "Start a shape key (a morph: a sac swelling, a jaw gaping). Sculpt, edit or add detail after it, then add End shape key — what moved becomes the key and the body goes back. Exported with the model, animated in Marionette. The Shape Keys panel (View menu) does all of this for you", () => AddFeature( NewFeature( ToolKind.ShapeKey, -1 ) ) ) );
 		mesh.Add( Tool( EffigyIcon.Sculpt, "End shape key", "Finish the shape key opened by the last Shape key: everything since then becomes the key, and the body goes back to how it was", () => AddFeature( NewFeature( ToolKind.ShapeKeyEnd, -1 ) ) ) );
 
+		mesh.Add( null );
+		mesh.Add( TopologyTool() );
+
 		_objectMenus = new List<EffigyStage> { objectMenu, add, mesh };
 	}
 
@@ -356,6 +359,7 @@ public sealed partial class EffigyWindow
 		Need( _objRetopoTool, bodies > 0, "Add a body first" );
 		Need( _objSubdivideTool, selected > 0, pickOne );
 		Need( _objRemeshTool, selected > 0, pickOne );
+		Need( _objTopologyTool, bodies > 0, "Add a body first" );
 		Need( _objBendTool, selected > 0 && _studio.Features.OfType<SplineFeature>().Any(), selected == 0 ? pickOne : "Draw a Spline first (Add ▸ Spline)" );
 
 		_objMoveTool.Checked = handle && mode == EffigyViewport.BodyDragMode.Move;
