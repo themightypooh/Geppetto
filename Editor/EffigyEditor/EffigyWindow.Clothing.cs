@@ -725,8 +725,8 @@ public sealed partial class EffigyWindow
 			Tip = "Write the garment as live cloth - models/effigy/NAME.cloth.json - for the Garment Cloth "
 				+ "component. Put that component on the character and the shirt hangs and swings with "
 				+ "real cloth physics instead of riding the bones stiffly. Works in the editor without Play. "
-				+ "It collides with the body only: no self-collision yet, and a jacket over a shirt will pass "
-				+ "through the shirt.",
+				+ "A jacket stays over the shirt under it, and padding is heavier and stiffer to fold. "
+				+ "A fold can still pass through itself.",
 			Clicked = PublishLiveCloth,
 		} );
 
@@ -766,6 +766,12 @@ public sealed partial class EffigyWindow
 		var pins = new List<float>();
 		ClothExport.Settings fabric = null;
 
+		// Which layer each particle is in and the padding sewn into it, so the jacket stays over
+		// the shirt and a quilted yoke is heavier and stiffer in the game too. See ClothExport.Layering.
+		var layering = new ClothExport.Layering();
+		var pads = _studio.Features.OfType<PaddingFeature>().ToList();
+		var regions = new BodyRegions.Map( _studio.Rig );
+
 		// Fur shells live on the garment mesh, on their own slot. They are a shader trick, not
 		// cloth, and simulating them makes the fur swing like a second shirt.
 		var furSlots = FurSlots();
@@ -796,6 +802,7 @@ public sealed partial class EffigyWindow
 			var feature = _studio.Features.OfType<GarmentFeature>().FirstOrDefault( g => g.Id == body.FeatureId );
 			fabric ??= feature is null ? null : ClothExport.FabricSettings( feature.FabricValue, feature.Stiffness.Clamped );
 			pins.AddRange( ClothExport.PinTop( cloth, feature?.LivePinFraction ?? 0.12f ) );
+			layering.Add( cloth, body, pads, regions );
 		}
 
 		var map = new BodyRegions.Map( _studio.Rig );
@@ -821,7 +828,7 @@ public sealed partial class EffigyWindow
 			Directory.CreateDirectory( folder );
 
 			var file = Path.Combine( folder, $"{name}.cloth.json" );
-			File.WriteAllText( file, ClothExport.Write( mesh, capsules, _studio.Rig, material, fabric, pins.ToArray() ) );
+			File.WriteAllText( file, ClothExport.Write( mesh, capsules, _studio.Rig, material, fabric, pins.ToArray(), layering ) );
 
 			Log.Info( $"[Effigy] wrote {file} - {mesh.VertexCount} cloth vertices on {capsules.Count} capsules" );
 

@@ -43,6 +43,13 @@ public static class ClothingSim
 	/// collision-last, for comparing.</summary>
 	static bool _oldSolver;
 
+	/// <summary>RunLive without the layers and padding the file carries, to compare against.</summary>
+	static bool _noLayers;
+
+	/// <summary>The last runtime run's worst 99th-percentile stretch over the poses, and its drift.</summary>
+	internal static float LastStretch, LastDrift;
+	internal static float LastUnderShare, LastUnderDepth, SettledUnderShare;
+
 	static void Check( string stage, string what, bool ok, string detail = null )
 	{
 		Findings.Add( new Finding { Recipe = _recipe, Stage = stage, What = what, Ok = ok, Detail = detail } );
@@ -173,6 +180,25 @@ public static class ClothingSim
 	}
 
 	// --- one garment through the whole bar ---------------------------------------------------
+
+	/// <summary>
+	/// Live cloth for a document that is already built - a jacket over a shirt, padded - written
+	/// and run through the runtime port, quick. What it checked comes back for the caller to report.
+	/// </summary>
+	internal static List<(string What, bool Ok, string Detail)> RunLive( PartStudio studio, string outDir, string file, bool layers = true )
+	{
+		_noLayers = !layers;
+		Findings.Clear();
+		Notes.Clear();
+		_recipe = file;
+		var cloth = LiveClothStage( studio, outDir, file );
+
+		if ( cloth is not null )
+			RuntimeStage( cloth, studio, outDir, file, quick: true );
+
+		_noLayers = false;
+		return Findings.Select( f => ($"[{f.Stage}] {f.What}", f.Ok, f.Detail) ).ToList();
+	}
 
 	static void RunRecipe( string name, Skeleton rig, byte[] wearerObj, string outDir, bool quick )
 	{
@@ -517,6 +543,11 @@ public static class ClothingSim
 		public FabricData Fabric { get; set; }
 		public float[] Pins { get; set; }
 		public float[] Fitted { get; set; }
+		public float[] Mass { get; set; }
+		public float[] BendScale { get; set; }
+		public float[] Under { get; set; }
+		public float[] Over { get; set; }
+		public int[] Layers { get; set; }
 		public float[] Positions { get; set; }
 		public float[] UVs { get; set; }
 		public int[] Triangles { get; set; }
@@ -548,6 +579,12 @@ public static class ClothingSim
 		var pins = new List<float>();
 		ClothExport.Settings fabric = null;
 
+		// Which layer each particle is in and the padding sewn into it, so the jacket stays over
+		// the shirt and a quilted yoke is heavier and stiffer in the game too. See ClothExport.Layering.
+		var layering = new ClothExport.Layering();
+		var pads = studio.Features.OfType<PaddingFeature>().ToList();
+		var regions = new BodyRegions.Map( studio.Rig );
+
 		var furSlots = studio.Features.OfType<FurFeature>()
 			.Where( f => !f.Suppressed && f.ResolvedSlot >= 0 )
 			.Select( f => f.ResolvedSlot )
@@ -571,6 +608,7 @@ public static class ClothingSim
 			var feature = studio.Features.OfType<GarmentFeature>().FirstOrDefault( g => g.Id == body.FeatureId );
 			fabric ??= feature is null ? null : ClothExport.FabricSettings( feature.FabricValue, feature.Stiffness.Clamped );
 			pins.AddRange( ClothExport.PinTop( cloth, feature?.LivePinFraction ?? 0.12f ) );
+			layering.Add( cloth, body, pads, regions );
 		}
 
 		var map = new BodyRegions.Map( studio.Rig );
@@ -582,7 +620,7 @@ public static class ClothingSim
 		if ( capsules.Count == 0 )
 			return null;
 
-		var json = ClothExport.Write( mesh, capsules, studio.Rig, "models/effigy/fabric/x.vmat", fabric, pins.ToArray() );
+		var json = ClothExport.Write( mesh, capsules, studio.Rig, "models/effigy/fabric/x.vmat", fabric, pins.ToArray(), layering );
 		File.WriteAllText( Path.Combine( outDir, $"{file}.cloth.json" ), json );
 
 		ClothFile data;
@@ -723,6 +761,39 @@ public static class ClothingSim
 
 		var anchors = _oldSolver ? null : BuildAnchors( data.Positions, links, pins );
 
+		// GarmentCloth's padding and layers.
+		var invMass = !_noLayers && data.Mass is { } ms && ms.Length == count ? ms.Select( v => 1f / MathF.Max( v, 0.1f ) ).ToArray() : null;
+		var bendScale = !_noLayers && data.BendScale is { } bs && bs.Length == count ? bs : null;
+		var under = !_noLayers && data.Under is { } un && un.Length == count ? un : null;
+		var over = new List<(int O, int I, float Gap)>();
+		if ( data.Over is { } ov && !_noLayers )
+			for ( var k = 0; k + 2 < ov.Length; k += 3 )
+				if ( (int)ov[k] >= 0 && (int)ov[k] < count && (int)ov[k + 1] >= 0 && (int)ov[k + 1] < count )
+					over.Add( ((int)ov[k], (int)ov[k + 1], MathF.Max( 0f, ov[k + 2] )) );
+		float Share( int a, int b ) => invMass is null || invMass[a] + invMass[b] < 1e-6f ? 0.5f : invMass[a] / (invMass[a] + invMass[b]);
+		var normals = new Vec3[count];
+		var tris = data.Triangles;
+		var fans = new List<int>[count];
+		for ( var i = 0; i < count; i++ ) fans[i] = new List<int>();
+		for ( var t = 0; t + 2 < tris.Length; t += 3 ) { fans[tris[t]].Add( t ); fans[tris[t + 1]].Add( t ); fans[tris[t + 2]].Add( t ); }
+		var around = new List<int>[count];
+		for ( var i = 0; i < count; i++ ) around[i] = new List<int>();
+		foreach ( var (a, b, _, bend) in links ) if ( !bend ) { around[a].Add( b ); around[b].Add( a ); }
+
+		// GarmentCloth.Nearest.
+		int Nearest( Vec3[] x, Vec3 p, int from )
+		{
+			var best = (x[from] - p).LengthSquared;
+			for ( var hop = 0; hop < 16; hop++ )
+			{
+				var next = from;
+				foreach ( var j in around[from] ) { var d = (x[j] - p).LengthSquared; if ( d < best ) { best = d; next = j; } }
+				if ( next == from ) break;
+				from = next;
+			}
+			return from;
+		}
+
 		var x = new Vec3[count];
 		var prev = new Vec3[count];
 		for ( var i = 0; i < count; i++ ) x[i] = prev[i] = bindBone[vertexBone[i]].TransformPoint( local[i] );
@@ -765,9 +836,11 @@ public static class ClothingSim
 					var len = d.Length;
 					if ( len < 1e-6f ) continue;
 					var k = isBend ? bend : fabric.Stiffness;
-					var correction = d * ((len - rest) / len * 0.5f * k);
-					x[a] -= correction;
-					x[b] += correction;
+					if ( isBend && bendScale is not null ) k = MathF.Min( 1f, k * MathF.Sqrt( bendScale[a] * bendScale[b] ) );
+					var share = Share( a, b );
+					var correction = d * ((len - rest) / len * k);
+					x[a] -= correction * share;
+					x[b] += correction * (1f - share);
 				}
 
 			if ( _pinFirst || !_oldSolver )
@@ -779,7 +852,76 @@ public static class ClothingSim
 				Attach();
 			}
 
-			// Collide
+			Collide();
+
+			if ( over.Count > 0 )
+			{
+				Layers( false );
+				Collide();
+				for ( var round = 0; round < 2; round++ )
+				{
+					Layers( true );
+					Collide();
+				}
+			}
+
+			if ( _oldSolver )
+			{
+				Tether();
+
+				if ( !_pinFirst )
+					Pin();
+			}
+		}
+
+		void Normals()
+		{
+			Array.Clear( normals );
+			for ( var t = 0; t + 2 < data.Triangles.Length; t += 3 )
+			{
+				var (a, b, c) = (data.Triangles[t], data.Triangles[t + 1], data.Triangles[t + 2]);
+				var face = Vec3.Cross( x[b] - x[a], x[c] - x[a] );
+				normals[a] += face; normals[b] += face; normals[c] += face;
+			}
+		}
+
+		// GarmentCloth.Layers.
+		void Layers( bool outerOnly )
+		{
+			for ( var k = 0; k < over.Count; k++ )
+			{
+				var (o, i, gap) = over[k];
+				i = Nearest( x, x[o], i );
+				over[k] = (o, i, gap);
+				var best = -1; var bestD = float.MaxValue; var bary = (A: 1f, B: 0f, C: 0f);
+				foreach ( var t in fans[i] )
+				{
+					var w = ClosestOnTriangle( x[o], x[tris[t]], x[tris[t + 1]], x[tris[t + 2]] );
+					var q = x[tris[t]] * w.A + x[tris[t + 1]] * w.B + x[tris[t + 2]] * w.C;
+					var d = (x[o] - q).LengthSquared;
+					if ( d < bestD ) { bestD = d; best = t; bary = w; }
+				}
+				if ( best < 0 ) continue;
+				var (a, b, c) = (tris[best], tris[best + 1], tris[best + 2]);
+				var normal = Vec3.Cross( x[b] - x[a], x[c] - x[a] ).Normal;
+				var on = x[a] * bary.A + x[b] * bary.B + x[c] * bary.C;
+				var along = Vec3.Dot( x[o] - on, normal );
+				if ( along >= gap ) continue;
+				float W( int p ) => (invMass?[p] ?? 1f) * (1f - (pins?[p] ?? 0f));
+				var wo = outerOnly ? 1f : W( o );
+				var (wa, wb, wc) = outerOnly ? (0f, 0f, 0f) : (W( a ), W( b ), W( c ));
+				var denom = wo + bary.A * bary.A * wa + bary.B * bary.B * wb + bary.C * bary.C * wc;
+				if ( denom < 1e-6f ) continue;
+				var s = (gap - along) / denom;
+				x[o] += normal * (s * wo);
+				x[a] -= normal * (s * bary.A * wa);
+				x[b] -= normal * (s * bary.B * wb);
+				x[c] -= normal * (s * bary.C * wc);
+			}
+		}
+
+		void Collide()
+		{
 			for ( var i = 0; i < count; i++ )
 				for ( var ci = 0; ci < capsWorld.Length; ci++ )
 				{
@@ -790,7 +932,7 @@ public static class ClothingSim
 					var core = a + ab * t;
 					var d = x[i] - core;
 					var dist = d.Length;
-					var want = Allowed( i, ci, radius + Skin );
+					var want = Allowed( i, ci, radius + Skin + (under?[i] ?? 0f) );
 					if ( dist >= want ) continue;
 					var normal = dist > 1e-5f ? d / dist : new Vec3( 0, 0, 1 );
 					var pushed = core + normal * want;
@@ -798,14 +940,6 @@ public static class ClothingSim
 					var slide = moved - normal * Vec3.Dot( moved, normal );
 					x[i] = pushed - slide * fabric.Friction;
 				}
-
-			if ( _oldSolver )
-			{
-				Tether();
-
-				if ( !_pinFirst )
-					Pin();
-			}
 		}
 
 		void Tether()
@@ -853,11 +987,57 @@ public static class ClothingSim
 			}
 		}
 
+		// The outer layer against the inner one's real surface: each outer particle that has a
+		// layer under it, signed distance to the nearest triangle of that layer. Under is the
+		// share of them on the wrong side, and how deep the deepest is.
+		var layerOf = data.Layers;
+		void UnderSurface( string when )
+		{
+			if ( layerOf is null || layerOf.Length != count ) return;
+			var top = layerOf.Max();
+			var inner = new PolyMesh();
+			var map = new int[count];
+			for ( var i = 0; i < count; i++ ) map[i] = layerOf[i] < top ? inner.AddVertex( x[i] ) : -1;
+			for ( var t = 0; t + 2 < data.Triangles.Length; t += 3 )
+			{
+				var (a, b, c) = (data.Triangles[t], data.Triangles[t + 1], data.Triangles[t + 2]);
+				if ( map[a] >= 0 && map[b] >= 0 && map[c] >= 0 ) inner.AddFace( new[] { map[a], map[b], map[c] } );
+			}
+			if ( inner.FaceCount == 0 ) return;
+			var tree = MeshBVH.Build( inner );
+			var outer = Enumerable.Range( 0, count ).Where( i => layerOf[i] == top ).ToList();
+			// Only over the surface: the nearest point straight under the particle. Past an open
+			// edge (a cuff, the neckline) the nearest point is on the rim and in or out means nothing.
+			float Over( int i )
+			{
+				if ( tree.NearestSurface( inner, x[i], 1.5f ) is not { } h ) return float.NaN;
+				var d = x[i] - h.Point;
+				var along = Vec3.Dot( d, h.Normal );
+				return (d - h.Normal * along).Length < 0.1f ? along : float.NaN;
+			}
+			var depths = outer.Select( Over )
+				.Where( float.IsFinite ).ToList();
+			if ( depths.Count == 0 ) return;
+			var share = depths.Count( d => d < -0.05f ) / (float)depths.Count;
+			if ( when == "settled" ) SettledUnderShare = share;
+			LastUnderShare = MathF.Max( LastUnderShare, share );
+			LastUnderDepth = MathF.Max( LastUnderDepth, -depths.Min() );
+			var bonesUnder = outer.Where( i => Over( i ) < -0.05f )
+				.GroupBy( i => data.VertexBones[i] ).OrderByDescending( g => g.Count() ).Take( 5 ).Select( g => $"{g.Key} {g.Count()}" );
+			Note( $"runtime {when}: under by bone: {string.Join( ", ", bonesUnder )}" );
+			Note( $"runtime {when}: {depths.Count( d => d < -0.05f )} of {depths.Count} outer-layer particles under the layer below, deepest {-depths.Min():0.##} in" );
+		}
+
 		// Measures, per frame.
 		var finite = true;
 		var worstInside = 0f;
 		var worstStretch = 0f;
 		var maxSpeed = 0f;
+		var worstThrough = 0f;
+		LastStretch = 0f;
+		LastUnderShare = 0f;
+		LastUnderDepth = 0f;
+		SettledUnderShare = 0f;
 		var strains = new List<float>();
 
 		void Measure()
@@ -875,6 +1055,15 @@ public static class ClothingSim
 					var t = ab.LengthSquared < 1e-8f ? 0f : Math.Clamp( Vec3.Dot( x[i] - a, ab ) / ab.LengthSquared, 0f, 1f );
 					worstInside = MathF.Max( worstInside, Allowed( i, ci, r ) - (x[i] - (a + ab * t)).Length );
 				}
+			}
+
+			// A layer through the one under it: how far an outer particle is on the wrong side
+			// of the inner particle it was fitted over.
+			if ( over.Count > 0 )
+			{
+				Normals();
+				foreach ( var (o, i, _) in over )
+					worstThrough = MathF.Max( worstThrough, -Vec3.Dot( x[o] - x[i], normals[i].Normal ) );
 			}
 
 			var frame = new List<float>( links.Length );
@@ -909,8 +1098,11 @@ public static class ClothingSim
 
 		// Settle at bind.
 		var bindRig = rig.Clone();
-		Frames( quick ? 60 : 120, _ => bindRig );
+		Frames( quick ? 30 : 60, _ => bindRig );
+		worstThrough = 0f;
+		Frames( quick ? 30 : 60, _ => bindRig );
 
+		UnderSurface( "settled" );
 		var sag = 0f;
 		var free = 0;
 		for ( var i = 0; i < count; i++ )
@@ -918,6 +1110,11 @@ public static class ClothingSim
 		sag = free > 0 ? sag / free : 0f;
 
 		Check( "runtime", "stays finite while settling", finite );
+		if ( over.Count > 0 )
+		{
+			Note( $"runtime layers: {over.Count} particles held over the layer under them, worst through it {worstThrough:0.##} in" );
+			Check( "runtime", "settled: no layer through the one under it (> 0.1 in)", worstThrough < 0.1f, $"{worstThrough:0.##} in" );
+		}
 		Note( $"runtime settle: free cloth sags {sag:0.##} in on average, worst inside a capsule {worstInside:0.##} in, 99th-percentile stretch {strains.Max():0.##}x (one edge {worstStretch:0.##}x)" );
 		Check( "runtime", "settled cloth hangs within the leash, not on the floor", sag < Leash * 0.9f, $"mean sag {sag:0.##} in" );
 
@@ -944,20 +1141,25 @@ public static class ClothingSim
 		// Each pose: half a second in, half held, half back.
 		foreach ( var pose in quick ? GarmentPoses.All.Take( 2 ) : GarmentPoses.All )
 		{
-			worstInside = 0f; worstStretch = 0f; maxSpeed = 0f; strains.Clear();
+			worstInside = 0f; worstStretch = 0f; maxSpeed = 0f; worstThrough = 0f; strains.Clear();
 			const int In = 30, Hold = 30;
 			var full = Posed( pose, 1f );
 			var steps = Enumerable.Range( 0, In + 1 ).Select( k => Posed( pose, k / (float)In ) ).ToArray();
 
 			Frames( In, f => steps[f + 1] );
 			Frames( Hold, _ => full );
+			UnderSurface( pose.Name );
 			Frames( In, f => steps[In - 1 - f] );
 
 			Check( "runtime", $"{pose.Name}: stays finite", finite );
 			var p99 = strains.Max();
+			LastStretch = MathF.Max( LastStretch, p99 );
 			Note( $"runtime {pose.Name}: worst inside a capsule {worstInside:0.##} in, 99th-percentile stretch {p99:0.##}x (one edge {worstStretch:0.##}x), max speed {maxSpeed:0} in/s" );
 			Check( "runtime", $"{pose.Name}: no particle left deep inside a capsule (> 1 in)", worstInside < 1f, $"{worstInside:0.##} in" );
 			Check( "runtime", $"{pose.Name}: 99% of edges within 1.5x their length", p99 < 1.5f, $"{p99:0.##}x" );
+
+			if ( over.Count > 0 )
+				Note( $"runtime {pose.Name}: layer pairs, worst through by particle normal {worstThrough:0.##} in" );
 
 			if ( !finite ) return;
 		}
@@ -967,8 +1169,39 @@ public static class ClothingSim
 		var drift = 0f;
 		for ( var i = 0; i < count; i++ ) drift += (x[i] - settled.Positions[i]).Length;
 		drift /= Math.Max( 1, count );
+		LastDrift = drift;
 		Note( $"runtime: after every pose and back, cloth is {drift:0.##} in from where it first settled (mean)" );
 		Check( "runtime", "comes back to where it settled after the poses (mean < 1 in)", drift < 1f, $"{drift:0.##} in" );
+	}
+
+	/// <summary>GarmentCloth.ClosestOnTriangle: barycentric weights of the point on triangle abc nearest p (Ericson, Real-Time
+	/// Collision Detection 5.1.5).</summary>
+	static (float A, float B, float C) ClosestOnTriangle( Vec3 p, Vec3 a, Vec3 b, Vec3 c )
+	{
+		var ab = b - a;
+		var ac = c - a;
+		var ap = p - a;
+		var d1 = Vec3.Dot( ab, ap );
+		var d2 = Vec3.Dot( ac, ap );
+		if ( d1 <= 0f && d2 <= 0f ) return (1f, 0f, 0f);
+		var bp = p - b;
+		var d3 = Vec3.Dot( ab, bp );
+		var d4 = Vec3.Dot( ac, bp );
+		if ( d3 >= 0f && d4 <= d3 ) return (0f, 1f, 0f);
+		var vc = d1 * d4 - d3 * d2;
+		if ( vc <= 0f && d1 >= 0f && d3 <= 0f ) { var v = d1 / (d1 - d3); return (1f - v, v, 0f); }
+		var cp = p - c;
+		var d5 = Vec3.Dot( ab, cp );
+		var d6 = Vec3.Dot( ac, cp );
+		if ( d6 >= 0f && d5 <= d6 ) return (0f, 0f, 1f);
+		var vb = d5 * d2 - d1 * d6;
+		if ( vb <= 0f && d2 >= 0f && d6 <= 0f ) { var w = d2 / (d2 - d6); return (1f - w, 0f, w); }
+		var va = d3 * d6 - d5 * d4;
+		if ( va <= 0f && d4 - d3 >= 0f && d5 - d6 >= 0f ) { var w = (d4 - d3) / ((d4 - d3) + (d5 - d6)); return (0f, 1f - w, w); }
+		var denom = 1f / (va + vb + vc);
+		var vv = vb * denom;
+		var ww = vc * denom;
+		return (1f - vv - ww, vv, ww);
 	}
 
 	/// <summary>GarmentCloth.BuildAnchors.</summary>

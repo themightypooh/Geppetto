@@ -82,12 +82,151 @@ public static class ClothExport
 		return pins;
 	}
 
+	/// <summary>
+	/// What each particle is wearing over and under it: which layer it is in, how much room its
+	/// own garment takes, and the padding sewn into it there. Make live cloth adds every garment's
+	/// sheet in the order it adds the sheet itself, so the lists line up with the cloth's vertices.
+	///
+	/// THE LAYERS, AS THE CLOTH RUNS THEM. A jacket over a shirt is fitted over the shirt, and as
+	/// live cloth it has to stay there: its body capsules are inflated by the room the shirt takes
+	/// (Under), each jacket particle is held off the shirt particle it was fitted over (Over), and
+	/// the capsules get the last word. Without it the jacket swings straight through the shirt.
+	///
+	/// PADDING IS PER PARTICLE. A quilted yoke is thicker (a bigger gap off the shirt), stiffer to
+	/// fold (BendScale) and heavier (Mass), and the solver splits every correction by mass, so the
+	/// heavy yoke drags the light shirt cloth beside it rather than the other way round.
+	/// </summary>
+	public sealed class Layering
+	{
+		public readonly List<int> Layer = new();
+		public readonly List<float> Room = new();
+		public readonly List<float> Pad = new();
+		public readonly List<float> Mass = new();
+		public readonly List<float> BendScale = new();
+		public readonly List<Vec3> Normal = new();
+
+		public int Count => Layer.Count;
+
+		/// <param name="sheet">The garment's cloth as it goes into the file - its outer wall, fur left out.</param>
+		/// <param name="body">The garment the sheet came from, for its layer and its room.</param>
+		/// <param name="pads">Every Padding in the document. The ones that padded this garment are used.</param>
+		public void Add( PolyMesh sheet, Body body, IEnumerable<PaddingFeature> pads, BodyRegions.Map map )
+		{
+			var n = sheet.VertexCount;
+			var pad = new float[n];
+			var mass = Enumerable.Repeat( 1f, n ).ToArray();
+			var bend = Enumerable.Repeat( 1f, n ).ToArray();
+
+			foreach ( var p in pads ?? Enumerable.Empty<PaddingFeature>() )
+			{
+				if ( p.Suppressed || p.Error is not null || !p.PaddedBodies.Contains( body.Id ) )
+					continue;
+
+				var field = p.Field( sheet, map, out var weight );
+
+				for ( var i = 0; i < n; i++ )
+				{
+					pad[i] += field[i];
+					mass[i] *= 1f + (p.Heavier.Clamped - 1f) * weight[i];
+					bend[i] *= 1f + (p.Stiffer.Clamped - 1f) * weight[i];
+				}
+			}
+
+			var normals = sheet.ComputeVertexNormals();
+
+			for ( var i = 0; i < n; i++ )
+			{
+				Layer.Add( body.Layer );
+				Room.Add( MathF.Max( 0f, body.LayerAllowance ) );
+				Pad.Add( pad[i] );
+				Mass.Add( MathF.Min( mass[i], 4f ) );
+				BendScale.Add( MathF.Min( bend[i], 10f ) );
+				Normal.Add( normals[i] );
+			}
+		}
+
+		/// <summary>
+		/// Per particle, how far further off the capsules it has to sit for the garments under it:
+		/// the room each lower layer takes where it is nearest, padding included. 0 on the base layer.
+		/// And the pairs: each particle of an outer layer with the nearest particle of the layers
+		/// under it, and how far off that one's surface it is held - its own room and padding, or
+		/// where it was fitted if that was closer, so a fit that left a garment snug is not blown apart.
+		/// </summary>
+		public (float[] Under, List<(int Outer, int Inner, float Gap)> Over) Pairs( PolyMesh cloth, float reach = 2f )
+		{
+			var n = Count;
+			var under = new float[n];
+			var over = new List<(int, int, float)>();
+			var layers = Layer.Where( l => l >= 0 ).Distinct().OrderBy( l => l ).ToArray();
+
+			if ( layers.Length < 2 || n != cloth.VertexCount )
+				return (under, over);
+
+			var byLayer = layers.ToDictionary( l => l, l => Enumerable.Range( 0, n ).Where( i => Layer[i] == l ).ToArray() );
+
+			for ( var i = 0; i < n; i++ )
+			{
+				if ( Layer[i] <= layers[0] )
+					continue;
+
+				var p = cloth.Positions[i];
+				var own = Room[i] + Pad[i];
+				var best = -1;
+				var bestD = float.MaxValue;
+
+				foreach ( var l in layers )
+				{
+					if ( l >= Layer[i] )
+						break;
+
+					var nearest = -1;
+					var nearestD = float.MaxValue;
+
+					foreach ( var j in byLayer[l] )
+					{
+						var d = (cloth.Positions[j] - p).LengthSquared;
+
+						if ( d < nearestD )
+						{
+							nearestD = d;
+							nearest = j;
+						}
+					}
+
+					if ( nearest < 0 )
+						continue;
+
+					// Inflated only for the layers it is actually over; held off the nearest one
+					// wherever it is, since a shirt a few inches off at rest is right under it with
+					// the arm raised.
+					if ( MathF.Sqrt( nearestD ) <= reach + own )
+						under[i] += Room[nearest] + Pad[nearest];
+
+					if ( nearestD < bestD )
+					{
+						bestD = nearestD;
+						best = nearest;
+					}
+				}
+
+				if ( best < 0 )
+					continue;
+
+				var along = Vec3.Dot( p - cloth.Positions[best], Normal[best] );
+				over.Add( (i, best, Math.Clamp( along, 0f, own )) );
+			}
+
+			return (under, over);
+		}
+	}
+
 	/// <param name="garment">The finished garment, in the wearer's model space.</param>
 	/// <param name="capsules">What it hangs on - see BoneCapsules. Their Bone indexes <paramref name="skeleton"/>.</param>
 	/// <param name="settings">The fabric. Null writes none, and the component uses its own.</param>
 	/// <param name="pins">Per-vertex pin weight, see <see cref="PinTop"/>. Null pins nothing.</param>
+	/// <param name="layering">Layers and padding per vertex, see <see cref="Layering"/>. Null writes none.</param>
 	public static string Write( PolyMesh garment, IReadOnlyList<Capsule> capsules, Skeleton skeleton, string material,
-		Settings settings = null, float[] pins = null )
+		Settings settings = null, float[] pins = null, Layering layering = null )
 	{
 		string Name( int bone ) => bone >= 0 && bone < skeleton.Count ? skeleton.Bones[bone].Name : "";
 
@@ -109,6 +248,27 @@ public static class ClothExport
 			sb.Append( "  \"Pins\": [" );
 			sb.Append( string.Join( ",", pins.Select( F ) ) );
 			sb.Append( "],\n" );
+		}
+
+		if ( layering is not null && layering.Count == garment.VertexCount )
+		{
+			// Only what differs from a plain single garment, so old files and plain shirts stay as they were.
+			if ( layering.Mass.Any( m => MathF.Abs( m - 1f ) > 1e-4f ) )
+				sb.Append( $"  \"Mass\": [{string.Join( ",", layering.Mass.Select( F ) )}],\n" );
+
+			if ( layering.BendScale.Any( m => MathF.Abs( m - 1f ) > 1e-4f ) )
+				sb.Append( $"  \"BendScale\": [{string.Join( ",", layering.BendScale.Select( F ) )}],\n" );
+
+			var (under, over) = layering.Pairs( garment );
+
+			if ( layering.Layer.Distinct().Count() > 1 )
+				sb.Append( $"  \"Layers\": [{string.Join( ",", layering.Layer )}],\n" );
+
+			if ( under.Any( u => u > 0f ) )
+				sb.Append( $"  \"Under\": [{string.Join( ",", under.Select( F ) )}],\n" );
+
+			if ( over.Count > 0 )
+				sb.Append( $"  \"Over\": [{string.Join( ",", over.Select( o => $"{o.Outer},{o.Inner},{F( o.Gap )}" ) )}],\n" );
 		}
 
 		// Per vertex: its bind position, a UV (the first corner that names one - a seam's two

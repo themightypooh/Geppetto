@@ -247,7 +247,12 @@ public sealed class GarmentFeature : Feature
 		// told to move up the tree so the jacket can be fitted over it.
 		var layer = LayerValue;
 		var earlier = ctx.Bodies.Where( b => b.IsGarment ).ToList();
-		var others = earlier.Where( b => b.Layer <= layer ).Select( b => b.Mesh ).ToList();
+		// A thickened garment is two walls, and only its OUTER wall is what a garment over it rests
+		// on. Against both, a jacket that started under a loose shirt found the shirt's lining
+		// nearest, whose normal faces the body, read itself as outside and stayed there - the shirt
+		// showed through the jacket in patches all over the torso.
+		var others = earlier.Where( b => b.Layer <= layer )
+			.Select( b => MeshSolidify.OuterSheet( b.Mesh, out _ ) ?? b.Mesh ).ToList();
 		var inner = earlier.Where( b => b.Layer >= 0 && b.Layer < layer )
 			.Select( b => (b.Mesh, b.Layer, b.LayerAllowance) ).ToList();
 		var over = earlier.Where( b => b.Layer > layer ).Select( b => b.Name ).ToList();

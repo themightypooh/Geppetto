@@ -77,6 +77,10 @@ public static class Program
 		if ( args.Length > 0 && args[0] == "--tree" )
 			return TreeGen.Run( args.Length > 1 ? args[1] : DefaultOutDir() );
 
+		// Just the garment padding and layering tests, then the jacket over the shirt as OBJs to render.
+		if ( rawArgs.Length > 0 && rawArgs[0] == "--padding" )
+			return PaddingTests.RunAlone( rawArgs.Length > 1 ? rawArgs[1] : DefaultOutDir() );
+
 		if ( args.Length > 0 && args[0] == "--tentacle" )
 			return TentacleGen.Run( args.Length > 1 ? args[1] : DefaultOutDir() );
 
