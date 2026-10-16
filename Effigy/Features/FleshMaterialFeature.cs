@@ -7,10 +7,16 @@ namespace Effigy;
 
 /// <summary>
 /// Flesh Material: a layered organic material baked onto a body's UVs - wet flesh, raw meat, lung,
-/// gut, bone, tooth, gum - as an albedo and a roughness texture and a Complex .vmat (see
+/// gut, bone, tooth, gum - as an albedo and a roughness texture and a .vmat (see
 /// <see cref="FleshMaterial"/> for the layers and the masks they ride on).
 ///
-///   add FleshMaterial bodies=Sac preset=raw_meat resolution=2048 folder=materials/creature
+///   add FleshMaterial bodies=Sac preset=raw_meat resolution=2048 folder=materials/creature [shader=skin|complex] [lightthrough=2]
+///
+/// THE SHADER FOLLOWS THE PRESET unless set. Living tissue goes out on s&amp;box's skin shader (SSS,
+/// the red AO bleed, a wet second lobe, light through thin walls), with an occlusion map and a
+/// transmission mask baked from the wall thickness; bone, tooth, oil, spikes and the glowing ribbon
+/// go out on complex (see FleshMaterial.WithShader). The vmat turns morphs on when the body has
+/// shape keys.
 ///
 /// THE MAPS FOLLOW THE MESH. Cavity, occlusion and height are read off the body as built, so the
 /// material is a feature: sculpt a deeper crease upstream and the crease darkens on the next rebuild.
@@ -68,9 +74,42 @@ public sealed class FleshMaterialFeature : Feature
 	/// everything inside fully and leaves a sharp edge.</summary>
 	public readonly FloatParam Front = new( "Corruption front", 12f, 0.05f, 500f );
 
-	public override IReadOnlyList<IParam> Parameters => new IParam[] { Bodies, Preset, Resolution, Detail, Seed, Folder, Show, PerVertex, Seeds, Reach, Front };
+	/// <summary>Which s&amp;box shader the .vmat is for. Preset's: skin for living tissue, complex for
+	/// bone, enamel and the glowing or see-through presets.</summary>
+	public readonly ChoiceParam Shader = new( "Shader", new[] { "Preset's", "Skin", "Complex" } );
 
-	public override IReadOnlyList<IParam> AdvancedParameters => new IParam[] { Seed, Show, PerVertex, Seeds, Reach, Front };
+	/// <summary>How far light gets through thin walls on the skin shader, times the preset's own
+	/// (1 is real skin: a 1 mm wall passes a third of the red, 3 mm nothing). 0 turns it off.</summary>
+	public readonly FloatParam LightThrough = new( "Light through", 1f, 0f, 20f );
+
+	public override IReadOnlyList<IParam> Parameters => new IParam[] { Bodies, Preset, Shader, Resolution, Detail, LightThrough, Seed, Folder, Show, PerVertex, Seeds, Reach, Front };
+
+	public override IReadOnlyList<IParam> AdvancedParameters => new IParam[] { LightThrough, Seed, Show, PerVertex, Seeds, Reach, Front };
+
+	/// <summary>The shader the .vmat is written for: the choice, or the preset's.</summary>
+	public FleshShader ShaderUsed => Shader.Index switch
+	{
+		1 => FleshShader.Skin,
+		2 => FleshShader.Complex,
+		_ => Stack.Shader,
+	};
+
+	/// <summary>The k the transmission mask is baked with: the preset's (1 where the preset has none
+	/// and skin was asked for) times Light through.</summary>
+	public float LightThroughUsed
+	{
+		get
+		{
+			var k = Stack.LightThrough > 0f ? Stack.LightThrough : 1f;
+			return k * LightThrough.Clamped;
+		}
+	}
+
+	/// <summary>The skin shader's maps last baked, by body id (Shader skin, Folder set).</summary>
+	public IReadOnlyDictionary<string, FleshShaderMaps> ShaderMaps => _shaderMaps;
+
+	readonly Dictionary<string, FleshShaderMaps> _shaderMaps = new();
+	readonly Dictionary<string, string> _shaderRecipes = new();
 
 	/// <summary>The stack this feature applies.</summary>
 	public FleshStack Stack => FleshMaterial.Preset( PresetName );
@@ -159,7 +198,7 @@ public sealed class FleshMaterialFeature : Feature
 			}
 
 			if ( !string.IsNullOrWhiteSpace( Folder.Value ) )
-				written.AddRange( WriteFiles( body, maps ) );
+				written.AddRange( WriteFiles( body, maps, recipe ) );
 
 			if ( Show.Value )
 			{
@@ -176,6 +215,33 @@ public sealed class FleshMaterialFeature : Feature
 			Warn( "Unwrapped first", $"{string.Join( ", ", unwrapped )} had no UVs, so it was unwrapped to have somewhere to bake.",
 				"Unwrap it yourself upstream to choose the seams" );
 
+		if ( ShaderUsed == FleshShader.Skin && !PerVertex.Value )
+		{
+			var stack = Stack;
+			var dropped = new List<string>();
+			if ( stack.Layers.Any( l => l.Emission > 0f ) ) dropped.Add( "glow" );
+			if ( stack.Translucency > 0f ) dropped.Add( "see-through" );
+			if ( dropped.Count > 0 )
+				Warn( $"The skin shader drops the {string.Join( " and ", dropped )}",
+					$"{PresetName} has {string.Join( " and ", dropped )}, which the skin shader cannot do: it has no glow, and it refuses see-through alongside its subsurface scattering.",
+					"Set Shader to Complex (or Preset's) to keep them" );
+
+			if ( string.IsNullOrWhiteSpace( Folder.Value ) )
+				Warn( "No files written", "The skin shader's occlusion and light-through maps are baked with the .vmat, and no Folder is set.",
+					"Set Folder to write the textures and the .vmat" );
+
+			foreach ( var (id, sm) in _shaderMaps )
+			{
+				if ( sm.TransmissionPerVertex is not { Length: > 0 } t ) continue;
+				var lit = t.Count( v => v > 0.02f ) / (float)t.Length;
+				// realtime-flesh-shading.md §3.3: the human head transmits on ~1.5% of its texels.
+				if ( lit > 0.4f )
+					Warn( "Light comes through most of it",
+						$"{ctx.Bodies.FirstOrDefault( b => b.Id == id )?.Name ?? id}: {lit:P0} of the surface lets light through, so the whole part will glow. Real skin does it only on thin parts (ears, membranes).",
+						"Lower Light through, or thicken the walls" );
+			}
+		}
+
 		// Said every time, not once: the colours look right in Effigy and the exported model is
 		// written with them (raw RGBA), so nothing else would ever tell you the game ignores them.
 		if ( perVertex.Count > 0 )
@@ -185,7 +251,7 @@ public sealed class FleshMaterialFeature : Feature
 				"Turn Per vertex off to bake colour and roughness textures (it unwraps the body if it has no UVs)" );
 	}
 
-	IEnumerable<string> WriteFiles( Body body, FleshMaps maps )
+	IEnumerable<string> WriteFiles( Body body, FleshMaps maps, string recipe )
 	{
 		var folder = Folder.Value.Trim().Replace( '\\', '/' ).TrimEnd( '/' );
 		var dir = Path.GetFullPath( folder );
@@ -225,8 +291,40 @@ public sealed class FleshMaterialFeature : Feature
 		}
 
 		var stack = Stack;
-		WriteIfChanged( Path.Combine( dir, vmat ), System.Text.Encoding.UTF8.GetBytes(
-			FleshMaterial.VmatSource( Asset( color ), Asset( rough ), stack, stack.Metalness, glow is null ? null : Asset( glow ) ) ) );
+		string source;
+
+		if ( ShaderUsed == FleshShader.Skin )
+		{
+			var k = LightThrough.Clamped > 0f ? LightThroughUsed : 0f;
+			var shaderRecipe = $"{recipe}|{k}";
+			if ( !_shaderMaps.TryGetValue( body.Id, out var sm ) || _shaderRecipes.GetValueOrDefault( body.Id ) != shaderRecipe )
+			{
+				sm = FleshMaterial.BakeSkinMaps( body.Mesh, maps.Size, k );
+				_shaderMaps[body.Id] = sm;
+				_shaderRecipes[body.Id] = shaderRecipe;
+			}
+
+			var ao = $"flesh_{tag}_ao.png";
+			WriteIfChanged( Path.Combine( dir, ao ), PngWriter.ToBytes( sm.Ao.Rgb, sm.Ao.Width, sm.Ao.Height ) );
+			files.Add( Path.Combine( dir, ao ) );
+
+			string trans = null;
+			if ( sm.Transmission is not null )
+			{
+				trans = $"flesh_{tag}_transmission.png";
+				WriteIfChanged( Path.Combine( dir, trans ), PngWriter.ToBytes( sm.Transmission.Rgb, sm.Transmission.Width, sm.Transmission.Height ) );
+				files.Add( Path.Combine( dir, trans ) );
+			}
+
+			source = FleshMaterial.SkinVmatSource( Asset( color ), Asset( rough ), stack, Asset( ao ),
+				trans is null ? null : Asset( trans ), morphs: body.Mesh.HasMorphs );
+		}
+		else
+		{
+			source = FleshMaterial.VmatSource( Asset( color ), Asset( rough ), stack, stack.Metalness, glow is null ? null : Asset( glow ) );
+		}
+
+		WriteIfChanged( Path.Combine( dir, vmat ), System.Text.Encoding.UTF8.GetBytes( source ) );
 		files.Add( Path.Combine( dir, vmat ) );
 
 		return files;

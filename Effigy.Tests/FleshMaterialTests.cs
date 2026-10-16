@@ -155,7 +155,8 @@ public static class FleshMaterialTests
 
 		var feature = studio.Features.OfType<FleshMaterialFeature>().FirstOrDefault();
 		Check( "the script adds it", result.Ok && feature is not null, result.ToString() );
-		Check( "and it writes the maps and the vmat", feature is not null && feature.Written.Count == 3 && feature.Written.All( File.Exists ),
+		// Raw meat goes out on the skin shader: colour, roughness, occlusion, light-through, vmat.
+		Check( "and it writes the maps and the vmat", feature is not null && feature.Written.Count == 5 && feature.Written.All( File.Exists ),
 			feature is null ? "" : string.Join( ", ", feature.Written.Select( Path.GetFileName ) ) );
 		Check( "and shows on the model", studio.Bodies.Any( b => b.Mesh?.Paint is { Width: 128 } ) );
 	}
