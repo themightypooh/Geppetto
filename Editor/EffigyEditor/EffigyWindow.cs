@@ -797,6 +797,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		_viewport.MaterialStrokeStarted = OnMaterialStrokeStarted;
 
 		_viewport.AddPaintOverlay( _paintBar );
+		CreatePaintLayersPanel();
 
 		_viewport.PaintStrokeFinished = OnPaintStrokeFinished;
 
@@ -1598,15 +1599,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			foreach ( var slot in slots )
 				claimed.Add( slot );
 
-			var tag = SanitizePaintTag( body.Id );
-			var opaque = PaintMaterial.OpaqueRgba( canvas );
-			var pngPath = Path.Combine( folder, $"{name}_{tag}_paint.png" );
-			var vmatPath = Path.Combine( folder, $"{name}_{tag}_paint.vmat" );
-			var relPng = $"models/effigy/{name}_{tag}_paint.png";
-			var relVmat = $"models/effigy/{name}_{tag}_paint.vmat";
-
-			PngWriter.WriteFileRgba( pngPath, opaque, canvas.Width, canvas.Height );
-			File.WriteAllText( vmatPath, PaintMaterial.VmatSource( relPng ) );
+			// The whole texture set — colour, plus roughness, metallic and a normal from painted
+			// height where those were painted. See EffigyWindow.PaintLayers.cs.
+			var relVmat = WritePaintTextureSet( canvas, name, SanitizePaintTag( body.Id ), folder );
 
 			foreach ( var slot in slots )
 				_studio.MaterialNames[slot] = relVmat;
@@ -1954,6 +1949,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		};
 
 		stage.Add( _paintHomeTool );
+		stage.Add( NewFillLayerTool() );
 
 		stage.Add( new EffigyStageTool
 		{
@@ -2008,7 +2004,10 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			Checked = true,
 		} );
 
-		return new List<EffigyStage> { brush };
+		// Channel picker and layer tools — see EffigyWindow.PaintLayers.cs.
+		var stages = new List<EffigyStage> { brush };
+		stages.AddRange( BuildPaintLayerStages() );
+		return stages;
 	}
 
 	/// <summary>
@@ -2116,6 +2115,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		_viewport.BeginPaint( session );
 		_paintBar.Bind( session, feature );
+		BindPaintLayers( session, feature );
 		_viewport.RefreshPaintPreview();
 
 		// Say what the auto-unwrap did, and what it costs. An unwrap is 0..1 and does not repeat, so a
@@ -2319,6 +2319,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		_viewport.EndPaint();
 		_paintBar.Bind( null );
+		UnbindPaintLayers();
 
 		var feature = _paintFeature;
 		_paintFeature = null;
@@ -8196,6 +8197,10 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		}
 
 		RebuildStudio();
+
+		// Undo can change a layer's blend, opacity or mask as well as its strokes.
+		if ( _viewport?.PaintSession is { } painting && _paintFeature is not null )
+			BindPaintLayers( painting, _paintFeature );
 	}
 
 	/// <summary>

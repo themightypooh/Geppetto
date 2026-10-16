@@ -25,16 +25,16 @@ internal sealed class EffigyPaintBar : Widget
 	private readonly EffigyNumericField _strength;
 	private readonly ComboBox _falloff;
 	private readonly Button _erase;
+	private readonly ComboBox _channel;
+	private readonly Editor.Label _valueLabel;
+	private readonly EffigyNumericField _value;
 
 	private PaintSession _session;
 
 	/// <summary>
-	/// The layer being painted, which is where Blend lives.
-	///
-	/// The other three controls are values about the STROKE and belong to the session; Blend is one
-	/// answer for the whole layer, so it is kept here rather than copied onto every stroke. The bar
-	/// is the only place it can be reached at all — selecting a paint feature enters painting
-	/// instead of opening a parameter dialog, so nothing else on screen would ever show it.
+	/// The layer being painted. Its blend mode, opacity, fill and mask are layer settings and live
+	/// on the layer stack under this bar (EffigyPaintLayersPanel); this bar holds what belongs to the
+	/// STROKE — channel, color or value, radius, strength, falloff, erase.
 	/// </summary>
 	private PaintFeature _feature;
 
@@ -45,6 +45,10 @@ internal sealed class EffigyPaintBar : Widget
 	/// <summary>Raised when something here changed a value the viewport should redraw for.</summary>
 	public Action Changed { get; set; }
 
+	/// <summary>Raised after the channel combo switched the session's channel, so the window can
+	/// re-upload the preview and tick the matching stage tool.</summary>
+	public Action ChannelChanged { get; set; }
+
 	public EffigyPaintBar( Widget parent ) : base( parent )
 	{
 		// The same two flags every floating widget in this tool sets — a plain Widget paints the
@@ -54,15 +58,39 @@ internal sealed class EffigyPaintBar : Widget
 
 		Visible = false;
 		FixedHeight = BarHeight;
-		// Wide enough for Falloff and the Erase toggle that replaced the dead Blend combo.
-		FixedWidth = 640f;
+		// Wide enough for the channel picker, its value, Falloff and the Erase toggle.
+		FixedWidth = 900f;
 
 		Layout = Layout.Row();
 		Layout.Spacing = 8;
 		Layout.Margin = new Sandbox.UI.Margin( 0 );
 
-		_swatch = new PaintSwatch( this ) { Picked = OnColorPicked };
+		_channel = new ComboBox( this )
+		{
+			MinimumWidth = 110f,
+			ToolTip = "Channel — what the brush paints: the surface color, how rough or metallic it is, bumps (Height), or where this layer shows (Layer Mask).",
+		};
+
+		Layout.Add( _channel );
+
+		_swatch = new PaintSwatch( this ) { Picked = OnColorPicked, ToolTip = "Brush color. Click to pick." };
 		Layout.Add( _swatch );
+
+		_valueLabel = new Editor.Label( "Value" ) { Color = Theme.TextControl.WithAlpha( 0.6f ) };
+		Layout.Add( _valueLabel );
+
+		// 0..1 like the channel it paints. Shown instead of the swatch on every channel but color.
+		_value = new EffigyNumericField( this, 1f )
+		{
+			Label = "Channel value",
+			Min = 0f,
+			Max = 1f,
+			ValueEdited = OnValueEdited,
+			FixedWidth = 70f,
+			ToolTip = "The value the brush paints on this channel, 0 to 1. Roughness: 0 shiny, 1 matte. Metallic: 1 is metal. Height: 0.5 level, higher raises. Layer Mask: 1 shows, 0 hides.",
+		};
+
+		Layout.Add( _value );
 
 		Layout.Add( new Editor.Label( "Radius" ) { Color = Theme.TextControl.WithAlpha( 0.6f ) } );
 
@@ -146,6 +174,72 @@ internal sealed class EffigyPaintBar : Widget
 
 		RefreshFalloff();
 		RefreshErase();
+		RefreshChannel();
+	}
+
+	private void RefreshChannel()
+	{
+		if ( _channel is null || _session is null )
+			return;
+
+		_refreshing = true;
+
+		try
+		{
+			_channel.Clear();
+
+			foreach ( var channel in Enum.GetValues<PaintChannel>() )
+			{
+				var ch = channel;
+				_channel.AddItem( PaintChannels.Label( ch ), onSelected: () => OnChannelPicked( ch ),
+					selected: ch == _session.Channel );
+			}
+		}
+		finally
+		{
+			_refreshing = false;
+		}
+
+		RefreshChannelValue();
+	}
+
+	/// <summary>Swatch for color, value box for every other channel. Separate from the item rebuild
+	/// above so picking from the combo never clears the combo inside its own callback.</summary>
+	private void RefreshChannelValue()
+	{
+		if ( _session is null )
+			return;
+
+		var colour = _session.Channel == PaintChannel.Color;
+		_swatch.Visible = colour;
+		_valueLabel.Visible = !colour;
+		_value.Visible = !colour;
+		_value.SetValue( _session.Value );
+	}
+
+	private void OnChannelPicked( PaintChannel channel )
+	{
+		if ( _refreshing || _session is null || _session.Channel == channel )
+			return;
+
+		// Switching mid-stroke would split one mark across two maps; the session refuses it, so
+		// the combo does too rather than throwing from a click.
+		if ( _session.IsStroking )
+			return;
+
+		_session.Channel = channel;
+		RefreshChannelValue();
+		ChannelChanged?.Invoke();
+		Changed?.Invoke();
+	}
+
+	private void OnValueEdited( float value )
+	{
+		if ( _session is null )
+			return;
+
+		_session.Value = Math.Clamp( value, 0f, 1f );
+		Changed?.Invoke();
 	}
 
 	private void RefreshFalloff()

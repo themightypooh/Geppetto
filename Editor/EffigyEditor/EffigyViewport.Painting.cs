@@ -100,8 +100,10 @@ internal sealed partial class EffigyViewport
 	{
 		var res = session.Resolution;
 
+		// The layered preview, not the bare canvas: the layers below, this layer over them with its
+		// blend, opacity and mask, on the channel being painted. Same arithmetic as the rebuild.
 		var opaque = new byte[res * res * 4];
-		session.Canvas.BakeOpaque( opaque, PaintMaterial.DefaultBaseR, PaintMaterial.DefaultBaseG, PaintMaterial.DefaultBaseB );
+		session.BakePreview( opaque, 0, 0, res, res );
 
 		_paintTexture = Texture.Create( res, res, ImageFormat.RGBA8888 )
 			.WithDynamicUsage()
@@ -140,8 +142,7 @@ internal sealed partial class EffigyViewport
 			var h = canvas.MaxY - canvas.MinY + 1;
 			var sub = new byte[w * h * 4];
 
-			canvas.BakeOpaque( sub, PaintMaterial.DefaultBaseR, PaintMaterial.DefaultBaseG, PaintMaterial.DefaultBaseB,
-				canvas.MinX, canvas.MinY, w, h );
+			PaintSession.BakePreview( sub, canvas.MinX, canvas.MinY, w, h );
 			_paintTexture.Update( sub, canvas.MinX, canvas.MinY, w, h );
 
 			canvas.ClearDirty();
