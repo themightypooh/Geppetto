@@ -3819,6 +3819,11 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			Kind = ToolKind.Import },
 
 		// --- Solid: profiles become bodies ------------------------------------------------------
+		// FIRST ON SOLID, next to Primitive at the end of Sketch: a Part is a finished solid with
+		// dials, not something to sketch on, so it sits with the tools that make bodies.
+		new() { Icon = EffigyIcon.Primitive, Label = "Part", Stage = StageSolid, MenuIcon = "settings",
+			Tip = "Add a Part from the library — cog, bolt, rivet, hinge, pipe elbow, strap, buckle — with a few dials",
+			Kind = ToolKind.Part },
 		new() { Icon = EffigyIcon.Extrude, Label = "Extrude", Stage = StageSolid, MenuIcon = "arrow_upward",
 			Tip = "Add an Extrude — pull a sketch profile, or a face of a part, into a solid",
 			Kind = ToolKind.Extrude },
@@ -3839,9 +3844,6 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		new() { Icon = EffigyIcon.SplineTool, Label = "Spline", Stage = StageSolid, MenuIcon = "gesture",
 			Tip = "Add a Spline — click points in the viewport for a curve, and a tube along it. A Sweep or a Bend can follow it too",
 			Kind = ToolKind.Spline },
-		new() { Icon = EffigyIcon.Primitive, Label = "Part", Stage = StageSketch, MenuIcon = "settings",
-			Tip = "Add a Part from the library — cog, bolt, rivet, hinge, pipe elbow, strap, buckle — with a few dials",
-			Kind = ToolKind.Part },
 		new() { Icon = EffigyIcon.Loft, Label = "Profile", Stage = StageSketch, MenuIcon = "accessibility_new",
 			Tip = "Add a Profile body — a front outline and a side outline, stacked into a body. A torso is eight numbers",
 			Kind = ToolKind.Profile },

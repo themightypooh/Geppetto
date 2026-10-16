@@ -49,6 +49,15 @@ public sealed class Body
 	/// and Fur with nothing picked grows on garments.</summary>
 	public bool IsGarment;
 
+	/// <summary>For a garment: which layer it is worn in, 0 Base (next to the skin) to 3 Outer.
+	/// -1 is a garment-like body that does not say (a trim): it is collided with, as before, but
+	/// adds nothing to the room a garment over it leaves. See GarmentFeature.Layer.</summary>
+	public int Layer = -1;
+
+	/// <summary>For a garment: how much room it takes up under a garment worn over it, in inches -
+	/// its own thickness and the clearance it sits off what is under it. See GarmentFit.Options.Inner.</summary>
+	public float LayerAllowance;
+
 	/// <summary>Here to be measured against, not to be shipped — the body a WearerFeature brought
 	/// in so a garment has something to be cut from and collide with. Everything reads it the way
 	/// it reads any other body; only export leaves it out. See WearerFeature.</summary>
@@ -62,7 +71,7 @@ public sealed class Body
 	}
 
 	public Body Clone() => new( Id, Name, Mesh.Clone() )
-		{ Visible = Visible, FeatureId = FeatureId, IsGarment = IsGarment, IsReference = IsReference };
+		{ Visible = Visible, FeatureId = FeatureId, IsGarment = IsGarment, IsReference = IsReference, Layer = Layer, LayerAllowance = LayerAllowance };
 }
 
 // --- parameters -------------------------------------------------------------------------------

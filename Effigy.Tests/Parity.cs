@@ -158,7 +158,7 @@ public static class Parity
 			return meshes[c.Mesh] = (m, path);
 		}
 		var rows = new List<string>();
-		Console.WriteLine( $"{"brush",-24} {"effigy",-11} {"shape",6} {"gain",8} {"rest",6}  {"@str",-7} blender peak / moved" );
+		Console.WriteLine( $"{"brush",-24} {"effigy",-16} {"shape",6} {"gain",8} {"best",6}  {"@str",-7} {"scale",7}  blender peak / moved" );
 		var picked = Cases.Where( c => string.IsNullOrEmpty( filter ) || c.Name.Contains( filter, StringComparison.OrdinalIgnoreCase ) ).ToArray();
 		string RefPath( Case c ) => Path.Combine( outDir, "refs", c.File + ".obj" );
 		// Every missing reference in ONE Blender launch.
@@ -175,43 +175,53 @@ public static class Parity
 			var peakB = dB.Max( d => d.Length );
 			var movedB = dB.Count( d => d.Length > 1e-4f );
 			string line;
+			// SHAPE and GAIN are measured with Effigy at Blender's own strength: GAIN ≈ 1 means the same
+			// number does the same amount (calibrated). BEST is the best shape over a strength ladder, in
+			// case the shape changes with strength; SCALE the strength multiplier that would bring GAIN to 1.
+			Func<float, Vec3[]> run;
+			string what;
 			if ( c.Filter is { } fk )
 			{
-				var best = (Shape: -2f, Gain: 0f, Residual: 1f, Strength: 0f);
-				foreach ( var st in new[] { 0.005f, 0.01f, 0.02f, 0.05f, 0.1f, 0.2f, 0.5f, 1f } )
-				{
-					var mesh = surface.Clone();
-					MeshFilter.Apply( mesh, fk, st );
-					var r = Compare( dB, mesh.Positions.Select( ( p, i ) => p - surface.Positions[i] ).ToArray() );
-					if ( r.Shape > best.Shape )
-					{
-						best = (r.Shape, r.Gain, r.Residual, st);
-						File.WriteAllLines( Path.Combine( outDir, "refs", c.File + ".effigy.txt" ), mesh.Positions.Select( p => FormattableString.Invariant( $"v {p.x} {p.y} {p.z}" ) ) );
-					}
-				}
-				line = $"{c.Name,-24} {fk,-11} {best.Shape,6:0.00} {best.Gain,8:0.000} {best.Residual,6:0.00}  @{best.Strength,-6} {peakB:0.000} / {movedB}";
+				what = fk.ToString();
+				run = st => { var mesh = surface.Clone(); MeshFilter.Apply( mesh, fk, st ); return mesh.Positions.ToArray(); };
 			}
-			else if ( c.Effigy is not { } kind )
-				line = $"{c.Name,-24} {"MISSING",-11} {"",6} {"",8} {"",6}  {"",-7} {peakB:0.000} / {movedB}";
+			else if ( c.Effigy is { } kind )
+			{
+				what = kind.ToString();
+				run = st => { var mesh = surface.Clone(); Brush.Apply( mesh, EffigyStroke( c, kind, st * c.EffigySign ), mask: c.EffigyMask?.Invoke( mesh, StrokePath( c ) ) ); return mesh.Positions.ToArray(); };
+			}
 			else
 			{
-				// Effigy's strengths are its own units (inches, or a share per dab): search for the one
-				// whose result is closest in shape, and report the gain left over.
-				var best = (Shape: -2f, Gain: 0f, Residual: 1f, Strength: 0f);
-				foreach ( var st in new[] { 0.005f, 0.01f, 0.02f, 0.05f, 0.1f, 0.2f, 0.5f, 1f } )
-				{
-					var mesh = surface.Clone();
-					Brush.Apply( mesh, EffigyStroke( c, kind, st * c.EffigySign ), mask: c.EffigyMask?.Invoke( mesh, StrokePath( c ) ) );
-					var dE = mesh.Positions.Select( ( p, i ) => p - surface.Positions[i] ).ToArray();
-					var r = Compare( dB, dE );
-					if ( r.Shape > best.Shape )
-					{
-						best = (r.Shape, r.Gain, r.Residual, st);
-						File.WriteAllLines( Path.Combine( outDir, "refs", c.File + ".effigy.txt" ), mesh.Positions.Select( p => FormattableString.Invariant( $"v {p.x} {p.y} {p.z}" ) ) );
-					}
-				}
-				line = $"{c.Name,-24} {kind,-11} {best.Shape,6:0.00} {best.Gain,8:0.000} {best.Residual,6:0.00}  @{best.Strength,-6} {peakB:0.000} / {movedB}";
+				line = $"{c.Name,-24} {"MISSING",-16} {"",6} {"",8} {"",6}  {"",-7} {"",7}  {peakB:0.000} / {movedB}";
+				Console.WriteLine( line );
+				rows.Add( line );
+				continue;
 			}
+			Vec3[] Delta( Vec3[] p ) => p.Select( ( q, i ) => q - surface.Positions[i] ).ToArray();
+			var atB = run( c.Strength );
+			var same = Compare( dB, Delta( atB ) );
+			File.WriteAllLines( Path.Combine( outDir, "refs", c.File + ".effigy.txt" ), atB.Select( p => FormattableString.Invariant( $"v {p.x} {p.y} {p.z}" ) ) );
+			var best = (Shape: -2f, Strength: 0f);
+			foreach ( var st in new[] { 0.005f, 0.01f, 0.02f, 0.05f, 0.1f, 0.2f, 0.5f, 1f, 2f } )
+			{
+				var r = Compare( dB, Delta( run( st ) ) );
+				if ( r.Shape > best.Shape + 1e-3f ) best = (r.Shape, st);
+			}
+			// The multiplier on strength that brings GAIN to 1: bisection in log space (GAIN falls as strength rises).
+			var scale = float.NaN;
+			if ( same.Gain > 0f )
+			{
+				double lo = Math.Log( 1e-3 ), hi = Math.Log( 1e3 );
+				for ( var it = 0; it < 22; it++ )
+				{
+					var mid = 0.5 * (lo + hi);
+					var g = Compare( dB, Delta( run( c.Strength * (float)Math.Exp( mid ) ) ) ).Gain;
+					if ( g > 1f ) lo = mid; else hi = mid;
+				}
+				scale = (float)Math.Exp( 0.5 * (lo + hi) );
+				if ( scale > 999f || scale < 1.01e-3f ) scale = float.NaN;
+			}
+			line = $"{c.Name,-24} {what,-16} {same.Shape,6:0.00} {same.Gain,8:0.000} {best.Shape,6:0.00}  @{best.Strength,-6} {scale,7:0.000}  {peakB:0.000} / {movedB}";
 			Console.WriteLine( line );
 			rows.Add( line );
 		}
