@@ -190,6 +190,11 @@ public static class SkinShaderTests
 		var vmat = File.Exists( Path.Combine( dir, "flesh_sac.vmat" ) ) ? File.ReadAllText( Path.Combine( dir, "flesh_sac.vmat" ) ) : "";
 		Check( "and the vmat is skin with the maps named", vmat.Contains( "shaders/skin.shader" ) && vmat.Contains( "flesh_sac_transmission.png" ) && vmat.Contains( "flesh_sac_ao.png" ) );
 
+		var exp = BuildScript.Run( studio, "export models/sac", dir );
+		var vmdlPath = Path.Combine( dir, "models/sac/sac.vmdl" );
+		var vmdl = File.Exists( vmdlPath ) ? File.ReadAllText( vmdlPath ) : "";
+		Check( "and the exported model is bound to that vmat, not the default", exp.Ok && vmdl.Contains( "flesh_sac.vmat" ) && !vmdl.Contains( "materials/default.vmat" ), exp + " " + vmdl );
+
 		var studio2 = new PartStudio();
 		BuildScript.Run( studio2,
 			"add Primitive name=Sac shape=Sphere radius=3 segments=24\n" +

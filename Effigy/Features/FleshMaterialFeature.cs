@@ -126,6 +126,10 @@ public sealed class FleshMaterialFeature : Feature
 	/// <summary>The maps last baked, by body id.</summary>
 	public IReadOnlyDictionary<string, FleshMaps> Maps => _maps;
 
+	/// <summary>The asset path of the .vmat the last rebuild wrote (the first body's), or null. What
+	/// the export binds the covered slots to unless the slot has a material of its own.</summary>
+	public string VmatAsset { get; private set; }
+
 	/// <summary>Files the last rebuild wrote or found already current.</summary>
 	public IReadOnlyList<string> Written { get; private set; } = Array.Empty<string>();
 
@@ -141,6 +145,7 @@ public sealed class FleshMaterialFeature : Feature
 	{
 		var targets = RequireBodies( ctx, Bodies );
 		var written = new List<string>();
+		VmatAsset = null;
 		var unwrapped = new List<string>();
 		var perVertex = new List<string>();
 
@@ -325,6 +330,7 @@ public sealed class FleshMaterialFeature : Feature
 		}
 
 		WriteIfChanged( Path.Combine( dir, vmat ), System.Text.Encoding.UTF8.GetBytes( source ) );
+		VmatAsset ??= Asset( vmat );
 		files.Add( Path.Combine( dir, vmat ) );
 
 		return files;

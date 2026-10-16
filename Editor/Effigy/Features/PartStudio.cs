@@ -74,12 +74,34 @@ public sealed class PartStudio
 	/// </summary>
 	public Dictionary<int, Vec2> MaterialScales = new();
 
-	/// <summary>The name for a slot, falling back to the numbered default. Pass this straight to any
-	/// of the exporters.</summary>
+	/// <summary>The name for a slot, falling back to the .vmat a Flesh Material wrote for it, then
+	/// the numbered default. Pass this straight to any of the exporters.
+	///
+	/// THE FLESH FALLBACK: a Flesh Material writes its own .vmat, and without this every export
+	/// still bound the slot to the default material, so the baked flesh never reached the game.
+	/// A name set on the slot (Materials panel, `material` verb) still wins.</summary>
 	public string NameForSlot( int slot ) =>
 		MaterialNames.TryGetValue( slot, out var name ) && !string.IsNullOrWhiteSpace( name )
 			? name
-			: ObjWriter.DefaultMaterialName( slot );
+			: FleshVmatFor( slot ) ?? ObjWriter.DefaultMaterialName( slot );
+
+	string FleshVmatFor( int slot ) =>
+		Features.OfType<FleshMaterialFeature>().LastOrDefault( f => !f.Suppressed && f.Error is null && f.VmatAsset is not null && f.ResolvedSlots.Contains( slot ) )?.VmatAsset;
+
+	/// <summary>Every slot bound to a .vmat: MaterialNames, plus the Flesh Material vmats on slots
+	/// with no name of their own. What the .vmdl's remap list is written from.</summary>
+	public IReadOnlyDictionary<int, string> MaterialBindings
+	{
+		get
+		{
+			var o = new Dictionary<int, string>( MaterialNames );
+			foreach ( var f in Features.OfType<FleshMaterialFeature>().Where( f => !f.Suppressed && f.Error is null && f.VmatAsset is not null ) )
+				foreach ( var slot in f.ResolvedSlots )
+					if ( !o.TryGetValue( slot, out var n ) || string.IsNullOrWhiteSpace( n ) )
+						o[slot] = FleshVmatFor( slot );
+			return o;
+		}
+	}
 
 	/// <summary>
 	/// Names given to a body, keyed by body id.
