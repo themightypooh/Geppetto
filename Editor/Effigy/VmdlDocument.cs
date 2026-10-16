@@ -162,6 +162,27 @@ public static class VmdlDocument
 		return Wrap( materials + RenderMeshList( meshFilenames ) + LodGroupList( switchDistances ) + physics );
 	}
 
+	/// <summary>
+	/// A skinned model with levels of detail: one skinned mesh file per level (each carrying the
+	/// same skeleton, see <see cref="LodExport"/>), the LODGroupList that switches them, and the
+	/// bone markup, animations and physics of <see cref="Skinned"/> once for the whole model.
+	/// </summary>
+	public static string SkinnedWithLods( IReadOnlyList<string> meshFilenames, IReadOnlyList<float> switchDistances,
+		Skeleton skeleton, string physics = "", string materials = "", string animations = null, string animGraph = "" )
+	{
+		if ( meshFilenames is null || meshFilenames.Count == 0 )
+			throw new ArgumentException( "at least one mesh", nameof( meshFilenames ) );
+		if ( switchDistances is null || switchDistances.Count != meshFilenames.Count )
+			throw new ArgumentException( "one switch distance per mesh", nameof( switchDistances ) );
+
+		return Wrap( materials
+			+ RenderMeshList( meshFilenames )
+			+ LodGroupList( switchDistances )
+			+ VmdlAnimation.BoneMarkupList( skeleton )
+			+ (string.IsNullOrEmpty( animations ) ? VmdlAnimation.BindPoseList() : animations)
+			+ physics, animGraph );
+	}
+
 	static string Wrap( string children, string animGraph = "" ) =>
 		Header
 		+ "{\n"

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace Effigy;
 
@@ -88,6 +89,15 @@ public static class Decimate
 		/// its opening and a two-material part smears the line between them.
 		/// </summary>
 		public bool PreserveBoundary = true;
+
+		/// <summary>
+		/// Hold UV seams the way <see cref="PreserveBoundary"/> holds borders: an edge where the two
+		/// triangles disagree about a UV is walled in place, a vertex where seams branch or end is
+		/// pinned, and every collapse carries the UVs on each side of a seam along its own side.
+		/// Off, a level of detail smears its texture across the seams (the islands' outlines move
+		/// while their UVs stay put). Needs <see cref="PreserveBoundary"/>.
+		/// </summary>
+		public bool PreserveUVSeams = true;
 
 		/// <summary>
 		/// Never collapse an edge that runs along an open border, so every border vertex survives
@@ -438,6 +448,19 @@ public static class Decimate
 		/// <see cref="Options.PreserveBoundary"/>.</summary>
 		readonly List<bool> _locked = new();
 
+		/// <summary>A corner of the constrained network: where three or more borders, material
+		/// seams or UV seams meet, or where one ends. It never moves and is never removed, so the
+		/// outline of every UV island and material region keeps its corners.</summary>
+		readonly List<bool> _pinned = new();
+
+		// Shape keys, carried per working vertex like the colours: one delta array per morph.
+		List<Vec3[]> _morphs;
+		List<string> _morphNames;
+
+		// The UV changes a collapse will make, worked out before it is applied: corner index into
+		// _triUV, and its new value.
+		readonly List<(int Corner, Vec2 UV)> _uvPlan = new();
+
 		Vec4[] _colors;
 		SkinWeights _skin;
 		PaintCanvas _paint;
@@ -498,6 +521,14 @@ public static class Decimate
 			_skin = mesh.IsRigged ? new SkinWeights( _pos.Count ) : null;
 			_paint = mesh.Paint;
 
+			var morphs = mesh.ValidMorphs.ToList();
+
+			if ( morphs.Count > 0 )
+			{
+				_morphNames = morphs.ConvertAll( m => m.Name );
+				_morphs = morphs.ConvertAll( _ => new Vec3[_pos.Count] );
+			}
+
 			// The first source vertex to land on a welded position is the one whose colour and
 			// weights the merged vertex takes. Averaging them would be defensible and is not
 			// obviously better: coincident vertices in a real file are a seam, and the two sides of
@@ -518,12 +549,19 @@ public static class Decimate
 
 				if ( _skin is not null )
 					_skin[to] = mesh.Skin[i];
+
+				if ( _morphs is not null )
+				{
+					for ( var m = 0; m < _morphs.Count; m++ )
+						_morphs[m][to] = morphs[m].Deltas[i];
+				}
 			}
 
 			for ( var i = 0; i < _pos.Count; i++ )
 			{
 				_alive.Add( true );
 				_locked.Add( false );
+				_pinned.Add( false );
 				_quadric.Add( default );
 				_vertTris.Add( new List<int>() );
 			}
@@ -677,6 +715,7 @@ public static class Decimate
 		void AddConstraintPlanes( Quadric[] quadrics )
 		{
 			var edges = new Dictionary<EdgeKey, (int Count, int Triangle, int Material, bool Mixed)>();
+			var seams = _options.PreserveUVSeams;
 
 			for ( var t = 0; t < _triAlive.Count; t++ )
 			{
@@ -687,12 +726,46 @@ public static class Decimate
 					if ( edges.TryGetValue( key, out var e ) )
 					{
 						edges[key] = (e.Count + 1, e.Triangle, e.Material,
-							e.Mixed || e.Material != _triMaterial[t]);
+							e.Mixed || e.Material != _triMaterial[t]
+							|| (seams && UVSeamBetween( e.Triangle, t, key.A, key.B )));
 					}
 					else
 					{
 						edges[key] = (1, t, _triMaterial[t], false);
 					}
+				}
+			}
+
+			// How many constrained edges meet at each vertex. Two is a vertex part-way along a
+			// border or seam; anything else is a corner of the network (see _pinned).
+			// A vertex with two whose line turns sharply (a sheet's corner, an island's corner) is
+			// one too: the walls alone let it slide round the turn and cut the corner off.
+			var constrained = new int[_pos.Count];
+			var turn = new Vec3[_pos.Count];
+
+			foreach ( var (key, e) in edges )
+			{
+				if ( e.Count == 2 && !e.Mixed )
+					continue;
+
+				constrained[key.A]++;
+				constrained[key.B]++;
+
+				var direction = (_pos[key.B] - _pos[key.A]).Normal;
+
+				// Summed as "out of A" and "into B", so a straight run cancels to nothing.
+				turn[key.A] += direction;
+				turn[key.B] -= direction;
+			}
+
+			if ( seams )
+			{
+				for ( var v = 0; v < constrained.Length; v++ )
+				{
+					// Two unit directions out of a vertex: their sum's length is 2·sin(turn/2),
+					// so 0.52 is a turn of about 30 degrees.
+					_pinned[v] = constrained[v] != 0
+						&& (constrained[v] != 2 || turn[v].Length > 0.52f);
 				}
 			}
 
@@ -732,6 +805,91 @@ public static class Decimate
 				_locked[key.A] = true;
 				_locked[key.B] = true;
 			}
+		}
+
+		/// <summary>The UV triangle <paramref name="t"/> gives vertex <paramref name="v"/>.</summary>
+		Vec2 UVAt( int t, int v )
+		{
+			for ( var i = 0; i < 3; i++ )
+			{
+				if ( _tri[3 * t + i] == v )
+					return _triUV[3 * t + i];
+			}
+
+			return default;
+		}
+
+		static bool SameUV( Vec2 a, Vec2 b ) =>
+			MathF.Abs( a.x - b.x ) <= 1e-6f && MathF.Abs( a.y - b.y ) <= 1e-6f;
+
+		/// <summary>Whether two triangles sharing the edge a–b disagree about a UV at either end:
+		/// the edge is a UV seam, the outline of an island.</summary>
+		bool UVSeamBetween( int t0, int t1, int a, int b ) =>
+			!SameUV( UVAt( t0, a ), UVAt( t1, a ) ) || !SameUV( UVAt( t0, b ), UVAt( t1, b ) );
+
+		/// <summary>
+		/// The UVs a collapse of b into a at <paramref name="to"/> gives the corners that survive it,
+		/// into <see cref="_uvPlan"/>; false when no UVs can be right, so the collapse is refused.
+		///
+		/// A vertex on a seam has one UV per side (a "wedge"). Each triangle that dies with the edge
+		/// sits in one wedge of a and one of b, and says what the merged vertex's UV is on that side:
+		/// the two UVs blended as far along the edge as the position went. Every surviving corner
+		/// takes the blend of the dying triangle in its own wedge. A wedge the edge does not touch has
+		/// no blend to take, which is only acceptable when that end does not move.
+		/// </summary>
+		bool PlanUVs( int a, int b, Vec3 to, float t )
+		{
+			_uvPlan.Clear();
+
+			var dying = new List<(Vec2 A, Vec2 B, Vec2 Merged)>( 2 );
+
+			foreach ( var tri in _vertTris[a] )
+			{
+				if ( !_triAlive[tri] || !Uses( tri, b ) )
+					continue;
+
+				var ua = UVAt( tri, a );
+				var ub = UVAt( tri, b );
+				dying.Add( (ua, ub, new Vec2( ua.x + (ub.x - ua.x) * t, ua.y + (ub.y - ua.y) * t )) );
+			}
+
+			return PlanEnd( a, b, to, dying, fromA: true ) && PlanEnd( b, a, to, dying, fromA: false );
+		}
+
+		bool PlanEnd( int v, int other, Vec3 to, List<(Vec2 A, Vec2 B, Vec2 Merged)> dying, bool fromA )
+		{
+			var stays = (to - _pos[v]).LengthSquared <= 1e-20f;
+
+			foreach ( var tri in _vertTris[v] )
+			{
+				if ( !_triAlive[tri] || Uses( tri, other ) )
+					continue;
+
+				for ( var i = 0; i < 3; i++ )
+				{
+					if ( _tri[3 * tri + i] != v )
+						continue;
+
+					var corner = 3 * tri + i;
+					var uv = _triUV[corner];
+					var found = false;
+
+					foreach ( var d in dying )
+					{
+						if ( SameUV( fromA ? d.A : d.B, uv ) )
+						{
+							_uvPlan.Add( (corner, d.Merged) );
+							found = true;
+							break;
+						}
+					}
+
+					if ( !found && !stays )
+						return false;
+				}
+			}
+
+			return true;
 		}
 
 		// --- the collapse loop ------------------------------------------------------------------
@@ -850,10 +1008,21 @@ public static class Decimate
 			if ( lockedA && lockedB && (_options.FreezeBoundary || !IsConstrainedEdge( a, b )) )
 				return false;
 
+			var pinnedA = _pinned[a];
+			var pinnedB = _pinned[b];
+
+			// A corner of the seam network stays exactly where it is, and two never merge.
+			if ( pinnedA && pinnedB )
+				return false;
+
 			var q = _quadric[a];
 			q.Add( _quadric[b] );
 
-			if ( lockedA != lockedB )
+			if ( pinnedA || pinnedB )
+			{
+				to = pinnedA ? _pos[a] : _pos[b];
+			}
+			else if ( lockedA != lockedB )
 			{
 				// One end is held. The merged vertex goes there; the free one comes to it.
 				to = lockedA ? _pos[a] : _pos[b];
@@ -887,6 +1056,7 @@ public static class Decimate
 		{
 			var count = 0;
 			var material = -1;
+			var first = -1;
 
 			foreach ( var t in _vertTris[a] )
 			{
@@ -897,6 +1067,12 @@ public static class Decimate
 
 				if ( material >= 0 && material != _triMaterial[t] )
 					return true;
+
+				if ( _options.PreserveUVSeams && first >= 0 && UVSeamBetween( first, t, a, b ) )
+					return true;
+
+				if ( first < 0 )
+					first = t;
 
 				material = _triMaterial[t];
 			}
@@ -1062,6 +1238,15 @@ public static class Decimate
 			var from = _pos[a];
 			var t = Along( from, _pos[b], to );
 
+			// Worked out before anything changes, so a refusal leaves the mesh as it was.
+			if ( _options.PreserveUVSeams && !PlanUVs( a, b, to, t ) )
+				return false;
+
+			foreach ( var (corner, uv) in _uvPlan )
+				_triUV[corner] = uv;
+
+			_uvPlan.Clear();
+
 			// Kill the triangles that used the whole edge — they have collapsed to a line.
 			foreach ( var tri in _vertTris[a] )
 			{
@@ -1090,6 +1275,7 @@ public static class Decimate
 			_pos[a] = to;
 			_alive[b] = false;
 			_locked[a] = _locked[a] || _locked[b];
+			_pinned[a] = _pinned[a] || _pinned[b];
 			_version[a]++;
 
 			var q = _quadric[a];
@@ -1098,6 +1284,12 @@ public static class Decimate
 
 			if ( _colors is not null )
 				_colors[a] = Vec4.Lerp( _colors[a], _colors[b], t );
+
+			if ( _morphs is not null )
+			{
+				foreach ( var deltas in _morphs )
+					deltas[a] = Vec3.Lerp( deltas[a], deltas[b], t );
+			}
 
 			if ( _skin is not null )
 			{
@@ -1174,6 +1366,7 @@ public static class Decimate
 
 			var colors = _colors is null ? null : new List<Vec4>();
 			var skin = _skin is null ? null : new SkinWeights();
+			var morphs = _morphs is null ? null : _morphs.ConvertAll( _ => new List<Vec3>() );
 
 			for ( var t = 0; t < _triAlive.Count; t++ )
 			{
@@ -1192,6 +1385,12 @@ public static class Decimate
 						remap[v] = mesh.AddVertex( _pos[v] );
 						colors?.Add( _colors[v] );
 						skin?.Vertices.Add( _skin[v] );
+
+						if ( morphs is not null )
+						{
+							for ( var m = 0; m < morphs.Count; m++ )
+								morphs[m].Add( _morphs[m][v] );
+						}
 					}
 
 					indices[i] = remap[v];
@@ -1206,6 +1405,12 @@ public static class Decimate
 
 			mesh.Skin = skin;
 			mesh.Paint = _paint;
+
+			if ( morphs is not null )
+			{
+				for ( var m = 0; m < morphs.Count; m++ )
+					mesh.Morphs.Add( new MeshMorph { Name = _morphNames[m], Deltas = morphs[m].ToArray() } );
+			}
 
 			return mesh;
 		}

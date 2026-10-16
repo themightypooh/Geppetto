@@ -400,7 +400,9 @@ public static partial class BuildScript
 	///
 	///   lods=      0 (default) none; 1 = half and a quarter detail (the editor's set); or a list of
 	///              triangle ratios, 0.5,0.25. loddistance= the switch distances in units; by default
-	///              6, 15, 30… times the model's diagonal. Static models only.
+	///              6, 15, 30… times the model's diagonal. Static levels are triangulated .obj files;
+	///              a skinned model gets skinned .dmx/.smd levels on the same skeleton, shape keys kept.
+	///              Every level holds UV seams and material borders.
 	///   collision= none (default, what export always wrote); auto = the editor's choice (exact shapes
 	///              from the history, else a hull per body; on a skinned model a hull per body on the
 	///              bone that drives it); hulls = one hull per body; render = physics from the render mesh.
@@ -451,9 +453,6 @@ public static partial class BuildScript
 
 		if ( !TryLods( opts, out var ratios, out var lodDistances, out var whyLods ) )
 			return Fail( r, whyLods );
-
-		if ( skin && ratios.Count > 0 )
-			return Fail( r, "lods= is for static models: a skinned .vmdl here has no LOD list, and decimating a skinned mesh would scramble its weights. Drop lods=, or export skin=0." );
 
 		var bodies = studio.Bodies.Where( b => b?.Mesh is not null && b.Mesh.Faces.Count > 0 && b.Visible && !b.IsReference ).ToList();
 
@@ -551,8 +550,26 @@ public static partial class BuildScript
 			DmxWriter.WriteFile( mesh, dmxPath, skeleton, materialName: studio.NameForSlot, modelName: safe );
 			SmdWriter.WriteFile( mesh, smdPath, skeleton, materialName: studio.NameForSlot );
 			var vmdlPath = Path.Combine( dir, safe + ".vmdl" );
-			File.WriteAllText( vmdlPath, VmdlDocument.Skinned( $"{folder}/{safe}.dmx", skeleton, physics, VmdlMaterials.GroupList( studio, mesh ) ) );
-			r.Written.AddRange( new[] { dmxPath, smdPath, vmdlPath } );
+			var skinMaterials = VmdlMaterials.GroupList( studio, mesh );
+			r.Written.AddRange( new[] { dmxPath, smdPath } );
+
+			if ( ratios.Count > 0 )
+			{
+				// Skinned levels: each decimated with its weights and shape keys carried, on the
+				// same pivoted skeleton as the full mesh.
+				var levels = LodExport.WriteSkinned( mesh, skeleton, dir, folder, safe, studio.NameForSlot, ratios, lodDistances );
+				var (files, switchAt) = LodExport.VmdlLists( $"{folder}/{safe}.dmx", levels );
+				File.WriteAllText( vmdlPath, VmdlDocument.SkinnedWithLods( files, switchAt, skeleton, physics, skinMaterials ) );
+				levels.ForEach( l => r.Written.AddRange( l.Files ) );
+				r.Log.Add( $"export: {safe} skinned LODs: {Decimate.TriangleCount( mesh )} tris, then {LodExport.Describe( levels )}" );
+
+				if ( Decimate.TriangleCount( mesh ) < LodExport.MinimumTriangles )
+					r.Log.Add( $"export: note: {safe} is only {Decimate.TriangleCount( mesh )} triangles, so its LODs save next to nothing" );
+			}
+			else
+				File.WriteAllText( vmdlPath, VmdlDocument.Skinned( $"{folder}/{safe}.dmx", skeleton, physics, skinMaterials ) );
+
+			r.Written.Add( vmdlPath );
 
 			// Shape keys went into the DMX (DmxMorphs); their materials need F_MORPH_SUPPORTED or the
 			// GPU never applies them - the editor's Compile does the same (EnableMorphMaterials).
@@ -665,6 +682,7 @@ public static partial class BuildScript
 	static void WriteStatic( PartStudio studio, PolyMesh mesh, string dir, string folder, string name, string physics,
 		List<float> ratios, List<float> distances, bool fbx, Result r )
 	{
+		// Triangulated the bake's way (NormalBake.FaceTriangles), as the editor's static compile is.
 		var objPath = Path.Combine( dir, name + ".obj" );
 
 		// OBJ has no shape keys. Say so rather than drop them without a word, as the editor does.
@@ -672,7 +690,7 @@ public static partial class BuildScript
 			r.Log.Add( $"export: warning: {mesh.ValidMorphs.Count()} shape key(s) on {name} were left out: a static model exports as OBJ, which has no morphs. "
 				+ "Export it skinned (add a bone, and no skin=0 or split=1) to keep them in the .dmx." );
 
-		ObjWriter.WriteFile( mesh, objPath, name, materialName: studio.NameForSlot );
+		ObjWriter.WriteFile( mesh, objPath, name, materialName: studio.NameForSlot, triangulate: true );
 		r.Written.Add( objPath );
 
 		var materials = VmdlMaterials.GroupList( studio, mesh );
@@ -680,29 +698,15 @@ public static partial class BuildScript
 
 		if ( ratios.Count > 0 )
 		{
-			var files = new List<string> { $"{folder}/{name}.obj" };
-			var switchAt = new List<float> { 0f };
-			var size = MathF.Max( mesh.BoundsDiagonal, 1f );
-			var levels = new List<string>();
 			var full = Decimate.TriangleCount( mesh );
-
-			for ( var i = 0; i < ratios.Count; i++ )
-			{
-				var lod = Decimate.ToRatio( mesh, ratios[i] );
-				var lodName = $"{name}_lod{i + 1}";
-				var lodPath = Path.Combine( dir, lodName + ".obj" );
-				ObjWriter.WriteFile( lod, lodPath, lodName, materialName: studio.NameForSlot );
-				r.Written.Add( lodPath );
-				files.Add( $"{folder}/{lodName}.obj" );
-				var at = distances?[i] ?? size * (i == 0 ? 6f : i == 1 ? 15f : 15f * MathF.Pow( 2f, i - 1 ));
-				switchAt.Add( at );
-				levels.Add( $"{Decimate.TriangleCount( lod )} tris from {N( at )}" );
-			}
+			var levels = LodExport.WriteStatic( mesh, dir, folder, name, studio.NameForSlot, ratios, distances );
+			var (files, switchAt) = LodExport.VmdlLists( $"{folder}/{name}.obj", levels );
+			levels.ForEach( l => r.Written.AddRange( l.Files ) );
 
 			File.WriteAllText( vmdlPath, VmdlDocument.StaticWithLods( files, switchAt, physics, materials ) );
-			r.Log.Add( $"export: {name} LODs: {full} tris, then {string.Join( ", ", levels )}" );
+			r.Log.Add( $"export: {name} LODs: {full} tris, then {LodExport.Describe( levels )}" );
 
-			if ( full < 64 )
+			if ( full < LodExport.MinimumTriangles )
 				r.Log.Add( $"export: note: {name} is only {full} triangles, so its LODs save next to nothing" );
 		}
 		else

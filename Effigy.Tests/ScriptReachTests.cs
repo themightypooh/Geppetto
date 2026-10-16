@@ -369,7 +369,7 @@ public static class ScriptReachTests
 		string Err( string script, PartStudio studio = null ) => BuildScript.Run( studio ?? new PartStudio(), script, ExportDir( "bad" ) ).Error ?? "(ok)";
 
 		Check( "skin=1 with no rig is refused", Err( Box + "export m/x skin=1" ).Contains( "no bones" ) );
-		Check( "lods on a skinned export is refused", Err( "export m/x lods=1", RiggedStudio() ).Contains( "static models" ) );
+		Check( "lods on a skinned export now writes skinned levels (ExportGapsTests checks them)", Err( "export m/x lods=1", RiggedStudio() ) == "(ok)" );
 		Check( "skin with split is refused", Err( "export m/x skin=1 split=1", RiggedStudio() ).Contains( "split" ) );
 		Check( "a bad lod list says what it takes", Err( Box + "export m/x lods=0.25,0.5" ).Contains( "coarser" ) );
 		Check( "loddistance needs one per level", Err( Box + "export m/x lods=0.5,0.25 loddistance=100" ).Contains( "one per level" ) );

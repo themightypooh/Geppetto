@@ -406,10 +406,10 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		file.AddOption( "Run Build Script...", "description", RunBuildScriptFile ).ToolTip = "Run an Effigy build script (.txt) on this studio as one undo step — the same scripts Claude writes";
 		file.AddOption( "Collision Report", "fitness_center", ReportCollision ).ToolTip = "List each part's physics shape, and which feature turned it into one hull instead of boxes";
 		var lods = file.AddOption( "Export with LODs", "layers" );
-		lods.ToolTip = "When on, Compile .vmdl also writes half- and quarter-detail copies that switch with distance";
+		lods.ToolTip = "When on, Compile .vmdl also writes half- and quarter-detail copies that switch with distance. Rigged models get skinned copies on the same bones, with their shape keys";
 		lods.Checkable = true;
 		lods.Checked = _exportLods;
-		lods.Toggled += on => { _exportLods = on; Log.Info( on ? "[Effigy] Compile .vmdl will write half- and quarter-detail LODs for a static model, switching with distance" : "[Effigy] Compile .vmdl writes one level of detail" ); };
+		lods.Toggled += on => { _exportLods = on; Log.Info( on ? "[Effigy] Compile .vmdl will write half- and quarter-detail LODs, switching with distance (skinned on a rigged model)" : "[Effigy] Compile .vmdl writes one level of detail" ); };
 		file.AddSeparator();
 		file.AddOption( "Close", "close", Close );
 
@@ -7553,9 +7553,28 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			var clips = EffigyAnimExport.WriteClips( _animClips, folder, "models/effigy", skeleton, out var skippedClips );
 
 			var vmdlPath = Path.Combine( folder, $"{name}.vmdl" );
-			File.WriteAllText( vmdlPath, BuildSkinnedVmdl( $"models/effigy/{name}.dmx", skeleton,
-				BuildPhysics( rigged: true ), VmdlMaterials.GroupList( _studio, mesh ),
-				VmdlAnimation.AnimationList( clips.ToArray() ) ) );
+			var skinnedPhysics = BuildPhysics( rigged: true );
+			var skinnedMaterials = VmdlMaterials.GroupList( _studio, mesh );
+			var skinnedAnimations = VmdlAnimation.AnimationList( clips.ToArray() );
+
+			if ( _exportLods && Decimate.TriangleCount( mesh ) >= LodExport.MinimumTriangles )
+			{
+				// Skinned levels: decimated with their weights and shape keys carried, UV seams held,
+				// each its own .dmx on the same pivoted skeleton.
+				var levels = LodExport.WriteSkinned( mesh, skeleton, folder, "models/effigy", name, _studio.NameForSlot );
+				var (lodFiles, lodDistances) = LodExport.VmdlLists( $"models/effigy/{name}.dmx", levels );
+				File.WriteAllText( vmdlPath, VmdlDocument.SkinnedWithLods( lodFiles, lodDistances, skeleton,
+					skinnedPhysics, skinnedMaterials, skinnedAnimations ) );
+				Log.Info( $"[Effigy] {name}: skinned LODs - {LodExport.Describe( levels )}" );
+			}
+			else
+			{
+				if ( _exportLods )
+					Log.Warning( $"[Effigy] {name}: Export with LODs is on, but the model is only {Decimate.TriangleCount( mesh )} triangles, so one level was written (LODs start at {LodExport.MinimumTriangles})" );
+
+				File.WriteAllText( vmdlPath, BuildSkinnedVmdl( $"models/effigy/{name}.dmx", skeleton,
+					skinnedPhysics, skinnedMaterials, skinnedAnimations ) );
+			}
 
 			var result = EffigyAssetFolder.Register( folder );
 			Log.Info( $"[Effigy] wrote {vmdlPath} - {result.Registered} registered" );
@@ -7622,29 +7641,22 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		var staticPhysics = BuildPhysics( rigged: false );
 		var staticMaterials = VmdlMaterials.GroupList( _studio, staticMesh );
 
-		if ( _exportLods && Decimate.TriangleCount( staticMesh ) >= 64 )
+		if ( _exportLods && Decimate.TriangleCount( staticMesh ) >= LodExport.MinimumTriangles )
 		{
 			// Half and a quarter of the triangles, switching at six and fifteen times the model's
-			// size away — far enough that the coarser mesh is a few pixels' difference.
-			var files = new List<string> { $"models/effigy/{name}.obj" };
-			var distances = new List<float> { 0f };
-			var size = MathF.Max( staticMesh.BoundsDiagonal, 1f );
-			var levels = new[] { (0.5f, 6f), (0.25f, 15f) };
-			for ( var i = 0; i < levels.Length; i++ )
-			{
-				var (ratio, far) = levels[i];
-				var lod = Decimate.ToRatio( staticMesh, ratio );
-				var lodPath = Path.Combine( folder, $"{name}_lod{i + 1}.obj" );
-				ObjWriter.WriteFile( lod, lodPath, $"{name}_lod{i + 1}", materialName: _studio.NameForSlot );
-				files.Add( $"models/effigy/{name}_lod{i + 1}.obj" );
-				distances.Add( size * far );
-			}
+			// size away — far enough that the coarser mesh is a few pixels' difference. Each level
+			// is triangulated the bake's way, like the full mesh above, and holds its UV seams.
+			var levels = LodExport.WriteStatic( staticMesh, folder, "models/effigy", name, _studio.NameForSlot );
+			var (files, distances) = LodExport.VmdlLists( $"models/effigy/{name}.obj", levels );
 
 			File.WriteAllText( staticVmdlPath, VmdlDocument.StaticWithLods( files, distances, staticPhysics, staticMaterials ) );
-			Log.Info( $"[Effigy] {name}: LODs written at half and a quarter detail" );
+			Log.Info( $"[Effigy] {name}: LODs written at half and a quarter detail - {LodExport.Describe( levels )}" );
 		}
 		else
 		{
+			if ( _exportLods )
+				Log.Warning( $"[Effigy] {name}: Export with LODs is on, but the model is only {Decimate.TriangleCount( staticMesh )} triangles, so one level was written (LODs start at {LodExport.MinimumTriangles})" );
+
 			File.WriteAllText( staticVmdlPath, BuildVmdl( $"models/effigy/{name}.obj", staticPhysics, staticMaterials ) );
 		}
 

@@ -223,6 +223,7 @@ public static class Program
 		TestWeld();
 
 		DecimateTests.Run();
+		ExportGapsTests.Run();
 		QuadRemeshTests.Run();
 		VoxelRemeshTests.Run();
 		TakeToolsTests.Run();
