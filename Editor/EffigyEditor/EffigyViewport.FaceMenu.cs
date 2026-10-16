@@ -81,6 +81,10 @@ internal sealed partial class EffigyViewport
 	// held: a press that flew nowhere is a click, however long it was held down.
 
 	private bool _flyingCamera;
+
+	/// <summary>The right button is held and steering the camera. W and S fly then, so the handle
+	/// keys stand aside.</summary>
+	public bool IsFlyingCamera => _flyingCamera;
 	private Vector3 _flightPosition;
 	private Vector3 _flightForward;
 	private float _cameraMovedAt = float.NegativeInfinity;

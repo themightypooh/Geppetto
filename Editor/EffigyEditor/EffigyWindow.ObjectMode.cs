@@ -62,9 +62,9 @@ public sealed partial class EffigyWindow
 		static EffigyStageTool Tool( EffigyIcon icon, string label, string tip, Action clicked, bool checkable = false ) =>
 			new() { Icon = icon, Label = label, Tip = tip, Clicked = clicked, Checkable = checkable };
 
-		_objMoveTool = Tool( EffigyIcon.Transform, "Move", "Move the selected body with a handle (W). Saved as a Transform", () => StartBodyTransform( EffigyViewport.BodyDragMode.Move ), checkable: true );
-		_objRotateTool = Tool( EffigyIcon.CircularPattern, "Rotate", "Turn the selected body with a handle (E)", () => StartBodyTransform( EffigyViewport.BodyDragMode.Rotate ), checkable: true );
-		_objScaleTool = Tool( EffigyIcon.Primitive, "Scale", "Scale the selected body with a handle (R)", () => StartBodyTransform( EffigyViewport.BodyDragMode.Scale ), checkable: true );
+		_objMoveTool = Tool( EffigyIcon.Transform, "Move", "Move the selected body with a handle (G or W). Saved as a Transform", () => StartBodyTransform( EffigyViewport.BodyDragMode.Move ), checkable: true );
+		_objRotateTool = Tool( EffigyIcon.CircularPattern, "Rotate", "Turn the selected body with a handle (R)", () => StartBodyTransform( EffigyViewport.BodyDragMode.Rotate ), checkable: true );
+		_objScaleTool = Tool( EffigyIcon.Primitive, "Scale", "Scale the selected body with a handle (S)", () => StartBodyTransform( EffigyViewport.BodyDragMode.Scale ), checkable: true );
 		_objDuplicateTool = Tool( EffigyIcon.LinearPattern, "Duplicate", "A copy of the selected body beside it. Saved as a Linear pattern, so the count and spacing can still be changed", DuplicateBody );
 		_objMirrorTool = Tool( EffigyIcon.Mirror, "Mirror", "A mirrored copy of the selected body across a plane", () => AddFeature( NewFeature( ToolKind.Mirror, -1 ) ) );
 		_objJoinTool = Tool( EffigyIcon.Boolean, "Join", "Make one body of the selected ones, as a new Import. Ctrl+Z brings them back", () => JoinParts( _viewport?.IdleBodyIds.ToList() ) );

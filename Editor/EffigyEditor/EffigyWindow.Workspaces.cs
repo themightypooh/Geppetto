@@ -3274,11 +3274,25 @@ public sealed partial class EffigyWindow
 	[Shortcut( "effigy.mesh.soft", "O", typeof( EffigyViewport ) )]
 	private void ShortcutMeshSoft() => MeshEditKey( 'O' );
 
+	// G and S are the same move and scale keys outside Edit mode too: in Object mode they start or
+	// switch the body handle, on a bone the bone handle — see DriveHandle. One keymap everywhere.
 	[Shortcut( "effigy.mesh.move", "G", typeof( EffigyViewport ) )]
-	private void ShortcutMeshMove() => MeshEditKey( 'G' );
+	private void ShortcutMeshMove()
+	{
+		if ( _viewport?.IsFlyingCamera == true || MeshEditKey( 'G' ) )
+			return;
+
+		DriveHandle( EffigyViewport.BoneDragMode.Move, EffigyViewport.BodyDragMode.Move );
+	}
 
 	[Shortcut( "effigy.mesh.scale", "S", typeof( EffigyViewport ) )]
-	private void ShortcutMeshScale() => MeshEditKey( 'S' );
+	private void ShortcutMeshScale()
+	{
+		if ( _viewport?.IsFlyingCamera == true || MeshEditKey( 'S' ) )
+			return;
+
+		DriveHandle( EffigyViewport.BoneDragMode.Scale, EffigyViewport.BodyDragMode.Scale );
+	}
 
 	[Shortcut( "effigy.mesh.selectall", "A", typeof( EffigyViewport ) )]
 	private void ShortcutMeshSelectAll() => MeshEditKey( 'A' );

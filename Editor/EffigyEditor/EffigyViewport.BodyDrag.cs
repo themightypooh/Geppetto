@@ -61,14 +61,14 @@ internal sealed partial class EffigyViewport
 	public BodyDragMode CurrentBodyDragMode => _bodyDragMode;
 
 	/// <summary>
-	/// Switch the body handle, or do nothing when there is no body handle — W/E/R call this beside
+	/// Switch the body handle, or do nothing when there is no body handle — the handle keys call this beside
 	/// <see cref="SetBoneDragMode"/>, so the three keys mean one thing whichever handle is up.
 	///
 	/// REFUSED MID-DRAG. Swapping the control under a held button leaves the old one believing it is
 	/// still grabbed, and the new one takes the next frame's mouse as the start of a drag.
 	/// </summary>
 	/// <returns>Whether the key was answered — switched, or refused with a reason — so the caller
-	/// can tell "nothing here takes W/E/R" from "the body handle took it".</returns>
+	/// can tell "nothing here takes the handle keys" from "the body handle took it".</returns>
 	public bool SetBodyDragMode( BodyDragMode mode )
 	{
 		if ( !BodyDragEnabled )
@@ -84,9 +84,9 @@ internal sealed partial class EffigyViewport
 		return true;
 	}
 
-	/// <summary>What W/E/R do, for when nothing on screen can take them.</summary>
+	/// <summary>What the handle keys do, for when nothing on screen can take them.</summary>
 	public const string HandleKeysIdleReason =
-		"W / E / R switch the handle between move, rotate and scale — select a bone, or open a Transform, first.";
+		"G (or W) moves, R rotates and S scales — select a body or a bone first.";
 
 	/// <summary>
 	/// The tool whose click would fight a drag handle, as a phrase, or null when the handles can show.

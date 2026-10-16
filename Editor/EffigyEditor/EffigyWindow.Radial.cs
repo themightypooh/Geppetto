@@ -116,9 +116,9 @@ public sealed partial class EffigyWindow
 
 		_viewport.OpenRadial( body.Name ?? "Body", new[]
 		{
-			Slot( _objMoveTool, "open_with", "W · drag the handle" ),
-			Slot( _objRotateTool, "rotate_right", "E · turn it" ),
-			Slot( _objScaleTool, "open_in_full", "R · size it" ),
+			Slot( _objMoveTool, "open_with", "G · drag the handle" ),
+			Slot( _objRotateTool, "rotate_right", "R · turn it" ),
+			Slot( _objScaleTool, "open_in_full", "S · size it" ),
 			Slot( _objDuplicateTool, "content_copy", "a copy beside it" ),
 			Slot( _objDeleteTool, "delete", "Ctrl+Z brings it back" ),
 			(new EffigyRadialMenu.Item( "More…", "more_horiz", Hint: "the full object menu" ), () => OpenObjectMenu( body )),

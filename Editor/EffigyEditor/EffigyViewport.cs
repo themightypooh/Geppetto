@@ -137,10 +137,10 @@ internal sealed partial class EffigyViewport : Widget
 	private BoneDragMode _boneDragMode = BoneDragMode.Rotate;
 
 	/// <summary>
-	/// Set the drag mode for the selected bone, or do nothing when none is selected — the W/E/R
+	/// Set the drag mode for the selected bone, or do nothing when none is selected — the the handle keys
 	/// shortcuts call this, and a mode with no bone to apply it to is a key that did nothing.
 	/// </summary>
-	/// <returns>Whether a bone took the key, so the caller can say what W/E/R do when neither the
+	/// <returns>Whether a bone took the key, so the caller can say what the handle keys do when neither the
 	/// bone nor the body handle could (see <see cref="HandleKeysIdleReason"/>).</returns>
 	public bool SetBoneDragMode( BoneDragMode mode )
 	{
@@ -2018,7 +2018,7 @@ internal sealed partial class EffigyViewport : Widget
 	}
 
 	/// <summary>
-	/// Pose gizmo for the selected bone. Mode is set by W (move), E (rotate), R (scale).
+	/// Pose gizmo for the selected bone. Mode is set by G or W (move), R (rotate), S (scale).
 	/// Follows RigViewport's pattern: Position gives per-frame delta (accumulate), Rotate
 	/// gives cumulative-since-grab (assign). The start pose is captured once and everything
 	/// is applied to that — the live transform is never fed back.

@@ -8499,19 +8499,20 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			: "Notes hidden (H shows them again). The pen is still armed: new strokes are drawn hidden." );
 	}
 
-	// W/E/R drive whichever handle is up — the selected bone's and an open Transform's. Each setter
-	// no-ops when its handle is not there, so one convention serves both rather than two keymaps.
+	// G or W move, R rotates, S scales - the same in Object mode, Edit mode and on a bone, whichever
+	// handle is up. E also rotates outside Edit mode (where it is Extrude), for hands that learnt it.
+	// Each setter no-ops when its handle is not there, so one convention serves every handle.
 	[Shortcut( "effigy.bone.move", "W", typeof( EffigyViewport ) )]
 	private void ShortcutBoneMove()
 	{
-		if ( MeshEditKey( 'W' ) )
+		if ( _viewport?.IsFlyingCamera == true || MeshEditKey( 'W' ) )
 			return;
 
 		DriveHandle( EffigyViewport.BoneDragMode.Move, EffigyViewport.BodyDragMode.Move );
 	}
 
 	/// <summary>
-	/// W/E/R's one body. Drives the bone handle and an open Transform's handle as before; in Object
+	/// The handle keys' one body. Drives the bone handle and an open Transform's handle as before; in Object
 	/// mode with a body selected and no handle up yet, it STARTS the Move/Rotate/Scale the toolbar
 	/// button would - a key that does nothing until you have found the button is a key that looks
 	/// broken. With nothing selected there, it says so.
@@ -8550,19 +8551,20 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	{
 		// E is Extrude while editing a mesh — the note eraser shortcut on the same key already
 		// routes it there, and doing it twice would extrude twice.
-		if ( _viewport?.IsMeshEditing == true )
+		if ( _viewport?.IsMeshEditing == true || _viewport?.IsFlyingCamera == true )
 			return;
 
 		DriveHandle( EffigyViewport.BoneDragMode.Rotate, EffigyViewport.BodyDragMode.Rotate );
 	}
 
-	[Shortcut( "effigy.bone.scale", "R", typeof( EffigyViewport ) )]
-	private void ShortcutBoneScale()
+	// R used to scale here and rotate in Edit mode. It rotates everywhere now; S scales.
+	[Shortcut( "effigy.handle.rotate", "R", typeof( EffigyViewport ) )]
+	private void ShortcutHandleRotate()
 	{
-		if ( MeshEditKey( 'R' ) )
+		if ( _viewport?.IsFlyingCamera == true || MeshEditKey( 'R' ) )
 			return;
 
-		DriveHandle( EffigyViewport.BoneDragMode.Scale, EffigyViewport.BodyDragMode.Scale );
+		DriveHandle( EffigyViewport.BoneDragMode.Rotate, EffigyViewport.BodyDragMode.Rotate );
 	}
 
 	/// <summary>The index is into <see cref="_brushTools"/>, so the keyboard order and the stage

@@ -196,7 +196,7 @@ public sealed partial class EffigyWindow
 		Key( _meshMoveTool, "G" ); Key( _meshRotateTool, "R" ); Key( _meshScaleTool, "S" );
 		Key( _meshExtrudeTool, "E" ); Key( _meshInsetTool, "I" ); Key( _meshBevelTool, "^B" ); Key( _meshLoopCutTool, "^R" ); Key( _meshKnifeTool, "K" );
 		Key( _meshXrayTool, "⌥Z" ); Key( _meshSoftTool, "O" );
-		Key( _objMoveTool, "W" ); Key( _objRotateTool, "E" ); Key( _objScaleTool, "R" ); Key( _objEditTool, "Tab" );
+		Key( _objMoveTool, "G" ); Key( _objRotateTool, "R" ); Key( _objScaleTool, "S" ); Key( _objEditTool, "Tab" );
 
 		for ( var i = 0; i < _brushTools.Count && i < 9; i++ )
 			_brushTools[i].Tool.Key = (i + 1).ToString();
