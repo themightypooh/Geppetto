@@ -258,6 +258,56 @@ public static partial class BuildScript
 				return true;
 			}
 
+			case "turnaround":
+			{
+				// turnaround out/turn [shade=clay|material] [size=512] [views=front,quarter,side,back] [name=x] [focus=Body]
+				// File ▸ Render Turnaround, from a script: the sheet and one picture per view.
+				if ( args.Count < 1 )
+					return Fail( r, "turnaround needs a folder: turnaround out/turn [shade=clay|material] [size=512] [views=front,quarter,side,back] [name=model] [focus=Body]" );
+
+				var folder = Resolve( baseDir, args[0] );
+				var opts = Pairs( args.Skip( 1 ) );
+
+				foreach ( var key in opts.Keys )
+					if ( key is not ("shade" or "size" or "views" or "name" or "focus" or "elevation" or "ss" or "preset") )
+						return Fail( r, $"turnaround has no option '{key}'. Options: shade, size, views, name, focus, elevation, ss, preset." );
+
+				var look = opts.GetValueOrDefault( "shade", "clay" ).ToLowerInvariant();
+				if ( look is not ("clay" or "material") )
+					return Fail( r, $"shade={look}: use shade=clay (form only) or shade=material (what the materials make it look like)." );
+
+				var options = new TurnaroundOptions
+				{
+					Clay = look == "clay",
+					Size = (int)Number( opts.GetValueOrDefault( "size", "512" ) ),
+					Elevation = Number( opts.GetValueOrDefault( "elevation", "12" ) ),
+					Supersample = (int)Number( opts.GetValueOrDefault( "ss", "2" ) ),
+				};
+
+				if ( opts.TryGetValue( "views", out var viewList ) )
+					options.Views = viewList.Split( ',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries );
+
+				if ( opts.TryGetValue( "focus", out var focusName ) )
+				{
+					var focusBody = ModelMeasure.FindBody( studio, focusName );
+					if ( focusBody is null )
+						return Fail( r, $"focus={focusName}: no body called that." );
+					options.FocusBodyId = focusBody.Id;
+				}
+
+				if ( opts.TryGetValue( "preset", out var preset ) && (options.Fallback = FleshMaterial.Preset( preset )) is null )
+					return Fail( r, $"No material preset '{preset}'. Presets: {string.Join( ", ", FleshMaterial.Presets )}." );
+
+				var turned = Turnaround.Write( studio, folder, opts.GetValueOrDefault( "name", "model" ), options );
+				r.Log.AddRange( turned.Log );
+
+				if ( !turned.Ok )
+					return Fail( r, turned.Error );
+
+				r.Written.AddRange( turned.Written );
+				return true;
+			}
+
 			case "describe":
 				r.Log.Add( ModelMeasure.Describe( studio ) );
 				return true;
@@ -293,7 +343,8 @@ public static partial class BuildScript
 				foreach ( var body in args.Count > 0 ? new[] { ModelMeasure.FindBody( studio, args[0] ) } : studio.Bodies.ToArray() )
 				{
 					if ( body?.Mesh is null ) continue;
-					r.Log.Add( $"{body.Name ?? body.Id}: left-right symmetry error {ModelMeasure.SymmetryError( body.Mesh ) * 100f:0.#}% of width" );
+					var reading = SymmetryCheck.Measure( body.Mesh, int.MaxValue );
+					r.Log.Add( $"{body.Name ?? body.Id}: left-right symmetry error {reading.ErrorY * 100f:0.#}% of width (across X = 0: {reading.ErrorX * 100f:0.#}%)" );
 				}
 
 				return true;
@@ -377,16 +428,30 @@ public static partial class BuildScript
 			case "pivot":
 			{
 				// pivot Bob3 @Beam.bottom — the point this part turns about, which export makes its origin.
+				// pivot model @ground — the whole model's origin (Object ▸ Set Origin in the editor).
+				// Both are SAVED with the document now (PartStudio.BodyOrigins / Origin), not only kept
+				// for this run's export; r.Pivots still carries them so a run's export reads the same.
 				if ( args.Count < 2 )
-					return Fail( r, "pivot needs a body and a point: pivot Arm @Hub.centre" );
+					return Fail( r, "pivot needs a body (or model) and a point: pivot Arm @Hub.centre, pivot model @ground" );
 
-				if ( ModelMeasure.FindBody( studio, args[0] ) is null )
-					return Fail( r, $"No body called '{args[0]}'." );
+				var pivotBody = ModelMeasure.FindBody( studio, args[0] );
+				var whole = pivotBody is null && args[0].Equals( "model", StringComparison.OrdinalIgnoreCase );
+
+				if ( pivotBody is null && !whole )
+					return Fail( r, $"No body called '{args[0]}'. Name a body, or say model for the whole model's origin." );
 
 				if ( !Point( studio, args[1], out var p, out var why ) )
 					return Fail( r, why );
 
+				if ( whole )
+				{
+					StudioOrigin.SetModel( studio, OriginTarget.Point, null, p, out var said );
+					r.Log.Add( said );
+					return true;
+				}
+
 				r.Pivots[args[0]] = p;
+				studio.BodyOrigins[pivotBody.Id] = p;
 				return true;
 			}
 
@@ -430,7 +495,7 @@ public static partial class BuildScript
 			}
 
 			default:
-				return Fail( r, $"Unknown command '{verb}'. Commands: add, edit, set, remove, rebuild, fix, render, describe, measure, distance, symmetry, topology, section, flex, match, material, pivot, export, corrective, bake, paintmaps, save, echo." );
+				return Fail( r, $"Unknown command '{verb}'. Commands: add, edit, set, remove, rebuild, fix, render, turnaround, describe, measure, distance, symmetry, topology, section, flex, match, material, pivot, export, corrective, bake, paintmaps, save, echo." );
 		}
 	}
 
@@ -517,6 +582,11 @@ public static partial class BuildScript
 
 		Vec3 DefaultPivot( Vec3 min, Vec3 max ) => new( (min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f, min.z );
 
+		// The model's saved origin (Object ▸ Set Origin, or `pivot model`) when it has been moved off
+		// the world centre; otherwise the bottom centre, which is what export always did. A model
+		// whose origin was put back at the world centre therefore still exports bottom-centred here.
+		Vec3 ModelPivot( PartStudio s, Vec3 min, Vec3 max ) => StudioOrigin.HasModelOrigin( s ) ? s.Origin : DefaultPivot( min, max );
+
 		if ( split )
 		{
 			foreach ( var body in bodies )
@@ -524,7 +594,9 @@ public static partial class BuildScript
 				var partName = Safe( body.Name ?? body.Id );
 				var mesh = body.Mesh.Clone();
 				var (min, max) = ModelMeasure.Bounds( mesh );
-				var pivot = r.Pivots.TryGetValue( body.Name ?? "", out var p ) ? p : DefaultPivot( min, max );
+				var pivot = r.Pivots.TryGetValue( body.Name ?? "", out var p ) ? p
+					: StudioOrigin.TryBody( studio, body, out var saved ) ? saved
+					: DefaultPivot( min, max );
 
 				MeshTransform.Apply( mesh, Xform.Translate( -pivot ) );
 				var physics = StaticPhysics( studio, collision, surface, pivot, b => b.Id == body.Id, r, partName );
@@ -572,7 +644,7 @@ public static partial class BuildScript
 				}
 
 			var (min, max) = ModelMeasure.Bounds( mesh );
-			var pivot = r.Pivots.TryGetValue( name, out var p ) ? p : DefaultPivot( min, max );
+			var pivot = r.Pivots.TryGetValue( name, out var p ) ? p : ModelPivot( studio, min, max );
 			var shapes = collision is "auto" or "hulls" ? BoneHulls( studio, skeleton ) : null;
 
 			MeshTransform.Apply( mesh, Xform.Translate( -pivot ) );
@@ -670,7 +742,7 @@ public static partial class BuildScript
 				MeshTransform.Append( mesh, body.Mesh );
 
 			var (min, max) = ModelMeasure.Bounds( mesh );
-			var pivot = r.Pivots.TryGetValue( name, out var p ) ? p : DefaultPivot( min, max );
+			var pivot = r.Pivots.TryGetValue( name, out var p ) ? p : ModelPivot( studio, min, max );
 			MeshTransform.Apply( mesh, Xform.Translate( -pivot ) );
 			var physics = StaticPhysics( studio, collision, surface, pivot, b => bodies.Contains( b ), r, Safe( name ) );
 			WriteStatic( studio, mesh, dir, folder, Safe( name ), physics, ratios, lodDistances, fbx, r );
@@ -1394,56 +1466,8 @@ public static partial class BuildScript
 		if ( opts.TryGetValue( "preset", out var presetName ) && (fallback = FleshMaterial.Preset( presetName )) is null )
 			return Fail( r, $"No material preset '{presetName}'. Presets: {string.Join( ", ", FleshMaterial.Presets )}." );
 
-		var scene = new ShadeScene();
-		var flesh = studio.Features.OfType<FleshMaterialFeature>().Where( x => !x.Suppressed ).ToList();
-
-		foreach ( var body in studio.Bodies )
-		{
-			if ( body.Mesh is null || body.Mesh.Faces.Count == 0 || !body.Visible ) continue;
-			if ( focus is not null && body != focus ) continue;
-			var name = body.Name ?? body.Id;
-
-			if ( mode == "clay" ) { scene.Add( body.Mesh, ShadeMaterial.Clay() ); continue; }
-
-			var owner = flesh.LastOrDefault( x => x.Maps.ContainsKey( body.Id ) || x.VertexMaterials.ContainsKey( body.Id ) );
-			if ( owner is not null && owner.VertexMaterials.TryGetValue( body.Id, out var vm ) )
-			{
-				var coloured = body.Mesh.Clone();
-				coloured.VertexColors = vm.Colour;
-				scene.Add( coloured, FleshMaterial.Shade( owner.Stack, vertex: vm ) );
-				r.Log.Add( $"{name}: {owner.PresetName} (per vertex)" );
-			}
-			else if ( owner is not null && owner.Maps.TryGetValue( body.Id, out var maps ) )
-			{
-				scene.Add( body.Mesh, FleshMaterial.Shade( owner.Stack, maps ) );
-				r.Log.Add( $"{name}: {owner.PresetName} ({maps.Size}² maps)" );
-			}
-			else if ( body.Mesh.Paint is { } paint )
-			{
-				// Painted layers: colour, roughness, metallic and the normal from painted height,
-				// exactly the images `paintmaps` and the editor's compile write.
-				scene.Add( body.Mesh, PaintTextureSet.Shade( paint ) );
-				r.Log.Add( $"{name}: its paint ({paint.Width}² maps)" );
-			}
-			else if ( fallback is not null )
-			{
-				var v = FleshMaterial.BakeVertices( body.Mesh, fallback );
-				var coloured = body.Mesh.Clone();
-				coloured.VertexColors = v.Colour;
-				scene.Add( coloured, FleshMaterial.Shade( fallback, vertex: v ) );
-				r.Log.Add( $"{name}: {fallback.Name} (preset, per vertex)" );
-			}
-			else if ( body.Mesh.HasVertexColors )
-			{
-				scene.Add( body.Mesh, new ShadeMaterial { Roughness = 0.35f, Coat = 0.3f } );
-				r.Log.Add( $"{name}: its vertex colours" );
-			}
-			else
-			{
-				scene.Add( body.Mesh, ShadeMaterial.Clay() );
-				r.Log.Add( $"{name}: clay (no Flesh Material on it; add one, or pass preset=)" );
-			}
-		}
+		// The scene Render Turnaround draws, so the script's sheet and the editor's match.
+		var scene = Turnaround.Scene( studio, mode == "clay", focus?.Id, fallback, r.Log );
 
 		if ( scene.Items.Count == 0 )
 			return Fail( r, focus is null ? "Nothing to render: no visible body has faces." : $"{focus.Name ?? focus.Id} has no faces to render." );

@@ -334,6 +334,7 @@ public static class Program
 		SplineTests.Run();
 		AgentToolsTests.Run();
 		ScriptReachTests.Run();
+		OriginTurnaroundTests.Run();
 		VoxelSolidTests.Run();
 		OrganicFeatureTests.Run();
 		SolidMeasureTests.Run();

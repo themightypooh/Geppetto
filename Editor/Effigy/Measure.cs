@@ -456,53 +456,7 @@ public static class ModelMeasure
 	/// engine's left–right plane) and matched to its nearest vertex, averaged, as a fraction of
 	/// the mesh's width. 0 is a perfect mirror; 0.05 is a visibly lopsided character.
 	/// </summary>
-	public static float SymmetryError( PolyMesh mesh )
-	{
-		if ( mesh is null || mesh.Positions.Count == 0 )
-			return 0f;
-
-		var (min, max) = Bounds( mesh );
-		var width = MathF.Max( max.y - min.y, 1e-6f );
-
-		// A grid over the vertices so this is not quadratic on a dense mesh.
-		var cell = width / 24f;
-		var grid = new Dictionary<(int, int, int), List<int>>();
-
-		for ( var i = 0; i < mesh.Positions.Count; i++ )
-		{
-			var p = mesh.Positions[i];
-			var key = ((int)MathF.Floor( p.x / cell ), (int)MathF.Floor( p.y / cell ), (int)MathF.Floor( p.z / cell ));
-			if ( !grid.TryGetValue( key, out var list ) ) grid[key] = list = new List<int>();
-			list.Add( i );
-		}
-
-		var total = 0f;
-
-		foreach ( var p in mesh.Positions )
-		{
-			var m = new Vec3( p.x, -p.y, p.z );
-			var best = float.MaxValue;
-			var kx = (int)MathF.Floor( m.x / cell ); var ky = (int)MathF.Floor( m.y / cell ); var kz = (int)MathF.Floor( m.z / cell );
-
-			for ( var dx = -1; dx <= 1; dx++ )
-				for ( var dy = -1; dy <= 1; dy++ )
-					for ( var dz = -1; dz <= 1; dz++ )
-					{
-						if ( !grid.TryGetValue( (kx + dx, ky + dy, kz + dz), out var list ) )
-							continue;
-
-						foreach ( var j in list )
-						{
-							var d = (mesh.Positions[j] - m).Length;
-							if ( d < best ) best = d;
-						}
-					}
-
-			total += best == float.MaxValue ? cell * 2f : best;
-		}
-
-		return total / mesh.Positions.Count / width;
-	}
+	public static float SymmetryError( PolyMesh mesh ) => SymmetryCheck.Error( mesh, 1 );
 
 	static string N( float v ) => MathF.Abs( v ) >= 100f ? $"{v:0}" : MathF.Abs( v ) >= 10f ? $"{v:0.#}" : $"{v:0.##}";
 }

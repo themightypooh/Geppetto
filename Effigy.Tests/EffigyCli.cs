@@ -13,6 +13,7 @@ namespace Effigy.Tests;
 ///
 ///   effigy render  doc.effigy out.png [view] [size]   sheet (front/side/top/iso) or one view
 ///   effigy shade   model.obj outdir [options]          lit judging renders + labelled sheet, no Blender (ShadeCommand)
+///   effigy turnaround doc.effigy outdir [shade=clay|material] [size=512] [views=…] [name=]   File ▸ Render Turnaround, headless
 ///   effigy describe doc.effigy                         the model in words
 ///   effigy measure doc.effigy <landmark|x,y,z>         what is at a place
 ///   effigy match   doc.effigy <view> ref.png [out.png] silhouette against a drawing
@@ -36,7 +37,7 @@ namespace Effigy.Tests;
 public static class EffigyCli
 {
 	public static bool Handles( string verb ) =>
-		verb is "render" or "describe" or "measure" or "match" or "topology" or "section" or "flex" or "script" or "fix" or "parts" or "new" or "crop" or "wardrobe" or "clothing" or "take" or "sim" or "simrig" or "key" or "fbxdump" or "fbxskin" or "fbxinfo" or "shade";
+		verb is "render" or "describe" or "measure" or "match" or "topology" or "section" or "flex" or "script" or "fix" or "parts" or "new" or "crop" or "wardrobe" or "clothing" or "take" or "sim" or "simrig" or "key" or "fbxdump" or "fbxskin" or "fbxinfo" or "shade" or "turnaround";
 
 	public static int Run( string[] args )
 	{
@@ -64,6 +65,7 @@ public static class EffigyCli
 				"fbxinfo" => FbxInfo( args ),
 				"fbxskin" => FbxSkin( args ),
 				"shade" => ShadeCommand.Run( args ),
+				"turnaround" => TurnaroundCommand( args ),
 				_ => Usage(),
 			};
 		}
@@ -104,6 +106,28 @@ public static class EffigyCli
 
 		Console.WriteLine( a[2] );
 		Console.WriteLine( ModelMeasure.Describe( studio ) );
+		return 0;
+	}
+
+	/// <summary>`effigy turnaround`: the editor's File ▸ Render Turnaround on a saved document.</summary>
+	static int TurnaroundCommand( string[] a )
+	{
+		if ( a.Length < 3 ) { Console.Error.WriteLine( "effigy turnaround doc.effigy outdir [shade=clay|material] [size=512] [views=front,quarter,side,back] [name=model]" ); return 1; }
+
+		var studio = Load( a[1] );
+		var opts = a.Skip( 3 ).Select( x => x.Split( '=', 2 ) ).Where( p => p.Length == 2 ).ToDictionary( p => p[0], p => p[1] );
+		var options = new TurnaroundOptions
+		{
+			Clay = !opts.TryGetValue( "shade", out var shade ) || shade != "material",
+			Size = opts.TryGetValue( "size", out var size ) && int.TryParse( size, out var px ) ? px : 512,
+		};
+		if ( opts.TryGetValue( "views", out var views ) ) options.Views = views.Split( ',', StringSplitOptions.RemoveEmptyEntries );
+
+		var name = opts.TryGetValue( "name", out var n ) ? n : Path.GetFileNameWithoutExtension( a[1] );
+		var result = Turnaround.Write( studio, a[2], name, options );
+		foreach ( var line in result.Log ) Console.WriteLine( line );
+		if ( !result.Ok ) { Console.Error.WriteLine( result.Error ); return 1; }
+		foreach ( var path in result.Written ) Console.WriteLine( path );
 		return 0;
 	}
 

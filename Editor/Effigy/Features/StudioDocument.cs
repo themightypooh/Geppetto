@@ -118,6 +118,13 @@ public static class StudioDocument
 				sb.Append( "bodycollision " ).Append( id ).Append( ' ' ).Append( kind.Trim() ).Append( '\n' );
 		}
 
+		// Only bodies somebody gave an origin, sorted for stable bytes — the bodycollision rule.
+		foreach ( var (id, origin) in studio.BodyOrigins.OrderBy( kv => kv.Key, StringComparer.Ordinal ) )
+		{
+			if ( !string.IsNullOrWhiteSpace( id ) )
+				sb.Append( "bodyorigin " ).Append( id ).Append( ' ' ).Append( Vec( origin ) ).Append( '\n' );
+		}
+
 		// The path goes last because it may have spaces in it; everything before it is a number.
 		foreach ( var image in studio.ReferenceImages )
 		{
@@ -625,6 +632,18 @@ public static class StudioDocument
 
 				if ( !string.IsNullOrWhiteSpace( id ) && !string.IsNullOrWhiteSpace( kind ) )
 					studio.BodyCollision[id.Trim()] = kind.Trim();
+
+				continue;
+			}
+
+			if ( line.StartsWith( "bodyorigin " ) )
+			{
+				var (id, at) = Split( line[11..] );
+
+				// Three numbers or nothing: a hand-edited line short a coordinate is dropped, the way
+				// a bodycollision line with no kind is, rather than taking the document down.
+				if ( !string.IsNullOrWhiteSpace( id ) && at.Split( ' ', StringSplitOptions.RemoveEmptyEntries ).Length >= 3 )
+					studio.BodyOrigins[id.Trim()] = ParseVec3( at );
 
 				continue;
 			}

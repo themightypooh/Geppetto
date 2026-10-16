@@ -150,6 +150,13 @@ public sealed class PartStudio
 	public Vec3 Origin;
 
 	/// <summary>
+	/// Each body's own origin, by body id, for exports that write every body as its own model (the
+	/// build script's `export split=1`). Set by the script's `pivot` and saved with the document; a
+	/// body with no entry exports about the middle of its underside. See <see cref="StudioOrigin"/>.
+	/// </summary>
+	public Dictionary<string, Vec3> BodyOrigins = new();
+
+	/// <summary>
 	/// Grease-pencil notes: things the modeller wrote to themselves, drawn over the part.
 	///
 	/// NOT IN <see cref="Features"/>, AND THAT IS THE DESIGN. A note has to be impossible to export.

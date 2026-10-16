@@ -4,6 +4,7 @@
 #
 #   tools/effigy.sh render   doc.effigy out.png [sheet|front|side|top|iso|back|left] [size] [nowire] [plain] [bones]
 #   tools/effigy.sh shade    model.obj outdir [size=] [views=] [turn=] [cam= look= lens=] [clay=1] [silhouette=0] [ground=0] [style=studio]   lit judging renders, no Blender
+#   tools/effigy.sh turnaround doc.effigy outdir [shade=clay|material] [size=512] [views=front,quarter,side,back]   File > Render Turnaround, headless
 #   tools/effigy.sh describe doc.effigy
 #   tools/effigy.sh measure  doc.effigy <landmark|x,y,z> [second landmark]
 #   tools/effigy.sh match    doc.effigy <view> ref.png [diff.png]
