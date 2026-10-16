@@ -24,6 +24,50 @@ public static class UVToolsTests
 		Section( "UV tools: cylinder and sphere projection" );
 		TestCylinderProjection();
 		TestSphereProjection();
+
+		Section( "UV tools: texel density" );
+		TestTexelDensity();
+	}
+
+	static void TestTexelDensity()
+	{
+		// A 4 x 4 plane filling the unit square on a 1024 texture: 1024 px over 4 units = 256 px/unit.
+		var plane = Primitives.Plane( 4, 4, 2, 2 );
+		UVProjection.PlanarProject( plane, new Vec3( 0, 0, 1 ), 4f );
+		var ppu = UVDensity.PixelsPerUnit( plane, Enumerable.Range( 0, plane.FaceCount ), 1024 );
+		Check( "a 4-unit plane on a whole 1024 texture is 256 px per unit", MathF.Abs( ppu - 256f ) < 0.01f, $"{ppu}" );
+		Check( "and 512 on a 2048", MathF.Abs( UVDensity.PixelsPerUnit( plane, Enumerable.Range( 0, plane.FaceCount ), 2048 ) - 512f ) < 0.02f );
+
+		// Two boxes of different size in one mesh, unwrapped together: their islands differ in
+		// surface but share one density, because the unwrap packs at one scale.
+		var mesh = Primitives.Box( 2, 2, 2 );
+		var big = Primitives.Box( 6, 6, 6 );
+		for ( var i = 0; i < big.Positions.Count; i++ ) big.Positions[i] += new Vec3( 10, 0, 0 );
+		MeshTransform.Append( mesh, big );
+		UVUnwrap.Unwrap( mesh );
+		var report = UVDensity.Measure( mesh, 1024 );
+		Check( "an unwrap gives every island the same density", report.Islands.Count >= 2 && report.Max - report.Min < 0.02f * report.Max, report.ToString() );
+
+		// Size only the small box's islands up to 3x the density.
+		var target = report.PixelsPerUnit * 3f;
+		var small = Enumerable.Range( 0, 6 ).ToList();
+		var session = new MeshEditSession( mesh );
+		session.SetMode( EditElement.Face );
+		foreach ( var f in small )
+			session.SelectFace( f, MeshEditSession.Combine.Add );
+		var scaled = session.SetTexelDensity( target, 1024 );
+		var after = UVDensity.Measure( session.Mesh, 1024 );
+		var smallIslands = after.Islands.Where( i => UVIslands.Find( session.Mesh ).Islands[i.Index].All( f => f < 6 ) ).ToList();
+		var bigIslands = after.Islands.Where( i => UVIslands.Find( session.Mesh ).Islands[i.Index].All( f => f >= 6 ) ).ToList();
+		Check( "Set texel density hits the target on every selected island", scaled > 0 && smallIslands.Count > 0 && smallIslands.All( i => MathF.Abs( i.PixelsPerUnit - target ) < 0.01f * target ),
+			string.Join( ", ", smallIslands.Select( i => i.PixelsPerUnit.ToString( "0.##" ) ) ) + $" want {target:0.##}" );
+		Check( "and leaves the unselected islands' density alone", bigIslands.All( i => MathF.Abs( i.PixelsPerUnit - report.PixelsPerUnit ) < 0.02f * report.PixelsPerUnit ) );
+		Check( "the session reads the selection's density", MathF.Abs( session.TexelDensity( 1024 ).PixelsPerUnit - target ) < 0.01f * target, session.TexelDensity( 1024 ).ToString() );
+		Check( "one undo step", session.LastLabel == "Set texel density" );
+
+		var refused = false;
+		try { session.SetTexelDensity( 0f, 1024 ); } catch ( InvalidOperationException ) { refused = true; }
+		Check( "a density of zero is refused with a reason", refused );
 	}
 
 	static float SignedArea( Vec2[] uv )

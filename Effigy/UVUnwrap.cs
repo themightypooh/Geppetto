@@ -22,6 +22,10 @@ public sealed class UnwrapReport
 	public readonly float MeanStretch;
 	public readonly float MaxStretch;
 
+	/// <summary>Anything a caller adds after the unwrap - a texel density, a repack - said on the
+	/// end of <see cref="ToString"/>. Null for none.</summary>
+	public string Note;
+
 	public UnwrapReport( int charts, int faces, int skipped, float scale, float meanStretch = 0f, float maxStretch = 0f )
 	{
 		Charts = charts;
@@ -35,7 +39,8 @@ public sealed class UnwrapReport
 	public override string ToString() =>
 		$"{Faces} faces in {Charts} chart(s) at {Scale:0.####} units per UV unit"
 		+ (MeanStretch > 0f ? $", stretch {MeanStretch:0.00} mean / {MaxStretch:0.00} max" : "")
-		+ (SkippedFaces > 0 ? $", {SkippedFaces} degenerate face(s) skipped" : "");
+		+ (SkippedFaces > 0 ? $", {SkippedFaces} degenerate face(s) skipped" : "")
+		+ (string.IsNullOrEmpty( Note ) ? "" : $"; {Note}");
 }
 
 /// <summary>

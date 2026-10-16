@@ -1151,6 +1151,10 @@ public sealed partial class EffigyWindow
 	/// 512 px on 16 px per unit; change it with Project UVs and the trims follow.</summary>
 	private float _meshUnitsPerTile = 32f;
 
+	/// <summary>The texture size, in pixels square, the UV menu's texel density and pixel margins are
+	/// measured against. Set with UV ▸ Texture size.</summary>
+	private int _meshTextureSize = 1024;
+
 	/// <summary>Which fabric <see cref="StartMeshDrape"/> hangs the cloth as. Cycled by the Fabric tool.</summary>
 	private Fabric _meshFabric = Fabric.Cotton;
 
@@ -1836,7 +1840,7 @@ public sealed partial class EffigyWindow
 			Menu( "Face", "Triangulate", "Tris to quads", "Beautify", "Poke faces", "Fill holes", "Scatter", "-", "Split", "Separate", "Loose parts", "By material", "Extract", "-", "Flip", "Recalculate normals", "-", "Solidify", "-", "Delete faces only" ),
 			Menu( "Transform", "Move X", "Move Y", "Move Z", "-", "Rotate X", "Rotate Y", "Rotate Z", "-", "Scale by", "Flatten X", "Flatten Y", "Flatten Z", "-", "Pivot to selection", "To pivot", "Snap to grid" ),
 			Menu( "Mesh", "Move", "Rotate", "Scale", "Soft selection", "Connected only", "Falloff shape", "-", "Shrink/Fatten", "Shear", "Bend", "-", "Symmetrize", "Mirror X", "Snap to surface", "Shrinkwrap", "-", "Dissolve", "Limited dissolve", "Decimate", "Delete", "Delete loose" ),
-			Menu( "UV", "Unwrap", "Organic unwrap", "Mark seam", "Clear seam", "-", "Project UVs", "Project from above", "Cylinder projection", "Sphere projection", "-", "Trim row", "Trim rows" ),
+			Menu( "UV", "Unwrap", "Organic unwrap", "Mark seam", "Clear seam", "-", "Project UVs", "Project from above", "Cylinder projection", "Sphere projection", "-", "Texel density", "Set texel density", "Texture size", "-", "Trim row", "Trim rows" ),
 			Menu( "Modifiers", "Modifiers/Live mirror", "Modifiers/Live array", "Modifiers/Live subdivision", "Crease", "Clear crease", "Modifiers/Thickness" ),
 			Menu( "Retopo", "Retopo/Retopo", "Even quads", "Strip brush", "Retopo/Relax", "Finish retopo" ),
 			Menu( "Skin", "Copy weights", "Smooth weights", "Mirror weights", "Fix weights" ),
@@ -2124,6 +2128,9 @@ public sealed partial class EffigyWindow
 		_meshPlanarUVsTool = MeshTool( uv, EffigyIcon.Unwrap, "Project from above", "Map the selected faces straight down at this many units per tile — one continuous texture for a floor, a road, a sign. Shift-click projects along X instead", () => StartMeshOp( "Project UVs", _meshUnitsPerTile, ( s, v ) => { _meshUnitsPerTile = Positive( "Units per tile", v ); s.ProjectUVs( _meshUnitsPerTile, Editor.Application.IsKeyDown( KeyCode.Shift ) ? new Vec3( 1, 0, 0 ) : new Vec3( 0, 0, 1 ) ); } ) );
 		MeshTool( uv, EffigyIcon.Unwrap, "Cylinder projection", "Wrap the texture once round the selected faces (or all of them), along the direction they are longest — for a pipe, a limb or a can. Shift-click wraps round Z instead", () => RunMeshOp( "Cylinder projection", s => s.ProjectCylinder( Editor.Application.IsKeyDown( KeyCode.Shift ) ? (Vec3?)new Vec3( 0, 0, 1 ) : null ) ) );
 		MeshTool( uv, EffigyIcon.Unwrap, "Sphere projection", "Map the selected faces (or all of them) like a globe, by longitude and latitude round the up axis — for a head, an eye or a ball. Shift-click uses X as the axis", () => RunMeshOp( "Sphere projection", s => s.ProjectSphere( Editor.Application.IsKeyDown( KeyCode.Shift ) ? (Vec3?)new Vec3( 1, 0, 0 ) : null ) ) );
+		MeshTool( uv, EffigyIcon.Unwrap, "Texture size", "The texture size the texel density and pixel margins are measured for. Click to step through 512, 1024, 2048 and 4096 pixels", CycleMeshTextureSize );
+		MeshTool( uv, EffigyIcon.Unwrap, "Texel density", "Say how many texture pixels one unit of surface gets on the selected islands (or all), at the texture size — the number to match across parts so they are equally sharp", ShowMeshTexelDensity );
+		MeshTool( uv, EffigyIcon.Unwrap, "Set texel density", "Size the selected islands (or all) so each gets this many pixels per unit at the texture size. Each island grows or shrinks in place, so pack afterwards", StartMeshSetTexelDensity );
 		_meshTrimRowTool = MeshTool( uv, EffigyIcon.Unwrap, "Trim row", "Map the selected faces onto one row of a trim sheet: the number is which row, counting from the top. Runs along the face at the Project UVs scale", () => StartMeshOp( "Trim row", 1f, ( s, v ) => { var row = (int)Within( "Trim row", MathF.Round( v ), 1f, _meshTrimRows, $" (the sheet has {_meshTrimRows} rows)" ); s.MapToTrim( (row - 1) / (float)_meshTrimRows, row / (float)_meshTrimRows, _meshUnitsPerTile ); } ) );
 		_meshTrimRowsTool = MeshTool( uv, EffigyIcon.Unwrap, "Trim rows", "How many rows the trim sheet has — set it once for the sheet you use", () => { _meshTrimRows = Math.Max( 1, _meshTrimRows == 8 ? 4 : _meshTrimRows == 4 ? 16 : 8 ); SetPrompt( $"Trim sheet: {_meshTrimRows} rows. Trim row picks one." ); } );
 		_meshUnwrapTool = MeshTool( uv, EffigyIcon.Unwrap, "Unwrap", "Lay the mesh out flat so it can be painted or baked (U), cutting at your seams and wherever the surface turns more than this angle. With faces selected, only those are unwrapped and the rest keep their UVs", StartMeshUnwrap );
@@ -2826,6 +2833,50 @@ public sealed partial class EffigyWindow
 			var report = s.Unwrap( angle );
 			SetPrompt( $"Unwrap{only}: {report}.{hint}" );
 		} );
+	}
+
+	private void CycleMeshTextureSize()
+	{
+		_meshTextureSize = _meshTextureSize switch { 512 => 1024, 1024 => 2048, 2048 => 4096, _ => 512 };
+		SetPrompt( $"Texture size: {_meshTextureSize} px. Texel density and pixel margins are measured for it." );
+	}
+
+	private void ShowMeshTexelDensity()
+	{
+		if ( _viewport?.MeshEditSession is not { } session )
+			return;
+
+		if ( session.Mesh.FaceCount == 0 )
+		{
+			Refuse( "Texel density: there are no faces to measure." );
+			return;
+		}
+
+		var report = session.TexelDensity( _meshTextureSize );
+		if ( report.Islands.Count == 0 )
+		{
+			Refuse( "Texel density: these faces have no UV area yet. Unwrap or project them first." );
+			return;
+		}
+
+		SetPrompt( $"Texel density: {report} over {report.Islands.Count} island{(report.Islands.Count == 1 ? "" : "s")}." );
+	}
+
+	/// <summary>Set texel density, scrubbing the target; it starts at what the selection has now, so
+	/// a nudge is a small change.</summary>
+	private void StartMeshSetTexelDensity()
+	{
+		if ( _viewport?.MeshEditSession is not { } session )
+			return;
+
+		var now = session.Mesh.FaceCount > 0 ? session.TexelDensity( _meshTextureSize ).PixelsPerUnit : 0f;
+		if ( now <= 0f )
+		{
+			Refuse( "Set texel density: these faces have no UV area yet. Unwrap or project them first." );
+			return;
+		}
+
+		StartMeshOp( "Set texel density", now, ( s, v ) => s.SetTexelDensity( Positive( "Texel density", v ), _meshTextureSize ) );
 	}
 
 	/// <summary>The Organic unwrap from Edit mode: no angle to scrub, so it runs once and says what
