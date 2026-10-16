@@ -292,6 +292,7 @@ public static class Program
 		AllFeaturesTests.Run();
 
 		ImportFeatureTests.Run();
+		FbxImportTests.Run();
 
 		AcceptsTests.Run();
 

@@ -112,6 +112,7 @@ public static class FbxBinary
 		stack.Push( root );
 
 		Node arrayNode = null;
+		StringBuilder arrayText = null;
 
 		foreach ( var raw in ascii.Split( '\n' ) )
 		{
@@ -124,9 +125,16 @@ public static class FbxBinary
 			{
 				if ( arrayNode is not null )
 				{
+					if ( arrayText is not null )
+						arrayNode.Props.Add( ParseArray( arrayNode.Name, arrayText.ToString() ) );
+
 					arrayNode = null;
+					arrayText = null;
 					continue;
 				}
+
+				if ( stack.Count <= 1 )
+					throw new FormatException( "FBX has a closing brace with no block open" );
 
 				stack.Pop();
 				continue;
@@ -134,9 +142,13 @@ public static class FbxBinary
 
 			if ( arrayNode is not null )
 			{
-				// The one `a: v,v,v` line inside `Name: *N {`.
+				// The `a: v,v,v` inside `Name: *N {`. FbxText writes it on one line; other
+				// exporters wrap a long array over many, so continuation lines are gathered until
+				// the closing brace and parsed as one.
 				if ( line.StartsWith( "a:" ) )
-					arrayNode.Props.Add( ParseArray( arrayNode.Name, line[2..] ) );
+					arrayText = new StringBuilder( line[2..] );
+				else if ( arrayText is not null )
+					arrayText.Append( arrayText.Length > 0 && arrayText[^1] != ',' && line[0] != ',' ? "," : "" ).Append( line );
 
 				continue;
 			}
@@ -281,7 +293,9 @@ public static class FbxBinary
 	{
 		var parts = values.Split( ',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries );
 
-		if ( DoubleArrays.Contains( name ) )
+		// An array of a name this does not know is doubles when it is written as decimals - a
+		// NormalsW or a BinormalsW from another exporter - rather than a parse failure.
+		if ( DoubleArrays.Contains( name ) || Array.Exists( parts, p => p.IndexOfAny( new[] { '.', 'e', 'E' } ) >= 0 ) )
 		{
 			var d = new double[parts.Length];
 			for ( var i = 0; i < parts.Length; i++ )

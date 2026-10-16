@@ -16,8 +16,15 @@ namespace Effigy;
 /// fields. The weights live in the file the model was compiled from, so that is where they are
 /// read. <see cref="ModelDump.AttachWeights"/> lines this up with the engine's own model space.
 ///
-/// BINARY FBX ONLY (7.x, both the 32-bit and 64-bit offset layouts). ASCII FBX is refused rather
-/// than half-read. Blender, Maya and the kernel's own <see cref="FbxWriter"/> all write binary.
+/// BINARY FBX 7.x (both the 32-bit and 64-bit offset layouts), and ASCII FBX 7.x through
+/// <see cref="FbxBinary"/>'s text reader - the subset the kernel's own <see cref="FbxWriter"/> and
+/// the usual DCC exporters write. An ASCII file that reader does not understand is refused with the
+/// remedy (re-export as binary) rather than half-read.
+///
+/// WHAT IMPORT ADDS. <see cref="FbxImport"/> turns a scene into bodies, so each mesh also carries
+/// its per-corner normals, UVs and colours and the file's unit and axis declarations - kept here
+/// raw, in FBX's own space and units, so the dump/skin readers above see exactly what they did
+/// before. The conversion into Effigy's inches and Z-up happens in FbxImport, once.
 ///
 /// Positions are FBX global at the bind pose: a skinned mesh's points through its cluster's
 /// Transform, a bone through its cluster's TransformLink - the matrices the exporter wrote for
@@ -41,6 +48,20 @@ public sealed class FbxScene
 		/// <summary>Per control point: (bone name, weight). Null for a mesh with no skin.</summary>
 		public List<(string Bone, float Weight)>[] Weights;
 
+		/// <summary>What carried <see cref="Points"/> from the geometry's own space into FBX global
+		/// space: the node chain (with geometric offset), or the skin's bind matrices.</summary>
+		public Xform Placement = Xform.Identity;
+
+		/// <summary>Per polygon corner, in <see cref="Polygons"/> order, in FBX global space. Null
+		/// when the file has no normal layer.</summary>
+		public Vec3[] CornerNormals;
+
+		/// <summary>Per polygon corner, as stored: FBX's V runs UP from the bottom of the texture.
+		/// Null when the file has no UV layer.</summary>
+		public Vec2[] CornerUVs;
+
+		/// <summary>Per polygon corner, straight RGBA. Null when the file has no colour layer.</summary>
+		public Vec4[] CornerColors;
 		/// <summary>Blendshapes (shape keys), in the file's order. Empty when it has none.</summary>
 		public List<Shape> Shapes = new();
 	}
@@ -77,6 +98,33 @@ public sealed class FbxScene
 		}
 	}
 
+	/// <summary>Centimetres per file unit (GlobalSettings UnitScaleFactor). 1 when the file does not
+	/// say, which is FBX's own default.</summary>
+	public double UnitScale = 1;
+
+	/// <summary>The file's declared axes, as (axis 0..2, sign ±1). The defaults are the FBX SDK's
+	/// own when GlobalSettings is absent: Y up, +Z front, +X right.</summary>
+	public (int Axis, int Sign) Up = (1, 1), Front = (2, 1), Coord = (0, 1);
+
+	/// <summary>FBXHeaderExtension Creator, e.g. "Effigy" or "Blender (stable FBX IO) - …".</summary>
+	public string Creator = "";
+
+	/// <summary>The header's FBX version, e.g. 7400.</summary>
+	public int Version;
+
+	/// <summary>A bone's NodeAttribute Size, in file units, when it has one. Effigy writes the
+	/// bone's length here; other exporters write a display radius.</summary>
+	public Dictionary<string, float> BoneSize = new();
+
+	/// <summary>Bones some skin cluster actually deforms with.</summary>
+	public HashSet<string> SkinBones = new();
+
+	/// <summary>Each skeleton node's class (LimbNode, Null, Root…), by name.</summary>
+	public Dictionary<string, string> BoneClass = new();
+
+	/// <summary>Skeleton node names in the order the file lists them - stable, unlike a dictionary.</summary>
+	public List<string> BoneOrder = new();
+
 	public List<Mesh> Meshes = new();
 
 	/// <summary>Each bone's global transform at the bind pose, by name.</summary>
@@ -89,7 +137,7 @@ public sealed class FbxScene
 
 	public static FbxScene Read( byte[] file )
 	{
-		var root = FbxNode.Parse( file );
+		var root = FbxNode.ParseAny( file );
 		var objects = root.Child( "Objects" ) ?? throw new FormatException( "FBX has no Objects section" );
 
 		var byId = new Dictionary<long, FbxNode>();
@@ -119,6 +167,7 @@ public sealed class FbxScene
 			parentsOf.TryGetValue( id, out var ps ) ? ps.Where( byId.ContainsKey ).Select( p => byId[p] ).Where( n => n.Name == kind ) : Enumerable.Empty<FbxNode>();
 
 		var scene = new FbxScene();
+		ReadSettings( root, scene );
 
 		foreach ( var geometry in objects.Children.Where( n => n.Name == "Geometry" && n.ClassName == "Mesh" ) )
 		{
@@ -133,13 +182,31 @@ public sealed class FbxScene
 
 			// Polygons end on a negative index: the last corner, stored as ~index.
 			var current = new List<int>();
+			var cornerPoint = new List<int>();
+			var cornerPolygon = new List<int>();
 			foreach ( var v in geometry.Child( "PolygonVertexIndex" )?.Ints() ?? Array.Empty<int>() )
 			{
 				current.Add( v < 0 ? ~v : v );
+				cornerPoint.Add( v < 0 ? ~v : v );
+				cornerPolygon.Add( mesh.Polygons.Count );
 				if ( v >= 0 ) continue;
 				mesh.Polygons.Add( current.ToArray() );
 				current.Clear();
 			}
+
+			// A trailing polygon with no closing negative index is cut off, not invented.
+			if ( current.Count > 0 )
+			{
+				cornerPoint.RemoveRange( cornerPoint.Count - current.Count, current.Count );
+				cornerPolygon.RemoveRange( cornerPolygon.Count - current.Count, current.Count );
+			}
+
+			var normals = Layer( geometry, "LayerElementNormal", "Normals", "NormalsIndex", 3, cornerPoint, cornerPolygon,
+				( d, i ) => new Vec3( (float)d[i], (float)d[i + 1], (float)d[i + 2] ) );
+			mesh.CornerUVs = Layer( geometry, "LayerElementUV", "UV", "UVIndex", 2, cornerPoint, cornerPolygon,
+				( d, i ) => new Vec2( (float)d[i], (float)d[i + 1] ) );
+			mesh.CornerColors = Layer( geometry, "LayerElementColor", "Colors", "ColorIndex", 4, cornerPoint, cornerPolygon,
+				( d, i ) => new Vec4( (float)d[i], (float)d[i + 1], (float)d[i + 2], (float)d[i + 3] ) );
 
 			mesh.PolygonMaterial = new int[mesh.Polygons.Count];
 			if ( geometry.Child( "LayerElementMaterial" ) is { } layer && layer.Child( "Materials" )?.Ints() is { } mats )
@@ -153,7 +220,7 @@ public sealed class FbxScene
 				mesh.Materials = Children( (long)model.Props[0], "Material" ).Select( m => m.ObjectName ).ToList();
 
 			// Skin: geometry <- Deformer(Skin) <- Deformer(Cluster) <- Model(bone).
-			var placement = model is null ? Xform.Identity : GlobalOf( model, byId, Parents );
+			var placement = model is null ? Xform.Identity : GlobalOf( model, byId, Parents ) * GeometricOf( model );
 			var skin = Children( id, "Deformer" ).FirstOrDefault( d => d.ClassName == "Skin" );
 
 			if ( skin is not null )
@@ -170,6 +237,8 @@ public sealed class FbxScene
 
 					if ( cluster.Child( "TransformLink" )?.Doubles() is { Length: 16 } link )
 						scene.BoneBind[bone.ObjectName] = Matrix( link );
+
+					scene.SkinBones.Add( bone.ObjectName );
 
 					if ( !placedBySkin && cluster.Child( "Transform" )?.Doubles() is { Length: 16 } meshAtBind )
 					{
@@ -222,17 +291,31 @@ public sealed class FbxScene
 				}
 			}
 
+			mesh.Placement = placement;
+			mesh.CornerNormals = normals is null ? null : NormalsToGlobal( normals, placement );
 			scene.Meshes.Add( mesh );
 		}
 
 		// Bones without a cluster (not skinning anything) still help line the skeleton up.
-		foreach ( var limb in objects.Children.Where( n => n.Name == "Model" && n.ClassName is "LimbNode" or "Null" ) )
+		foreach ( var limb in objects.Children.Where( n => n.Name == "Model" && (n.ClassName is "LimbNode" or "Null" or "Root" || scene.SkinBones.Contains( n.ObjectName )) ) )
 		{
 			if ( !scene.BoneBind.ContainsKey( limb.ObjectName ) )
 				scene.BoneBind[limb.ObjectName] = GlobalOf( limb, byId, Parents );
 
-			if ( Parents( (long)limb.Props[0], "Model" ).FirstOrDefault() is { } parent && parent.ClassName is "LimbNode" or "Null" )
+			if ( Parents( (long)limb.Props[0], "Model" ).FirstOrDefault() is { } parent && (parent.ClassName is "LimbNode" or "Null" or "Root" || scene.SkinBones.Contains( parent.ObjectName )) )
 				scene.BoneParent[limb.ObjectName] = parent.ObjectName;
+
+			if ( !scene.BoneClass.ContainsKey( limb.ObjectName ) )
+			{
+				scene.BoneClass[limb.ObjectName] = limb.ClassName;
+				scene.BoneOrder.Add( limb.ObjectName );
+			}
+
+			// The bone's NodeAttribute hangs off its Model.
+			foreach ( var attribute in Children( (long)limb.Props[0], "NodeAttribute" ) )
+				foreach ( var p in attribute.Child( "Properties70" )?.Children ?? new List<FbxNode>() )
+					if ( p.Props.Count >= 5 && p.Props[0] as string == "Size" )
+						scene.BoneSize[limb.ObjectName] = (float)Convert.ToDouble( p.Props[4] );
 		}
 
 		return scene;
@@ -257,26 +340,180 @@ public sealed class FbxScene
 		return global;
 	}
 
+	/// <summary>
+	/// A model's transform relative to its parent, by the FBX SDK's full formula:
+	///
+	///   T * Roff * Rp * Rpre * R * Rpost⁻¹ * Rp⁻¹ * Soff * Sp * S * Sp⁻¹
+	///
+	/// Pivots, offsets and post-rotation are zero in what Blender and the kernel's writer emit, so
+	/// for those files this is translation, pre-rotation, rotation and scale - what this read before
+	/// - but a file from a tool that does use pivots lands where that tool showed it. R follows the
+	/// node's RotationOrder; pre- and post-rotation are always XYZ, as the SDK defines them.
+	/// </summary>
 	static Xform LocalOf( FbxNode model )
 	{
-		Vec3 Prop( string name, Vec3 fallback )
+		var t = Prop( model, "Lcl Translation", Vec3.Zero );
+		var r = Prop( model, "Lcl Rotation", Vec3.Zero );
+		var s = Prop( model, "Lcl Scaling", Vec3.One );
+		var pre = Prop( model, "PreRotation", Vec3.Zero );
+		var post = Prop( model, "PostRotation", Vec3.Zero );
+		var rOff = Prop( model, "RotationOffset", Vec3.Zero );
+		var rPivot = Prop( model, "RotationPivot", Vec3.Zero );
+		var sOff = Prop( model, "ScalingOffset", Vec3.Zero );
+		var sPivot = Prop( model, "ScalingPivot", Vec3.Zero );
+		var order = (int)PropScalar( model, "RotationOrder", 0 );
+
+		var postRotation = Euler( post, 0 );
+
+		return Xform.Translate( t ) * Xform.Translate( rOff ) * Xform.Translate( rPivot )
+			* Euler( pre, 0 ) * Euler( r, order ) * postRotation.Inverse * Xform.Translate( -rPivot )
+			* Xform.Translate( sOff ) * Xform.Translate( sPivot ) * Xform.Scale( s ) * Xform.Translate( -sPivot );
+	}
+
+	/// <summary>The geometric offset: a transform on the geometry alone, not inherited by children.</summary>
+	static Xform GeometricOf( FbxNode model ) =>
+		Xform.Translate( Prop( model, "GeometricTranslation", Vec3.Zero ) )
+		* Euler( Prop( model, "GeometricRotation", Vec3.Zero ), 0 )
+		* Xform.Scale( Prop( model, "GeometricScaling", Vec3.One ) );
+
+	static Vec3 Prop( FbxNode model, string name, Vec3 fallback )
+	{
+		foreach ( var p in model.Child( "Properties70" )?.Children ?? new List<FbxNode>() )
+			if ( p.Props.Count >= 7 && p.Props[0] as string == name )
+				return new Vec3( (float)Convert.ToDouble( p.Props[4] ), (float)Convert.ToDouble( p.Props[5] ), (float)Convert.ToDouble( p.Props[6] ) );
+		return fallback;
+	}
+
+	static double PropScalar( FbxNode node, string name, double fallback )
+	{
+		foreach ( var p in node?.Child( "Properties70" )?.Children ?? new List<FbxNode>() )
+			if ( p.Props.Count >= 5 && p.Props[0] as string == name && p.Props[4] is not string )
+				return Convert.ToDouble( p.Props[4] is bool b ? (b ? 1 : 0) : p.Props[4] );
+		return fallback;
+	}
+
+	/// <summary>Euler angles in degrees, composed in FBX's EFbxRotationOrder: 0 XYZ, 1 XZY, 2 YZX,
+	/// 3 YXZ, 4 ZXY, 5 ZYX - the first letter is applied first. Anything else reads as XYZ.</summary>
+	static Xform Euler( Vec3 degrees, int order )
+	{
+		var r = degrees * (MathF.PI / 180f);
+		var x = Xform.Rotate( new Vec3( 1, 0, 0 ), r.x );
+		var y = Xform.Rotate( new Vec3( 0, 1, 0 ), r.y );
+		var z = Xform.Rotate( new Vec3( 0, 0, 1 ), r.z );
+
+		return order switch
 		{
-			foreach ( var p in model.Child( "Properties70" )?.Children ?? new List<FbxNode>() )
-				if ( p.Props.Count >= 7 && p.Props[0] as string == name )
-					return new Vec3( (float)Convert.ToDouble( p.Props[4] ), (float)Convert.ToDouble( p.Props[5] ), (float)Convert.ToDouble( p.Props[6] ) );
-			return fallback;
+			1 => y * z * x,
+			2 => x * z * y,
+			3 => z * x * y,
+			4 => y * x * z,
+			5 => x * y * z,
+			_ => z * y * x,
+		};
+	}
+
+	/// <summary>
+	/// GlobalSettings and the header: units, axes, creator and version. Absent values keep the FBX
+	/// SDK's defaults.
+	/// </summary>
+	static void ReadSettings( FbxNode root, FbxScene scene )
+	{
+		var header = root.Child( "FBXHeaderExtension" );
+
+		if ( header?.Child( "FBXVersion" )?.Props.FirstOrDefault() is { } version and not string )
+			scene.Version = (int)Convert.ToDouble( version );
+
+		if ( header?.Child( "Creator" )?.Props.FirstOrDefault() is string creator )
+			scene.Creator = creator;
+		else if ( root.Child( "Creator" )?.Props.FirstOrDefault() is string topCreator )
+			scene.Creator = topCreator;
+
+		var settings = root.Child( "GlobalSettings" );
+
+		if ( settings is null )
+			return;
+
+		var unit = PropScalar( settings, "UnitScaleFactor", 1 );
+		scene.UnitScale = unit > 0 && double.IsFinite( unit ) ? unit : 1;
+
+		(int, int) Axis( string name, (int Axis, int Sign) fallback )
+		{
+			var axis = (int)PropScalar( settings, name, fallback.Axis );
+			var sign = PropScalar( settings, name + "Sign", fallback.Sign ) < 0 ? -1 : 1;
+			return axis is >= 0 and <= 2 ? (axis, sign) : fallback;
 		}
 
-		static Xform Euler( Vec3 degrees )
+		scene.Up = Axis( "UpAxis", scene.Up );
+		scene.Front = Axis( "FrontAxis", scene.Front );
+		scene.Coord = Axis( "CoordAxis", scene.Coord );
+	}
+
+	/// <summary>
+	/// One per-corner channel (normals, UVs, colours) read through its mapping and reference
+	/// modes. Null when the geometry has no such layer, or the layer's mapping is one this does not
+	/// know - then the channel is simply absent rather than wrong.
+	/// </summary>
+	static T[] Layer<T>( FbxNode geometry, string layerName, string dataName, string indexName, int stride,
+		List<int> cornerPoint, List<int> cornerPolygon, Func<double[], int, T> make )
+	{
+		var layer = geometry.Child( layerName );
+		var data = layer?.Child( dataName )?.Doubles();
+
+		if ( data is null || data.Length < stride )
+			return null;
+
+		var mapping = layer.Child( "MappingInformationType" )?.Props.FirstOrDefault() as string ?? "ByPolygonVertex";
+		var reference = layer.Child( "ReferenceInformationType" )?.Props.FirstOrDefault() as string ?? "Direct";
+		var index = reference is "IndexToDirect" or "Index" ? layer.Child( indexName )?.Ints() : null;
+
+		if ( reference is "IndexToDirect" or "Index" && index is null )
+			return null;
+
+		var corners = new T[cornerPoint.Count];
+		var count = data.Length / stride;
+
+		for ( var c = 0; c < corners.Length; c++ )
 		{
-			var r = degrees * (MathF.PI / 180f);
-			return Xform.Rotate( new Vec3( 0, 0, 1 ), r.z ) * Xform.Rotate( new Vec3( 0, 1, 0 ), r.y ) * Xform.Rotate( new Vec3( 1, 0, 0 ), r.x );
+			var key = mapping switch
+			{
+				"ByPolygonVertex" => c,
+				"ByVertice" or "ByVertex" or "ByControlPoint" => cornerPoint[c],
+				"ByPolygon" => cornerPolygon[c],
+				"AllSame" => 0,
+				_ => -1,
+			};
+
+			if ( key < 0 && mapping is not ("ByPolygonVertex" or "ByVertice" or "ByVertex" or "ByControlPoint" or "ByPolygon" or "AllSame") )
+				return null;
+
+			if ( index is not null )
+				key = key >= 0 && key < index.Length ? index[key] : -1;
+
+			if ( key >= 0 && key < count )
+				corners[c] = make( data, key * stride );
 		}
 
-		return Xform.Translate( Prop( "Lcl Translation", Vec3.Zero ) )
-			* Euler( Prop( "PreRotation", Vec3.Zero ) )
-			* Euler( Prop( "Lcl Rotation", Vec3.Zero ) )
-			* Xform.Scale( Prop( "Lcl Scaling", Vec3.One ) );
+		return corners;
+	}
+
+	/// <summary>Normals follow the inverse transpose, so a non-uniform scale bends them correctly.</summary>
+	static Vec3[] NormalsToGlobal( Vec3[] normals, Xform placement )
+	{
+		Xform inverse;
+
+		try { inverse = placement.Inverse; }
+		catch ( InvalidOperationException ) { return normals; }
+
+		var result = new Vec3[normals.Length];
+
+		for ( var i = 0; i < normals.Length; i++ )
+		{
+			var n = normals[i];
+			var g = new Vec3( Vec3.Dot( inverse.X, n ), Vec3.Dot( inverse.Y, n ), Vec3.Dot( inverse.Z, n ) );
+			result[i] = g.LengthSquared > 1e-20f ? g.Normal : n;
+		}
+
+		return result;
 	}
 }
 
@@ -309,11 +546,49 @@ public sealed class FbxNode
 		_ => null
 	};
 
+	/// <summary>Binary FBX, or ASCII FBX re-read through <see cref="FbxBinary"/>'s text reader.</summary>
+	public static FbxNode ParseAny( byte[] file )
+	{
+		if ( IsBinary( file ) )
+			return Parse( file );
+
+		if ( !IsAscii( file ) )
+			throw new FormatException( "not an FBX file: no binary FBX header and no ASCII FBX header" );
+
+		byte[] binary;
+
+		try
+		{
+			binary = FbxBinary.FromAscii( Encoding.UTF8.GetString( file ) );
+		}
+		catch ( Exception e ) when ( e is FormatException or OverflowException or InvalidOperationException or ArgumentException )
+		{
+			throw new FormatException( $"this ASCII FBX uses syntax the kernel's text reader does not understand ({e.Message}); re-export it as binary FBX" );
+		}
+
+		return Parse( binary );
+	}
+
+	const string BinaryMagic = "Kaydara FBX Binary  ";
+
+	/// <summary>True when the bytes start with the binary FBX magic.</summary>
+	public static bool IsBinary( byte[] file ) =>
+		file is not null && file.Length >= 27 && Encoding.ASCII.GetString( file, 0, BinaryMagic.Length ) == BinaryMagic;
+
+	/// <summary>True when the bytes look like ASCII FBX: an FBXHeaderExtension block near the top, the
+	/// way every ASCII FBX starts after its comment lines.</summary>
+	public static bool IsAscii( byte[] file )
+	{
+		if ( file is null || file.Length < 16 )
+			return false;
+
+		var head = Encoding.UTF8.GetString( file, 0, Math.Min( file.Length, 4096 ) );
+		return head.Contains( "FBXHeaderExtension:", StringComparison.Ordinal );
+	}
+
 	public static FbxNode Parse( byte[] file )
 	{
-		const string magic = "Kaydara FBX Binary  ";
-
-		if ( file.Length < 27 || Encoding.ASCII.GetString( file, 0, magic.Length ) != magic )
+		if ( !IsBinary( file ) )
 			throw new FormatException( "not a binary FBX (ASCII FBX is not supported; re-export as binary)" );
 
 		var version = BitConverter.ToInt32( file, 23 );

@@ -374,8 +374,9 @@ public static class ImportFeatureTests
 			File.Delete( import.Source.Value );
 		}
 
-		Report.Check( "an FBX is refused by extension, not parsed",
-			import.Error is not null && import.Error.Contains( "OBJ" ), import.Error ?? "built anyway" );
+		// FBX is read now (see FbxImportTests); a .fbx that is not FBX is refused naming FBX.
+		Report.Check( "a .fbx that is not FBX is refused, not read as an empty OBJ",
+			import.Error is not null && import.Error.Contains( "FBX" ), import.Error ?? "built anyway" );
 		Report.Check( "and the cause names FBX",
 			import.Diagnostic is not null && import.Diagnostic.Cause.Contains( ".fbx" ),
 			import.Diagnostic?.Cause ?? "" );

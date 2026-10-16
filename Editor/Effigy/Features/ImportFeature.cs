@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text;
 
 namespace Effigy;
@@ -9,6 +10,13 @@ namespace Effigy;
 /// A body that already exists as a mesh file, brought into the history — one body per object in
 /// the file, so a character exported with its brows, lids and hair kept separate arrives as a
 /// tidy list of parts rather than one welded lump. See <see cref="ObjReader.ReadPieces"/>.
+///
+/// OBJ OR FBX, decided by what the bytes are rather than what the file is called. An FBX brings
+/// one body per mesh, placed by its node transforms, scaled from its declared units to inches and
+/// turned from its declared up axis to Z, with its UVs, vertex colours and material slots - see
+/// <see cref="FbxImport"/>. When it is skinned, the weights ride along by bone name and land on
+/// the body whenever the document's rig has those bones; <see cref="InstallSkeleton"/> is how the
+/// file's own skeleton becomes the rig when the document has none.
 ///
 /// EFFIGY IS CONSTRUCTIVE. A body is the output of Primitive / Sketch+Extrude / Loft / Sweep /
 /// Boolean / Sculpt — there is no other way in. Paint, weight paint and SkinBinder all work on
@@ -29,8 +37,8 @@ public class ImportFeature : Feature
 	/// False here and true for WearerFeature, which is otherwise the same import.</summary>
 	protected virtual bool ReferenceBodies => false;
 
-	/// <summary>The mesh file this feature reads. Wavefront OBJ; anything else is a refusal with
-	/// a remedy, not a crash.</summary>
+	/// <summary>The mesh file this feature reads: Wavefront OBJ or FBX (binary, or ASCII 7.x).
+	/// Anything else is a refusal with a remedy, not a crash.</summary>
 	public readonly StringParam Source = new( "Source" );
 
 	public readonly IntParam Material = new( "Material slot", 0, 0, 63 ) { Slider = false };
@@ -53,8 +61,17 @@ public class ImportFeature : Feature
 	// side-car bytes. See the note in Execute.
 	string _piecesStamp;
 
-	// The OBJ bytes that produced _mesh, so a save can write the original rather than a re-export.
+	// The source bytes (OBJ or FBX) that produced _pieces, so a save can write the original rather
+	// than a re-export.
 	byte[] _objBytes;
+
+	// What an FBX source carried besides geometry, parallel to _pieces: named skin weights per piece
+	// (null entries for unskinned pieces, null list for an OBJ), the file's material names by slot,
+	// its skeleton, and what the conversion had to say. Cached with _pieces for the same reason.
+	List<List<(string Bone, float Weight)>[]> _weights;
+	SortedDictionary<int, string> _sourceMaterials;
+	Skeleton _sourceSkeleton;
+	FbxImport.Result _fbx;
 
 	// Piece indices the user has deleted. The source OBJ keeps every piece — deleting one must
 	// not rewrite the file — so this records which of the parsed pieces Publish should skip.
@@ -66,6 +83,71 @@ public class ImportFeature : Feature
 
 	/// <summary>True once a rebuild has produced a body from this feature.</summary>
 	public bool HasMesh => _pieces is not null;
+
+	/// <summary>True when the source bytes are FBX rather than OBJ.</summary>
+	public bool IsFbxSource => FbxImport.IsFbx( _objBytes ?? _pending );
+
+	/// <summary>The material names an FBX source gave its slots, slot → name. Empty for an OBJ or
+	/// before the first build. Read-only: binding a slot to a real material is still a drop.</summary>
+	public IReadOnlyDictionary<int, string> SourceMaterialNames =>
+		_sourceMaterials ?? (IReadOnlyDictionary<int, string>)new SortedDictionary<int, string>();
+
+	/// <summary>The FBX source's skeleton in Effigy space, or null for an OBJ, a file with no
+	/// bones, or before the first build.</summary>
+	public Skeleton SourceSkeleton => _sourceSkeleton;
+
+	/// <summary>
+	/// Make the source file's skeleton this document's rig, when the document has none.
+	///
+	/// ONLY AN EMPTY RIG IS FILLED - the same rule the wearer import follows. A rig somebody drew
+	/// carries bindings, weight paint and soft-bone settings keyed on its names, and an import that
+	/// replaced it would break all of those without being asked. Returns how many bones went in;
+	/// <paramref name="message"/> always says what happened, including why nothing did.
+	///
+	/// The feature does not do this itself at rebuild because a rebuild only makes bodies - the
+	/// rig is document state, changed by an explicit action (picking the file), never as a side
+	/// effect of re-running history.
+	/// </summary>
+	public static int InstallSkeleton( PartStudio studio, ImportFeature import, out string message )
+	{
+		message = "";
+
+		if ( studio is null || import is null )
+			return 0;
+
+		var bytes = import._objBytes ?? import._pending;
+
+		if ( !FbxImport.IsFbx( bytes ) )
+			return 0;
+
+		Skeleton skeleton;
+
+		try
+		{
+			skeleton = FbxImport.Read( bytes ).Skeleton;
+		}
+		catch ( Exception e )
+		{
+			message = $"The file's skeleton could not be read: {e.Message}";
+			return 0;
+		}
+
+		if ( skeleton is not { Count: > 0 } )
+			return 0;
+
+		if ( studio.Rig.Count > 0 )
+		{
+			message = $"The file's {skeleton.Count} bones were not installed - this document already has a rig with "
+				+ $"{studio.Rig.Count} bones. Delete those bones and pick the file again to take the file's skeleton.";
+			return 0;
+		}
+
+		studio.Rig.Bones.Clear();
+		studio.Rig.Bones.AddRange( skeleton.Bones );
+		studio.MarkDirty( import );
+		message = $"The file's skeleton is now the rig: {skeleton.Count} bones.";
+		return skeleton.Count;
+	}
 
 	/// <summary>How many bodies this import produces — one per <c>o</c>/<c>g</c> lump in the file.
 	/// Zero until it has been built once.</summary>
@@ -150,6 +232,10 @@ public class ImportFeature : Feature
 		_pending = bytes;
 		_objBytes = bytes;
 		_pieces = null;
+		_weights = null;
+		_sourceMaterials = null;
+		_sourceSkeleton = null;
+		_fbx = null;
 	}
 
 	/// <summary>
@@ -160,6 +246,10 @@ public class ImportFeature : Feature
 	{
 		Source.Value = path ?? "";
 		_pieces = null;
+		_weights = null;
+		_sourceMaterials = null;
+		_sourceSkeleton = null;
+		_fbx = null;
 		RemovedPieces.Clear();
 
 		if ( !string.IsNullOrWhiteSpace( path ) && File.Exists( path ) )
@@ -177,7 +267,7 @@ public class ImportFeature : Feature
 
 		if ( path.Length > 0 && File.Exists( path ) )
 		{
-			RefuseIfNotObj( path );
+			RefuseIfUnsupported( path );
 
 			// THE FILE IS ONLY PARSED AGAIN WHEN IT HAS CHANGED. Deleting a piece, undo and a variable
 			// edit all re-run this feature, and re-reading the source each time made every one of them
@@ -211,8 +301,8 @@ public class ImportFeature : Feature
 		{
 			FailOn( "Source",
 				"No mesh file to import",
-				"An Import needs a Wavefront OBJ, and this one has no source path.",
-				"Pick an .obj file" );
+				"An Import needs a Wavefront OBJ or an FBX, and this one has no source path.",
+				"Pick an .obj or .fbx file" );
 		}
 		else
 		{
@@ -220,21 +310,51 @@ public class ImportFeature : Feature
 				"The mesh file is missing",
 				$"Nothing is at '{path}', and this feature has no side-car copy to fall back on.",
 				"Pick the file again",
-				"Put the OBJ next to this document and point Source at it" );
+				"Put the mesh file next to this document and point Source at it" );
 		}
 
 		List<ObjReader.ObjPiece> pieces;
+		FbxImport.Result fbx = null;
+		var isFbx = FbxImport.IsFbx( bytes );
+
+		// A file named .fbx that is not one would otherwise fall through to the OBJ reader, which
+		// skips every line it does not know and reports an empty mesh - true, and no help at all.
+		if ( !isFbx && string.Equals( Path.GetExtension( path ), ".fbx", StringComparison.OrdinalIgnoreCase ) && from == path )
+		{
+			FailOn( "Source",
+				"The FBX file could not be read",
+				$"{from} is named .fbx but has neither a binary FBX header nor an ASCII FBX header.",
+				"Export it again as FBX (binary)",
+				"Or export it as OBJ and pick that" );
+		}
 
 		try
 		{
-			pieces = ObjReader.ReadPieces( Encoding.UTF8.GetString( bytes ) );
+			if ( isFbx )
+			{
+				fbx = FbxImport.Read( bytes );
+				pieces = fbx.Pieces;
+			}
+			else
+			{
+				pieces = ObjReader.ReadPieces( Encoding.UTF8.GetString( bytes ) );
+			}
 		}
 		catch ( Exception e )
 		{
+			if ( isFbx )
+			{
+				FailOn( "Source",
+					"The FBX file could not be read",
+					$"{from} is an FBX this feature could not read: {e.Message}",
+					"Export it again as binary FBX 7.x",
+					"Or export it as OBJ and pick that" );
+			}
+
 			FailOn( "Source",
 				"The mesh file could not be read",
 				$"{from} is not a Wavefront OBJ this feature understands: {e.Message}",
-				"Export the sculpt as OBJ and pick that" );
+				"Export the sculpt as OBJ or FBX and pick that" );
 			return;
 		}
 
@@ -245,6 +365,16 @@ public class ImportFeature : Feature
 		{
 			vertices += piece.Mesh.VertexCount;
 			faces += piece.Mesh.FaceCount;
+		}
+
+		if ( isFbx && (vertices == 0 || faces == 0) )
+		{
+			var bones = fbx.Skeleton?.Count ?? 0;
+			FailOn( "Source",
+				"The FBX has no mesh",
+				$"{from} holds no polygon meshes" + (bones > 0 ? $", only a skeleton of {bones} bones." : "."),
+				"Export the mesh objects too, not just the armature or animation",
+				"Pick a different file" );
 		}
 
 		if ( vertices == 0 || faces == 0 )
@@ -260,6 +390,10 @@ public class ImportFeature : Feature
 		_pending = null;
 		_pieces = pieces;
 		_piecesStamp = stamp;
+		_fbx = fbx;
+		_weights = fbx?.Weights;
+		_sourceMaterials = fbx?.MaterialSlots;
+		_sourceSkeleton = fbx?.Skeleton;
 
 		Publish( ctx, pieces );
 	}
@@ -293,6 +427,13 @@ public class ImportFeature : Feature
 
 		var single = remaining == 1;
 
+		// Skin from the file, resolved by bone name against the rig as it is NOW - the rig can
+		// change without the file changing, so this happens on every publish, not at parse.
+		var missingBones = new SortedSet<string>( StringComparer.Ordinal );
+		var skinnedNoRig = 0;
+		var skinLeftOff = 0;
+		var skinned = 0;
+
 		for ( var i = 0; i < pieces.Count; i++ )
 		{
 			var piece = pieces[i];
@@ -313,33 +454,107 @@ public class ImportFeature : Feature
 					face.Material = slot;
 			}
 
+			if ( _weights is not null && i < _weights.Count && _weights[i] is { } named
+				&& named.Length == mesh.VertexCount )
+			{
+				if ( ctx.Rig is not { Count: > 0 } )
+				{
+					skinnedNoRig++;
+				}
+				else if ( FbxImport.Resolve( named, ctx.Rig, missingBones, out _ ) is { } skin )
+				{
+					mesh.Skin = skin;
+					skinned++;
+				}
+				else
+				{
+					skinLeftOff++;
+				}
+			}
+
 			var label = single || string.IsNullOrWhiteSpace( piece.Name )
 				? Name
 				: $"{Name} / {piece.Name}";
 
 			ctx.Bodies.Add( new Body( id, label, mesh ) { IsReference = ReferenceBodies } );
 		}
+
+		WarnAboutSkin( skinnedNoRig, skinLeftOff, skinned, missingBones );
 	}
 
-	static void RefuseIfNotObj( string path )
+	/// <summary>
+	/// What happened to the file's skin, when it did not simply land. One warning, the most
+	/// useful one: weights that could not reach their bones first, then weights with no rig at all,
+	/// then faces the file says point the other way.
+	/// </summary>
+	void WarnAboutSkin( int skinnedNoRig, int skinLeftOff, int skinned, SortedSet<string> missing )
+	{
+		var named = string.Join( ", ", missing.Take( 6 ) ) + (missing.Count > 6 ? $" and {missing.Count - 6} more" : "");
+
+		if ( skinLeftOff > 0 )
+		{
+			Warn( "Some parts' skin weights were left off",
+				$"The rig has no bone called {named}, and {skinLeftOff} part(s) had vertices weighted only to those, "
+					+ "so those parts were left for the rig to bind instead of keeping the file's weights.",
+				"Delete this document's bones and pick the file again to take its skeleton",
+				"Or rename the rig's bones to match the file" );
+			return;
+		}
+
+		if ( missing.Count > 0 )
+		{
+			Warn( "Some skin influences were dropped",
+				$"The rig has no bone called {named}. Their share of each vertex went to the file's other bones.",
+				"Delete this document's bones and pick the file again to take its skeleton",
+				"Or rename the rig's bones to match the file" );
+			return;
+		}
+
+		if ( skinnedNoRig > 0 )
+		{
+			var bones = _sourceSkeleton?.Count ?? 0;
+			Warn( "The file's skin weights were left off",
+				$"{skinnedNoRig} part(s) of this FBX are skinned to {bones} bones, but this document has no rig to hold them.",
+				"Pick the file again from Source's browse button - with no bones here, the file's skeleton comes in with it",
+				"Or draw bones in Rig and bind the part there" );
+			return;
+		}
+
+		if ( _fbx is { InwardPieces: > 0 } fbx )
+		{
+			Warn( "Some imported faces point inward",
+				$"{fbx.InwardPieces} part(s) of this FBX have normals in the file that point against their faces, "
+					+ "so they will light inside out.",
+				"Re-export with the normals facing out (recalculate outside before exporting)" );
+		}
+	}
+
+	/// <summary>The extensions Import reads. Anything else is refused by name before any bytes are
+	/// parsed.</summary>
+	public static readonly string[] Extensions = { ".obj", ".fbx" };
+
+	static void RefuseIfUnsupported( string path )
 	{
 		var ext = Path.GetExtension( path );
 
-		if ( string.Equals( ext, ".obj", StringComparison.OrdinalIgnoreCase ) )
+		if ( Array.Exists( Extensions, e => string.Equals( e, ext, StringComparison.OrdinalIgnoreCase ) ) )
 			return;
 
 		var shown = string.IsNullOrEmpty( ext ) ? "no extension" : ext;
+		var gltf = string.Equals( ext, ".glb", StringComparison.OrdinalIgnoreCase ) || string.Equals( ext, ".gltf", StringComparison.OrdinalIgnoreCase );
+
 		FailOn( "Source",
-			"Import reads Wavefront OBJ",
-			$"'{path}' is {shown}. FBX, GLB and the rest are writers in this kernel, not readers.",
-			"Export the mesh as OBJ and pick that" );
+			"Import reads OBJ and FBX",
+			$"'{path}' is {shown}." + (gltf ? " glTF/GLB is not read yet." : ""),
+			"Export the mesh as FBX or OBJ and pick that" );
 	}
 }
 
 /// <summary>
 /// Where an imported mesh lives next to a document.
 ///
-/// One directory beside the .effigy file, one OBJ per import feature, named by that feature's id.
+/// One directory beside the .effigy file, one mesh file per import feature (<c>{id}.obj</c>, or
+/// <c>{id}.fbx</c> for an FBX source), named by that feature's id.
 /// Keyed by id rather than by position so re-ordering the history or renaming the feature does not
 /// hand somebody else's sculpt to this one.
 ///
@@ -360,8 +575,18 @@ public static class ImportSidecar
 		return Path.Combine( dir, Path.GetFileNameWithoutExtension( documentPath ) + FolderSuffix );
 	}
 
+	/// <summary>The side-car for an import whose bytes are OBJ. An FBX source is kept as FBX - see
+	/// <see cref="PathFor(string, string, byte[])"/>.</summary>
 	public static string PathFor( string documentPath, string featureId ) =>
 		Path.Combine( DirectoryFor( documentPath ), featureId + ".obj" );
+
+	/// <summary>The side-car for these bytes: <c>{id}.fbx</c> when they are FBX, <c>{id}.obj</c>
+	/// otherwise. Kept in the source's own format so a skinned FBX keeps its skeleton and weights
+	/// across a save, which a re-export to OBJ would lose.</summary>
+	public static string PathFor( string documentPath, string featureId, byte[] bytes ) =>
+		Path.Combine( DirectoryFor( documentPath ), featureId + (FbxImport.IsFbx( bytes ) ? ".fbx" : ".obj") );
+
+	static readonly string[] SidecarExtensions = { ".obj", ".fbx" };
 
 	/// <summary>Write an OBJ for every import feature that has one. Returns how many it wrote.</summary>
 	public static int Save( PartStudio studio, string documentPath )
@@ -388,7 +613,22 @@ public static class ImportSidecar
 		Directory.CreateDirectory( DirectoryFor( documentPath ) );
 
 		foreach ( var (id, bytes) in pending )
-			File.WriteAllBytes( PathFor( documentPath, id ), bytes );
+		{
+			var path = PathFor( documentPath, id, bytes );
+			File.WriteAllBytes( path, bytes );
+
+			// THIS FEATURE'S OWN PREVIOUS COPY in the other format goes, so a load cannot pick up
+			// the stale one: re-pointing an import from an OBJ to an FBX would otherwise leave
+			// both, and which won would depend on the order Load checks them in. Only that exact
+			// file - {id} in the other extension - is touched; nothing another feature wrote is.
+			foreach ( var ext in SidecarExtensions )
+			{
+				var other = Path.ChangeExtension( path, ext );
+
+				if ( other != path && File.Exists( other ) )
+					File.Delete( other );
+			}
+		}
 
 		return pending.Count;
 	}
@@ -411,9 +651,11 @@ public static class ImportSidecar
 			if ( feature is not ImportFeature import )
 				continue;
 
-			var path = PathFor( documentPath, feature.Id );
+			var path = SidecarExtensions
+				.Select( ext => Path.Combine( dir, feature.Id + ext ) )
+				.FirstOrDefault( File.Exists );
 
-			if ( !File.Exists( path ) )
+			if ( path is null )
 				continue;
 
 			import.LoadMesh( File.ReadAllBytes( path ) );
@@ -440,12 +682,15 @@ public static class ImportSidecar
 		foreach ( var feature in studio.Features )
 		{
 			if ( feature is ImportFeature )
-				keep.Add( feature.Id + ".obj" );
+			{
+				foreach ( var ext in SidecarExtensions )
+					keep.Add( feature.Id + ext );
+			}
 		}
 
 		var removed = 0;
 
-		foreach ( var path in Directory.GetFiles( dir, "*.obj" ) )
+		foreach ( var path in SidecarExtensions.SelectMany( ext => Directory.GetFiles( dir, "*" + ext ) ) )
 		{
 			if ( keep.Contains( Path.GetFileName( path ) ) )
 				continue;

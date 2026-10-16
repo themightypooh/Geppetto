@@ -18,6 +18,7 @@ namespace Effigy;
 ///   add Part name=Buckle part=Buckle size=6 length=4 position=@Torso.front+1,0,-6
 ///   add Spline name=Cable points=@Torso.back;-10,4,20;-14,0,8 radius=0.8
 ///   add CurveDeform bodies=Tail
+///   add Import name=Scan source=scan.fbx
 ///   set Torso sizez=32
 ///   fix Torso all
 ///   render out/torso.png view=sheet
@@ -128,6 +129,17 @@ public static partial class BuildScript
 					return false;
 
 				studio.Add( feature );
+
+				// add Import source=leg.fbx - the path is the script's, like save and export, and an
+				// FBX's skeleton becomes the rig when there is none yet, as picking it in the editor does.
+				if ( feature is ImportFeature import && !string.IsNullOrWhiteSpace( import.Source.Value ) )
+				{
+					import.BindSource( Resolve( baseDir, import.Source.Value.Trim() ) );
+
+					if ( ImportFeature.InstallSkeleton( studio, import, out var rigMessage ) > 0 || rigMessage.Length > 0 )
+						r.Log.Add( rigMessage );
+				}
+
 				return RebuildAndCheck( studio, feature, r, $"added {feature.TypeName} '{feature.Name ?? feature.Id}'" );
 			}
 
