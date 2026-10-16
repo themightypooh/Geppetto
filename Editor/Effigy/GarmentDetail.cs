@@ -903,12 +903,16 @@ public static class DetailEdges
 		for ( var k = 0; k < n; k++ )
 			pts[k] = edge.Points[k] + edge.Inward[k] * inset + edge.Normals[k] * lift;
 
-		for ( var pass = 0; pass < smooth; pass++ )
+		// Taubin (a shrink step, then a slightly bigger grow step), not plain averaging: averaging
+		// pulls a loop in, and on an 18-point cuff two passes moved it 0.12 in toward the wrist -
+		// more than the lift - so cuff studs and piping came out inside the sleeve.
+		for ( var pass = 0; pass < smooth * 2; pass++ )
 		{
 			var next = new Vec3[n];
+			var weight = pass % 2 == 0 ? 0.5f : -0.53f;
 
 			for ( var k = 0; k < n; k++ )
-				next[k] = (pts[(k - 1 + n) % n] + pts[k] * 2f + pts[(k + 1) % n]) * 0.25f;
+				next[k] = pts[k] + ((pts[(k - 1 + n) % n] + pts[(k + 1) % n]) * 0.5f - pts[k]) * weight;
 
 			pts = next;
 		}

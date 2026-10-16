@@ -111,6 +111,7 @@ public static class GarmentDetailDemo
 			Text( rel + ".vmat", source ); studio.MaterialNames[m.Slot] = rel + ".vmat";
 		}
 		// The wearer is never exported, but a dressed figure is judged on a body.
+		ClipReport( studio, skin );
 		var mesh = studio.ToMesh();
 		var body = skin.Clone();
 		foreach ( var face in body.Faces ) face.Material = 63;
@@ -193,5 +194,42 @@ public static class GarmentDetailDemo
 			File.WriteAllText( Path.Combine( folder, name + ".obj" ), ObjWriter.Write( mesh, name,
 				materialName: slot => studio.MaterialNames.TryGetValue( slot, out var path ) ? path : "material_" + slot ) );
 		}
+	}
+
+	/// <summary>Every garment against the skin and the outer wall of each garment before it; every
+	/// detail against the skin and every garment's outer wall. Points more than 0.05 in inside count.</summary>
+	public static int ClipReport( PartStudio studio, PolyMesh skin )
+	{
+		var garments = studio.Bodies.Where( b => b.IsGarment && !b.IsGarmentDetail ).ToList();
+		var total = 0;
+		(int Count, float Deepest, string Where) Clip( PolyMesh mesh, System.Collections.Generic.IEnumerable<PolyMesh> against )
+		{
+			var hits = new System.Collections.Generic.List<(Vec3 P, float D)>();
+			foreach ( var other in against )
+			{
+				var tree = MeshBVH.Build( other );
+				foreach ( var p in mesh.Positions )
+					if ( tree.NearestSurface( other, p, 3f ) is { } hit && -Vec3.Dot( p - hit.Point, hit.Normal ) is var d && d > 0.05f )
+						hits.Add( (p, d) );
+			}
+			var where = string.Join( " ", hits.GroupBy( h => $"z{MathF.Round( h.P.z / 6f ) * 6:F0}{(h.P.x > 0 ? "f" : "b")}" ).OrderByDescending( g => g.Count() ).Take( 4 ).Select( g => $"{g.Key}:{g.Count()}" ) );
+			return (hits.Count, hits.Count == 0 ? 0f : hits.Max( h => h.D ), where);
+		}
+		for ( var i = 0; i < garments.Count; i++ )
+		{
+			var outer = DetailEdges.Sheet( garments[i].Mesh );
+			var r = Clip( outer, new[] { skin }.Concat( garments.Take( i ).Select( g => DetailEdges.Sheet( g.Mesh ) ) ) );
+			Console.WriteLine( $"clip {garments[i].Name}: {r.Count}/{outer.VertexCount} deepest {r.Deepest:F2} in  {r.Where}" );
+			total += r.Count;
+		}
+		foreach ( var d in studio.Bodies.Where( b => b.IsGarmentDetail ) )
+		{
+			var host = garments.FirstOrDefault( g => d.Name.EndsWith( " on " + g.Name ) );
+			var r = Clip( d.Mesh, new[] { skin }.Concat( garments.Where( g => g != host ).Select( g => DetailEdges.Sheet( g.Mesh ) ) ) );
+			var own = host is null ? default : Clip( d.Mesh, new[] { DetailEdges.Sheet( host.Mesh ) } );
+			if ( r.Count + own.Count > 0 ) Console.WriteLine( $"clip {d.Name}: others {r.Count}/{d.Mesh.VertexCount} deepest {r.Deepest:F2} {r.Where} | own {own.Count} deepest {own.Deepest:F2} {own.Where}" );
+			total += r.Count + own.Count;
+		}
+		return total;
 	}
 }

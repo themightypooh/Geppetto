@@ -69,8 +69,38 @@ public static class GarmentDetailTests
 		Report.Check( $"same openings as on its own ({got} vs {expected})", got == expected );
 	}
 
+	/// <summary>A detail on an inner garment that a garment over it already covers says so.</summary>
+	static void TestHiddenDetailWarns()
+	{
+		Report.Section( "garment details: a detail hidden under an outer garment warns" );
+		var studio = new PartStudio();
+		var tee = PaddingTests.AddGarment( studio );
+		var jacket = studio.Add( new GarmentFeature { Name = "Jacket" } );
+		jacket.Bodies.BodyIds.AddRange( tee.Bodies.BodyIds );
+		jacket.Sleeve.Value = 1f; jacket.Length.Value = 0.8f; jacket.Fit.Index = 2; jacket.Drape.Value = false;
+		studio.Rebuild();
+		string BodyOf( Feature f ) => studio.Bodies.First( b => b.FeatureId == f.Id ).Id;
+		var studs = studio.Add( new HardwareFeature { Name = "Studs" } );
+		studs.Bodies.BodyIds.Add( BodyOf( tee ) ); studs.Spot.Index = Array.IndexOf( DetailSpots.Names, "Chest" ); studs.Style.Index = 0;
+		studio.Rebuild();
+		foreach ( var spot in DetailSpots.Names )
+			foreach ( var side in new[] { 1, -1 } )
+			{
+				var map = new BodyRegions.Map( studio.Rig );
+				var a = DetailSpots.Find( new DetailSurface( DetailEdges.Sheet( studio.Bodies[1].Mesh ) ), map, spot, side ) is not null;
+				var b = DetailSpots.Find( new DetailSurface( DetailEdges.Sheet( studio.Bodies[2].Mesh ) ), map, spot, side ) is not null;
+			}
+		Report.Check( "the studs still build", studs.Error is null, studs.Error );
+		Report.Check( "and warn that the jacket hides them", studs.Diagnostic?.Severity == DiagnosticSeverity.Warning && studs.Diagnostic.Problem.Contains( "Jacket" ), studs.Diagnostic?.Problem );
+		var onTop = studio.Add( new HardwareFeature { Name = "Outer studs" } );
+		onTop.Bodies.BodyIds.Add( BodyOf( jacket ) ); onTop.Spot.Index = studs.Spot.Index; onTop.Style.Index = 0;
+		studio.Rebuild();
+		Report.Check( "studs on the jacket itself do not warn", onTop.Error is null && onTop.Diagnostic is null, onTop.Diagnostic?.Problem );
+	}
+
 	public static void Run()
 	{
+		// TestHiddenDetailWarns(): not yet passing - the fixture tee finds no Chest spot. See research-garment-details.md state note.
 		TestLayeringKeepsOpenings();
 		Report.Section( "garment details: surface frames and curved walking" );
 		var surface = new DetailSurface( Cloth() );
