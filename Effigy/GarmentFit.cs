@@ -911,6 +911,7 @@ public static class GarmentFit
 		if ( o.Puff > 0f || o.Wrinkles > 0f )
 			PushOut( garment, bodies, trees, o.Clearance, reach );
 
+		CleanOpenings( garment, Neighbours( garment ) );
 		LimbUVs( garment, map );
 
 		if ( o.Thickness > 0f )
@@ -1699,6 +1700,118 @@ public static class GarmentFit
 
 			garment.Positions[i] = p;
 		}
+	}
+
+	/// <summary>
+	/// Every opening - collar, cuffs, hem, armholes - as a clean line.
+	///
+	/// WHY THE EDGE WAS ROUGH. The cut lands wherever the body's edges cross it, so its points
+	/// bunch where edges run along it and spread where they cross it; then the drape moves each
+	/// edge point on its own, with cloth on one side only. A collar came out as a little zig-zag
+	/// one face deep all the way round, which is the thing that says "generated" first.
+	///
+	/// A real edge is a smooth curve with its stitches evenly spaced. So each opening is pulled onto
+	/// a low-passed copy of itself - a Fourier series of the loop by arc length, keeping only waves
+	/// longer than <paramref name="wavelength"/> inches - a collar keeps about four, a cuff three (the drape's folds at a hem stay, the
+	/// face-sized wobble goes) - with its points spaced evenly along it, and the two rings of cloth
+	/// behind it relaxed so the move does not leave a crease.
+	/// </summary>
+	internal static int CleanOpenings( PolyMesh garment, List<int>[] neighbours, float wavelength = 4f )
+	{
+		var loops = GarmentTrim.OrderedBoundaryLoops( garment ).Where( l => l.Count >= 8 ).ToList();
+		var moved = new HashSet<int>();
+
+		foreach ( var loop in loops )
+		{
+			var n = loop.Count;
+			var pts = loop.Select( i => garment.Positions[i] ).ToArray();
+
+			// Arc length round the loop, closed.
+			var s = new float[n + 1];
+
+			for ( var i = 0; i < n; i++ )
+				s[i + 1] = s[i] + (pts[(i + 1) % n] - pts[i]).Length;
+
+			var length = s[n];
+
+			if ( length < 1e-3f )
+				continue;
+
+			// Resample evenly, then keep the low harmonics.
+			const int M = 256;
+			var even = new Vec3[M];
+
+			for ( int k = 0, seg = 0; k < M; k++ )
+			{
+				var at = length * k / M;
+
+				while ( seg < n - 1 && s[seg + 1] < at )
+					seg++;
+
+				var span = MathF.Max( s[seg + 1] - s[seg], 1e-6f );
+				even[k] = Vec3.Lerp( pts[seg], pts[(seg + 1) % n], (at - s[seg]) / span );
+			}
+
+			var harmonics = Math.Clamp( (int)(length / wavelength), 2, M / 2 - 1 );
+			var re = new Vec3[harmonics + 1];
+			var im = new Vec3[harmonics + 1];
+
+			for ( var h = 0; h <= harmonics; h++ )
+				for ( var k = 0; k < M; k++ )
+				{
+					var a = -2f * MathF.PI * h * k / M;
+					re[h] += even[k] * MathF.Cos( a );
+					im[h] += even[k] * MathF.Sin( a );
+				}
+
+			Vec3 Smooth( float u )
+			{
+				var p = re[0] / M;
+
+				for ( var h = 1; h <= harmonics; h++ )
+				{
+					var a = 2f * MathF.PI * h * u;
+					p += (re[h] * MathF.Cos( a ) - im[h] * MathF.Sin( a )) * (2f / M);
+				}
+
+				return p;
+			}
+
+			// Evenly spaced along the smooth curve, starting where the first point already is, so
+			// nothing slides round the opening.
+			for ( var i = 0; i < n; i++ )
+			{
+				garment.Positions[loop[i]] = Smooth( (float)i / n );
+				moved.Add( loop[i] );
+			}
+		}
+
+		if ( moved.Count == 0 )
+			return 0;
+
+		// The two rings behind the edge, eased toward their neighbours so the cloth follows the
+		// edge's move instead of folding at it.
+		var ring1 = moved.SelectMany( i => neighbours[i] ).Where( j => !moved.Contains( j ) ).ToHashSet();
+		var ring2 = ring1.SelectMany( i => neighbours[i] ).Where( j => !moved.Contains( j ) && !ring1.Contains( j ) ).ToHashSet();
+
+		foreach ( var (ring, amount) in new[] { (ring1, 0.5f), (ring2, 0.25f) } )
+			for ( var pass = 0; pass < 2; pass++ )
+			{
+				var next = ring.ToDictionary( i => i, i =>
+				{
+					var avg = Vec3.Zero;
+
+					foreach ( var j in neighbours[i] )
+						avg += garment.Positions[j];
+
+					return Vec3.Lerp( garment.Positions[i], avg / neighbours[i].Count, amount );
+				} );
+
+				foreach ( var (i, p) in next )
+					garment.Positions[i] = p;
+			}
+
+		return loops.Count;
 	}
 
 	static void Relax( PolyMesh mesh, List<int>[] neighbours, bool[] boundary, float amount )
