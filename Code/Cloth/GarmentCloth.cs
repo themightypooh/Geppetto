@@ -19,10 +19,14 @@ namespace Marionette;
 /// any frame rate, which a spring simulation is not, and it costs a few milliseconds for a
 /// T-shirt. It also runs in the editor, so a garment can be watched settling without pressing Play.
 ///
-/// NO SELF-COLLISION, AND NO CLOTH-ON-CLOTH. The cloth collides with the body's capsules and
-/// nothing else: a fold can pass through itself, and a jacket over a shirt passes through the
-/// shirt. That is the usual first version of a game cloth solver and it is what this is; the
-/// tool says so where it writes the file rather than letting a layered outfit be a surprise.
+/// LAYERED, NOT SELF-COLLIDING. A jacket over a shirt stays over it: the jacket's capsules are
+/// inflated by the room the shirt takes, each jacket particle is held off the shirt particle it
+/// was fitted over, and then the capsules run once more so the body has the last word. A fold can
+/// still pass through itself - there is no self-collision.
+///
+/// PADDED. A quilted yoke or an elbow patch is heavier and stiffer to fold than the cloth around
+/// it, per particle, and every correction is split by mass: the heavy patch moves less and drags
+/// the light cloth beside it, the way it does in a real jacket.
 ///
 /// LEASHED. Every particle is held within Leash of where the garment was fitted relative to its
 /// bone. Free cloth left behind by a teleport, a respawn or a frame hitch would otherwise be found
@@ -94,6 +98,19 @@ public sealed class GarmentCloth : Component, Component.ExecuteInEditor
 		/// <summary>Triples (particle, capsule, distance from the capsule's core) for the cloth
 		/// that was fitted close to or inside a capsule. Absent in files from before it.</summary>
 		public float[] Fitted { get; set; }
+
+		/// <summary>Per particle: how much heavier it is than plain cloth (padding). Absent = all 1.</summary>
+		public float[] Mass { get; set; }
+
+		/// <summary>Per particle: how much harder it is to fold (padding). Absent = all 1.</summary>
+		public float[] BendScale { get; set; }
+
+		/// <summary>Per particle: how much further off the capsules it sits for the garments under it.</summary>
+		public float[] Under { get; set; }
+
+		/// <summary>Triples (outer particle, inner particle, gap): a jacket particle and the shirt
+		/// particle it was fitted over, and how far off the shirt it is held.</summary>
+		public float[] Over { get; set; }
 		public float[] Positions { get; set; }
 		public float[] UVs { get; set; }
 		public int[] Triangles { get; set; }
@@ -138,6 +155,14 @@ public sealed class GarmentCloth : Component, Component.ExecuteInEditor
 	/// <summary>Per particle, the capsules it was fitted near and how far from each one's core.
 	/// Null for a particle that sat clear of them all.</summary>
 	(int Capsule, float Gap)[][] _fitted;
+
+	// Padding and layers, see ClothData. _invMass is 1 / Mass; the rest are null when the file has none.
+	float[] _invMass;
+	float[] _bendScale;
+	float[] _under;
+	(int Outer, int Inner, float Gap)[] _over;
+	int[][] _around;
+	int[][] _fans;
 
 	// The simulation, in world space.
 	Vector3[] _x;
@@ -296,6 +321,12 @@ public sealed class GarmentCloth : Component, Component.ExecuteInEditor
 		_links = BuildLinks( data.Positions, _triangles );
 		_anchors = BuildAnchors( data.Positions, _links, _pins );
 		_fitted = ReadFitted( data.Fitted, count, _capsules.Length );
+		_invMass = data.Mass is { } m && m.Length == count ? m.Select( v => 1f / Math.Max( v, 0.1f ) ).ToArray() : null;
+		_bendScale = data.BendScale is { } bs && bs.Length == count ? bs : null;
+		_under = data.Under is { } u && u.Length == count ? u : null;
+		_over = ReadOver( data.Over, count );
+		_around = _over is null ? null : Around( _links, count );
+		_fans = _over is null ? null : Fans( _triangles, count );
 		_fileMaterial = data.Material;
 
 		// Start the cloth where it was fitted, on the bones as they are now.
@@ -437,19 +468,239 @@ public sealed class GarmentCloth : Component, Component.ExecuteInEditor
 					continue;
 
 				var k = isBend ? bend : stiffness;
-				var correction = d * ((len - rest) / len * 0.5f * k);
-				_x[a] -= correction;
-				_x[b] += correction;
+
+				if ( isBend && _bendScale is not null )
+					k = MathF.Min( 1f, k * MathF.Sqrt( _bendScale[a] * _bendScale[b] ) );
+
+				// Split by mass: wa / (wa + wb) of it to a, the rest to b. Equal masses is the
+				// half and half every link used before padding.
+				var share = Share( a, b );
+				var correction = d * ((len - rest) / len * k);
+				_x[a] -= correction * share;
+				_x[b] += correction * (1f - share);
 			}
 		}
 
 		// Once per step, after the links. Collision LAST: the position the step ends on is the one
 		// that is drawn, and with the pins after it a raised arm's capsule swept through the
 		// shoulder band pinned to the chest and left it an inch and a half inside the arm.
+		// Layered: capsules (inflated for the layers under), then each layer off the one under
+		// it, then the capsules again so the body has the last word - and then the outer layers
+		// alone pushed back off what that pass moved. Without it the last capsule pass shoved the
+		// shirt sleeve back out through the jacket's on a raised arm. Then the capsules a last
+		// time: in an armpit the shirt's normal points at the other arm, and the outer push alone
+		// left the jacket an inch inside it.
 		Pin();
 		Tether();
 		Attach();
 		Collide();
+
+		if ( _over is not null )
+		{
+			Layers( false );
+			Collide();
+			for ( var round = 0; round < 2; round++ )
+			{
+				Layers( true );
+				Collide();
+			}
+		}
+	}
+
+	/// <summary>How much of a correction between a and b goes to a: its inverse mass over both.</summary>
+	float Share( int a, int b )
+	{
+		if ( _invMass is null )
+			return 0.5f;
+
+		var wa = _invMass[a];
+		var wb = _invMass[b];
+		return wa + wb > 1e-6f ? wa / (wa + wb) : 0.5f;
+	}
+
+	/// <summary>
+	/// Hold each outer-layer particle off the inner-layer particle it was fitted over, along that
+	/// one's normal, by its gap. Split by mass, like the links; a fully pinned particle does not
+	/// move. <paramref name="outerOnly"/> holds the inner layer still and moves the outer one.
+	/// </summary>
+	void Layers( bool outerOnly )
+	{
+		for ( var k = 0; k < _over.Length; k++ )
+		{
+			// FOLLOW THE CLOTH UNDER IT. A jacket sleeve slides along the shirt sleeve as the arm
+			// moves - nearly three inches on a raised arm - and held off the shirt particle it was
+			// fitted over, it was held off one round the curve of the arm, at the wrong angle.
+			// So the partner walks across the shirt to whichever particle is nearest now.
+			var (o, i, gap) = _over[k];
+			i = Nearest( _around, _x, _x[o], i );
+			_over[k] = (o, i, gap);
+
+			// AGAINST THE SURFACE, NOT A POINT. Off the nearest of the triangles round the partner,
+			// the way cloth-on-cloth is done in position-based solvers: a particle held off another
+			// particle slips between two of them where the shirt bunches at the shoulder.
+			var best = -1;
+			var bestD = float.MaxValue;
+			var bary = (A: 1f, B: 0f, C: 0f);
+
+			foreach ( var t in _fans[i] )
+			{
+				var w = ClosestOnTriangle( _x[o], _x[_triangles[t]], _x[_triangles[t + 1]], _x[_triangles[t + 2]] );
+				var q = _x[_triangles[t]] * w.A + _x[_triangles[t + 1]] * w.B + _x[_triangles[t + 2]] * w.C;
+				var d = (_x[o] - q).LengthSquared;
+
+				if ( d < bestD )
+				{
+					bestD = d;
+					best = t;
+					bary = w;
+				}
+			}
+
+			if ( best < 0 )
+				continue;
+
+			var (a, b, c) = (_triangles[best], _triangles[best + 1], _triangles[best + 2]);
+			var normal = Vector3.Cross( _x[b] - _x[a], _x[c] - _x[a] ).Normal;
+			var on = _x[a] * bary.A + _x[b] * bary.B + _x[c] * bary.C;
+			var along = Vector3.Dot( _x[o] - on, normal );
+
+			if ( along >= gap )
+				continue;
+
+			// Split by mass and by how much of the contact each corner carries; pinned cloth and,
+			// on the outer-only pass, the whole inner layer stay put.
+			float W( int p ) => (_invMass?[p] ?? 1f) * (1f - (_pins?[p] ?? 0f));
+			var wo = outerOnly ? 1f : W( o );
+			var (wa, wb, wc) = outerOnly ? (0f, 0f, 0f) : (W( a ), W( b ), W( c ));
+			var denom = wo + bary.A * bary.A * wa + bary.B * bary.B * wb + bary.C * bary.C * wc;
+
+			if ( denom < 1e-6f )
+				continue;
+
+			var s = (gap - along) / denom;
+			_x[o] += normal * (s * wo);
+			_x[a] -= normal * (s * bary.A * wa);
+			_x[b] -= normal * (s * bary.B * wb);
+			_x[c] -= normal * (s * bary.C * wc);
+		}
+	}
+
+	/// <summary>Per particle, the triangles it is a corner of, by their first index in _triangles.</summary>
+	static int[][] Fans( int[] tris, int count )
+	{
+		var lists = new List<int>[count];
+
+		for ( var i = 0; i < count; i++ )
+			lists[i] = new List<int>();
+
+		for ( var t = 0; t + 2 < tris.Length; t += 3 )
+		{
+			lists[tris[t]].Add( t );
+			lists[tris[t + 1]].Add( t );
+			lists[tris[t + 2]].Add( t );
+		}
+
+		return lists.Select( l => l.ToArray() ).ToArray();
+	}
+
+	/// <summary>Barycentric weights of the point on triangle abc nearest p (Ericson, Real-Time
+	/// Collision Detection 5.1.5).</summary>
+	static (float A, float B, float C) ClosestOnTriangle( Vector3 p, Vector3 a, Vector3 b, Vector3 c )
+	{
+		var ab = b - a;
+		var ac = c - a;
+		var ap = p - a;
+		var d1 = Vector3.Dot( ab, ap );
+		var d2 = Vector3.Dot( ac, ap );
+		if ( d1 <= 0f && d2 <= 0f ) return (1f, 0f, 0f);
+		var bp = p - b;
+		var d3 = Vector3.Dot( ab, bp );
+		var d4 = Vector3.Dot( ac, bp );
+		if ( d3 >= 0f && d4 <= d3 ) return (0f, 1f, 0f);
+		var vc = d1 * d4 - d3 * d2;
+		if ( vc <= 0f && d1 >= 0f && d3 <= 0f ) { var v = d1 / (d1 - d3); return (1f - v, v, 0f); }
+		var cp = p - c;
+		var d5 = Vector3.Dot( ab, cp );
+		var d6 = Vector3.Dot( ac, cp );
+		if ( d6 >= 0f && d5 <= d6 ) return (0f, 0f, 1f);
+		var vb = d5 * d2 - d1 * d6;
+		if ( vb <= 0f && d2 >= 0f && d6 <= 0f ) { var w = d2 / (d2 - d6); return (1f - w, 0f, w); }
+		var va = d3 * d6 - d5 * d4;
+		if ( va <= 0f && d4 - d3 >= 0f && d5 - d6 >= 0f ) { var w = (d4 - d3) / ((d4 - d3) + (d5 - d6)); return (0f, 1f - w, w); }
+		var denom = 1f / (va + vb + vc);
+		var vv = vb * denom;
+		var ww = vc * denom;
+		return (1f - vv - ww, vv, ww);
+	}
+
+	/// <summary>Each particle's neighbours along the cloth's edges.</summary>
+	static int[][] Around( (int A, int B, float Length, bool Bend)[] links, int count )
+	{
+		var lists = new List<int>[count];
+
+		for ( var i = 0; i < count; i++ )
+			lists[i] = new List<int>();
+
+		foreach ( var (a, b, _, bend) in links )
+		{
+			if ( bend )
+				continue;
+
+			lists[a].Add( b );
+			lists[b].Add( a );
+		}
+
+		return lists.Select( l => l.ToArray() ).ToArray();
+	}
+
+	/// <summary>Walk from <paramref name="from"/> to the neighbour nearest <paramref name="p"/> until
+	/// none is nearer. A handful of hops: the cloth under a particle moves a little each step.</summary>
+	static int Nearest( int[][] around, Vector3[] x, Vector3 p, int from )
+	{
+		var best = (x[from] - p).LengthSquared;
+
+		for ( var hop = 0; hop < 16; hop++ )
+		{
+			var next = from;
+
+			foreach ( var j in around[from] )
+			{
+				var d = (x[j] - p).LengthSquared;
+
+				if ( d < best )
+				{
+					best = d;
+					next = j;
+				}
+			}
+
+			if ( next == from )
+				break;
+
+			from = next;
+		}
+
+		return from;
+	}
+
+	/// <summary>The file's Over triples. Bad entries are skipped; none usable is null.</summary>
+	static (int, int, float)[] ReadOver( float[] triples, int particles )
+	{
+		if ( triples is null || triples.Length < 3 )
+			return null;
+
+		var list = new List<(int, int, float)>();
+
+		for ( var k = 0; k + 2 < triples.Length; k += 3 )
+		{
+			var o = (int)triples[k];
+			var i = (int)triples[k + 1];
+
+			if ( o >= 0 && o < particles && i >= 0 && i < particles && o != i && float.IsFinite( triples[k + 2] ) )
+				list.Add( (o, i, Math.Max( 0f, triples[k + 2] )) );
+		}
+
+		return list.Count > 0 ? list.ToArray() : null;
 	}
 
 	/// <summary>The file's Fitted triples as a short list per particle. Bad entries are skipped,
@@ -655,7 +906,7 @@ public sealed class GarmentCloth : Component, Component.ExecuteInEditor
 				var core = a + ab * t;
 				var d = _x[i] - core;
 				var dist = d.Length;
-				var want = radius + Skin;
+				var want = radius + Skin + (_under?[i] ?? 0f);
 
 				// No closer than it was fitted. A capsule is fatter than the body in places, and a
 				// close top lies inside it there; held to the capsule's surface it was thrown off.
