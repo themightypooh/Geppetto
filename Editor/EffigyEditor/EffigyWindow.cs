@@ -410,6 +410,11 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		lods.Checkable = true;
 		lods.Checked = _exportLods;
 		lods.Toggled += on => { _exportLods = on; Log.Info( on ? "[Effigy] Compile .vmdl will write half- and quarter-detail LODs, switching with distance (skinned on a rigged model)" : "[Effigy] Compile .vmdl writes one level of detail" ); };
+		_wrinkleMenuOption = file.AddOption( "Export with Wrinkle Maps", "texture" );
+		_wrinkleMenuOption.ToolTip = WrinkleMapsTip;
+		_wrinkleMenuOption.Checkable = true;
+		_wrinkleMenuOption.Checked = _exportWrinkles;
+		_wrinkleMenuOption.Toggled += SetExportWrinkles;
 		file.AddSeparator();
 		file.AddOption( "Close", "close", Close );
 
@@ -7469,6 +7474,32 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	/// distance switch. Off by default — a character or a one-off prop does not need them.</summary>
 	private bool _exportLods;
 
+	/// <summary>File ▸ Export with Wrinkle Maps (and the Rig bar's Wrinkle Maps): a rigged compile
+	/// also writes each shape key's squash/stretch for F_WRINKLE, the squish textures, and turns
+	/// wrinkles on in the model's Effigy materials. Off by default, like LODs.</summary>
+	private bool _exportWrinkles;
+
+	private Option _wrinkleMenuOption;
+
+	const string WrinkleMapsTip = "When on, Compile .vmdl on a rigged model with shape keys also bakes crease textures and records how much each key squashes or stretches the skin, so creases appear on the skin as the key plays";
+
+	/// <summary>Both switches (menu and Rig bar) set this, so they never disagree.</summary>
+	private void SetExportWrinkles( bool on )
+	{
+		_exportWrinkles = on;
+
+		if ( _wrinkleMenuOption is not null && _wrinkleMenuOption.Checked != on )
+			_wrinkleMenuOption.Checked = on;
+
+		UpdateRigChecks();
+
+		var text = on
+			? "Wrinkle maps on: Compile .vmdl will write them for a rigged model with shape keys"
+			: "Wrinkle maps off";
+		Log.Info( $"[Effigy] {text}" );
+		SetPrompt( text );
+	}
+
 	/// <summary>When set, <see cref="CompileVmdl"/> ships only these bodies. Clothing sets it so
 	/// the body the garment was cut from is not written into the clothing model.</summary>
 	private Func<Body, bool> _compileInclude;
@@ -7535,9 +7566,33 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			var smdPath = Path.Combine( folder, $"{name}.smd" );
 			SmdWriter.WriteFile( mesh, smdPath, skeleton, materialName: _studio.NameForSlot );
 
+			// Wrinkle maps: per-key squash/stretch for the DMX, the squish textures, F_WRINKLE on the
+			// Effigy materials. Anything that could not happen is said, with what to do about it.
+			Dictionary<string, float[]> wrinkleValues = null;
+
+			if ( _exportWrinkles )
+			{
+				var root = Project.Current?.GetAssetsPath();
+				var made = WrinkleMaps.WriteForExport( mesh, folder, "models/effigy", name, slot =>
+				{
+					var material = _studio.NameForSlot( slot );
+					if ( string.IsNullOrWhiteSpace( material ) || root is null ) return null;
+					return AssetSystem.FindByPath( material )?.AbsolutePath ?? Path.Combine( root, material );
+				} );
+
+				wrinkleValues = made.Values.Count > 0 ? made.Values : null;
+				Log.Info( $"[Effigy] {name}: wrinkle maps for {made.Values.Count} shape key(s), on {made.MaterialsOn.Count} material(s)" );
+
+				foreach ( var note in made.Notes )
+					Log.Warning( $"[Effigy] wrinkle maps: {note}" );
+
+				if ( made.Notes.Count > 0 )
+					_viewport?.ShowCallout( "wrinkles-partial", EffigyCalloutKind.Refusal, $"Wrinkle maps: {made.Notes[0]}", lifetime: FailureSeconds );
+			}
+
 			var dmxPath = Path.Combine( folder, $"{name}.dmx" );
 			DmxWriter.WriteFile( mesh, dmxPath, skeleton, materialName: _studio.NameForSlot,
-				modelName: name );
+				modelName: name, wrinkles: wrinkleValues );
 
 			Log.Info( $"[Effigy] wrote {dmxPath} - {skeleton.Count} bones, {mesh.VertexCount} vertices" );
 
@@ -7568,7 +7623,8 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			{
 				// Skinned levels: decimated with their weights and shape keys carried, UV seams held,
 				// each its own .dmx on the same pivoted skeleton.
-				var levels = LodExport.WriteSkinned( mesh, skeleton, folder, "models/effigy", name, _studio.NameForSlot );
+				var levels = LodExport.WriteSkinned( mesh, skeleton, folder, "models/effigy", name, _studio.NameForSlot,
+					wrinkles: wrinkleValues is not null );
 				var (lodFiles, lodDistances) = LodExport.VmdlLists( $"models/effigy/{name}.dmx", levels );
 				File.WriteAllText( vmdlPath, VmdlDocument.SkinnedWithLods( lodFiles, lodDistances, skeleton,
 					skinnedPhysics, skinnedMaterials, skinnedAnimations ) );
@@ -7628,6 +7684,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		var staticObjPath = Path.Combine( folder, $"{name}.obj" );
 		var staticMesh = _studio.ToMesh( _compileInclude );
 		ApplyPivot( staticMesh );
+
+		if ( _exportWrinkles )
+			Log.Warning( "[Effigy] Export with Wrinkle Maps is on, but wrinkle maps ride on shape keys, which only a rigged model exports. Add a bone to write them." );
 
 		// OBJ has no shape keys. Say so rather than drop them without a word.
 		if ( staticMesh.HasMorphs )

@@ -393,7 +393,7 @@ public static partial class BuildScript
 	}
 
 	const string ExportUsage = "export folder [split=1] [assets=root] [name=x] [lods=0|1|0.5,0.25] [loddistance=a,b] "
-		+ "[collision=none|auto|hulls|render] [surface=default] [skin=auto|0|1] [fbx=0|1]";
+		+ "[collision=none|auto|hulls|render] [surface=default] [skin=auto|0|1] [fbx=0|1] [wrinkles=0|1]";
 
 	/// <summary>
 	/// `export`: the .vmdl and the mesh files it loads, the same set the editor's Compile writes.
@@ -408,6 +408,9 @@ public static partial class BuildScript
 	///              bone that drives it); hulls = one hull per body; render = physics from the render mesh.
 	///   skin=      auto (default): skinned when the studio has bones and the export is not split.
 	///              Skinned writes .dmx (what the vmdl loads) and .smd, bound like the editor's export.
+	///   wrinkles=1 wrinkle maps (skinned only): each shape key's squash/stretch per vertex in the .dmx,
+	///              the squish normal/AO maps as {name}_squish_normal.png/_squish_ao.png, and F_WRINKLE on
+	///              each Effigy .vmat the model uses (found under the assets root).
 	///   fbx=1      also a binary .fbx of each model, skinned when the model is, for Blender and other DCCs.
 	///              The .vmdl still loads the .obj/.dmx, whose import ModelDoc has been measured on.
 	/// </summary>
@@ -421,7 +424,7 @@ public static partial class BuildScript
 		var opts = Pairs( args.Skip( 1 ) );
 
 		foreach ( var key in opts.Keys )
-			if ( key is not ("split" or "assets" or "name" or "lods" or "loddistance" or "collision" or "surface" or "skin" or "fbx") )
+			if ( key is not ("split" or "assets" or "name" or "lods" or "loddistance" or "collision" or "surface" or "skin" or "fbx" or "wrinkles") )
 				return Fail( r, $"export has no option '{key}'. {ExportUsage}" );
 
 		var root = opts.TryGetValue( "assets", out var assets ) ? assets : baseDir;
@@ -450,6 +453,11 @@ public static partial class BuildScript
 
 		if ( skin && split )
 			return Fail( r, "skin=1 with split=1: a skinned model is one mesh on one skeleton. Export it whole, or split it as static parts (skin=0)." );
+
+		var wrinkles = Truthy( opts.GetValueOrDefault( "wrinkles", "0" ) );
+
+		if ( wrinkles && !skin )
+			return Fail( r, "wrinkles=1 needs a skinned export: shape keys, and the wrinkle data that rides on them, only go out in the skinned .dmx. Build a rig (or pass skin=1), and do not split." );
 
 		if ( !TryLods( opts, out var ratios, out var lodDistances, out var whyLods ) )
 			return Fail( r, whyLods );
@@ -547,7 +555,26 @@ public static partial class BuildScript
 			var safe = Safe( name );
 			var dmxPath = Path.Combine( dir, safe + ".dmx" );
 			var smdPath = Path.Combine( dir, safe + ".smd" );
-			DmxWriter.WriteFile( mesh, dmxPath, skeleton, materialName: studio.NameForSlot, modelName: safe );
+			Dictionary<string, float[]> wrinkleValues = null;
+
+			if ( wrinkles )
+			{
+				var made = WrinkleMaps.WriteForExport( mesh, dir, folder, safe, slot =>
+				{
+					var material = studio.NameForSlot( slot );
+					return material.EndsWith( ".vmat", StringComparison.OrdinalIgnoreCase ) ? Path.Combine( root, material ) : null;
+				} );
+
+				wrinkleValues = made.Values.Count > 0 ? made.Values : null;
+				r.Written.AddRange( made.Written );
+				r.Log.Add( $"export: wrinkle maps for {made.Values.Count} shape key(s), on {made.MaterialsOn.Count} material(s)" );
+				r.Log.AddRange( made.Notes.Select( n => $"export: wrinkle maps: {n}" ) );
+
+				if ( made.Values.Count == 0 )
+					return Fail( r, $"wrinkles=1: {made.Notes.FirstOrDefault()}" );
+			}
+
+			DmxWriter.WriteFile( mesh, dmxPath, skeleton, materialName: studio.NameForSlot, modelName: safe, wrinkles: wrinkleValues );
 			SmdWriter.WriteFile( mesh, smdPath, skeleton, materialName: studio.NameForSlot );
 			var vmdlPath = Path.Combine( dir, safe + ".vmdl" );
 			var skinMaterials = VmdlMaterials.GroupList( studio, mesh );
@@ -557,7 +584,7 @@ public static partial class BuildScript
 			{
 				// Skinned levels: each decimated with its weights and shape keys carried, on the
 				// same pivoted skeleton as the full mesh.
-				var levels = LodExport.WriteSkinned( mesh, skeleton, dir, folder, safe, studio.NameForSlot, ratios, lodDistances );
+				var levels = LodExport.WriteSkinned( mesh, skeleton, dir, folder, safe, studio.NameForSlot, ratios, lodDistances, wrinkles: wrinkles );
 				var (files, switchAt) = LodExport.VmdlLists( $"{folder}/{safe}.dmx", levels );
 				File.WriteAllText( vmdlPath, VmdlDocument.SkinnedWithLods( files, switchAt, skeleton, physics, skinMaterials ) );
 				levels.ForEach( l => r.Written.AddRange( l.Files ) );

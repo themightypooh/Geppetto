@@ -52,7 +52,7 @@ public sealed partial class EffigyWindow
 
 	private EffigyStageTool _boneTool, _boneFromPartTool, _boneAssignTool, _boneMirrorTool, _boneDeleteTool;
 	private EffigyStageTool _boneSoftTool, _softPreviewTool, _softRestTool;
-	private EffigyStageTool _rigSubdivideTool, _rigRemeshTool;
+	private EffigyStageTool _rigSubdivideTool, _rigRemeshTool, _rigWrinkleTool;
 
 	/// <summary>Which part-studio stage was last looked at in the Rig workspace, so leaving and
 	/// coming back lands where you were — same courtesy _partStage does for CAD.</summary>
@@ -619,6 +619,17 @@ public sealed partial class EffigyWindow
 			Clicked = CheckPlayermodel,
 		} );
 
+		_rigWrinkleTool = new EffigyStageTool
+		{
+			Icon = EffigyIcon.SculptPinch,
+			Label = "Wrinkle Maps",
+			Tip = WrinkleMapsTip,
+			Checkable = true,
+			Clicked = () => SetExportWrinkles( !_exportWrinkles ),
+		};
+
+		ready.Add( _rigWrinkleTool );
+
 		return new List<EffigyStage> { bones, bind, soft, weights, mesh, ready };
 	}
 
@@ -864,6 +875,9 @@ public sealed partial class EffigyWindow
 			return;
 
 		var hasBone = _rigPanel.HasSelectedBone;
+
+		if ( _rigWrinkleTool is not null )
+			_rigWrinkleTool.Checked = _exportWrinkles;
 
 		if ( _boneTool is not null )
 		{

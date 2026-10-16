@@ -123,6 +123,7 @@ forgotten.
 - **Script bakes with several detail bodies and the skin shader.** `bake Low High,High2 folder` combines several high bodies; `shader=skin preset=Head k=3` writes a skin .vmat with the transmission mask and bent normal. `BuildScript.Bake`
 - **LODs for rigged models.** File ▸ Export with LODs now works on a rigged model too: Compile .vmdl writes half- and quarter-detail copies that bend on the same bones, keep their shape keys and switch with distance. Build scripts get the same with `export … lods=1` (or `lods=0.5,0.25 loddistance=…`) on a skinned export, which used to refuse. `LodExport`, `VmdlDocument.SkinnedWithLods`
 - **Shape keys in FBX.** File ▸ Export FBX (and `export … fbx=1` in a build script) now writes a model's shape keys as blendshapes, so they arrive in other 3D tools as shape keys / morph targets, on rigged and unrigged models alike. The export message says how many went out. `FbxBlendShapes`, `FbxScene.Shape`
+- **Wrinkle maps.** Turn on File ▸ Export with Wrinkle Maps (or **Wrinkle Maps** on the Rig bar's Export stage) and Compile .vmdl makes skin crease as a shape key squashes it and smooth out as one stretches it. It works out how much each key squashes or stretches the skin at every point, bakes crease normal and shadow textures that run across the squash, and turns the wrinkle textures on in the model's Effigy skin and complex materials. Build scripts: `export … wrinkles=1`. Needs a rigged model with shape keys and UVs, and says what is missing when it cannot. `WrinkleMaps`
 
 ### Fixed
 - **Plain-colour materials show in `tools/effigy.sh shade`.** A vmat with only a tint, metalness or roughness (garment hardware: chrome studs, gunmetal chain) rendered as grey clay; it now renders in its own colour and finish.
@@ -188,6 +189,7 @@ forgotten.
 - Some sculpt tools don't yet match Blender's: Pinch Folds, Bend/Twist and Grab Cloth, Clay Thumb, Multiplane Scrape, and the Sphere, Relax and Sharpen filters. They work but behave differently.
 - **A T-shirt's hem is wider than a real size M's** on the s&box human (44.9 in against 40.6). He is 40.4 in round at his widest below the chest, and Effigy's cloth does not stretch, so the hem clears his hips where a real knit tee would stretch over them.
 - **Extreme Test poses still clip a little.** At 100%, Arms up and Crouch leave about 6% of a T-shirt inside the body, up to 1.2 in deep at the armpit and hip, where skinning pinches. Push out on Check covers it, or use a looser Fit.
+- Wrinkle maps and LODs for rigged models have not been compiled in the s&box editor yet: if ModelDoc rejects a model exported with wrinkle maps, export it with the option off and report it. `WrinkleMaps`, `LodExport`
 
 ## v411088 — 2026-10-06
 

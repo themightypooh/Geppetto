@@ -109,10 +109,11 @@ public static class DmxWriter
 		string modelName = null,
 		AuthoredNormals authoredNormals = null,
 		bool triangulate = true,
-		bool tangents = true )
+		bool tangents = true,
+		IReadOnlyDictionary<string, float[]> wrinkles = null )
 	{
 		File.WriteAllText( path,
-			Write( mesh, skeleton, smoothingAngleDegrees, materialName, modelName, authoredNormals, triangulate, tangents ) );
+			Write( mesh, skeleton, smoothingAngleDegrees, materialName, modelName, authoredNormals, triangulate, tangents, wrinkles ) );
 	}
 
 	public static string Write(
@@ -123,8 +124,11 @@ public static class DmxWriter
 		string modelName = null,
 		AuthoredNormals authoredNormals = null,
 		bool triangulate = true,
-		bool tangents = true )
+		bool tangents = true,
+		IReadOnlyDictionary<string, float[]> wrinkles = null )
 	{
+		// wrinkles: per shape key name, a wrinkle value per vertex (WrinkleMaps.VertexValues), written
+		// with the key's delta state for F_WRINKLE materials. Null, the default, writes none.
 		if ( mesh is null )
 			throw new ArgumentNullException( nameof( mesh ) );
 
@@ -179,14 +183,14 @@ public static class DmxWriter
 			// children: the bone hierarchy's roots, then the mesh. A DmeDag is both a transform
 			// node and a place to hang geometry, which is why bones and meshes share one list.
 			() => WriteMeshDag( w, idMeshDag, idMeshTransform, idMesh, idVertexData,
-				mesh, skin, skeleton, cornerNormals, normals, materialName, cornerTangents, triangulate ) );
+				mesh, skin, skeleton, cornerNormals, normals, materialName, cornerTangents, triangulate, wrinkles ) );
 
 		// The model and the skeleton are the same element — one is the geometry's root, the other
 		// the pose's, and in a single-model file they are one DmeModel.
 		w.Attribute( "model", "element", idModel );
 
 		// The shape keys' flex controllers, on the root as Facepunch's citizen_head.dmx has them.
-		DmxMorphs.WriteCombinationOperator( w, mesh, idMesh );
+		DmxMorphs.WriteCombinationOperator( w, mesh, idMesh, wrinkles );
 
 		w.CloseElement();
 
@@ -349,7 +353,8 @@ public static class DmxWriter
 
 	static void WriteMeshDag( DmxText w, string dagId, string transformId, string meshId, string vertexDataId,
 		PolyMesh mesh, SkinWeights skin, Skeleton skeleton, int[][] cornerNormals, List<Vec3> normals,
-		Func<int, string> materialName, Vec4[][] cornerTangents, bool triangulate )
+		Func<int, string> materialName, Vec4[][] cornerTangents, bool triangulate,
+		IReadOnlyDictionary<string, float[]> wrinkles = null )
 	{
 		w.OpenArrayElement( "DmeDag", dagId, "mesh" );
 		WriteTransform( w, "transform", transformId, "mesh", Xform.Identity );
@@ -375,7 +380,7 @@ public static class DmxWriter
 			WriteFaceSets( w, mesh, materialName, triangulate );
 
 			// Shape keys, when the mesh has any - see DmxMorphs.
-			DmxMorphs.WriteDeltaStates( w, mesh, cornerNormals, normals );
+			DmxMorphs.WriteDeltaStates( w, mesh, cornerNormals, normals, wrinkles );
 		}
 		w.CloseElement();
 

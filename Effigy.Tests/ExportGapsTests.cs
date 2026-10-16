@@ -32,6 +32,13 @@ public static class ExportGapsTests
 		TestFbxBlendShapesRoundTrip();
 		TestFbxRiggedBlendShapes();
 		TestFbxWithoutKeysIsUnchanged();
+
+		Section( "export gaps: wrinkle maps" );
+		TestWrinkleValuesFollowTheStrain();
+		TestWrinkleDataInTheDmx();
+		TestSquishMapsHaveFolds();
+		TestWrinklesInTheVmat();
+		TestScriptWrinkles();
 	}
 
 	// --- UV-seam-aware decimation ----------------------------------------------------------------
@@ -415,5 +422,146 @@ public static class ExportGapsTests
 		var ascii = FbxWriter.Write( Primitives.QuadSphere( 10f, 4 ) );
 		Check( "a mesh with no shape keys writes no blendshape at all", !ascii.Contains( "BlendShape" ) && !ascii.Contains( "\"Shape\"" )
 			&& ascii.Contains( "ObjectType: \"Geometry\", {\n\t\tCount: 1" ) );
+	}
+
+	// --- wrinkle maps ------------------------------------------------------------------------------
+
+	static void TestWrinkleValuesFollowTheStrain()
+	{
+		var sheet = SeamSheet( 20 );
+		var squash = new MeshMorph { Name = "squash", Deltas = sheet.Positions.Select( p => p.x > 2f ? new Vec3( -(p.x - 2f) * 0.4f, 0, 0 ) : Vec3.Zero ).ToArray() };
+		var stretch = new MeshMorph { Name = "stretch", Deltas = sheet.Positions.Select( p => p.x > 2f ? new Vec3( (p.x - 2f) * 0.15f, 0, 0 ) : Vec3.Zero ).ToArray() };
+		var slide = new MeshMorph { Name = "slide", Deltas = sheet.Positions.Select( _ => new Vec3( 0, 0, 3f ) ).ToArray() };
+
+		float Mean( float[] values, Func<Vec3, bool> where ) =>
+			Enumerable.Range( 0, sheet.VertexCount ).Where( i => where( sheet.Positions[i] ) ).Average( i => values[i] );
+
+		var sq = WrinkleMaps.VertexValues( sheet, squash );
+		var st = WrinkleMaps.VertexValues( sheet, stretch );
+		var sl = WrinkleMaps.VertexValues( sheet, slide );
+
+		// 40% shorter is past the 25% that counts as full; 15% longer is 0.6 of full.
+		Check( "a squashed patch is -1 (squish maps)", Mean( sq, p => p.x > 5f ) < -0.95f, $"{Mean( sq, p => p.x > 5f )}" );
+		Check( "a stretched patch is positive, in proportion (0.6 for 15%)", MathF.Abs( Mean( st, p => p.x > 5f ) - 0.6f ) < 0.08f, $"{Mean( st, p => p.x > 5f )}" );
+		Check( "the untouched half stays 0", MathF.Abs( Mean( sq, p => p.x < -3f ) ) < 0.02f && MathF.Abs( Mean( st, p => p.x < -3f ) ) < 0.02f );
+		Check( "a key that only moves the skin wrinkles nothing", sl.All( v => MathF.Abs( v ) < 1e-4f ) );
+		Check( "every value is within -1..1", sq.Concat( st ).All( v => v >= -1f && v <= 1f ) );
+	}
+
+	static void TestWrinkleDataInTheDmx()
+	{
+		var mesh = KeyedSphere();
+		var wrinkles = WrinkleMaps.All( mesh );
+		var plain = DmxWriter.Write( mesh );
+		var dmx = DmxWriter.Write( mesh, wrinkles: wrinkles );
+
+		Check( "without wrinkles the DMX is as before (no wrinkle stream, scales 0)", !plain.Contains( "wrinkle$0" ) && plain.Contains( "\"wrinkleScales\" \"float_array\"" ) );
+		Check( "with them, each key's delta state lists wrinkle$0 and its indices", Count( dmx, "\"wrinkle$0\"" ) == 4 && Count( dmx, "\"wrinkle$0Indices\"" ) == 2,
+			$"{Count( dmx, "\"wrinkle$0\"" )} / {Count( dmx, "\"wrinkle$0Indices\"" )}" );
+		Check( "and it still parses as KeyValues2", DmxGrammarTests.Parse( dmx, out var e ) is not null, e );
+
+		// Read the pinch key's values back and compare with what was computed.
+		var at = dmx.IndexOf( "\"DmeVertexDeltaData\"", dmx.IndexOf( "\"pinch\"", StringComparison.Ordinal ) - 200, StringComparison.Ordinal );
+		var block = dmx[dmx.IndexOf( "\"wrinkle$0\" \"float_array\"", at, StringComparison.Ordinal )..];
+		var values = Numbers( block );
+		var indices = Numbers( block[block.IndexOf( "\"wrinkle$0Indices\"", StringComparison.Ordinal )..] ).Select( v => (int)v ).ToList();
+		var pinch = wrinkles["pinch"];
+		var worst = indices.Count == values.Count && indices.Count > 0
+			? indices.Select( ( v, k ) => MathF.Abs( pinch[v] - values[k] ) ).Max() : float.MaxValue;
+
+		Check( "the pinch key's values come back as computed, and its pinched waist is negative", worst < 1e-4f && values.Min() < -0.5f,
+			$"{indices.Count} indices, {values.Count} values, worst {worst}" );
+		var scales = System.Text.RegularExpressions.Regex.Matches( dmx, "\"wrinkleScales\" \"float_array\"\\s*\\[\\s*\"([^\"]*)\"" ).Select( m => m.Groups[1].Value ).ToList();
+		var plainScales = System.Text.RegularExpressions.Regex.Matches( plain, "\"wrinkleScales\" \"float_array\"\\s*\\[\\s*\"([^\"]*)\"" ).Select( m => m.Groups[1].Value ).ToList();
+		Check( "keys with wrinkle data get wrinkleScales 1 (0 without)", scales.Count == 2 && scales.All( v => v == "1" ) && plainScales.Count == 2 && plainScales.All( v => v == "0" ),
+			$"{string.Join( ",", scales )} / {string.Join( ",", plainScales )}" );
+	}
+
+	/// <summary>The numbers of the first array in <paramref name="text"/>: the quoted values between its [ and ].</summary>
+	static List<float> Numbers( string text )
+	{
+		var open = text.IndexOf( '[' );
+		var close = text.IndexOf( ']', open );
+		return text[(open + 1)..close].Split( new[] { ',', '\n', '\t', ' ', '"' }, StringSplitOptions.RemoveEmptyEntries )
+			.Select( t => float.Parse( t, System.Globalization.CultureInfo.InvariantCulture ) ).ToList();
+	}
+
+	static void TestSquishMapsHaveFolds()
+	{
+		var mesh = KeyedSphere();
+		var baked = WrinkleMaps.Bake( mesh, new WrinkleMaps.Settings { Size = 128 } );
+
+		Check( "the squish maps bake on the sphere's UVs", baked.SquishNormal is not null && baked.SquishAo is not null && baked.Covered > 128 * 128 / 4, $"{baked.Covered} texels" );
+
+		if ( baked.SquishNormal is null )
+			return;
+
+		var bent = 0;
+		var dark = 0;
+
+		for ( var i = 0; i < 128 * 128; i++ )
+		{
+			if ( Math.Abs( baked.SquishNormal.Rgb[i * 3] - 128 ) > 6 || Math.Abs( baked.SquishNormal.Rgb[i * 3 + 1] - 128 ) > 6 ) bent++;
+			if ( baked.SquishAo.Rgb[i * 3] < 200 ) dark++;
+		}
+
+		Check( "the pinched waist folds: some texels' normals tilt", baked.Squashed > 0 && bent > 50, $"{baked.Squashed} squashed, {bent} tilted" );
+		Check( "and the valleys darken in the AO", dark > 20, $"{dark}" );
+		Check( "where nothing is squashed the skin stays flat", bent < baked.Covered, $"{bent} of {baked.Covered}" );
+
+		var none = WrinkleMaps.Bake( new PolyMesh( Primitives.QuadSphere( 5f, 4 ).Positions, Primitives.QuadSphere( 5f, 4 ).Faces.Select( f => new Face( f.Indices, null, 0 ) ).ToList() ) );
+		Check( "a mesh with no UVs bakes nothing (and says so in an export)", none.SquishNormal is null );
+	}
+
+	static void TestWrinklesInTheVmat()
+	{
+		var skin = SkinMaterial.VmatSource( SkinMaterial.Head(), color: "models/x/head_color.png", ambientOcclusion: "models/x/head_ao.png" );
+		var on = WrinkleMaps.EnableInVmat( skin, "models/x/head_squish_normal.png", "models/x/head_squish_ao.png" );
+
+		Check( "F_WRINKLE goes on an Effigy skin vmat, under its shader line", on is not null && on.Contains( "F_WRINKLE 1" ) && on.IndexOf( "F_WRINKLE" ) > on.IndexOf( "shader \"" ) && on.IndexOf( "F_WRINKLE" ) < on.IndexOf( "//---- Ambient" ) );
+		Check( "with all six textures: squish maps given, the material's colour on both sides, flat stretched skin",
+			on is not null && on.Contains( "TextureSquishNormal \"models/x/head_squish_normal.png\"" ) && on.Contains( "TextureSquishAmbientOcclusion \"models/x/head_squish_ao.png\"" )
+			&& on.Contains( "TextureSquishColor \"models/x/head_color.png\"" ) && on.Contains( "TextureStretchColor \"models/x/head_color.png\"" )
+			&& on.Contains( $"TextureStretchNormal \"{WrinkleMaps.FlatNormal}\"" ) && on.Contains( "TextureStretchAmbientOcclusion \"models/x/head_ao.png\"" ) );
+		Check( "inside the layer's braces", on is not null && on.TrimEnd().EndsWith( "}" ) && on.IndexOf( "TextureStretchNormal" ) < on.LastIndexOf( '}' ) && Count( on, "{" ) == Count( on, "}" ) );
+		Check( "turning it on twice changes nothing", on is not null && WrinkleMaps.EnableInVmat( on, "a", "b" ) == on );
+
+		var complex = FleshMaterial.VmatSource( "models/x/c.png", "models/x/r.png" );
+		Check( "it goes on a complex vmat too", WrinkleMaps.EnableInVmat( complex, "n", "a" )?.Contains( "F_WRINKLE 1" ) == true );
+		Check( "never on a vmat Effigy did not write", WrinkleMaps.EnableInVmat( "Layer0\n{\n\tshader \"shaders/skin.shader\"\n}\n", "n", "a" ) is null );
+		Check( "nor on a shader with no wrinkle maps (fur)", WrinkleMaps.EnableInVmat( "// AUTO-GENERATED\nLayer0\n{\n\tshader \"shaders/fur.shader\"\n}\n", "n", "a" ) is null );
+	}
+
+	static void TestScriptWrinkles()
+	{
+		var root = ExportDir( "wrinkles" );
+		var studio = new PartStudio();
+		var r = BuildScript.Run( studio, "add Primitive name=Sac shape=Sphere radius=10 divisions=10 position=0,0,10\nadd UVProject bodies=Sac mode=Unwrap\n"
+			+ "add ShapeKey key=squeeze bodies=Sac\nadd Stroke bodies=Sac brush=Pinch radius=6 strength=1 points=0,-10,10;0,-9,10\nadd ShapeKeyEnd\n" );
+		studio.Rig.AddBoneFromPoints( "root", -1, new Vec3( 0, 0, 0 ), new Vec3( 0, 0, 20 ) );
+
+		Directory.CreateDirectory( Path.Combine( root, "materials" ) );
+		File.WriteAllText( Path.Combine( root, "materials", "sac.vmat" ), SkinMaterial.VmatSource( SkinMaterial.WetFlesh() ) );
+		studio.MaterialNames[0] = "materials/sac.vmat";
+
+		r = BuildScript.Run( studio, "export models/test/sac wrinkles=1 lods=1", root );
+		var folder = Path.Combine( root, "models/test/sac" );
+		string Text( string f ) => File.Exists( Path.Combine( folder, f ) ) ? File.ReadAllText( Path.Combine( folder, f ) ) : "";
+		var vmat = File.ReadAllText( Path.Combine( root, "materials", "sac.vmat" ) );
+
+		Check( "export wrinkles=1 writes the wrinkle stream into the skinned dmx", r.Ok && Text( "sac.dmx" ).Contains( "\"wrinkle$0\"" ), r.ToString() );
+		Check( "and into each skinned level", Text( "sac_lod1.dmx" ).Contains( "\"wrinkle$0\"" ) && Text( "sac_lod2.dmx" ).Contains( "\"wrinkle$0\"" ) );
+		Check( "bakes the squish maps beside it", File.Exists( Path.Combine( folder, "sac_squish_normal.png" ) ) && File.Exists( Path.Combine( folder, "sac_squish_ao.png" ) ) );
+		Check( "and turns wrinkles on in the model's Effigy material, pointing at them", vmat.Contains( "F_WRINKLE 1" ) && vmat.Contains( "models/test/sac/sac_squish_normal.png" ) );
+		Check( "the log says so", r.Log.Any( l => l.Contains( "wrinkle maps for 1 shape key" ) ), string.Join( " | ", r.Log ) );
+
+		var refused = BuildScript.Run( new PartStudio(), "add Primitive name=B shape=Box\nexport m/x wrinkles=1", ExportDir( "bad" ) );
+		Check( "wrinkles=1 on a static export is refused with the reason", !refused.Ok && refused.Error.Contains( "skinned export" ), refused.Error );
+
+		var noKeys = new PartStudio();
+		BuildScript.Run( noKeys, "add Primitive name=B shape=Sphere radius=5 divisions=6" );
+		noKeys.Rig.AddBoneFromPoints( "root", -1, Vec3.Zero, new Vec3( 0, 0, 5 ) );
+		var keyless = BuildScript.Run( noKeys, "export m/y wrinkles=1", ExportDir( "nokeys" ) );
+		Check( "and on a model with no shape keys, with what to do", !keyless.Ok && keyless.Error.Contains( "shape key" ), keyless.Error );
 	}
 }

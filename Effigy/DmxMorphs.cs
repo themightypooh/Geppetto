@@ -24,6 +24,15 @@ namespace Effigy;
 ///     control; "useLaggedValues" 0; "targets", the meshes that carry the deltas.
 ///
 /// Nothing here is written for a mesh without morphs, so every other export is byte-identical.
+///
+/// WRINKLE DATA (opt-in, see <see cref="WrinkleMaps"/>): a key with wrinkle values gets "wrinkle$0" in
+/// its vertexFormat, a sparse float_array "wrinkle$0" with "wrinkle$0Indices" into the base
+/// position$0 array, and wrinkleScales [1] on its control. The per-control wrinkleScales is in
+/// citizen_head.dmx; the per-vertex stream's name is NOT read from a Facepunch file - it follows the
+/// "&lt;field&gt;$0" naming of this format's other streams, and older Source DMX names the same field
+/// "wrinkle"/"wrinkleIndices" (DmeVertexDeltaData). Whether ModelDoc reads it is an in-engine check.
+/// Values run −1 (squashed: TextureSquish*) to +1 (stretched: TextureStretch*), the sign s&amp;box's
+/// skinning_cs gives F_WRINKLE (realtime-flesh-shading.md §5).
 /// </summary>
 public static class DmxMorphs
 {
@@ -32,7 +41,8 @@ public static class DmxMorphs
 
 	/// <summary>The delta states and their weights, inside the DmeMesh element. <paramref name="cornerNormals"/>
 	/// and <paramref name="normals"/> are the base state's, as the writer wrote them.</summary>
-	internal static void WriteDeltaStates( DmxText w, PolyMesh mesh, int[][] cornerNormals, List<Vec3> normals )
+	internal static void WriteDeltaStates( DmxText w, PolyMesh mesh, int[][] cornerNormals, List<Vec3> normals,
+		IReadOnlyDictionary<string, float[]> wrinkles = null )
 	{
 		var morphs = mesh.ValidMorphs.ToList();
 
@@ -47,9 +57,13 @@ public static class DmxMorphs
 		{
 			w.OpenArrayElement( "DmeVertexDeltaData", w.NextId(), morph.Name );
 
+			var wrinkle = WrinkleFor( wrinkles, morph.Name, mesh.VertexCount );
+
 			w.OpenArray( "vertexFormat", "string_array" );
 			w.ArrayValue( "position$0" );
 			w.ArrayValue( "normal$0" );
+			if ( wrinkle is not null )
+				w.ArrayValue( "wrinkle$0" );
 			w.CloseArray();
 
 			w.Attribute( "jointCount", "int", "0" );
@@ -80,6 +94,13 @@ public static class DmxMorphs
 			w.CloseArray();
 			w.IntArray( "normal$0Indices", turned );
 
+			if ( wrinkle is not null )
+			{
+				var wrinkled = Enumerable.Range( 0, wrinkle.Length ).Where( i => MathF.Abs( wrinkle[i] ) > WrinkleEpsilon ).ToList();
+				w.FloatArray( "wrinkle$0", wrinkled.ConvertAll( i => Math.Clamp( wrinkle[i], -1f, 1f ) ) );
+				w.IntArray( "wrinkle$0Indices", wrinkled );
+			}
+
 			w.CloseElement();
 		}
 
@@ -98,7 +119,8 @@ public static class DmxMorphs
 
 	/// <summary>The combination operator, on the root element: one control per morph, targeting
 	/// the mesh with id <paramref name="meshId"/>.</summary>
-	internal static void WriteCombinationOperator( DmxText w, PolyMesh mesh, string meshId )
+	internal static void WriteCombinationOperator( DmxText w, PolyMesh mesh, string meshId,
+		IReadOnlyDictionary<string, float[]> wrinkles = null )
 	{
 		var names = mesh.ValidMorphs.Select( m => m.Name ).ToList();
 
@@ -118,7 +140,7 @@ public static class DmxMorphs
 			w.Attribute( "stereo", "bool", "0" );
 			w.Attribute( "eyelid", "bool", "0" );
 			w.OpenArray( "wrinkleScales", "float_array" );
-			w.ArrayValue( "0" );
+			w.ArrayValue( WrinkleFor( wrinkles, name, mesh.VertexCount ) is null ? "0" : "1" );
 			w.CloseArray();
 			w.CloseElement();
 		}
@@ -143,6 +165,13 @@ public static class DmxMorphs
 
 		w.CloseElement();
 	}
+
+	/// <summary>Wrinkle values under this size are left out of the sparse array.</summary>
+	const float WrinkleEpsilon = 1e-3f;
+
+	/// <summary>The key's wrinkle values, when given and the right length.</summary>
+	static float[] WrinkleFor( IReadOnlyDictionary<string, float[]> wrinkles, string name, int vertexCount ) =>
+		wrinkles is not null && wrinkles.TryGetValue( name, out var values ) && values is not null && values.Length == vertexCount ? values : null;
 
 	/// <summary>Each normal group's direction: the area-weighted normals of the faces whose corners
 	/// use it, on <paramref name="positions"/>, normalised.</summary>

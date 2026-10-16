@@ -124,9 +124,11 @@ public static class LodExport
 	/// every one bound to the same <paramref name="skeleton"/>, its weights the decimation's blend of
 	/// the full mesh's and its shape keys carried along. The mesh must carry its skin
 	/// (<see cref="PolyMesh.Skin"/>); a level without one would compile as a rigid model.
+	/// <paramref name="wrinkles"/> writes each level's own wrinkle values (WrinkleMaps) with its keys.
 	/// </summary>
 	public static List<Level> WriteSkinned( PolyMesh mesh, Skeleton skeleton, string dir, string assetFolder, string name,
-		Func<int, string> materialName, IReadOnlyList<float> ratios = null, IReadOnlyList<float> distances = null, bool smd = true )
+		Func<int, string> materialName, IReadOnlyList<float> ratios = null, IReadOnlyList<float> distances = null, bool smd = true,
+		bool wrinkles = false )
 	{
 		if ( skeleton is null || skeleton.Count == 0 )
 			throw new InvalidOperationException( "skinned levels of detail need the skeleton the model is bound to" );
@@ -140,7 +142,8 @@ public static class LodExport
 		{
 			var lodName = $"{name}_lod{level.Index}";
 			var dmxPath = Path.Combine( dir, lodName + ".dmx" );
-			DmxWriter.WriteFile( level.Mesh, dmxPath, skeleton, materialName: materialName, modelName: lodName );
+			DmxWriter.WriteFile( level.Mesh, dmxPath, skeleton, materialName: materialName, modelName: lodName,
+				wrinkles: wrinkles && level.Mesh.HasMorphs ? WrinkleMaps.All( level.Mesh ) : null );
 			level.Files.Add( dmxPath );
 
 			if ( smd )
