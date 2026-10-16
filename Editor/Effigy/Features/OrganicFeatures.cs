@@ -241,16 +241,23 @@ public sealed class StrokeFeature : Feature
 	public readonly FloatParam Strength = new( "Strength", 0.5f, 0f, 10f );
 	public readonly BoolParam Invert = new( "Invert", false );
 	public readonly ChoiceParam Falloff = new( "Falloff", Enum.GetNames( typeof( BrushFalloff ) ) );
-	public readonly ChoiceParam Mirror = new( "Mirror", Enum.GetNames( typeof( MirrorAxis ) ) );
+	/// <summary>Mirror planes. The first four are the single planes older files stored by index; the
+	/// rest are combinations. See <see cref="BrushSymmetry.Choices"/>.</summary>
+	public readonly ChoiceParam Mirror = new( "Mirror", BrushSymmetry.ChoiceNames() );
+
+	/// <summary>Radial symmetry: the stroke repeats this many times evenly round the radial axis
+	/// through the origin. 1 is off.</summary>
+	public readonly IntParam Radial = new( "Radial copies", 1, 1, 64 );
+	public readonly ChoiceParam RadialAxis = new( "Radial axis", new[] { "X", "Y", "Z" }, 2 );
 	public readonly FloatParam Spacing = new( "Spacing", 0.25f, 0.02f, 4f );
 	public readonly ChoiceParam Mask = new( "Only", new[] { "Everywhere", "Creases", "Ridges" } );
 	public readonly StringParam Alpha = new( "Alpha PNG", "" );
 	public readonly FloatParam AlphaScale = new( "Alpha scale", 1f, 0.01f, 100f );
 
 	public override IReadOnlyList<IParam> Parameters =>
-		new IParam[] { Bodies, Brush, Radius, Strength, Invert, Falloff, Mirror, Spacing, Mask, Alpha, AlphaScale };
+		new IParam[] { Bodies, Brush, Radius, Strength, Invert, Falloff, Mirror, Radial, RadialAxis, Spacing, Mask, Alpha, AlphaScale };
 
-	public override IReadOnlyList<IParam> AdvancedParameters => new IParam[] { Falloff, Spacing, Mask, Alpha, AlphaScale };
+	public override IReadOnlyList<IParam> AdvancedParameters => new IParam[] { Falloff, RadialAxis, Spacing, Mask, Alpha, AlphaScale };
 
 	protected override void Execute( FeatureContext ctx )
 	{
@@ -278,7 +285,9 @@ public sealed class StrokeFeature : Feature
 			{
 				Kind = kind,
 				Falloff = (BrushFalloff)Falloff.Index,
-				Mirror = (MirrorAxis)Mirror.Index,
+				MirrorAxes = BrushSymmetry.Choices[Math.Clamp( Mirror.Index, 0, BrushSymmetry.Choices.Length - 1 )],
+				Radial = Radial.Clamped,
+				RadialAxis = (MirrorAxis)(RadialAxis.Index + 1),
 				Alpha = alpha,
 			};
 

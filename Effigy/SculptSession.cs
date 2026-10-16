@@ -163,6 +163,15 @@ public sealed class SculptSession
 	/// see <see cref="MirrorAxis"/>.</summary>
 	public MirrorAxis Mirror;
 
+	/// <summary>More mirror planes, any combination, on top of <see cref="Mirror"/>; and radial symmetry,
+	/// <see cref="Radial"/> evenly spaced copies round <see cref="RadialAxis"/> (1 is off). See BrushSymmetry.</summary>
+	public SymmetryAxes MirrorAxes;
+	public int Radial = 1;
+	public MirrorAxis RadialAxis = MirrorAxis.Z;
+
+	/// <summary>Whether any symmetry is on.</summary>
+	public bool IsSymmetric => Mirror != MirrorAxis.None || MirrorAxes != SymmetryAxes.None || Radial > 1;
+
 	/// <summary>
 	/// Strokes paint the mask instead of moving the surface.
 	///
@@ -660,14 +669,16 @@ public sealed class SculptSession
 			var mask = MaskFor( Level );
 			mask.Paint( _working, _bvh, point, Radius, Erasing ? -Strength : Strength, Falloff );
 
-			if ( Mirror != MirrorAxis.None )
-				mask.Paint( _working, _bvh, Effigy.Brush.Mirror( point, Mirror ), Radius,
+			var copies = BrushSymmetry.Copies( MirrorAxes | BrushSymmetry.AxesOf( Mirror ), Radial, RadialAxis );
+
+			for ( var c = 1; c < copies.Count; c++ )
+				mask.Paint( _working, _bvh, copies[c].Apply( point ), Radius,
 					Erasing ? -Strength : Strength, Falloff );
 
 			return;
 		}
 
-		var stroke = new BrushStroke { Kind = Brush, Falloff = Falloff, Mirror = Mirror, Alpha = Alpha };
+		var stroke = new BrushStroke { Kind = Brush, Falloff = Falloff, Mirror = Mirror, MirrorAxes = MirrorAxes, Radial = Radial, RadialAxis = RadialAxis, Alpha = Alpha };
 		stroke.Samples.Add( new BrushSample( point, normal, Radius, Inverted ? -Strength : Strength, direction ) );
 
 		// The mask is passed EVERY stroke, not applied afterwards. Brush.Apply folds it into the

@@ -2,6 +2,7 @@
 using Effigy;
 using Sandbox;
 using System;
+using System.Collections.Generic;
 
 namespace Marionette.EditorTools;
 
@@ -29,6 +30,7 @@ internal sealed class EffigySculptBar : Widget
 	private readonly ComboBox _falloff;
 	private readonly Editor.Label _level;
 	private readonly Button _auto;
+	private readonly Button _symmetry;
 	private readonly Button _filter;
 	private readonly Button _alpha;
 	private string _alphaName;
@@ -104,6 +106,8 @@ internal sealed class EffigySculptBar : Widget
 		// Auto-masking, whole-level filters and brush alphas: each a menu, so the row stays one row.
 		_auto = new Button( "Auto" ) { ToolTip = "Auto-masking: limit strokes to the piece they start on, hold open edges, or work only the crevices (or only the ridges)", Clicked = OpenAutoMenu };
 		Layout.Add( _auto );
+		_symmetry = new Button( "Symmetry options" ) { ToolTip = "Mirror strokes across one, two or all three centre planes, or repeat them evenly round an axis (radial) for starfish, maws and flowers", Clicked = OpenSymmetryMenu };
+		Layout.Add( _symmetry );
 		_filter = new Button( "Filter" ) { ToolTip = "Run a filter over the whole level at the current Strength (the mask still holds)", Clicked = OpenFilterMenu };
 		Layout.Add( _filter );
 		_alpha = new Button( "Alpha" ) { ToolTip = "A greyscale image over the brush that scales its strength: stamp pores, scales, wrinkles", Clicked = OpenAlphaMenu };
@@ -158,8 +162,8 @@ internal sealed class EffigySculptBar : Widget
 		if ( _session.Level < top )
 			text += $" · showing {_session.Level}, model builds at {top}";
 
-		if ( _session.Mirror != MirrorAxis.None )
-			text += " · mirrored";
+		if ( _session.IsSymmetric )
+			text += " · " + SymmetryText( _session );
 
 		if ( _session.AutoTopology || _session.AutoBoundary || _session.AutoCavity )
 			text += " · auto-mask";
@@ -236,6 +240,80 @@ internal sealed class EffigySculptBar : Widget
 		Toggle( "Open edges", "Hold the mesh's open edges still", () => _session.AutoBoundary, v => _session.AutoBoundary = v );
 		Toggle( "Cavity", "Work only the crevices", () => _session.AutoCavity && !_session.AutoCavityInverted, v => { _session.AutoCavity = v; _session.AutoCavityInverted = false; } );
 		Toggle( "Cavity, inverted", "Work only the ridges", () => _session.AutoCavity && _session.AutoCavityInverted, v => { _session.AutoCavity = v; _session.AutoCavityInverted = v; } );
+		menu.OpenAtCursor();
+	}
+
+	/// <summary>"mirror X+Y", "radial 6 about Z", or both.</summary>
+	private static string SymmetryText( SculptSession s )
+	{
+		var axes = s.MirrorAxes | BrushSymmetry.AxesOf( s.Mirror );
+		var parts = new List<string>();
+
+		if ( axes != SymmetryAxes.None )
+			parts.Add( $"mirror {BrushSymmetry.Name( axes )}" );
+
+		if ( s.Radial > 1 )
+			parts.Add( $"radial {s.Radial} about {s.RadialAxis}" );
+
+		return string.Join( ", ", parts );
+	}
+
+	/// <summary>Mirror planes in any combination and radial copies. Public so the sculpt strip's search
+	/// entry can open it too.</summary>
+	public void OpenSymmetryMenu()
+	{
+		if ( _session is null )
+			return;
+
+		var menu = new Menu( this );
+		menu.AddHeading( "Mirror across" );
+
+		// The session's single Mirror (what the X key toggles) is folded into the plane set here, so
+		// the menu shows one truth and the X key still turns everything off.
+		void Plane( string label, SymmetryAxes axis, string tip )
+		{
+			var on = (_session.MirrorAxes | BrushSymmetry.AxesOf( _session.Mirror )).HasFlag( axis );
+			var option = menu.AddOption( label, null, () =>
+			{
+				var axes = _session.MirrorAxes | BrushSymmetry.AxesOf( _session.Mirror );
+				_session.Mirror = MirrorAxis.None;
+				_session.MirrorAxes = on ? axes & ~axis : axes | axis;
+				Refresh();
+				Changed?.Invoke();
+			} );
+			option.StatusTip = tip;
+			option.Checkable = true;
+			option.Checked = on;
+		}
+
+		Plane( "X (left and right)", SymmetryAxes.X, "Mirror strokes across the plane where X is 0" );
+		Plane( "Y (front and back)", SymmetryAxes.Y, "Mirror strokes across the plane where Y is 0" );
+		Plane( "Z (top and bottom)", SymmetryAxes.Z, "Mirror strokes across the plane where Z is 0" );
+
+		menu.AddSeparator();
+		menu.AddHeading( "Radial" );
+
+		foreach ( var count in new[] { 1, 2, 3, 4, 5, 6, 8, 12 } )
+		{
+			var n = count;
+			var option = menu.AddOption( n == 1 ? "Off" : $"{n} copies", null, () => { _session.Radial = n; Refresh(); Changed?.Invoke(); } );
+			option.StatusTip = n == 1 ? "No radial symmetry" : $"Repeat every stroke {n} times evenly round the radial axis";
+			option.Checkable = true;
+			option.Checked = _session.Radial == n;
+		}
+
+		menu.AddSeparator();
+		menu.AddHeading( "Radial axis" );
+
+		foreach ( var axis in new[] { MirrorAxis.X, MirrorAxis.Y, MirrorAxis.Z } )
+		{
+			var a = axis;
+			var option = menu.AddOption( $"About {a}", null, () => { _session.RadialAxis = a; Refresh(); Changed?.Invoke(); } );
+			option.StatusTip = $"Radial copies turn round the {a} axis through the origin";
+			option.Checkable = true;
+			option.Checked = _session.RadialAxis == a;
+		}
+
 		menu.OpenAtCursor();
 	}
 

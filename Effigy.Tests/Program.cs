@@ -392,6 +392,7 @@ public static class Program
 		SboxOutputTests.Run( outDir );
 		SculptToolsTests.Run();
 		DeformTests.Run();
+		BrushOptionsTests.Run();
 
 		MenuIconTests.Run();
 

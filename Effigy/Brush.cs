@@ -153,6 +153,20 @@ public sealed class BrushStroke
 	public BrushKind Kind;
 	public BrushFalloff Falloff = BrushFalloff.Smooth;
 	public MirrorAxis Mirror;
+
+	/// <summary>More mirror planes, any combination; added to <see cref="Mirror"/>. See <see cref="BrushSymmetry"/>.</summary>
+	public SymmetryAxes MirrorAxes;
+
+	/// <summary>Radial symmetry: the stroke repeats this many times evenly round <see cref="RadialAxis"/>
+	/// through the origin. 1 is off.</summary>
+	public int Radial = 1;
+
+	public MirrorAxis RadialAxis = MirrorAxis.Z;
+
+	/// <summary>Every copy this stroke is applied as, identity first.</summary>
+	public List<SymmetryCopy> SymmetryCopies() =>
+		BrushSymmetry.Copies( MirrorAxes | BrushSymmetry.AxesOf( Mirror ), Radial, RadialAxis );
+
 	/// <summary>An image scaling the brush's strength across its footprint, or null.</summary>
 	public BrushAlpha Alpha;
 	public readonly List<BrushSample> Samples = new();
@@ -261,6 +275,9 @@ public static class Brush
 			return undo;
 		}
 
+		// The stroke and its symmetric copies: mirror planes, any combination, times radial repeats.
+		var copies = stroke.SymmetryCopies();
+
 		Vec3? previous = null;
 		foreach ( var sample in stroke.Samples )
 		{
@@ -270,10 +287,8 @@ public static class Brush
 			previous = sample.Position;
 			ApplySample( mesh, stroke, frames, mask, bvh, neighbors, found, undo, sample, dir, strokeSoFar );
 
-			if ( stroke.Mirror == MirrorAxis.None )
-				continue;
-
-			ApplySample( mesh, stroke, frames, mask, bvh, neighbors, found, undo, Mirror( sample, stroke.Mirror ), Mirror( dir, stroke.Mirror ), strokeSoFar );
+			for ( var c = 1; c < copies.Count; c++ )
+				ApplySample( mesh, stroke, frames, mask, bvh, neighbors, found, undo, Copy( sample, copies[c], stroke.Kind ), copies[c].Apply( dir ), strokeSoFar );
 		}
 
 		return undo;
@@ -797,11 +812,16 @@ public static class Brush
 		_ => v
 	};
 
-	static BrushSample Mirror( BrushSample s, MirrorAxis axis ) =>
+	/// <summary>A sample carried to one symmetric copy. Turning brushes turn the other way in a
+	/// reflected copy, so a twist mirrors into its mirror image rather than the same spin.</summary>
+	static BrushSample Copy( BrushSample s, SymmetryCopy copy, BrushKind kind ) =>
 		new(
-			Mirror( s.Position, axis ),
-			Mirror( s.Normal, axis ),
+			copy.Apply( s.Position ),
+			copy.Apply( s.Normal ),
 			s.Radius,
-			s.Strength,
-			Mirror( s.Direction, axis ) );
+			IsTurning( kind ) ? s.Strength * copy.Det : s.Strength,
+			copy.Apply( s.Direction ) );
+
+	/// <summary>Brushes whose Strength is an angle about the surface normal.</summary>
+	static bool IsTurning( BrushKind kind ) => kind is BrushKind.Twist;
 }

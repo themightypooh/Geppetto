@@ -1742,7 +1742,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		{
 			Icon = EffigyIcon.Mirror,
 			Label = "Symmetry",
-			Tip = "Symmetry (X) — mirror every stroke across X",
+			Tip = "Symmetry (X) — mirror every stroke across X; when any symmetry is on, turns it all off",
 			Checkable = true,
 		};
 
@@ -1750,6 +1750,13 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		stroke.Add( _maskTool );
 		stroke.Add( _symmetryTool );
+		stroke.Add( new EffigyStageTool
+		{
+			Icon = EffigyIcon.CircularPattern,
+			Label = "Symmetry options",
+			Tip = "Mirror strokes across several centre planes at once, or repeat them evenly round an axis (radial)",
+			Clicked = () => _sculptBar?.OpenSymmetryMenu(),
+		} );
 
 		var levels = new EffigyStage { Name = "Levels" };
 
@@ -2577,9 +2584,18 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		if ( _viewport?.SculptSession is not { } session )
 			return;
 
-		// The strip button toggles X — the default plane — on and off. Y and Z are available to a
-		// future axis picker now that the session carries a MirrorAxis rather than a bool.
-		session.Mirror = session.Mirror == MirrorAxis.None ? MirrorAxis.X : MirrorAxis.None;
+		// The strip button toggles X — the default plane — on, and turns ALL symmetry off when any is
+		// on: the sculpt bar's Symmetry menu picks other planes, combinations and radial copies.
+		if ( session.IsSymmetric )
+		{
+			session.Mirror = MirrorAxis.None;
+			session.MirrorAxes = SymmetryAxes.None;
+			session.Radial = 1;
+		}
+		else
+		{
+			session.Mirror = MirrorAxis.X;
+		}
 
 		UpdateSculptChecks();
 		_sculptBar?.Refresh();
@@ -2598,7 +2614,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			_maskTool.Checked = session?.Masking ?? false;
 
 		if ( _symmetryTool is not null )
-			_symmetryTool.Checked = session is not null && session.Mirror != MirrorAxis.None;
+			_symmetryTool.Checked = session is not null && session.IsSymmetric;
 
 		_stageBar?.Refresh();
 
