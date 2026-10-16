@@ -21,6 +21,8 @@ namespace Effigy;
 ///   add Import name=Scan source=scan.fbx
 ///   set Torso sizez=32
 ///   fix Torso all
+///   remedy Stroke1                       (press a failing feature's fix button: Subdivide above, …)
+///   add Stroke bodies=Sac … inkey=sac_swell   (sculpt into a finished shape key)
 ///   render out/torso.png view=sheet
 ///   describe
 ///   match front reference.png out/match.png
@@ -125,10 +127,21 @@ public static partial class BuildScript
 
 				var pairs = Pairs( args.Skip( 1 ) );
 
+				// inkey=sac_swell: into that finished shape key, just above its End Shape Key.
+				pairs.Remove( "inkey", out var intoKey );
+
 				if ( !Assign( studio, feature, pairs, r ) )
 					return false;
 
-				studio.Add( feature );
+				if ( intoKey is not null )
+				{
+					if ( !ShapeKeyEdit.AddToKey( studio, intoKey, feature, out var whyKey ) )
+						return Fail( r, whyKey );
+				}
+				else
+				{
+					studio.Add( feature );
+				}
 
 				// add Import source=leg.fbx - the path is the script's, like save and export, and an
 				// FBX's skeleton becomes the rig when there is none yet, as picking it in the editor does.
@@ -140,7 +153,7 @@ public static partial class BuildScript
 						r.Log.Add( rigMessage );
 				}
 
-				return RebuildAndCheck( studio, feature, r, $"added {feature.TypeName} '{feature.Name ?? feature.Id}'" );
+				return RebuildAndCheck( studio, feature, r, $"added {feature.TypeName} '{feature.Name ?? feature.Id}'" + (intoKey is null ? "" : $" into shape key {intoKey}") );
 			}
 
 			case "edit":
@@ -200,6 +213,43 @@ public static partial class BuildScript
 				studio.Remove( feature );
 				studio.Rebuild();
 				r.Log.Add( $"removed {feature.Name ?? feature.TypeName}" );
+				return true;
+			}
+
+			case "remedy":
+			{
+				// remedy Stroke1 [2] [folder=out/tex]: press the fix button on a feature's diagnostic.
+				if ( args.Count < 1 )
+					return Fail( r, "remedy needs a feature name: remedy Stroke1 (the first fix), remedy Stroke1 2, remedy Flesh folder=out/tex" );
+
+				var feature = FindFeature( studio, args[0] );
+
+				if ( feature is null )
+					return Fail( r, $"No feature called '{args[0]}'." );
+
+				studio.Rebuild();
+				var actions = feature.Diagnostic?.Actions ?? new List<RemedyAction>();
+
+				if ( actions.Count == 0 )
+					return Fail( r, feature.Diagnostic is null
+						? $"{feature.Name} has no problem to fix."
+						: $"{feature.Name}: {feature.Diagnostic.Problem}. It has no one-click fix; its advice is: {string.Join( "; ", feature.Diagnostic.Remedies )}." );
+
+				var options = Pairs( args.Skip( 1 ).Where( a => a.Contains( '=' ) ) );
+				var pick = args.Skip( 1 ).FirstOrDefault( a => !a.Contains( '=' ) );
+				var n = pick is not null && int.TryParse( pick, out var parsed ) ? parsed : 1;
+
+				if ( n < 1 || n > actions.Count )
+					return Fail( r, $"{feature.Name} has {actions.Count} fix(es): {string.Join( ", ", actions.Select( ( a, i ) => $"{i + 1} {a.Label}" ) )}." );
+
+				var outcome = FeatureRemedy.Apply( studio, feature, actions[n - 1], options.GetValueOrDefault( "folder" ) );
+
+				if ( !outcome.Ok )
+					return Fail( r, outcome.Message );
+
+				studio.Rebuild();
+				r.Log.Add( outcome.Message + (feature.Diagnostic is null ? $" {feature.Name} builds cleanly now."
+					: $" {feature.Name} still says: {feature.Diagnostic.Problem}.") );
 				return true;
 			}
 
@@ -1347,6 +1397,18 @@ public static partial class BuildScript
 		}
 
 		return null;
+	}
+
+	/// <summary>A new feature by the name a script uses ("Subdivide", "UVProject", "UV project"), or null.</summary>
+	public static Feature CreateFeature( string typeName ) => string.IsNullOrWhiteSpace( typeName ) ? null : Create( typeName );
+
+	/// <summary>Set a feature's parameters from script-style key=value pairs, as `add` does.</summary>
+	public static bool Configure( PartStudio studio, Feature feature, IEnumerable<KeyValuePair<string, string>> pairs, out string why )
+	{
+		var r = new Result();
+		var ok = Assign( studio, feature, pairs.ToDictionary( p => p.Key, p => p.Value ), r );
+		why = r.Error;
+		return ok;
 	}
 
 	static IEnumerable<Type> FeatureTypes() => typeof( Feature ).Assembly.GetTypes()

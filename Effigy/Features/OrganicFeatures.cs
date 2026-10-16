@@ -276,6 +276,8 @@ public sealed class StrokeFeature : Feature
 		var touched = 0;
 		var missed = new List<string>();
 		var coarse = new List<string>();
+		var coarseIds = new List<string>();
+		var coarsest = 0f;
 
 		foreach ( var body in RequireBodies( ctx, Bodies ) )
 		{
@@ -325,11 +327,27 @@ public sealed class StrokeFeature : Feature
 				coarse.Add( edge > radius * 0.5f
 					? $"{body.Name ?? body.Id}: the brush is {radius:0.##} across and its edges are {edge:0.##} long, so no vertex sits under it"
 					: $"{body.Name ?? body.Id}: every vertex under it was masked out, or the strength is zero" );
+
+				if ( edge > radius * 0.5f )
+				{
+					coarseIds.Add( body.Id );
+					coarsest = MathF.Max( coarsest, edge );
+				}
 			}
 		}
 
 		// A stroke that moved nothing anywhere is an error: it is in the history claiming to be a
 		// crease, and the skin is untouched. One that missed only some of its bodies is a warning.
+		if ( touched == 0 && coarseIds.Count > 0 )
+		{
+			Fail(
+				RemedyAction.SubdivideAbove( coarseIds, coarsest, radius * 0.5f ),
+				"The stroke moved nothing",
+				string.Join( "; ", coarse ) + ".",
+				"Put a Subdivide above this, or make the radius bigger",
+				"Check Strength and Only" );
+		}
+
 		if ( touched == 0 )
 		{
 			Fail(
@@ -457,6 +475,8 @@ public sealed class DetailFeature : Feature
 	{
 		var moved = 0f;
 		var coarse = new List<string>();
+		var coarseIds = new List<string>();
+		var coarsest = 0f;
 
 		foreach ( var body in RequireBodies( ctx, Bodies ) )
 		{
@@ -499,7 +519,23 @@ public sealed class DetailFeature : Feature
 
 			var edge = StrokeFeature.MeanEdge( mesh );
 			if ( edge > Size.Clamped * 0.5f )
+			{
 				coarse.Add( $"{body.Name ?? body.Id} (edges {edge:0.##}, size {Size.Clamped:0.##})" );
+				coarseIds.Add( body.Id );
+				coarsest = MathF.Max( coarsest, edge );
+			}
+		}
+
+		var subdivide = coarseIds.Count > 0 ? RemedyAction.SubdivideAbove( coarseIds, coarsest, Size.Clamped * 0.5f ) : null;
+
+		if ( moved <= 1e-6f && subdivide is not null )
+		{
+			Fail(
+				subdivide,
+				"The detail pass moved nothing",
+				"The detail is finer than the mesh: " + string.Join( ", ", coarse ) + ".",
+				"Put a Subdivide above this, or make Size bigger",
+				"Widen Reach, raise Busy, or set Only to Everywhere" );
 		}
 
 		if ( moved <= 1e-6f )
@@ -516,6 +552,7 @@ public sealed class DetailFeature : Feature
 		if ( coarse.Count > 0 )
 		{
 			Warn(
+				subdivide,
 				"Some detail is finer than the mesh",
 				"Edges longer than half the detail size alias it into facets: " + string.Join( ", ", coarse ) + ".",
 				"Put a Subdivide above this",

@@ -515,7 +515,7 @@ public sealed class PartStudio
 		}
 
 		// A Shape Key with no End Shape Key below it leaves its bodies shaped and its key unfinished.
-		ShapeKeyFeature.WarnUnclosed( Features.Take( count ), ctx, report );
+		ShapeKeyFeature.WarnUnclosed( Features.Take( count ), ctx, report, Features );
 
 		// Features past the rollback bar are neither evaluated nor errors; just note them.
 		for ( var i = count; i < Features.Count; i++ )

@@ -34,6 +34,11 @@ public sealed class FeatureDiagnostic
 	/// parameter — handing the user the number rather than only telling them it.</summary>
 	public float? SuggestedValue;
 
+	/// <summary>Remedies the editor can do in one click — insert the missing Subdivide, choose the
+	/// folder — alongside the words in <see cref="Remedies"/>. Applied headlessly by
+	/// <see cref="FeatureRemedy.Apply"/>.</summary>
+	public List<RemedyAction> Actions = new();
+
 	public FeatureDiagnostic() { }
 
 	public FeatureDiagnostic( DiagnosticSeverity severity, string problem, string cause = null,
@@ -47,6 +52,15 @@ public sealed class FeatureDiagnostic
 
 		if ( remedies is { Length: > 0 } )
 			Remedies.AddRange( remedies );
+	}
+
+	/// <summary>Attach a one-click remedy; returns this for chaining.</summary>
+	public FeatureDiagnostic With( RemedyAction action )
+	{
+		if ( action is not null )
+			Actions.Add( action );
+
+		return this;
 	}
 
 	/// <summary>Problem plus cause, for a tooltip that has no room for the list.</summary>

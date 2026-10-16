@@ -307,6 +307,10 @@ public static class Program
 
 		DiagnosticTests.Run();
 
+		RemedyActionTests.Run();
+
+		ShapeKeyEditTests.Run();
+
 		FaceSurfaceTests.Run();
 
 		FaceSketchTests.Run();

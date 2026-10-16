@@ -811,6 +811,16 @@ public abstract class Feature
 	protected void Warn( string problem, string cause, params string[] remedies ) =>
 		ApplyDiagnostic( new FeatureDiagnostic( DiagnosticSeverity.Warning, problem, cause, remedies: remedies ) );
 
+	/// <summary>Refuse, and offer <paramref name="fix"/> as a button: the missing prerequisite, done
+	/// for you. The first remedy should say the same thing in words.</summary>
+	[DoesNotReturn]
+	protected static void Fail( RemedyAction fix, string problem, string cause, params string[] remedies ) =>
+		throw new FeatureException( new FeatureDiagnostic( DiagnosticSeverity.Error, problem, cause, remedies: remedies ).With( fix ) );
+
+	/// <summary>Warn, and offer <paramref name="fix"/> as a button.</summary>
+	protected void Warn( RemedyAction fix, string problem, string cause, params string[] remedies ) =>
+		ApplyDiagnostic( new FeatureDiagnostic( DiagnosticSeverity.Warning, problem, cause, remedies: remedies ).With( fix ) );
+
 	/// <summary>
 	/// After a cut, put every piece the cut severed into the part list. Returns how many bodies
 	/// were added, so the caller can say so.
@@ -1030,6 +1040,7 @@ public abstract class Feature
 			warnings[0].Problem,
 			string.Join( " ", warnings.Select( w => w.Cause ).Where( c => !string.IsNullOrEmpty( c ) ) ),
 			warnings.SelectMany( w => w.Remedies ).Distinct().ToArray() );
+		Diagnostic?.Actions.AddRange( warnings.SelectMany( w => w.Actions ) );
 	}
 
 	/// <summary>A number the user can type that is never larger than the true fit, so suggesting

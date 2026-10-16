@@ -147,6 +147,7 @@ public sealed class FleshMaterialFeature : Feature
 		var written = new List<string>();
 		VmatAsset = null;
 		var unwrapped = new List<string>();
+		var unwrappedIds = new List<string>();
 		var perVertex = new List<string>();
 
 		foreach ( var body in targets )
@@ -181,6 +182,7 @@ public sealed class FleshMaterialFeature : Feature
 			{
 				UVUnwrap.Unwrap( mesh );
 				unwrapped.Add( body.Name ?? body.Id );
+				unwrappedIds.Add( body.Id );
 			}
 
 			// A recipe over everything the bake reads, so a rebuild for an unrelated feature does not
@@ -216,8 +218,19 @@ public sealed class FleshMaterialFeature : Feature
 		ResolvedSlots = targets.Where( b => b.Mesh is not null ).SelectMany( b => b.Mesh.Faces ).Select( f => f.Material )
 			.Where( s => !ctx.ShellSlots.Contains( s ) ).Distinct().OrderBy( s => s ).ToList();
 
+		// Least pressing first: a later Warn replaces the diagnostic, so the callout shows the one that
+		// matters most.
+		var baked = targets.Count - perVertex.Count;
+
+		if ( baked > 0 && string.IsNullOrWhiteSpace( Folder.Value ) )
+			Warn( RemedyAction.ChooseFolder( "Choose folder", Folder.Label ),
+				"No texture files written",
+				"Folder is empty, so the colour and roughness maps are only shown here. The exported model will not have this material.",
+				"Choose a folder for the PNGs and .vmat (inside your project's Assets)" );
+
 		if ( unwrapped.Count > 0 )
-			Warn( "Unwrapped first", $"{string.Join( ", ", unwrapped )} had no UVs, so it was unwrapped to have somewhere to bake.",
+			Warn( RemedyAction.InsertFeatureAbove( "Unwrap above", "UVProject", unwrappedIds, ("mode", "Organic") ),
+				"Unwrapped first", $"{string.Join( ", ", unwrapped )} had no UVs, so it was unwrapped to have somewhere to bake.",
 				"Unwrap it yourself upstream to choose the seams" );
 
 		if ( ShaderUsed == FleshShader.Skin && !PerVertex.Value )

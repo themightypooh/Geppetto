@@ -41,8 +41,20 @@ public sealed class ShapeKeyFeature : Feature
 	/// <summary>Called after a rebuild: a body still recording means the last Shape Key was never
 	/// ended. Warns on that feature (rolled back past its End is the usual cause, and is fine while
 	/// sculpting the key - the warning says what an export would get).</summary>
-	internal static void WarnUnclosed( IEnumerable<Feature> evaluated, FeatureContext ctx, RebuildReport report )
+	/// <param name="all">The whole history. A key whose End Shape Key is past the rollback bar is
+	/// being edited (Shape Keys ▸ Edit key, <see cref="ShapeKeyEdit"/>), not left open: no warning.</param>
+	internal static void WarnUnclosed( IEnumerable<Feature> evaluated, FeatureContext ctx, RebuildReport report, IReadOnlyList<Feature> all = null )
 	{
+		// A Shape Key reused from the cache is not re-run, so it would keep the warning an earlier
+		// rebuild gave it (open while its key was being recorded) after its End is added. Executing
+		// one never warns, so a warning on it is always this one: clear it and decide afresh.
+		foreach ( var stale in evaluated.OfType<ShapeKeyFeature>().Where( k => k._warnedUnclosed ) )
+		{
+			report.Warnings.RemoveAll( w => w.FeatureId == stale.Id && w.Message == stale.Warning );
+			stale.Warning = null;
+			stale._warnedUnclosed = false;
+		}
+
 		var open = ctx.Bodies.Where( b => b.Mesh?.RecordingMorph is not null ).ToList();
 
 		if ( open.Count == 0 )
@@ -53,10 +65,19 @@ public sealed class ShapeKeyFeature : Feature
 		if ( evaluated.LastOrDefault( f => f is ShapeKeyFeature k && !k.Suppressed && k.Error is null ) is not ShapeKeyFeature start )
 			return;
 
+		if ( all is not null && all.SkipWhile( f => !ReferenceEquals( f, start ) ).Skip( 1 )
+			.TakeWhile( f => f is not ShapeKeyFeature ).Any( f => f is ShapeKeyEndFeature ) )
+		{
+			return;
+		}
+
 		start.Warning = $"Shape key '{key}' is still open: nothing below it ends it, so {string.Join( ", ", open.Select( b => b.Name ) )} "
 			+ "show the shape and the key is not exported. Add End Shape Key after the features that shape it.";
+		start._warnedUnclosed = true;
 		report.Warnings.Add( (start.Id, start.Warning) );
 	}
+
+	bool _warnedUnclosed;
 
 	protected override void Execute( FeatureContext ctx )
 	{

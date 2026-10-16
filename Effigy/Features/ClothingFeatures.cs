@@ -213,6 +213,7 @@ public sealed class GarmentFeature : Feature
 		if ( ctx.Rig is null || ctx.Rig.Count == 0 )
 		{
 			Fail(
+				RemedyAction.OpenWorkspace( "Open Rig", "Rig" ),
 				"A garment needs a rig",
 				"Garments find the torso, arms and legs from the bones, and this part has none.",
 				"Place bones in the Rig workspace",
