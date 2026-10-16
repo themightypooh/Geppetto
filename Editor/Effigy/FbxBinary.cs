@@ -48,7 +48,7 @@ public static class FbxBinary
 	/// <summary>Arrays of doubles. Every other array FbxWriter writes is int32 indices.</summary>
 	static readonly HashSet<string> DoubleArrays = new()
 	{
-		"Vertices", "Normals", "UV", "Weights", "Transform", "TransformLink", "Matrix", "Binormals", "Tangents", "Colors",
+		"Vertices", "Normals", "UV", "Weights", "Transform", "TransformLink", "Matrix", "Binormals", "Tangents", "Colors", "FullWeights",
 	};
 
 	/// <summary>`P` types whose values are int32, per the FBX SDK's property types.</summary>

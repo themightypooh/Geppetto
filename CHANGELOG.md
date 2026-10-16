@@ -122,6 +122,7 @@ forgotten.
 - **16-bit height and normal maps.** Edit ▸ Settings ▸ Bake ▸ 16-bit height and normals (or `bits=16`) writes the height, normal, bent normal, object normal and position maps as 16-bit PNGs, so gentle slopes don't step. 8-bit stays the default. `PngWriter.WriteFile16`, `PngReader.Read16`
 - **Script bakes with several detail bodies and the skin shader.** `bake Low High,High2 folder` combines several high bodies; `shader=skin preset=Head k=3` writes a skin .vmat with the transmission mask and bent normal. `BuildScript.Bake`
 - **LODs for rigged models.** File ▸ Export with LODs now works on a rigged model too: Compile .vmdl writes half- and quarter-detail copies that bend on the same bones, keep their shape keys and switch with distance. Build scripts get the same with `export … lods=1` (or `lods=0.5,0.25 loddistance=…`) on a skinned export, which used to refuse. `LodExport`, `VmdlDocument.SkinnedWithLods`
+- **Shape keys in FBX.** File ▸ Export FBX (and `export … fbx=1` in a build script) now writes a model's shape keys as blendshapes, so they arrive in other 3D tools as shape keys / morph targets, on rigged and unrigged models alike. The export message says how many went out. `FbxBlendShapes`, `FbxScene.Shape`
 
 ### Fixed
 - **Plain-colour materials show in `tools/effigy.sh shade`.** A vmat with only a tint, metalness or roughness (garment hardware: chrome studs, gunmetal chain) rendered as grey clay; it now renders in its own colour and finish.

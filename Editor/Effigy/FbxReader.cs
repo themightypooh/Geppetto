@@ -40,6 +40,41 @@ public sealed class FbxScene
 
 		/// <summary>Per control point: (bone name, weight). Null for a mesh with no skin.</summary>
 		public List<(string Bone, float Weight)>[] Weights;
+
+		/// <summary>Blendshapes (shape keys), in the file's order. Empty when it has none.</summary>
+		public List<Shape> Shapes = new();
+	}
+
+	/// <summary>
+	/// One BlendShapeChannel and its Shape: the control points it moves and how far, at full
+	/// strength, in the same global frame as <see cref="Mesh.Points"/>.
+	/// </summary>
+	public sealed class Shape
+	{
+		public string Name = "";
+		public int[] Indexes = Array.Empty<int>();
+		public Vec3[] Offsets = Array.Empty<Vec3>();
+
+		/// <summary>Per index, the normal's change; empty when the file has none.</summary>
+		public Vec3[] NormalOffsets = Array.Empty<Vec3>();
+
+		/// <summary>The channel's weight at which the Shape is reached (FullWeights; 100 for one target).</summary>
+		public double FullWeight = 100;
+
+		/// <summary>The channel's saved weight, 0..100.</summary>
+		public double DeformPercent;
+
+		/// <summary>The offsets as one array over all <paramref name="pointCount"/> control points.</summary>
+		public Vec3[] Dense( int pointCount )
+		{
+			var dense = new Vec3[pointCount];
+
+			for ( var k = 0; k < Math.Min( Indexes.Length, Offsets.Length ); k++ )
+				if ( Indexes[k] >= 0 && Indexes[k] < pointCount )
+					dense[Indexes[k]] = Offsets[k];
+
+			return dense;
+		}
 	}
 
 	public List<Mesh> Meshes = new();
@@ -155,6 +190,38 @@ public sealed class FbxScene
 			}
 
 			mesh.Points = local.Select( placement.TransformPoint ).ToArray();
+
+			// Blendshapes: geometry <- Deformer(BlendShape) <- Deformer(BlendShapeChannel) <- Geometry(Shape).
+			// Offsets are directions, so only the placement's turn and scale apply.
+			foreach ( var blend in Children( id, "Deformer" ).Where( d => d.ClassName == "BlendShape" ) )
+			{
+				foreach ( var channel in Children( (long)blend.Props[0], "Deformer" ).Where( d => d.ClassName == "BlendShapeChannel" ) )
+				{
+					var target = Children( (long)channel.Props[0], "Geometry" ).FirstOrDefault( g => g.ClassName == "Shape" );
+
+					if ( target is null )
+						continue;
+
+					var offsets = target.Child( "Vertices" )?.Doubles() ?? Array.Empty<double>();
+					var normalOffsets = target.Child( "Normals" )?.Doubles() ?? Array.Empty<double>();
+
+					static Vec3[] Triples( double[] v, Xform x ) =>
+						Enumerable.Range( 0, v.Length / 3 ).Select( i => x.TransformDirection( new Vec3( (float)v[i * 3], (float)v[i * 3 + 1], (float)v[i * 3 + 2] ) ) ).ToArray();
+
+					var deform = channel.Child( "DeformPercent" )?.Props.FirstOrDefault();
+
+					mesh.Shapes.Add( new Shape
+					{
+						Name = channel.ObjectName.Length > 0 ? channel.ObjectName : target.ObjectName,
+						Indexes = target.Child( "Indexes" )?.Ints() ?? Array.Empty<int>(),
+						Offsets = Triples( offsets, placement ),
+						NormalOffsets = Triples( normalOffsets, placement ),
+						FullWeight = channel.Child( "FullWeights" )?.Doubles() is { Length: > 0 } full ? full[0] : 100,
+						DeformPercent = deform is null ? 0 : Convert.ToDouble( deform ),
+					} );
+				}
+			}
+
 			scene.Meshes.Add( mesh );
 		}
 

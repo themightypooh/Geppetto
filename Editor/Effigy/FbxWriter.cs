@@ -153,10 +153,13 @@ public static class FbxWriter
 
 		var idPose = w.NextId();
 
+		// Shape keys, after every other id so a model without them keeps its ids exactly.
+		var shapes = FbxBlendShapes.Plan( w, mesh );
+
 		WriteHeader( w );
 		WriteGlobalSettings( w, unitScale );
 		WriteDocuments( w );
-		WriteDefinitions( w, slots.Count, skeleton.Count, rigged );
+		WriteDefinitions( w, slots.Count, skeleton.Count, rigged, shapes?.Count ?? 0 );
 
 		w.Open( "Objects: " );
 		{
@@ -183,11 +186,13 @@ public static class FbxWriter
 
 				WriteBindPose( w, idPose, idMeshModel, boneModelIds, skeleton );
 			}
+
+			shapes?.WriteObjects( w, mesh, modelName );
 		}
 		w.Close();
 
 		WriteConnections( w, idGeometry, idMeshModel, materialIds, boneModelIds, boneAttrIds,
-			idSkin, clusterIds, skeleton, rigged );
+			idSkin, clusterIds, skeleton, rigged, shapes );
 
 		return w.ToString();
 	}
@@ -288,14 +293,15 @@ public static class FbxWriter
 	/// wrong, but a file whose Definitions disagree with its Objects is the kind of thing that
 	/// loads in one importer and not the next, so it is written honestly.
 	/// </summary>
-	static void WriteDefinitions( FbxText w, int materialCount, int boneCount, bool rigged = true )
+	static void WriteDefinitions( FbxText w, int materialCount, int boneCount, bool rigged = true, int shapeCount = 0 )
 	{
 		// One Model per bone plus the mesh's; one NodeAttribute per bone; one Skin plus one
 		// Cluster per bone; one Geometry; one Pose; GlobalSettings itself. Unrigged, no skin and
-		// no pose.
-		var deformers = rigged ? boneCount + 1 : 0;
+		// no pose. Shape keys add a Shape geometry and a BlendShapeChannel each, plus one BlendShape.
+		var deformers = (rigged ? boneCount + 1 : 0) + (shapeCount > 0 ? shapeCount + 1 : 0);
+		var geometries = 1 + shapeCount;
 		var poses = rigged ? 1 : 0;
-		var total = 1 + (boneCount + 1) + boneCount + materialCount + deformers + 1 + poses;
+		var total = 1 + (boneCount + 1) + boneCount + materialCount + deformers + geometries + poses;
 
 		w.Open( "Definitions: " );
 		w.Line( "Version: 100" );
@@ -304,13 +310,12 @@ public static class FbxWriter
 		ObjectType( w, "GlobalSettings", 1 );
 		ObjectType( w, "Model", boneCount + 1 );
 		ObjectType( w, "NodeAttribute", boneCount );
-		ObjectType( w, "Geometry", 1 );
+		ObjectType( w, "Geometry", geometries );
 		ObjectType( w, "Material", materialCount );
-		if ( rigged )
-		{
+		if ( deformers > 0 )
 			ObjectType( w, "Deformer", deformers );
+		if ( rigged )
 			ObjectType( w, "Pose", poses );
-		}
 
 		w.Close();
 		w.Raw( "" );
@@ -735,7 +740,8 @@ public static class FbxWriter
 	/// a pair is exactly as silent.
 	/// </summary>
 	static void WriteConnections( FbxText w, long geometryId, long meshModelId, long[] materialIds,
-		long[] boneModelIds, long[] boneAttrIds, long skinId, long[] clusterIds, Skeleton skeleton, bool rigged = true )
+		long[] boneModelIds, long[] boneAttrIds, long skinId, long[] clusterIds, Skeleton skeleton, bool rigged = true,
+		FbxBlendShapes shapes = null )
 	{
 		w.Open( "Connections: " );
 
@@ -754,6 +760,8 @@ public static class FbxWriter
 			var parent = skeleton.Bones[i].Parent;
 			Connect( w, boneModelIds[i], parent < 0 ? 0 : boneModelIds[parent], "Model -> parent" );
 		}
+
+		shapes?.WriteConnections( w, geometryId );
 
 		if ( !rigged )
 		{

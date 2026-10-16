@@ -27,6 +27,11 @@ public static class ExportGapsTests
 		TestSkinnedLevelsKeepTheirWeights();
 		TestScriptSkinnedLods();
 		TestSkinnedLodVmdl();
+
+		Section( "export gaps: FBX blendshapes" );
+		TestFbxBlendShapesRoundTrip();
+		TestFbxRiggedBlendShapes();
+		TestFbxWithoutKeysIsUnchanged();
 	}
 
 	// --- UV-seam-aware decimation ----------------------------------------------------------------
@@ -318,5 +323,97 @@ public static class ExportGapsTests
 		var refused = false;
 		try { VmdlDocument.SkinnedWithLods( new[] { "m/a.dmx" }, new[] { 0f, 1f }, skeleton ); } catch ( ArgumentException ) { refused = true; }
 		Check( "and refuses a distance list that does not match", refused );
+	}
+
+	// --- FBX blendshapes ---------------------------------------------------------------------------
+
+	/// <summary>A sphere with two keys: "swell" pushes the top half out, "pinch" draws the middle in.</summary>
+	internal static PolyMesh KeyedSphere( PolyMesh mesh = null )
+	{
+		mesh ??= Primitives.QuadSphere( 10f, 8 );
+		mesh.AddMorph( "swell", mesh.Positions.Select( p => p.z > 0 ? p * 1.3f : p ).ToList() );
+		mesh.AddMorph( "pinch", mesh.Positions.Select( p => MathF.Abs( p.z ) < 4f ? new Vec3( p.x * 0.7f, p.y * 0.7f, p.z ) : p ).ToList() );
+		return mesh;
+	}
+
+	static float WorstShapeError( FbxScene.Mesh read, PolyMesh mesh )
+	{
+		var worst = 0f;
+
+		foreach ( var morph in mesh.ValidMorphs )
+		{
+			var shape = read.Shapes.FirstOrDefault( s => s.Name == morph.Name );
+
+			if ( shape is null )
+				return float.MaxValue;
+
+			var dense = shape.Dense( read.Points.Length );
+
+			for ( var i = 0; i < morph.Deltas.Length; i++ )
+				worst = MathF.Max( worst, (dense[i] - morph.Deltas[i]).Length );
+		}
+
+		return worst;
+	}
+
+	static void TestFbxBlendShapesRoundTrip()
+	{
+		var mesh = KeyedSphere();
+		var path = Path.Combine( ExportDir( "fbx" ), "keyed.fbx" );
+		FbxWriter.WriteBinaryFile( mesh, path, modelName: "keyed" );
+
+		var scene = FbxScene.ReadFile( path );
+		var read = scene.Meshes.FirstOrDefault();
+
+		Check( "a keyed mesh's FBX reads back with its two blendshapes, by name", read is not null
+			&& read.Shapes.Select( s => s.Name ).SequenceEqual( new[] { "swell", "pinch" } ),
+			read is null ? "no mesh" : string.Join( ",", read.Shapes.Select( s => s.Name ) ) );
+
+		if ( read is null )
+			return;
+
+		var worst = WorstShapeError( read, mesh );
+		Check( "every vertex's offset comes back as the key had it", worst < 1e-4f, $"worst {worst}" );
+
+		var swell = read.Shapes.First( s => s.Name == "swell" );
+		var moved = mesh.ValidMorphs.First().Deltas.Count( d => d.Length > 1e-5f );
+		Check( "sparse: only the points the key moves are listed", swell.Indexes.Length < read.Points.Length && swell.Indexes.Length >= moved,
+			$"{swell.Indexes.Length} of {read.Points.Length}, {moved} moved" );
+		Check( "each channel reaches its shape at 100 and is saved off", swell.FullWeight == 100 && swell.DeformPercent == 0 );
+		Check( "the normal offsets come too, and turn the swollen top", swell.NormalOffsets.Length == swell.Indexes.Length && swell.NormalOffsets.Any( n => n.Length > 1e-3f ) );
+
+		var ascii = FbxWriter.Write( mesh, skeletonless: true );
+		Check( "Definitions count the shapes: 3 geometries and 3 deformers", ascii.Contains( "ObjectType: \"Geometry\", {\n\t\tCount: 3" )
+			&& ascii.Contains( "ObjectType: \"Deformer\", {\n\t\tCount: 3" ), Snippet( ascii, "ObjectType: \"Geometry\"" ) );
+	}
+
+	static string Snippet( string text, string at )
+	{
+		var i = text.IndexOf( at, StringComparison.Ordinal );
+		return i < 0 ? "(missing)" : text.Substring( i, Math.Min( 80, text.Length - i ) ).Replace( "\n", "\\n" );
+	}
+
+	static void TestFbxRiggedBlendShapes()
+	{
+		var (mesh, skeleton) = RiggedSphere();
+		KeyedSphere( mesh );
+		var path = Path.Combine( ExportDir( "fbx-rigged" ), "rigged.fbx" );
+		FbxWriter.WriteBinaryFile( mesh, path, skeleton, modelName: "rigged" );
+
+		var read = FbxScene.ReadFile( path ).Meshes.FirstOrDefault();
+		Check( "a skinned FBX carries the skin and the blendshapes together", read is { Weights: not null } && read.Shapes.Count == 2 );
+
+		if ( read is not null )
+		{
+			var worst = WorstShapeError( read, mesh );
+			Check( "and its offsets survive the bind-pose placement", worst < 1e-4f, $"worst {worst}" );
+		}
+	}
+
+	static void TestFbxWithoutKeysIsUnchanged()
+	{
+		var ascii = FbxWriter.Write( Primitives.QuadSphere( 10f, 4 ) );
+		Check( "a mesh with no shape keys writes no blendshape at all", !ascii.Contains( "BlendShape" ) && !ascii.Contains( "\"Shape\"" )
+			&& ascii.Contains( "ObjectType: \"Geometry\", {\n\t\tCount: 1" ) );
 	}
 }

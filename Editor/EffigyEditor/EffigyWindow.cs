@@ -7441,8 +7441,8 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			skeleton = PivotedSkeleton( skeleton );
 
 			FbxWriter.WriteBinaryFile( mesh, fbxPath, skeleton, _studio.NameForSlot, name );
-			Log.Info( $"[Effigy] exported {fbxPath} - {skeleton.Count} bones, {mesh.VertexCount} vertices" );
-			SetPrompt( $"Exported {fbxPath} with {skeleton.Count} bones" );
+			Log.Info( $"[Effigy] exported {fbxPath} - {skeleton.Count} bones, {mesh.VertexCount} vertices{ShapeKeysNote( mesh )}" );
+			SetPrompt( $"Exported {fbxPath} with {skeleton.Count} bones{ShapeKeysNote( mesh )}" );
 			return;
 		}
 
@@ -7450,8 +7450,15 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		ApplyPivot( staticMesh );
 
 		FbxWriter.WriteBinaryFile( staticMesh, fbxPath, materialName: _studio.NameForSlot, modelName: name );
-		Log.Info( $"[Effigy] exported {fbxPath}" );
-		SetPrompt( $"Exported {fbxPath}" );
+		Log.Info( $"[Effigy] exported {fbxPath}{ShapeKeysNote( staticMesh )}" );
+		SetPrompt( $"Exported {fbxPath}{ShapeKeysNote( staticMesh )}" );
+	}
+
+	/// <summary>", and 3 shape keys as blendshapes" when the FBX carries any (FbxBlendShapes), else empty.</summary>
+	static string ShapeKeysNote( PolyMesh mesh )
+	{
+		var count = mesh.ValidMorphs.Count();
+		return count == 0 ? "" : count == 1 ? ", and 1 shape key as a blendshape" : $", and {count} shape keys as blendshapes";
 	}
 
 	/// <summary>The skinned model the last CompileVmdl produced, as an asset path, or null when it
