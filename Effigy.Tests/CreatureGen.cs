@@ -72,6 +72,7 @@ public static partial class CreatureGen
 			"realparts" => RealPartsTest( options ),
 			"heads" => HeadsTest( options ),
 			"choir" => Choir( options ),
+			"rigging" => Rigging( options ),
 			"stalk" => Stalk( options ),
 			"bloom" => Bloom( options ),
 			_ when name.StartsWith( "study_" ) => PartStudy( name, options ),
