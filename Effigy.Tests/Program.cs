@@ -44,6 +44,8 @@ public static class Program
 			Console.WriteLine( $"{Report.Passed} passed, {Report.Failed} failed" );
 			return Report.Failed == 0 ? 0 : 1;
 		}
+		if ( rawArgs.Length > 1 && rawArgs[0] == "--garment-details-punk" )
+			return GarmentDetailDemo.RunPunk( rawArgs[1] );
 		if ( rawArgs.Length > 1 && rawArgs[0] == "--garment-details-demo" )
 			return GarmentDetailDemo.Run( rawArgs[1] );
 		// `dotnet run --nologo` hands the flag straight through to us. The first positional
