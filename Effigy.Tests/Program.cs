@@ -398,6 +398,7 @@ public static class Program
 		MenuIconTests.Run();
 
 		MeshReportTests.Run( outDir );
+		ShapeKeyPipelineTests.Run();
 
 		Section( "writing sample OBJs" );
 		WriteSamples( outDir );
