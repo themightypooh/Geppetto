@@ -1247,11 +1247,15 @@ public static partial class UVUnwrap
 	/// conformal map can be moved, turned and scaled for free) and pinning more would force the
 	/// layout rather than let it find its shape. Far apart, so the pins themselves bend nothing.
 	/// </summary>
-	static double[] Solve( PolyMesh mesh, Patch patch, Dictionary<int, Vec2> previous = null )
+	/// With <paramref name="userPins"/> (chart vertex to UV, at least two), those vertices are held
+	/// where they are given instead - the user's pins - and the first guess is <paramref name="previous"/>
+	/// as it stands, so the layout keeps its place and size. (Groundwork for UV pins; nothing passes it yet.)
+	static double[] Solve( PolyMesh mesh, Patch patch, Dictionary<int, Vec2> previous = null, IReadOnlyDictionary<int, Vec2> userPins = null )
 	{
 		var n = patch.VertexCount;
+		var pinnedByUser = userPins is { Count: >= 2 };
 
-		if ( patch.Boundary.Count == 0 || n < 3 )
+		if ( (patch.Boundary.Count == 0 && !pinnedByUser) || n < 3 )
 			return null;
 
 		var p = new Vec3[n];
@@ -1261,13 +1265,20 @@ public static partial class UVUnwrap
 
 		// Pins: the boundary vertex farthest from the first boundary vertex, then the one farthest
 		// from that. Farthest-point twice is a cheap, deterministic stand-in for the diameter.
-		var first = patch.Boundary[0].A;
-		var pin0 = FarthestOnBoundary( patch, p, first );
-		var pin1 = FarthestOnBoundary( patch, p, pin0 );
-		var span = (double)(p[pin1] - p[pin0]).Length;
+		var pin0 = 0;
+		var pin1 = 0;
+		var span = 0.0;
 
-		if ( pin0 == pin1 || span < 1e-12 )
-			return null;
+		if ( !pinnedByUser )
+		{
+			var first = patch.Boundary[0].A;
+			pin0 = FarthestOnBoundary( patch, p, first );
+			pin1 = FarthestOnBoundary( patch, p, pin0 );
+			span = (p[pin1] - p[pin0]).Length;
+
+			if ( pin0 == pin1 || span < 1e-12 )
+				return null;
+		}
 
 		// Per triangle: its corners' complex coefficients, already weighted by 1/sqrt(area).
 		var count = patch.Triangles.Count;
@@ -1353,10 +1364,25 @@ public static partial class UVUnwrap
 		var size = n * 2;
 		var free = new bool[size];
 		Array.Fill( free, true );
-		free[pin0 * 2] = free[pin0 * 2 + 1] = free[pin1 * 2] = free[pin1 * 2 + 1] = false;
-
 		var pinned = new double[size];
-		pinned[pin1 * 2] = span;
+
+		if ( pinnedByUser )
+		{
+			foreach ( var (v, at) in userPins )
+			{
+				if ( v < 0 || v >= n )
+					continue;
+
+				free[v * 2] = free[v * 2 + 1] = false;
+				pinned[v * 2] = at.x;
+				pinned[v * 2 + 1] = at.y;
+			}
+		}
+		else
+		{
+			free[pin0 * 2] = free[pin0 * 2 + 1] = free[pin1 * 2] = free[pin1 * 2 + 1] = false;
+			pinned[pin1 * 2] = span;
+		}
 
 		var diagonal = new double[size];
 
@@ -1412,7 +1438,10 @@ public static partial class UVUnwrap
 		for ( var i = 0; i < n; i++ )
 			reach = Math.Max( reach, Math.Abs( source[i * 2] - z0r ) + Math.Abs( source[i * 2 + 1] - z0i ) );
 
-		if ( z1 > reach * reach * 1e-8 && z1 > 0 )
+		// The user's pins already say where the layout sits, so the present UVs are the guess as they are.
+		if ( pinnedByUser )
+			Array.Copy( source, guess, size );
+		else if ( z1 > reach * reach * 1e-8 && z1 > 0 )
 		{
 			// Multiply by span / z1 as complex numbers: span * conj(z1) / |z1|^2.
 			var mr = span * z1r / z1;
