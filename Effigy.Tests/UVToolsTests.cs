@@ -27,6 +27,155 @@ public static class UVToolsTests
 
 		Section( "UV tools: texel density" );
 		TestTexelDensity();
+
+		Section( "UV tools: pack with pixel margins and arbitrary rotation" );
+		TestPixelPack();
+	}
+
+	static float SegmentDistance( Vec2 a, Vec2 b, Vec2 c, Vec2 d )
+	{
+		float PointSeg( Vec2 p, Vec2 s0, Vec2 s1 )
+		{
+			var e = s1 - s0;
+			var t = e.LengthSquared > 0 ? Math.Clamp( Vec2.Dot( p - s0, e ) / e.LengthSquared, 0f, 1f ) : 0f;
+			return (p - (s0 + e * t)).Length;
+		}
+
+		// Crossing segments are at distance zero.
+		float O( Vec2 p, Vec2 q, Vec2 r ) => Vec2.Cross( q - p, r - p );
+		if ( O( a, b, c ) * O( a, b, d ) < 0 && O( c, d, a ) * O( c, d, b ) < 0 )
+			return 0f;
+
+		return MathF.Min( MathF.Min( PointSeg( a, c, d ), PointSeg( b, c, d ) ), MathF.Min( PointSeg( c, a, b ), PointSeg( d, a, b ) ) );
+	}
+
+	/// <summary>The smallest gap between any two islands' outlines, and the smallest gap from any UV to
+	/// the edge of the square.</summary>
+	static (float Between, float Edge) Gaps( PolyMesh mesh )
+	{
+		var layout = UVIslands.Find( mesh );
+		var edges = new List<(Vec2 A, Vec2 B)>[layout.Count];
+		for ( var i = 0; i < layout.Count; i++ )
+		{
+			edges[i] = new List<(Vec2, Vec2)>();
+			foreach ( var f in layout.Islands[i] )
+			{
+				var uv = mesh.Faces[f].UVs;
+				for ( var c = 0; c < uv.Length; c++ )
+					edges[i].Add( (uv[c], uv[(c + 1) % uv.Length]) );
+			}
+		}
+
+		var between = float.MaxValue;
+		for ( var i = 0; i < layout.Count; i++ )
+			for ( var j = i + 1; j < layout.Count; j++ )
+				foreach ( var (a, b) in edges[i] )
+					foreach ( var (c, d) in edges[j] )
+						between = MathF.Min( between, SegmentDistance( a, b, c, d ) );
+
+		var edge = mesh.Faces.SelectMany( f => f.UVs ).Min( u => MathF.Min( MathF.Min( u.x, u.y ), MathF.Min( 1f - u.x, 1f - u.y ) ) );
+		return (between, edge);
+	}
+
+	static void TestPixelPack()
+	{
+		// A box (six islands) and a cylinder (wall, caps) unwrapped together, then packed 8 px apart
+		// on a 512 texture.
+		var mesh = Primitives.Box( 2, 2, 2 );
+		var cyl = Primitives.Cylinder( 1f, 4f, 12 );
+		for ( var i = 0; i < cyl.Positions.Count; i++ ) cyl.Positions[i] += new Vec3( 6, 0, 0 );
+		MeshTransform.Append( mesh, cyl );
+		UVUnwrap.Unwrap( mesh );
+		var islands = UVIslands.Find( mesh ).Count;
+
+		var result = UVPack.Pack( mesh, new UVPack.Options { TextureSize = 512, MarginPixels = 8f } );
+		var (between, edge) = Gaps( mesh );
+		var margin = 8f / 512f;
+		Check( "pixel-margin pack fits", result.Fits && result.Islands == islands, result.ToString() );
+		Check( "every two islands are at least 8 px apart at 512", between >= margin - 1e-5f, $"{between * 512f:0.###} px" );
+		Check( "and every island is at least 4 px from the edge", edge >= margin * 0.5f - 1e-5f, $"{edge * 512f:0.###} px" );
+		Check( "no texel is claimed twice", NormalBake.Measure( mesh ).CanBake, NormalBake.Measure( mesh ).Problem );
+		Check( "it still fills a fair share of the square", result.Coverage > 0.3f, $"{result.Coverage:0.###}" );
+		Check( "the islands are still the same islands", UVIslands.Find( mesh ).Count == islands );
+
+		var signs = mesh.Faces.Select( f => MathF.Sign( SignedArea( f.UVs ) ) ).Where( s => s != 0 ).Distinct().Count();
+		Check( "packing turns islands but never mirrors one", signs == 1 );
+
+		// Rotation: six long strips each laid at 30 degrees. Boxed as they lie, each wastes most of
+		// its box; turned to their tightest angle they stack, and the texture is used far better.
+		PolyMesh Strips()
+		{
+			var all = new PolyMesh();
+			for ( var k = 0; k < 6; k++ )
+			{
+				var strip = Primitives.Plane( 10, 1, 10, 1 );
+				for ( var i = 0; i < strip.Positions.Count; i++ ) strip.Positions[i] += new Vec3( 0, k * 3f, 0 );
+				UVProjection.PlanarProject( strip, new Vec3( 0, 0, 1 ), 10f );
+				UVIslands.Rotate( strip, Enumerable.Range( 0, strip.FaceCount ).ToList(), 30f );
+				MeshTransform.Append( all, strip );
+			}
+
+			return all;
+		}
+
+		var turned = Strips();
+		var still = Strips();
+		var r1 = UVPack.Pack( turned, new UVPack.Options { TextureSize = 1024, MarginPixels = 2f, Rotate = true } );
+		var r2 = UVPack.Pack( still, new UVPack.Options { TextureSize = 1024, MarginPixels = 2f, Rotate = false, QuarterTurns = false } );
+		Check( "turning islands to their tightest angle uses the texture far better", r1.Fits && r2.Fits && r1.Coverage > r2.Coverage * 1.5f, $"{r1.Coverage:0.###} vs {r2.Coverage:0.###}" );
+		var first = UVIslands.Find( turned ).Islands[0];
+		var (min, max) = UVIslands.Bounds( turned, first );
+		var size = max - min;
+		Check( "and lays each strip square to the texture", MathF.Max( size.x, size.y ) > 8f * MathF.Min( size.x, size.y ), $"{size}" );
+		Check( "turned strips keep their 2 px margin", Gaps( turned ).Between >= 2f / 1024f - 1e-5f );
+
+		// Keep scale: the density is untouched, only the places change.
+		var keep = Primitives.Box( 2, 2, 2 );
+		UVUnwrap.Unwrap( keep );
+		UVDensity.Set( keep, 40f, 1024 );
+		var kept = UVPack.Pack( keep, new UVPack.Options { TextureSize = 1024, MarginPixels = 4f, KeepScale = true } );
+		var d = UVDensity.Measure( keep, 1024 );
+		Check( "packing at the islands' own size keeps the texel density", kept.Fits && MathF.Abs( d.Min - 40f ) < 0.05f && MathF.Abs( d.Max - 40f ) < 0.05f, d.ToString() );
+		var crowded = Primitives.Box( 2, 2, 2 );
+		UVUnwrap.Unwrap( crowded );
+		UVDensity.Set( crowded, 4000f, 1024 );
+		var before = CopyUVs( crowded );
+		var overflow = UVPack.Pack( crowded, new UVPack.Options { TextureSize = 1024, MarginPixels = 4f, KeepScale = true } );
+		Check( "a density too big for the square says it does not fit and writes nothing", !overflow.Fits
+			&& crowded.Faces.Select( ( f, i ) => f.UVs.Zip( before[i], ( a, b ) => (a - b).Length == 0f ).All( x => x ) ).All( x => x ) );
+
+		// Edit mode and the feature.
+		var session = new MeshEditSession( Primitives.Box( 2, 2, 2 ) );
+		session.Unwrap();
+		var packed = session.PackIslands( 6f, 256 );
+		Check( "Edit mode's Pack islands is one undo step", packed.Fits && session.LastLabel == "Pack islands" );
+		var refused = false;
+		try { session.PackIslands( 200f, 256 ); } catch ( InvalidOperationException ) { refused = true; }
+		Check( "a margin that leaves no room is refused with a reason", refused && session.LastLabel == "Pack islands" && session.UndoCount == 2 );
+
+		var studio = new PartStudio();
+		studio.Add( new PrimitiveFeature() );
+		var project = studio.Add( new UVProjectFeature() );
+		project.Mode.Index = Array.IndexOf( project.Mode.Options, "Unwrap" );
+		project.TextureSize.Value = 256;
+		project.MarginPixels.Value = 8f;
+		project.RotateIslands.Value = true;
+		studio.Rebuild();
+		var (fb, fe) = Gaps( studio.Bodies[0].Mesh );
+		Check( "UV Project's Margin in pixels repacks with that margin", project.Error is null && fb >= 8f / 256f - 1e-5f && fe >= 4f / 256f - 1e-5f, project.Error ?? $"{fb * 256:0.##} / {fe * 256:0.##} px" );
+		Check( "and its report says so", project.LastUnwrap?.ToString().Contains( "8 px" ) == true, project.LastUnwrap?.ToString() );
+		Check( "the new settings are under Advanced, only for the unwrapping modes", project.AdvancedParameters.Contains( project.MarginPixels ) );
+
+		project.TexelDensity.Value = 20f;
+		studio.MarkDirty( project );
+		studio.Rebuild();
+		var fd = UVDensity.Measure( studio.Bodies[0].Mesh, 256 );
+		Check( "UV Project's Texel density gives every island that density", project.Error is null && MathF.Abs( fd.Min - 20f ) < 0.05f && MathF.Abs( fd.Max - 20f ) < 0.05f, project.Error ?? fd.ToString() );
+
+		project.TexelDensity.Value = 5000f;
+		studio.MarkDirty( project );
+		studio.Rebuild();
+		Check( "a density that cannot fit fails with a diagnostic naming the remedy", project.Error is not null && project.Diagnostic?.Remedies.Any( r => r.Contains( "Texel density" ) ) == true, project.Error );
 	}
 
 	static void TestTexelDensity()

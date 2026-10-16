@@ -1840,7 +1840,7 @@ public sealed partial class EffigyWindow
 			Menu( "Face", "Triangulate", "Tris to quads", "Beautify", "Poke faces", "Fill holes", "Scatter", "-", "Split", "Separate", "Loose parts", "By material", "Extract", "-", "Flip", "Recalculate normals", "-", "Solidify", "-", "Delete faces only" ),
 			Menu( "Transform", "Move X", "Move Y", "Move Z", "-", "Rotate X", "Rotate Y", "Rotate Z", "-", "Scale by", "Flatten X", "Flatten Y", "Flatten Z", "-", "Pivot to selection", "To pivot", "Snap to grid" ),
 			Menu( "Mesh", "Move", "Rotate", "Scale", "Soft selection", "Connected only", "Falloff shape", "-", "Shrink/Fatten", "Shear", "Bend", "-", "Symmetrize", "Mirror X", "Snap to surface", "Shrinkwrap", "-", "Dissolve", "Limited dissolve", "Decimate", "Delete", "Delete loose" ),
-			Menu( "UV", "Unwrap", "Organic unwrap", "Mark seam", "Clear seam", "-", "Project UVs", "Project from above", "Cylinder projection", "Sphere projection", "-", "Texel density", "Set texel density", "Texture size", "-", "Trim row", "Trim rows" ),
+			Menu( "UV", "Unwrap", "Organic unwrap", "Mark seam", "Clear seam", "-", "Project UVs", "Project from above", "Cylinder projection", "Sphere projection", "-", "Pack islands", "Texel density", "Set texel density", "Texture size", "-", "Trim row", "Trim rows" ),
 			Menu( "Modifiers", "Modifiers/Live mirror", "Modifiers/Live array", "Modifiers/Live subdivision", "Crease", "Clear crease", "Modifiers/Thickness" ),
 			Menu( "Retopo", "Retopo/Retopo", "Even quads", "Strip brush", "Retopo/Relax", "Finish retopo" ),
 			Menu( "Skin", "Copy weights", "Smooth weights", "Mirror weights", "Fix weights" ),
@@ -2128,6 +2128,7 @@ public sealed partial class EffigyWindow
 		_meshPlanarUVsTool = MeshTool( uv, EffigyIcon.Unwrap, "Project from above", "Map the selected faces straight down at this many units per tile — one continuous texture for a floor, a road, a sign. Shift-click projects along X instead", () => StartMeshOp( "Project UVs", _meshUnitsPerTile, ( s, v ) => { _meshUnitsPerTile = Positive( "Units per tile", v ); s.ProjectUVs( _meshUnitsPerTile, Editor.Application.IsKeyDown( KeyCode.Shift ) ? new Vec3( 1, 0, 0 ) : new Vec3( 0, 0, 1 ) ); } ) );
 		MeshTool( uv, EffigyIcon.Unwrap, "Cylinder projection", "Wrap the texture once round the selected faces (or all of them), along the direction they are longest — for a pipe, a limb or a can. Shift-click wraps round Z instead", () => RunMeshOp( "Cylinder projection", s => s.ProjectCylinder( Editor.Application.IsKeyDown( KeyCode.Shift ) ? (Vec3?)new Vec3( 0, 0, 1 ) : null ) ) );
 		MeshTool( uv, EffigyIcon.Unwrap, "Sphere projection", "Map the selected faces (or all of them) like a globe, by longitude and latitude round the up axis — for a head, an eye or a ball. Shift-click uses X as the axis", () => RunMeshOp( "Sphere projection", s => s.ProjectSphere( Editor.Application.IsKeyDown( KeyCode.Shift ) ? (Vec3?)new Vec3( 1, 0, 0 ) : null ) ) );
+		MeshTool( uv, EffigyIcon.Unwrap, "Pack islands", "Lay every island into the texture as large as it goes, this many pixels apart at the texture size, each turned to whatever angle fits it tightest. Shift-click keeps each island's angle", StartMeshPackIslands );
 		MeshTool( uv, EffigyIcon.Unwrap, "Texture size", "The texture size the texel density and pixel margins are measured for. Click to step through 512, 1024, 2048 and 4096 pixels", CycleMeshTextureSize );
 		MeshTool( uv, EffigyIcon.Unwrap, "Texel density", "Say how many texture pixels one unit of surface gets on the selected islands (or all), at the texture size — the number to match across parts so they are equally sharp", ShowMeshTexelDensity );
 		MeshTool( uv, EffigyIcon.Unwrap, "Set texel density", "Size the selected islands (or all) so each gets this many pixels per unit at the texture size. Each island grows or shrinks in place, so pack afterwards", StartMeshSetTexelDensity );
@@ -2832,6 +2833,17 @@ public sealed partial class EffigyWindow
 			var angle = Within( "Unwrap angle", v, 1f, 179f, "°" );
 			var report = s.Unwrap( angle );
 			SetPrompt( $"Unwrap{only}: {report}.{hint}" );
+		} );
+	}
+
+	/// <summary>Pack islands, scrubbing the margin in pixels.</summary>
+	private void StartMeshPackIslands()
+	{
+		var rotate = !Editor.Application.IsKeyDown( KeyCode.Shift );
+		StartMeshOp( "Pack islands", 4f, ( s, v ) =>
+		{
+			var result = s.PackIslands( Within( "Margin", v, 0f, _meshTextureSize * 0.25f, " px" ), _meshTextureSize, rotate );
+			SetPrompt( $"Pack islands: {result}." );
 		} );
 	}
 

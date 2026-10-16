@@ -45,6 +45,31 @@ public sealed partial class MeshEditSession
 		Step( "Sphere projection", () => UVProjection.SphereProject( Mesh, a, null, faces ) );
 	}
 
+	// --- packing ---------------------------------------------------------------------------
+
+	/// <summary>
+	/// Lay every island into the texture square as large as it goes, at least
+	/// <paramref name="marginPixels"/> apart at <paramref name="textureSize"/>, each turned to the
+	/// angle that boxes it tightest when <paramref name="rotate"/> (see <see cref="UVPack"/>).
+	/// </summary>
+	public UVPack.Result PackIslands( float marginPixels, int textureSize, bool rotate = true, bool keepScale = false )
+	{
+		if ( Mesh.FaceCount == 0 )
+			throw new InvalidOperationException( "There is nothing to pack." );
+
+		UVPack.Result result = null;
+		Step( "Pack islands", () =>
+		{
+			result = UVPack.Pack( Mesh, new UVPack.Options { MarginPixels = marginPixels, TextureSize = textureSize, Rotate = rotate, KeepScale = keepScale } );
+			if ( !result.Fits )
+				throw new InvalidOperationException( keepScale
+					? $"The islands don't fit in the square at their present size with {marginPixels:0.#} px margins. Lower the texel density, use a bigger texture size, or pack without keeping the size."
+					: $"The islands don't fit in the square with {marginPixels:0.#} px margins at {textureSize} px. Use a smaller margin or a bigger texture size." );
+			Report( result.ToString() );
+		} );
+		return result;
+	}
+
 	// --- texel density ---------------------------------------------------------------------
 
 	/// <summary>The texel density of the selected faces' islands (or every island) at

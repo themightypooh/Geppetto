@@ -285,6 +285,22 @@ public sealed class UVProjectFeature : Feature
 	/// </summary>
 	public readonly BoolParam Atlas = new( "Atlas", false );
 
+	/// <summary>Unwrap and Organic: the texture size the pixel margin and texel density below are
+	/// measured on.</summary>
+	public readonly IntParam TextureSize = new( "Texture size", 1024, 16, 16384 );
+
+	/// <summary>Unwrap and Organic: when above zero, the islands are repacked with this many empty
+	/// pixels between them at Texture size, instead of the Island margin fraction.</summary>
+	public readonly FloatParam MarginPixels = new( "Margin in pixels", 0f, 0f, 256f, unit: "px" );
+
+	/// <summary>Unwrap and Organic: repack with each island turned to the angle that boxes it tightest.</summary>
+	public readonly BoolParam RotateIslands = new( "Rotate islands to fit", false );
+
+	/// <summary>Unwrap and Organic: when above zero, every island gets this many pixels per unit at
+	/// Texture size, and the islands are packed at that size rather than scaled to fill the square -
+	/// so separate UV Projects (or a hand and the arm) can match.</summary>
+	public readonly FloatParam TexelDensity = new( "Texel density", 0f, 0f, unit: "px/u" );
+
 	/// <summary>
 	/// What the last Unwrap produced, so the editor can say "12 charts, 340 faces, 1.4 units per
 	/// UV unit" rather than discarding the report. Null while Mode is Box or Planar, and null
@@ -313,6 +329,59 @@ public sealed class UVProjectFeature : Feature
 		_ => new IParam[] { Bodies, Mode, Scale },
 	};
 
+	public override IReadOnlyList<IParam> AdvancedParameters => Mode.Value is "Unwrap" or "Organic"
+		? new IParam[] { TextureSize, MarginPixels, RotateIslands, TexelDensity }
+		: System.Array.Empty<IParam>();
+
+	/// <summary>True when the pixel margin, rotation or density settings ask for a repack.</summary>
+	bool Repacks => MarginPixels.Value > 0f || RotateIslands.Value || TexelDensity.Value > 0f;
+
+	/// <summary>
+	/// After the unwrap: set the density, then repack at a pixel margin. Says what it did on the
+	/// report, and warns - leaving the unwrap's own layout - when the islands do not fit.
+	/// </summary>
+	void Repack( PolyMesh mesh, UnwrapReport report, string what )
+	{
+		if ( !Repacks || mesh.FaceCount == 0 )
+			return;
+
+		var size = TextureSize.Clamped;
+		var keep = TexelDensity.Value > 0f;
+		var before = mesh.Faces.Select( f => (Vec2[])f.UVs.Clone() ).ToArray();
+
+		if ( keep )
+			UVDensity.Set( mesh, TexelDensity.Value, size );
+
+		var margin = MarginPixels.Value > 0f ? MarginPixels.Clamped : Margin.Clamped * size;
+		var result = UVPack.Pack( mesh, new UVPack.Options { TextureSize = size, MarginPixels = margin, Rotate = RotateIslands.Value, KeepScale = keep } );
+
+		if ( !result.Fits )
+		{
+			for ( var f = 0; f < mesh.FaceCount; f++ )
+				mesh.Faces[f].UVs = before[f];
+
+			if ( keep )
+			{
+				FailOn( "Texel density",
+					$"{TexelDensity.Value:0.##} px per unit does not fit on a {size} px texture",
+					$"At that density {what} needs more than the whole square, with {margin:0.#} px margins.",
+					"Lower Texel density",
+					"Raise Texture size",
+					"Set Texel density to 0 to fill the square instead" );
+			}
+
+			Warn(
+				"The islands do not fit with that pixel margin",
+				$"{result}. The unwrap's own layout was kept.",
+				"Use a smaller Margin in pixels",
+				"Raise Texture size" );
+			return;
+		}
+
+		var density = UVDensity.Measure( mesh, size );
+		report.Note = $"{result}; {density}";
+	}
+
 	protected override void Execute( FeatureContext ctx )
 	{
 		LastUnwrap = null;
@@ -335,6 +404,7 @@ public sealed class UVProjectFeature : Feature
 		var scale = 1f;
 		var stretchSum = 0f;
 		var stretchMax = 0f;
+		string lastNote = null;
 		var unwrapping = Mode.Value is "Unwrap" or "Organic";
 
 		var bodies = RequireBodies( ctx, Bodies ).ToList();
@@ -349,6 +419,17 @@ public sealed class UVProjectFeature : Feature
 			LastUnwrap = report;
 			var whole = new PolyMesh();
 			foreach ( var m in meshes ) MeshTransform.Append( whole, m );
+
+			if ( Repacks )
+			{
+				// Packed as one atlas, then each body's faces take their UVs back in Append's order.
+				Repack( whole, report, "the atlas" );
+				var at = 0;
+				foreach ( var m in meshes )
+					foreach ( var face in m.Faces )
+						face.UVs = (Vec2[])whole.Faces[at++].UVs.Clone();
+			}
+
 			LastCoverage = NormalBake.Measure( whole );
 
 			if ( report.SkippedFaces > 0 )
@@ -371,6 +452,8 @@ public sealed class UVProjectFeature : Feature
 			{
 				var report = UVUnwrap.Unwrap( body.Mesh, ChartAngle.Clamped, Margin.Clamped,
 					mode: Mode.Value == "Organic" ? UnwrapMode.Organic : UnwrapMode.Angle );
+				Repack( body.Mesh, report, body.Name );
+				lastNote = report.Note;
 
 				charts += report.Charts;
 				faces += report.Faces;
@@ -420,7 +503,7 @@ public sealed class UVProjectFeature : Feature
 		}
 
 		if ( unwrapping )
-			LastUnwrap = new UnwrapReport( charts, faces, skipped, scale, faces > 0 ? stretchSum / faces : 0f, stretchMax );
+			LastUnwrap = new UnwrapReport( charts, faces, skipped, scale, faces > 0 ? stretchSum / faces : 0f, stretchMax ) { Note = lastNote };
 	}
 }
 
