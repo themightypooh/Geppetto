@@ -3573,7 +3573,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 	/// <summary>
 	/// One callout per feature in trouble — red when it failed, amber when it built with a warning — each with Open, and — when the feature knows the
-	/// value that would fix it — a button that sets it. Each one goes the moment its feature
+	/// value that would fix it — a button that sets it, plus one per RemedyAction (EffigyWindow.Remedies.cs). Each one goes the moment its feature
 	/// builds again, so the stack is always the features that are broken right now.
 	///
 	/// Shown for the feature whose dialog is open too — that is exactly when you have just typed
@@ -3606,6 +3606,13 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 				&& diagnostic.Remedies.Count > 0 )
 			{
 				actions.Add( (diagnostic.Remedies[0], () => ApplySuggestedValue( target, diagnostic.ParameterLabel, value )) );
+			}
+
+			// The fixes the feature can name exactly: Subdivide above, Unwrap above, Choose folder, Open Rig.
+			foreach ( var fix in diagnostic.Actions )
+			{
+				var remedy = fix;
+				actions.Add( (remedy.Label, () => ApplyRemedy( target, remedy )) );
 			}
 
 			// An error built nothing; a warning built something, but not what you probably meant.

@@ -8,7 +8,8 @@ namespace Marionette.EditorTools;
 
 /// <summary>
 /// The shape keys (morphs, blend shapes) on the selected body, as a list: + starts a key and puts
-/// you in Sculpt with it recording, Finish ends it, − removes it, and a slider previews it.
+/// you in Sculpt with it recording, Finish ends it, − removes it, a slider previews it, and Edit
+/// re-opens a finished key to sculpt more into it.
 ///
 /// UNDER THE HOOD IT IS STILL THE HISTORY. A key here is a Shape Key feature, the features that
 /// shape it, and an End Shape Key, so scripts, saved files and the feature tree keep working; this
@@ -18,12 +19,14 @@ namespace Marionette.EditorTools;
 internal sealed class EffigyShapeKeysPanel : Widget
 {
 	/// <summary>One key. StartId is the Shape Key feature's id, null for a key that came in with the
-	/// mesh (an import) rather than from this document's history — those can be previewed only.</summary>
-	public readonly record struct KeyRow( string Name, string StartId, bool Recording, float Weight );
+	/// mesh (an import) rather than from this document's history — those can be previewed only.
+	/// Editing: a finished key re-opened with Edit, so new sculpting goes into it.</summary>
+	public readonly record struct KeyRow( string Name, string StartId, bool Recording, float Weight, bool Editing = false );
 
 	public Action AddClicked { get; set; }
 	public Action FinishClicked { get; set; }
 	public Action<string> RemoveClicked { get; set; }
+	public Action<string> EditClicked { get; set; }
 	public Action<string, string> RenameCommitted { get; set; }
 	public Action<string, float> WeightChanged { get; set; }
 
@@ -54,7 +57,7 @@ internal sealed class EffigyShapeKeysPanel : Widget
 
 		_finish = new Button( "Finish key", this )
 		{
-			ToolTip = "End the key being recorded: everything since + New key becomes the key",
+			ToolTip = "End the key being recorded or edited: everything sculpted into it becomes the key, and the body goes back",
 			Visible = false,
 		};
 		_finish.Clicked = () => FinishClicked?.Invoke();
@@ -80,7 +83,7 @@ internal sealed class EffigyShapeKeysPanel : Widget
 		if ( _list.Children.OfType<Widget>().SelectMany( r => r.Children ).OfType<LineEdit>().Any( e => e.IsFocused ) )
 			return;
 
-		var recording = rows.Any( r => r.Recording );
+		var recording = rows.Any( r => r.Recording || r.Editing );
 
 		_title.Text = body is null ? "Shape Keys" : $"Shape Keys · {body}";
 		_status.Text = status ?? "";
@@ -119,9 +122,9 @@ internal sealed class EffigyShapeKeysPanel : Widget
 
 		row.Layout.Add( name );
 
-		if ( key.Recording )
+		if ( key.Recording || key.Editing )
 		{
-			row.Layout.Add( new Editor.Label( "recording…" ) { Color = Theme.Primary } );
+			row.Layout.Add( new Editor.Label( key.Editing ? "editing…" : "recording…" ) { Color = Theme.Primary } );
 			row.Layout.AddStretchCell();
 		}
 		else
@@ -144,6 +147,17 @@ internal sealed class EffigyShapeKeysPanel : Widget
 
 			row.Layout.Add( slider, 1 );
 			row.Layout.Add( readout );
+		}
+
+		if ( key.StartId is { } editId && !key.Recording && !key.Editing )
+		{
+			row.Layout.Add( new IconButton( "edit", () => EditClicked?.Invoke( editId ) )
+			{
+				ToolTip = "Sculpt more into this key. The model shows the key fully on, and whatever you sculpt, edit or detail "
+					+ "is added to it. Press Finish key when you are done",
+				IconSize = 16,
+				Background = Color.Transparent,
+			} );
 		}
 
 		if ( key.StartId is { } startId )
