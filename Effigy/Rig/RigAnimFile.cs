@@ -434,6 +434,28 @@ public sealed class RigAnimFile
 		Ik = RigIk.ReadRig( json );
 		Limits = RigLimit.ReadRig( json );
 		Collision = RigSoftCollision.ReadRig( json );
+		Drivers = MorphDriver.ReadRig( json );
+	}
+
+	/// <summary>
+	/// The rig's morph drivers (<see cref="MorphDriver.ReadRig"/>): correctives whose weight is read
+	/// off a bone's pose every frame. Null or empty drives nothing.
+	/// </summary>
+	public List<MorphDriver> Drivers;
+
+	/// <summary>
+	/// Every morph at a frame given the frame's pose: driven morphs first (<see cref="Drivers"/>), then
+	/// the clip's own keyed curves and events over them - a morph the clip animates by hand is the
+	/// clip's on the frames it says so. Marionette's player and viewport layer them the same way.
+	/// </summary>
+	public Dictionary<string, float> MorphWeightsAt( float frame, Skeleton skeleton, IReadOnlyList<Xform> local )
+	{
+		var result = MorphDriver.WeightsAt( Drivers, skeleton, local );
+
+		foreach ( var (name, value) in MorphWeightsAt( frame ) )
+			result[name] = value;
+
+		return result;
 	}
 
 	/// <summary>Each IK goal's space and object, by end bone - Marionette's IkGoalAnchors. A goal not
@@ -839,7 +861,7 @@ public sealed class RigAnimFile
 			}
 
 			clip.AddFrame( pose, scales );
-			clip.SetMorphs( MorphWeightsAt( f ) );
+			clip.SetMorphs( Drivers is { Count: > 0 } ? MorphWeightsAt( f, skeleton, pose ) : MorphWeightsAt( f ) );
 		}
 
 		return clip;

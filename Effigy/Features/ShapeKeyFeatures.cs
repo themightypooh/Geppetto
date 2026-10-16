@@ -18,7 +18,7 @@ namespace Effigy;
 /// A KEY CAN ONLY MOVE VERTICES. A feature inside it that adds or removes vertices (extrude,
 /// subdivide, remesh) cannot be expressed as a morph; End Shape Key says which body and stops.
 /// </summary>
-public sealed class ShapeKeyFeature : Feature
+public sealed class ShapeKeyFeature : Feature, IShapeKeyStart
 {
 	public override string TypeName => "Shape Key";
 
@@ -30,13 +30,29 @@ public sealed class ShapeKeyFeature : Feature
 
 	public readonly BodySelectionParam Bodies = new( "Bodies" );
 
-	public override IReadOnlyList<IParam> Parameters => new IParam[] { Key, Bodies };
+	// "Driven by": empty bone, keyed by hand only. See ShapeKeyDriver / MorphDriver.
+	public readonly StringParam Bone = ShapeKeyDriver.BoneParam();
+	public readonly ChoiceParam Channel = ShapeKeyDriver.ChannelParam();
+	public readonly ChoiceParam Axis = ShapeKeyDriver.AxisParam();
+	public readonly StringParam OtherBone = ShapeKeyDriver.OtherBoneParam();
+	public readonly FloatParam RestAngle = ShapeKeyDriver.RestParam();
+	public readonly FloatParam TargetAngle = ShapeKeyDriver.TargetParam();
+	public readonly ChoiceParam Ease = ShapeKeyDriver.EaseParam();
+	public readonly BoolParam Clamp = ShapeKeyDriver.ClampParam();
+
+	public override IReadOnlyList<IParam> Parameters => new IParam[] { Key, Bodies, Bone, Channel, Axis, OtherBone, RestAngle, TargetAngle, Ease, Clamp };
+
+	public override IReadOnlyList<IParam> AdvancedParameters => new IParam[] { Bone, Channel, Axis, OtherBone, RestAngle, TargetAngle, Ease, Clamp };
 
 	/// <summary>Key name, or the feature's own name with spaces made underscores ("Shape Key 1" →
 	/// Shape_Key_1), or "shape_key".</summary>
-	public string KeyName => !string.IsNullOrWhiteSpace( Key.Value ) ? Key.Value.Trim()
-		: !string.IsNullOrWhiteSpace( Name ) ? string.Join( "_", Name.Trim().Replace( "\"", "" ).Split( ' ', StringSplitOptions.RemoveEmptyEntries ) )
-		: "shape_key";
+	public string KeyName => ShapeKeyDriver.KeyName( Key.Value, Name, "shape_key" );
+
+	/// <summary>The bone reading that sets the key's weight, or null when it is keyed by hand.</summary>
+	public MorphDriver Driver => ShapeKeyDriver.From( KeyName, Bone, Channel, Axis, OtherBone, RestAngle, TargetAngle, Ease, Clamp );
+
+	BodySelectionParam IShapeKeyStart.KeyBodies => Bodies;
+	StringParam IShapeKeyStart.KeyNameParam => Key;
 
 	/// <summary>Called after a rebuild: a body still recording means the last Shape Key was never
 	/// ended. Warns on that feature (rolled back past its End is the usual cause, and is fine while
@@ -62,7 +78,7 @@ public sealed class ShapeKeyFeature : Feature
 
 		var key = open[0].Mesh.RecordingMorph.Name;
 
-		if ( evaluated.LastOrDefault( f => f is ShapeKeyFeature k && !k.Suppressed && k.Error is null ) is not ShapeKeyFeature start )
+		if ( evaluated.LastOrDefault( f => f is IShapeKeyStart && !f.Suppressed && f.Error is null ) is not { } start )
 			return;
 
 		if ( all is not null && all.SkipWhile( f => !ReferenceEquals( f, start ) ).Skip( 1 )
@@ -91,6 +107,16 @@ public sealed class ShapeKeyFeature : Feature
 				"Set Key name, e.g. key=sac_swell" );
 		}
 
+		// A driven key whose driver cannot evaluate is still a key - it can be keyed by hand - so this
+		// warns, naming what the driver needs, rather than failing the model.
+		if ( Driver is { } driver && driver.Problems( ctx.Rig is { Count: > 0 } ? ctx.Rig : null ) is { Count: > 0 } problems )
+		{
+			Warn(
+				$"'{name}' is driven but its driver cannot work yet",
+				problems[0],
+				ctx.Rig is { Count: > 0 } ? "Fix Driven by in the key's Advanced fields" : "Place bones in the Rig workspace so the driver has a bone to read" );
+		}
+
 		foreach ( var body in RequireBodies( ctx, Bodies ) )
 		{
 			if ( body.Mesh.RecordingMorph is { } open )
@@ -101,7 +127,7 @@ public sealed class ShapeKeyFeature : Feature
 					"Add End Shape Key before this one" );
 			}
 
-			body.Mesh.Morphs.Add( new MeshMorph { Name = name, Base = body.Mesh.Positions.ToArray(), Deltas = null } );
+			body.Mesh.Morphs.Add( new MeshMorph { Name = name, Base = body.Mesh.Positions.ToArray(), Deltas = null, Driver = Driver } );
 		}
 	}
 }
@@ -147,10 +173,25 @@ public sealed class ShapeKeyEndFeature : Feature
 					"Move that feature above the Shape Key, or below End Shape Key" );
 			}
 
-			morph.Deltas = mesh.Positions.Select( ( p, i ) => p - morph.Base[i] ).ToArray();
+			if ( morph.IsCorrective )
+			{
+				// Sculpted posed: carry each vertex back through its own skinning to bind space, and
+				// put the body back at bind rather than at the pose it was shown in. CorrectiveShape.
+				morph.Deltas = CorrectiveShape.Deltas( morph.BindBase, morph.Unskin, mesh.Positions );
 
-			for ( var i = 0; i < morph.Base.Length; i++ )
-				mesh.Positions[i] = morph.Base[i];
+				for ( var i = 0; i < morph.BindBase.Length; i++ )
+					mesh.Positions[i] = morph.BindBase[i];
+
+				morph.BindBase = null;
+				morph.Unskin = null;
+			}
+			else
+			{
+				morph.Deltas = mesh.Positions.Select( ( p, i ) => p - morph.Base[i] ).ToArray();
+
+				for ( var i = 0; i < morph.Base.Length; i++ )
+					mesh.Positions[i] = morph.Base[i];
+			}
 
 			morph.Base = null;
 			mesh.Morphs.RemoveAll( m => m != morph && m?.Name == morph.Name );

@@ -35,6 +35,19 @@ public static class MeshTransform
 			// An open key's base moves with the mesh, or End Shape Key would read the move as the shape.
 			for ( var i = 0; i < (morph.Base?.Length ?? 0); i++ )
 				morph.Base[i] = xform.TransformPoint( morph.Base[i] );
+
+			// A corrective being recorded: its bind positions move like the base, and its un-skin
+			// matrices are conjugated so they still carry a (moved) posed point to its (moved) bind one.
+			for ( var i = 0; i < (morph.BindBase?.Length ?? 0); i++ )
+				morph.BindBase[i] = xform.TransformPoint( morph.BindBase[i] );
+
+			if ( morph.Unskin is { } unskin )
+			{
+				var inverse = xform.Inverse;
+
+				for ( var i = 0; i < unskin.Length; i++ )
+					unskin[i] = xform * unskin[i] * inverse;
+			}
 		}
 
 		if ( !xform.FlipsWinding )
@@ -112,7 +125,11 @@ public static class MeshTransform
 				if ( source.Morphs.FirstOrDefault( m => m is { Recording: false } && m.Name == name ) is { } s && s.Deltas?.Length == source.Positions.Count )
 					Array.Copy( s.Deltas, 0, deltas, offset, s.Deltas.Length );
 
-				merged.Add( new MeshMorph { Name = name, Deltas = deltas } );
+				// A driver (corrective) rides its key through the merge.
+				var driver = target.Morphs.FirstOrDefault( m => m?.Name == name )?.Driver
+					?? source.Morphs.FirstOrDefault( m => m is { Recording: false } && m.Name == name )?.Driver;
+
+				merged.Add( new MeshMorph { Name = name, Deltas = deltas, Driver = driver?.Clone() } );
 			}
 
 			target.Morphs = merged;

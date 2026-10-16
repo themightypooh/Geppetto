@@ -744,6 +744,12 @@ public static partial class BuildScript
 
 			DmxWriter.WriteFile( mesh, dmxPath, skeleton, materialName: studio.NameForSlot, modelName: safe, wrinkles: wrinkleValues );
 			SmdWriter.WriteFile( mesh, smdPath, skeleton, materialName: studio.NameForSlot );
+
+			// Driven shape keys: their drivers into the model's .ctrlrig, for Marionette and the player.
+			var drivers = MorphDriver.FromMesh( mesh );
+
+			if ( MorphDriver.WriteRigFile( Path.Combine( dir, safe + ".ctrlrig" ), drivers, $"{folder}/{safe}.vmdl" ) )
+				r.Log.Add( $"export: {drivers.Count} morph driver(s) written to {safe}.ctrlrig" );
 			var vmdlPath = Path.Combine( dir, safe + ".vmdl" );
 			var skinMaterials = VmdlMaterials.GroupList( studio, mesh );
 			r.Written.AddRange( new[] { dmxPath, smdPath } );

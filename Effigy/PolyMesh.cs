@@ -589,5 +589,30 @@ public sealed class MeshMorph
 
 	public bool Recording => Base is not null;
 
-	public MeshMorph Clone() => new() { Name = Name, Deltas = (Vec3[])Deltas?.Clone(), Base = (Vec3[])Base?.Clone() };
+	/// <summary>The bone reading that sets this key's weight (a corrective shape key), or null for a
+	/// key that is only keyed by hand. See <see cref="MorphDriver"/>.</summary>
+	public MorphDriver Driver;
+
+	/// <summary>
+	/// While a Corrective Shape Key is recording: the body is shown POSED, and these are its bind
+	/// positions and, per vertex, the inverse of its blended skin matrix at that pose (inverse LBS).
+	/// End Shape Key carries each sculpted posed vertex back through it to bind space, so the key's
+	/// offsets are bind-space offsets the skinning reproduces at the pose. Null for a plain key.
+	/// See <see cref="CorrectiveShape"/>.
+	/// </summary>
+	public Vec3[] BindBase;
+
+	public Xform[] Unskin;
+
+	public bool IsCorrective => Unskin is not null;
+
+	public MeshMorph Clone() => new()
+	{
+		Name = Name,
+		Deltas = (Vec3[])Deltas?.Clone(),
+		Base = (Vec3[])Base?.Clone(),
+		Driver = Driver?.Clone(),
+		BindBase = (Vec3[])BindBase?.Clone(),
+		Unskin = (Xform[])Unskin?.Clone(),
+	};
 }
