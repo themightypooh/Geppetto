@@ -117,7 +117,7 @@ public sealed partial class EffigyWindow
 		add.Add( Tool( EffigyIcon.Plane, "Top reference image...", "A picture seen from above", () => AddReferenceImage( "top" ) ) );
 
 		var mesh = new EffigyStage { Name = "Mesh" };
-		foreach ( var tool in new[] { _objEditTool, _objSculptTool, _objRetopoTool, null, _objSubdivideTool, _objRemeshTool, _objBendTool, null, _objCadTool } )
+		foreach ( var tool in new[] { _objEditTool, _objSculptTool, _objRetopoTool, null, _objSubdivideTool, _objRemeshTool, null, _objCadTool } )
 			mesh.Add( tool );
 
 		// Features that only a build script could add until the usability audit (2026-10-16).
@@ -126,10 +126,19 @@ public sealed partial class EffigyWindow
 		mesh.Add( Tool( EffigyIcon.Sculpt, "Shape key", "Start a shape key (a morph: a sac swelling, a jaw gaping). Sculpt, edit or add detail after it, then add End shape key — what moved becomes the key and the body goes back. Exported with the model, animated in Marionette. The Shape Keys panel (View menu) does all of this for you", () => AddFeature( NewFeature( ToolKind.ShapeKey, -1 ) ) ) );
 		mesh.Add( Tool( EffigyIcon.Sculpt, "End shape key", "Finish the shape key opened by the last Shape key: everything since then becomes the key, and the body goes back to how it was", () => AddFeature( NewFeature( ToolKind.ShapeKeyEnd, -1 ) ) ) );
 
+		mesh.Add( Tool( EffigyIcon.Shell, "Shell", "Give the selected body a wall thickness: hollow it, grow a skin outward, or thicken an open sheet. Options set the direction, even thickness and the rim", () => AddFeature( NewFeature( ToolKind.Shell, -1 ) ) ) );
+
 		mesh.Add( null );
 		mesh.Add( TopologyTool() );
 
-		_objectMenus = new List<EffigyStage> { objectMenu, add, mesh };
+
+		// Deform: reshape a whole body and keep it editable — proportions without resculpting.
+		var deform = new EffigyStage { Name = "Deform" };
+		deform.Add( Tool( EffigyIcon.Drape, "Simple deform", "Twist, bend, taper or stretch the selected body along an axis. The angle and limits stay editable in the history", () => AddFeature( NewFeature( ToolKind.SimpleDeform, -1 ) ) ) );
+		deform.Add( Tool( EffigyIcon.Transform, "Lattice", "Put a cage of control points round the selected body. Moving a point drags the shape near it: a longer snout, a heavier jaw", () => AddFeature( NewFeature( ToolKind.Lattice, -1 ) ) ) );
+		deform.Add( _objBendTool );
+
+		_objectMenus = new List<EffigyStage> { objectMenu, add, mesh, deform };
 	}
 
 	/// <summary>

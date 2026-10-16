@@ -3626,6 +3626,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		Spline, CurveDeform, Part, Profile,
 		Blob, SurfaceDetail, FleshMaterial, ShapeKey, ShapeKeyEnd,
 		Pocket, Hardware, Wear, Glow,
+		SimpleDeform, Lattice,
 	}
 
 	/// <summary>Build one, and apply the variant chosen from its dropdown where it has one.</summary>
@@ -3674,6 +3675,8 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		ToolKind.FleshMaterial => new FleshMaterialFeature(),
 		ToolKind.ShapeKey => new ShapeKeyFeature(),
 		ToolKind.ShapeKeyEnd => new ShapeKeyEndFeature(),
+		ToolKind.SimpleDeform => new SimpleDeformFeature(),
+		ToolKind.Lattice => new LatticeFeature(),
 		_ => throw new ArgumentOutOfRangeException( nameof( kind ), kind, "no feature for this tool" )
 	};
 
@@ -3908,6 +3911,12 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		new() { Icon = EffigyIcon.Drape, Label = "Bend Along Curve", Stage = StageRepeat, MenuIcon = "gesture",
 			Tip = "Add a Bend along curve — a body's length follows the spline above it",
 			Kind = ToolKind.CurveDeform },
+		new() { Icon = EffigyIcon.Drape, Label = "Simple Deform", Stage = StageRepeat, MenuIcon = "rotate_right",
+			Tip = "Add a Simple Deform — twist, bend, taper or stretch bodies along an axis",
+			Kind = ToolKind.SimpleDeform },
+		new() { Icon = EffigyIcon.Transform, Label = "Lattice", Stage = StageRepeat, MenuIcon = "grid_on",
+			Tip = "Add a Lattice — a cage of points round bodies; moving a point drags the shape near it",
+			Kind = ToolKind.Lattice },
 
 		// --- Finish: what is left on the CAD bar after the other workspaces took theirs ---------
 		// Subdivide and Sculpt live in the Sculpt workspace, and UV Project and Paint in the Paint

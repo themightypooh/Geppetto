@@ -391,6 +391,7 @@ public static class Program
 		BakeSetTests.Run( outDir );
 		SboxOutputTests.Run( outDir );
 		SculptToolsTests.Run();
+		DeformTests.Run();
 
 		MenuIconTests.Run();
 
