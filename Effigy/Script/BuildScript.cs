@@ -399,8 +399,38 @@ public static partial class BuildScript
 			case "bake":
 				return Bake( studio, args, baseDir, r );
 
+			case "paintmaps":
+			{
+				// paintmaps Torso out/tex [name=torso] [assets=root] [bump=2] — the painted texture set.
+				if ( args.Count < 2 )
+					return Fail( r, "paintmaps needs a painted body and a folder: paintmaps Torso out/tex [name=x] [assets=root] [bump=2]" );
+
+				var body = ModelMeasure.FindBody( studio, args[0] );
+
+				if ( body?.Mesh is null )
+					return Fail( r, $"No body called '{args[0]}'. Bodies: {string.Join( ", ", studio.Bodies.Select( b => b.Name ?? b.Id ) )}." );
+
+				if ( body.Mesh.Paint is null )
+					return Fail( r, $"{args[0]} has no paint to write. Add a paint layer first: add Paint bodies={args[0]} fill=1 color=0.4,0.3,0.2" );
+
+				var opts = Pairs( args.Skip( 2 ) );
+				var dir = Resolve( baseDir, args[1] );
+				var root = opts.TryGetValue( "assets", out var assets ) ? assets : baseDir;
+				var bump = opts.TryGetValue( "bump", out var bumpText ) ? Number( bumpText ) : PaintTextureSet.DefaultBumpStrength;
+				var name = Safe( opts.GetValueOrDefault( "name", (body.Name ?? body.Id) + "_paint" ) );
+
+				foreach ( var path in PaintTextureSet.Write( body.Mesh.Paint, dir, name,
+					p => Path.GetRelativePath( root, p ).Replace( '\\', '/' ), bump ) )
+				{
+					r.Written.Add( path );
+					r.Log.Add( $"wrote {path}" );
+				}
+
+				return true;
+			}
+
 			default:
-				return Fail( r, $"Unknown command '{verb}'. Commands: add, edit, set, remove, rebuild, fix, render, describe, measure, distance, symmetry, topology, section, flex, match, material, pivot, export, corrective, bake, save, echo." );
+				return Fail( r, $"Unknown command '{verb}'. Commands: add, edit, set, remove, rebuild, fix, render, describe, measure, distance, symmetry, topology, section, flex, match, material, pivot, export, corrective, bake, paintmaps, save, echo." );
 		}
 	}
 
@@ -1347,8 +1377,8 @@ public static partial class BuildScript
 	/// `render out.png shade=material|clay [views=4] [size=512] [elevation=12] [preset=Wet gore] [focus=Body] [label=OURS]`:
 	/// a lit turnaround through ShadedRender, for judging how a thing LOOKS (wet, glossy, translucent)
 	/// rather than measuring it. shade=material shows each body as its Flesh Material feature baked it
-	/// (maps or per-vertex); a body with none takes `preset=` evaluated per vertex, else its vertex
-	/// colours, else clay.
+	/// (maps or per-vertex); a body with none shows its paint layers if it has any, else takes
+	/// `preset=` evaluated per vertex, else its vertex colours, else clay.
 	/// </summary>
 	static bool RenderShaded( PartStudio studio, string path, Dictionary<string, string> opts, string shade, Result r )
 	{
@@ -1387,6 +1417,13 @@ public static partial class BuildScript
 			{
 				scene.Add( body.Mesh, FleshMaterial.Shade( owner.Stack, maps ) );
 				r.Log.Add( $"{name}: {owner.PresetName} ({maps.Size}² maps)" );
+			}
+			else if ( body.Mesh.Paint is { } paint )
+			{
+				// Painted layers: colour, roughness, metallic and the normal from painted height,
+				// exactly the images `paintmaps` and the editor's compile write.
+				scene.Add( body.Mesh, PaintTextureSet.Shade( paint ) );
+				r.Log.Add( $"{name}: its paint ({paint.Width}² maps)" );
 			}
 			else if ( fallback is not null )
 			{

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Text;
 
 namespace Effigy;
@@ -158,5 +159,80 @@ public static class PaintTextureSet
 		sb.Append( "}\n" );
 
 		return sb.ToString();
+	}
+
+	/// <summary>
+	/// Write the whole set into <paramref name="folder"/>: <c>{baseName}.png</c> for colour,
+	/// <c>{baseName}_rough/_metal/_normal.png</c> for the rest, and <c>{baseName}.vmat</c> naming them
+	/// by <paramref name="assetPath"/> (file path → the path the material should name). Returns every
+	/// file written, the .vmat last. The editor's compile and the `paintmaps` script verb both call
+	/// this, so a painted body exports the same files from either.
+	/// </summary>
+	public static List<string> Write( PaintCanvas paint, string folder, string baseName, Func<string, string> assetPath,
+		float bumpStrength = DefaultBumpStrength )
+	{
+		if ( paint is null )
+			throw new ArgumentNullException( nameof( paint ) );
+
+		Directory.CreateDirectory( folder );
+		var written = new List<string>();
+		var named = new Dictionary<string, string>();
+
+		foreach ( var image in Images( paint, bumpStrength ) )
+		{
+			var path = Path.Combine( folder, image.Suffix == "color" ? $"{baseName}.png" : $"{baseName}_{image.Suffix}.png" );
+			PngWriter.WriteFileRgba( path, image.Rgba, image.Width, image.Height );
+			written.Add( path );
+			named[image.Suffix] = assetPath( path );
+		}
+
+		var vmat = Path.Combine( folder, $"{baseName}.vmat" );
+		File.WriteAllText( vmat, VmatSource( named ) );
+		written.Add( vmat );
+		return written;
+	}
+
+	/// <summary>
+	/// A material for Effigy's own renderer showing this paint the way the exported set will: the
+	/// colour, roughness and metallic images and the normal map from height, all at the colour
+	/// canvas's size (a channel painted at another resolution is resampled to it).
+	/// </summary>
+	public static Effigy.Render.ShadeMaterial Shade( PaintCanvas paint, float bumpStrength = DefaultBumpStrength )
+	{
+		if ( paint is null )
+			throw new ArgumentNullException( nameof( paint ) );
+
+		var size = paint.Width;
+
+		byte[] At( PaintCanvas canvas, PaintChannel channel )
+		{
+			if ( canvas is null )
+				return null;
+
+			var holder = new PaintCanvas( size, size );
+			var resized = canvas.Width == size && canvas.Height == size ? canvas : PaintLayers.Resample( canvas, size, size );
+
+			switch ( channel )
+			{
+				case PaintChannel.Roughness: holder.RoughnessMap = resized; break;
+				case PaintChannel.Metalness: holder.MetalnessMap = resized; break;
+				default: return PaintLayers.Opaque( resized, PaintChannel.Color );
+			}
+
+			return PaintLayers.Opaque( holder, channel );
+		}
+
+		var height = paint.HeightMap is null ? null
+			: paint.HeightMap.Width == size ? paint.HeightMap : PaintLayers.Resample( paint.HeightMap, size, size );
+
+		return new Effigy.Render.ShadeMaterial
+		{
+			MapSize = size,
+			AlbedoMap = PaintLayers.Opaque( paint, PaintChannel.Color ),
+			Roughness = PaintChannels.Base( PaintChannel.Roughness ),
+			RoughnessMap = At( paint.RoughnessMap, PaintChannel.Roughness ),
+			MetallicMap = At( paint.MetalnessMap, PaintChannel.Metalness ),
+			NormalMap = height is null ? null : HeightToNormal( height, bumpStrength ),
+		};
 	}
 }

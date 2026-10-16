@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using Effigy;
 using static Effigy.Tests.Report;
@@ -40,6 +41,7 @@ public static class PaintLayerTests
 		TestFillChannels();
 		TestHeightToNormal();
 		TestVmatBindsChannels();
+		TestScriptWritesTextureSet();
 
 		Section( "paint layers: save and load" );
 		TestChannelsRoundTrip();
@@ -558,5 +560,34 @@ public static class PaintLayerTests
 			f.UVs = null;
 
 		Check( "a mesh with none is caught before a fill or a generator runs", !PaintMasks.HasUVs( mesh ) );
+	}
+
+	static void TestScriptWritesTextureSet()
+	{
+		var dir = Path.Combine( Path.GetTempPath(), $"effigy-paintmaps-{Guid.NewGuid():N}" );
+		var studio = new PartStudio();
+
+		var result = BuildScript.Run( studio,
+			"add Primitive name=Torso shape=Box sizex=1 sizey=1 sizez=1\n"
+			+ "add UVProject bodies=Torso mode=Unwrap\n"
+			+ "add Paint name=Rust bodies=Torso resolution=64 fill=1 color=0.5,0.25,0.1 use_roughness=1 roughness=0.9 use_metallic=1 metallic=0.2 mask_generator=gradient\n"
+			+ "paintmaps Torso tex name=torso_paint\n", dir );
+
+		Check( "a script can add a fill layer with a mask and write its texture set", result.Ok, result.ToString() );
+
+		var expected = new[] { "torso_paint.png", "torso_paint_rough.png", "torso_paint_metal.png", "torso_paint.vmat" };
+		Check( "paintmaps writes colour, roughness, metallic and the vmat (no normal: no height painted)",
+			expected.All( f => File.Exists( Path.Combine( dir, "tex", f ) ) ) && !File.Exists( Path.Combine( dir, "tex", "torso_paint_normal.png" ) ),
+			string.Join( ",", Directory.Exists( Path.Combine( dir, "tex" ) ) ? Directory.GetFiles( Path.Combine( dir, "tex" ) ).Select( Path.GetFileName ) : Array.Empty<string>() ) );
+
+		var vmat = File.Exists( Path.Combine( dir, "tex", "torso_paint.vmat" ) ) ? File.ReadAllText( Path.Combine( dir, "tex", "torso_paint.vmat" ) ) : "";
+		Check( "the vmat names the images relative to the assets root",
+			vmat.Contains( "TextureRoughness \"tex/torso_paint_rough.png\"" ) && vmat.Contains( "TextureMetalness \"tex/torso_paint_metal.png\"" ), vmat );
+
+		var refused = BuildScript.Run( new PartStudio(), "add Primitive name=Bare shape=Box\npaintmaps Bare tex\n", dir );
+		Check( "paintmaps on an unpainted body says why and how to fix it", !refused.Ok && refused.Error.Contains( "no paint" ) && refused.Error.Contains( "add Paint" ),
+			refused.Error );
+
+		try { Directory.Delete( dir, true ); } catch ( IOException ) { }
 	}
 }
