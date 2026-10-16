@@ -61,7 +61,7 @@ internal sealed partial class EffigyViewport
 	private bool IdlePickingAllowed =>
 		!IsSketching && !IsSplineEditing && !IsSculpting && !IsMeshEditing && !IsPainting && !IsMaterialBrushing && !IsNoting && !IsWeightPainting && !Measuring
 		&& !PlanePickMode && !SketchPickMode && !FacePickMode && !EdgePickMode && !BodyPickMode
-		&& !BoneToolActive
+		&& !BoneToolActive && !PointPicking
 		&& !_draggingOrigin && !_draggingLight && !_draggingFace;
 
 	/// <summary>

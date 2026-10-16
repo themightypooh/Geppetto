@@ -1643,6 +1643,7 @@ internal sealed partial class EffigyViewport : Widget
 
 		DrawRigSkeleton();
 		BoneToolFrame();
+		PointPickFrame();
 
 		SketchFrame();
 		SplineFrame();
@@ -1671,7 +1672,7 @@ internal sealed partial class EffigyViewport : Widget
 		// RigMode joins the list for the same reason every other entry is on it: these sit where
 		// first clicks land, and in the rig workspace those clicks are meant for bones and parts.
 		if ( !IsSketching && !IsMeshEditing && !PlanePickMode && !SketchPickMode && !FacePickMode && !EdgePickMode
-			&& !BodyPickMode && !BoneToolActive && !RigMode )
+			&& !BodyPickMode && !BoneToolActive && !RigMode && !PointPicking )
 		{
 			DrawViewportLights();
 			DrawOrigin();
@@ -1724,7 +1725,7 @@ internal sealed partial class EffigyViewport : Widget
 		DrawRadial();
 
 		Cursor = CubeOwnsMouse || Gizmo.HasHovered || IsSketching || IsMeshEditing || IsPainting || IsMaterialBrushing || _hoveredSketchId is not null || _hoveredFaceBodyId is not null
-			|| BoneToolActive || BodyPickMode || FacePickMode || EdgePickMode
+			|| BoneToolActive || BodyPickMode || FacePickMode || EdgePickMode || PointPicking
 			|| ( RigMode && TryPickBoneUnderCursor( out _ ) )
 			? CursorShape.Finger : CursorShape.Arrow;
 	}
@@ -2343,6 +2344,14 @@ internal sealed partial class EffigyViewport : Widget
 		if ( e.Key != KeyCode.Escape )
 		{
 			base.OnKeyPress( e );
+			return;
+		}
+
+		// Escape puts down a click-to-place before anything else it could mean.
+		if ( PointPicking )
+		{
+			EndPointPick();
+			e.Accepted = true;
 			return;
 		}
 

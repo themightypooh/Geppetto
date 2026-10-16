@@ -673,6 +673,7 @@ internal sealed class EffigyFeatureDialog : Widget
 		Visible = false;
 
 		_activeArmable = null;
+		_viewport.EndPointPick();
 		_viewport.PlanePickMode = false;
 		_viewport.DatumPlanePicked = null;
 		_viewport.FacePickMode = false;
@@ -1833,6 +1834,26 @@ internal sealed class EffigyFeatureDialog : Widget
 				Background = Color.Transparent,
 			} );
 		}
+		else if ( _feature is BlobFeature blob && ReferenceEquals( sp, blob.Shapes ) )
+		{
+			layout.Add( PointPickButton(
+				"Place shapes on the model: press and drag out a sphere, hold Shift to cut a hole instead. Escape stops",
+				"Drag out a sphere on the model or in space. Shift+drag cuts a hole. Escape stops.",
+				drag: true,
+				ghost: () => LastBlobRadius( sp.Value ),
+				anchor: () => LastBlobCentre( sp.Value ),
+				picked: ( p, r, cut ) => AppendPoint( sp, edit, $"{(cut ? "-" : "")}sphere {Xyz( p )} {Num( r )}" ) ) );
+		}
+		else if ( _feature is FleshMaterialFeature flesh && ReferenceEquals( sp, flesh.Seeds ) )
+		{
+			layout.Add( PointPickButton(
+				"Click the model to add corruption seeds, the spots it spreads out from. Escape stops",
+				"Click the model to add a corruption seed. Escape stops.",
+				drag: false,
+				ghost: () => 1f,
+				anchor: () => Vec3.Zero,
+				picked: ( p, _, _ ) => AppendPoint( sp, edit, Xyz( p ) ) ) );
+		}
 		else if ( _feature is ImportFeature import && ReferenceEquals( sp, import.Source ) )
 		{
 			layout.Add( new IconButton( "folder_open", () => BrowseImport( import, edit ) )
@@ -2118,6 +2139,97 @@ internal sealed class EffigyFeatureDialog : Widget
 		_ => null,
 	};
 
+	/// <summary>
+	/// A toggle that arms the viewport's click-to-place for one setting. Lit while armed; a second
+	/// press, Escape or closing the dialog puts it down. The setting stays text (or numbers), so
+	/// scripts and saved files read it exactly as before.
+	/// </summary>
+	private IconButton PointPickButton( string tip, string prompt, bool drag, Func<float> ghost, Func<Vec3> anchor, Action<Vec3, float, bool> picked )
+	{
+		IconButton button = null;
+		EffigyViewport.PointPickRequest mine = null;
+
+		void Light( bool on )
+		{
+			if ( button.IsValid() )
+				button.Background = on ? Theme.Primary.WithAlpha( 0.5f ) : Color.Transparent;
+		}
+
+		button = new IconButton( "ads_click", () =>
+		{
+			if ( mine is not null && ReferenceEquals( _viewport.PointPick, mine ) )
+			{
+				_viewport.EndPointPick();
+				return;
+			}
+
+			mine = new EffigyViewport.PointPickRequest
+			{
+				Drag = drag,
+				GhostRadius = ghost(),
+				Anchor = anchor(),
+				Picked = picked,
+				Ended = () =>
+				{
+					Light( false );
+					_viewport.SetPickPrompt( "" );
+				},
+			};
+
+			_viewport.BeginPointPick( mine );
+			_viewport.SetPickPrompt( prompt );
+			Light( true );
+		} )
+		{
+			ToolTip = tip,
+			IconSize = 16,
+			Background = Color.Transparent,
+		};
+
+		return button;
+	}
+
+	/// <summary>Add one entry to a `;`-separated setting and rebuild.</summary>
+	private void AppendPoint( StringParam sp, LineEdit edit, string entry )
+	{
+		var now = (sp.Value ?? "").Trim().TrimEnd( ';' ).Trim();
+		sp.Value = now.Length == 0 ? entry : $"{now}; {entry}";
+
+		if ( edit.IsValid() )
+			edit.Text = sp.Value;
+
+		RaiseEdited();
+	}
+
+	private static string Num( float v ) => MathF.Round( v, 2 ).ToString( System.Globalization.CultureInfo.InvariantCulture );
+
+	private static string Xyz( Vec3 p ) => $"{Num( p.x )},{Num( p.y )},{Num( p.z )}";
+
+	/// <summary>The last shape's centre and size in a Blob's text, so a click past the model lands
+	/// beside what is already there and the ghost starts at a size that fits it.</summary>
+	private static (Vec3 Centre, float Radius)? LastBlobShape( string shapes )
+	{
+		var last = (shapes ?? "").Split( ';' ).Select( s => s.Trim() ).LastOrDefault( s => s.Length > 0 );
+		var words = last?.Split( ' ', StringSplitOptions.RemoveEmptyEntries );
+		if ( words is null || words.Length < 3 )
+			return null;
+
+		var xyz = words[1].Split( '|' )[0].Split( ',' );
+		var inv = System.Globalization.CultureInfo.InvariantCulture;
+		if ( xyz.Length != 3
+			|| !float.TryParse( xyz[0], System.Globalization.NumberStyles.Float, inv, out var x )
+			|| !float.TryParse( xyz[1], System.Globalization.NumberStyles.Float, inv, out var y )
+			|| !float.TryParse( xyz[2], System.Globalization.NumberStyles.Float, inv, out var z ) )
+			return null;
+
+		var radius = float.TryParse( words[^1].Split( '|' )[0], System.Globalization.NumberStyles.Float, inv, out var r ) && r > 0f ? r : 4f;
+		return (new Vec3( x, y, z ), radius);
+	}
+
+	private static Vec3 LastBlobCentre( string shapes ) => LastBlobShape( shapes )?.Centre ?? Vec3.Zero;
+
+	private static float LastBlobRadius( string shapes ) => LastBlobShape( shapes )?.Radius ?? 4f;
+
 	private Widget BuildVec3Row( Vec3Param vp )
 	{
 		var row = NewRow( out var layout, column: true, highlightLabel: vp.Label );
@@ -2160,6 +2272,25 @@ internal sealed class EffigyFeatureDialog : Widget
 		fields[0] = AddAxis( sub, "X", Theme.Red, () => vp.Value.x, v => Set( 0, v ) );
 		fields[1] = AddAxis( sub, "Y", Theme.Green, () => vp.Value.y, v => Set( 1, v ) );
 		fields[2] = AddAxis( sub, "Z", Theme.Blue, () => vp.Value.z, v => Set( 2, v ) );
+
+		if ( _feature is DetailFeature detail && ReferenceEquals( vp, detail.Near ) )
+		{
+			sub.Layout.Add( PointPickButton(
+				"Click the model to set the point the detail gathers round",
+				"Click the model where the detail should gather.",
+				drag: false,
+				ghost: () => 1f,
+				anchor: () => vp.Value,
+				picked: ( p, _, _ ) =>
+				{
+					vp.Value = p;
+					fields[0]?.SetValue( p.x );
+					fields[1]?.SetValue( p.y );
+					fields[2]?.SetValue( p.z );
+					RaiseEdited();
+					_viewport.EndPointPick();
+				} ) );
+		}
 
 		layout.Add( sub );
 		return row;
