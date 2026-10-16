@@ -77,6 +77,9 @@ public static class PaddingTests
 			Pad( "Collar band", 0, 0.12f, 0f ),
 		};
 
+		if ( Environment.GetEnvironmentVariable( "PAD_NOPADS" ) is not null )
+			foreach ( var p in pads ) p.Suppressed = true;
+
 		studio.Rebuild();
 		return (studio, shirt, jacket, pads);
 	}
@@ -191,6 +194,15 @@ public static class PaddingTests
 
 	/// <summary>`--padding outDir`: these tests alone, then the outfit draped and padded as OBJs -
 	/// the wearer, the shirt and the jacket - for `effigy.sh shade`.</summary>
+	static PolyMesh LiningSheet( PolyMesh solid, int offset )
+	{
+		var m = new PolyMesh();
+		for ( var i = 0; i < offset; i++ ) m.AddVertex( solid.Positions[i] );
+		foreach ( var f in solid.Faces )
+			if ( f.Indices.All( i => i < offset ) ) m.AddFace( f.Indices, f.UVs, f.Material );
+		return m;
+	}
+
 	public static int RunAlone( string outDir )
 	{
 		if ( Environment.GetEnvironmentVariable( "PAD_RENDER_ONLY" ) is null ) Run();
@@ -205,6 +217,26 @@ public static class PaddingTests
 			var under = js.Positions.Select( p => tree.NearestSurface( ss, p, 3f ) is { } h ? Vec3.Dot( p - h.Point, h.Normal ) : 99f ).ToList();
 			Console.WriteLine( $"  jacket outer vs shirt outer: {under.Count( d => d < 0 )} of {under.Count} under the shirt, worst {under.Min():0.##}, under by >0.2: {under.Count( d => d < -0.2f )}; back (x<-2) under: {js.Positions.Select( ( p, i ) => (p, i) ).Count( t => t.p.x < -2 && under[t.i] < 0 )}" );
 		}
+		foreach ( var g in studio.Bodies.Where( b => b.IsGarment ) )
+			foreach ( var wall in new[] { "outer", "lining" } )
+			{
+				var sheetMesh = MeshSolidify.OuterSheet( g.Mesh, out var off );
+				if ( sheetMesh is null ) continue;
+				var m = wall == "outer" ? sheetMesh : MeshSolidify.OuterSheet( g.Mesh, out _ ) is { } ? LiningSheet( g.Mesh, off ) : null;
+				if ( m is null ) continue;
+				foreach ( var loop in GarmentTrim.OrderedBoundaryLoops( m ).Where( l => l.Count >= 8 ) )
+				{
+					var pts = loop.Select( i => m.Positions[i] ).ToArray();
+					var edges = pts.Select( ( p, i ) => (pts[(i + 1) % pts.Length] - p).Length ).ToArray();
+					var mean = edges.Average();
+					var cv = MathF.Sqrt( edges.Select( e => (e - mean) * (e - mean) ).Average() ) / mean;
+					// Second difference: how far each point is off the line through its neighbours.
+					var wiggle = pts.Select( ( p, i ) => (p - (pts[(i + pts.Length - 1) % pts.Length] + pts[(i + 1) % pts.Length]) * 0.5f).Length ).Max();
+					var c = pts.Aggregate( Vec3.Zero, ( a, b ) => a + b ) / pts.Length;
+					Console.WriteLine( $"  {g.Name.Split( ' ' )[0]} {wall} loop at z {c.z:0.#}: {pts.Length} pts, length {edges.Sum():0.#} in, edge CV {cv:P0}, worst kink {wiggle:0.###} in" );
+				}
+			}
+
 		foreach ( var g in studio.Bodies.Where( b => b.IsGarment ) )
 			Console.WriteLine( $"  {g.Name}: layer {g.Layer}, room {g.LayerAllowance:0.##}, {g.Mesh.VertexCount} v, check {GarmentCheck.Run( g.Mesh, studio.Bodies.Where( b => b != g && (!b.IsGarment || b.Layer < g.Layer) ).Select( b => b.Mesh ).ToList() ).Clipping} clipping" );
 
