@@ -155,7 +155,6 @@ forgotten.
 - **`tools/effigy.sh clothing outdir`** runs the whole Clothing bar on a Citizen-shaped body, with no editor: every garment through Wearer, Garment, Trim, Fur, Fabric, the Test poses, Check and Push out, Make live cloth and Make clothing, then steps the live cloth through the poses. It writes a pass/fail report and renders. `ClothingSim`
 
 ### Known Issues
-- **A short jacket over trousers can show the waistband through its lower back** when the trousers sit high: the jacket is pushed off the trousers but not fully clear of them there. A longer Length or a looser Fit hides it.
 - **Garment-detail limits:** rips follow whole mesh faces (subdivide for small tears), eyelets use dark inset centres rather than cutting the garment, and bright tape is not true retroreflection. Wear matches generated Fabric materials; custom materials currently use a jersey fallback. LED text/patterns scroll, but do not play GIFs or video.
 - **Live cloth layers can still cross with the arms raised.** Settled, a jacket stays over the shirt everywhere. With the arms fully up the shirt bunches at the shoulders and forearms, and about 5% of a jacket can end up under it, up to an inch deep. That is half what it was without layers.
 - Some sculpt tools don't yet match Blender's: Pinch Folds, Bend/Twist and Grab Cloth, Clay Thumb, Multiplane Scrape, and the Sphere, Relax and Sharpen filters. They work but behave differently.
