@@ -38,7 +38,73 @@ public enum RigTrackKind
 	IkGoal,
 
 	/// <summary>A camera's shot; the key's scale carries the field of view.</summary>
-	Camera
+	Camera,
+
+	/// <summary>An IK constraint's weight over time, named for its end bone; the key's scale.x is the
+	/// weight, 0 to 1. No track means 1. See <see cref="RigAnimFile.IkWeightAt"/>.</summary>
+	IkWeight,
+
+	/// <summary>A morph's value over time, named for the morph; the key's scale.x is the value. See
+	/// <see cref="RigAnimFile.MorphWeightsAt"/>.</summary>
+	Morph
+}
+
+/// <summary>Marionette's MorphEvent: a morph held at Value over a frame range, eased in and out.</summary>
+public sealed class RigMorphEvent
+{
+	public string Morph = "";
+	public int Start, End = 1, FadeIn, FadeOut;
+	public float Value = 1f;
+
+	/// <summary>MorphEvent.WeightAt: 0 outside the range, smoothstep up over FadeIn and down over
+	/// FadeOut, the lower of the two where they overlap.</summary>
+	public float WeightAt( float frame )
+	{
+		if ( frame < Start || frame > End )
+			return 0f;
+
+		var up = FadeIn > 0 ? Smooth( (frame - Start) / FadeIn ) : 1f;
+		var down = FadeOut > 0 ? Smooth( (End - frame) / FadeOut ) : 1f;
+		return MathF.Min( up, down );
+	}
+
+	static float Smooth( float t )
+	{
+		t = Math.Clamp( t, 0f, 1f );
+		return t * t * (3f - 2f * t);
+	}
+}
+
+/// <summary>What an IK goal's keys are relative to. THE ORDER IS MARIONETTE'S IkGoalSpace AND MUST
+/// STAY IT, for the same reason as <see cref="RigEase"/>.</summary>
+public enum RigGoalSpace
+{
+	/// <summary>The model's space - every goal keyed before spaces existed.</summary>
+	Model,
+
+	/// <summary>Planted where the clip started. Headless, the model never moves, so this is Model.</summary>
+	World,
+
+	/// <summary>Relative to one of the clip's objects, parts or reference props.</summary>
+	Object
+}
+
+/// <summary>Where one of the clip's objects, parts or reference props was placed: its transform
+/// relative to what it sits in, with the uniform scale Marionette stores.</summary>
+public sealed class RigPlacement
+{
+	public string Name = "";
+	public RigPose Pose = RigPose.Identity;
+
+	/// <summary>A bone it follows - which an IK goal cannot be keyed against. See
+	/// <see cref="RigAnimFile.PlacementAt"/>.</summary>
+	public string FollowBone = "";
+
+	/// <summary>The part of the same object a part follows. Empty for the object alone.</summary>
+	public string ParentPart = "";
+
+	/// <summary>An object's parts. Empty for a part and for a reference prop.</summary>
+	public List<RigPlacement> Parts = new();
 }
 
 /// <summary>One bone's local transform: what a keyframe stores and what a track evaluates to.</summary>
@@ -327,7 +393,8 @@ public static class RigHermite
 /// by a test, so the next tool calls it instead.
 ///
 /// ONLY THE PARTS A POSE NEEDS are read: the tracks, their keys, the frame rate and length, and
-/// which model the clip was made on. Props, lights, cameras and events are Marionette's business.
+/// which model the clip was made on, plus where its objects and props stand - an IK goal can be
+/// keyed against one. Lights, cameras and events are Marionette's business.
 /// </summary>
 public sealed class RigAnimFile
 {
@@ -349,6 +416,57 @@ public sealed class RigAnimFile
 	/// it would check a pose the clip never plays.
 	/// </summary>
 	public List<RigIk> Ik;
+
+	/// <summary>
+	/// The rig's Limit constraints (<see cref="RigLimit.ReadRig"/>): every bone's local is clamped as
+	/// it is read - keyed or at bind, as Marionette's viewport does - and every IK solve stays inside
+	/// them. Null or empty limits nothing.
+	/// </summary>
+	public List<RigLimit> Limits;
+
+	/// <summary>What the rig says soft bones collide with (<see cref="RigSoftCollision"/>). Null or
+	/// empty collides with nothing.</summary>
+	public RigSoftCollision Collision;
+
+	/// <summary>Take the IK and Limit constraints and the soft-bone collision from a .ctrlrig's JSON.</summary>
+	public void UseRig( string json )
+	{
+		Ik = RigIk.ReadRig( json );
+		Limits = RigLimit.ReadRig( json );
+		Collision = RigSoftCollision.ReadRig( json );
+	}
+
+	/// <summary>Each IK goal's space and object, by end bone - Marionette's IkGoalAnchors. A goal not
+	/// in here is in model space.</summary>
+	public Dictionary<string, (RigGoalSpace Space, string Object)> GoalSpaces = new();
+
+	/// <summary>The clip's objects (with their parts) and reference props, as placed - what an
+	/// object-space IK goal is keyed against.</summary>
+	public List<RigPlacement> Objects = new();
+	public List<RigPlacement> Props = new();
+
+	/// <summary>The clip's MorphEvents, in file order (a later one wins where two overlap).</summary>
+	public List<RigMorphEvent> MorphEvents = new();
+
+	/// <summary>
+	/// Every morph the clip drives at a frame: keyed morph curves (RigTrackKind.Morph) first, then
+	/// active morph events over them. Marionette's RigAnimDocument.MorphWeightsAt - keep the two alike.
+	/// </summary>
+	public Dictionary<string, float> MorphWeightsAt( float frame )
+	{
+		var result = new Dictionary<string, float>( StringComparer.Ordinal );
+
+		foreach ( var track in Tracks.Where( t => t.Kind == RigTrackKind.Morph && t.Keys.Count > 0 && !string.IsNullOrWhiteSpace( t.Name ) ) )
+			result[track.Name] = track.Evaluate( frame ).Scale.x;
+
+		foreach ( var e in MorphEvents )
+		{
+			if ( !string.IsNullOrWhiteSpace( e.Morph ) && frame >= e.Start && frame <= e.End )
+				result[e.Morph] = e.Value * e.WeightAt( frame );
+		}
+
+		return result;
+	}
 
 	/// <summary>The .ctrlrig the clip names, as written in the file - empty when there is none.</summary>
 	public string RigAsset = "";
@@ -377,6 +495,9 @@ public sealed class RigAnimFile
 			FrameRate = root.TryGetProperty( "AnimationSpeed", out var speed ) && speed.ValueKind == JsonValueKind.Number ? (int)MathF.Round( speed.GetSingle() ) : 30,
 			FrameCount = root.TryGetProperty( "FrameCount", out var count ) && count.ValueKind == JsonValueKind.Number ? count.GetInt32() : 0,
 		};
+
+		ReadPlacements( root, clip );
+		ReadMorphEvents( root, clip );
 
 		if ( !root.TryGetProperty( "BoneTracks", out var tracks ) || tracks.ValueKind != JsonValueKind.Array )
 			return clip;
@@ -430,6 +551,7 @@ public sealed class RigAnimFile
 		{
 			var track = Find( skeleton.Bones[b].Name );
 			pose[b] = track is { Keys.Count: > 0 } ? track.Evaluate( frame ).ToXform() : skeleton.Bones[b].Local;
+			pose[b] = RigLimit.Clamp( Limits, skeleton.Bones[b].Name, pose[b] );
 		}
 
 		return SolveIk( skeleton, pose, frame );
@@ -454,12 +576,20 @@ public sealed class RigAnimFile
 		var world = ModelSpace( skeleton, local );
 		var moved = false;
 
-		foreach ( var ik in constraints )
+		foreach ( var constraint in constraints )
 		{
-			if ( goals.FirstOrDefault( g => g.Name == ik.EndBone ) is not { } goal )
+			if ( IkGoalAt( constraint.EndBone, frame ) is not { } goal )
 				continue;
 
-			if ( ChainIk.Apply( skeleton, world, ik, goal.Evaluate( frame ) ) is { } solved )
+			// A keyed weight of 0 hands the chain to its keyframes - a free cable on its baked sim.
+			var keyedWeight = IkWeightAt( constraint.EndBone, frame );
+
+			if ( keyedWeight <= 0f )
+				continue;
+
+			var ik = keyedWeight < 1f ? constraint.Weighted( keyedWeight ) : constraint;
+
+			if ( ChainIk.Apply( skeleton, world, ik, goal, Limits ) is { } solved )
 			{
 				world = solved;
 				moved = true;
@@ -467,6 +597,204 @@ public sealed class RigAnimFile
 		}
 
 		return moved ? LocalSpace( skeleton, world ) : local;
+	}
+
+	/// <summary>The keyed weight of <paramref name="bone"/>'s constraint at a frame, 0 to 1 (the key's
+	/// scale.x), or 1 when the clip keys none. Marionette's RigAnimDocument.IkWeightAt.</summary>
+	public float IkWeightAt( string bone, float frame ) =>
+		Tracks.FirstOrDefault( t => t.Kind == RigTrackKind.IkWeight && t.Name == bone && t.Keys.Count > 0 ) is { } track
+			? Math.Clamp( track.Evaluate( frame ).Scale.x, 0f, 1f )
+			: 1f;
+
+	/// <summary>
+	/// The goal of <paramref name="bone"/>'s constraint at a frame, in model space - its keys taken
+	/// out of whatever space they were keyed in. Null when the clip keys no goal, or keys it on an
+	/// object it no longer has. Marionette's RigAnimDocument.IkGoalAt, with the model at the origin.
+	/// </summary>
+	public RigPose? IkGoalAt( string bone, float frame )
+	{
+		if ( IkGoalTracks.FirstOrDefault( g => g.Name == bone ) is not { } track )
+			return null;
+
+		var key = track.Evaluate( frame );
+
+		if ( !GoalSpaces.TryGetValue( bone, out var anchor ) || anchor.Space != RigGoalSpace.Object )
+			return key;
+
+		if ( PlacementAt( anchor.Object, frame ) is not { } placed )
+			return null;
+
+		var world = placed.ToXform() * key.ToXform();
+		return new RigPose( world.Origin, Quat.FromXform( world ), Quat.ScaleOf( world ) );
+	}
+
+	/// <summary>
+	/// Where an object, "object/part" or reference prop sits at a frame, in the clip's space: its
+	/// part track when keyed, else where it was placed, a part through every part it follows.
+	/// Null for a name nothing owns and for anything following a bone. Marionette's
+	/// RigAnimDocument.PlacementAt.
+	/// </summary>
+	public RigPose? PlacementAt( string key, float frame )
+	{
+		if ( string.IsNullOrEmpty( key ) )
+			return null;
+
+		Xform Keyed( string name, RigPose placed ) =>
+			(Tracks.FirstOrDefault( t => t.Kind == RigTrackKind.Part && t.Name == name && t.Keys.Count > 0 ) is { } track
+				? track.Evaluate( frame ) : placed).ToXform();
+
+		var slash = key.IndexOf( '/' );
+		var owner = Objects.FirstOrDefault( o => o.Name == key )
+			?? (slash > 0 ? Objects.FirstOrDefault( o => o.Name == key[..slash] ) : null);
+
+		if ( owner is not null )
+		{
+			if ( !string.IsNullOrWhiteSpace( owner.FollowBone ) )
+				return null;
+
+			var placed = Keyed( owner.Name, owner.Pose );
+
+			if ( key != owner.Name )
+			{
+				var partName = key[(slash + 1)..];
+
+				if ( owner.Parts.FirstOrDefault( p => p.Name == partName ) is not { } part )
+					return null;
+
+				var inObject = Keyed( key, part.Pose );
+
+				for ( var leader = ParentOf( owner, part ); leader is not null; leader = ParentOf( owner, leader ) )
+					inObject = Keyed( owner.Name + "/" + leader.Name, leader.Pose ) * inObject;
+
+				placed = placed * inObject;
+			}
+
+			return new RigPose( placed.Origin, Quat.FromXform( placed ), Quat.ScaleOf( placed ) );
+		}
+
+		if ( Props.FirstOrDefault( p => p.Name == key ) is { } prop && string.IsNullOrWhiteSpace( prop.FollowBone ) )
+		{
+			var placed = Keyed( prop.Name, prop.Pose );
+			return new RigPose( placed.Origin, Quat.FromXform( placed ), Quat.ScaleOf( placed ) );
+		}
+
+		return null;
+	}
+
+	/// <summary>The part <paramref name="part"/> follows, or null - also for a loop, which is broken
+	/// rather than followed. Marionette's RigObject.ParentOf.</summary>
+	static RigPlacement ParentOf( RigPlacement owner, RigPlacement part )
+	{
+		if ( string.IsNullOrEmpty( part.ParentPart ) )
+			return null;
+
+		var leader = owner.Parts.FirstOrDefault( p => p.Name == part.ParentPart );
+
+		if ( leader is null || leader == part )
+			return null;
+
+		var up = leader;
+
+		for ( var guard = 0; guard < 256; guard++ )
+		{
+			if ( string.IsNullOrEmpty( up.ParentPart ) )
+				return leader;
+
+			var next = owner.Parts.FirstOrDefault( p => p.Name == up.ParentPart );
+
+			if ( next is null || next == up )
+				return leader;
+
+			if ( next == part )
+				return null;
+
+			up = next;
+		}
+
+		return null;
+	}
+
+	static void ReadMorphEvents( JsonElement root, RigAnimFile clip )
+	{
+		if ( !root.TryGetProperty( "MorphEvents", out var events ) || events.ValueKind != JsonValueKind.Array )
+			return;
+
+		int I( JsonElement e, string n, int d ) => e.TryGetProperty( n, out var v ) && v.ValueKind == JsonValueKind.Number ? v.GetInt32() : d;
+
+		foreach ( var e in events.EnumerateArray() )
+		{
+			var morph = Str( e, "MorphName" );
+
+			if ( string.IsNullOrWhiteSpace( morph ) )
+				morph = Str( e, "Name" ) ?? "morph";
+
+			clip.MorphEvents.Add( new RigMorphEvent
+			{
+				Morph = morph,
+				Start = I( e, "StartFrame", 0 ),
+				End = I( e, "EndFrame", 1 ),
+				FadeIn = I( e, "FadeIn", 0 ),
+				FadeOut = I( e, "FadeOut", 0 ),
+				Value = e.TryGetProperty( "Value", out var v ) && v.ValueKind == JsonValueKind.Number ? v.GetSingle() : 1f,
+			} );
+		}
+	}
+
+	/// <summary>The clip's IkGoalAnchors, Objects and ReferenceProps - only what an object-space goal
+	/// needs to be placed.</summary>
+	static void ReadPlacements( JsonElement root, RigAnimFile clip )
+	{
+		if ( root.TryGetProperty( "IkGoalAnchors", out var anchors ) && anchors.ValueKind == JsonValueKind.Array )
+		{
+			foreach ( var a in anchors.EnumerateArray() )
+			{
+				var bone = Str( a, "Bone" );
+				var space = a.TryGetProperty( "Space", out var sp ) ? ParseSpace( sp ) : RigGoalSpace.Model;
+
+				if ( !string.IsNullOrEmpty( bone ) && space != RigGoalSpace.Model )
+					clip.GoalSpaces[bone] = (space, Str( a, "Object" ) ?? "");
+			}
+		}
+
+		if ( root.TryGetProperty( "Objects", out var objects ) && objects.ValueKind == JsonValueKind.Array )
+		{
+			foreach ( var o in objects.EnumerateArray() )
+			{
+				var placement = Placement( o );
+
+				if ( o.TryGetProperty( "Parts", out var parts ) && parts.ValueKind == JsonValueKind.Array )
+					placement.Parts = parts.EnumerateArray().Select( Placement ).ToList();
+
+				clip.Objects.Add( placement );
+			}
+		}
+
+		if ( root.TryGetProperty( "ReferenceProps", out var props ) && props.ValueKind == JsonValueKind.Array )
+			clip.Props = props.EnumerateArray().Select( Placement ).ToList();
+	}
+
+	/// <summary>Name, Position, Rotation (s&amp;box Angles: "pitch,yaw,roll" in degrees), uniform Scale.</summary>
+	static RigPlacement Placement( JsonElement e )
+	{
+		var p = Floats( Str( e, "Position" ), 3 ) ?? new float[] { 0, 0, 0 };
+		var a = Floats( Str( e, "Rotation" ), 3 ) ?? new float[] { 0, 0, 0 };
+		var scale = e.TryGetProperty( "Scale", out var sc ) && sc.ValueKind == JsonValueKind.Number ? sc.GetSingle() : 1f;
+
+		return new RigPlacement
+		{
+			Name = Str( e, "Name" ) ?? "",
+			Pose = new RigPose( new Vec3( p[0], p[1], p[2] ), Quat.FromAngles( a[0], a[1], a[2] ), new Vec3( scale, scale, scale ) ),
+			FollowBone = Str( e, "FollowBone" ) ?? "",
+			ParentPart = Str( e, "ParentPart" ) ?? "",
+		};
+	}
+
+	static RigGoalSpace ParseSpace( JsonElement e )
+	{
+		if ( e.ValueKind == JsonValueKind.Number )
+			return e.TryGetInt32( out var n ) && n >= 0 && n <= (int)RigGoalSpace.Object ? (RigGoalSpace)n : RigGoalSpace.Model;
+
+		return e.ValueKind == JsonValueKind.String && Enum.TryParse<RigGoalSpace>( e.GetString(), true, out var space ) ? space : RigGoalSpace.Model;
 	}
 
 	/// <summary>
@@ -500,6 +828,7 @@ public sealed class RigAnimFile
 			}
 
 			clip.AddFrame( pose, scales );
+			clip.SetMorphs( MorphWeightsAt( f ) );
 		}
 
 		return clip;
@@ -546,7 +875,7 @@ public sealed class RigAnimFile
 		if ( target.ValueKind == JsonValueKind.Number )
 		{
 			var n = target.GetInt32();
-			return n >= 0 && n <= (int)RigTrackKind.Camera ? (RigTrackKind)n : (RigTrackKind)(-1);
+			return n >= 0 && n <= (int)RigTrackKind.Morph ? (RigTrackKind)n : (RigTrackKind)(-1);
 		}
 
 		if ( target.ValueKind == JsonValueKind.String )

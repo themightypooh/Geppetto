@@ -7,7 +7,7 @@ using System.Linq;
 namespace Marionette.Tools;
 
 /// <summary>
-/// The AnimEvents tab - the event list up top ("Add Event" alongside it), the selected event's
+/// The Events tab - the event list up top ("Add Event" alongside it), the selected event's
 /// fields below via a ControlSheet built off its SerializedObject (the same machinery the
 /// Inspector uses for any [Property]-decorated type, so Name/StartFrame/EndFrame/Side/Model/
 /// AttachBone/FollowBone/Offset all show up with the right widget per type for free).
@@ -23,10 +23,13 @@ internal sealed class RigEventProperties : Widget
 	public Action Edited { get; set; }
 	public Action<RigEvent> Selected { get; set; }
 
+	/// <summary>The timeline's playhead - where Morph Curves keys land.</summary>
+	public Func<float> Playhead { get; set; }
+
 	public RigEventProperties( Widget parent ) : base( parent )
 	{
-		Name = "AnimEvents";
-		WindowTitle = "AnimEvents";
+		Name = "Events";
+		WindowTitle = "Events";
 		SetWindowIcon( "bolt" );
 
 		Layout = Layout.Column();
@@ -158,7 +161,7 @@ internal sealed class RigEventProperties : Widget
 
 		if ( _asset is null )
 		{
-			_detail.Layout.Add( new Editor.Label( "Open a Rig Events asset to edit its events." ) { Enabled = false } );
+			_detail.Layout.Add( new Editor.Label( "Open a Rig Animation to edit its events." ) { Enabled = false } );
 			return;
 		}
 
@@ -197,10 +200,64 @@ internal sealed class RigEventProperties : Widget
 
 		var header = _detail.Layout.AddRow();
 		header.Add( new Editor.Label( "Morph Events" ) { Enabled = false }, 1 );
-		header.Add( new Button( "add", "add" ) { Clicked = AddMorphEvent } );
+		header.Add( new Button( "Add", "add" ) { Clicked = AddMorphEvent, ToolTip = "Add a morph event" } );
 
 		foreach ( var morph in _asset.MorphEvents )
 			_detail.Layout.Add( MorphRow( morph ) );
+
+		BuildMorphCurves();
+	}
+
+	/// <summary>
+	/// Keyed morph curves (TrackTarget.Morph): every morph the model has, plus any the clip already
+	/// keys, with a value field and Key at the playhead. The keys land on a "(morph)" timeline row,
+	/// eased and graph-edited like any other; the export writes them as flex channels.
+	/// </summary>
+	private void BuildMorphCurves()
+	{
+		_detail.Layout.AddSpacingCell( 12 );
+
+		var header = _detail.Layout.AddRow();
+		header.Add( new Editor.Label( "Morph Curves" ) { Enabled = false }, 1 );
+
+		var model = _asset.SourceModel;
+		var names = (model is null ? Enumerable.Empty<string>() : Enumerable.Range( 0, model.MorphCount ).Select( model.GetMorphName ))
+			.Concat( _asset.MorphTracks.Select( t => t.BoneName ) )
+			.Where( n => !string.IsNullOrWhiteSpace( n ) )
+			.Distinct()
+			.ToList();
+
+		if ( names.Count == 0 )
+		{
+			_detail.Layout.Add( new Editor.Label( model is null ? "Set a model to key its morphs." : "This model has no morphs (shape keys)." ) { Enabled = false } );
+			return;
+		}
+
+		foreach ( var name in names )
+		{
+			var morph = name;
+			var row = _detail.Layout.AddRow();
+			var frame = (int)MathF.Round( Playhead?.Invoke() ?? 0f );
+			var current = _asset.FindMorphTrack( morph ) is { Keyframes.Count: > 0 } track ? track.Evaluate( frame ).Scale.x : 0f;
+
+			row.Add( new Editor.Label( morph ), 1 );
+			var value = row.Add( new LineEdit( $"{current:0.##}" ) { FixedWidth = 52, ToolTip = "Value to key (0 = off, 1 = the full shape)" } );
+			row.Add( new Button( "Key", "key" )
+			{
+				ToolTip = $"Key {morph} to this value at the playhead",
+				Clicked = () =>
+				{
+					if ( !float.TryParse( value.Text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var v ) )
+					{
+						Log.Warning( $"[Marionette] '{value.Text}' is not a number - {morph} not keyed" );
+						return;
+					}
+
+					_asset.SetMorphKey( morph, (int)MathF.Round( Playhead?.Invoke() ?? 0f ), v );
+					Edited?.Invoke();
+				}
+			} );
+		}
 	}
 
 	private Widget MorphRow( MorphEvent morph )
@@ -210,8 +267,9 @@ internal sealed class RigEventProperties : Widget
 
 		var title = row.Layout.AddRow();
 		title.Add( new Editor.Label( string.IsNullOrWhiteSpace( morph.Name ) ? "morph" : morph.Name ), 1 );
-		title.Add( new Button( "delete", "delete" )
+		title.Add( new Button( "Delete", "delete" )
 		{
+			ToolTip = "Delete this morph event",
 			Clicked = () =>
 			{
 				_asset.MorphEvents.Remove( morph );

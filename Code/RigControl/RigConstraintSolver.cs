@@ -18,7 +18,9 @@ namespace Marionette;
 ///     Playback needs no solver at all, and a clip plays identically anywhere that can read a
 ///     keyframe; the cost is that changing a constraint later does not touch poses already made.
 ///
-/// Limits are applied to keyframes as they are read, either way.
+/// LIMITS APPLY EVERYWHERE A POSE IS MADE: to keyframes (and bind poses) as they are read, and
+/// inside every IK solve (SolveChain's limit argument, see Limit) - in the viewport, the game player,
+/// the export and Effigy's headless sim alike (kernel twin: Effigy RigLimit / ChainIk.Limit).
 /// </summary>
 public static class RigConstraintSolver
 {
@@ -52,6 +54,26 @@ public static class RigConstraintSolver
 		return local;
 	}
 
+	/// <summary>
+	/// The clamp SolveChain takes for a chain of <paramref name="bones"/> (top first): bone k's
+	/// parent-space transform through ClampToLimits. Null when no enabled limit names any of them, so
+	/// an unlimited chain solves exactly as before.
+	/// </summary>
+	public static Func<int, Transform, Transform> LimitsFor( RigDocument rig, IReadOnlyList<string> bones )
+	{
+		if ( rig?.LimitConstraints is not { Count: > 0 } limits || bones is null )
+			return null;
+
+		if ( !bones.Any( b => limits.Any( l => l.Enabled && l.TargetBone == b ) ) )
+			return null;
+
+		return ( k, local ) => ClampToLimits( rig, bones[k], local );
+	}
+
+	/// <summary>Whether an enabled Limit constraint names <paramref name="boneName"/>.</summary>
+	public static bool IsLimited( RigDocument rig, string boneName ) =>
+		rig?.LimitConstraints?.Any( l => l.Enabled && l.TargetBone == boneName ) == true;
+
 	public static IkConstraint FindIkFor( RigDocument rig, string boneName ) =>
 		rig?.IkConstraints.FirstOrDefault( c => c.Enabled && c.TargetBone == boneName );
 
@@ -70,7 +92,7 @@ public static class RigConstraintSolver
 	/// bends the same way whichever way the character faces.
 	/// </summary>
 	public static bool TrySolve( SkinnedModelRenderer renderer, BoneCollection.Bone end, IkConstraint ik,
-		Vector3 target, Rotation? goalRotation, out List<SolvedBone> solved )
+		Vector3 target, Rotation? goalRotation, out List<SolvedBone> solved, RigDocument rig = null )
 	{
 		solved = null;
 
@@ -97,7 +119,13 @@ public static class RigConstraintSolver
 				return false;
 		}
 
-		if ( !SolveChain( world, target, goalRotation, renderer.WorldRotation * ik.PoleDirection, ik.Iterations, ik.Weight ) )
+		var limit = LimitsFor( rig, bones.Select( b => b.Name ).ToArray() );
+		var above = renderer.WorldTransform;
+
+		if ( limit is not null && bones[0].Parent is { } top && !renderer.TryGetBoneTransform( top, out above ) )
+			return false;
+
+		if ( !SolveChain( world, target, goalRotation, renderer.WorldRotation * ik.PoleDirection, ik.Iterations, ik.Weight, ik.Solver, ik.MaxStretch, above, limit ) )
 			return false;
 
 		solved = new List<SolvedBone>( bones.Length );
@@ -142,7 +170,8 @@ public static class RigConstraintSolver
 
 	/// <summary>
 	/// IK on a chain of world transforms, solved in place: <paramref name="chain"/>[0] is the top
-	/// bone that turns, the last entry is the end that reaches. Every bone keeps its length.
+	/// bone that turns, the last entry is the end that reaches. Every bone keeps its length unless
+	/// <paramref name="maxStretch"/> says otherwise.
 	///
 	/// THE LENGTH PICKS THE SOLVER - and until this existed, IkConstraint.ChainLength and Iterations
 	/// were saved in every rig and read by nothing:
@@ -156,25 +185,59 @@ public static class RigConstraintSolver
 	///     already points, so it never has to know which local axis a rig treats as "along the
 	///     bone" - a convention that varies per rig and is not safe to assume. The pole has no
 	///     single middle joint to mean here and is not used.
+	///   - three or more with <paramref name="solver"/> FABRIK: the joint positions are reached to
+	///     the target and back to the root, then each bone is turned (as a delta, the same way) to
+	///     point at its solved child. Spreads the bend along the chain instead of curling the tip.
+	///   - three or more with Spline: laid on one even arc from root to goal, bowing the way the pose
+	///     bows (or toward the pole); with a goal rotation its twist is spread down the chain.
+	///
+	/// <paramref name="maxStretch"/> above 1 lets the chain lengthen, by up to that factor, toward a
+	/// goal it cannot reach - see Stretch. At 1 every bone keeps its length, as above.
 	///
 	/// The end bone keeps its world rotation unless <paramref name="goalRotation"/> is given.
 	/// <paramref name="weight"/> blends every chain bone between where it was and the solve.
 	///
+	/// <paramref name="limit"/> (LimitsFor) keeps the solve inside the rig's Limit constraints - see
+	/// Limit; <paramref name="above"/> is the world transform of the top bone's parent, which a
+	/// parent-space limit is measured against.
+	///
 	/// Effigy's kernel has the same solve on its own types (ChainIk), which is what a headless take
 	/// check and the .vmdl export use - keep the two alike.
 	/// </summary>
-	public static bool SolveChain( Transform[] chain, Vector3 target, Rotation? goalRotation, Vector3 pole, int iterations, float weight )
+	public static bool SolveChain( Transform[] chain, Vector3 target, Rotation? goalRotation, Vector3 pole, int iterations, float weight,
+		IkSolver solver = IkSolver.Ccd, float maxStretch = 1f, Transform above = default, Func<int, Transform, Transform> limit = null )
 	{
 		if ( chain is null || chain.Length < 2 )
 			return false;
 
-		var original = (Transform[])chain.Clone();
+		var original = chain.ToArray();      // not chain.Clone(): Array.Clone is off s&box's whitelist (SB1000)
 		var n = chain.Length - 1;
+
+		// A stretched chain is one the goal is at or past the end of, so its answer is a straight
+		// line - which FABRIK lays exactly and CCD only creeps toward. Either solver gets it.
+		var stretched = Stretch( chain, target, maxStretch );
 
 		if ( n == 2 )
 		{
 			if ( !SolveTwoBone( chain, target, pole ) )
 				return false;
+		}
+		else if ( n >= 3 && solver == IkSolver.Spline && !stretched )
+		{
+			SolveSpline( chain, target, pole, Math.Max( iterations, 1 ) );
+
+			// The end only moves; the rotation it was carried through is put back.
+			chain[n] = new Transform( chain[n].Position, original[n].Rotation, original[n].Scale );
+
+			if ( goalRotation is { } twistTo )
+				Twist( chain, original, twistTo );
+		}
+		else if ( n >= 3 && (solver == IkSolver.Fabrik || stretched) )
+		{
+			SolveFabrik( chain, target, Math.Max( iterations, 1 ) );
+
+			// The end only moves; the rotation it was carried through is put back.
+			chain[n] = new Transform( chain[n].Position, original[n].Rotation, original[n].Scale );
 		}
 		else
 		{
@@ -203,6 +266,9 @@ public static class RigConstraintSolver
 		if ( goalRotation is { } turn )
 			chain[n] = new Transform( chain[n].Position, turn, chain[n].Scale );
 
+		if ( limit is not null )
+			Limit( chain, above, limit, target, iterations );
+
 		weight = weight.Clamp( 0f, 1f );
 
 		if ( weight < 1f )
@@ -213,6 +279,302 @@ public static class RigConstraintSolver
 
 		return true;
 	}
+
+	/// <summary>
+	/// Limit constraints inside the solve: every chain bone's parent-space transform clamped by
+	/// <paramref name="limit"/>, root first, each clamp carrying the bones below it. When a clamp
+	/// bit, the end is off the goal, so CCD passes win back what reach the limits allow, each turn
+	/// clamped as it is made. A chain the solve kept inside its limits is left exactly as solved; the
+	/// end keeps the rotation the solve gave it, clamped last. Kernel twin: Effigy ChainIk.Limit.
+	/// </summary>
+	public static void Limit( Transform[] chain, Transform above, Func<int, Transform, Transform> limit, Vector3 target, int iterations )
+	{
+		var n = chain.Length - 1;
+
+		Transform Parent( int k ) => k == 0 ? above : chain[k - 1];
+
+		bool ClampAt( int k )
+		{
+			var parent = Parent( k );
+			var local = parent.ToLocal( chain[k] );
+			var clamped = limit( k, local );
+
+			var a = local.Rotation;
+			var b = clamped.Rotation;
+
+			if ( MathF.Abs( a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w ) > 0.9999999f )
+				return false;
+
+			var placed = parent.ToWorld( new Transform( local.Position, clamped.Rotation, local.Scale ) );
+			var old = chain[k];
+			chain[k] = placed;
+
+			for ( var j = k + 1; j <= n; j++ )
+				chain[j] = placed.ToWorld( old.ToLocal( chain[j] ) );
+
+			return true;
+		}
+
+		var endRotation = chain[n].Rotation;
+		var bit = false;
+
+		for ( var k = 0; k < n; k++ )
+			bit |= ClampAt( k );
+
+		if ( bit )
+		{
+			for ( var pass = 0; pass < Math.Max( iterations, 10 ); pass++ )
+			{
+				for ( var j = n - 1; j >= 0; j-- )
+				{
+					var pivot = chain[j].Position;
+					var delta = DeltaBetween( chain[n].Position - pivot, target - pivot );
+
+					for ( var k = j; k <= n; k++ )
+						chain[k] = new Transform( pivot + delta * (chain[k].Position - pivot), delta * chain[k].Rotation, chain[k].Scale );
+
+					ClampAt( j );
+				}
+
+				if ( chain[n].Position.Distance( target ) < 0.01f )
+					break;
+			}
+
+			chain[n] = new Transform( chain[n].Position, endRotation, chain[n].Scale );
+		}
+
+		ClampAt( n );
+	}
+
+	/// <summary>
+	/// Lengthen a chain toward a goal it cannot reach: each joint below the root slides out along its
+	/// own bone, every bone by the same factor - the goal's distance over the chain's length, capped
+	/// at <paramref name="maxStretch"/>. Rotations and scales are untouched, and the solve that
+	/// follows runs on the longer chain. True when it stretched - the goal is then at or past the end
+	/// of the chain. Kernel twin: Effigy ChainIk.Stretch.
+	///
+	/// TRANSLATION, NOT SCALE. Scaling each bone along its length with the thickness at 1/sqrt of
+	/// the stretch would need non-uniform bone scale, and Source 2 has none - a bone's scale is one
+	/// float in a DMX, and the export already averages three axes into it. So the joints move apart
+	/// and the skin between them stretches; every bone keeps its own thickness.
+	/// </summary>
+	public static bool Stretch( Transform[] chain, Vector3 target, float maxStretch )
+	{
+		if ( !(maxStretch > 1f) || chain is null || chain.Length < 2 )
+			return false;
+
+		var n = chain.Length - 1;
+		var total = 0f;
+
+		for ( var k = 0; k < n; k++ )
+			total += (chain[k + 1].Position - chain[k].Position).Length;
+
+		var distance = (target - chain[0].Position).Length;
+
+		if ( total < 1e-4f || distance <= total )
+			return false;
+
+		var grow = MathF.Min( distance / total, maxStretch ) - 1f;
+		var shift = Vector3.Zero;
+		var above = chain[0].Position;
+
+		for ( var k = 1; k <= n; k++ )
+		{
+			var position = chain[k].Position;
+			shift += (position - above) * grow;
+			above = position;
+			chain[k] = new Transform( position + shift, chain[k].Rotation, chain[k].Scale );
+		}
+
+		return true;
+	}
+
+	/// <summary>
+	/// FABRIK on joint positions, then the chain turned bone by bone onto them. Each turn is the
+	/// shortest-arc delta from where the child is to where it was solved, applied about the bone's
+	/// own head to it and everything below - lengths are kept by construction, and no bone's
+	/// "along" axis is ever assumed. Kernel twin: Effigy ChainIk.Fabrik.
+	/// </summary>
+	private static void SolveFabrik( Transform[] chain, Vector3 target, int iterations )
+	{
+		var n = chain.Length - 1;
+		var p = new Vector3[n + 1];
+		var d = new float[n];
+		var total = 0f;
+
+		for ( var k = 0; k <= n; k++ )
+			p[k] = chain[k].Position;
+
+		for ( var k = 0; k < n; k++ )
+		{
+			d[k] = (p[k + 1] - p[k]).Length;
+			total += d[k];
+		}
+
+		var root = p[0];
+
+		if ( (target - root).Length >= total )
+		{
+			// Out of reach: the chain lies straight along the line to the target.
+			var dir = (target - root).Normal;
+
+			for ( var k = 0; k < n; k++ )
+				p[k + 1] = p[k] + dir * d[k];
+		}
+		else
+		{
+			for ( var pass = 0; pass < iterations; pass++ )
+			{
+				p[n] = target;
+
+				for ( var k = n - 1; k >= 0; k-- )
+					p[k] = p[k + 1] + Toward( p[k] - p[k + 1] ) * d[k];
+
+				p[0] = root;
+
+				for ( var k = 0; k < n; k++ )
+					p[k + 1] = p[k] + Toward( p[k + 1] - p[k] ) * d[k];
+
+				if ( p[n].Distance( target ) < 0.01f )
+					break;
+			}
+		}
+
+		for ( var j = 0; j < n; j++ )
+		{
+			var pivot = chain[j].Position;
+			var delta = DeltaBetween( chain[j + 1].Position - pivot, p[j + 1] - pivot );
+
+			for ( var k = j; k <= n; k++ )
+				chain[k] = new Transform( pivot + delta * (chain[k].Position - pivot), delta * chain[k].Rotation, chain[k].Scale );
+		}
+	}
+
+	/// <summary>
+	/// Spline IK: the chain laid on the one circular arc from its root to the goal that is exactly as
+	/// long as the chain - constant curvature, so every joint bends the same and slack goes into one
+	/// smooth bow, never a kink. It bows the way the posed chain bows, or toward the pole when the pose
+	/// is straight. Bones are turned onto it, then FABRIK passes settle any rounding. Out of reach it
+	/// is FABRIK's straight line. Kernel twin: Effigy ChainIk.Spline.
+	///
+	/// CCD curls the tip and FABRIK bends wherever the pose happens to; a tentacle or a slack cable
+	/// reads as one even curve. (A Bezier fitted to length was tried first and folded back on itself
+	/// whenever the goal came in close.)
+	/// </summary>
+	private static void SolveSpline( Transform[] chain, Vector3 target, Vector3 pole, int iterations )
+	{
+		var n = chain.Length - 1;
+		var p = chain.Select( t => t.Position ).ToArray();
+		var d = new float[n];
+
+		for ( var k = 0; k < n; k++ )
+			d[k] = (p[k + 1] - p[k]).Length;
+
+		var bow = Vector3.Zero;
+
+		for ( var k = 1; k < n; k++ )
+			bow += p[k] - p[0];
+
+		if ( ArcJoints( p[0], target, bow, pole, d ) is { } q )
+		{
+			for ( var j = 0; j < n; j++ )
+			{
+				var pivot = chain[j].Position;
+				var delta = DeltaBetween( chain[j + 1].Position - pivot, q[j + 1] - pivot );
+
+				for ( var k = j; k <= n; k++ )
+					chain[k] = new Transform( pivot + delta * (chain[k].Position - pivot), delta * chain[k].Rotation, chain[k].Scale );
+			}
+		}
+
+		SolveFabrik( chain, target, iterations );
+	}
+
+	/// <summary>Joints of a chain <paramref name="lengths"/> long on the root-to-goal circular arc of
+	/// the chain's length (θ solves chord/length = sin(θ/2)/(θ/2)), bowing toward
+	/// <paramref name="bow"/> square to the chord, then the pole's, then any side. Null out of reach.
+	/// Kernel twin: Effigy ChainIk.ArcJoints - keep the two alike.</summary>
+	public static Vector3[] ArcJoints( Vector3 root, Vector3 goal, Vector3 bow, Vector3 pole, float[] lengths )
+	{
+		var total = lengths.Sum();
+		var chord = (goal - root).Length;
+
+		if ( chord < 1e-4f || chord >= total * 0.9999f )
+			return null;
+
+		var u = (goal - root) / chord;
+		var side = Square( bow, u );
+
+		if ( side.Length < 1e-3f * total )
+			side = Square( pole, u );
+
+		if ( side.Length < 1e-6f )
+			side = Square( MathF.Abs( u.z ) < 0.9f ? Vector3.Up : Vector3.Forward, u );
+
+		var v = side.Normal;
+		var ratio = chord / total;
+		var lo = 1e-5f;
+		var hi = MathF.PI - 1e-5f;
+
+		for ( var i = 0; i < 50; i++ )
+		{
+			var mid = (lo + hi) * 0.5f;
+
+			if ( MathF.Sin( mid ) / mid > ratio ) lo = mid; else hi = mid;
+		}
+
+		var theta = lo + hi;
+		var radius = total / theta;
+		var centre = root + u * (chord * 0.5f) - v * (radius * MathF.Cos( theta * 0.5f ));
+
+		var joints = new Vector3[lengths.Length + 1];
+		joints[0] = root;
+		var along = 0f;
+
+		for ( var k = 0; k < lengths.Length; k++ )
+		{
+			along += lengths[k];
+			var a = MathF.PI * 0.5f + theta * 0.5f - along / radius;
+			joints[k + 1] = centre + u * (radius * MathF.Cos( a )) + v * (radius * MathF.Sin( a ));
+		}
+
+		return joints;
+	}
+
+	private static Vector3 Square( Vector3 v, Vector3 unit ) => v - unit * Vector3.Dot( v, unit );
+
+	/// <summary>Spread a goal's twist down the chain: the end's turn about the last bone, against
+	/// where its parent carried it, shared so bone k takes (k+1)/(n+1) of it about its own length.
+	/// Positions do not move. Kernel twin: Effigy ChainIk.Twist.</summary>
+	private static void Twist( Transform[] chain, Transform[] original, Rotation goalRotation )
+	{
+		var n = chain.Length - 1;
+		var carried = chain[n - 1].Rotation * original[n - 1].Rotation.Inverse * original[n].Rotation;
+		var q = goalRotation * carried.Inverse;
+		var axis = Toward( chain[n].Position - chain[n - 1].Position );
+		var angle = 2f * MathF.Atan2( q.x * axis.x + q.y * axis.y + q.z * axis.z, q.w );
+
+		if ( angle > MathF.PI ) angle -= 2f * MathF.PI;
+		if ( angle < -MathF.PI ) angle += 2f * MathF.PI;
+
+		if ( MathF.Abs( angle ) < 1e-4f )
+			return;
+
+		for ( var k = 0; k < n; k++ )
+		{
+			var along = chain[k + 1].Position - chain[k].Position;
+
+			if ( along.Length < 1e-6f )
+				continue;
+
+			var turn = Rotation.FromAxis( along.Normal, (angle * (k + 1) / (n + 1)).RadianToDegree() );
+			chain[k] = new Transform( chain[k].Position, turn * chain[k].Rotation, chain[k].Scale );
+		}
+	}
+
+	/// <summary>A unit vector along <paramref name="v"/>, or up when two joints landed on each
+	/// other and v has no direction left.</summary>
+	private static Vector3 Toward( Vector3 v ) => v.Length > 1e-6f ? v.Normal : Vector3.Up;
 
 	/// <summary>The closed-form two-bone solve on a three-entry chain, in place. False when the
 	/// chain is degenerate (zero-length bones, target on the root).</summary>
@@ -283,7 +645,7 @@ public static class RigConstraintSolver
 	/// <summary>Shortest rotation taking one direction onto another, built from an explicit
 	/// axis and angle - Rotation.FromAxis is the one primitive here that's certain to exist and
 	/// behave, and the degenerate cases (parallel, antiparallel) need handling anyway.</summary>
-	private static Rotation DeltaBetween( Vector3 from, Vector3 to )
+	internal static Rotation DeltaBetween( Vector3 from, Vector3 to )
 	{
 		if ( from.Length < 0.001f || to.Length < 0.001f )
 			return Rotation.Identity;

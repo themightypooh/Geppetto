@@ -18,7 +18,7 @@ namespace Marionette.Tools;
 /// RATHER THAN COPIED FROM A REFERENCE, and it has not been confirmed to load. Before relying on
 /// it, validate it the same way the rest of this format was validated:
 ///
-///   dmxconvert.exe -i <stem>.vdmx -o check.vdmx
+///   dmxconvert.exe -i &lt;stem&gt;.vdmx -o check.vdmx
 ///
 /// dmxconvert reports the first thing wrong, with a line number, in about a second. The element
 /// and attribute spellings below (DmeCamera, transform, fov, znear, zfar) are the working set from

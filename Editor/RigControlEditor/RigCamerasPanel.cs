@@ -160,7 +160,7 @@ internal sealed class RigCamerasPanel : Widget
 		var header = panel.Layout.AddRow();
 		header.Spacing = 6;
 
-		var chip = new Editor.Label( "[cam]" ) { Color = Theme.Blue };
+		var chip = new Editor.Label( "Camera" ) { Color = Theme.Blue };
 		chip.SetStyles( "font-weight: bold;" );
 		header.Add( chip );
 		header.Add( new Editor.Label( camera.Name ) { Enabled = false }, 1 );
@@ -169,7 +169,7 @@ internal sealed class RigCamerasPanel : Widget
 		// puts it. Saying so is the difference between "my edit did nothing" and knowing why.
 		if ( _anim?.FindCameraTrack( camera.Name ) is { Keyframes.Count: > 0 } keyed )
 		{
-			var badge = new Editor.Label( $"{keyed.Keyframes.Count} key(s)" )
+			var badge = new Editor.Label( keyed.Keyframes.Count == 1 ? "1 key" : $"{keyed.Keyframes.Count} keys" )
 			{
 				Color = Theme.Yellow,
 				ToolTip = "This camera moves: its track places it, so the fields below only matter where it has no keys"
@@ -182,7 +182,7 @@ internal sealed class RigCamerasPanel : Widget
 		// the difference between a working shot and something that will show up in a game.
 		if ( camera.Export )
 		{
-			var exported = new Editor.Label( "exports" ) { Color = Theme.Green };
+			var exported = new Editor.Label( "Exported" ) { Color = Theme.Green, ToolTip = "Spawns when the clip plays in game" };
 			exported.SetStyles( "font-weight: bold;" );
 			header.Add( exported );
 		}

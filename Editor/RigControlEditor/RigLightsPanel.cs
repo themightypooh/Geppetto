@@ -213,7 +213,7 @@ internal sealed class RigLightsPanel : Widget
 		var header = panel.Layout.AddRow();
 		header.Spacing = 6;
 
-		var chip = new Editor.Label( $"[{light.Kind}]" ) { Color = ChipColor( light.Kind ) };
+		var chip = new Editor.Label( $"{light.Kind}" ) { Color = ChipColor( light.Kind ) };
 		chip.SetStyles( "font-weight: bold;" );
 		header.Add( chip );
 		header.Add( new Editor.Label( light.Name ) { Enabled = false }, 1 );
@@ -223,7 +223,7 @@ internal sealed class RigLightsPanel : Widget
 		// it is not worth scrolling a property sheet to find out.
 		if ( light.Export )
 		{
-			var exported = new Editor.Label( "exports" ) { Color = Theme.Green };
+			var exported = new Editor.Label( "Exported" ) { Color = Theme.Green, ToolTip = "Spawns when the clip plays in game" };
 			exported.SetStyles( "font-weight: bold;" );
 			header.Add( exported );
 		}

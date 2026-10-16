@@ -22,13 +22,13 @@ namespace Effigy;
 /// The reader never has to rename anything, and the one thing that can silently ruin a playermodel -
 /// a misspelled bone - cannot happen on this route.
 ///
-/// WHY EVERY PART IS LONGEST ALONG ITS BONE. <see cref="BoneFromBody.TryDerive"/> measures the
+/// WHY EVERY PART IS LONGEST ALONG ITS BONE. <see cref="BoneFromBody.TryDerive(PolyMesh, out Vec3, out Vec3, out Vec3, Vec3?)"/> measures the
 /// direction the vertices spread out along most, so a part that is wider than it is long yields a
 /// bone across the limb rather than down it. That is why the torso boxes are taller than they are
 /// wide and the robot reads as slightly slim: the shape is constrained by what the measurement can
 /// see, not by taste. A cube has no longest axis at all and would be skipped outright.
 ///
-/// UNITS ARE INCHES, the same as the rest of Effigy and of s&box. It stands in a T-pose facing +X
+/// UNITS ARE INCHES, the same as the rest of Effigy and of s&amp;box. It stands in a T-pose facing +X
 /// with the soles of its feet at z=0 and its hips at 31.5 - citizen's own pelvis height, because
 /// citizen's walk decides how high the hips ride and a model built far from it floats or sinks.
 /// </summary>

@@ -59,7 +59,7 @@ internal static class RigAnimExport
 			return Fail( "Save the clip first — export writes next to the .riganim." );
 
 		if ( doc.SourceModel is null )
-			return Fail( "Set a Model in BonesObject first — export has to know which skeleton this clip is for." );
+			return Fail( "Set a Model in the Scene tab first — export has to know which skeleton this clip is for." );
 
 		// Skeleton tracks only. A .vmdl animation is bone channels, so a clip whose keys are all
 		// on whole parts has nothing to write here - and saying "nothing to export" about a clip
@@ -368,14 +368,23 @@ internal static class RigAnimExport
 	/// <summary>Morph events are not bone channels either.</summary>
 	static string MorphNote( RigAnimDocument doc )
 	{
-		var morphs = doc.MorphEvents?.Count( m => m is not null ) ?? 0;
+		var names = doc.MorphTracks.Where( t => t.Keyframes.Count > 0 ).Select( t => t.BoneName )
+			.Concat( doc.MorphEvents?.Where( m => m is not null ).Select( m => string.IsNullOrWhiteSpace( m.MorphName ) ? m.Name : m.MorphName ) ?? Enumerable.Empty<string>() )
+			.Where( n => !string.IsNullOrWhiteSpace( n ) )
+			.Distinct()
+			.ToList();
 
-		if ( morphs == 0 )
+		if ( names.Count == 0 )
 			return null;
 
-		return $"This clip has {morphs} morph event(s). They are not in the .vmdl - a morph in a compiled "
-			+ "animation needs the model's own flex controllers, which this export does not author. "
-			+ "RigAnimPlayerComponent applies them on the same clock as the bones.";
+		var model = doc.SourceModel;
+		var has = model is null ? new HashSet<string>() : Enumerable.Range( 0, model.MorphCount ).Select( model.GetMorphName ).ToHashSet();
+		var missing = names.Where( n => !has.Contains( n ) ).ToList();
+
+		return $"{names.Count} morph(s) are written as flex channels ({string.Join( ", ", names.Take( 8 ) )})."
+			+ (missing.Count > 0
+				? $" The model has no morph named {string.Join( ", ", missing.Take( 8 ) )} - those channels drive nothing until it does."
+				: "");
 	}
 
 	/// <summary>Scale is the one channel built rather than copied from a reference export - say so.</summary>

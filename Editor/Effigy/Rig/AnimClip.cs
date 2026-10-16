@@ -115,6 +115,46 @@ public sealed class AnimClip
 	public float ScaleAt( int frame, int bone ) => Scales?[frame] is { } s ? s[bone] : 1f;
 
 	/// <summary>
+	/// Morph (flex controller) values per frame, by morph name - one value per frame in
+	/// <see cref="Frames"/>, 0 where the clip does not drive it. Empty for a clip that drives none,
+	/// which then exports exactly as before. Written by DmxAnimWriter as flex channels.
+	/// </summary>
+	public SortedDictionary<string, List<float>> Morphs = new( StringComparer.Ordinal );
+
+	/// <summary>The morph values of the frame just added with AddFrame. A morph first named here is
+	/// back-filled with 0 for the frames before it; one not named is 0 on this frame.</summary>
+	public void SetMorphs( IReadOnlyDictionary<string, float> values )
+	{
+		var frame = FrameCount - 1;
+
+		if ( frame < 0 )
+			return;
+
+		foreach ( var (name, _) in values ?? new Dictionary<string, float>() )
+		{
+			if ( !string.IsNullOrWhiteSpace( name ) && !Morphs.ContainsKey( name ) )
+				Morphs[name] = new List<float>();
+		}
+
+		foreach ( var (name, list) in Morphs )
+		{
+			while ( list.Count < frame )
+				list.Add( 0f );
+
+			var value = values is not null && values.TryGetValue( name, out var v ) ? v : 0f;
+
+			if ( list.Count == frame )
+				list.Add( value );
+			else
+				list[frame] = value;
+		}
+	}
+
+	/// <summary>A morph's value at a frame; 0 where it is not driven.</summary>
+	public float MorphAt( string name, int frame ) =>
+		Morphs.TryGetValue( name, out var list ) && frame >= 0 && frame < list.Count ? list[frame] : 0f;
+
+	/// <summary>
 	/// Check the clip against the skeleton it claims to animate, and say what is wrong rather than
 	/// leaving it to be discovered as a model that will not load.
 	///

@@ -118,19 +118,40 @@ public sealed class RigAnimDocument : GameResource
 	[Property] public List<RigMark> Marks { get; set; } = new();
 
 	/// <summary>
+	/// What each IK goal is keyed relative to, by the constraint's end bone. A goal with no entry
+	/// here is in the model's space, which is every goal keyed before this existed. See IkGoalSpace.
+	///
+	/// ON THE CLIP, NOT THE CONSTRAINT. The rig is shared by every clip authored against it, but
+	/// the pipe a hand clamps belongs to one clip - and the keys of a goal only mean anything in the
+	/// space they were keyed in, so the space has to travel with the keys.
+	/// </summary>
+	[Property, Group( "IK" ), Title( "IK Goal Spaces" )] public List<IkGoalAnchor> IkGoalAnchors { get; set; } = new();
+
+	/// <summary>
 	/// Every morph the clip drives at <paramref name="frame"/>, by morph name, into
 	/// <paramref name="into"/> (cleared first).
 	///
-	/// A morph event is a value held over a frame range. Two events on the same morph that overlap
+	/// A morph event is a value held over a frame range, optionally eased in and out at its ends
+	/// (MorphEvent.FadeIn / FadeOut) - which is how a jaw opens or a sac swells over time. Two events on the same morph that overlap
 	/// resolve to the LATER one in the list, which is the one added last - the same rule a second
 	/// key on a frame follows. An event with no Morph Name falls back to its Name, because the
 	/// row's title is the only name most people ever type.
 	///
-	/// The one place this is decided, so the editor's viewport and the game's player agree.
+	/// KEYED MORPH CURVES (TrackTarget.Morph) come first: a morph track gives its value on every frame
+	/// it has keys for. An event on the same morph overrides the curve while it is active.
+	///
+	/// The one place this is decided, so the editor's viewport, the game's player and the export agree
+	/// (Effigy's RigAnimFile.MorphWeightsAt is the kernel twin).
 	/// </summary>
 	public void MorphWeightsAt( float frame, Dictionary<string, float> into )
 	{
 		into.Clear();
+
+		foreach ( var track in MorphTracks )
+		{
+			if ( track.Keyframes.Count > 0 && !string.IsNullOrWhiteSpace( track.BoneName ) )
+				into[track.BoneName] = track.Evaluate( frame ).Scale.x;
+		}
 
 		if ( MorphEvents is null )
 			return;
@@ -143,7 +164,7 @@ public sealed class RigAnimDocument : GameResource
 			var name = string.IsNullOrWhiteSpace( morph.MorphName ) ? morph.Name : morph.MorphName;
 
 			if ( !string.IsNullOrWhiteSpace( name ) )
-				into[name] = morph.Value;
+				into[name] = morph.Value * morph.WeightAt( frame );
 		}
 	}
 
@@ -187,6 +208,128 @@ public sealed class RigAnimDocument : GameResource
 
 	public BoneTrack GetOrAddIkGoalTrack( string bone ) => GetOrAddTrack( bone, TrackTarget.IkGoal );
 
+	/// <summary>What the goal of <paramref name="bone"/>'s constraint is keyed relative to, or null
+	/// for the model, as every goal was before spaces existed.</summary>
+	public IkGoalAnchor FindIkGoalAnchor( string bone ) =>
+		IkGoalAnchors?.FirstOrDefault( a => a is not null && a.Bone == bone && a.Space != IkGoalSpace.Model );
+
+	/// <summary>
+	/// Where an object, one of its parts, or a reference prop sits at <paramref name="frame"/>, in
+	/// the clip's own space - the space the editor places them in, with the model at its origin.
+	/// Null for a name nothing in the clip owns, and for anything that follows a bone: an IK goal on
+	/// something carried by the rig would chase its own solve.
+	/// </summary>
+	public Transform? PlacementAt( string key, float frame )
+	{
+		if ( string.IsNullOrEmpty( key ) )
+			return null;
+
+		Transform Keyed( string name, Transform placed ) =>
+			FindPartTrack( name ) is { Keyframes.Count: > 0 } track ? track.Evaluate( frame ) : placed;
+
+		var (owner, part) = FindPartTarget( key );
+
+		if ( owner is not null )
+		{
+			if ( !string.IsNullOrWhiteSpace( owner.FollowBone ) || (part is null && key != owner.Name) )
+				return null;
+
+			var placed = Keyed( owner.Name, owner.LocalTransform );
+			return part is null ? placed : placed.ToWorld( PartInObject( owner, part, frame ) );
+		}
+
+		if ( ReferenceProps?.FirstOrDefault( p => p is not null && p.Name == key ) is { } prop && string.IsNullOrWhiteSpace( prop.FollowBone ) )
+			return Keyed( prop.Name, prop.LocalTransform );
+
+		return null;
+	}
+
+	/// <summary>
+	/// The goal of <paramref name="bone"/>'s constraint at <paramref name="frame"/>, in the model's
+	/// space - its keys, taken out of whatever space they were keyed in. Null when the clip keys no
+	/// goal, or keys it against an object the clip no longer has.
+	///
+	/// <paramref name="modelInClip"/> is where the model stands among the clip's objects; the editor
+	/// passes its renderer, since the model can be moved there. Omitted, the model is at the origin,
+	/// which is how a clip is authored and how a headless export reads it.
+	///
+	/// World is the model's own space here: a clip is authored with the model standing still, so
+	/// the two only part company in game - see RigAnimPlayerComponent.
+	/// </summary>
+	public Transform? IkGoalAt( string bone, float frame, Transform? modelInClip = null )
+	{
+		if ( FindIkGoalTrack( bone ) is not { Keyframes.Count: > 0 } track )
+			return null;
+
+		var key = track.Evaluate( frame );
+
+		if ( FindIkGoalAnchor( bone ) is not { Space: IkGoalSpace.Object } anchor )
+			return key;
+
+		if ( PlacementAt( anchor.Object, frame ) is not { } placed )
+			return null;
+
+		var model = modelInClip ?? Transform.Zero;
+		return model.ToLocal( placed.ToWorld( key ) );
+	}
+
+	/// <summary>The key that puts <paramref name="bone"/>'s goal at <paramref name="goal"/> (model
+	/// space) on <paramref name="frame"/> - IkGoalAt run backwards, for whatever is about to key it.
+	/// A goal whose object has gone is keyed as it stands, in the model's space.</summary>
+	public Transform IkGoalKey( string bone, Transform goal, float frame, Transform? modelInClip = null )
+	{
+		if ( FindIkGoalAnchor( bone ) is not { Space: IkGoalSpace.Object } anchor || PlacementAt( anchor.Object, frame ) is not { } placed )
+			return goal;
+
+		var model = modelInClip ?? Transform.Zero;
+		return placed.ToLocal( model.ToWorld( goal ) );
+	}
+
+	/// <summary>
+	/// Key <paramref name="bone"/>'s goal in a new space, every key converted so the goal stays
+	/// exactly where it was on its own frame - a hand already on the pipe stays on the pipe, and
+	/// from then on moves with it. Returns false when the object cannot be placed (a typo, or
+	/// something that follows a bone), leaving everything as it was.
+	/// </summary>
+	public bool SetIkGoalSpace( string bone, IkGoalSpace space, string objectName )
+	{
+		if ( string.IsNullOrEmpty( bone ) )
+			return false;
+
+		objectName = space == IkGoalSpace.Object ? objectName ?? "" : "";
+
+		if ( space == IkGoalSpace.Object && PlacementAt( objectName, 0 ) is null )
+			return false;
+
+		IkGoalAnchors ??= new List<IkGoalAnchor>();
+
+		if ( FindIkGoalTrack( bone ) is { Keyframes.Count: > 0 } track )
+		{
+			// Every goal into model space under the old anchor, then back out under the new one.
+			var model = track.Keyframes.Select( k => (Key: k, Goal: IkGoalAt( bone, k.Frame ) ?? k.Local) ).ToList();
+
+			IkGoalAnchors.RemoveAll( a => a is null || a.Bone == bone );
+			IkGoalAnchors.Add( new IkGoalAnchor { Bone = bone, Space = space, Object = objectName } );
+
+			// A hand-set tangent is a slope in the old space, so it goes back to automatic.
+			foreach ( var (key, goal) in model )
+			{
+				key.Local = IkGoalKey( bone, goal, key.Frame );
+				key.TangentIn = null;
+				key.TangentOut = null;
+			}
+		}
+		else
+		{
+			IkGoalAnchors.RemoveAll( a => a is null || a.Bone == bone );
+			IkGoalAnchors.Add( new IkGoalAnchor { Bone = bone, Space = space, Object = objectName } );
+		}
+
+		// Model is what no entry means - don't keep one around to say it.
+		IkGoalAnchors.RemoveAll( a => a is null || a.Space == IkGoalSpace.Model );
+		return true;
+	}
+
 	/// <summary>The keyed shot of a camera, by the camera's name. See TrackTarget.Camera.</summary>
 	public BoneTrack FindCameraTrack( string camera ) =>
 		BoneTracks.FirstOrDefault( t => t.Target == TrackTarget.Camera && t.BoneName == camera );
@@ -218,6 +361,44 @@ public sealed class RigAnimDocument : GameResource
 
 	/// <summary>Only the IK goal tracks.</summary>
 	public IEnumerable<BoneTrack> IkGoalTracks => BoneTracks.Where( t => t.Target == TrackTarget.IkGoal );
+
+	/// <summary>The keyed weight of the IK constraint whose end is <paramref name="bone"/>, if the clip
+	/// keys one. See TrackTarget.IkWeight.</summary>
+	public BoneTrack FindIkWeightTrack( string bone ) =>
+		BoneTracks.FirstOrDefault( t => t.Target == TrackTarget.IkWeight && t.BoneName == bone );
+
+	public BoneTrack GetOrAddIkWeightTrack( string bone ) => GetOrAddTrack( bone, TrackTarget.IkWeight );
+
+	/// <summary>
+	/// How much of <paramref name="bone"/>'s constraint applies at <paramref name="frame"/>, 0 to 1:
+	/// its weight track (scale.x of the key) when keyed, otherwise 1. Multiplied into the
+	/// constraint's own Weight by everything that solves live IK - player, viewport, export - so
+	/// they agree.
+	/// </summary>
+	public float IkWeightAt( string bone, float frame ) =>
+		FindIkWeightTrack( bone ) is { Keyframes.Count: > 0 } track ? track.Evaluate( frame ).Scale.x.Clamp( 0f, 1f ) : 1f;
+
+	/// <summary>Key <paramref name="bone"/>'s IK weight at <paramref name="frame"/>.</summary>
+	public void SetIkWeightKey( string bone, int frame, float weight ) =>
+		GetOrAddIkWeightTrack( bone ).SetKeyframe( frame, IkWeightKey( weight ) );
+
+	/// <summary>The keyed morph tracks. See TrackTarget.Morph.</summary>
+	public IEnumerable<BoneTrack> MorphTracks => BoneTracks.Where( t => t.Target == TrackTarget.Morph );
+
+	public BoneTrack FindMorphTrack( string morph ) =>
+		BoneTracks.FirstOrDefault( t => t.Target == TrackTarget.Morph && t.BoneName == morph );
+
+	public BoneTrack GetOrAddMorphTrack( string morph ) => GetOrAddTrack( morph, TrackTarget.Morph );
+
+	/// <summary>Key <paramref name="morph"/> to <paramref name="value"/> at <paramref name="frame"/>.</summary>
+	public void SetMorphKey( string morph, int frame, float value ) =>
+		GetOrAddMorphTrack( morph ).SetKeyframe( frame, MorphKey( value ) );
+
+	/// <summary>The key a morph track stores for a value - see TrackTarget.Morph.</summary>
+	public static Transform MorphKey( float value ) => new( Vector3.Zero, Rotation.Identity, value );
+
+	/// <summary>The key an IK weight track stores for a weight - see TrackTarget.IkWeight.</summary>
+	public static Transform IkWeightKey( float weight ) => new( Vector3.Zero, Rotation.Identity, weight.Clamp( 0f, 1f ) );
 
 	/// <summary>
 	/// A camera's shot at <paramref name="frame"/>: its keys when it has any, otherwise where it
@@ -300,7 +481,9 @@ public enum TrackTarget
 	///
 	/// Named for the constraint's end bone (its TargetBone), and stored in the MAIN MODEL'S SPACE -
 	/// relative to the model's root, not to any bone - because a goal is where the hand should be in
-	/// the world the model stands in, not where it is on the arm. Rotation is kept as well: with
+	/// the world the model stands in, not where it is on the arm. Unless the clip says otherwise: a
+	/// goal can be keyed planted in the world or on one of the clip's objects (IkGoalAnchors) - read
+	/// it through IkGoalAt, which hands back model space whichever it is. Rotation is kept as well: with
 	/// GoalRotation on, the end bone takes it, so one control places the wrist and turns the palm.
 	///
 	/// A clip without goal keys plays exactly as before - the solve only runs where there is a goal
@@ -317,7 +500,63 @@ public enum TrackTarget
 	/// second undo path to key one extra number. Through the scale it eases, curves and copies like
 	/// every other track.
 	/// </summary>
-	Camera
+	Camera,
+
+	/// <summary>
+	/// An IK constraint's weight over time - IK/FK blend - named for its end bone like the goal.
+	/// THE KEY'S SCALE.X CARRIES THE WEIGHT, 0 to 1, for the camera's reason: one number gets the
+	/// timeline, easing, copy/paste and undo for free. It multiplies the constraint's own Weight;
+	/// 0 hands the chain to its keyframes (a free cable on its baked sim), 1 clamps it to the goal.
+	/// No track means 1, which is every clip keyed before this existed. See IkWeightAt.
+	/// </summary>
+	IkWeight,
+
+	/// <summary>
+	/// A morph (shape key, flex controller) over time - a sac swelling, a maw gaping - named for the
+	/// morph. THE KEY'S SCALE.X CARRIES THE VALUE, for the camera's reason: keyed like anything else,
+	/// eased, curved in the graph editor, copied. Unlike a MorphEvent's held value this is a free
+	/// curve. Played by the viewport and the player (MorphWeightsAt), and written into the .vmdl
+	/// export as a flex channel. Appended - new values are never inserted.
+	/// </summary>
+	Morph
+}
+
+/// <summary>
+/// What an IK goal's keys are relative to. See RigAnimDocument.IkGoalAnchors.
+/// NEW VALUES ARE APPENDED, NEVER INSERTED - see KeyInterpolation for why.
+/// </summary>
+public enum IkGoalSpace
+{
+	/// <summary>The model's own space: the goal travels with the character. A hand on its hip.</summary>
+	Model,
+
+	/// <summary>
+	/// Planted in the world where the clip started. In the editor this is the model's space - the
+	/// model stands still there - but in game, when the character's GameObject moves while the clip
+	/// plays, the goal stays where it was put. A hand on a wall that is not part of the clip.
+	/// </summary>
+	World,
+
+	/// <summary>
+	/// Relative to one of the clip's objects, parts or reference props (IkGoalAnchor.Object): the
+	/// goal follows it, the way Follow Bone makes a prop follow a bone. A hand clamped to a pipe -
+	/// move the pipe, or bind it in game (RigAnimPlayerComponent.Parts) to the real one, and the hand
+	/// stays on it.
+	/// </summary>
+	Object,
+}
+
+/// <summary>One IK goal's space. See RigAnimDocument.IkGoalAnchors.</summary>
+public sealed class IkGoalAnchor
+{
+	/// <summary>The constraint's end bone - the name its goal track is keyed under.</summary>
+	[Property] public string Bone { get; set; } = "";
+
+	[Property] public IkGoalSpace Space { get; set; } = IkGoalSpace.Model;
+
+	/// <summary>With Space Object: the object, "object/part" or reference prop the goal follows -
+	/// the same name its timeline row and its RigAnimPlayerComponent.Parts binding use.</summary>
+	[Property] public string Object { get; set; } = "";
 }
 
 /// <summary>A named frame on the clip's timeline. See RigAnimDocument.Marks.</summary>
@@ -532,6 +771,8 @@ public sealed class BoneTrack
 	{
 		TrackTarget.IkGoal => $"{RigTrackName.Display( BoneName )} (IK goal)",
 		TrackTarget.Camera => $"{BoneName} (camera)",
+		TrackTarget.IkWeight => $"{RigTrackName.Display( BoneName )} (IK weight)",
+		TrackTarget.Morph => $"{BoneName} (morph)",
 		_ => RigTrackName.Display( BoneName )
 	};
 	[Property] public List<BoneKeyframe> Keyframes { get; set; } = new();
@@ -830,5 +1071,33 @@ public sealed class MorphEvent
 	[Property, Title( "Morph Name" )] public string MorphName { get; set; } = "";
 	[Property] public float Value { get; set; } = 1f;
 
+	/// <summary>Frames to ramp up from nothing to Value, starting at Start Frame. 0 (the default, and
+	/// what every older clip reads back as) snaps on. Eased, so a jaw or a swelling sac accelerates
+	/// into the shape rather than sliding at constant speed.</summary>
+	[Property, Title( "Fade In" ), Range( 0, 120 )] public int FadeIn { get; set; }
+
+	/// <summary>Frames to ramp back down to nothing, ending at End Frame. 0 snaps off.</summary>
+	[Property, Title( "Fade Out" ), Range( 0, 120 )] public int FadeOut { get; set; }
+
 	public bool IsActive( float frame ) => frame >= StartFrame && frame <= EndFrame;
+
+	/// <summary>How much of Value applies at <paramref name="frame"/>: 0 outside the range, eased up
+	/// over Fade In and down over Fade Out. When the fades overlap (a short event with long fades)
+	/// the lower of the two wins, so the shape peaks below Value rather than jumping.</summary>
+	public float WeightAt( float frame )
+	{
+		if ( !IsActive( frame ) )
+			return 0f;
+
+		var up = FadeIn > 0 ? Smooth( (frame - StartFrame) / FadeIn ) : 1f;
+		var down = FadeOut > 0 ? Smooth( (EndFrame - frame) / FadeOut ) : 1f;
+
+		return MathF.Min( up, down );
+	}
+
+	private static float Smooth( float t )
+	{
+		t = t.Clamp( 0f, 1f );
+		return t * t * (3f - 2f * t);
+	}
 }

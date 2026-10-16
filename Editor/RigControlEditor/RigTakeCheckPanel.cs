@@ -60,7 +60,7 @@ internal sealed class RigTakeCheckPanel : Widget
 	{
 		_viewport = viewport;
 
-		Name = "TakeCheck";
+		Name = "Take Check";
 		WindowTitle = "Take Check";
 		SetWindowIcon( "rule" );
 
@@ -105,7 +105,7 @@ internal sealed class RigTakeCheckPanel : Widget
 		_run = bar.Add( new Button( "Run Check", "play_arrow" ) { Clicked = Run, ToolTip = "Check the open clip on the viewport's model" } );
 		_copy = bar.Add( new Button( "Copy Report", "content_copy" )
 		{
-			ToolTip = "The whole report as text - the same text tools/effigy.sh take prints",
+			ToolTip = "Copy the full report to the clipboard as text",
 			Clicked = () => { if ( !string.IsNullOrEmpty( _summary ) ) EditorUtility.Clipboard.Copy( _summary ); }
 		} );
 		_copy.Enabled = false;
@@ -288,7 +288,7 @@ internal sealed class RigTakeCheckPanel : Widget
 		// it RigAnimFile solves them the way a new constraint would, which is right for most rigs
 		// and said so in the report when it happens.
 		if ( rigJson is not null )
-			clip.Ik = RigIk.ReadRig( rigJson );
+			clip.UseRig( rigJson );
 
 		if ( options.From is { } from && options.To is { } to && to < from )
 			options.To = from;

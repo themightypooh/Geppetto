@@ -13,7 +13,7 @@ namespace Effigy;
 /// the headless suite can exercise the whole retarget, and the Godot option stays open.
 ///
 /// WHERE THE NUMBERS CAME FROM, since a wrong bind pose here is invisible until something animates.
-/// Read off the engine - <see cref="EffigySkeletonImport"/> rebuilds citizen's 95 bones from the
+/// Read off the engine - <c>EffigySkeletonImport</c> rebuilds citizen's 95 bones from the
 /// compiled `models/citizen/citizen.vmdl` and `effigy_skeleton_probe ... local` dumps each bone's
 /// LOCAL basis, which these rows are. The first version came out of a converter that read
 /// `citizen.fbx` and changed coordinate systems, and it got every POSITION right while silently

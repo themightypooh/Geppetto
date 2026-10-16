@@ -196,7 +196,7 @@ internal sealed class RigTutorial
 				{
 					"Click its dot in the viewport",
 					"Or click its name in the timeline's left column",
-					"Or click it in the bone tree in the BonesObject tab"
+					"Or click it in the bone tree in the Scene tab"
 				},
 				Detail = "All three do the same thing. The selected bone turns yellow and gets a gizmo you can drag. Select arm_upper_R - the right shoulder - to carry on.",
 				Art = StepArt.Bone,
@@ -207,13 +207,13 @@ internal sealed class RigTutorial
 				Instruction = "To reach for something, you need something to reach for",
 				Bullets = new[]
 				{
-					"In the BonesObject tab, add a Reference Prop",
+					"In the Scene tab, add a Reference Prop",
 					"Pick models/lightswitch/lightswitch_plate.vmdl",
 					"Drag its green dot in the viewport, out in front of the hand"
 				},
 				Detail = "Reference props are shown in the viewport only - never keyed, never exported. Posing at a real object beats imagining where one would be.",
 				Art = StepArt.Model,
-				Panel = "BonesObject",
+				Panel = "Scene",
 
 				// Assigning a model isn't the step - PLACING it is. This used to tick the instant a
 				// model was picked, while the prop was still sitting at the origin inside the

@@ -110,6 +110,17 @@ internal sealed partial class RigViewport
 	/// the next frame drawn, not now, so a drag that edits every frame pays once per frame.</summary>
 	public void InvalidateOverlays() => _overlayDirty = true;
 
+	/// <summary>What the overlays currently hold, for the MCP self-check: ghosts drawn, trail
+	/// points, keyed cameras placed.</summary>
+	internal (int Ghosts, int TrailPoints, int TrailKeys, int KeyedCameras) OverlayCounts()
+	{
+		RefreshOverlays();
+		return (_ghosts.Count, _trail.Count, _trailKeys.Count, _cameraFrame.Count);
+	}
+
+	/// <summary>The viewport's own camera, for rendering what it sees to a bitmap.</summary>
+	internal CameraComponent ViewCameraComponent => _camera;
+
 	private void RefreshOverlays()
 	{
 		if ( !_overlayDirty && _trailBone == (_showTrail ? SelectedBone : null) )
@@ -194,7 +205,7 @@ internal sealed partial class RigViewport
 			return world;
 
 		Transform? Pose( string bone ) => anim.FindTrack( bone ) is { Keyframes.Count: > 0 } track ? track.Evaluate( frame ) : null;
-		Transform? Goal( string bone ) => anim.FindIkGoalTrack( bone ) is { Keyframes.Count: > 0 } track ? track.Evaluate( frame ) : null;
+		Transform? Goal( string bone ) => anim.IkGoalAt( bone, frame, _renderer.WorldTransform );
 
 		foreach ( var bone in bones.AllBones )
 		{

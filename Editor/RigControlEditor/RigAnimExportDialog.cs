@@ -131,7 +131,7 @@ internal sealed class RigAnimExportDialog : Window
 		if ( !string.IsNullOrEmpty( result.Note ) )
 			body += "\n\n" + result.Note;
 
-		new PopupWindow( "Export Complete", body, "OK",
+		new PopupWindow( result.Compiled ? "Export Complete" : "Export Finished with Errors", body, "OK",
 			new System.Collections.Generic.Dictionary<string, System.Action>
 			{
 				{ "OK", () => { } }

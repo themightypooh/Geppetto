@@ -66,7 +66,9 @@ public sealed class RigAnimPlayerComponent : Component
 	public float Blend => Mode == RigAnimMode.Exclusive ? 1f : _blend;
 
 	/// <summary>
-	/// Which GameObject each of the clip's whole-part tracks drives.
+	/// Which GameObject each of the clip's whole-part tracks drives - and what an IK goal keyed on an
+	/// object clamps to (IkGoalSpace.Object): bind the clip's "pipe" to the level's pipe and the hand
+	/// holds that one, wherever it is.
 	///
 	/// Leave it empty for a clip that only animates the main model. Fill in one row per object the
 	/// clip touches - the name has to match the reference prop it was authored against, which is
@@ -78,6 +80,31 @@ public sealed class RigAnimPlayerComponent : Component
 	/// its bones, or both.
 	/// </summary>
 	[Property] public List<AnimPartBinding> Parts { get; set; } = new();
+
+	/// <summary>Playback speed: 2 plays twice as fast, 0.5 half. Marks still fire once per crossing.</summary>
+	[Property, Range( 0.05f, 4f )] public float Rate { get; set; } = 1f;
+
+	/// <summary>
+	/// Play this clip ON TOP OF ANOTHER PLAYER rather than over the animgraph - an idle pulse over a
+	/// haul, one cable's short loop over the body's clip. Set Mode to Additive or Overlay; the other
+	/// player poses first every frame, then this one layers onto exactly what it wrote, so the two
+	/// never fight over order. Each keeps its own clock, Loop and Rate, so loops of different lengths
+	/// drift through each other and never line up.
+	///
+	/// Leave empty to layer over the animgraph as before. To bake the sum into one clip instead (for
+	/// export or the take check), use the timeline's Layer Clip menu - RigClipLayer.MergeLayer.
+	/// </summary>
+	[Property, HideIf( nameof( Mode ), RigAnimMode.Exclusive )]
+	public RigAnimPlayerComponent LayerOver { get; set; }
+
+	/// <summary>
+	/// Bones sprung LIVE after the clip, its layers and IK: each entry is a bone and everything
+	/// below it, with a preset (Loose cable, Heavy flesh, Springy, Stiff) or its own numbers. They
+	/// lag and swing behind the clip and behind the GameObject moving through the world - what a
+	/// baked secondary pass cannot know about. Bones a live IK chain is holding are left alone. See
+	/// RigSoftChain; Bake Secondary Motion is the same springs written into the clip instead.
+	/// </summary>
+	[Property, Group( "Secondary Motion" )] public List<RigSoftChain> SoftChains { get; set; } = new();
 
 	public bool IsPlaying { get; private set; }
 	public float Frame { get; private set; }
@@ -298,12 +325,46 @@ public sealed class RigAnimPlayerComponent : Component
 		_cameraShots.Clear();
 	}
 
+	/// <summary>The player this one layers over, when it is live; see LayerOver.</summary>
+	private RigAnimPlayerComponent Under =>
+		Mode != RigAnimMode.Exclusive && LayerOver.IsValid() && LayerOver != this && LayerOver.Enabled && LayerOver.LayerOver != this
+			? LayerOver : null;
+
+	/// <summary>Players layered over this one, ticked right after it poses. They sign themselves up
+	/// from their own OnUpdate, so a layer added or retargeted at runtime is picked up a frame later.</summary>
+	private readonly List<RigAnimPlayerComponent> _layers = new();
+
+	/// <summary>Every bone object this player wrote on its last frame - what a layer over it reads
+	/// as "the pose below" instead of the animgraph's.</summary>
+	private readonly HashSet<GameObject> _written = new();
+
+	/// <summary>Bones a live IK chain solved this frame with some weight - the soft pass leaves them.</summary>
+	private readonly HashSet<GameObject> _ikHeld = new();
+
+	private readonly RigSoftPass _soft = new();
+
 	protected override void OnUpdate()
+	{
+		// A layer is posed by the player under it, straight after that one's own pose.
+		if ( Under is { } under )
+		{
+			if ( !under._layers.Contains( this ) )
+				under._layers.Add( this );
+
+			return;
+		}
+
+		Tick( Time.Delta );
+	}
+
+	private void Tick( float delta )
 	{
 		if ( !Target.IsValid() || Anim is null )
 			return;
 
 		EnsureRig();
+		_written.Clear();
+		_ikHeld.Clear();
 
 		if ( IsPlaying )
 		{
@@ -311,7 +372,7 @@ public sealed class RigAnimPlayerComponent : Component
 			// on this first tick - the cue that goes with the clip starting.
 			var before = _fromStart ? -1f : Frame;
 			_fromStart = false;
-			Frame += Time.Delta * FrameRate;
+			Frame += delta * FrameRate * MathF.Max( Rate, 0f );
 
 			FireMarks( before, MathF.Min( Frame, LastFrame ) );
 
@@ -320,6 +381,10 @@ public sealed class RigAnimPlayerComponent : Component
 				if ( Loop )
 				{
 					Frame %= MathF.Max( LastFrame, 0.0001f );
+
+					// A cycle plants its World-space goals afresh from wherever the body has got
+					// to - a haul that loops grips the next stretch of pipe, not the first one.
+					_worldAnchor = Target.WorldTransform;
 
 					// The wrap starts the clip again: a mark on frame 0 has arrived, and so has
 					// everything up to where this tick landed.
@@ -346,22 +411,66 @@ public sealed class RigAnimPlayerComponent : Component
 		if ( Mode == RigAnimMode.Exclusive )
 		{
 			ApplyFrame( Frame );
+			TickLayers( delta );
+			ApplySoft( delta, 1f );
 			return;
 		}
 
 		var fade = _active ? BlendIn : BlendOut;
 		_blend = fade <= 0f
 			? (_active ? 1f : 0f)
-			: _blend.Approach( _active ? 1f : 0f, Time.Delta / fade );
+			: _blend.Approach( _active ? 1f : 0f, delta / fade );
 
 		if ( !_active && _blend <= 0f )
 		{
 			ReleaseBones();
+			TickLayers( delta );
 			return;
 		}
 
 		ApplyFrame( Frame );
+		TickLayers( delta );
+		ApplySoft( delta, (Weight * _blend).Clamp( 0f, 1f ) );
 	}
+
+	/// <summary>
+	/// The live springs (SoftChains), last: keys, then layers, then IK, then springs - the order the
+	/// bake reacts in too. Built on first use and after Play(); a GameObject that teleports resets
+	/// its tails rather than whipping them across the map.
+	/// </summary>
+	private void ApplySoft( float delta, float amount )
+	{
+		if ( SoftChains is not { Count: > 0 } )
+			return;
+
+		if ( !_soft.Built )
+			_soft.Build( SoftChains, name => FindBone( Target.GameObject, name ), IsBone, Target, Anim.RigAsset );
+
+		_soft.Step( delta,
+			( go, bone ) => Wrote( go ) ? go.LocalTransform : AnimatedLocal( new DrivenBone { Object = go, Renderer = Target, Bone = bone } ),
+			go => _ikHeld.Contains( go ) || _layers.Any( l => l._ikHeld.Contains( go ) ),
+			amount );
+	}
+
+	/// <summary>Pose every live layer over this player, in the order they signed up, each on what
+	/// the one before it left. A layer that has gone, or now layers elsewhere, drops out.</summary>
+	private void TickLayers( float delta )
+	{
+		_layers.RemoveAll( l => !l.IsValid() || !l.Enabled || l.Under != this );
+
+		foreach ( var layer in _layers.ToList() )
+		{
+			layer.Tick( delta );
+			_written.UnionWith( layer._written );
+		}
+	}
+
+	/// <summary>True when this player (or a layer over it) wrote <paramref name="bone"/> this frame.</summary>
+	private bool Wrote( GameObject bone ) => _written.Contains( bone );
+
+	/// <summary>Where the model stood when the clip (or this cycle of a loop) started - what a
+	/// World-space IK goal is planted against. See IkGoalSpace.World.</summary>
+	private Transform? _worldAnchor;
 
 	/// <summary>Set by Play() from frame 0, so the first tick includes a mark ON frame 0.</summary>
 	private bool _fromStart;
@@ -389,10 +498,14 @@ public sealed class RigAnimPlayerComponent : Component
 
 		_fromStart = Frame <= 0f;
 
+		if ( _fromStart || _worldAnchor is null )
+			_worldAnchor = Target.IsValid() ? Target.WorldTransform : null;
+
 		// Resolve afresh: Parts may have been bound, or the model swapped, since last time.
 		ReleaseBones();
 		_driven.Clear();
 		_ikChains.Clear();
+		_soft.Rest();
 
 		_notifiedFinish = false;
 		IsPlaying = true;
@@ -419,6 +532,7 @@ public sealed class RigAnimPlayerComponent : Component
 	{
 		Frame = frame.Clamp( 0f, LastFrame );
 		_notifiedFinish = false;
+		_soft.Rest();
 		ApplyFrame( Frame );
 	}
 
@@ -471,11 +585,13 @@ public sealed class RigAnimPlayerComponent : Component
 			if ( Driven( track ) is not { } driven )
 				continue;
 
-			var clip = track.Evaluate( frame );
+			// Limits as the keys are read - the viewport, the export and the headless sim do the same.
+			var clip = RigConstraintSolver.ClampToLimits( Anim.RigAsset, track.BoneName, track.Evaluate( frame ) );
 
 			if ( Mode == RigAnimMode.Exclusive )
 			{
 				driven.Object.LocalTransform = clip;
+				_written.Add( driven.Object );
 				continue;
 			}
 
@@ -483,7 +599,8 @@ public sealed class RigAnimPlayerComponent : Component
 				continue;
 
 			var weight = (Weight * _blend).Clamp( 0f, 1f );
-			var anim = AnimatedLocal( driven );
+			var anim = UnderLocal( driven );
+			_written.Add( driven.Object );
 
 			driven.Object.LocalTransform = Mode == RigAnimMode.Additive
 				? AddOnto( anim, driven.Reference, clip, weight )
@@ -493,12 +610,60 @@ public sealed class RigAnimPlayerComponent : Component
 					Vector3.Lerp( anim.Scale, clip.Scale, weight ) );
 		}
 
+		if ( Mode == RigAnimMode.Exclusive )
+			ApplyLimitedBinds();
+
 		ApplyIk( frame );
 		ApplyParts( frame );
 		ApplyMorphs( frame );
 		ApplyCameras( frame );
 
 		_events?.SetFrame( frame );
+	}
+
+	/// <summary>
+	/// A limited bone the clip never keys sits at its bind pose, clamped - what the viewport shows and
+	/// the export and headless sim bake. Exclusive only: in a layered mode an unkeyed bone is the
+	/// graph's, not the clip's.
+	/// </summary>
+	private void ApplyLimitedBinds()
+	{
+		if ( Anim.RigAsset?.LimitConstraints is not { Count: > 0 } limits )
+			return;
+
+		foreach ( var limit in limits )
+		{
+			var name = limit?.TargetBone;
+
+			if ( limit is null || !limit.Enabled || string.IsNullOrEmpty( name ) || Anim.FindTrack( name ) is { Keyframes.Count: > 0 } )
+				continue;
+
+			if ( !_driven.TryGetValue( name, out var driven ) || (driven is not null && !driven.Object.IsValid()) )
+			{
+				var go = FindBoneFor( name );
+				var renderer = go.IsValid() ? go.GetComponentInParent<SkinnedModelRenderer>( true, false ) : null;
+
+				driven = go.IsValid()
+					? new DrivenBone { Object = go, Renderer = renderer, Bone = renderer?.Model?.Bones.GetBone( go.Name ), InMask = true }
+					: null;
+
+				_driven[name] = driven;
+			}
+
+			if ( driven?.Bone is not { } bone )
+				continue;
+
+			if ( !driven.Object.Flags.Contains( GameObjectFlags.ProceduralBone ) )
+			{
+				driven.Object.Flags |= GameObjectFlags.ProceduralBone;
+				driven.Flagged = true;
+			}
+
+			// Bone.LocalTransform is MODEL space despite its name; the parent's undoes it.
+			var bind = bone.Parent is { } parent ? parent.LocalTransform.ToLocal( bone.LocalTransform ) : bone.LocalTransform;
+			driven.Object.LocalTransform = RigConstraintSolver.ClampToLimits( Anim.RigAsset, name, bind );
+			_written.Add( driven.Object );
+		}
 	}
 
 	/// <summary>
@@ -536,7 +701,8 @@ public sealed class RigAnimPlayerComponent : Component
 	/// history - a longer chain's iterated solve would creep - and a clip has to look the same on
 	/// every frame it is played, scrubbed or exported.
 	///
-	/// The goal is in the model's space (see TrackTarget.IkGoal), so it travels with the character.
+	/// A goal is keyed in the model's space by default (see TrackTarget.IkGoal), so it travels with
+	/// the character. The clip can plant it instead - see GoalWorld.
 	/// </summary>
 	private void ApplyIk( float frame )
 	{
@@ -577,23 +743,74 @@ public sealed class RigAnimPlayerComponent : Component
 				if ( !chain.Keyed[k] )
 				{
 					bone.LocalTransform = layered
-						? AnimatedLocal( new DrivenBone { Object = bone, Renderer = Target, Bone = chain.Bones[k] } )
+						? UnderLocal( new DrivenBone { Object = bone, Renderer = Target, Bone = chain.Bones[k] } )
 						: chain.Bind[k];
 				}
 
 				world[k] = bone.WorldTransform;
 			}
 
-			var goal = Target.WorldTransform.ToWorld( goalTrack.Evaluate( frame ) );
-			var weight = ik.Weight * (layered ? (Weight * _blend).Clamp( 0f, 1f ) : 1f);
+			if ( GoalWorld( ik.TargetBone, goalTrack.Evaluate( frame ), frame ) is not { } goal )
+				continue;
+
+			// The clip's keyed IK weight (TrackTarget.IkWeight) on top: 0 leaves the chain on its keys.
+			var weight = ik.Weight * Anim.IkWeightAt( ik.TargetBone, frame ) * (layered ? (Weight * _blend).Clamp( 0f, 1f ) : 1f);
+
+			if ( weight <= 0f )
+				continue;
+
+			// Inside the rig's Limit constraints, measured against the top bone's parent.
+			var limit = RigConstraintSolver.LimitsFor( Anim.RigAsset, chain.Objects.Select( o => o.Name ).ToArray() );
+			var above = chain.Objects[0].Parent is { } top && top.IsValid() ? top.WorldTransform : Target.WorldTransform;
 
 			if ( !RigConstraintSolver.SolveChain( world, goal.Position, ik.GoalRotation ? goal.Rotation : null,
-				Target.WorldRotation * ik.PoleDirection, ik.Iterations, weight ) )
+				Target.WorldRotation * ik.PoleDirection, ik.Iterations, weight, ik.Solver, ik.MaxStretch, above, limit ) )
 				continue;
 
 			// Top-down, so each bone is written under a parent that is already where it belongs.
 			for ( var k = 0; k < world.Length; k++ )
+			{
 				chain.Objects[k].WorldTransform = world[k];
+				_written.Add( chain.Objects[k] );
+			}
+
+			// The bones the solve moves (the top one only turns; the end only when the goal turns it).
+			for ( var k = 0; k < world.Length - (ik.GoalRotation ? 0 : 1); k++ )
+				_ikHeld.Add( chain.Objects[k] );
+		}
+	}
+
+	/// <summary>
+	/// A goal's key in the world, through the space the clip keyed it in (IkGoalSpace):
+	///
+	///   - Model: where the character is now. The goal travels with it.
+	///   - World: where the character was when the clip, or this cycle of it, started - so the hand
+	///     stays planted while game code moves the GameObject.
+	///   - Object: on the object it follows. Bound in Parts, that is the real object in the scene,
+	///     wherever it is - the hand clamps the pipe the level actually has. Unbound, it is where the
+	///     clip placed the object around the model, so the clip still plays as authored.
+	///
+	/// Null when the clip's object is gone and nothing is bound in its place.
+	/// </summary>
+	private Transform? GoalWorld( string bone, Transform key, float frame )
+	{
+		var anchor = Anim.FindIkGoalAnchor( bone );
+
+		switch ( anchor?.Space ?? IkGoalSpace.Model )
+		{
+			case IkGoalSpace.World:
+				return (_worldAnchor ?? Target.WorldTransform).ToWorld( key );
+
+			case IkGoalSpace.Object:
+				if ( Resolve( anchor.Object ) is { } bound && bound.IsValid() && bound != Target.GameObject )
+					return bound.WorldTransform.ToWorld( key );
+
+				return Anim.PlacementAt( anchor.Object, frame ) is { } placed
+					? Target.WorldTransform.ToWorld( placed.ToWorld( key ) )
+					: null;
+
+			default:
+				return Target.WorldTransform.ToWorld( key );
 		}
 	}
 
@@ -707,17 +924,16 @@ public sealed class RigAnimPlayerComponent : Component
 	/// "nothing has happened yet" - and every later key is read as a nudge from there.
 	///
 	/// Rotation composes in the bone's own frame, so a spine kick bends the spine the same way
-	/// whether he is standing or crouched. Position adds as a plain offset. Scale is the graph's.
+	/// whether he is standing or crouched. Position adds as a plain offset. Scale multiplies, so a
+	/// keyed 4 % swell swells whatever is under it (it used to be dropped). RigClipLayer.Compose.
 	/// </summary>
-	private static Transform AddOnto( Transform anim, Transform reference, Transform clip, float weight )
-	{
-		var delta = Rotation.Slerp( Rotation.Identity, reference.Rotation.Inverse * clip.Rotation, weight );
+	private static Transform AddOnto( Transform anim, Transform reference, Transform clip, float weight ) =>
+		RigClipLayer.Compose( anim, reference, clip, weight, additive: true );
 
-		return new Transform(
-			anim.Position + (clip.Position - reference.Position) * weight,
-			anim.Rotation * delta,
-			anim.Scale );
-	}
+	/// <summary>The pose this player blends from: what the player it layers over wrote this frame,
+	/// when it wrote this bone (see LayerOver); otherwise the animgraph's, as before.</summary>
+	private Transform UnderLocal( DrivenBone driven ) =>
+		Under is { } under && under.Wrote( driven.Object ) ? driven.Object.LocalTransform : AnimatedLocal( driven );
 
 	/// <summary>
 	/// What the graph wants this bone to be, in its parent's space - the pose the clip blends
@@ -821,6 +1037,7 @@ public sealed class RigAnimPlayerComponent : Component
 	private void ReleaseBones()
 	{
 		ReleaseMorphs();
+		_soft.Release();
 
 		foreach ( var chain in _ikChains.Values )
 		{

@@ -9,10 +9,9 @@ using System.Linq;
 
 namespace Marionette.Tools;
 
-/// <summary>What dragging a bone does. Held E flips between rotate and move for as long as it's
-/// down, so the common case (rotate) needs no modifier and the occasional one is still one key
-/// away. Scale is reached through the toolbar only - it's the rare case, and a bone scale that
-/// isn't deliberate is a good way to ruin a rig.</summary>
+/// <summary>What dragging a bone does. W, E and R switch it and it stays switched, the same keys
+/// and the same behaviour as Effigy's bone handles. Scale is the rare case, and a bone scale
+/// that isn't deliberate is a good way to ruin a rig.</summary>
 internal enum BoneDragMode
 {
 	Rotate,
@@ -98,6 +97,14 @@ internal sealed partial class RigViewport : Widget
 	/// the single most common way a first pose ends up looking broken. Move is still here because
 	/// it's genuinely needed for root/IK-target bones, but it's the exception.</summary>
 	public BoneDragMode DragMode { get; set; } = BoneDragMode.Rotate;
+
+	/// <summary>What dragging a prop, an object or the whole model does. Its own setting because its
+	/// default is the opposite of a bone's - a prop is placed far more than it is turned - but W,
+	/// E and R set both together, as Effigy's do for its bone and body handles. Scale has no meaning
+	/// for these, so it moves them.</summary>
+	public BoneDragMode ObjectDragMode { get; set; } = BoneDragMode.Move;
+
+	private bool RotatesObjects => ObjectDragMode == BoneDragMode.Rotate;
 
 	/// <summary>Fired every frame a bone's pose actually changes from dragging - the current
 	/// frame's keyframe is written on every call rather than once at drag-end, since
@@ -355,7 +362,7 @@ internal sealed partial class RigViewport : Widget
 
 		if ( Rig is null )
 		{
-			RigStatusBar.Show( "Hiding bones needs a Control Rig - set one in the BonesObject tab first" );
+			RigStatusBar.Show( "Hiding bones needs a Control Rig - set one in the Scene tab first" );
 			return;
 		}
 
@@ -385,7 +392,7 @@ internal sealed partial class RigViewport : Widget
 		showHidden.Checkable = true;
 		showHidden.Checked = ShowHiddenBones;
 
-		var unhideAll = menu.AddOption( "Unhide All", "restart_alt", () =>
+		var unhideAll = menu.AddOption( "Unhide All", "visibility", () =>
 		{
 			Rig.HiddenBones.Clear();
 			BoneVisibilityChanged?.Invoke();
@@ -558,7 +565,7 @@ internal sealed partial class RigViewport : Widget
 
 		_wholeModelToggle = new Checkbox( "Move Whole Model" )
 		{
-			ToolTip = "One gizmo on the model root instead of a handle per bone - for placing the arms relative to the eye. Drag to move, hold E to rotate. Hides the bone handles while it's on."
+			ToolTip = "One gizmo on the model root instead of a handle per bone - for placing the arms relative to the eye. W moves, E rotates. Hides the bone handles while it's on."
 		};
 		_wholeModelToggle.Toggled = () => SetViewMode( () => MoveWholeModel = _wholeModelToggle.Value );
 		bar.Add( _wholeModelToggle );
@@ -624,7 +631,7 @@ internal sealed partial class RigViewport : Widget
 		// In first person this straightens your head rather than dropping you out of the mode -
 		// otherwise the only way back from having looked around would be to leave and re-enter,
 		// which loses the framing you were judging.
-		bar.Add( new Button( "Reset Camera", "restart_alt" )
+		bar.Add( new Button( "Reset Camera", "settings_backup_restore" )
 		{
 			Clicked = () => SetViewMode( () =>
 			{
@@ -958,7 +965,7 @@ internal sealed partial class RigViewport : Widget
 		};
 	}
 
-	/// <summary>Every selected bone. A plain replace leaves just <paramref name="bone"/>; an
+	/// <summary>Every selected bone. A plain replace leaves just the clicked bone; an
 	/// additive select toggles it in or out, which is how Shift-click builds up a finger-full of
 	/// bones to pose together.</summary>
 	private readonly HashSet<string> _selectedBones = new();
@@ -2062,8 +2069,8 @@ internal sealed partial class RigViewport : Widget
 	private Vector3 _propMoveDelta;
 
 	/// <summary>
-	/// Click something to select it, then drag its gizmo - move by default, hold E to rotate, the
-	/// same contract as a bone.
+	/// Click something to select it, then drag its gizmo - move by default, W and E to switch, the
+	/// same keys as a bone.
 	///
 	/// A PART IS CLICKED BEFORE ITS OBJECT. Parts are drawn after their parents and win ties, so
 	/// clicking the handle grabs the handle; the object itself is grabbed by its dot, or from the
@@ -2130,7 +2137,7 @@ internal sealed partial class RigViewport : Widget
 
 			RigStatusBar.Show( _pickMovable is not null
 				? $"{_pickPrompt}  -  {RigTrackName.Display( movable.Key )}"
-				: $"{RigTrackName.Display( movable.Key )}  -  click to select, then drag to move. Hold E to rotate." );
+				: $"{RigTrackName.Display( movable.Key )}  -  click to select, then drag to {(RotatesObjects ? "rotate. W to move." : "move. E to rotate.")}" );
 
 			if ( Gizmo.WasLeftMousePressed && _pickMovable is not null )
 			{
@@ -2269,7 +2276,7 @@ internal sealed partial class RigViewport : Widget
 
 		Transform moved;
 
-		if ( Editor.Application.IsKeyDown( KeyCode.E ) )
+		if ( RotatesObjects )
 		{
 			if ( !Gizmo.Control.Rotate( "prop-rotate", Rotation.Identity, out var rotation ) )
 			{
@@ -2380,7 +2387,7 @@ internal sealed partial class RigViewport : Widget
 		}
 	}
 
-	public void EvaluatePose( Func<string, Transform?> poseForBone, Func<string, Transform?> goalForBone = null )
+	public void EvaluatePose( Func<string, Transform?> poseForBone, Func<string, Transform?> goalForBone = null, Func<string, float> weightForBone = null )
 	{
 		_poseLookup = poseForBone;
 		_suppressAutoKey = true;
@@ -2453,7 +2460,7 @@ internal sealed partial class RigViewport : Widget
 
 			// LIVE IK, AFTER THE KEYFRAMES AND BEFORE ANYTHING IS WRITTEN - the same order the game
 			// plays it in (RigAnimPlayerComponent.ApplyIk), so a scrub shows what the game will.
-			var solvedChain = goalForBone is null ? null : SolveLiveIk( goalForBone, resolved, poseForBone );
+			var solvedChain = goalForBone is null ? null : SolveLiveIk( goalForBone, resolved, poseForBone, weightForBone );
 
 			foreach ( var (bone, dragged) in order )
 			{
@@ -2513,7 +2520,7 @@ internal sealed partial class RigViewport : Widget
 	/// Main model only: a goal is stored in the main model's space and names one of its bones. A
 	/// chain with a bone under the mouse is skipped - the drag owns it this frame.
 	/// </summary>
-	private HashSet<string> SolveLiveIk( Func<string, Transform?> goalForBone, Dictionary<string, Transform> resolved, Func<string, Transform?> poseForBone )
+	private HashSet<string> SolveLiveIk( Func<string, Transform?> goalForBone, Dictionary<string, Transform> resolved, Func<string, Transform?> poseForBone, Func<string, float> weightForBone = null )
 	{
 		if ( Rig?.IkConstraints is not { Count: > 0 } constraints || !_renderer.IsValid() )
 			return null;
@@ -2523,6 +2530,12 @@ internal sealed partial class RigViewport : Widget
 		foreach ( var ik in constraints )
 		{
 			if ( ik is null || !ik.Enabled || !ik.Live || goalForBone( ik.TargetBone ) is not { } goalLocal )
+				continue;
+
+			// The clip's keyed IK weight (TrackTarget.IkWeight): 0 leaves the chain on its keys.
+			var keyedWeight = weightForBone?.Invoke( ik.TargetBone ) ?? 1f;
+
+			if ( keyedWeight <= 0f )
 				continue;
 
 			if ( FindBone( ik.TargetBone ) is not { Subject: RigTrackName.RootSubject } end )
@@ -2542,8 +2555,12 @@ internal sealed partial class RigViewport : Widget
 			var world = chain.Select( b => resolved[b.Key] ).ToArray();
 			var goal = _renderer.WorldTransform.ToWorld( goalLocal );
 
+			// Inside the rig's Limit constraints, measured against the top bone's parent - as in game.
+			var limit = RigConstraintSolver.LimitsFor( Rig, chain.Select( b => b.Key ).ToArray() );
+			var above = chain[0].Parent is { } top && resolved.TryGetValue( top.Key, out var topWorld ) ? topWorld : _renderer.WorldTransform;
+
 			if ( !RigConstraintSolver.SolveChain( world, goal.Position, ik.GoalRotation ? goal.Rotation : null,
-				_renderer.WorldRotation * ik.PoleDirection, ik.Iterations, ik.Weight ) )
+				_renderer.WorldRotation * ik.PoleDirection, ik.Iterations, ik.Weight * keyedWeight, ik.Solver, ik.MaxStretch, above, limit ) )
 				continue;
 
 			placed ??= new HashSet<string>();
@@ -2740,7 +2757,7 @@ internal sealed partial class RigViewport : Widget
 	private bool _draggingBone;
 
 	/// <summary>One dot per bone, click to select, Shift-click to add or remove, click-and-drag to
-	/// pose - hold E to flip rotate/move, or use the toolbar for scale. A single selected bone gets
+	/// pose - W, E and R pick move, rotate or scale. A single selected bone gets
 	/// a gizmo on itself; several selected bones get one gizmo on their centroid that poses the lot
 	/// together. Unselected bones get a plain click-to-select hitbox. The selected bone gets no
 	/// hitbox of ours at all - only Gizmo.Control, which brings its own. Registering both is what
@@ -2757,9 +2774,9 @@ internal sealed partial class RigViewport : Widget
 		// reason this mode exists.
 		if ( MoveWholeModel )
 		{
-			RigStatusBar.Show( Editor.Application.IsKeyDown( KeyCode.E )
-				? "Whole model  -  drag to rotate. Let go of E to move instead."
-				: "Whole model  -  drag to move. Hold E to rotate instead." );
+			RigStatusBar.Show( RotatesObjects
+				? "Whole model  -  drag to rotate. W to move instead."
+				: "Whole model  -  drag to move. E to rotate instead." );
 
 			DragWholeModel();
 			return;
@@ -2928,9 +2945,9 @@ internal sealed partial class RigViewport : Widget
 	{
 		var (verb, flip) = DragMode switch
 		{
-			BoneDragMode.Rotate => ("rotate", "Hold E to move instead."),
-			BoneDragMode.Move => ("move", "Hold E to rotate instead."),
-			_ => ("scale", "")
+			BoneDragMode.Rotate => ("rotate", "W to move, R to scale."),
+			BoneDragMode.Move => ("move", "E to rotate, R to scale."),
+			_ => ("scale", "W to move, E to rotate.")
 		};
 
 		return $"{subject}  -  click to select, Shift-click to add, drag to {verb}. {flip}".TrimEnd();
@@ -3005,10 +3022,9 @@ internal sealed partial class RigViewport : Widget
 
 		var startRotation = _draggingModel ? _modelRotateStart : _modelObject.WorldRotation;
 
-		// Same hold-to-flip as bones: E borrows the other mode for as long as it's held. Move is
-		// the default here rather than rotate, because placing the arms relative to the eye is
-		// what this mode is for - the inverse of a bone, where rotation is the common case.
-		if ( Editor.Application.IsKeyDown( KeyCode.E ) )
+		// ObjectDragMode, whose default is Move: placing the arms relative to the eye is what this
+		// mode is for - the inverse of a bone, where rotation is the common case.
+		if ( RotatesObjects )
 		{
 			// Cumulative since the grab, assigned rather than accumulated - see DragSelectedBone
 			// for why the two controls differ.
@@ -3191,10 +3207,7 @@ internal sealed partial class RigViewport : Widget
 
 		Gizmo.Hitbox.DepthBias = 0.01f;
 
-		// E is a hold-to-flip, not a toggle - it borrows the other mode for as long as it's down
-		// and springs back, so you can nudge a bone's position mid-rotation-pass without losing
-		// your place.
-		var mode = EffectiveDragMode();
+		var mode = DragMode;
 
 		Transform newWorld;
 
@@ -3297,7 +3310,7 @@ internal sealed partial class RigViewport : Widget
 
 		if ( RigConstraintSolver.FindIkFor( Rig, bone.Key ) is { } ik
 			&& RigConstraintSolver.TrySolve( bone.Renderer, bone.Bone, ik, newWorld.Position,
-				live ? newWorld.Rotation : null, out var chain ) )
+				live ? newWorld.Rotation : null, out var chain, Rig ) )
 		{
 			// SolveChain has already blended by Weight against the pose it started from.
 			var weight = 1f;
@@ -3371,21 +3384,6 @@ internal sealed partial class RigViewport : Widget
 		NotifyPosed( bone, newWorld );
 	}
 
-	/// <summary>The drag mode the gizmo should act in this frame, with E's hold-to-flip applied.
-	/// E flips rotate/move and never implies scale - scale is deliberate, reached from the toolbar.</summary>
-	private BoneDragMode EffectiveDragMode()
-	{
-		if ( !Editor.Application.IsKeyDown( KeyCode.E ) )
-			return DragMode;
-
-		return DragMode switch
-		{
-			BoneDragMode.Rotate => BoneDragMode.Move,
-			BoneDragMode.Move => BoneDragMode.Rotate,
-			_ => DragMode
-		};
-	}
-
 	/// <summary>
 	/// Drag several selected bones as a group, from one gizmo at their centroid.
 	///
@@ -3405,7 +3403,7 @@ internal sealed partial class RigViewport : Widget
 
 		Gizmo.Hitbox.DepthBias = 0.01f;
 
-		var mode = EffectiveDragMode();
+		var mode = DragMode;
 
 		// Rotate and Scale hand back values CUMULATIVE since the grab; Position hands back a
 		// per-frame delta. Same contract as DragSelectedBone - see the note there.

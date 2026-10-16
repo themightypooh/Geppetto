@@ -516,9 +516,21 @@ internal sealed class RigTimeline : Widget
 
 			ScrubTo( next );
 		}
-		catch ( Exception )
+		catch ( Exception e )
 		{
+			// Playback stops, so this logs once rather than every frame. The button has to say it
+			// stopped too, or it sits on pause over a clip that is not playing.
 			_playing = false;
+			Log.Warning( $"[Marionette] playback stopped at frame {Playhead}: {e.Message}" );
+
+			try
+			{
+				_playButton.Icon = "play_arrow";
+			}
+			catch ( Exception )
+			{
+				// The widget died under us - the closed-timeline case above. Nothing left to update.
+			}
 		}
 	}
 
@@ -1201,6 +1213,62 @@ internal sealed class RigTimelineLanes : Widget
 			} );
 		}
 
+		if ( track.Target == TrackTarget.Bone )
+		{
+			var bake = menu.AddMenu( "Bake Secondary Motion", "waves" );
+			bake.AddHeading( "This bone and everything below it" );
+
+			foreach ( var preset in RigSecondaryBake.Presets )
+			{
+				var chosen = preset;
+				bake.AddOption( chosen.Name, null, () => BakeSecondary( track.BoneName, chosen ) ).StatusTip = chosen.Tip;
+			}
+
+			// A cable whose hand a live IK clamps: the rope can sag between the body and the hand.
+			if ( RigSecondaryBake.IkEndOnLine( Anim, track.BoneName ) is { } hand )
+			{
+				var rope = RigSecondaryBake.Presets.First( p => p.Rope );
+				bake.AddOption( $"Rope, Pinned At {hand}", null, () => BakeSecondary( track.BoneName, rope, hand ) ).StatusTip =
+					$"Keeps its length and sags between this bone and {hand}, which stays on its IK goal (the IK chain's bones are baked too)";
+			}
+
+			bake.AddSeparator();
+
+			// Key From Targets: type where this bone (an IK end) should be, the chain is keyed for it.
+			var targetsMenu = menu.AddMenu( "Key From Targets", "my_location" );
+			targetsMenu.AddHeading( "frame:x,y,z[:p,y,r][:ease][:w=0..1]; … (model space)" );
+			var targetsEdit = new LineEdit( targetsMenu ) { Text = $"{(int)MathF.Round( Playhead )}:", PlaceholderText = "0:10,0,40;20:14,2,38", FixedWidth = 260 };
+			targetsMenu.AddWidget( targetsEdit );
+			var boneName = track.BoneName;
+
+			targetsMenu.AddOption( "As IK Goal Keys", "flag", () => KeyFromTargets( boneName, targetsEdit.Text, "goal" ) ).StatusTip =
+				"Key this bone's live IK goal (and w= weights) at each target - the chain solves at playback";
+			targetsMenu.AddOption( "Solve Now Into FK Keys", "timeline", () => KeyFromTargets( boneName, targetsEdit.Text, "fk" ) ).StatusTip =
+				"Solve the chain toward each target on the clip's own pose and key its bones";
+
+			var wave = menu.AddMenu( "Wave Down Chain", "water" );
+			wave.AddHeading( "This bone down to the tip, added to the clip" );
+
+			foreach ( var preset in Effigy.ChainWave.Presets )
+			{
+				var key = preset.Key;
+				wave.AddOption( preset.Name, null, () => WaveChain( track.BoneName, key ) )
+					.StatusTip = $"{preset.Settings.Amplitude:0}° every {preset.Settings.Period:0} frames, one wave per {preset.Settings.Wavelength:0} bones. Each chain gets its own phase, so cables never move as twins.";
+			}
+
+			wave.AddSeparator();
+
+			var waveLoop = wave.AddOption( "Fit To Loop", "repeat", () => _bakeAsLoop = !_bakeAsLoop );
+			waveLoop.Checkable = true;
+			waveLoop.Checked = _bakeAsLoop;
+			waveLoop.StatusTip = "Fit the period so a whole number of swings fills the clip and the wave meets itself at the seam";
+
+			var loop = bake.AddOption( "Bake As Loop", "repeat", () => _bakeAsLoop = !_bakeAsLoop );
+			loop.Checkable = true;
+			loop.Checked = _bakeAsLoop;
+			loop.StatusTip = "Warm the springs up on one pass of the clip, so the last frame flows into the first";
+		}
+
 		menu.AddSeparator();
 
 		var clear = menu.AddOption( "Clear All Keyframes", "clear_all", () =>
@@ -1707,6 +1775,10 @@ internal sealed class RigTimelineLanes : Widget
 			}
 
 			menu.AddSeparator();
+
+			BuildKeyToolsMenu( menu.AddMenu( "Key Tools", "construction" ) );
+
+			menu.AddSeparator();
 		}
 
 		menu.AddHeading( "Clipboard" );
@@ -1736,7 +1808,257 @@ internal sealed class RigTimelineLanes : Widget
 			menu.AddSeparator();
 			menu.AddOption( "Select All", "select_all", SelectAll )
 				.StatusTip = "Select every keyframe in the clip";
+
+			menu.AddOption( "Make Loop", "all_inclusive", MakeLoop )
+				.StatusTip = "Every track ends on the pose it starts with, at the clip's last keyed frame";
+
+			var layer = menu.AddMenu( "Layer Clip", "layers" );
+			layer.AddOption( "Additive, Looping…", "all_inclusive", () => PickLayer( RigAnimMode.Additive, true ) )
+				.StatusTip = "Add another clip's motion on top, repeated over this whole clip - an idle pulse over a haul, one cable's loop among others";
+			layer.AddOption( "Additive, Once at Playhead…", "start", () => PickLayer( RigAnimMode.Additive, false ) )
+				.StatusTip = "Add another clip's motion on top, once, starting at the playhead";
+			layer.AddOption( "Overlay, Looping…", "all_inclusive", () => PickLayer( RigAnimMode.Overlay, true ) )
+				.StatusTip = "Another clip replaces the bones it keys, repeated over this whole clip";
+			layer.AddOption( "Overlay, Once at Playhead…", "start", () => PickLayer( RigAnimMode.Overlay, false ) )
+				.StatusTip = "Another clip replaces the bones it keys, once, starting at the playhead";
 		}
+	}
+
+	/// <summary>
+	/// Layer Clip: pick a .riganim and bake it onto this one (RigClipLayer.MergeLayer) - each bone it
+	/// keys becomes dense Monotone keys, reduced. One undo step. What it did goes to the log, and so
+	/// does why when it did nothing.
+	/// </summary>
+	private void PickLayer( RigAnimMode mode, bool loop )
+	{
+		if ( Anim is null )
+			return;
+
+		var offset = (int)MathF.Round( Playhead );
+		var picker = AssetPicker.Create( null, AssetType.FromType( typeof( RigAnimDocument ) ), new AssetPicker.PickerOptions() );
+		picker.Title = "Layer Clip";
+		picker.OnAssetPicked = assets =>
+		{
+			if ( assets.FirstOrDefault() is not { } asset || !asset.TryLoadResource<RigAnimDocument>( out var top ) || top is null )
+				return;
+
+			var result = RigClipLayer.MergeLayer( Anim, top, new RigClipLayer.Settings { Mode = mode, Loop = loop, Offset = loop ? 0 : offset },
+				RigClipLayer.BindOf( Anim.SourceModel ) );
+
+			if ( !result.Ok )
+			{
+				Log.Warning( $"[Marionette] layer {top.ResourceName}: {result.Error}" );
+				return;
+			}
+
+			Log.Info( $"[Marionette] layer {top.ResourceName} ({mode}{(loop ? ", looping" : $", from frame {offset}")}): {result}" );
+			_selection.Clear();
+			Update();
+			Scrubbed?.Invoke( Playhead );
+			Edited?.Invoke();
+		};
+		picker.Show();
+	}
+
+	/// <summary>
+	/// Whole-selection edits - see RigKeyOps, which the MCP tools share so an agent and a person do
+	/// the same thing to a clip. Each says in the log what it did, and says so when it did nothing,
+	/// rather than leaving a click that changes nothing looking broken.
+	/// </summary>
+	private void BuildKeyToolsMenu( Menu tools )
+	{
+		var span = _selection.Count > 0
+			? $"frames {_selection.Min( k => k.Key.Frame )}–{_selection.Max( k => k.Key.Frame )}"
+			: "";
+
+		tools.AddOption( "Reverse", "swap_horiz", () => ApplyKeyOp( "reverse", RigKeyOps.Reverse( _selection.ToList() ) ) )
+			.StatusTip = $"Play the selected keys backwards over {span}. Animate a pull-in, reverse it, and it is a strike.";
+
+		var retime = tools.AddMenu( "Retime", "speed" );
+
+		foreach ( var factor in new[] { 0.5f, 0.75f, 1.25f, 1.5f, 2f } )
+		{
+			var by = factor;
+			retime.AddOption( $"×{by:0.##}  ({(by < 1f ? "faster" : "slower")})", null,
+					() => ApplyKeyOp( $"retime ×{by:0.##}", RigKeyOps.Retime( _selection.ToList(), by ) ) )
+				.StatusTip = $"Stretch the selected keys in time around the first one: the move takes {by:0.##}× as long";
+		}
+
+		var offset = tools.AddMenu( "Offset Down Chain", "stairs" );
+
+		foreach ( var frames in new[] { 1, 2, 3, 4 } )
+		{
+			var step = frames;
+			offset.AddOption( $"{step} frame{(step == 1 ? "" : "s")} per bone", null, () => OffsetDownChain( step ) )
+				.StatusTip = "Overlap: each selected bone's keys shift later by its depth below the top selected bone, so the move rolls root first, tip last";
+		}
+
+		tools.AddOption( "Shift Later 1 Frame", "chevron_right", () => ApplyKeyOp( "shift +1", RigKeyOps.Offset( _selection.ToList(), _ => 1 ) ) );
+		tools.AddOption( "Shift Earlier 1 Frame", "chevron_left", () => ApplyKeyOp( "shift -1", RigKeyOps.Offset( _selection.ToList(), _ => -1 ) ) );
+
+		tools.AddSeparator();
+
+		tools.AddOption( "Make Loop", "all_inclusive", MakeLoop )
+			.StatusTip = "Every track ends on the pose it starts with, at the clip's last keyed frame - the loop plays round without a jump";
+
+		tools.AddOption( "Reduce Keys", "compress", () =>
+			{
+				var removed = RigKeyOps.Reduce( _selection.ToList() );
+				_selection.RemoveAll( k => !k.Track.Keyframes.Contains( k.Key ) );
+				ApplyKeyOp( "reduce", removed, "removed" );
+			} )
+			.StatusTip = "Remove selected keys the curve does not need (within 0.05 units and 0.5°) - for dense baked or captured takes";
+	}
+
+	private static bool _bakeAsLoop;
+
+	private void BakeSecondary( string bone, Effigy.ChainSpring.Preset preset, string pin = null )
+	{
+		RigSecondaryBake.Result result;
+
+		try
+		{
+			result = RigSecondaryBake.Bake( Anim, bone, preset.ToSoftBone(), _bakeAsLoop, rope: preset.Rope, pin: pin );
+		}
+		catch ( Exception e )
+		{
+			Log.Warning( $"[Marionette] secondary bake failed: {e.Message}" );
+			return;
+		}
+
+		if ( !result.Ok )
+		{
+			Log.Warning( $"[Marionette] {result.Message}" );
+			return;
+		}
+
+		Log.Info( $"[Marionette] {result.Message}" );
+
+		_selection.Clear();
+		Update();
+		Scrubbed?.Invoke( Playhead );
+		Edited?.Invoke();
+	}
+
+	private void KeyFromTargets( string bone, string targets, string mode )
+	{
+		string message;
+		bool changed;
+
+		try
+		{
+			message = RigKeyFromTargets.Apply( Anim, bone, targets, mode, "Smooth", 0, "fabrik", out changed );
+		}
+		catch ( Exception e )
+		{
+			Log.Warning( $"[Marionette] key from targets failed: {e.Message}" );
+			return;
+		}
+
+		if ( !changed )
+		{
+			Log.Warning( $"[Marionette] {message}" );
+			return;
+		}
+
+		Log.Info( $"[Marionette] {message}" );
+
+		_selection.Clear();
+		Update();
+		Scrubbed?.Invoke( Playhead );
+		Edited?.Invoke();
+	}
+
+	private void WaveChain( string bone, string presetKey )
+	{
+		var settings = Effigy.ChainWave.FindPreset( presetKey );
+		settings.Offset = Effigy.ChainWave.OffsetFor( bone, settings.Period );
+
+		RigSecondaryBake.Result result;
+
+		try
+		{
+			result = RigSecondaryBake.Wave( Anim, bone, settings, _bakeAsLoop );
+		}
+		catch ( Exception e )
+		{
+			Log.Warning( $"[Marionette] wave failed: {e.Message}" );
+			return;
+		}
+
+		if ( !result.Ok )
+		{
+			Log.Warning( $"[Marionette] {result.Message}" );
+			return;
+		}
+
+		Log.Info( $"[Marionette] {result.Message}" );
+		_selection.Clear();
+		Update();
+		Scrubbed?.Invoke( Playhead );
+		Edited?.Invoke();
+	}
+
+	/// <summary>Every track ends on the pose it starts with, at the clip's last keyed frame.</summary>
+	private void MakeLoop()
+	{
+		if ( Anim?.BoneTracks is not { } tracks )
+			return;
+
+		var last = tracks.SelectMany( t => t.Keyframes ).Select( k => k.Frame ).DefaultIfEmpty( 0 ).Max();
+		var closed = RigKeyOps.MakeLoop( tracks, last );
+
+		if ( closed == 0 )
+		{
+			Log.Info( "[Marionette] make loop: no track has keys before the last frame" );
+			return;
+		}
+
+		Log.Info( $"[Marionette] make loop: {closed} track(s) now end at frame {last} on the pose they start with" );
+		Update();
+		Scrubbed?.Invoke( Playhead );
+		Edited?.Invoke();
+	}
+
+	private void OffsetDownChain( int framesPerBone )
+	{
+		var names = _selection.Where( k => k.Track.Target == TrackTarget.Bone ).Select( k => k.Track.BoneName ).Distinct().ToList();
+		var depth = names.ToDictionary( n => n, BoneDepth );
+		var top = depth.Count > 0 ? depth.Values.Where( d => d >= 0 ).DefaultIfEmpty( 0 ).Min() : 0;
+
+		ApplyKeyOp( $"offset {framesPerBone}/bone", RigKeyOps.Offset( _selection.ToList(),
+			t => t.Target == TrackTarget.Bone && depth.TryGetValue( t.BoneName, out var d ) && d >= 0 ? (d - top) * framesPerBone : 0 ) );
+	}
+
+	/// <summary>How many parents a bone of the clip's model has, or -1 for a name it does not have.</summary>
+	private int BoneDepth( string name )
+	{
+		var bone = Anim?.SourceModel?.Bones?.AllBones?.FirstOrDefault( b => b.Name == name );
+
+		if ( bone is null )
+			return -1;
+
+		var depth = 0;
+
+		for ( var up = bone.Parent; up is not null; up = up.Parent )
+			depth++;
+
+		return depth;
+	}
+
+	private void ApplyKeyOp( string what, int changed, string verb = "moved" )
+	{
+		if ( changed == 0 )
+		{
+			Log.Info( $"[Marionette] {what}: nothing to change in the selection" );
+			return;
+		}
+
+		Log.Info( $"[Marionette] {what}: {changed} key{(changed == 1 ? "" : "s")} {verb}" );
+
+		Update();
+		Scrubbed?.Invoke( Playhead );
+		Edited?.Invoke();
 	}
 
 	/// <summary>Long rig bones ("arm_lower_R_twistctrl1") push the menu absurdly wide and bury the

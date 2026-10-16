@@ -60,7 +60,7 @@ public sealed class RigLight
 
 	/// <summary>Multiplies the colour. Separate from it so a light can be made stronger without
 	/// going white, and so a colour picked once survives being dimmed.</summary>
-	[Property, Group( "Colour" ), Range( 0f, 8f, 0.05f, false )]
+	[Property, Group( "Colour" ), Range( 0f, 8f, false ), Step( 0.05f )]
 	public float Brightness { get; set; } = 1f;
 
 	/// <summary>Where the light is. Ignored by Directional, which has no position, and by
@@ -82,14 +82,14 @@ public sealed class RigLight
 	public float Range { get; set; } = 512f;
 
 	/// <summary>The full-brightness core of a spot's cone, in degrees from its axis.</summary>
-	[Property, Group( "Falloff" ), Title( "Cone Inner" ), Range( 0f, 90f, 1f, false )]
+	[Property, Group( "Falloff" ), Title( "Cone Inner" ), Range( 0f, 90f, false ), Step( 1f )]
 	[ShowIf( nameof( Kind ), RigLightKind.Spot )]
 	public float ConeInner { get; set; } = 25f;
 
 	/// <summary>Where the cone has faded out entirely. Below Cone Inner it is clamped up to it -
 	/// an outer smaller than the inner is a light with a hard edge and no core, which reads as
 	/// the spot being broken.</summary>
-	[Property, Group( "Falloff" ), Title( "Cone Outer" ), Range( 0f, 90f, 1f, false )]
+	[Property, Group( "Falloff" ), Title( "Cone Outer" ), Range( 0f, 90f, false ), Step( 1f )]
 	[ShowIf( nameof( Kind ), RigLightKind.Spot )]
 	public float ConeOuter { get; set; } = 45f;
 

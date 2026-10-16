@@ -43,7 +43,7 @@ public sealed class RigCamera
 
 	/// <summary>Vertical field of view in degrees. The default matches the viewport's own, so a
 	/// camera placed "at the camera" reads back exactly as it looked when you were there.</summary>
-	[Property, Group( "Lens" ), Title( "Field Of View" ), Range( 1f, 179f, 1f, false )]
+	[Property, Group( "Lens" ), Title( "Field Of View" ), Range( 1f, 179f, false ), Step( 1f )]
 	public float FieldOfView { get; set; } = 80f;
 
 	/// <summary>Near clipping plane, in inches. Small so a camera can sit close to the model.</summary>

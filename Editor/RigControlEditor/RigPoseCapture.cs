@@ -14,7 +14,7 @@ namespace Marionette.Tools;
 ///
 ///   rig_capture_pose &lt;model&gt; &lt;output.riganim&gt; [params] [props] [frame]
 ///
-/// The case it was written for is sitting. s&box's BaseChair and SitMoveMode drive citizen's
+/// The case it was written for is sitting. s&amp;box's BaseChair and SitMoveMode drive citizen's
 /// graph into a sit, and that pose is a good hundred numbers nobody wants to author twice — but
 /// there is no way to get at it from Marionette, which only ever poses bones by hand. So this
 /// runs the graph in a scratch scene, waits for the blend to finish, and reads the result off the

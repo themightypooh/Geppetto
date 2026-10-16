@@ -7,7 +7,7 @@ using System.Linq;
 namespace Marionette.Tools;
 
 /// <summary>
-/// The BonesObject tab - header fields (Model / Asset Path / Rig Asset Path / Animation Speed)
+/// The Scene tab - header fields (Model / Asset Path / Rig Asset Path / Animation Speed)
 /// over a real tree of the rig's bones, matching the reference video: pelvis's chain and a
 /// separate root_IK utility chain (aim_matrix/foot_IK_target/hand_IK_attach) both as top-level
 /// roots, each bone shown with its actual children rather than a flat list.
@@ -31,8 +31,8 @@ internal sealed class RigBonesPanel : Widget
 
 	public RigBonesPanel( Widget parent, RigViewport viewport ) : base( parent )
 	{
-		Name = "BonesObject";
-		WindowTitle = "BonesObject";
+		Name = "Scene";
+		WindowTitle = "Scene";
 		SetWindowIcon( "polyline" );
 
 		_viewport = viewport;

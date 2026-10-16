@@ -38,7 +38,6 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 	private RigLightsPanel _lights;
 	private RigCamerasPanel _cameras;
 	private RigInspectorPanel _inspector;
-	private RigGripPanel _grip;
 	private RigTakeCheckPanel _takeCheck;
 	private RigGraphEditor _graph;
 	private DockWidget _centralDock;
@@ -60,8 +59,30 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 	/// </summary>
 	public const string DefaultModelPath = "models/first_person/first_person_arms_preview.vmdl";
 
+	/// <summary>The most recently opened Marionette window, for the MCP tools (MarionetteMcp) - an
+	/// agent checking the tool needs the window the person has open, not a second one.</summary>
+	internal static RigControlWindow Current { get; private set; }
+
+	internal RigViewport Viewport => _viewport;
+	internal RigTimeline Timeline => _timeline;
+	internal RigAnimDocument Anim => _anim;
+	internal RigDocument Rig => _rig;
+	internal RigGraphEditor Graph => _graph;
+	internal RigTakeCheckPanel TakeCheck => _takeCheck;
+
+	/// <summary>Move the playhead and pose the model there, as a scrub does.</summary>
+	internal void ScrubForTools( float frame )
+	{
+		_timeline.Playhead = frame;
+		OnScrub( frame );
+	}
+
+	/// <summary>Mirror Pose / Copy Pose to Other Side, as the Edit menu runs them.</summary>
+	internal void MirrorForTools( bool flip ) => MirrorPose( flip );
+
 	public RigControlWindow()
 	{
+		Current = this;
 		DeleteOnClose = true;
 		// Roomier by default. The side panels were pinched enough at 1400 that step text and
 		// property names clipped, and a tool whose first impression is truncated labels reads as
@@ -191,6 +212,8 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		file.AddOption( "Open...", "folder_open", OpenPicker, "editor.open" );
 		file.AddSeparator();
 		_saveOption = file.AddOption( "Save", "common/save.png", Save, "editor.save" );
+		file.AddOption( "Save As...", "save_alt", SaveAs )
+			.StatusTip = "Save this clip under a new name - the open window switches to the copy";
 		file.AddSeparator();
 		file.AddOption( "Import OBJ...", "file_upload", ImportObj )
 			.StatusTip = "Load a Wavefront OBJ into the viewport, one object per o/g group in the file - each one placeable, poseable and keyable on its own";
@@ -233,11 +256,14 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 
 		edit.AddSeparator();
 		edit.AddOption( "Add Mark at Playhead", "bookmark_add", AddMark, "rig.addmark" )
-			.StatusTip = "A named frame saved in the clip - contact, release, a sound cue. Drawn on the timeline ruler; RigAnimPlayerComponent.MarkReached fires on it in game";
+			.StatusTip = "A named frame saved in the clip - contact, release, a sound cue. Drawn on the timeline ruler, and game code can react when playback reaches it";
 	}
 
 	[Shortcut( "rig.mirrorpose", "CTRL+M", ShortcutType.Window )]
 	private void MirrorPoseShortcut() => MirrorPose( true );
+
+	[Shortcut( "rig.mirrorcopy", "CTRL+SHIFT+M", ShortcutType.Window )]
+	private void MirrorCopyShortcut() => MirrorPose( false );
 
 	[Shortcut( "rig.addmark", "M", ShortcutType.Window )]
 	private void AddMarkShortcut() => AddMark();
@@ -319,8 +345,8 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 
 			Transform sourceGoal;
 
-			if ( _anim.FindIkGoalTrack( source ) is { Keyframes.Count: > 0 } goalTrack )
-				sourceGoal = goalTrack.Evaluate( frame );
+			if ( _anim.IkGoalAt( source, frame, _viewport.Renderer.WorldTransform ) is { } keyedGoal )
+				sourceGoal = keyedGoal;
 			else if ( _anim.FindIkGoalTrack( target ) is { Keyframes.Count: > 0 } )
 				// The partner is not goal-driven, but this side is: its goal has to follow the mirrored
 				// bone, or the next scrub pulls the arm straight back. Where the partner's end bone is
@@ -334,7 +360,7 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		}
 
 		foreach ( var (target, goal) in writes )
-			_anim.GetOrAddIkGoalTrack( target ).SetKeyframe( frame, goal );
+			_anim.GetOrAddIkGoalTrack( target ).SetKeyframe( frame, _anim.IkGoalKey( target, goal, frame, _viewport.Renderer.WorldTransform ) );
 
 		return writes.Count;
 	}
@@ -785,16 +811,39 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		RigStatusBar.Show( $"Copied pose ({n} bones) — open another clip and Ctrl+V to paste" );
 	}
 
-	private void ToggleDragMode()
+	private void ToggleDragMode() => SetDragMode( _viewport.DragMode switch
 	{
-		_viewport.DragMode = _viewport.DragMode switch
-		{
-			BoneDragMode.Rotate => BoneDragMode.Move,
-			BoneDragMode.Move => BoneDragMode.Scale,
-			_ => BoneDragMode.Rotate
-		};
+		BoneDragMode.Rotate => BoneDragMode.Move,
+		BoneDragMode.Move => BoneDragMode.Scale,
+		_ => BoneDragMode.Rotate
+	} );
 
+	// W/E/R, the same keys and the same sticky switch as Effigy's bone handles, so moving between
+	// the two tools needs no relearning. They set the bone mode and the prop/object mode together.
+	[Shortcut( "rig.drag.move", "W", typeof( RigViewport ) )]
+	private void ShortcutDragMove() => SetDragMode( BoneDragMode.Move );
+
+	[Shortcut( "rig.drag.rotate", "E", typeof( RigViewport ) )]
+	private void ShortcutDragRotate() => SetDragMode( BoneDragMode.Rotate );
+
+	[Shortcut( "rig.drag.scale", "R", typeof( RigViewport ) )]
+	private void ShortcutDragScale() => SetDragMode( BoneDragMode.Scale );
+
+	private void SetDragMode( BoneDragMode mode )
+	{
+		if ( _viewport is null )
+			return;
+
+		_viewport.DragMode = mode;
+		_viewport.ObjectDragMode = mode;
 		UpdateDragModeOption();
+
+		RigStatusBar.Show( mode switch
+		{
+			BoneDragMode.Move => "Move  -  dragging moves bones and objects",
+			BoneDragMode.Rotate => "Rotate  -  dragging rotates bones and objects",
+			_ => "Scale  -  dragging scales bones; objects still move"
+		} );
 	}
 
 	private void UpdateDragModeOption()
@@ -810,9 +859,9 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 
 		_dragModeOption.ToolTip = _viewport.DragMode switch
 		{
-			BoneDragMode.Rotate => "Dragging a bone rotates it. Hold E to move instead. Rotation is what you want for almost all posing - joints pivot, they don't slide.",
-			BoneDragMode.Move => "Dragging a bone moves it. Hold E to rotate instead. Moving a bone stretches the skin, so it's mainly for root and IK-target bones.",
-			_ => "Dragging a bone scales it uniformly. Scaling stretches the skin - use it for squash-and-stretch, not for normal posing."
+			BoneDragMode.Rotate => "Rotate (E). Rotation is what you want for almost all posing - joints pivot, they don't slide. W moves, R scales.",
+			BoneDragMode.Move => "Move (W). Moving a bone stretches the skin, so it's mainly for root and IK-target bones. E rotates, R scales.",
+			_ => "Scale (R). Scaling stretches the skin - use it for squash-and-stretch, not for normal posing. W moves, E rotates."
 		};
 	}
 
@@ -941,6 +990,7 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		_events = new RigEventProperties( this )
 		{
 			Edited = () => MarkDirty( "Edit Anim Event" ),
+			Playhead = () => _timeline.Playhead,
 		};
 
 		_bones = new RigBonesPanel( this, _viewport )
@@ -962,6 +1012,13 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		_constraints = new RigConstraintsPanel( this )
 		{
 			Edited = () => MarkDirty( "Edit Constraint" ),
+			Playhead = () => _timeline.Playhead,
+			Keyed = () =>
+			{
+				MarkDirty( "Key IK Weight" );
+				_timeline.Update();
+				OnScrub( _timeline.Playhead );
+			},
 		};
 
 		// The viewport is rebuilt from the list on every edit rather than the panel touching the
@@ -986,20 +1043,6 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 				MarkDirty( label );
 			},
 			Playhead = () => (int)MathF.Round( _timeline.Playhead ),
-		};
-
-		// The grip is its own asset and saves itself; the panel tracks its own unsaved state. Only
-		// keying the fingers touches the clip, so only that is a clip edit with an undo step.
-		_grip = new RigGripPanel( this, _viewport )
-		{
-			Changed = label =>
-			{
-				if ( label != "Key Grip Fingers" )
-					return;
-
-				_timeline.Refresh();
-				MarkDirty( label );
-			},
 		};
 
 		// Edits a drag at a time like the viewport: Changing on every step (the pose follows, no undo
@@ -1058,14 +1101,13 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		};
 
 		DockManager.RegisterDock( new() { Title = "Tutorial", Icon = "school", Area = DockArea.Hidden, CreateAction = () => _tutorialPanel } );
-		DockManager.RegisterDock( new() { Title = "AnimEvents", Icon = "bolt", Area = DockArea.Hidden, CreateAction = () => _events } );
-		DockManager.RegisterDock( new() { Title = "BonesObject", Icon = "polyline", Area = DockArea.Hidden, CreateAction = () => _bones } );
+		DockManager.RegisterDock( new() { Title = "Events", Icon = "bolt", Area = DockArea.Hidden, CreateAction = () => _events } );
+		DockManager.RegisterDock( new() { Title = "Scene", Icon = "polyline", Area = DockArea.Hidden, CreateAction = () => _bones } );
 		DockManager.RegisterDock( new() { Title = "Constraints", Icon = "link", Area = DockArea.Hidden, CreateAction = () => _constraints } );
 		DockManager.RegisterDock( new() { Title = "Inspector", Icon = "tune", Area = DockArea.Hidden, CreateAction = () => _inspector } );
 		DockManager.RegisterDock( new() { Title = "Lights", Icon = "lightbulb", Area = DockArea.Hidden, CreateAction = () => _lights } );
 		DockManager.RegisterDock( new() { Title = "Cameras", Icon = "videocam", Area = DockArea.Hidden, CreateAction = () => _cameras } );
-		DockManager.RegisterDock( new() { Title = "Grip", Icon = "pan_tool", Area = DockArea.Hidden, CreateAction = () => _grip } );
-		DockManager.RegisterDock( new() { Title = "TakeCheck", Icon = "rule", Area = DockArea.Hidden, CreateAction = () => _takeCheck } );
+		DockManager.RegisterDock( new() { Title = "Take Check", Icon = "rule", Area = DockArea.Hidden, CreateAction = () => _takeCheck } );
 		DockManager.RegisterDock( new() { Title = "Graph", Icon = "show_chart", Area = DockArea.Hidden, CreateAction = () => _graph } );
 
 		// THE EDITOR'S OWN CONSOLE, not one of ours.
@@ -1101,9 +1143,12 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		// layout would keep the old arrangement and BuildDefaultLayout would never run again.
 		// Bumped again for the taller timeline row, and again for the Console dock.
 		// Bumped again for the Graph dock, tabbed beside the Timeline - a dock that only exists in
-		// BuildDefaultLayout never appears for anyone with a saved layout. Grip and Take Check are
-		// left to the View menu and need no bump.
-		StateCookie = "Marionette7";
+		// BuildDefaultLayout never appears for anyone with a saved layout. Take Check is left to the
+		// View menu and needs no bump.
+		// Bumped again for BonesObject, AnimEvents and TakeCheck being renamed Scene, Events and
+		// Take Check. Dock titles are the keys a saved layout restores by, so a Marionette7 layout
+		// would look for docks that no longer exist under those names.
+		StateCookie = "Marionette8";
 
 		_lastModel = _anim.SourceModel;
 		_viewport.SetModel( _lastModel );
@@ -1127,7 +1172,7 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		// and forth between the instruction and the panel the instruction is about. Below them in
 		// the same column, both are on screen at once, which is the only arrangement where a
 		// written step and the fields it refers to are usable together.
-		var bonesDock = DockManager.OpenDock( "BonesObject", DockArea.Right, _centralDock );
+		var bonesDock = DockManager.OpenDock( "Scene", DockArea.Right, _centralDock );
 
 		// A quarter of the width. Narrower than the 0.62/0.38 it replaced, which was sized for a
 		// column that had to hold the tutorial's prose as well; the tutorial now has its own space
@@ -1138,10 +1183,10 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		// shipped first); Center stacks a dock as a tab alongside whatever's already there.
 		DockManager.OpenDock( "Inspector", DockArea.Center, bonesDock );
 
-		// AnimEvents and Constraints are registered but deliberately NOT opened here. Both are
+		// Events and Constraints are registered but deliberately NOT opened here. Both are
 		// for work that comes after you can already pose and key - and four tabs across a quarter
 		// width column truncates every one of their titles. They're one click away in View.
-		DockManager.RaiseDock( "BonesObject" );
+		DockManager.RaiseDock( "Scene" );
 
 		if ( RigTutorial.OpenOnStartup )
 		{
@@ -1168,6 +1213,7 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 	private void ApplyRigToPanels()
 	{
 		_constraints.SetRig( _rig );
+		_constraints.SetClip( _anim );
 		_viewport.Rig = _rig;
 
 		// Before the props are built - a prop drawn from an OBJ beside the clip cannot be found
@@ -1180,7 +1226,6 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		_lights?.SetAnim( _anim );
 		_viewport.SetCameras( _anim?.Cameras );
 		_cameras?.SetAnim( _anim );
-		_grip?.SetAnim( _anim );
 		_takeCheck?.SetAnim( _anim, _asset );
 
 		// SourceModel on the clip itself wins; the rig's own model is only a fallback for a clip
@@ -1276,7 +1321,8 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 
 		_viewport.EvaluatePose(
 			bone => _anim.FindTrack( bone ) is { } track && track.Keyframes.Count > 0 ? track.Evaluate( frame ) : null,
-			bone => _anim.FindIkGoalTrack( bone ) is { } goal && goal.Keyframes.Count > 0 ? goal.Evaluate( frame ) : null );
+			bone => _anim.IkGoalAt( bone, frame, _viewport.Renderer?.WorldTransform ),
+			bone => _anim.IkWeightAt( bone, frame ) );
 
 		_anim.MorphWeightsAt( frame, _morphScratch );
 		_viewport.ApplyMorphs( _morphScratch );
@@ -1299,7 +1345,9 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		if ( _anim is null )
 			return;
 
-		_anim.GetOrAddIkGoalTrack( bone ).SetKeyframe( (int)MathF.Round( _timeline.Playhead ), goal );
+		// Keyed in the goal's own space - on a pipe, relative to the pipe. See IkGoalSpace.
+		var frame = (int)MathF.Round( _timeline.Playhead );
+		_anim.GetOrAddIkGoalTrack( bone ).SetKeyframe( frame, _anim.IkGoalKey( bone, goal, frame, _viewport.Renderer?.WorldTransform ) );
 
 		_timeline.Refresh();
 		_inspector?.Refresh();
@@ -1473,7 +1521,7 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 
 		if ( _anim.SourceModel is null )
 		{
-			RigStatusBar.Show( "Set a Model in BonesObject first — export has to know which skeleton this clip is for" );
+			RigStatusBar.Show( "Set a Model in the Scene tab first — export has to know which skeleton this clip is for" );
 			return;
 		}
 
@@ -1708,8 +1756,19 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 		MainAssetBrowser.Instance?.Local.UpdateAssetList();
 	}
 
-	/// <summary>First save of a blank document - prompts for where to put it, creates the
-	/// .riganim there, and points _asset at it so every save after this is a normal overwrite.</summary>
+	/// <summary>Save to a new .riganim and carry on editing that one, as Effigy's Save As does.
+	/// The old file is left as it was last saved.</summary>
+	private void SaveAs()
+	{
+		if ( _anim is null || !PickSaveLocation() )
+			return;
+
+		Save();
+	}
+
+	/// <summary>Prompts for where to put the clip, creates the .riganim there, and points _asset at
+	/// it so every save after this is a normal overwrite. The first save of a blank document, and
+	/// Save As.</summary>
 	private bool PickSaveLocation()
 	{
 		var fd = new FileDialog( null )
@@ -1719,7 +1778,7 @@ public sealed class RigControlWindow : DockWindow, IAssetEditor
 			Directory = Project.Current?.GetAssetsPath() ?? "",
 		};
 
-		fd.SelectFile( "untitled.riganim" );
+		fd.SelectFile( _asset is null ? "untitled.riganim" : $"{_asset.Name}_copy.riganim" );
 		fd.SetFindFile();
 		fd.SetModeSave();
 		fd.SetNameFilter( "Rig Animation (*.riganim)" );

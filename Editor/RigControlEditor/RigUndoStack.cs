@@ -22,6 +22,7 @@ internal sealed class RigSnapshot
 	private List<RigEvent> _events;
 	private List<MorphEvent> _morphs;
 	private List<RigMark> _marks;
+	private List<IkGoalAnchor> _goalAnchors;
 	private List<ReferenceProp> _references;
 	private int _frameCount;
 	private int _animationSpeed;
@@ -46,6 +47,11 @@ internal sealed class RigSnapshot
 			snap._morphs = anim.MorphEvents.Select( Clone ).ToList();
 			snap._marks = (anim.Marks ?? new List<RigMark>()).Where( m => m is not null ).Select( Clone ).ToList();
 			snap._references = anim.ReferenceProps.Select( Clone ).ToList();
+
+			// A goal's space says what its keys mean. Undone without it, the keys would come back
+			// converted for one space and be read in another.
+			snap._goalAnchors = (anim.IkGoalAnchors ?? new List<IkGoalAnchor>()).Where( a => a is not null )
+				.Select( a => new IkGoalAnchor { Bone = a.Bone, Space = a.Space, Object = a.Object } ).ToList();
 
 			// Objects are a document edit like any other - importing one, moving a part, renaming
 			// it. Left out of the snapshot, undo would restore the keyframes of parts that no
@@ -90,6 +96,8 @@ internal sealed class RigSnapshot
 			anim.MorphEvents = _morphs.Select( Clone ).ToList();
 			anim.Marks = (_marks ?? new List<RigMark>()).Select( Clone ).ToList();
 			anim.ReferenceProps = _references.Select( Clone ).ToList();
+			anim.IkGoalAnchors = (_goalAnchors ?? new List<IkGoalAnchor>())
+				.Select( a => new IkGoalAnchor { Bone = a.Bone, Space = a.Space, Object = a.Object } ).ToList();
 			anim.Objects = (_objects ?? new List<RigObject>()).Select( Clone ).ToList();
 			anim.Lights = (_lights ?? new List<RigLight>()).Select( Clone ).ToList();
 			anim.Cameras = (_cameras ?? new List<RigCamera>()).Select( Clone ).ToList();
@@ -213,7 +221,9 @@ internal sealed class RigSnapshot
 		StartFrame = m.StartFrame,
 		EndFrame = m.EndFrame,
 		MorphName = m.MorphName,
-		Value = m.Value
+		Value = m.Value,
+		FadeIn = m.FadeIn,
+		FadeOut = m.FadeOut
 	};
 
 	private static RigMark Clone( RigMark m ) => new()
@@ -232,8 +242,10 @@ internal sealed class RigSnapshot
 		ChainLength = c.ChainLength,
 		PoleDirection = c.PoleDirection,
 		Iterations = c.Iterations,
+		Solver = c.Solver,
 		Live = c.Live,
-		GoalRotation = c.GoalRotation
+		GoalRotation = c.GoalRotation,
+		MaxStretch = c.MaxStretch
 	};
 
 	private static LimitConstraint Clone( LimitConstraint c ) => new()

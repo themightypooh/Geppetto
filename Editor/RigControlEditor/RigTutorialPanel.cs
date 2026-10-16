@@ -90,7 +90,7 @@ internal sealed class RigTutorialPanel : Widget
 		buttons.Margin = new Sandbox.UI.Margin( 12, 6, 12, 10 );
 		buttons.Spacing = 6;
 
-		buttons.Add( new Button( "Restart", "restart_alt" )
+		buttons.Add( new Button( "Restart", "replay" )
 		{
 			Clicked = () => { Tutorial?.Restart(); Changed?.Invoke(); Rebuild(); }
 		} );
