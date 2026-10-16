@@ -74,7 +74,7 @@ public static class ShapeKeyEdit
 	/// Open a finished key for more sculpting: move the rollback bar to just above its End Shape Key.
 	/// Refuses, saying why, when the key is still recording (nothing to reopen) or another key is open.
 	/// </summary>
-	public static bool Reopen( PartStudio studio, ShapeKeyFeature start, out string why )
+	public static bool Reopen( PartStudio studio, IShapeKeyStart start, out string why )
 	{
 		why = null;
 		var runs = Runs( studio );

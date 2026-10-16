@@ -272,7 +272,7 @@ public sealed partial class EffigyWindow
 	/// the bar back.</summary>
 	private void EditShapeKey( string startId )
 	{
-		if ( _studio.Features.FirstOrDefault( f => f.Id == startId ) is not ShapeKeyFeature key )
+		if ( _studio.Features.FirstOrDefault( f => f.Id == startId ) is not IShapeKeyStart key )
 		{
 			Refuse( "That shape key is no longer in the history." );
 			return;
@@ -322,11 +322,11 @@ public sealed partial class EffigyWindow
 	private void EditShapeKeyFromMenu()
 	{
 		var body = ShapeKeyBody();
-		var finished = body is null ? new List<(ShapeKeyFeature Start, ShapeKeyEndFeature End)>() : ShapeKeyRuns( body ).Where( r => r.End is not null ).ToList();
+		var finished = body is null ? new List<(IShapeKeyStart Start, ShapeKeyEndFeature End)>() : ShapeKeyRuns( body ).Where( r => r.End is not null ).ToList();
 
 		if ( finished.Count == 1 )
 		{
-			EditShapeKey( finished[0].Start.Id );
+			EditShapeKey( ((Feature)finished[0].Start).Id );
 			return;
 		}
 
