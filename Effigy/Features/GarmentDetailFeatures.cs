@@ -44,6 +44,29 @@ public abstract class GarmentDetailFeature : Feature, IDetailMaterials
 			Fail( "No garment to decorate", "The selected garment is missing, or no garment has been made yet.", "Add a Garment first, then select it" );
 		return targets;
 	}
+	/// <summary>
+	/// Weight the detail to its garment and add it - and say so when a garment worn over that one
+	/// already covers it. That garment was made before the detail, so it made no room for it: a
+	/// wallet chain on jeans added after the jacket sits inside the jacket's hem.
+	/// </summary>
+	protected void AddDetail( FeatureContext ctx, Body host, PolyMesh mesh, string name )
+	{
+		if ( host.Mesh.IsRigged ) SkinBinder.TransferFrom( mesh, host.Mesh );
+		foreach ( var over in ctx.Bodies.Where( b => b.IsGarment && !b.IsGarmentDetail && b != host && !b.IsReference ) )
+		{
+			var sheet = DetailEdges.Sheet( over.Mesh );
+			var tree = MeshBVH.Build( sheet );
+			var inside = mesh.Positions.Count( p => tree.NearestSurface( sheet, p, 3f ) is { } hit && Vec3.Dot( p - hit.Point, hit.Normal ) < -0.05f );
+			if ( inside * 10 > mesh.VertexCount )
+			{
+				Warn( $"Part of this is hidden under {over.Name}",
+					$"{over.Name} is worn over {host.Name} and comes before this detail in the history, so it makes no room for it and the detail clips through.",
+					$"Drag this detail above {over.Name} in the history", $"Or put it on {over.Name}", "Or move it with Where, Across and Up" );
+				break;
+			}
+		}
+		ctx.Bodies.Add( new Body( ctx.NewBodyId(), name, mesh ) { IsGarment = true, IsGarmentDetail = true, Layer = host.Layer } );
+	}
 	protected void Build( FeatureContext ctx, List<Body> targets,
 		Action<PolyMesh, DetailSurface, SurfaceFrame, Body, int> make )
 	{
@@ -58,9 +81,7 @@ public abstract class GarmentDetailFeature : Feature, IDetailMaterials
 				if ( DetailSpots.Find( surface, map, Spot.Value, side, Across.Clamped, Up.Clamped ) is { } f )
 					make( mesh, surface, f.Turned( Angle.Clamped ), target, side );
 			if ( mesh.FaceCount == 0 ) continue;
-			if ( target.Mesh.IsRigged ) SkinBinder.TransferFrom( mesh, target.Mesh );
-			ctx.Bodies.Add( new Body( ctx.NewBodyId(), $"{Name ?? TypeName} on {target.Name}", mesh )
-				{ IsGarment = true, IsGarmentDetail = true } );
+			AddDetail( ctx, target, mesh, $"{Name ?? TypeName} on {target.Name}" );
 			made++;
 		}
 		if ( made == 0 )
@@ -166,8 +187,7 @@ public sealed class HardwareFeature : GarmentDetailFeature
 						DetailShapes.Place( mesh, Part(), new SurfaceFrame( points[k], path[at[k]].Normal, path[at[k]].Inward ) );
 				}
 				if ( mesh.FaceCount == 0 ) continue;
-				if ( body.Mesh.IsRigged ) SkinBinder.TransferFrom( mesh, body.Mesh );
-				ctx.Bodies.Add( new Body( ctx.NewBodyId(), $"{TypeName} on {body.Name}", mesh ) { IsGarment = true, IsGarmentDetail = true } );
+				AddDetail( ctx, body, mesh, $"{Name ?? TypeName} on {body.Name}" );
 				made++;
 			}
 			if ( made == 0 ) Fail( "No openings found", "This garment has no selected open edge.", "Try All openings" );
@@ -260,8 +280,7 @@ public sealed class GlowFeature : GarmentDetailFeature
 				foreach ( var edge in DetailEdges.Openings( body.Mesh, Openings.Index - 1 ) )
 					DetailShapes.Tube( mesh, DetailEdges.Inset( edge, 0.12f, 0.08f ).Select( p => p.Point ).ToList(), 0.045f, 6, true, slot );
 				if ( mesh.FaceCount == 0 ) continue;
-				if ( body.Mesh.IsRigged ) SkinBinder.TransferFrom( mesh, body.Mesh );
-				ctx.Bodies.Add( new Body( ctx.NewBodyId(), $"EL wire on {body.Name}", mesh ) { IsGarment = true, IsGarmentDetail = true } );
+				AddDetail( ctx, body, mesh, $"EL wire on {body.Name}" );
 				made++;
 			}
 			if ( made == 0 ) Fail( "No openings found", "No edge is available for the wire.", "Try All openings" );
