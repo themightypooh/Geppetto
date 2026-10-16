@@ -368,6 +368,9 @@ public static class BuildScript
 			case "export":
 				return Export( studio, args, baseDir, r );
 
+			case "corrective":
+				return Corrective( studio, args, r );
+
 			case "bake":
 			{
 				// bake Low High out/bake size=2048 maps=normal,ao,curvature,height,cavity cage=0.2 ss=2 vmat=1
@@ -457,7 +460,7 @@ public static class BuildScript
 			}
 
 			default:
-				return Fail( r, $"Unknown command '{verb}'. Commands: add, edit, set, remove, rebuild, fix, render, describe, measure, distance, symmetry, match, material, pivot, export, bake, save, echo." );
+				return Fail( r, $"Unknown command '{verb}'. Commands: add, edit, set, remove, rebuild, fix, render, describe, measure, distance, symmetry, match, material, pivot, export, corrective, bake, save, echo." );
 		}
 	}
 
@@ -569,6 +572,27 @@ public static class BuildScript
 			}
 
 			mesh.Skin = weights;
+
+			// The writers keep 4 bones a vertex (s&box's GPU skinning reads no more); say when that costs something.
+			if ( weights.CapWarning( DmxWriter.MaxInfluences ) is { } capped )
+				r.Log.Add( "export: " + capped );
+
+			// Corrective shapes from the weights just bound, before the pivot moves mesh and bones together.
+			foreach ( var line in CorrectiveMorph.BuildAll( mesh, skeleton, studio.Correctives, DmxWriter.MaxInfluences ) )
+				r.Log.Add( "export: " + line );
+
+			// Morphs only play on materials that turn them on. Effigy's own flesh vmats on these bodies get the switch.
+			if ( mesh.HasMorphs )
+				foreach ( var vmatPath in studio.Features.OfType<FleshMaterialFeature>().Where( f => !f.Suppressed )
+					.SelectMany( f => f.Written ).Where( w => w.EndsWith( ".vmat", StringComparison.OrdinalIgnoreCase ) && File.Exists( w ) ) )
+				{
+					var text = File.ReadAllText( vmatPath );
+					if ( !VmatMorph.IsOn( text ) && VmatMorph.Enable( text ) is { } on )
+					{
+						File.WriteAllText( vmatPath, on );
+						r.Log.Add( $"export: {Path.GetFileName( vmatPath )}: F_MORPH_SUPPORTED on, for the morphs" );
+					}
+				}
 
 			var (min, max) = ModelMeasure.Bounds( mesh );
 			var pivot = r.Pivots.TryGetValue( name, out var p ) ? p : DefaultPivot( min, max );
@@ -1388,6 +1412,61 @@ public static class BuildScript
 		ShadedRender.Sheet( scene, views, size, elevation, 2, opts.GetValueOrDefault( "label", "OURS" ) ).SavePng( path );
 		r.Written.Add( path );
 		r.Log.Add( $"rendered shade={mode}, {Math.Clamp( views, 1, 12 )} views, to {path}" );
+		return true;
+	}
+
+	/// <summary>
+	///   corrective bone=elbow_L angle=90 [axis=x,y,z]   add (or replace) a corrective shape on a bone
+	///   corrective remove bone=elbow_L [angle=90]        take it (or every one on that bone) off
+	///   corrective                                       list them
+	/// Built into the model at export (CorrectiveMorph) from the export's own weights.
+	/// </summary>
+	static bool Corrective( PartStudio studio, List<string> args, Result r )
+	{
+		var remove = args.Count > 0 && args[0].Equals( "remove", StringComparison.OrdinalIgnoreCase );
+		var opts = Pairs( remove ? args.Skip( 1 ) : args );
+
+		if ( opts.Count == 0 )
+		{
+			r.Log.Add( studio.Correctives.Count == 0 ? "no corrective shapes"
+				: string.Join( "\n", studio.Correctives.Select( c => $"corrective {c.MorphName}: bone {c.Bone}, {c.Angle:0}°" ) ) );
+			return true;
+		}
+
+		if ( !opts.TryGetValue( "bone", out var bone ) || string.IsNullOrWhiteSpace( bone ) )
+			return Fail( r, "corrective needs bone=: corrective bone=elbow_L angle=90" );
+
+		float? angle = null;
+		if ( opts.TryGetValue( "angle", out var angleText ) )
+		{
+			if ( !float.TryParse( angleText, NumberStyles.Float, CultureInfo.InvariantCulture, out var a ) || a <= 0f || a > 170f )
+				return Fail( r, $"angle={angleText}: a bend in degrees, above 0 and up to 170." );
+			angle = a;
+		}
+
+		if ( remove )
+		{
+			var n = studio.Correctives.RemoveAll( c => c.Bone == bone && (angle is null || MathF.Abs( c.Angle - angle.Value ) < 0.5f) );
+			if ( n == 0 ) return Fail( r, $"no corrective shape on '{bone}'{(angle is null ? "" : $" at {angle:0}°")} to remove." );
+			r.Log.Add( $"removed {n} corrective shape(s) from {bone}" );
+			return true;
+		}
+
+		if ( studio.Rig.IndexOf( bone ) < 0 )
+			return Fail( r, $"No bone '{bone}'. Bones: {string.Join( ", ", studio.Rig.Bones.Select( b => b.Name ).Take( 20 ) )}." );
+
+		var shape = new CorrectiveShape { Bone = bone, Angle = angle ?? 90f };
+		if ( opts.TryGetValue( "axis", out var axisText ) )
+		{
+			var c = axisText.Split( ',' );
+			if ( c.Length != 3 || !c.All( x => float.TryParse( x, NumberStyles.Float, CultureInfo.InvariantCulture, out _ ) ) )
+				return Fail( r, $"axis={axisText}: a direction x,y,z (the joint's hinge), or leave it out to pick one." );
+			shape.Axis = new Vec3( float.Parse( c[0], CultureInfo.InvariantCulture ), float.Parse( c[1], CultureInfo.InvariantCulture ), float.Parse( c[2], CultureInfo.InvariantCulture ) );
+		}
+
+		studio.Correctives.RemoveAll( c => c.MorphName == shape.MorphName );
+		studio.Correctives.Add( shape );
+		r.Log.Add( $"corrective {shape.MorphName}: built into the model at export" );
 		return true;
 	}
 

@@ -1,0 +1,2 @@
+# part	model	pivot x	y	z	size x	y	z
+leg	models/test/leg/leg.vmdl	0	0	0.304	3.757	3.757	19.392

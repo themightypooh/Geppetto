@@ -902,6 +902,8 @@ internal sealed class EffigyRigPanel : Widget
 
 		BuildSoftness();
 
+		BuildCorrectives();
+
 		// A count on the tree row is enough to notice a bone has bodies; fixing a WRONG one from
 		// there means re-arming Assign Body and hunting for it in the viewport. Naming each one
 		// here, with its own remove button, is the actual undo-a-mistake path.
@@ -1251,6 +1253,99 @@ internal sealed class EffigyRigPanel : Widget
 		_editingInspector = false;
 
 		RefreshBodyList();
+		RefreshCorrectives();
+	}
+
+	private Button _correctiveButton;
+	private EffigyNumericField _correctiveAngle;
+	private Widget _correctiveList;
+
+	/// <summary>
+	/// Corrective shape: keep the selected joint's volume when it bends. The shape itself is built at
+	/// export (CorrectiveMorph), from the export's own weights; here it is a bone and an angle on the
+	/// studio, listed under the bone with a remove button each.
+	/// </summary>
+	private void BuildCorrectives()
+	{
+		var row = new Widget( _inspector ) { Layout = Layout.Row() };
+		row.Layout.Spacing = 4;
+
+		_correctiveButton = new Button( "Corrective shape", "open_in_full" )
+		{
+			ToolTip = "Keep this joint's volume when it bends. A bent joint pinches thin on its own; this adds a shape "
+				+ "that puffs it back out, made for the bend set beside it. It goes out with the model as a morph "
+				+ "named bone_bend90: drive it from 0 straight to 1 at that bend",
+			Clicked = AddCorrective,
+		};
+		row.Layout.Add( _correctiveButton, 1 );
+
+		row.Layout.Add( new Editor.Label( "at" ) );
+		_correctiveAngle = new EffigyNumericField( row, 90f ) { FixedWidth = 52, Min = 5f, Max = 170f, Unit = "°" };
+		_correctiveAngle.ToolTip = "The bend the shape fully corrects, in degrees: 90 for an elbow or knee at a right angle";
+		row.Layout.Add( _correctiveAngle );
+		_inspector.Layout.Add( row );
+
+		_correctiveList = new Widget( _inspector ) { Layout = Layout.Column() };
+		_correctiveList.Layout.Spacing = 2;
+		_inspector.Layout.Add( _correctiveList );
+	}
+
+	private void AddCorrective()
+	{
+		if ( _studio is null || _selectedBone < 0 || _selectedBone >= Skeleton.Count )
+			return;
+
+		var shape = new CorrectiveShape { Bone = Skeleton.Bones[_selectedBone].Name, Angle = Math.Clamp( _correctiveAngle.Value, 5f, 170f ) };
+		RigChanging?.Invoke();
+		_studio.Correctives.RemoveAll( c => c.MorphName == shape.MorphName );
+		_studio.Correctives.Add( shape );
+		RefreshCorrectives();
+		RigChanged?.Invoke();
+	}
+
+	private void RefreshCorrectives()
+	{
+		if ( _correctiveList is null )
+			return;
+
+		_correctiveList.Layout.Clear( true );
+
+		var hasBone = _selectedBone >= 0 && _selectedBone < Skeleton.Count;
+		var parent = hasBone ? Skeleton.Bones[_selectedBone].Parent : -1;
+
+		// Disabled with the reason rather than doing nothing: a root has no joint to bend, and a rig
+		// outside a studio has nowhere to save the shape.
+		_correctiveButton.Enabled = _studio is not null && parent >= 0;
+		_correctiveButton.ToolTip = _studio is null ? "Open a part to add corrective shapes; they are saved with it"
+			: hasBone && parent < 0 ? "A root bone has no joint above it to bend, so there is nothing to correct. Select the bone below the joint"
+			: "Keep this joint's volume when it bends. A bent joint pinches thin on its own; this adds a shape "
+				+ "that puffs it back out, made for the bend set beside it. It goes out with the model as a morph "
+				+ "named bone_bend90: drive it from 0 straight to 1 at that bend";
+
+		if ( !hasBone || _studio is null )
+			return;
+
+		var boneName = Skeleton.Bones[_selectedBone].Name;
+
+		foreach ( var shape in _studio.Correctives.Where( c => c.Bone == boneName ).ToList() )
+		{
+			var row = new Widget( _correctiveList ) { Layout = Layout.Row() };
+			row.Layout.Spacing = 4;
+			row.Layout.Add( new Editor.Label( $"{shape.MorphName} · {shape.Angle:0}°" ) { Color = Theme.TextLight }, 1 );
+			row.Layout.Add( new IconButton( "close", () =>
+			{
+				RigChanging?.Invoke();
+				_studio.Correctives.Remove( shape );
+				RefreshCorrectives();
+				RigChanged?.Invoke();
+			} )
+			{
+				IconSize = 16,
+				Background = Color.Transparent,
+				ToolTip = "Remove this corrective shape",
+			} );
+			_correctiveList.Layout.Add( row );
+		}
 	}
 
 	/// <summary>Named rows for every body assigned to the selected bone, each with its own remove
@@ -1512,6 +1607,10 @@ internal sealed class EffigyRigPanel : Widget
 
 						foreach ( var body in BodiesOnBone( oldName ) )
 							Bindings[body] = name;
+
+						// Corrective shapes are keyed by bone name too, and go with it.
+						foreach ( var c in _studio?.Correctives.Where( c => c.Bone == oldName ) ?? Enumerable.Empty<CorrectiveShape>() )
+							c.Bone = name;
 
 						renamed = true;
 					}

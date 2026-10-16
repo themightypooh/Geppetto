@@ -183,6 +183,13 @@ public sealed class PartStudio
 	public Dictionary<string, string> BodyBoneMap = new();
 
 	/// <summary>
+	/// Corrective shapes on the rig: per bone, a morph that puts back the volume the joint loses when
+	/// bent (<see cref="CorrectiveMorph"/>). Built at export from the export's own weights, so the
+	/// shape always matches the skinning it corrects. Saved in the rig block.
+	/// </summary>
+	public List<CorrectiveShape> Correctives = new();
+
+	/// <summary>
 	/// Named values the whole document can refer to as <c>#name</c> in a numeric field.
 	///
 	/// DOCUMENT STATE, next to MaterialNames: a variable that belongs to a feature is just a
