@@ -74,7 +74,8 @@ One command does it all: sync, commit, run the suite, push, publish the s&box pa
 changelog with the new revision, and print the changelist text.
 
 - **Publishing needs the s&box editor open on this project.** The upload is the editor's, driven
-  over its MCP bridge on `127.0.0.1:7269`. If the editor is closed, the push still happens; run
+  over its MCP pipe (a local socket since s&box 26.10, not `127.0.0.1:7269` any more) through
+  `tools/sbox-mcp.py`. If the editor is closed, the push still happens; run
   `tools/publish.sh --commit` later.
 - **The changelist is pasted by hand.** The package API can read changelists and can't write
   them, so paste what `ship.sh` prints into sbox.game ▸ the package ▸ Edit changelist.

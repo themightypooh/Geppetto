@@ -4,10 +4,11 @@
 #
 # WHY THIS IS NOT JUST A COMMAND. The upload is `geppetto_publish`, a ConCmd living inside the
 # editor - it needs the editor's own ProjectPublisher, its login and the project it has open, none
-# of which exist in a shell. What DOES reach out of the editor is its MCP bridge, an HTTP server on
-# 127.0.0.1:7269 whose `console_command` tool runs anything the console accepts. So this does not
-# reimplement publishing: it types the command into the editor's console over HTTP and reads the
-# answer back out of the log, which is exactly what a person does by hand.
+# of which exist in a shell. What DOES reach out of the editor is its MCP server - a same-user local
+# pipe since 26.10, reached through tools/sbox-mcp.py - whose `console_command` tool runs anything
+# the console accepts. So this does not reimplement publishing: it types the command into the
+# editor's console over that pipe and reads the answer back out of the log, which is exactly what a
+# person does by hand.
 #
 # THE EDITOR HAS TO BE OPEN, ON THIS PROJECT. Both are checked before anything is sent, because the
 # failure they prevent is publishing the wrong package - the stray pooh.toolshed package got made
@@ -25,7 +26,7 @@ set -eu
 root=$( cd "$( dirname "$0" )/.." && pwd )
 cd "$root"
 
-bridge=${SBOX_MCP_URL:-http://127.0.0.1:7269/mcp}
+bridge="$root/tools/sbox-mcp.py"
 project=geppetto
 commit=0
 force=0
@@ -44,13 +45,11 @@ while [ $# -gt 0 ]; do
 	shift
 done
 
-# One call, one JSON-RPC id: the bridge is stateless over HTTP, so nothing has to be kept between
-# calls and a failed curl is just a failed call rather than a broken session.
+# One call, one connection: each call opens the pipe, shakes hands and closes it again, so nothing
+# has to be kept between calls and a failed call is just a failed call rather than a broken session.
+# SBOX_PID picks the editor when more than one is open; otherwise the one on geppetto wins.
 call() {
-	curl -s -m 120 -X POST "$bridge" \
-		-H 'Content-Type: application/json' \
-		-H 'Accept: application/json, text/event-stream' \
-		-d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"$1\",\"arguments\":$2}}"
+	SBOX_MCP_TIMEOUT=120 python3 "$bridge" --call "$1" "$2"
 }
 
 # The bridge answers in MCP's envelope - result.content[0].text - and the text is itself JSON for
@@ -61,7 +60,7 @@ text() {
 
 if ! status=$( call editor_status '{}' 2>/dev/null ) || [ -z "$status" ]; then
 	echo ""
-	echo "no editor on $bridge - the package was NOT published."
+	echo "no s&box editor listening - the package was NOT published."
 	echo ""
 	echo "Open Geppetto in s&box and run this again, or publish from the editor console:"
 	echo ""

@@ -1,9 +1,9 @@
 {
   "mcpServers": {
     "sbox": {
-      "type": "http",
-      "url": "http://127.0.0.1:7269/mcp",
-      "timeout": 30000
+      "type": "stdio",
+      "command": "python3",
+      "args": ["tools/sbox-mcp.py"]
     }
   }
 }
