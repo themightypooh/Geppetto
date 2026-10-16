@@ -3804,7 +3804,7 @@ public sealed partial class MeshEditSession
 			// Decimate the selection as a mesh of its own with its rim frozen, then put it back:
 			// every rim vertex is still where the body has one, so they stitch by position.
 			var piece = TakeFaces( faces );
-			var slimmed = Decimate.Run( piece, new Decimate.Options { Ratio = ratio, FreezeBoundary = true } ).Mesh;
+			var slimmed = Decimate.Run( piece, new Decimate.Options { Ratio = ratio, FreezeBoundary = true, PreserveUVSeams = false } ).Mesh;
 			var first = Mesh.VertexCount;
 			MeshTransform.Append( Mesh, slimmed );
 
