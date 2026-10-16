@@ -21,7 +21,7 @@ public sealed partial class RigAnimPlayerComponent
 
 	/// <summary>This frame's travel, in the model's own space (position and turn) - what Move
 	/// GameObject applied, or what Report Only leaves for game code. Identity when nothing moved.</summary>
-	public Transform RootMotionDelta { get; private set; } = Transform.Zero;
+	public Transform RootMotionDelta { get; private set; } = global::Transform.Zero;
 
 	/// <summary>The clip's travel at the last frame applied, measured from frame 0. Null right
 	/// after Play or Seek, so a jump never moves the character.</summary>
@@ -36,14 +36,14 @@ public sealed partial class RigAnimPlayerComponent
 	{
 		_rootPrev = null;
 		_rootWrapped = false;
-		RootMotionDelta = Transform.Zero;
+		RootMotionDelta = global::Transform.Zero;
 	}
 
 	private void ApplyRootMotion()
 	{
 		var wrapped = _rootWrapped;
 		_rootWrapped = false;
-		RootMotionDelta = Transform.Zero;
+		RootMotionDelta = global::Transform.Zero;
 
 		if ( RootMotion == RootMotionPlayback.Off || Anim?.RootMotion is not { Enabled: true } settings || !Target.IsValid() )
 			return;
@@ -63,7 +63,7 @@ public sealed partial class RigAnimPlayerComponent
 		if ( Mode != RigAnimMode.Exclusive && !Wrote( root ) )
 			return;
 
-		var parentModel = Target.Model?.Bones.GetBone( settings.Bone )?.Parent is { } parent ? parent.LocalTransform : Transform.Zero;
+		var parentModel = Target.Model?.Bones.GetBone( settings.Bone )?.Parent is { } parent ? parent.LocalTransform : global::Transform.Zero;
 		Transform ModelAt( float frame ) => parentModel.ToWorld( track.Evaluate( frame ) );
 
 		var start = ModelAt( 0f );
@@ -71,7 +71,7 @@ public sealed partial class RigAnimPlayerComponent
 		var motion = RigRootMotionMath.MotionOf( start, now, settings.Mode );
 
 		var delta = _rootPrev is not { } prev
-			? Transform.Zero
+			? global::Transform.Zero
 			: wrapped
 				? prev.ToLocal( RigRootMotionMath.MotionOf( start, ModelAt( LastFrame ), settings.Mode ) ).ToWorld( motion )
 				: prev.ToLocal( motion );
