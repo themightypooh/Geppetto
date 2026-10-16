@@ -233,7 +233,7 @@ public static partial class BuildScript
 				var scene = new ShadeScene();
 				scene.Add( posed, ShadeMaterial.Clay() );
 				var path = Path.Combine( dir, $"{Safe( name )}_{Safe( bend.Bone )}_{N( bend.Degrees )}.png" );
-				ShadedRender.Sheet( scene, views, size, 12f, 2, $"OURS · {bend.Bone} {N( bend.Degrees )}°" ).SavePng( path );
+				ShadedRender.Sheet( scene, views, size, 12f, 1, $"OURS · {bend.Bone} {N( bend.Degrees )}°" ).SavePng( path );
 				r.Written.Add( path );
 				r.Log.Add( $"rendered {bend.Bone} at {N( bend.Degrees )}° to {path}" );
 			}

@@ -159,6 +159,15 @@ public sealed class ShadeScene
 	public float FloorReflectionBlur = 0.12f;
 	/// <summary>Downsample the supersampled frame with a tent filter rather than a box: thin parts stop stair-stepping.</summary>
 	public bool SoftFilter;
+	/// <summary>
+	/// Antialiasing: visibility samples per output pixel (rounded to 1, 4, 9 … 64), multi-jittered and
+	/// resolved with a Blackman-Harris filter, while the shading still runs once per shading pixel. 1 turns it
+	/// off (the supersampled frame is filtered down as before). See <see cref="CoverageResolve"/>.
+	/// </summary>
+	public int Coverage = 16;
+	/// <summary>Widen the gloss where the surface curves fast within a pixel (Tokuyoshi and Kaplanyan's
+	/// geometric specular antialiasing), so a highlight on a small round part does not sparkle.</summary>
+	public bool SpecularAa = true;
 
 	/// <summary>
 	/// Everything that makes a render read as a finished piece, on at once: the studio environment, bent-normal
@@ -233,7 +242,7 @@ public static class ShadedRender
 	/// scene with no lights gets the studio three-light set per view, so the key always comes from the
 	/// camera's front-right.
 	/// </summary>
-	public static Raster Sheet( ShadeScene scene, int views, int tile, float elevation = 12f, int supersample = 2, string label = null )
+	public static Raster Sheet( ShadeScene scene, int views, int tile, float elevation = 12f, int supersample = 1, string label = null )
 	{
 		views = Math.Clamp( views, 1, 12 );
 		var bmin = new Vec3( float.MaxValue, float.MaxValue, float.MaxValue );
@@ -276,7 +285,7 @@ public static class ShadedRender
 		return sheet;
 	}
 
-	public static Raster Render( ShadeScene scene, ShadeCamera camera, int width, int height, int supersample = 2 )
+	public static Raster Render( ShadeScene scene, ShadeCamera camera, int width, int height, int supersample = 1 )
 	{
 		var ss = Math.Clamp( supersample, 1, 4 );
 		var W = width * ss;
@@ -286,6 +295,7 @@ public static class ShadedRender
 		var pos = new List<Vec3>(); var nrm = new List<Vec3>(); var col = new List<Vec3>(); var mat = new List<int>();
 		var vrough = new List<float>(); var vemit = new List<Vec3>();
 		var tris = new List<(int A, int B, int C)>();
+		var triItem = new List<int>();
 		var triUv = new List<(Vec2 A, Vec2 B, Vec2 C)>();
 		var triTan = new List<(Vec3 T, Vec3 B)>();
 		var materialList = new List<ShadeMaterial>();
@@ -327,6 +337,7 @@ public static class ShadedRender
 				for ( var k = 1; k + 1 < f.Indices.Length; k++ )
 				{
 					tris.Add( (Vertex( f.Indices[0], mi, material ), Vertex( f.Indices[k], mi, material ), Vertex( f.Indices[k + 1], mi, material )) );
+					triItem.Add( item );
 					var tuv = f.UVs is { } uv && uv.Length == f.Indices.Length ? (uv[0], uv[k], uv[k + 1]) : default;
 					triUv.Add( tuv );
 					triTan.Add( material.NormalMap is null ? default
@@ -420,7 +431,18 @@ public static class ShadedRender
 					if ( meshT <= floorT )
 					{
 						var n = (nrm[a] * w.x + nrm[b] * w.y + nrm[c] * w.z).Normal;
-						if ( Vec3.Dot( n, dir ) > 0 ) n = -n;
+						if ( Vec3.Dot( n, dir ) > -0.05f )
+						{
+							// Facing away (or edge-on). Seen from behind - the inside of a sleeve or a mouth - the
+							// FACE faces away too, and the normal is flipped to light that side. On the silhouette of a
+							// smooth body the face still faces the camera and only the smoothed normal has turned past
+							// edge-on; flipping that lit the rim from behind and drew a black line round everything.
+							// There it is bent back until it just faces the camera.
+							var fn = Vec3.Cross( pos[b] - pos[a], pos[c] - pos[a] );
+							if ( Vec3.Dot( fn, n ) < 0f ) fn = -fn;
+							if ( Vec3.Dot( fn, dir ) > 0f ) n = -n;
+							else n = (n - dir * (Vec3.Dot( n, dir ) + 0.05f)).Normal;
+						}
 						wpos[i] = p; wnrm[i] = n; kind[i] = 1;
 						depth[i] = Vec3.Dot( p - camera.Eye, fwd );
 						continue;
@@ -585,6 +607,19 @@ public static class ShadedRender
 				}
 				else { m = floorMat; albedo = scene.FloorColour; rough = m.Roughness; }
 
+				// Geometric specular AA: the normal's change to the next pixel over is curvature the pixel
+				// averages; as roughness it blurs the highlight instead of letting it sparkle (Tokuyoshi &
+				// Kaplanyan 2019, sigma² 0.25 for the pixel filter, clamped at 0.18).
+				if ( scene.SpecularAa && kind[i] == 1 )
+				{
+					var item = triItem[triId[i]];
+					Vec3 Step( int j ) => j >= 0 && j < kind.Length && kind[j] == 1 && triItem[triId[j]] == item ? wnrm[j] - wnrm[i] : Vec3.Zero;
+					var ddx = x + 1 < W ? Step( i + 1 ) : Step( i - 1 );
+					var ddy = y + 1 < H ? Step( i + W ) : Step( i - W );
+					var variance = MathF.Min( 0.5f * (ddx.LengthSquared + ddy.LengthSquared), 0.18f );
+					if ( variance > 1e-6f ) rough = ToksvigRoughness( rough, variance );
+				}
+
 				if ( frame.Contact > 0f )
 					for ( var li = 0; li < scene.Lights.Count; li++ )
 						contact[li] = scene.Lights[li].Shadows && Vec3.Dot( wnrm[i], scene.Lights[li].Direction ) > -0.1f
@@ -608,6 +643,7 @@ public static class ShadedRender
 		// --- bloom, tonemap, gamma, downsample --------------------------------------------------
 		var bloom = scene.Bloom > 0f ? BuildBloom( scene, hdr, emitBuf, W, H, ss, width, height ) : null;
 		var outRaster = new Raster( width, height, 0 );
+		var coverage = scene.Coverage > 1 && tris.Count > 0;
 		var halfDiag = MathF.Sqrt( width * width + height * height ) * 0.5f;
 		// Each supersample through the curve once, then filtered down: averaging after the curve keeps
 		// bright edges from fattening.
@@ -617,12 +653,19 @@ public static class ShadedRender
 			for ( var xx = 0; xx < W; xx++ )
 				toned[yy * W + xx] = Tone( scene, hdr[yy * W + xx] * scene.Exposure, bloom, width, height, (xx + 0.5f) / ss, (yy + 0.5f) / ss );
 		} );
+		// Coverage AA: the edges from many cheap visibility samples, each coloured by a shaded pixel.
+		var resolved = coverage ? CoverageResolve.Resolve( new CoverageResolve.Frame
+		{
+			Toned = toned, W = W, H = H, Ss = ss, Kind = kind, TriId = triId, Depth = depth,
+			TriItem = triItem.ToArray(), Tris = tris, Sx = sx, Sy = sy, Sz = sz, Near = near,
+		}, width, height, scene.Coverage ) : null;
 		Parallel.For( 0, height, y =>
 		{
 			for ( var x = 0; x < width; x++ )
 			{
 				var acc = Vec3.Zero;
-				if ( scene.SoftFilter )
+				if ( resolved is not null ) acc = resolved[y * width + x];
+				else if ( scene.SoftFilter )
 				{
 					// A tent one output pixel wide each way, over the supersamples round this pixel.
 					var wsum = 0f;

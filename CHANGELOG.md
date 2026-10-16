@@ -36,6 +36,9 @@ forgotten.
 ## Unreleased
 
 ### Added
+- **Smooth edges in shaded renders, and faster.** Render Turnaround, `render shade=` and `tools/effigy.sh shade` now take 16 antialiasing samples per pixel (`aa=`, up to 64 for a final) while the lighting is worked out once per pixel. Edges, fingers and near-flat silhouettes come out smooth instead of stair-stepped, and a render takes well under half the work it did. `ss=` now only sets how many times a pixel is lit (raise it for hair-thin strands). `CoverageResolve`
+- **Highlights on small curved parts stop sparkling.** Where a surface curves a lot inside one pixel the gloss is widened to match, so a ring, a rivet or a fingertip keeps a soft highlight (`specaa=0` turns it off). `ShadeScene.SpecularAa`
+- **Smooth wires and grids in the measuring view.** Wireframe, grid, axes and bones are drawn antialiased. `Raster.LineSmooth`
 - **Pockets.** Sew patch, bellows cargo (with flap and snap/button), or zipper pockets onto a named body part. They wrap the garment and follow fit changes.
 - **Punk hardware.** Add pyramid studs, cone spikes, domes, eyelets, safety pins, chains, buckled straps, ports and cables, including stud rows around openings.
 - **Wear.** Local abrasion and grime, plus real rips and holes with loose threads. Cuts go before Fur; small cuts need a fine garment mesh.
@@ -137,6 +140,7 @@ forgotten.
 - **Symmetry on the Model check badge.** The badge now also says whether the body is mirror-symmetric (across X or Y, whichever it is closer to) and by how much; hover for both numbers, and when it is off across X the badge's menu offers Symmetrize. `SymmetryCheck`
 
 ### Fixed
+- **No more black rim round shaded models.** The outline of a smooth body was lit from behind and drew a dark line all round it; it is now lit like the surface it belongs to.
 - **Plain-colour materials show in `tools/effigy.sh shade`.** A vmat with only a tint, metalness or roughness (garment hardware: chrome studs, gunmetal chain) rendered as grey clay; it now renders in its own colour and finish.
 - **Armour plates and bright tape are no longer LED cyan.** Left at the default colour, a Glow armour plate is gunmetal and bright tape silver-white.
 - **A garment over another one no longer comes out full of holes.** A jacket over a T-shirt, or jeans after a tee, lost the patches where the garment underneath hugged the skin, so the shirt showed through and studs or piping set on the openings ringed every hole.

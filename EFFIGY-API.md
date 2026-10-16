@@ -284,6 +284,14 @@ scenes render as they did; `scene.Portfolio()` turns the lot on (studio IBL, 24-
 with bent normals, contact shadows, bloom 0.6, AgX punchy, vignette 0.3, floor reflection 0.15, tent
 filter). That costs 2-2.5x a plain render (900x1200 at ss=2 on 16 threads: ~4.4 s against ~1.9 s).
 
+**Antialiasing is on by default and is not those options:** `scene.Coverage = 16` (1, 4, 9 … 64)
+takes that many multi-jittered visibility samples per output pixel, each coloured by the nearest shaded
+pixel that saw the same surface, then filtered with Blackman-Harris (1.5 px) in display-linear light
+(`CoverageResolve`). Shading runs once per pixel at `ss = 1`, so 16 samples cost about a third more
+than no AA and well under half the old `ss = 2`; 64 costs less than the old `ss = 2` did.
+`scene.SpecularAa` (on) widens gloss where the normal turns fast inside a pixel. `Coverage = 1`
+restores the old supersample-and-filter path (`SoftFilter` picks tent over box there).
+
 ```csharp
 var scene = new ShadeScene().Portfolio();          // or set the pieces below one by one
 scene.Add( helmet, looks, looks[Shell] );          // one mesh, a material per Face.Material id
@@ -360,7 +368,7 @@ save out/robot.effigy
 | `match` | `match view ref.png [diff.png]`, or several views at once: `match front=ref_front.png side=ref_side.png [out=dir]` adds a combined line (mean overlap, worst view) and writes `match_<view>.png` diffs to `out=` |
 | `material` | `material slot path.vmat` |
 | `pivot` | `pivot Body @landmark` or `pivot model @landmark`. Saved with the document: a body's origin in `PartStudio.BodyOrigins` (used by `export split=1`), the model's in `PartStudio.Origin` (what every whole-model export subtracts; the editor's Object ▸ Origin to …). Export uses this run's `pivot`, else the saved origin, else the bottom centre — so a model whose origin was put back at the world centre still exports bottom-centred from a script (`StudioOrigin`). |
-| `turnaround` | `turnaround folder [shade=clay\|material] [size=512] [views=front,quarter,side,back] [name=model] [focus=Body] [elevation=12] [ss=2] [preset=…]`: the editor's File ▸ Render Turnaround. Writes `name_turnaround.png` (labelled sheet) and `name_<view>.png` per view (`Turnaround`). |
+| `turnaround` | `turnaround folder [shade=clay\|material] [size=512] [views=front,quarter,side,back] [name=model] [focus=Body] [elevation=12] [ss=1] [aa=16] [preset=…]`: the editor's File ▸ Render Turnaround. Writes `name_turnaround.png` (labelled sheet) and `name_<view>.png` per view (`Turnaround`). |
 | `export` | `export folder [split=1] [assets=root] [name=x] [lods=0\|1\|0.5,0.25] [loddistance=a,b] [collision=none\|auto\|hulls\|render] [surface=default] [skin=auto\|0\|1] [fbx=1]`. Static: `.obj` + `.vmdl` (+ `_lodN.obj` and a LOD list with `lods=`; `lods=1` is half and a quarter, switching at 6x and 15x the model's diagonal unless `loddistance=` says). Skinned (default when the studio has bones and `split` is off): `.dmx` + `.smd` + a skinned `.vmdl`, bound like the editor's export (body→bone map, smoothing, weight paint), skeleton moved with the pivot; no LODs. `collision=auto` is the editor's choice (exact shapes from the history, else a hull per body; on a skinned model a hull per body on its bone), `hulls` a hull per body, `render` physics from the render mesh; default none. `fbx=1` adds a binary `.fbx` (skinned when the model is) for Blender; the `.vmdl` still loads the `.obj`/`.dmx`. Reference bodies are left out. |
 | `bake` | `bake LOW HIGH[,HIGH2…] folder` or `bake * folder` (pairs by _low/_high/_cage name) `[size=1024] [maps=normal,ao,curvature,cavity,height,thickness,bentnormal,objectnormal,position,id\|all\|everything] [cage=0\|CageBody] [ss=1] [bits=8\|16] [id=material\|body] [vmat=0] [shader=complex\|skin preset= k=]` (see [Baking](#baking)) |
 | `corrective` | `corrective bone=elbow_L angle=90 [axis=x,y,z]` adds a corrective shape (saved with the rig); `corrective remove bone= [angle=]`; bare `corrective` lists them. At a skinned export each becomes a morph `bone_bend90` built from the export's own 4-bone weights (`CorrectiveMorph`): it pushes the blend zone's in-plane offset from the joint out by 1/s(w) − 1, so at that bend the joint keeps its rest volume instead of cos(A/2) of it. Drive it 0 straight → 1 at the angle (`CorrectiveMorph.WeightAt` for in between). The export also logs when the 4-weight cap drops more than 5% of a vertex's weight (`SkinWeights.CapLoss`). |

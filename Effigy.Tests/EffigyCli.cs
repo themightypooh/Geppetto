@@ -305,7 +305,7 @@ public static class EffigyCli
 	/// fractions of the image when 1 or less).</summary>
 	static int Crop( string[] a )
 	{
-		if ( a.Length < 7 ) { Console.Error.WriteLine( "effigy crop in.png out.png x y w h" ); return 1; }
+		if ( a.Length < 7 ) { Console.Error.WriteLine( "effigy crop in.png out.png x y w h [zoom]" ); return 1; }
 
 		var (w, h, rgb, alpha) = Raster.LoadPng( a[2 - 1] );
 		float F( string t ) => float.Parse( t, System.Globalization.CultureInfo.InvariantCulture );
@@ -313,13 +313,15 @@ public static class EffigyCli
 		var x0 = P( F( a[3] ), w ); var y0 = P( F( a[4] ), h ); var cw = P( F( a[5] ), w ); var ch = P( F( a[6] ), h );
 		x0 = Math.Clamp( x0, 0, w - 1 ); y0 = Math.Clamp( y0, 0, h - 1 ); cw = Math.Clamp( cw, 1, w - x0 ); ch = Math.Clamp( ch, 1, h - y0 );
 
-		var outRaster = new Raster( cw, ch );
-		for ( var y = 0; y < ch; y++ )
-			for ( var x = 0; x < cw; x++ )
-				outRaster.Pixels[y * cw + x] = rgb[(y0 + y) * w + x0 + x];
+		// An optional whole-number zoom, nearest neighbour, so single pixels (an edge's steps) can be seen.
+		var zoom = a.Length > 7 ? Math.Clamp( int.Parse( a[7] ), 1, 16 ) : 1;
+		var outRaster = new Raster( cw * zoom, ch * zoom );
+		for ( var y = 0; y < ch * zoom; y++ )
+			for ( var x = 0; x < cw * zoom; x++ )
+				outRaster.Pixels[y * cw * zoom + x] = rgb[(y0 + y / zoom) * w + x0 + x / zoom];
 
 		outRaster.SavePng( a[2] );
-		Console.WriteLine( $"{a[2]} {cw}x{ch}" );
+		Console.WriteLine( $"{a[2]} {cw * zoom}x{ch * zoom}" );
 		return 0;
 	}
 

@@ -319,7 +319,7 @@ public static partial class BuildScript
 				var opts = Pairs( args.Skip( 1 ) );
 
 				foreach ( var key in opts.Keys )
-					if ( key is not ("shade" or "size" or "views" or "name" or "focus" or "elevation" or "ss" or "preset") )
+					if ( key is not ("shade" or "size" or "views" or "name" or "focus" or "elevation" or "ss" or "aa" or "preset") )
 						return Fail( r, $"turnaround has no option '{key}'. Options: shade, size, views, name, focus, elevation, ss, preset." );
 
 				var look = opts.GetValueOrDefault( "shade", "clay" ).ToLowerInvariant();
@@ -331,7 +331,8 @@ public static partial class BuildScript
 					Clay = look == "clay",
 					Size = (int)Number( opts.GetValueOrDefault( "size", "512" ) ),
 					Elevation = Number( opts.GetValueOrDefault( "elevation", "12" ) ),
-					Supersample = (int)Number( opts.GetValueOrDefault( "ss", "2" ) ),
+					Supersample = (int)Number( opts.GetValueOrDefault( "ss", "1" ) ),
+					Coverage = (int)Number( opts.GetValueOrDefault( "aa", "16" ) ),
 				};
 
 				if ( opts.TryGetValue( "views", out var viewList ) )
@@ -1545,7 +1546,8 @@ public static partial class BuildScript
 			return Fail( r, focus is null ? "Nothing to render: no visible body has faces." : $"{focus.Name ?? focus.Id} has no faces to render." );
 
 		Directory.CreateDirectory( Path.GetDirectoryName( Path.GetFullPath( path ) ) ?? "." );
-		ShadedRender.Sheet( scene, views, size, elevation, 2, opts.GetValueOrDefault( "label", "OURS" ) ).SavePng( path );
+		scene.Coverage = (int)Number( opts.GetValueOrDefault( "aa", "16" ) );
+		ShadedRender.Sheet( scene, views, size, elevation, (int)Number( opts.GetValueOrDefault( "ss", "1" ) ), opts.GetValueOrDefault( "label", "OURS" ) ).SavePng( path );
 		r.Written.Add( path );
 		r.Log.Add( $"rendered shade={mode}, {Math.Clamp( views, 1, 12 )} views, to {path}" );
 		return true;

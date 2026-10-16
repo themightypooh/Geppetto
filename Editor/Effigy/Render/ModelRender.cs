@@ -196,10 +196,10 @@ public static class ModelRender
 				var colour = major ? GridMajor : GridColour;
 				var a = Screen( new Vec3( i * step, -lines * step, 0 ) );
 				var b = Screen( new Vec3( i * step, lines * step, 0 ) );
-				raster.Line( a.x, a.y, b.x, b.y, colour );
+				raster.LineSmooth( a.x, a.y, b.x, b.y, colour );
 				a = Screen( new Vec3( -lines * step, i * step, 0 ) );
 				b = Screen( new Vec3( lines * step, i * step, 0 ) );
-				raster.Line( a.x, a.y, b.x, b.y, colour );
+				raster.LineSmooth( a.x, a.y, b.x, b.y, colour );
 			}
 
 			if ( options.Labels )
@@ -213,9 +213,9 @@ public static class ModelRender
 			var ax = Screen( new Vec3( length, 0, 0 ) );
 			var ay = Screen( new Vec3( 0, length, 0 ) );
 			var az = Screen( new Vec3( 0, 0, length ) );
-			raster.Line( o.x, o.y, ax.x, ax.y, 0xe5625a );
-			raster.Line( o.x, o.y, ay.x, ay.y, 0x3fbf8a );
-			raster.Line( o.x, o.y, az.x, az.y, 0x5b93ff );
+			raster.LineSmooth( o.x, o.y, ax.x, ax.y, 0xe5625a, 1f, 1.5f );
+			raster.LineSmooth( o.x, o.y, ay.x, ay.y, 0x3fbf8a, 1f, 1.5f );
+			raster.LineSmooth( o.x, o.y, az.x, az.y, 0x5b93ff, 1f, 1.5f );
 		}
 
 		// --- the bodies, depth tested ---
@@ -283,7 +283,7 @@ public static class ModelRender
 					{
 						var a = face.Indices[k];
 						var b = face.Indices[(k + 1) % face.Indices.Length];
-						raster.Line( projected[a].x, projected[a].y, projected[b].x, projected[b].y, WireColour, 0.75f, depth[a], depth[b], bias );
+						raster.LineSmooth( projected[a].x, projected[a].y, projected[b].x, projected[b].y, WireColour, 0.75f, 1f, depth[a], depth[b], bias );
 					}
 				}
 			}
@@ -295,7 +295,7 @@ public static class ModelRender
 			{
 				var head = Screen( rig.HeadWorld( i ) );
 				var tail = Screen( rig.TailWorld( i ) );
-				raster.Line( head.x, head.y, tail.x, tail.y, 0xf0a13a );
+				raster.LineSmooth( head.x, head.y, tail.x, tail.y, 0xf0a13a, 1f, 1.5f );
 				raster.Rect( (int)head.x - 1, (int)head.y - 1, 3, 3, 0xffffff );
 			}
 		}

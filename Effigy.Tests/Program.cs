@@ -247,6 +247,7 @@ public static class Program
 		SkinShaderTests.Run( outDir );
 		GoreMaterialTests.Run( outDir );
 		ShadeLookTests.Run( outDir );
+		AntialiasTests.Run();
 
 		SculptTests.Run();
 

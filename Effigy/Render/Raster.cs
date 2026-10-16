@@ -84,6 +84,61 @@ public sealed class Raster
 		}
 	}
 
+	/// <summary>
+	/// An antialiased line: every pixel near the segment is covered by how far its centre is from the
+	/// line's middle (a <paramref name="width"/>-pixel line seen through a one-pixel box, the prefiltered
+	/// line of Gupta and Sproull 1981), blended in linear light so a dark wire over a light surface is
+	/// not thinned by gamma. The depth works as in <see cref="Line"/>. Pixel centres are on whole
+	/// coordinates, as there.
+	/// </summary>
+	public void LineSmooth( float x0, float y0, float x1, float y1, int colour, float alpha = 1f, float width = 1f, float z0 = float.MinValue, float z1 = float.MinValue, float bias = 0f )
+	{
+		var reach = width * 0.5f + 0.5f;
+		var dx = x1 - x0; var dy = y1 - y0;
+		var len2 = dx * dx + dy * dy;
+		var steep = MathF.Abs( dy ) > MathF.Abs( dx );
+
+		// Walk the major axis; across it only the few pixels the line can reach (a long diagonal grid
+		// line must not visit its whole bounding box).
+		var (a0, a1) = steep ? (MathF.Min( y0, y1 ), MathF.Max( y0, y1 )) : (MathF.Min( x0, x1 ), MathF.Max( x0, x1 ));
+		var lo = (int)MathF.Floor( a0 - reach ); var hi = (int)MathF.Ceiling( a1 + reach );
+		var slope = steep ? (MathF.Abs( dy ) > 1e-12f ? dx / dy : 0f) : (MathF.Abs( dx ) > 1e-12f ? dy / dx : 0f);
+		var across = reach * MathF.Sqrt( 1f + slope * slope ) + 1f;
+
+		for ( var m = Math.Max( 0, lo ); m <= Math.Min( (steep ? Height : Width) - 1, hi ); m++ )
+		{
+			var am = Math.Clamp( (float)m, a0, a1 );
+			var c = steep ? x0 + (am - y0) * slope : y0 + (am - x0) * slope;
+			var cLo = Math.Max( 0, (int)MathF.Floor( c - across ) );
+			var cHi = Math.Min( (steep ? Width : Height) - 1, (int)MathF.Ceiling( c + across ) );
+			for ( var n = cLo; n <= cHi; n++ )
+			{
+				var x = steep ? n : m; var y = steep ? m : n;
+				var t = len2 > 1e-12f ? Math.Clamp( ((x - x0) * dx + (y - y0) * dy) / len2, 0f, 1f ) : 0f;
+				var ex = x - (x0 + dx * t); var ey = y - (y0 + dy * t);
+				var cover = Math.Clamp( reach - MathF.Sqrt( ex * ex + ey * ey ), 0f, 1f );
+				if ( cover <= 0f )
+					continue;
+
+				var i = y * Width + x;
+				if ( z0 != float.MinValue && z0 + (z1 - z0) * t - bias > Depth[i] )
+					continue;
+
+				Pixels[i] = BlendLinear( Pixels[i], colour, alpha * cover );
+			}
+		}
+	}
+
+	/// <summary><see cref="Blend"/> done in linear light.</summary>
+	public static int BlendLinear( int under, int over, float alpha )
+	{
+		alpha = Math.Clamp( alpha, 0f, 1f );
+		static float Lin( int c ) { var v = c / 255f; return v <= 0.04045f ? v / 12.92f : MathF.Pow( (v + 0.055f) / 1.055f, 2.4f ); }
+		static int Enc( float v ) { v = Math.Clamp( v, 0f, 1f ); v = v <= 0.0031308f ? v * 12.92f : 1.055f * MathF.Pow( v, 1f / 2.4f ) - 0.055f; return (int)(v * 255f + 0.5f); }
+		int Mix( int shift ) => Enc( Lin( (under >> shift) & 0xFF ) + (Lin( (over >> shift) & 0xFF ) - Lin( (under >> shift) & 0xFF )) * alpha );
+		return Rgb( Mix( 16 ), Mix( 8 ), Mix( 0 ) );
+	}
+
 	void PlotZ( int x, int y, int colour, float alpha, float z, float bias )
 	{
 		if ( x < 0 || y < 0 || x >= Width || y >= Height )

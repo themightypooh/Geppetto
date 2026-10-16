@@ -18,8 +18,11 @@ public sealed class TurnaroundOptions
 	/// <summary>Degrees the camera looks down from level.</summary>
 	public float Elevation = 12f;
 
-	/// <summary>Pixels rendered per output pixel along each side (1 fast, 2 smooth edges).</summary>
-	public int Supersample = 2;
+	/// <summary>Shading samples per output pixel along each side. 1 is enough: edges come from
+	/// <see cref="Coverage"/>. Raise it for strands thinner than a pixel, or for a smoother occlusion.</summary>
+	public int Supersample = 1;
+	/// <summary>Antialiasing samples per pixel (<see cref="ShadeScene.Coverage"/>): 16 is clean, 64 for a final.</summary>
+	public int Coverage = 16;
 
 	/// <summary>Only this body, by id. Null renders every visible body.</summary>
 	public string FocusBodyId;
@@ -169,6 +172,7 @@ public static class Turnaround
 			return Fail( result, $"There is no body '{options.FocusBodyId}' to render. Pick a body that is in the model, or render the whole model." );
 
 		var scene = Scene( studio, options.Clay, options.FocusBodyId, options.Fallback, result.Log );
+		scene.Coverage = options.Coverage;
 
 		if ( scene.Items.Count == 0 )
 			return Fail( result, focus is null

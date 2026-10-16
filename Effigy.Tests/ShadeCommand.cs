@@ -12,7 +12,7 @@ namespace Effigy.Tests;
 /// <see cref="ShadedRender"/>. Same arguments, same file names, so the scripts swap one line.
 ///
 ///   effigy shade model.obj outdir [size=1024] [views=front,quarter,side,back,top,close] [turn=8]
-///                [cam=x,y,z look=x,y,z lens=85] [clay=1] [silhouette=0] [ground=0] [ss=2] [sheet=0]
+///                [cam=x,y,z look=x,y,z lens=85] [clay=1] [silhouette=0] [ground=0] [ss=1] [aa=16] [specaa=1] [sheet=0]
 ///                [tex=0] [assets=dir] [style=studio] [ibl=0|1] [bloom=0.6] [tonemap=legacy|aces|agx|punchy]
 ///                [vignette=0.3] [floorrefl=0.15] [contact=-1]
 ///
@@ -38,7 +38,7 @@ public static class ShadeCommand
 {
 	public static int Run( string[] a )
 	{
-		if ( a.Length < 3 ) { Console.Error.WriteLine( "effigy shade model.obj outdir [size=] [views=] [turn=] [cam= look= lens=] [clay=1] [silhouette=0] [ground=0] [ss=2] [sheet=0] [style=studio] [bloom=] [tonemap=agx|punchy|aces] [vignette=] [floorrefl=] [ibl=0|1]" ); return 1; }
+		if ( a.Length < 3 ) { Console.Error.WriteLine( "effigy shade model.obj outdir [size=] [views=] [turn=] [cam= look= lens=] [clay=1] [silhouette=0] [ground=0] [ss=1] [aa=16] [specaa=1] [sheet=0] [style=studio] [bloom=] [tonemap=agx|punchy|aces] [vignette=] [floorrefl=] [ibl=0|1]" ); return 1; }
 
 		var objPath = a[1]; var outDir = a[2];
 		var opts = a.Skip( 3 ).Select( s => s.Split( '=', 2 ) ).Where( p => p.Length == 2 ).ToDictionary( p => p[0], p => p[1] );
@@ -47,7 +47,7 @@ public static class ShadeCommand
 		static Vec3 V( string s ) { var p = s.Split( ',' ); return new Vec3( F( p[0] ), F( p[1] ), F( p[2] ) ); }
 
 		var size = int.Parse( O( "size", "1024" ) );
-		var ss = Math.Clamp( int.Parse( O( "ss", "2" ) ), 1, 4 );
+		var ss = Math.Clamp( int.Parse( O( "ss", "1" ) ), 1, 4 );
 		var views = O( "views", "front,quarter,side,back,top,close" ).Split( ',', StringSplitOptions.RemoveEmptyEntries ).ToList();
 		var clay = O( "clay", "0" ) == "1";
 		var name = Path.GetFileNameWithoutExtension( objPath );
@@ -78,6 +78,8 @@ public static class ShadeCommand
 		};
 		// The finished look (studio IBL, AO, contact shadows, bloom, AgX, vignette); each piece can be set alone too.
 		if ( O( "style", "plain" ) == "studio" ) scene.Portfolio();
+		if ( opts.ContainsKey( "aa" ) ) scene.Coverage = Math.Clamp( int.Parse( opts["aa"] ), 1, 64 );
+		if ( opts.ContainsKey( "specaa" ) ) scene.SpecularAa = opts["specaa"] != "0";
 		if ( opts.ContainsKey( "bloom" ) ) scene.Bloom = F( opts["bloom"] );
 		if ( opts.ContainsKey( "vignette" ) ) scene.Vignette = F( opts["vignette"] );
 		if ( opts.ContainsKey( "floorrefl" ) ) scene.FloorReflection = F( opts["floorrefl"] );
