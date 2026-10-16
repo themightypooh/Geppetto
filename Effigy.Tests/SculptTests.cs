@@ -1572,8 +1572,10 @@ public static class SculptTests
 		Check( "and the two are mirror images, not merely both non-zero",
 			MathF.Abs( right.x + left.x ) < 0.05f, $"{right.x:0.###} vs {left.x:0.###}" );
 
-		Check( "the +v flank leans towards +v", far.y > 0.05f, $"y {far.y:0.###}" );
-		Check( "the -v flank leans the other way", near.y < -0.05f, $"y {near.y:0.###}" );
+		// Green is s&box's: +y is UP the image, towards smaller v (BakeOptions.FlipGreen), so the
+		// flank at larger v leans down the image and reads negative.
+		Check( "the +v flank leans towards +v (down the image, so -green)", far.y < -0.05f, $"y {far.y:0.###}" );
+		Check( "the -v flank leans the other way", near.y > 0.05f, $"y {near.y:0.###}" );
 
 		// A map that came out flat would pass every sign test above by accident if the thresholds
 		// were loose, so say plainly that the thing is not flat.

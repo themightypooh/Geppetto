@@ -100,11 +100,12 @@ public static class BooleanFeatureTests
 
 			var op = studio.Add( new BooleanFeature() );
 			op.Operation.Index = 1; // Subtract
+			op.Method.Index = BooleanFeature.MethodExact; // Auto would fall back to the voxel boolean
 			op.Tools.BodyIds.Add( b.Id + "b0" );
 
 			studio.Rebuild();
 
-			Check( "with no boolean installed it says so rather than doing nothing",
+			Check( "asked for Exact with no boolean installed it says so rather than doing nothing",
 				op.Error is not null, op.Error ?? "silent" );
 
 			Check( "and points at the editor, where there is one",

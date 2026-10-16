@@ -143,7 +143,7 @@ public static class AcceptsTests
 			// Extrude joined this list when a mesh face became a profile it can pull. It used to be
 			// pinned here as deliberately ABSENT, with a note saying that the day it changed should
 			// be a day something said so out loud — this is that, kept rather than deleted.
-			nameof( ExtrudeFeature ), nameof( MoveFaceFeature ),
+			nameof( ExtrudeFeature ), nameof( MoveFaceFeature ), nameof( DeleteFaceFeature ),
 		} )
 		{
 			Report.Check( $"{expected} is offered a face", consumers.Contains( expected ),

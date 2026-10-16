@@ -30,6 +30,9 @@
 
     <!-- Marionette's cubic curve, so the kernel's copy can be checked against it. Engine-free for that reason. -->
     <Compile Include="../Code/RigControl/RigCurve.cs" />
+
+    <!-- Marionette's spring presets as numbers, so a live soft chain is pinned to the bake's. -->
+    <Compile Include="../Code/RigControl/RigSpringPresets.cs" />
   </ItemGroup>
 
 </Project>

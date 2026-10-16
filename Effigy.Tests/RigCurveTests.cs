@@ -38,8 +38,11 @@ public static class RigCurveTests
 		TestChainOfOneAims();
 		TestChainOfTwoIsTheTwoBoneSolve();
 		TestLongChainReaches();
+		TestFabrikSpreadsTheBend();
 		TestWeightAndGoalRotation();
 		TestClipSolvesItsGoals();
+		TestStretchReachesPastTheChain();
+		TestGoalFollowsAnObject();
 
 		Section( "riganim: scale in the export" );
 		TestScaleIsBakedApart();
@@ -301,6 +304,47 @@ public static class RigCurveTests
 		Check( "a chain longer than the skeleton is refused", ChainIk.Apply( s, world, new RigIk { EndBone = "end", ChainLength = 9 }, Goal( target ) ) is null );
 	}
 
+	static void TestFabrikSpreadsTheBend()
+	{
+		var s = Chain();
+		var world = SoftSolver.BindPose( s );
+		var target = new Vec3( 20, 22, 0 );
+		var fabrik = ChainIk.Apply( s, world, new RigIk { EndBone = "end", ChainLength = 4, Iterations = 30, GoalRotation = false, Fabrik = true }, Goal( target ) );
+		var ccd = ChainIk.Apply( s, world, new RigIk { EndBone = "end", ChainLength = 4, Iterations = 30, GoalRotation = false }, Goal( target ) );
+
+		Check( "FABRIK reaches the goal", (fabrik[s.IndexOf( "end" )].Origin - target).Length < 0.05f, fabrik[s.IndexOf( "end" )].Origin.ToString() );
+		Check( "keeping every bone its length", new[] { "b1", "b2", "b3", "end" }.All( b => Near( Length( fabrik, s, b ), 10f, 1e-3f ) ) );
+		Check( "and the root where it was", fabrik[0].Origin.AlmostEquals( world[0].Origin ) );
+		Check( "and the bone below the end carried with it", Near( Length( fabrik, s, "tip" ), 2f, 1e-3f ) );
+
+		// The bend between consecutive bones, root to tip. CCD puts most of it near the end; FABRIK
+		// spreads it, so its largest single bend is smaller.
+		float MaxBend( Xform[] w )
+		{
+			var names = new[] { "b0", "b1", "b2", "b3", "end" };
+			var most = 0f;
+
+			for ( var k = 1; k < names.Length - 1; k++ )
+			{
+				var a = (w[s.IndexOf( names[k] )].Origin - w[s.IndexOf( names[k - 1] )].Origin).Normal;
+				var b = (w[s.IndexOf( names[k + 1] )].Origin - w[s.IndexOf( names[k] )].Origin).Normal;
+				most = MathF.Max( most, MathF.Acos( Math.Clamp( Vec3.Dot( a, b ), -1f, 1f ) ) );
+			}
+
+			return most;
+		}
+
+		Check( "FABRIK's sharpest joint is gentler than CCD's", MaxBend( fabrik ) < MaxBend( ccd ), $"fabrik {MaxBend( fabrik ):0.###} ccd {MaxBend( ccd ):0.###}" );
+
+		var far = new Vec3( 0, 80, 0 );
+		var straight = ChainIk.Apply( s, world, new RigIk { EndBone = "end", ChainLength = 4, GoalRotation = false, Fabrik = true }, Goal( far ) );
+		Check( "out of reach, FABRIK lies straight toward the goal", (straight[s.IndexOf( "end" )].Origin - new Vec3( 0, 40, 0 )).Length < 0.01f, straight[s.IndexOf( "end" )].Origin.ToString() );
+
+		Check( "a rig's Solver reads by name", RigIk.ReadRig( "{\"IkConstraints\":[{\"TargetBone\":\"a\",\"Solver\":\"Fabrik\"}]}" )[0].Fabrik );
+		Check( "and by ordinal", RigIk.ReadRig( "{\"IkConstraints\":[{\"TargetBone\":\"a\",\"Solver\":1}]}" )[0].Fabrik );
+		Check( "and is CCD when absent", !RigIk.ReadRig( "{\"IkConstraints\":[{\"TargetBone\":\"a\"}]}" )[0].Fabrik );
+	}
+
 	static void TestWeightAndGoalRotation()
 	{
 		var s = Chain();
@@ -333,6 +377,80 @@ public static class RigCurveTests
 		clip.Ik = new List<RigIk> { new() { EndBone = "end", Live = false } };
 		var baked = RigAnimFile.ModelSpace( s, clip.SampleLocal( s, 10 ) );
 		Check( "unless the rig says the constraint is not live", baked[s.IndexOf( "end" )].Origin.AlmostEquals( new Vec3( 40, 0, 0 ) ), baked[s.IndexOf( "end" )].Origin.ToString() );
+	}
+
+	static void TestStretchReachesPastTheChain()
+	{
+		var s = Chain();
+		var world = SoftSolver.BindPose( s );
+		var far = new Vec3( 0, 50, 0 );   // the four bones are 40 long
+
+		foreach ( var (label, ik) in new[]
+		{
+			("CCD", new RigIk { EndBone = "end", ChainLength = 4, Iterations = 30, GoalRotation = false, MaxStretch = 1.5f }),
+			("FABRIK", new RigIk { EndBone = "end", ChainLength = 4, Iterations = 30, GoalRotation = false, MaxStretch = 1.5f, Fabrik = true }),
+		} )
+		{
+			var solved = ChainIk.Apply( s, world, ik, Goal( far ) );
+			var end = solved[s.IndexOf( "end" )].Origin;
+
+			Check( $"stretch: {label} reaches a goal past the chain's length", (end - far).Length < 0.05f, end.ToString() );
+			Check( $"stretch: {label} lengthens every bone by the same factor", new[] { "b1", "b2", "b3", "end" }.All( b => Near( Length( solved, s, b ), 12.5f, 0.05f ) ) );
+			Check( $"stretch: {label} leaves the bone below the end its own length", Near( Length( solved, s, "tip" ), 2f, 1e-3f ) );
+			Check( $"stretch: {label} scales no bone", new[] { "b0", "b1", "b2", "b3", "end" }.All( b => Near( solved[s.IndexOf( b )].X.Length, 1f, 1e-4f ) ) );
+		}
+
+		var two = ChainIk.Apply( s, world, new RigIk { EndBone = "end", ChainLength = 2, GoalRotation = false, MaxStretch = 2f }, Goal( new Vec3( 20, 25, 0 ) ) );
+		Check( "stretch: a two-bone chain reaches past its length", (two[s.IndexOf( "end" )].Origin - new Vec3( 20, 25, 0 )).Length < 0.01f, two[s.IndexOf( "end" )].Origin.ToString() );
+
+		var capped = ChainIk.Apply( s, world, new RigIk { EndBone = "end", ChainLength = 4, GoalRotation = false, MaxStretch = 1.25f, Fabrik = true }, Goal( new Vec3( 0, 80, 0 ) ) );
+		Check( "stretch: capped at Max Stretch, then pointed at", (capped[s.IndexOf( "end" )].Origin - new Vec3( 0, 50, 0 )).Length < 0.01f, capped[s.IndexOf( "end" )].Origin.ToString() );
+
+		var near = new Vec3( 15, 20, 5 );
+		var within = ChainIk.Apply( s, world, new RigIk { EndBone = "end", ChainLength = 4, Iterations = 30, GoalRotation = false, MaxStretch = 2f }, Goal( near ) );
+		var plain = ChainIk.Apply( s, world, new RigIk { EndBone = "end", ChainLength = 4, Iterations = 30, GoalRotation = false }, Goal( near ) );
+		Check( "stretch: a goal in reach does not stretch", Enumerable.Range( 0, s.Count ).All( b => within[b].Origin.AlmostEquals( plain[b].Origin, 1e-5f ) ) );
+
+		var unstretched = ChainIk.Apply( s, world, new RigIk { EndBone = "end", ChainLength = 4, GoalRotation = false, Fabrik = true }, Goal( far ) );
+		Check( "stretch: off by default", Near( Length( unstretched, s, "b1" ), 10f, 1e-3f ) );
+
+		Check( "stretch: read from a rig", Near( RigIk.ReadRig( "{\"IkConstraints\":[{\"TargetBone\":\"a\",\"MaxStretch\":1.75}]}" )[0].MaxStretch, 1.75f ) );
+		Check( "stretch: an older rig reads back as none", RigIk.ReadRig( "{\"IkConstraints\":[{\"TargetBone\":\"a\"}]}" )[0].MaxStretch == 1f );
+	}
+
+	static void TestGoalFollowsAnObject()
+	{
+		var s = Chain();
+
+		// A pipe at (30,10,0) turned 90 degrees of yaw, and slid 4 along y by frame 10. The goal is
+		// keyed 2 along the pipe's own x - which, turned, is +y in the clip.
+		var json = Clip(
+			("end", "IkGoal", new[] { Key( 0, new Vec3( 2, 0, 0 ), Quat.Identity, "Linear" ) }),
+			("pipe", "Part", new[] { Key( 0, new Vec3( 30, 10, 0 ), Quat.FromAngles( 0, 90, 0 ), "Linear" ), Key( 10, new Vec3( 30, 14, 0 ), Quat.FromAngles( 0, 90, 0 ), "Linear" ) }) );
+		json = json.Insert( json.Length - 1, ",\"IkGoalAnchors\":[{\"Bone\":\"end\",\"Space\":\"Object\",\"Object\":\"pipe\"}]" +
+			",\"Objects\":[{\"Name\":\"pipe\",\"Position\":\"0,0,0\",\"Rotation\":\"0,0,0\",\"Scale\":1,\"Parts\":[]}]" +
+			",\"ReferenceProps\":[{\"Name\":\"rail\",\"Position\":\"5,6,7\",\"Rotation\":\"0,90,0\",\"Scale\":2}]" );
+
+		var clip = RigAnimFile.Read( json );
+		var start = clip.IkGoalAt( "end", 0 )?.Position ?? Vec3.Zero;
+		var later = clip.IkGoalAt( "end", 10 )?.Position ?? Vec3.Zero;
+
+		Check( "goal space: an object goal is keyed on the object", start.AlmostEquals( new Vec3( 30, 12, 0 ), 1e-4f ), start.ToString() );
+		Check( "goal space: and moves with it", later.AlmostEquals( new Vec3( 30, 16, 0 ), 1e-4f ), later.ToString() );
+
+		var hand = RigAnimFile.ModelSpace( s, clip.SampleLocal( s, 10 ) )[s.IndexOf( "end" )].Origin;
+		Check( "goal space: the hand follows the pipe when sampled", (hand - new Vec3( 30, 16, 0 )).Length < 1e-2f, hand.ToString() );
+
+		var rail = clip.PlacementAt( "rail", 0 );
+		Check( "goal space: a reference prop is placed from its angles and scale",
+			rail is { } r && r.Position.AlmostEquals( new Vec3( 5, 6, 7 ) ) && r.Rotation.Rotate( new Vec3( 1, 0, 0 ) ).AlmostEquals( new Vec3( 0, 1, 0 ), 1e-5f ) && Near( r.Scale.x, 2f ) );
+
+		Check( "goal space: a goal on an object the clip lacks is not solved", RigAnimFile.Read( json.Replace( "\"Object\":\"pipe\"", "\"Object\":\"gone\"" ) ).IkGoalAt( "end", 0 ) is null );
+
+		var model = RigAnimFile.Read( Clip( ("end", "IkGoal", new[] { Key( 0, new Vec3( 2, 0, 0 ), Quat.Identity, "Linear" ) }) ) );
+		Check( "goal space: a clip without spaces keys goals in model space", model.IkGoalAt( "end", 0 )?.Position.AlmostEquals( new Vec3( 2, 0, 0 ) ) == true );
+
+		Check( "goal space: the order is Marionette's", (int)RigGoalSpace.Model == 0 && (int)RigGoalSpace.World == 1 && (int)RigGoalSpace.Object == 2 );
 	}
 
 	// --- scale -----------------------------------------------------------------------------------

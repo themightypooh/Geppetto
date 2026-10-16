@@ -33,5 +33,27 @@ done
 [ -n "$py" ] || { echo "no working python for the editor lint" >&2; exit 1; }
 "$py" "$root/tools/lint-editor-usings.py"
 
+# The editor assembly itself, compiled headlessly against s&box's own libraries. The lint above
+# catches one kind of mistake; this catches all of them - a broken editor build used to surface
+# only as a red line in s&box's log, and only once the editor was focused and tried to hot-reload.
+# The project file is the one s&box generates for IDEs (gitignored, machine-specific paths), so it
+# exists only where s&box has opened this project. Without it - a fresh cloud container - the step
+# is skipped and says so, rather than failing a suite that has no editor to build.
+editor_proj="$root/Editor/geppetto.editor.csproj"
+engine_ref=$( sed -n 's|.*Reference Include="\([^"]*Sandbox\.Engine\.dll\)".*|\1|p' "$editor_proj" 2>/dev/null | head -n 1 )
+
+if [ -f "$editor_proj" ] && [ -n "$engine_ref" ] && [ -f "$root/Editor/$engine_ref" ]; then
+	echo "building the editor assembly headlessly"
+	editor_out=$( mktemp -d )
+	if ! dotnet build "$editor_proj" -c Release -o "$editor_out" -nologo -clp:ErrorsOnly; then
+		rm -rf "$editor_out"
+		echo "the editor assembly does not compile - fix the errors above" >&2
+		exit 1
+	fi
+	rm -rf "$editor_out"
+else
+	echo "skipping the editor build: no s&box-generated Editor/geppetto.editor.csproj (open the project in s&box once to make it)"
+fi
+
 cd "$root/Effigy.Tests"
 exec dotnet run --  "${1:-out}"

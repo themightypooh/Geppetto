@@ -35,6 +35,113 @@ public static class SketchEditTests
 
 		Report.Section( "sketch mirror" );
 		TestMirror();
+
+		Report.Section( "sketch point merge" );
+		TestMergePoints();
+
+		Report.Section( "sketch use edge reasons" );
+		TestUseEdgeReasons();
+	}
+
+	/// <summary>
+	/// Dropping a dragged end onto another point has to make them ONE point, or a corner that
+	/// looks closed is two loose ends to ProfileFinder, which walks by index.
+	/// </summary>
+	static void TestMergePoints()
+	{
+		// Three sides of a square, drawn with the last corner as a separate point sitting exactly on
+		// the first - what a drag that snapped onto the start leaves behind.
+		var sketch = new Sketch();
+		var a = sketch.AddPoint( 0f, 0f );
+		var b = sketch.AddPoint( 4f, 0f );
+		var c = sketch.AddPoint( 4f, 4f );
+		var d = sketch.AddPoint( 0f, 4f );
+		var a2 = sketch.AddPoint( 0f, 0f );
+
+		sketch.Add( new SketchLine( a, b ) );
+		sketch.Add( new SketchLine( b, c ) );
+		sketch.Add( new SketchLine( c, d ) );
+		var last = sketch.Add( new SketchLine( d, a2 ) );
+		sketch.AddConstraint( last, SketchConstraintKind.Vertical );
+		sketch.AddConstraint( SketchConstraintKind.Coincident, a, a2 );
+
+		Report.Check( "two points on top of each other are not a closed loop",
+			ProfileFinder.Find( sketch ).Profiles.Count == 0 );
+
+		var ok = SketchEdit.MergePoints( sketch, a, a2, out var kept, out var error );
+
+		Report.Check( "the dropped point merges", ok, error );
+		Report.Check( "and leaves the point list", sketch.Points.Count == 4, $"{sketch.Points.Count} points" );
+		Report.Check( "the kept point keeps its index", kept == a, $"kept {kept}" );
+		Report.Check( "the line that ended on it now ends on the kept point", last.End == a, $"end {last.End}" );
+		Report.Check( "the coincidence between the two goes - it asks nothing now",
+			sketch.Constraints.All( k => k.Kind != SketchConstraintKind.Coincident ) );
+		Report.Check( "the vertical on the curve survives",
+			sketch.Constraints.Any( k => k.Kind == SketchConstraintKind.Vertical ) );
+		Report.Check( "and the square closes", ProfileFinder.Find( sketch ).Profiles.Count == 1 );
+
+		// Renumbering: a point past the dropped one moves down, and a curve on it follows.
+		var shifted = new Sketch();
+		var p0 = shifted.AddPoint( 0f, 0f );
+		var p1 = shifted.AddPoint( 1f, 0f );
+		var p2 = shifted.AddPoint( 0f, 0f );
+		var p3 = shifted.AddPoint( 5f, 5f );
+		var tail = shifted.Add( new SketchLine( p2, p3 ) );
+		shifted.Add( new SketchLine( p0, p1 ) );
+
+		Report.Check( "keeping the later point works too",
+			SketchEdit.MergePoints( shifted, p2, p0, out var keptLater, out _ )
+				&& keptLater == 1 && tail.Start == 1 && tail.End == 2
+				&& (shifted.Points[tail.End] - new Vec2( 5f, 5f )).Length < 1e-6f,
+			$"kept {keptLater}, tail {tail.Start}-{tail.End}" );
+
+		// Refusals, each before anything changes.
+		var line = new Sketch();
+		var s = line.AddPoint( 0f, 0f );
+		var e = line.AddPoint( 3f, 0f );
+		line.Add( new SketchLine( s, e ) );
+
+		Report.Check( "the two ends of one line are refused",
+			!SketchEdit.MergePoints( line, s, e, out _, out var lineError ) && lineError is not null
+				&& line.Points.Count == 2 );
+
+		var held = new Sketch();
+		var h0 = held.AddPoint( 0f, 0f );
+		var h1 = held.AddPoint( 2f, 0f );
+		held.AddConstraint( SketchConstraintKind.Distance, h0, h1, 2f );
+
+		Report.Check( "a dimension holding them apart is refused",
+			!SketchEdit.MergePoints( held, h0, h1, out _, out var heldError ) && heldError is not null
+				&& held.Constraints.Count == 1 );
+	}
+
+	/// <summary>Use says why it added nothing, and adds nothing - not even a point - when it refuses.</summary>
+	static void TestUseEdgeReasons()
+	{
+		var reference = new SketchReference();
+		reference.Points.Add( new Vec2( 0f, 0f ) );
+		reference.Points.Add( new Vec2( 4f, 0f ) );
+		reference.Points.Add( new Vec2( 4f, 0.000001f ) );
+		reference.Edges.Add( (0, 1) );
+		reference.Edges.Add( (1, 2) );
+
+		var sketch = new Sketch();
+
+		Report.Check( "an edge comes in as construction when asked",
+			reference.UseEdge( sketch, 0, true, out var used ) == UseEdgeResult.Added && used.Construction );
+
+		Report.Check( "the same edge again is already in the sketch",
+			reference.UseEdge( sketch, 0, false, out _ ) == UseEdgeResult.AlreadyInSketch );
+
+		var points = sketch.Points.Count;
+
+		Report.Check( "a too-short edge says so",
+			reference.UseEdge( sketch, 1, false, out _ ) == UseEdgeResult.TooShort );
+
+		Report.Check( "and leaves no stray point behind", sketch.Points.Count == points );
+
+		Report.Check( "an index off the end is no such edge",
+			reference.UseEdge( sketch, 9, false, out _ ) == UseEdgeResult.NoSuchEdge );
 	}
 
 	static void TestFillet()

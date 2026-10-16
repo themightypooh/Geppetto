@@ -135,8 +135,9 @@ public static class DmxGrammarTests
 		// any future rename self-checking, whatever the names become.
 		var declared = vertexData.Array( "vertexFormat" ).Select( f => f.Value ).ToList();
 
-		Report.Check( "vertexFormat declares the five fields a skinned mesh needs",
-			declared.Count == 5, string.Join( ", ", declared ) );
+		// Five a skinned mesh needs, plus tangent$0: the bake's own tangents (NormalBake.ExportTangents).
+		Report.Check( "vertexFormat declares the five fields a skinned mesh needs, plus tangents",
+			declared.Count == 6 && declared.Contains( "tangent$0" ), string.Join( ", ", declared ) );
 
 		Report.Check( "every declared field exists as an array under that exact name",
 			declared.All( f => vertexData.Array( f ).Count > 0 ),
@@ -204,9 +205,9 @@ public static class DmxGrammarTests
 			normalIndices.Count == positionIndices.Count && uvIndices.Count == positionIndices.Count,
 			$"{positionIndices.Count}/{normalIndices.Count}/{uvIndices.Count}" );
 
-		// N-gons are the reason DMX is written at all. A cylinder's caps are n-gons; if the writer
-		// ever triangulates, the corner count above drops and this is the check that says why.
-		Report.Check( "the cap n-gons were not triangulated",
+		// The corners stay the mesh's own even when the faces go out as triangles: a triangle names
+		// three of its face's corners, so the corner count above is every face's full count.
+		Report.Check( "the fixture has n-gon caps, so the triangulation is exercised",
 			mesh.Faces.Any( f => f.Count > 4 ), "no face has more than four corners" );
 
 		var faceSet = FindFirst( root, "DmeFaceSet" );
@@ -220,8 +221,17 @@ public static class DmxGrammarTests
 		foreach ( var set in FindAll( root, "DmeFaceSet" ) )
 			terminators += set.Array( "faces" ).Count( f => f.Value == "-1" );
 
-		Report.Check( "the face sets cover every face",
-			terminators == mesh.FaceCount, $"{terminators} vs {mesh.FaceCount}" );
+		// Triangulated by default (the bake's split, NormalBake.FaceTriangles): n − 2 per face.
+		var triangles = mesh.Faces.Sum( f => f.Count - 2 );
+
+		Report.Check( "the face sets cover every face, as the bake's triangles",
+			terminators == triangles, $"{terminators} vs {triangles}" );
+
+		var quads = Parse( DmxWriter.Write( mesh, skeleton, modelName: "grammar", triangulate: false ), out _ );
+		var quadTerminators = FindAll( quads, "DmeFaceSet" ).Sum( set => set.Array( "faces" ).Count( f => f.Value == "-1" ) );
+
+		Report.Check( "and with triangulate off, one run per face, n-gons intact",
+			quadTerminators == mesh.FaceCount, $"{quadTerminators} vs {mesh.FaceCount}" );
 	}
 
 	static void TestVertexColor()
@@ -270,7 +280,10 @@ public static class DmxGrammarTests
 		Report.Check( "a painted vertex writes its paint colour", colors[0].Value == "255 0 0 255",
 			colors[0].Value );
 
-		Report.Check( "an unpainted vertex is white", colors[1].Value == "255 255 255 255",
+		// STRAIGHT RGBA, AS STORED. An unset vertex is (0, 0, 0, 0) and goes out as that: vertex
+		// colour is data now (FleshMaterial.PackMasks: R corruption, G wet, B veins, A AO), and the
+		// old white-for-unpainted Tint() destroyed every packed mask.
+		Report.Check( "an unset vertex is written as stored, not tinted white", colors[1].Value == "0 0 0 0",
 			colors[1].Value );
 
 		// The general guard, rather than two spot checks: an imported mesh carries arbitrary colour

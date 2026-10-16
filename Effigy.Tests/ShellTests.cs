@@ -38,6 +38,49 @@ public static class ShellTests
 
 		Section( "solidify: a surface gains thickness" );
 		TestSolidify();
+
+		Section( "shell: a voxel-skinned organic body" );
+		TestShellsAClosedBlob();
+	}
+
+	/// <summary>
+	/// The audit's case: Shell refused 0.2 in on a closed Blob 7-8 in across, claiming the shape
+	/// was too thin. It was the voxel skin's slivers and near-coplanar fans making the plane solve
+	/// ill-conditioned, not the shape. Checked by measuring the wall, not just by it not throwing.
+	/// </summary>
+	static void TestShellsAClosedBlob()
+	{
+		// The first is the exact shape that was refused ("face 1363 has no inner surface left").
+		foreach ( var (shapes, noise) in new[] { ("ellipsoid 0,0,0 4,3,2.5", 0f), ("sphere 0,0,0 3; sphere 2.5,0,0 2.5", 0.15f), ("sphere 0,0,0 3.5", 0f) } )
+		{
+			var studio = new PartStudio();
+			var r = BuildScript.Run( studio, $"add Blob name=B shapes=\"{shapes}\" blend=2 voxel=0.25 noise={noise.ToString( System.Globalization.CultureInfo.InvariantCulture )}\nadd Shell bodies=B thickness=0.2" );
+			var mesh = studio.Bodies.FirstOrDefault()?.Mesh;
+			Check( $"a 0.2 shell of a closed blob ({shapes}) builds", r.Ok, r.ToString() );
+
+			if ( !r.Ok || mesh is null )
+				continue;
+
+			// The inner sheet is the second half of the vertices; each should sit 0.2 from the outer.
+			var half = mesh.VertexCount / 2;
+			var outer = new PolyMesh();
+			foreach ( var p in mesh.Positions.Take( half ) ) outer.AddVertex( p );
+			foreach ( var f in mesh.Faces )
+				if ( f.Indices.All( i => i < half ) ) outer.AddFace( (int[])f.Indices.Clone(), (Vec2[])f.UVs.Clone(), f.Material );
+
+			var bvh = MeshBVH.Build( outer );
+			// Faces with area only: the Blob's skin can carry a zero-size closed speck (six faces on
+			// coincident vertices - the "face 1363" the old refusal named), whose inner copy is the same speck.
+			var used = mesh.Faces.Where( f => mesh.FaceArea( f ) > 1e-6f ).SelectMany( f => f.Indices ).Where( i => i >= half ).Distinct();
+			var gaps = used.Select( i => bvh.NearestSurface( outer, mesh.Positions[i], 2f )?.Distance ?? 2f ).OrderBy( d => d ).ToList();
+			var median = gaps[gaps.Count / 2];
+			Check( "and the wall measures 0.2 (median within 10%)", MathF.Abs( median - 0.2f ) < 0.02f, $"median {median:0.###}" );
+			Check( "nowhere thinner than half or thicker than double", gaps[0] > 0.1f && gaps[^1] < 0.4f, $"{gaps[0]:0.###}..{gaps[^1]:0.###}" );
+			Check( "and it is a closed, outward-facing solid", MeshValidator.Validate( mesh ).IsClosed && mesh.SignedVolume() > 0f, $"{mesh.SignedVolume()}" );
+		}
+
+		var thick = BuildScript.Run( new PartStudio(), "add Blob name=B shapes=\"ellipsoid 0,0,0 4,3,2.5\" voxel=0.25\nadd Shell bodies=B thickness=3" );
+		Check( "a wall thicker than the blob is still refused", !thick.Ok && thick.Error.Contains( "thick" ), thick.ToString() );
 	}
 
 	/// <summary>

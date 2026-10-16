@@ -176,7 +176,9 @@ public static class PaintCanvasTests
 			sculpted.Positions[i] = new Vec3( p.x, p.y, p.z + 0.2f * t * t * (3f - 2f * t) );
 		}
 
-		var map = NormalBake.Bake( cage, sculpted, 32 );
+		// green=dx: the reference was captured before the default green became s&box's (2026-10-16),
+		// and this test is about the PNG writer, not the convention.
+		var map = NormalBake.Bake( cage, sculpted, 32, new BakeOptions { FlipGreen = true } );
 		var now = PngWriter.ToBytes( map.Rgb, map.Width, map.Height );
 		var before = Convert.FromBase64String( ReferenceRgbPng );
 

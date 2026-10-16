@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System;
 using System.IO;
 using System.Linq;
@@ -20,14 +21,18 @@ namespace Effigy.Tests;
 ///   effigy parts   out.png                             the part library on one sheet
 ///   effigy new     out.effigy                          an empty document
 ///   effigy wardrobe outdir [recipe] [size] [nodrape]   every garment recipe, rendered and checked
+///   effigy clothing outdir [recipe] [quick]            the whole Clothing bar, then the live cloth stepped
 ///   effigy take    dump.json clip.riganim [options]    play a clip on a dumped model, count crossings, render stills
+///   effigy sim clip.riganim [model=dump.json|tentacle|citizen] [options]   play a clip headlessly and lint its motion
+///   effigy simrig tentacle|citizen out.json [cables=5] [bones=12]        a stand-in model dump for take/sim
+///   effigy key clip.riganim bone goal|fk "frame:x,y,z;.." [options]    key a clip from targets (MarionetteCli)
 ///   effigy fbxdump bones.json source.fbx out.json      a model dump from its source FBX, on an engine skeleton
 ///   effigy fbxskin dump.json source.fbx [out.json]     give a dump's render meshes the FBX's skin weights
 /// </summary>
 public static class EffigyCli
 {
 	public static bool Handles( string verb ) =>
-		verb is "render" or "describe" or "measure" or "match" or "script" or "fix" or "parts" or "new" or "crop" or "wardrobe" or "take" or "fbxdump" or "fbxskin" or "shade";
+		verb is "render" or "describe" or "measure" or "match" or "script" or "fix" or "parts" or "new" or "crop" or "wardrobe" or "clothing" or "take" or "sim" or "simrig" or "key" or "fbxdump" or "fbxskin" or "fbxinfo" or "shade";
 
 	public static int Run( string[] args )
 	{
@@ -45,8 +50,13 @@ public static class EffigyCli
 				"new" => New( args ),
 				"crop" => Crop( args ),
 				"wardrobe" => Wardrobe( args ),
+				"clothing" => ClothingSim.Run( args ),
 				"take" => Take( args ),
+				"sim" => Sim( args ),
+				"simrig" => SimRigCommand( args ),
+				"key" => MarionetteCli.Key( args ),
 				"fbxdump" => FbxDump( args ),
+				"fbxinfo" => FbxInfo( args ),
 				"fbxskin" => FbxSkin( args ),
 				"shade" => ShadeCommand.Run( args ),
 				_ => Usage(),
@@ -61,7 +71,7 @@ public static class EffigyCli
 
 	static int Usage()
 	{
-		Console.WriteLine( "effigy render|shade|describe|measure|match|script|fix|parts|new|wardrobe|take|fbxdump|fbxskin … — see EffigyCli.cs" );
+		Console.WriteLine( "effigy render|shade|describe|measure|match|script|fix|parts|new|wardrobe|clothing|take|fbxdump|fbxskin … — see EffigyCli.cs" );
 		return 1;
 	}
 
@@ -255,6 +265,24 @@ public static class EffigyCli
 	/// the Check report and build time per recipe. The way to look at the whole clothing kernel
 	/// without the editor: effigy wardrobe outdir [recipe] [size] [nodrape]
 	/// </summary>
+	/// <summary>What is in a skinned FBX: meshes, bounds, bones. effigy fbxinfo file.fbx</summary>
+	static int FbxInfo( string[] a )
+	{
+		var scene = FbxScene.ReadFile( a[1] );
+
+		foreach ( var m in scene.Meshes )
+		{
+			var lo = new Vec3( m.Points.Min( p => p.x ), m.Points.Min( p => p.y ), m.Points.Min( p => p.z ) );
+			var hi = new Vec3( m.Points.Max( p => p.x ), m.Points.Max( p => p.y ), m.Points.Max( p => p.z ) );
+			Console.WriteLine( $"mesh {m.Name}: {m.Points.Length} points, {m.Polygons.Count} polys, skin {(m.Weights is null ? "no" : "yes")}, {lo} .. {hi}, materials {string.Join( ",", m.Materials )}" );
+		}
+
+		Console.WriteLine( $"{scene.BoneBind.Count} bones" );
+		foreach ( var (name, x) in scene.BoneBind.Take( 200 ) )
+			Console.WriteLine( $"  {name} <- {scene.BoneParent.GetValueOrDefault( name ) ?? "-"} at {x.Origin}" );
+		return 0;
+	}
+
 	static int Wardrobe( string[] a )
 	{
 		if ( a.Length < 2 ) { Console.Error.WriteLine( "effigy wardrobe outdir [recipe name] [size] [nodrape]" ); return 1; }
@@ -264,11 +292,29 @@ public static class EffigyCli
 
 		var only = a.Length > 2 && !int.TryParse( a[2], out _ ) && a[2] != "nodrape" ? a[2] : null;
 		var size = a.Skip( 2 ).Select( x => int.TryParse( x, out var n ) ? n : 0 ).FirstOrDefault( n => n > 0 );
+		if ( only is "openings" or "human" or "female" or "measure" ) only = null;
 		if ( size == 0 ) size = 512;
 		var drape = !a.Contains( "nodrape" );
 
 		var rig = CitizenSkeleton.Build();
 		var skin = SkinBlockout.Build( rig );
+
+		// "human" / "female": the s&box human from the citizen addon's source FBX instead of a
+		// body grown from the Citizen skeleton. See SboxHuman.
+		if ( a.Contains( "human" ) || a.Contains( "female" ) )
+		{
+			var fbx = SboxHuman.Find( female: a.Contains( "female" ) );
+
+			if ( fbx is null )
+			{
+				Console.Error.WriteLine( "No s&box install found - set SBOX_PATH to the sbox folder." );
+				return 1;
+			}
+
+			(skin, rig) = SboxHuman.Load( fbx );
+			Console.WriteLine( $"wearer: {Path.GetFileName( fbx )}, {skin.VertexCount} v, {rig.Count} bones" );
+		}
+
 		var objBytes = System.Text.Encoding.UTF8.GetBytes( ObjWriter.Write( skin, "wearer" ) );
 
 		var tile = 260;
@@ -302,12 +348,64 @@ public static class EffigyCli
 				continue;
 			}
 
+			if ( a.Contains( "measure" ) && names[k] == "T-shirt" )
+			{
+				var m = TeeMeasure.Measure( made.Mesh, skin, rig );
+				Console.WriteLine( $"    wearer chest round {m.BodyChest:0.0} in - size M is for 38-40 (Gildan 5000); widest between chest and hem {m.BodyWidest:0.0}, body under the hem {m.BodyHem:0.0}, bare arm at the sleeve end {m.BodyArm:0.0}" );
+				Console.WriteLine( $"    {"point of measure",-34} {"Effigy",7} {"real M",7}  diff" );
+				foreach ( var (name, ours, real) in TeeMeasure.Compare( m ) )
+					Console.WriteLine( $"    {name,-34} {ours,7:0.0} {real,7:0.0}  {ours - real:+0.0;-0.0}" );
+			}
+
+			if ( a.Contains( "openings" ) )
+			{
+				var sheet = MeshSolidify.OuterSheet( made.Mesh, out _ ) ?? made.Mesh;
+
+				var bdeg = new System.Collections.Generic.Dictionary<int, int>();
+				foreach ( var (ek, f) in sheet.BuildEdgeFaces() )
+					if ( f.Count == 1 ) { bdeg[ek.A] = bdeg.GetValueOrDefault( ek.A ) + 1; bdeg[ek.B] = bdeg.GetValueOrDefault( ek.B ) + 1; }
+				Console.WriteLine( $"    boundary verts {bdeg.Count}, pinched {bdeg.Count( kv => kv.Value != 2 )}, nonmanifold edges {sheet.BuildEdgeFaces().Count( kv => kv.Value.Count > 2 )}" );
+				foreach ( var kv in bdeg.Where( kv => kv.Value != 2 ).Take( 8 ) )
+					Console.WriteLine( $"      pinch {kv.Key} x{kv.Value} at {sheet.Positions[kv.Key]}" );
+
+				foreach ( var loop in GarmentTrim.OrderedBoundaryLoops( sheet ) )
+				{
+					var c = loop.Aggregate( Vec3.Zero, ( acc, vi ) => acc + sheet.Positions[vi] ) / loop.Count;
+					var round = 0f;
+					for ( var i = 0; i < loop.Count; i++ ) round += (sheet.Positions[loop[(i + 1) % loop.Count]] - sheet.Positions[loop[i]]).Length;
+					Console.WriteLine( $"    opening: {loop.Count} verts, {round:0.#} in round, centre {c}  x {loop.Min( vi => sheet.Positions[vi].x ):0.0}..{loop.Max( vi => sheet.Positions[vi].x ):0.0} y {loop.Min( vi => sheet.Positions[vi].y ):0.0}..{loop.Max( vi => sheet.Positions[vi].y ):0.0} z {loop.Min( vi => sheet.Positions[vi].z ):0.0}..{loop.Max( vi => sheet.Positions[vi].z ):0.0}" );
+				}
+			}
+
 			var wornOver = studio.Bodies.Where( b => !b.IsGarment ).Select( b => b.Mesh ).ToList();
 			var report = GarmentCheck.Run( made.Mesh, wornOver );
 			Console.WriteLine( $"{names[k],-12} {clock.ElapsedMilliseconds,6} ms  {made.Mesh.VertexCount,6} v  {report}{(problem is null ? "" : "  [" + problem + "]")}" );
 
 			var file = names[k].ToLowerInvariant().Replace( ' ', '_' ).Replace( "-", "" );
 			ModelRender.Named( studio.Bodies, "sheet", size, new RenderOptions { Wireframe = true, Labels = false }, null ).SavePng( Path.Combine( outDir, file + ".png" ) );
+
+			// Shaded, no wire, front / side / back / three-quarter in a row: the views a garment is
+			// judged from, at a size where the silhouette can be read.
+			var cell = size / 2;
+			var look = new Raster( cell * 4, cell );
+			var views = new[] { RenderView.Named( "front" ), RenderView.Named( "left" ), RenderView.Named( "back" ), RenderView.Turn( 35f, 12f ) };
+			for ( var v = 0; v < views.Length; v++ )
+			{
+				var shot = ModelRender.Render( studio.Bodies, views[v], cell, new RenderOptions { Wireframe = false, Grid = false, Axes = false, Labels = false, Margin = 0.04f } );
+				for ( var y = 0; y < cell; y++ )
+					Array.Copy( shot.Pixels, y * cell, look.Pixels, y * look.Width + v * cell, cell );
+			}
+			look.SavePng( Path.Combine( outDir, file + "_look.png" ) );
+
+			// The same four, framed on the garment, for the seams and the collar.
+			var close = new Raster( cell * 4, cell );
+			for ( var v = 0; v < views.Length; v++ )
+			{
+				var shot = ModelRender.Render( studio.Bodies, views[v], cell, new RenderOptions { Wireframe = true, Grid = false, Axes = false, Labels = false, Margin = 0.06f, FocusBodyId = made.Id } );
+				for ( var y = 0; y < cell; y++ )
+					Array.Copy( shot.Pixels, y * cell, close.Pixels, y * close.Width + v * cell, cell );
+			}
+			close.SavePng( Path.Combine( outDir, file + "_close.png" ) );
 
 			var front = ModelRender.Render( studio.Bodies, RenderView.Turn( 25f, 10f ), tile, new RenderOptions { Grid = false, Axes = false, Labels = false } );
 			var ox = (k % 5) * tile;
@@ -352,7 +450,7 @@ public static class EffigyCli
 		var clip = RigAnimFile.ReadFile( a[2] );
 
 		if ( Opt( "rig" ) is { } rigPath )
-			clip.Ik = RigIk.ReadRig( File.ReadAllText( rigPath ) );
+			clip.UseRig( File.ReadAllText( rigPath ) );
 		else if ( clip.IkGoalTracks.Any() )
 			Console.WriteLine( "clip keys IK goals but no rig= was given - solving them as two-bone chains bending up" );
 
@@ -477,5 +575,243 @@ public static class EffigyCli
 		StudioDocument.WriteFile( new PartStudio(), a[1] );
 		Console.WriteLine( a[1] );
 		return 0;
+	}
+
+	/// <summary>
+	/// A stand-in model, written as a dump: <c>tentacle</c> (a heap with cable arms and hands, the
+	/// Rigging shape) or <c>citizen</c> (Citizen's skeleton in tubes). Feeds <c>take</c> and <c>sim</c>
+	/// when there is no editor to dump a real model from.
+	/// </summary>
+	static int SimRigCommand( string[] a )
+	{
+		if ( a.Length < 3 ) { Console.Error.WriteLine( "effigy simrig tentacle|citizen out.json [cables=5] [bones=12] [length=90] [nofingers] [pipe=x,y,z:x,y,z:radius]" ); return 1; }
+
+		string Opt( string key ) => a.Skip( 3 ).FirstOrDefault( x => x.StartsWith( key + "=" ) )?[(key.Length + 1)..];
+		var dump = BuildSimRig( a[1], Opt, a.Contains( "nofingers" ) );
+
+		if ( dump is null ) { Console.Error.WriteLine( $"no stand-in called '{a[1]}' - tentacle or citizen" ); return 1; }
+
+		if ( Opt( "pipe" ) is { } pipe )
+		{
+			var p = pipe.Split( ':' );
+			if ( p.Length == 3 && ModelMeasure.TryParseVec3( p[0], out var from ) && ModelMeasure.TryParseVec3( p[1], out var to ) )
+				dump.Props.Add( SimRig.Pipe( "pipe", from, to, float.Parse( p[2], System.Globalization.CultureInfo.InvariantCulture ) ) );
+		}
+
+		dump.WriteFile( a[2] );
+		Console.WriteLine( $"{dump.Model}: {dump.Skeleton.Count} bones, {dump.Meshes.Sum( m => m.TriangleCount )} triangles, {dump.Props.Count} prop(s) -> {a[2]}" );
+		return 0;
+	}
+
+	static ModelDump BuildSimRig( string kind, Func<string, string> opt, bool noFingers )
+	{
+		int Int( string key, int fallback ) => opt( key ) is { } v ? int.Parse( v ) : fallback;
+		float Flt( string key, float fallback ) => opt( key ) is { } v ? float.Parse( v, System.Globalization.CultureInfo.InvariantCulture ) : fallback;
+
+		return kind switch
+		{
+			"tentacle" => SimRig.Tentacle( Int( "cables", 5 ), Int( "bones", 12 ), Flt( "length", 90f ), !noFingers ),
+			"citizen" => SimRig.Citizen(),
+			_ => null
+		};
+	}
+
+	/// <summary>
+	/// Play a Marionette clip headlessly and lint its motion (MotionLint): pops, sliding contacts,
+	/// unreached goals, stretch, drift in holds, the loop seam, overlap order. Optionally bake
+	/// secondary motion first and write the result, trace the motion to a picture, and run the take
+	/// check's clipping on the same model. Exit 0 clean, 3 when anything failed.
+	/// </summary>
+	static int Sim( string[] a )
+	{
+		if ( a.Length < 2 )
+		{
+			Console.Error.WriteLine( "effigy sim clip.riganim [model=dump.json|tentacle|citizen] [rig=x.ctrlrig] [substeps=2] [from=F] [to=F] "
+				+ "[contacts=glob,..] [chain=prefix,..] [loop] [pop=25] [slide=0.25] [reach=0.25] [ignore=glob,..|none] "
+				+ "[layer=clip.riganim[:additive|overlay][:loop][:offset=F][:rate=R][:weight=W][:mask=glob;glob],..] "
+				+ "[bake=root:preset[:loop][:rope][:pin=bone],..] [collide=bone:radius,..] [ground=z] [thickness=t] [wave=root:preset[:loop][:amp=][:period=][:wavelength=],..] [write=out.riganim] [trail=out.png] [trace=bone,..] [take]" );
+			return 1;
+		}
+
+		string Opt( string key ) => a.Skip( 2 ).FirstOrDefault( x => x.StartsWith( key + "=" ) )?[(key.Length + 1)..];
+		float? Num( string key ) => Opt( key ) is { } v ? float.Parse( v, System.Globalization.CultureInfo.InvariantCulture ) : null;
+		List<string> List( string key ) => (Opt( key ) ?? "").Split( ',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries ).ToList();
+
+		var json = File.ReadAllText( a[1] );
+		var clip = RigAnimFile.Read( json );
+
+		if ( Opt( "rig" ) is { } rigPath )
+			clip.UseRig( File.ReadAllText( rigPath ) );
+		else if ( clip.IkGoalTracks.Any() )
+			Console.WriteLine( "clip keys IK goals but no rig= was given - solving them as two-bone chains bending up" );
+
+		// The model: a dump, a named stand-in, or a guess from the clip.
+		var modelArg = Opt( "model" )
+			?? (clip.SourceModel.Contains( "citizen", StringComparison.OrdinalIgnoreCase ) ? "citizen"
+				: clip.Tracks.Any( t => t.Name.StartsWith( "cable" ) ) ? "tentacle" : null);
+
+		if ( modelArg is null ) { Console.Error.WriteLine( "no model= given and none can be guessed from the clip - pass a dump, or model=tentacle / model=citizen" ); return 1; }
+
+		var dump = File.Exists( modelArg ) ? ModelDump.ReadFile( modelArg ) : BuildSimRig( modelArg, Opt, false );
+
+		if ( dump is null ) { Console.Error.WriteLine( $"model '{modelArg}' is neither a dump file nor a stand-in (tentacle, citizen)" ); return 1; }
+
+		var skeleton = dump.Skeleton;
+		var missing = clip.BoneTracks.Where( t => t.Keys.Count > 0 && skeleton.IndexOf( t.Name ) < 0 ).Select( t => t.Name ).ToList();
+
+		Console.WriteLine( $"model {dump.Model}: {skeleton.Count} bones; clip {Path.GetFileName( a[1] )}: {clip.BoneTracks.Count()} bone tracks, {clip.IkGoalTracks.Count()} IK goals, frames 0..{clip.LastFrame} at {clip.FrameRate} fps" );
+
+		if ( missing.Count > 0 )
+			Console.WriteLine( $"  {missing.Count} track(s) name bones the model lacks and are ignored: {string.Join( ", ", missing.Take( 8 ) )}{(missing.Count > 8 ? " ..." : "")}" );
+
+		// Layers first - they are keys, and the bakes react to the sum: path[:additive|overlay][:loop][:offset=][:rate=][:weight=][:mask=a;b].
+		foreach ( var spec in List( "layer" ) )
+		{
+			var p = spec.Split( ':' );
+
+			if ( !File.Exists( p[0] ) ) { Console.Error.WriteLine( $"layer '{spec}': no file {p[0]}" ); return 1; }
+
+			var settings = new ClipLayer.Settings
+			{
+				Mode = p.Contains( "overlay" ) ? RigLayerMode.Overlay : RigLayerMode.Additive,
+				Loop = p.Contains( "loop" ),
+			};
+
+			foreach ( var kv in p.Skip( 1 ).Where( x => x.Contains( '=' ) ).Select( x => x.Split( '=', 2 ) ) )
+			{
+				if ( kv[0] == "mask" ) { settings.Mask = kv[1].Split( ';', StringSplitOptions.RemoveEmptyEntries ).ToList(); continue; }
+
+				var v = float.Parse( kv[1], System.Globalization.CultureInfo.InvariantCulture );
+				if ( kv[0] == "offset" ) settings.Offset = (int)MathF.Round( v );
+				else if ( kv[0] == "rate" ) settings.Rate = v;
+				else if ( kv[0] == "weight" ) settings.Weight = v;
+			}
+
+			var layered = ClipLayer.Merge( clip, RigAnimFile.ReadFile( p[0] ), settings, skeleton );
+
+			if ( !layered.Ok ) { Console.Error.WriteLine( $"layer '{spec}': {layered.Error}" ); return 1; }
+
+			Console.WriteLine( $"layered {Path.GetFileName( p[0] )} ({settings.Mode}{(settings.Loop ? ", loop" : "")}): {layered.Tracks} track(s), {layered.Keys} key(s)"
+				+ (layered.Notes.Count > 0 ? "; " + string.Join( "; ", layered.Notes ) : "") );
+		}
+
+		// What soft bones collide with: the rig's (rig=), plus collide=bone:radius,.. ground=z thickness=t.
+		if ( Opt( "collide" ) is { } || Opt( "ground" ) is { } || Opt( "thickness" ) is { } )
+		{
+			clip.Collision ??= new RigSoftCollision();
+			clip.Collision.Capsules.AddRange( RigSoftCollision.Parse( Opt( "collide" ) ) );
+
+			if ( Num( "ground" ) is { } floor ) clip.Collision.Ground = floor;
+			if ( Num( "thickness" ) is { } thick ) clip.Collision.Thickness = thick;
+		}
+
+		// Secondary bakes, in order: root:preset[:loop][:rope][:pin=bone]. Presets by key or index; or
+		// root:stiffness/damping/weight/angle. The rope preset (or :rope) keeps length and drapes.
+		foreach ( var spec in List( "bake" ) )
+		{
+			var p = spec.Split( ':' );
+			var preset = ChainSpring.FindPreset( p.Length > 1 ? p[1] : "loose" );
+			SoftBone soft;
+
+			if ( preset is not null )
+				soft = preset.ToSoftBone();
+			else if ( p.Length > 1 && p[1].Split( '/' ) is { Length: 4 } n )
+			{
+				var f = n.Select( x => float.Parse( x, System.Globalization.CultureInfo.InvariantCulture ) ).ToArray();
+				soft = new SoftBone { Stiffness = f[0], Damping = f[1], Weight = f[2], MaxAngle = f[3] };
+			}
+			else { Console.Error.WriteLine( $"bake '{spec}': preset is loose, heavy, springy, stiff, rope, 0-4, or stiffness/damping/weight/angle" ); return 1; }
+
+			var rope = preset?.Rope == true || p.Contains( "rope" );
+			var pin = p.FirstOrDefault( x => x.StartsWith( "pin=" ) )?[4..];
+			var baked = ClipBake.Secondary( clip, skeleton, p[0], soft, p.Contains( "loop" ), rope: rope, pin: pin );
+
+			if ( !baked.Ok ) { Console.Error.WriteLine( $"bake '{spec}': {baked.Error}" ); return 1; }
+
+			Console.WriteLine( $"baked {p[0]} ({preset?.Key ?? "custom"}{(rope ? ", rope" : "")}{(pin is null ? "" : $", pinned at {pin}")}): {baked.Bones} bone(s), {baked.Keys} key(s)"
+				+ (baked.SkippedForIk.Count > 0 ? $", skipped {baked.SkippedForIk.Count} posed by live IK" : "")
+				+ (clip.Collision?.Any == true ? $", colliding with {clip.Collision.Capsules.Count} capsule(s){(clip.Collision.Ground is { } g ? $" and the floor at z={g}" : "")}" : "")
+				+ (baked.Notes.Count > 0 ? "; " + string.Join( "; ", baked.Notes ) : "") );
+		}
+
+		// Waves: root:preset[:loop][:amp=12][:period=40][:wavelength=8], each chain its own phase.
+		foreach ( var spec in List( "wave" ) )
+		{
+			var p = spec.Split( ':' );
+			var settings = ChainWave.FindPreset( p.Length > 1 && !p[1].Contains( '=' ) && p[1] != "loop" ? p[1] : "writhe" );
+
+			if ( settings is null ) { Console.Error.WriteLine( $"wave '{spec}': preset is sway, writhe, wriggle or undulate" ); return 1; }
+
+			foreach ( var kv in p.Skip( 1 ).Where( x => x.Contains( '=' ) ).Select( x => x.Split( '=' ) ) )
+			{
+				var v = float.Parse( kv[1], System.Globalization.CultureInfo.InvariantCulture );
+				if ( kv[0] == "amp" ) settings.Amplitude = v;
+				else if ( kv[0] == "period" ) settings.Period = v;
+				else if ( kv[0] == "wavelength" ) settings.Wavelength = v;
+				else if ( kv[0] == "taper" ) settings.Taper = v;
+			}
+
+			settings.Offset = ChainWave.OffsetFor( p[0], settings.Period );
+			var waved = ClipBake.Wave( clip, skeleton, p[0], settings, p.Contains( "loop" ) );
+
+			if ( !waved.Ok ) { Console.Error.WriteLine( $"wave '{spec}': {waved.Error}" ); return 1; }
+
+			Console.WriteLine( $"waved {p[0]}: {waved.Bones} bone(s), {waved.Keys} key(s)" + (waved.SkippedForIk.Count > 0 ? $", skipped {waved.SkippedForIk.Count} posed by live IK" : "") );
+		}
+
+		if ( Opt( "write" ) is { } writePath )
+		{
+			File.WriteAllText( writePath, RigAnimWriter.Write( clip, json ) );
+			Console.WriteLine( $"wrote {writePath}" );
+		}
+
+		var lint = new MotionLint( skeleton, clip );
+		var options = new MotionLint.Options
+		{
+			Substeps = (int)(Num( "substeps" ) ?? 2),
+			From = Num( "from" ),
+			To = Num( "to" ),
+			Contacts = List( "contacts" ),
+			Chains = List( "chain" ),
+			Loop = a.Contains( "loop" ),
+		};
+
+		if ( Opt( "ignore" ) is { } ignore ) options.Ignore = ignore == "none" ? new List<string>() : List( "ignore" );
+		if ( Num( "pop" ) is { } pop ) options.PopDegrees = pop;
+		if ( Num( "slide" ) is { } slide ) options.SlideTolerance = slide;
+		if ( Num( "reach" ) is { } reach ) options.ReachTolerance = reach;
+
+		var result = lint.Run( options );
+		Console.WriteLine( result );
+		var clean = result.Clear;
+
+		if ( Opt( "trail" ) is { } trailPath )
+		{
+			var traced = List( "trace" ).Select( skeleton.IndexOf ).Where( i => i >= 0 ).ToList();
+
+			if ( traced.Count == 0 )
+				traced = MotionTrail.DefaultTraced( skeleton, clip );
+
+			var from = options.From ?? 0f;
+			var to = options.To ?? clip.LastFrame;
+			MotionTrail.Render( skeleton, lint.Pose, from, to, traced, title: Path.GetFileName( a[1] ) ).SavePng( trailPath );
+			Console.WriteLine( $"trail: {traced.Count} bone(s) traced -> {trailPath}" );
+		}
+
+		if ( a.Contains( "take" ) )
+		{
+			// A stand-in's tubes overlap at every joint by construction, so its self-crossings are
+			// noise; its props (a pipe to clamp) are still worth checking.
+			var standIn = !File.Exists( modelArg );
+
+			if ( standIn )
+				Console.WriteLine( "take: the stand-in's tube skin overlaps itself at the joints, so only props are checked" );
+
+			var take = new TakeAudit( dump, clip ).Run( new TakeAudit.Options { From = options.From, To = options.To, Self = !standIn, PartPairs = !standIn } );
+			Console.WriteLine( take );
+			clean &= take.Clear;
+		}
+
+		return clean ? 0 : 3;
 	}
 }

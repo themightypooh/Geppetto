@@ -47,6 +47,33 @@ public static class Program
 		if ( rawArgs.Length > 0 && EffigyCli.Handles( rawArgs[0] ) )
 			return EffigyCli.Run( rawArgs );
 
+		// A quick look at the cloth brushes: --clothtest out.obj [bend]. A 20 in sheet at 0.3 in, a row of Cloth Expand dabs.
+		if ( rawArgs.Length > 1 && rawArgs[0] == "--clothtest" )
+		{
+			if ( rawArgs.Length > 2 ) Brush.ClothBend = float.Parse( rawArgs[2], System.Globalization.CultureInfo.InvariantCulture );
+			var sheet = Primitives.Plane( 20, 20, 66, 66 );
+			var sc = new Sculptor( sheet );
+			for ( var x = -6f; x <= 6f; x += 3f )
+				sc.Dab( BrushKind.ClothExpand, new Vec3( x, 0, 0 ), 3f, 0.22f );
+			ObjWriter.WriteFile( sheet, rawArgs[1], "clothtest" );
+			return 0;
+		}
+
+		if ( rawArgs.Length > 0 && rawArgs[0] == "--parity" )
+			return Parity.Run( rawArgs.Length > 1 ? rawArgs[1] : Path.Combine( DefaultOutDir(), "parity" ), rawArgs.Length > 2 ? rawArgs[2] : null );
+
+		if ( rawArgs.Length > 0 && rawArgs[0] == "--fuzz-values" )
+			return ValueFuzz.Run( rawArgs.Length > 1 ? rawArgs[1] : Path.Combine( DefaultOutDir(), "value-fuzz.md" ) );
+
+		if ( rawArgs.Length > 1 && rawArgs[0] == "--creature" )
+			return CreatureGen.Run( rawArgs[1], rawArgs.Length > 2 ? rawArgs[2] : DefaultOutDir(), rawArgs.Skip( 3 ).ToArray() );
+
+		if ( rawArgs.Length > 2 && rawArgs[0] == "--shade" )
+			return ShadeCli.Run( rawArgs.Skip( 1 ).ToArray() );
+
+		if ( rawArgs.Length > 1 && rawArgs[0] == "--material" )
+			return MaterialStudies.Run( rawArgs[1], rawArgs.Length > 2 ? rawArgs[2] : DefaultOutDir(), rawArgs.Skip( 3 ).ToArray() );
+
 		if ( args.Length > 0 && args[0] == "--tree" )
 			return TreeGen.Run( args.Length > 1 ? args[1] : DefaultOutDir() );
 
@@ -174,11 +201,19 @@ public static class Program
 		TestWeld();
 
 		DecimateTests.Run();
+		QuadRemeshTests.Run();
+		VoxelRemeshTests.Run();
 		TakeToolsTests.Run();
 		RigCurveTests.Run();
+		ChainSpringTests.Run();
+		MarionetteSimTests.Run( outDir );
 		GarmentPosesTests.Run();
 		GarmentCutTests.Run();
+		ClothingTabTests.Run();
 		FabricMaterialTests.Run();
+		FleshMaterialTests.Run( outDir );
+		GoreMaterialTests.Run( outDir );
+		ShadeLookTests.Run( outDir );
 
 		SculptTests.Run();
 
@@ -262,6 +297,12 @@ public static class Program
 		AtlasIdTests.Run();
 		SplineTests.Run();
 		AgentToolsTests.Run();
+		ScriptReachTests.Run();
+		VoxelSolidTests.Run();
+		OrganicFeatureTests.Run();
+		SolidMeasureTests.Run();
+		FacingPairTests.Run();
+		FaceDeleteTests.Run();
 
 		FaceMaterialTests.Run();
 		FaceMenuTests.Run();
@@ -276,6 +317,7 @@ public static class Program
 		PaintDocumentTests.Run();
 
 		HoleTests.Run();
+		ProfileWindingTests.Run();
 
 		SplitTests.Run();
 
@@ -307,12 +349,19 @@ public static class Program
 		RigTrackNameTests.Run();
 
 		UnwrapTests.Run();
+		OrganicUnwrapTests.Run();
 
 		PngTests.Run();
 
 		NoteTests.Run();
 
 		KernelSyncTests.Run();
+
+		CageToolsTests.Run();
+		SurfaceDetailTests.Run();
+		BakeSetTests.Run( outDir );
+		SboxOutputTests.Run( outDir );
+		SculptToolsTests.Run();
 
 		MenuIconTests.Run();
 

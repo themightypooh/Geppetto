@@ -76,7 +76,7 @@ public static class AllFeaturesTests
 			ok.Error is null && moved.Bodies.Count == 1, ok.Error ?? $"{moved.Bodies.Count} bodies" );
 	}
 
-	static List<Type> FeatureTypes() => typeof( Feature ).Assembly
+	internal static List<Type> FeatureTypes() => typeof( Feature ).Assembly
 		.GetTypes()
 		.Where( t => t.IsSubclassOf( typeof( Feature ) ) && !t.IsAbstract )
 		.OrderBy( t => t.Name, StringComparer.Ordinal )
@@ -93,7 +93,7 @@ public static class AllFeaturesTests
 	/// of the box is this harness keeping its own promise that every tool is judged on its real path
 	/// rather than on its input guard. The guard itself is covered by the empty-studio test.
 	/// </summary>
-	static void GivePickedInput( Feature feature, PartStudio studio )
+	internal static void GivePickedInput( Feature feature, PartStudio studio )
 	{
 		// GARMENT, FUR, TRIM AND FABRIC ARE THE CLOTHING TOOLS, and the fixture has no rig, which is
 		// exactly the input the garment's own guard is written to refuse. The model these need
@@ -130,6 +130,16 @@ public static class AllFeaturesTests
 		// and give Bend along curve a spline to follow, since it refuses with none above it.
 		if ( feature is SplineFeature drawn )
 			drawn.Points.AddRange( new[] { new Vec3( -2, 0, 2 ), new Vec3( 0, 1, 2.5f ), new Vec3( 2, 0, 3 ), new Vec3( 3, -1, 2 ) } );
+
+		// A STROKE IS DRAWN TOO, and one with no path refuses rather than doing nothing. Drag it across
+		// the fixture box's top corners, wide enough to reach the coarse box's vertices.
+		if ( feature is StrokeFeature stroke )
+		{
+			studio.Rebuild();
+			var (lo, hi) = ModelMeasure.Bounds( studio.Bodies );
+			stroke.Points.AddRange( new[] { new Vec3( lo.x, lo.y, hi.z ), new Vec3( hi.x, hi.y, hi.z ) } );
+			stroke.Radius.Value = 1.5f;
+		}
 
 		if ( feature is CurveDeformFeature )
 		{
@@ -247,6 +257,22 @@ public static class AllFeaturesTests
 			return;
 		}
 
+		// Delete face on the same top. Closing that one opening puts the face back, which is a
+		// successful heal of a face that was the wall rather than a boss.
+		if ( feature is DeleteFaceFeature delete )
+		{
+			for ( var i = 0; i < mesh.Faces.Count; i++ )
+			{
+				if ( mesh.FaceNormal( mesh.Faces[i] ).z > 0.99f )
+				{
+					delete.Faces.Add( FacePlane.Capture( body, i, mesh.FaceCentroid( mesh.Faces[i] ) ) );
+					return;
+				}
+			}
+
+			return;
+		}
+
 		if ( feature is not FaceMaterialFeature material )
 			return;
 
@@ -268,7 +294,7 @@ public static class AllFeaturesTests
 	/// Whether the engine's real boolean makes the right hole is the engine's question, and
 	/// HoleTests is where the shape of the tool is checked.
 	/// </summary>
-	sealed class SweepBoolean : IMeshBoolean
+	internal sealed class SweepBoolean : IMeshBoolean
 	{
 		public bool TryApply( BooleanOp op, PolyMesh target, PolyMesh tool, out PolyMesh result, out string error )
 		{
@@ -280,7 +306,7 @@ public static class AllFeaturesTests
 
 	/// <summary>A studio holding a box and a closed sketch above it, so any feature added next has
 	/// something real to act on.</summary>
-	static PartStudio WithInput()
+	internal static PartStudio WithInput()
 	{
 		var studio = new PartStudio();
 

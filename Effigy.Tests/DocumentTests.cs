@@ -43,6 +43,9 @@ public static class DocumentTests
 		Report.Section( "document: the rig survives the round trip" );
 		TestRigRoundTrip();
 
+		Report.Section( "document: a bone that cannot be added is reported, not dropped quietly" );
+		TestBadBoneReported();
+
 		Report.Section( "document: soft bones survive the round trip" );
 		TestSoftRoundTrip();
 
@@ -51,6 +54,46 @@ public static class DocumentTests
 
 		Report.Section( "document: reference images survive the round trip" );
 		TestReferenceImages();
+
+		Report.Section( "document: a feature added after loading is evaluated" );
+		TestBarAtEndReloadsOpen();
+	}
+
+	/// <summary>
+	/// A document saved with the bar at the end must still evaluate features added after it is
+	/// loaded. Read used to clamp the bar to the feature count, which pinned it under the last
+	/// loaded feature: a build script run on a saved .effigy added features that were never
+	/// evaluated, with no geometry and no error.
+	/// </summary>
+	static void TestBarAtEndReloadsOpen()
+	{
+		var studio = new PartStudio();
+		var box = studio.Add( new PrimitiveFeature() );
+		box.SizeX.Value = box.SizeY.Value = box.SizeZ.Value = 10f;
+
+		// Both ways a bar ends up "at the end": never moved, and dragged to just after the last feature.
+		foreach ( var bar in new[] { int.MaxValue, 1 } )
+		{
+			studio.RollbackIndex = bar;
+			var back = StudioDocument.Read( StudioDocument.Write( studio ) );
+
+			Report.Check( $"a bar at the end ({bar}) reloads as roll-to-end", back.RollbackIndex == int.MaxValue,
+				$"came back as {back.RollbackIndex}" );
+
+			var smooth = back.Add( new SubdivideFeature() );
+			smooth.Levels.Value = 2;
+			var report = back.Rebuild();
+
+			var tris = back.ToMesh().Faces.Sum( f => f.Count - 2 );
+			Report.Check( $"a Subdivide added after loading runs (bar {bar})", !report.HasErrors && tris > 12,
+				$"{tris} triangles, errors: {report}" );
+		}
+
+		// A bar genuinely inside the tree is the user's, and stays where they put it.
+		studio.Add( new PrimitiveFeature() );
+		studio.RollbackIndex = 1;
+		var rolled = StudioDocument.Read( StudioDocument.Write( studio ) );
+		Report.Check( "a bar inside the tree stays put", rolled.RollbackIndex == 1, $"came back as {rolled.RollbackIndex}" );
 	}
 
 	static void TestReferenceImages()
@@ -78,6 +121,25 @@ public static class DocumentTests
 	/// reopening lost every bone with no error and no warning, because nothing in the format was
 	/// ever asked to carry them.
 	/// </summary>
+	static void TestBadBoneReported()
+	{
+		var studio = new PartStudio();
+		var spine = studio.Rig.AddBone( "spine", -1, Xform.Identity, 6f );
+		studio.Rig.AddBone( "tail", spine, Xform.Identity, 3f );
+
+		var clean = StudioDocument.Read( StudioDocument.Write( studio ) );
+		Report.Check( "a clean file has nothing to report", clean.ReadWarnings.Count == 0, string.Join( "; ", clean.ReadWarnings ) );
+
+		// A hand edit that names the second bone the same as the first.
+		var text = StudioDocument.Write( studio ).Replace( "bone tail", "bone spine" );
+		var back = StudioDocument.Read( text );
+
+		Report.Check( "the duplicate is left out", back.Rig.Count == 1, $"got {back.Rig.Count}" );
+		Report.Check( "and named in ReadWarnings",
+			back.ReadWarnings.Count == 1 && back.ReadWarnings[0].Contains( "'spine'" ) && back.ReadWarnings[0].StartsWith( "line " ),
+			string.Join( "; ", back.ReadWarnings ) );
+	}
+
 	static void TestRigRoundTrip()
 	{
 		var studio = new PartStudio();
@@ -547,7 +609,9 @@ public static class DocumentTests
 		shell.Bodies.BodyIds.Add( "boxb0" );
 		shell.Suppressed = true;
 
-		studio.RollbackIndex = 6;
+		// A bar INSIDE the tree. One at the end (6 of 6) reloads as int.MaxValue, "roll to end" —
+		// see TestBarAtEndReloadsOpen.
+		studio.RollbackIndex = 5;
 
 		studio.Origin = new Vec3( 1.5f, -2f, 0.25f );
 
