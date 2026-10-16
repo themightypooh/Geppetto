@@ -107,9 +107,9 @@ public sealed partial class EffigyWindow
 		add.Add( _objPartTool );
 		add.Add( _objProfileTool );
 		add.Add( Tool( EffigyIcon.Paint, "Fur (creature)", "Shell fur on the selected body for s&box's fur shader — a pelt, a mane, a mossy back. Pick faces first to grow it only there", AddCreatureFur ) );
-		add.Add( Tool( EffigyIcon.Sculpt, "Blob (metaballs)", "Spheres, capsules, cones and tubes melted into one smooth skin — a heart, a gut pile, a creature block-out. Type the shapes in its settings; a shape starting with - cuts a hole", () => AddFeature( NewFeature( ToolKind.Blob, -1 ) ) ) );
+		add.Add( Tool( EffigyIcon.Sculpt, "Blob (metaballs)", "Spheres, capsules, cones and tubes melted into one smooth skin — a heart, a gut pile, a creature block-out. In its settings, use the place-shapes button and press-drag on the model to drop spheres; hold Shift to cut a hole", () => AddFeature( NewFeature( ToolKind.Blob, -1 ) ) ) );
 		add.Add( null );
-		add.Add( Tool( EffigyIcon.Primitive, "Import mesh...", "Bring in a Wavefront .obj as a body", () => AddFeature( NewFeature( ToolKind.Import, -1 ) ) ) );
+		add.Add( Tool( EffigyIcon.Primitive, ImportMenuLabel, ImportTip, ImportObj ) );
 		add.Add( Tool( EffigyIcon.Bone, "Body from Bones", "A skin block-out built on the rig, ready to edit", BodyFromBones ) );
 		add.Add( null );
 		add.Add( Tool( EffigyIcon.Plane, "Front reference image...", "A picture behind the model to draw against, seen from the front", () => AddReferenceImage( "front" ) ) );

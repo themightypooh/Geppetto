@@ -139,7 +139,7 @@ public sealed partial class EffigyWindow
 		{
 			slots.Add( (CreateSlot( ToolKind.Sketch, "Sketch", "edit", "draw on a plane" ), () => AddFeature( NewFeature( ToolKind.Sketch, -1 ) )) );
 			slots.Add( (CreateSlot( ToolKind.Primitive, "Box", "check_box_outline_blank", "start from a block" ), () => AddFeature( NewFeature( ToolKind.Primitive, -1 ) )) );
-			slots.Add( (CreateSlot( ToolKind.Import, "Import", "file_open", ".obj .fbx .vmdl" ), () => AddFeature( NewFeature( ToolKind.Import, -1 ) )) );
+			slots.Add( (CreateSlot( ToolKind.Import, "Import", "file_open", ImportFormats ), () => ImportObj()) );
 		}
 		else
 		{

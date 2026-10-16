@@ -1681,7 +1681,8 @@ public sealed partial class EffigyWindow
 		var search = new MenuSearchEdit( row ) { PlaceholderText = placeholder, MinimumWidth = 280f };
 		search.TextChanged += text => FillToolSearch( menu, source(), text );
 
-		// Enter runs the first match that can run, so "gr⏎" is a grid fill.
+		// Enter runs the first tool that can run whose name matches (a tip-only match when none does),
+		// so "gr⏎" is a grid fill.
 		search.ReturnPressed += () =>
 		{
 			if ( _meshSearchFirst is { } first )
@@ -1731,6 +1732,16 @@ public sealed partial class EffigyWindow
 		var seen = new HashSet<EffigyStageTool>();
 		_meshSearchFirst = null;
 
+		// Tips are searched too, but Enter prefers a tool whose NAME matches, as the Model catalog
+		// does: "bevel" must run Bevel, not the first tool whose tip happens to mention bevelling.
+		// Looked for across every stage up front, so a name match past the 24-row cut still wins.
+		EffigyStageTool firstShown = null;
+		if ( !string.IsNullOrWhiteSpace( filter ) )
+		{
+			_meshSearchFirst = stages.Where( st => st?.Tools is not null ).SelectMany( st => st.Tools )
+				.FirstOrDefault( t => t is not null && t.Enabled && t.Label.IndexOf( filter, StringComparison.OrdinalIgnoreCase ) >= 0 );
+		}
+
 		foreach ( var stage in stages )
 		{
 			if ( stage?.Tools is null )
@@ -1749,8 +1760,8 @@ public sealed partial class EffigyWindow
 				var run = tool.Clicked;
 				var option = menu.AddOption( $"{tool.Label}    ·  {stage.Name}", null, () => run?.Invoke() );
 
-				if ( _meshSearchFirst is null && tool.Enabled && !string.IsNullOrWhiteSpace( filter ) )
-					_meshSearchFirst = tool;
+				if ( firstShown is null && tool.Enabled && !string.IsNullOrWhiteSpace( filter ) )
+					firstShown = tool;
 				option.Enabled = tool.Enabled;
 				option.Checkable = tool.Checkable;
 				option.Checked = tool.Checked;
@@ -1764,6 +1775,8 @@ public sealed partial class EffigyWindow
 			if ( shown >= 24 )
 				break;
 		}
+
+		_meshSearchFirst ??= firstShown;
 
 		if ( shown == 0 )
 			menu.AddOption( "No tool by that name", null, null ).Enabled = false;
