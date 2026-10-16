@@ -94,6 +94,49 @@ public sealed class SkinWeights
 		Blend( (IEnumerable<(BoneWeight[], float)>)terms );
 
 	/// <summary>
+	/// What the export's cap to <paramref name="max"/> influences will throw away, before it does:
+	/// how many vertices have more, and the worst one's share of weight beyond the strongest
+	/// <paramref name="max"/> (0..1, of that vertex's total). s&amp;box skins with 4 bones a vertex
+	/// (core/shaders/skinning_cs.shader: uint4 indices, float4 weights), so a 5th bone is dropped and
+	/// the rest renormalised. Under about 0.05 nobody sees it; above it, a joint where three or more
+	/// limbs meet will move differently in the game than here
+	/// (realtime-flesh-shading.md §6.3: prune to 4 and keep the worst discarded weight under 0.05).
+	/// </summary>
+	public (int Over, float WorstLost, int WorstVertex) CapLoss( int max = 4 )
+	{
+		var over = 0;
+		var worst = 0f;
+		var at = -1;
+
+		for ( var v = 0; v < Vertices.Count; v++ )
+		{
+			var w = Vertices[v];
+			if ( w is null || w.Length <= max ) continue;
+
+			var positive = w.Where( b => b.Weight > 0f ).Select( b => b.Weight ).OrderByDescending( x => x ).ToArray();
+			if ( positive.Length <= max ) continue;
+
+			over++;
+			var total = positive.Sum();
+			if ( total <= 1e-9f ) continue;
+			var lost = positive.Skip( max ).Sum() / total;
+			if ( lost > worst ) { worst = lost; at = v; }
+		}
+
+		return (over, worst, at);
+	}
+
+	/// <summary>The warning to show when <see cref="CapLoss"/> is past what nobody would see, else null.</summary>
+	public string CapWarning( int max = 4, float tolerance = 0.05f )
+	{
+		var (over, worst, at) = CapLoss( max );
+		if ( worst <= tolerance ) return null;
+		return $"{over} vertices are weighted to more than {max} bones; the game keeps the strongest {max}, "
+			+ $"and vertex {at} loses {worst:P0} of its weight there, so it will bend differently in the game. "
+			+ "Run Fix weights to see what the game will deform, then Smooth weights over that joint.";
+	}
+
+	/// <summary>
 	/// Drop to at most `max` influences per vertex and renormalise.
 	///
 	/// Called once, at export, because engines index a fixed number of bones per vertex — four,

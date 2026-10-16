@@ -107,7 +107,7 @@ public static class VmdlMaterials
 		if ( studio is null )
 			return GroupList( mesh, null, null );
 
-		return GroupList( mesh, studio.NameForSlot, studio.MaterialNames, FallbackFor( studio ) );
+		return GroupList( mesh, studio.NameForSlot, studio.MaterialBindings, FallbackFor( studio ) );
 	}
 
 	/// <summary>

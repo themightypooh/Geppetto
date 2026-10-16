@@ -69,6 +69,14 @@ public static class Program
 			return 0;
 		}
 
+		// Just the skin-shader / thickness / weight-cap / corrective-morph checks, for iterating on them.
+		if ( rawArgs.Length > 0 && rawArgs[0] == "--skinshader" )
+		{
+			SkinShaderTests.Run( rawArgs.Length > 1 ? rawArgs[1] : DefaultOutDir() );
+			Console.WriteLine( $"\n{Report.Passed} passed, {Report.Failed} failed" );
+			return Report.Failed == 0 ? 0 : 1;
+		}
+
 		if ( rawArgs.Length > 0 && rawArgs[0] == "--parity" )
 			return Parity.Run( rawArgs.Length > 1 ? rawArgs[1] : Path.Combine( DefaultOutDir(), "parity" ), rawArgs.Length > 2 ? rawArgs[2] : null );
 
@@ -228,6 +236,7 @@ public static class Program
 		FabricMaterialTests.Run();
 		GarmentDetailTests.Run();
 		FleshMaterialTests.Run( outDir );
+		SkinShaderTests.Run( outDir );
 		GoreMaterialTests.Run( outDir );
 		ShadeLookTests.Run( outDir );
 

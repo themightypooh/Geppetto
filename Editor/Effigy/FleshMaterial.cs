@@ -44,7 +44,7 @@ public static class FleshMaterial
 	{
 		var key = (name ?? "").ToLowerInvariant().Replace( " ", "" ).Replace( "_", "" );
 
-		return key switch
+		return WithShader( key switch
 		{
 			"wetflesh" => WetFlesh(),
 			"rawmeat" => RawMeat(),
@@ -60,8 +60,81 @@ public static class FleshMaterial
 			"blackspike" or "spike" or "spikes" => BlackSpike(),
 			"entityribbon" or "ribbon" or "ribbons" => EntityRibbon(),
 			_ => null,
-		};
+		} );
 	}
+
+	/// <summary>
+	/// Which s&amp;box shader each preset goes out on, and how far light gets through it
+	/// (realtime-flesh-shading.md §5.1). Living tissue is skin.shader, the only one with SSS and
+	/// transmission. Bone and enamel stay on complex (their look is specular, not scatter); so do oil,
+	/// spikes and the entity ribbon, because skin.shader has no glow and refuses see-through
+	/// (F_TRANSLUCENT) alongside its SSS. Light-through is the k of §3.3: 1 is real skin; lung and fat
+	/// are gel-like and pass light through three times the wall.
+	/// </summary>
+	static FleshStack WithShader( FleshStack stack )
+	{
+		if ( stack is null ) return null;
+
+		switch ( stack.Name )
+		{
+			case "Bone" or "Tooth" or "Oil black" or "Black spike" or "Entity ribbon":
+				stack.Shader = FleshShader.Complex;
+				stack.LightThrough = 0f;
+				break;
+			case "Lung" or "Fat":
+				stack.LightThrough = 3f;
+				break;
+			case "Wet flesh" or "Gut mucosa":
+				stack.LightThrough = 2f;
+				break;
+		}
+
+		return stack;
+	}
+
+	/// <summary>
+	/// The skin.shader numbers for a stack: Facepunch's human body, with the mouth's wet second lobe
+	/// on anything wet (wet tissue in s&amp;box is a broad base lobe plus a small sharp one, §4), the
+	/// mouth's tighter curvature and less-blurred normal on mucosa and gum, and the light coming
+	/// through in the stack's own scatter colour (fat yellow, gore red) where it has one.
+	/// </summary>
+	public static SkinMaterial.Params SkinParams( FleshStack stack, bool morphs = false )
+	{
+		var p = SkinMaterial.Body();
+		p.Name = stack?.Name ?? "Body";
+		p.Morphs = morphs;
+
+		if ( stack is null ) return p;
+
+		if ( stack.Wet >= 0.5f )
+		{
+			p.SecondLobeRatio = 0.263f;
+			p.SecondLobeGlossiness = 0.3f;
+		}
+
+		if ( stack.Name is "Gut mucosa" or "Gum" )
+		{
+			p.CurvatureScale = 0.569f;
+			p.DiffuseNormalBlur = 0.435f;
+		}
+
+		if ( stack.ScatterTint is { } tint )
+			p.TransmissionColor = tint;
+
+		return p;
+	}
+
+	/// <summary>
+	/// The skin.shader .vmat over a flesh bake (<see cref="SkinMaterial.VmatSource"/> with
+	/// <see cref="SkinParams"/>). <paramref name="aoPng"/> is what the red AO bleed tints, so pass the
+	/// occlusion map; <paramref name="transmissionPng"/> the mask from a thickness bake
+	/// (<see cref="SkinMaterial.TransmissionMask"/>), null for none. Glow is not carried: skin.shader
+	/// has no self-illumination, which is why the glowing presets default to complex.
+	/// </summary>
+	public static string SkinVmatSource( string colorPng, string roughPng, FleshStack stack, string aoPng = null,
+		string transmissionPng = null, bool morphs = false, string normalPng = null ) =>
+		SkinMaterial.VmatSource( SkinParams( stack, morphs ), colorPng, normalPng, roughPng, aoPng, transmissionPng )
+			.Replace( "by Effigy (SkinMaterial).", "by an Effigy FleshMaterial feature (skin shader). Edit the feature, not this file." );
 
 	/// <summary>Bake <paramref name="stack"/> onto <paramref name="mesh"/>'s UVs at <paramref name="size"/>
 	/// texels square. <paramref name="detail"/> scales every noise feature size (2 = blobs twice as big).</summary>
@@ -71,6 +144,75 @@ public static class FleshMaterial
 		var surface = new FleshSurface( mesh, size ) { Detail = detail, Seed = seed };
 		if ( corruption is not null ) surface.Corruption = new VertexSignal( "corruption:field", _ => corruption );
 		return stack.Render( surface );
+	}
+
+	/// <summary>
+	/// Wall thickness at every vertex, in model units: a ray cast inward along −N (<see cref="MeshRaycast"/>)
+	/// to the far wall. −1 where the ray finds no far wall (the open edge of a sheet, a single-sided
+	/// membrane), which gets no transmission rather than a guess.
+	/// </summary>
+	public static float[] Thickness( PolyMesh mesh )
+	{
+		if ( mesh is null ) throw new ArgumentNullException( nameof( mesh ) );
+		var n = mesh.VertexCount;
+		var o = new float[n];
+		if ( n == 0 || mesh.FaceCount == 0 ) return o;
+
+		var normals = SurfaceDetail.VertexNormals( mesh );
+		var bvh = MeshBVH.Build( mesh );
+		// Start a hair inside so the ray does not hit the faces around its own vertex.
+		var eps = MathF.Max( Diagonal( mesh ) * 1e-4f, 1e-5f );
+
+		System.Threading.Tasks.Parallel.For( 0, n, i =>
+		{
+			var dir = -normals[i];
+			if ( dir.LengthSquared < 1e-12f ) { o[i] = -1f; return; }
+			var hit = MeshRaycast.Raycast( mesh, mesh.Positions[i] + dir * eps, dir, bvh );
+			o[i] = hit is { } h ? h.Distance + eps : -1f;
+		} );
+
+		return o;
+	}
+
+	/// <summary>
+	/// The extra maps the skin shader wants over a flesh bake, on the body's own UVs:
+	/// occlusion (white open, what the red AO bleed tints) and, when <paramref name="lightThrough"/>
+	/// is above 0, the transmission mask from the wall thickness (<see cref="Thickness"/> per vertex,
+	/// through skin's red transmittance at thickness × mm-per-unit ÷ k, then onto texels with
+	/// <see cref="NormalBake.BakeVertexValues"/>). Texels no face covers are black in the mask.
+	/// </summary>
+	public static FleshShaderMaps BakeSkinMaps( PolyMesh mesh, int size, float lightThrough, float millimetresPerUnit = 25.4f )
+	{
+		if ( mesh is null ) throw new ArgumentNullException( nameof( mesh ) );
+		var o = new FleshShaderMaps();
+		// The body bakes onto itself: rays start a hair off the surface and land on the same face.
+		var options = new BakeOptions { MaxDistance = MathF.Max( Diagonal( mesh ) * 1e-3f, 1e-4f ) };
+
+		var ao = SurfaceDetail.AmbientOcclusion( mesh, 24, FleshSurface.AoReach( mesh ) );
+		o.Ao = NormalBake.BakeVertexValues( mesh, mesh, size, size, v => { var g = Math.Clamp( 1f - ao[v], 0f, 1f ); return new Vec3( g, g, g ); }, Vec3.One, options );
+
+		if ( lightThrough > 0f )
+		{
+			o.Thickness = Thickness( mesh );
+			o.TransmissionPerVertex = o.Thickness.Select( t => t < 0f ? 0f
+				: Math.Clamp( SkinMaterial.SkinTransmittanceRed( t * millimetresPerUnit / lightThrough ), 0f, 1f ) ).ToArray();
+			var mask = o.TransmissionPerVertex;
+			o.Transmission = NormalBake.BakeVertexValues( mesh, mesh, size, size, v => new Vec3( mask[v], mask[v], mask[v] ), default, options );
+		}
+
+		return o;
+	}
+
+	static float Diagonal( PolyMesh mesh )
+	{
+		if ( mesh.VertexCount == 0 ) return 0f;
+		var min = mesh.Positions[0]; var max = min;
+		foreach ( var p in mesh.Positions )
+		{
+			min = new Vec3( MathF.Min( min.x, p.x ), MathF.Min( min.y, p.y ), MathF.Min( min.z, p.z ) );
+			max = new Vec3( MathF.Max( max.x, p.x ), MathF.Max( max.y, p.y ), MathF.Max( max.z, p.z ) );
+		}
+		return (max - min).Length;
 	}
 
 	/// <summary>The stack at every vertex (no UVs needed): the vertex-colour route for Blob meshes and
@@ -577,6 +719,19 @@ public sealed class FleshMaps
 	}
 }
 
+/// <summary>The skin shader's extra maps for a flesh bake (<see cref="FleshMaterial.BakeSkinMaps"/>).</summary>
+public sealed class FleshShaderMaps
+{
+	/// <summary>Occlusion, white open to black shut in.</summary>
+	public BakedMap Ao;
+	/// <summary>Where light comes through, white most. Null when nothing transmits.</summary>
+	public BakedMap Transmission;
+	/// <summary>Wall thickness per vertex in model units, −1 where no far wall was found. Null with no transmission.</summary>
+	public float[] Thickness;
+	/// <summary>The mask per vertex, 0..1.</summary>
+	public float[] TransmissionPerVertex;
+}
+
 /// <summary>What a per-vertex bake hands back, one entry per mesh vertex: colour (sRGB 0..1, ready
 /// for <see cref="PolyMesh.VertexColors"/>), roughness, and glow (null when no layer emits).</summary>
 public sealed class FleshVertexMaterial
@@ -584,6 +739,15 @@ public sealed class FleshVertexMaterial
 	public Vec4[] Colour;
 	public float[] Roughness;
 	public Vec3[] Emission;
+}
+
+/// <summary>The s&amp;box shader a flesh .vmat is written for.</summary>
+public enum FleshShader
+{
+	/// <summary>skin.shader: curvature SSS, red AO bleed, second wet lobe, transmission through thin parts.</summary>
+	Skin,
+	/// <summary>complex.shader: plain PBR with a wrap-light stand-in for SSS; carries glow and see-through.</summary>
+	Complex,
 }
 
 public enum FleshBlend
@@ -684,6 +848,14 @@ public sealed class FleshStack
 
 	/// <summary>The colour light picks up inside (null: the albedo, saturated). Flesh scatters red.</summary>
 	public Vec3? ScatterTint;
+
+	/// <summary>Which s&amp;box shader the .vmat is written for. Skin (SSS + transmission) unless the
+	/// preset says otherwise; see FleshMaterial.WithShader.</summary>
+	public FleshShader Shader = FleshShader.Skin;
+
+	/// <summary>How far light gets through thin parts on the skin shader: the k of
+	/// realtime-flesh-shading.md §3.3 (1 = real skin, 3–10 gel-like flesh). 0 writes no transmission map.</summary>
+	public float LightThrough = 1f;
 
 	public FleshMaps Render( FleshSurface s )
 	{
@@ -1115,7 +1287,7 @@ public sealed class FleshSurface
 		return o;
 	}
 
-	static float AoReach( PolyMesh m )
+	internal static float AoReach( PolyMesh m )
 	{
 		if ( m.VertexCount == 0 ) return 6f;
 		var min = m.Positions[0]; var max = min;

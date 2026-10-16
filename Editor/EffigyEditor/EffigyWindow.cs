@@ -7390,6 +7390,10 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 			mesh.Skin = weights;
 
+			// Corrective shapes (Rig panel), from these exact weights so each one undoes this skinning's squash.
+			foreach ( var line in CorrectiveMorph.BuildAll( mesh, skeleton, _studio.Correctives, DmxWriter.MaxInfluences ) )
+				Log.Info( $"[Effigy] {name}: {line}" );
+
 			ApplyPivot( mesh );
 			skeleton = PivotedSkeleton( skeleton );
 
@@ -7458,6 +7462,10 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 			mesh.Skin = weights;
 
+			// Corrective shapes (Rig panel), from these exact weights so each one undoes this skinning's squash.
+			foreach ( var line in CorrectiveMorph.BuildAll( mesh, skeleton, _studio.Correctives, DmxWriter.MaxInfluences ) )
+				Log.Info( $"[Effigy] {name}: {line}" );
+
 			// AFTER binding, and both together. The weights come from distances between vertices and
 			// bones, so shifting either side before the bind would rig the model to where the bones
 			// used to be. Shifting both afterwards moves the bind pose and leaves the weights - which
@@ -7482,6 +7490,10 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 				modelName: name );
 
 			Log.Info( $"[Effigy] wrote {dmxPath} - {skeleton.Count} bones, {mesh.VertexCount} vertices" );
+
+			// The DMX keeps 4 bones a vertex, as s&box's GPU skinning does; say when that changes the bend.
+			if ( weights.CapWarning( DmxWriter.MaxInfluences ) is { } capped )
+				Log.Warning( $"[Effigy] {name}: {capped}" );
 
 			// Shape keys went into the DMX (DmxMorphs); their materials need F_MORPH_SUPPORTED or the
 			// GPU never applies them.

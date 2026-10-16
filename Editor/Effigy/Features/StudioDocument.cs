@@ -249,6 +249,9 @@ public static class StudioDocument
 		// INSIDE THE RIG BLOCK so an older reader skips it rather than refusing the file — ReadRig
 		// ignores keys it does not recognise. Weight paint without bones is not a thing, so a
 		// document that has never been rigged still writes no rig block at all.
+		foreach ( var c in studio.Correctives.Where( c => !string.IsNullOrWhiteSpace( c?.Bone ) ) )
+			sb.Append( "\tcorrective " ).Append( c ).Append( '\n' );
+
 		if ( studio.WeightPaint is { Count: > 0 } layer )
 			WriteWeights( sb, layer );
 
@@ -731,6 +734,14 @@ public static class StudioDocument
 
 			if ( line == "endrig" )
 				return;
+
+			if ( line.StartsWith( "corrective " ) )
+			{
+				if ( CorrectiveShape.Parse( line[11..] ) is { } c )
+					studio.Correctives.Add( c );
+
+				continue;
+			}
 
 			if ( line.StartsWith( "bind " ) )
 			{
