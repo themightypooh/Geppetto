@@ -247,6 +247,8 @@ public static class Program
 
 		RigTests.Run();
 
+		SparseSolverTests.Run();
+
 		BoneFromBodyTests.Run();
 
 		RigDiagnosticTests.Run();
