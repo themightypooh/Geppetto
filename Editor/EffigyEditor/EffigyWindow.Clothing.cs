@@ -1385,6 +1385,7 @@ public sealed partial class EffigyWindow
 			Clicked = () => AddFeature( NewFeature( ToolKind.Fur, -1 ) ),
 		} );
 
+		AddGarmentDetailTools( stage );
 		return stage;
 	}
 

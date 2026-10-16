@@ -51,6 +51,30 @@ Every feature exposes typed parameters:
 | `StringParam` | `.Value = "..."` | paths, outline text |
 | `BodySelectionParam` | `.BodyIds.Add( id )` | **empty means every body** |
 
+## Garment details
+
+After a `GarmentFeature`, add `PocketFeature` (Patch/Cargo/Zipper), `HardwareFeature`
+(studs, spikes, eyelets, pins, chain, strap/buckle, port or cable), `WearFeature`
+(Abrasion/Dirt/Rip/Hole), or `GlowFeature` (LED panel, strip, EL wire, armour or tape).
+All take `Bodies`, `Spot`, `Side`, `Across`, `Up` and `Angle`. Distances are inches;
+spots come from the rig. Empty `Bodies` decorates all garments, excluding other details.
+Select a specific garment when layering. New detail bodies carry `IsGarmentDetail`
+and inherit the garment's skin weights. `IDetailMaterials` supplies their material recipes;
+the editor writes and binds those recipes automatically. Headless callers must write/bind
+the recipes themselves (see `Effigy.Tests/GarmentDetailDemo.cs`).
+
+`Hardware.Layout` places rows around openings; `Glow.Openings` does the same for EL wire.
+`Wear.Area` targets a body part or openings. Cuts remove whole faces, so subdivide before
+small tears; put cuts before Fur. Wear/dirt preserve generated Fabric settings, but a custom
+external fabric currently falls back to a generated jersey variant. Eyelet centres are dark
+insets, not bores through the underlying garment. Tape is a bright material, not a physically
+retroreflective shader. LED patterns scroll; they are not GIF/video playback.
+
+Run focused checks with `dotnet run --project Effigy.Tests -- --garment-details`.
+Generate a small cropped-jacket-over-shirt example with
+`dotnet run --project Effigy.Tests -- --garment-details-demo /tmp/opencode/garment-preview`
+(requires the Citizen source FBX). Judge its OBJs using `sh tools/effigy.sh shade`.
+
 ## Body ids
 
 A feature's bodies are `feature.Id + "b0"`, `"b1"`, … in the order it made them. That is how a

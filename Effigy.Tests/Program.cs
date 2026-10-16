@@ -38,6 +38,14 @@ public static class Program
 
 	public static int Main( string[] rawArgs )
 	{
+		if ( rawArgs.Length > 0 && rawArgs[0] == "--garment-details" )
+		{
+			GarmentDetailTests.Run();
+			Console.WriteLine( $"{Report.Passed} passed, {Report.Failed} failed" );
+			return Report.Failed == 0 ? 0 : 1;
+		}
+		if ( rawArgs.Length > 1 && rawArgs[0] == "--garment-details-demo" )
+			return GarmentDetailDemo.Run( rawArgs[1] );
 		// `dotnet run --nologo` hands the flag straight through to us. The first positional
 		// argument is the output directory, so an unrecognised flag taken as one wrote the whole
 		// sample set into a folder literally named `--nologo`. Drop flags we do not own.
@@ -211,6 +219,7 @@ public static class Program
 		GarmentCutTests.Run();
 		ClothingTabTests.Run();
 		FabricMaterialTests.Run();
+		GarmentDetailTests.Run();
 		FleshMaterialTests.Run( outDir );
 		GoreMaterialTests.Run( outDir );
 		ShadeLookTests.Run( outDir );

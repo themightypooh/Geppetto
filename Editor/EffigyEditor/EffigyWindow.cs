@@ -3623,6 +3623,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		Garment, Fur, Trim, Fabric,
 		Spline, CurveDeform, Part, Profile,
 		Blob, SurfaceDetail, FleshMaterial, ShapeKey, ShapeKeyEnd,
+		Pocket, Hardware, Wear, Glow,
 	}
 
 	/// <summary>Build one, and apply the variant chosen from its dropdown where it has one.</summary>
@@ -3662,6 +3663,10 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		ToolKind.Fur => new FurFeature(),
 		ToolKind.Trim => new TrimFeature(),
 		ToolKind.Fabric => new FabricFeature(),
+		ToolKind.Pocket => new PocketFeature(),
+		ToolKind.Hardware => new HardwareFeature(),
+		ToolKind.Wear => new WearFeature(),
+		ToolKind.Glow => new GlowFeature(),
 		ToolKind.Blob => new BlobFeature(),
 		ToolKind.SurfaceDetail => new DetailFeature(),
 		ToolKind.FleshMaterial => new FleshMaterialFeature(),
@@ -5458,6 +5463,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		SyncFurMaterials();
 		SyncFabricMaterials();
+		SyncDetailMaterials();
 		_featureTree?.Rebuild();
 		_partsPanel?.Refresh();
 		RefreshMeshEditPanel();

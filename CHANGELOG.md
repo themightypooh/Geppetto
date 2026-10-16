@@ -36,6 +36,10 @@ forgotten.
 ## Unreleased
 
 ### Added
+- **Pockets.** Sew patch, bellows cargo (with flap and snap/button), or zipper pockets onto a named body part. They wrap the garment and follow fit changes.
+- **Punk hardware.** Add pyramid studs, cone spikes, domes, eyelets, safety pins, chains, buckled straps, ports and cables, including stud rows around openings.
+- **Wear.** Local abrasion and grime, plus real rips and holes with loose threads. Cuts go before Fur; small cuts need a fine garment mesh.
+- **Clothing lights.** LED panels with scrolling text/patterns, light strips and EL piping, plus armour plates and bright tape. Text scrolling uses the material, not a runtime script.
 - **Click to place instead of typing coordinates.** The target button beside a Blob's Shapes lets you press on the model and drag out a sphere (Shift+drag cuts a hole), and keeps going until you press Escape. The same button sets Surface detail's Near point and adds Flesh Material's corruption seeds with a click. The settings are still text, so build scripts and saved files read them as before.
 - **Five tools that only scripts could reach now have buttons.** Model ▸ Add ▸ **Blob (metaballs)** melts spheres, capsules and tubes into one skin. Model ▸ Mesh ▸ **Surface detail** adds skin grain, pustules, bumps or sag folds. Model ▸ Mesh ▸ **Shape key** / **End shape key** make a morph from the edits between them. Paint ▸ **Flesh Material** bakes wet flesh, meat, gut, bone or tooth onto a body. And **File ▸ Run Build Script…** runs an Effigy build script on the open model as one undo step.
 - **Key from targets.** Say where a hand, foot or cable tip should be on which frames, and get keys instead of hand-picking angles: right-click a bone's row ▸ Key From Targets (`frame:x,y,z[:pitch,yaw,roll][:ease][:w=weight]; …`, model space) keys its live IK goal, or solves the chain now into FK keys. Also the `marionette_key` MCP tool and `tools/effigy.sh key clip.riganim bone goal|fk "…"`, which warns when no live IK constraint ends at the bone (goal keys would do nothing) and finds the clip's own rig by itself. `ClipKeys`, `RigKeyFromTargets`
@@ -142,6 +146,7 @@ forgotten.
 - **`tools/effigy.sh clothing outdir`** runs the whole Clothing bar on a Citizen-shaped body, with no editor: every garment through Wearer, Garment, Trim, Fur, Fabric, the Test poses, Check and Push out, Make live cloth and Make clothing, then steps the live cloth through the poses. It writes a pass/fail report and renders. `ClothingSim`
 
 ### Known Issues
+- **Garment-detail limits:** rips follow whole mesh faces (subdivide for small tears), eyelets use dark inset centres rather than cutting the garment, and bright tape is not true retroreflection. Wear matches generated Fabric materials; custom materials currently use a jersey fallback. LED text/patterns scroll, but do not play GIFs or video.
 - Some sculpt tools don't yet match Blender's: Pinch Folds, Bend/Twist and Grab Cloth, Clay Thumb, Multiplane Scrape, and the Sphere, Relax and Sharpen filters. They work but behave differently.
 - **A T-shirt's hem is wider than a real size M's** on the s&box human (44.9 in against 40.6). He is 40.4 in round at his widest below the chest, and Effigy's cloth does not stretch, so the hem clears his hips where a real knit tee would stretch over them.
 - **Extreme Test poses still clip a little.** At 100%, Arms up and Crouch leave about 6% of a T-shirt inside the body, up to 1.2 in deep at the armpit and hip, where skinning pinches. Push out on Check covers it, or use a looser Fit.

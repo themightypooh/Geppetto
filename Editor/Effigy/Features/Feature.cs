@@ -48,6 +48,8 @@ public sealed class Body
 	/// <summary>Made by a GarmentFeature. Later garments collide with it but are never cut from it,
 	/// and Fur with nothing picked grows on garments.</summary>
 	public bool IsGarment;
+	/// <summary>Sewn-on parts, not another cloth surface to decorate by default.</summary>
+	public bool IsGarmentDetail;
 
 	/// <summary>Here to be measured against, not to be shipped — the body a WearerFeature brought
 	/// in so a garment has something to be cut from and collide with. Everything reads it the way
@@ -62,7 +64,7 @@ public sealed class Body
 	}
 
 	public Body Clone() => new( Id, Name, Mesh.Clone() )
-		{ Visible = Visible, FeatureId = FeatureId, IsGarment = IsGarment, IsReference = IsReference };
+		{ Visible = Visible, FeatureId = FeatureId, IsGarment = IsGarment, IsGarmentDetail = IsGarmentDetail, IsReference = IsReference };
 }
 
 // --- parameters -------------------------------------------------------------------------------

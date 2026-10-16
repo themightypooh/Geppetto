@@ -552,6 +552,7 @@ public sealed class FurFeature : Feature
 			else if ( body.IsGarment )
 				faces = FurShells.OutwardFaces( mesh, faces );
 
+			faces = faces.Where( fi => !ctx.ShellSlots.Contains( mesh.Faces[fi].Material ) ).ToList();
 			ShellFaces += FurShells.Grow( mesh, faces, options );
 		}
 
@@ -694,7 +695,7 @@ public sealed class TrimFeature : Feature
 		// Trim goes on garments unless you say otherwise. Naming a body explicitly overrides that,
 		// so a frill can be hung off the hem of something modelled by hand.
 		var targets = Bodies.BodyIds.Count == 0
-			? ctx.Bodies.Where( b => b.IsGarment ).ToList()
+			? ctx.Bodies.Where( b => b.IsGarment && !b.IsGarmentDetail ).ToList()
 			: ctx.Bodies.Where( b => Bodies.Matches( b ) ).ToList();
 
 		if ( targets.Count == 0 )
