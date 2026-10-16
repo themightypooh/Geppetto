@@ -751,9 +751,17 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			NoSystemBackground = true,
 			Layout = Layout.Row(),
 			FixedHeight = EffigyToolChrome.ButtonHeight,
-			FixedWidth = EffigySizeReferenceButton.BarWidth,
+			FixedWidth = EffigySizeReferenceButton.BarWidth + EffigyToolChrome.ButtonHeight + 6,
 		};
 		trailing.Layout.Spacing = 6;
+
+		// Space's search, as a button too: CAD, Paint, Rig and Clothing have no Model header with a
+		// search box, and a key nobody has been told about is a key nobody presses.
+		trailing.Layout.Add( new IconButton( "search", OpenWorkspaceToolSearch )
+		{
+			ToolTip = "Find a tool in this workspace by name or by what it does (Space)",
+			FixedSize = EffigyToolChrome.ButtonHeight,
+		} );
 
 		_citizenButton = new EffigySizeReferenceButton( trailing, _viewport )
 		{

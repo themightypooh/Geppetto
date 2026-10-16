@@ -1652,14 +1652,30 @@ public sealed partial class EffigyWindow
 			return;
 
 		UpdateMeshEditChecks();
+		OpenToolSearch( MeshMenus, "Search every tool: grid fill, rip, bevel…" );
+	}
 
+	/// <summary>
+	/// Space outside Model: the same search over whatever the stage bar is showing — CAD's
+	/// sketch and solid tools, Paint, Rig, Clothing — its stages and its menus both.
+	/// </summary>
+	private void OpenWorkspaceToolSearch()
+	{
+		if ( _viewport is null || _stageBar is not { Visible: true } )
+			return;
+
+		OpenToolSearch( () => _stageBar.Stages.Concat( _stageBar.Menus ?? (IEnumerable<EffigyStage>)Array.Empty<EffigyStage>() ), "Search this workspace's tools…" );
+	}
+
+	private void OpenToolSearch( Func<IEnumerable<EffigyStage>> source, string placeholder )
+	{
 		var menu = new Menu( _viewport );
 
 		var row = new Widget( menu ) { Layout = Layout.Row() };
 		row.Layout.Margin = 6;
 
-		var search = new MenuSearchEdit( row ) { PlaceholderText = "Search every tool: grid fill, rip, bevel…", MinimumWidth = 280f };
-		search.TextChanged += text => FillMeshToolSearch( menu, text );
+		var search = new MenuSearchEdit( row ) { PlaceholderText = placeholder, MinimumWidth = 280f };
+		search.TextChanged += text => FillToolSearch( menu, source(), text );
 
 		// Enter runs the first match that can run, so "gr⏎" is a grid fill.
 		search.ReturnPressed += () =>
@@ -1674,7 +1690,7 @@ public sealed partial class EffigyWindow
 		row.Layout.Add( search );
 		menu.AddWidget( row );
 
-		FillMeshToolSearch( menu, null );
+		FillToolSearch( menu, source(), null );
 		menu.OpenAtCursor();
 		search.Focus();
 	}
@@ -1693,7 +1709,7 @@ public sealed partial class EffigyWindow
 		}
 	}
 
-	private void FillMeshToolSearch( Menu menu, string filter )
+	private void FillToolSearch( Menu menu, IEnumerable<EffigyStage> stages, string filter )
 	{
 		var visible = menu.Visible;
 
@@ -1711,8 +1727,11 @@ public sealed partial class EffigyWindow
 		var seen = new HashSet<EffigyStageTool>();
 		_meshSearchFirst = null;
 
-		foreach ( var stage in MeshMenus() )
+		foreach ( var stage in stages )
 		{
+			if ( stage?.Tools is null )
+				continue;
+
 			foreach ( var tool in stage.Tools )
 			{
 				if ( tool is null || !seen.Add( tool ) )
@@ -3189,9 +3208,11 @@ public sealed partial class EffigyWindow
 		if ( MeshEditKey( MeshKeySearch ) )
 			return;
 
-		// Object mode and sculpt have a catalog too.
+		// Object mode and sculpt have a catalog too; every other workspace searches its stage bar.
 		if ( _modelHeader is { Visible: true } )
 			OpenModelCatalog();
+		else
+			OpenWorkspaceToolSearch();
 	}
 
 	[Shortcut( "effigy.mesh.extrude_normals", "ALT+E", typeof( EffigyViewport ) )]
