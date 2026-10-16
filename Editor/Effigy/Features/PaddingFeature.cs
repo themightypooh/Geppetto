@@ -127,7 +127,9 @@ public sealed class PaddingFeature : Feature
 				offset = 0;
 
 			var pad = Field( sheet, map, out _ );
-			var normals = mesh.ComputeVertexNormals();
+			// Smoothed: a vertex normal at a cut edge or in a drape crease points any which way, and
+			// a collar band pushed along those came out as a ragged rim.
+			var normals = SmoothNormals( mesh, mesh.ComputeVertexNormals(), 3 );
 			var moved = 0;
 
 			for ( var i = 0; i < pad.Length; i++ )
@@ -155,6 +157,42 @@ public sealed class PaddingFeature : Feature
 				"Pick another Where or Side",
 				"Or raise Size" );
 		}
+	}
+
+	static Vec3[] SmoothNormals( PolyMesh mesh, Vec3[] normals, int passes )
+	{
+		var neighbours = new List<int>[mesh.VertexCount];
+
+		for ( var i = 0; i < neighbours.Length; i++ )
+			neighbours[i] = new List<int>();
+
+		foreach ( var f in mesh.Faces )
+			for ( var c = 0; c < f.Count; c++ )
+			{
+				var a = f.Indices[c];
+				var b = f.Indices[(c + 1) % f.Count];
+				neighbours[a].Add( b );
+				neighbours[b].Add( a );
+			}
+
+		for ( var pass = 0; pass < passes; pass++ )
+		{
+			var next = new Vec3[normals.Length];
+
+			for ( var i = 0; i < normals.Length; i++ )
+			{
+				var sum = normals[i];
+
+				foreach ( var j in neighbours[i] )
+					sum += normals[j];
+
+				next[i] = sum.Normal;
+			}
+
+			normals = next;
+		}
+
+		return normals;
 	}
 
 	/// <summary>
