@@ -213,6 +213,11 @@ public sealed class MeshEditFeature : Feature
 	/// saved with it. See <see cref="MeshEditSession.Creases"/>.</summary>
 	public Dictionary<EdgeKey, float> Creases { get; private set; } = new();
 
+	/// <summary>The UV seams marked in the edit (Mark Seam), saved with it and carried on the body
+	/// this feature outputs, so an unwrap further down the tree cuts where they were marked. They
+	/// live on the edited mesh itself - see <see cref="PolyMesh.Seams"/>.</summary>
+	public IReadOnlyCollection<EdgeKey> Seams => (IReadOnlyCollection<EdgeKey>)_edited?.Seams ?? System.Array.Empty<EdgeKey>();
+
 	/// <summary>The live modifiers applied to <paramref name="mesh"/> — what this feature outputs
 	/// for it, and what the editor shows over the cage while you edit.</summary>
 	public PolyMesh ApplyModifiers( PolyMesh mesh ) => ApplyModifiers( mesh, Creases );
@@ -271,7 +276,7 @@ public sealed class MeshEditFeature : Feature
 	/// Hand the feature an edited mesh. <paramref name="basedOn"/> is the body the session started
 	/// from — normally <see cref="LastInput"/>. The mesh is cloned: the session keeps editing its own.
 	/// </summary>
-	public void Commit( PolyMesh edited, PolyMesh basedOn, IEnumerable<PolyMesh> pieces = null, IEnumerable<KeyValuePair<EdgeKey, float>> creases = null )
+	public void Commit( PolyMesh edited, PolyMesh basedOn, IEnumerable<PolyMesh> pieces = null, IEnumerable<KeyValuePair<EdgeKey, float>> creases = null, IEnumerable<EdgeKey> seams = null )
 	{
 		if ( edited is null )
 			throw new System.ArgumentNullException( nameof( edited ) );
@@ -279,6 +284,8 @@ public sealed class MeshEditFeature : Feature
 			throw new System.ArgumentNullException( nameof( basedOn ) );
 
 		_edited = edited.Clone();
+		if ( seams is not null )
+			_edited.Seams = new HashSet<EdgeKey>( seams );
 		Creases = new Dictionary<EdgeKey, float>();
 		if ( creases is not null )
 			foreach ( var (key, weight) in creases )

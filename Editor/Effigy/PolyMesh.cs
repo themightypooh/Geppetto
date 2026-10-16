@@ -164,6 +164,31 @@ public sealed class PolyMesh
 
 	public bool HasMorphs => ValidMorphs.Any();
 
+	/// <summary>
+	/// Edges marked as UV seams (Mark Seam), by vertex index: where an unwrap must cut. Rides the
+	/// mesh for the reason <see cref="Skin"/> does - a Mesh edit marks them and a UV project feature
+	/// further down the tree reads them, and the body between the two is the only thing they share.
+	/// Clone and <see cref="MeshTransform.Append"/> carry them; the live modifiers map them through
+	/// mirror, array and subdivide. Anything else that rebuilds the vertex list starts with none,
+	/// and a key that no longer names an edge is ignored by <see cref="LiveSeams"/>.
+	/// </summary>
+	public HashSet<EdgeKey> Seams = new();
+
+	/// <summary>The marked seams that are still edges of this mesh - what an unwrap should obey.</summary>
+	public HashSet<EdgeKey> LiveSeams()
+	{
+		var live = new HashSet<EdgeKey>();
+		if ( Seams is null || Seams.Count == 0 )
+			return live;
+
+		var edges = BuildEdgeFaces();
+		foreach ( var key in Seams )
+			if ( edges.ContainsKey( key ) )
+				live.Add( key );
+
+		return live;
+	}
+
 	/// <summary>Add (or replace) a shape key from where every vertex should be when it is fully on -
 	/// the same vertex order as this mesh, e.g. a copy of it pushed about by a brush or a deform.</summary>
 	public MeshMorph AddMorph( string name, IReadOnlyList<Vec3> target )
@@ -461,6 +486,7 @@ public sealed class PolyMesh
 			m.Paint = Paint.Clone();
 
 		m.Morphs = Morphs.Where( x => x is not null ).Select( x => x.Clone() ).ToList();
+		m.Seams = Seams is null ? new HashSet<EdgeKey>() : new HashSet<EdgeKey>( Seams );
 
 		foreach ( var f in Faces )
 			m.Faces.Add( new Face( (int[])f.Indices.Clone(), (Vec2[])f.UVs.Clone(), f.Material ) );

@@ -142,7 +142,8 @@ public static class UVUnwrap
 	/// which is what overlaps when they are exported as one model with one texture.
 	///
 	/// <paramref name="seams"/> are edge keys, which are vertex indices, so they only mean anything
-	/// on one mesh; with several they apply to the first.
+	/// on one mesh; with several they apply to the first. Left null, each mesh is cut along the
+	/// seams it carries itself (<see cref="PolyMesh.Seams"/>, marked in a Mesh edit).
 	/// </summary>
 	public static UnwrapReport UnwrapAll( IReadOnlyList<PolyMesh> meshes, float angleDegrees = 66f, float margin = 0.01f,
 		IReadOnlySet<EdgeKey> seams = null, UnwrapMode mode = UnwrapMode.Angle,
@@ -160,7 +161,7 @@ public static class UVUnwrap
 		for ( var owner = 0; owner < meshes.Count; owner++ )
 		{
 			var mesh = meshes[owner] ?? throw new ArgumentException( "A mesh in the list is null.", nameof( meshes ) );
-			var meshSeams = owner == 0 ? seams : null;
+			var meshSeams = seams is null ? (IReadOnlySet<EdgeKey>)mesh.LiveSeams() : owner == 0 ? seams : null;
 			var first = flattened.Count;
 			faceCount += mesh.FaceCount;
 

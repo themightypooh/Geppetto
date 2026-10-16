@@ -371,8 +371,9 @@ public static class MeshEditBlob
 	static readonly byte[] Magic = Encoding.ASCII.GetBytes( "EFFIGYME" );
 
 	/// <summary>2 added separated pieces after the main mesh; 3 added edge creases after the
-	/// pieces. Formats 1 and 2 still read.</summary>
-	public const int Version = 3;
+	/// pieces; 4 added the main mesh's marked UV seams (<see cref="PolyMesh.Seams"/>) after the
+	/// creases. Formats 1 to 3 still read, with no seams.</summary>
+	public const int Version = 4;
 
 	public const string Extension = ".meshedit";
 
@@ -402,6 +403,16 @@ public static class MeshEditBlob
 				w.Write( key.A );
 				w.Write( key.B );
 				w.Write( weight );
+			}
+		}
+
+		w.Write( mesh.Seams?.Count ?? 0 );
+		if ( mesh.Seams is not null )
+		{
+			foreach ( var key in mesh.Seams )
+			{
+				w.Write( key.A );
+				w.Write( key.B );
 			}
 		}
 
@@ -456,6 +467,19 @@ public static class MeshEditBlob
 				var weight = r.ReadSingle();
 				if ( a >= 0 && b >= 0 && a < mesh.VertexCount && b < mesh.VertexCount && a != b )
 					creases[new EdgeKey( a, b )] = weight;
+			}
+		}
+
+		mesh.Seams = new HashSet<EdgeKey>();
+		if ( version >= 4 )
+		{
+			var count = r.ReadInt32();
+			for ( var i = 0; i < count; i++ )
+			{
+				var a = r.ReadInt32();
+				var b = r.ReadInt32();
+				if ( a >= 0 && b >= 0 && a < mesh.VertexCount && b < mesh.VertexCount && a != b )
+					mesh.Seams.Add( new EdgeKey( a, b ) );
 			}
 		}
 

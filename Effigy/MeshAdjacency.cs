@@ -1614,9 +1614,10 @@ public sealed class MeshEditSession
 	/// along seams is how you decide where the texture is allowed to break, and it is the difference
 	/// between an automatic unwrap and one you chose.
 	///
-	/// Held on the session and in its undo history, NOT saved with the edit: the committed mesh
-	/// carries the UVs the unwrap produced, so reopening the edit gives you the result, not the cuts
-	/// that made it.
+	/// Held on the session and in its undo history, and saved with the edit: the session starts
+	/// with the seams its starting mesh carries (<see cref="PolyMesh.Seams"/>) and
+	/// <see cref="CommitTo"/> hands them to the feature, which keeps them on the body it outputs -
+	/// so a UV project feature further down unwraps along them, and reopening the edit shows them.
 	/// </summary>
 	public HashSet<EdgeKey> Seams { get; } = new();
 
@@ -1772,6 +1773,12 @@ public sealed class MeshEditSession
 
 		Base = body.Clone();
 		Mesh = (start ?? body).Clone();
+
+		if ( Mesh.Seams is { Count: > 0 } )
+		{
+			Seams.UnionWith( Mesh.Seams );
+			PruneSeams();
+		}
 	}
 
 	// --- selection ---------------------------------------------------------------------------
@@ -5274,7 +5281,7 @@ public sealed class MeshEditSession
 		if ( !HasChanges )
 			return false;
 
-		feature.Commit( Mesh, Base, Separated, Creases );
+		feature.Commit( Mesh, Base, Separated, Creases, Seams );
 		return true;
 	}
 

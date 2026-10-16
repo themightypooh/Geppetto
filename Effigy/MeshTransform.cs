@@ -148,6 +148,14 @@ public static class MeshTransform
 		if ( target.Paint is null && source.Paint is not null )
 			target.Paint = source.Paint;
 
+		// Marked UV seams are vertex-index pairs, so they shift with the source's vertices.
+		if ( source.Seams is { Count: > 0 } )
+		{
+			target.Seams ??= new HashSet<EdgeKey>();
+			foreach ( var key in source.Seams )
+				target.Seams.Add( new EdgeKey( key.A + offset, key.B + offset ) );
+		}
+
 		foreach ( var f in source.Faces )
 		{
 			var indices = new int[f.Count];
@@ -405,6 +413,10 @@ public static class MeshModifiers
 		var result = mesh.Clone();
 		var live = creases is null || creases.Count == 0 ? null : new Dictionary<EdgeKey, float>( creases );
 
+		// UV seams marked on the cage follow it like the creases do, so an unwrap after the edit
+		// still cuts where they were marked (see UVSeams).
+		var seams = mesh.Seams is { Count: > 0 } ? new HashSet<EdgeKey>( mesh.Seams ) : null;
+
 		if ( mirrorX )
 		{
 			result = MirrorX( result, seam, out var map, bonePartner );
@@ -413,6 +425,13 @@ public static class MeshModifiers
 				foreach ( var (key, weight) in creases )
 					if ( key.A < map.Length && key.B < map.Length )
 						live[new EdgeKey( map[key.A], map[key.B] )] = weight;
+			}
+
+			if ( seams is not null )
+			{
+				foreach ( var key in new List<EdgeKey>( seams ) )
+					if ( key.A < map.Length && key.B < map.Length )
+						seams.Add( new EdgeKey( map[key.A], map[key.B] ) );
 			}
 		}
 
@@ -426,14 +445,40 @@ public static class MeshModifiers
 					for ( var k = 1; k < arrayCount; k++ )
 						live[new EdgeKey( key.A + n * k, key.B + n * k )] = weight;
 			}
+
+			if ( seams is not null )
+			{
+				foreach ( var key in new List<EdgeKey>( seams ) )
+					for ( var k = 1; k < arrayCount; k++ )
+						seams.Add( new EdgeKey( key.A + n * k, key.B + n * k ) );
+			}
 		}
 
 		if ( subdivide > 0 )
-			result = CatmullClark.Subdivide( result, Math.Min( subdivide, 3 ), live, out _ );
+		{
+			if ( seams is null )
+				result = CatmullClark.Subdivide( result, Math.Min( subdivide, 3 ), live, out _ );
+			else
+			{
+				// One level at a time, so the seams can be split onto each level's edge points.
+				for ( var level = 0; level < Math.Min( subdivide, 3 ); level++ )
+				{
+					var before = result;
+					result = CatmullClark.Subdivide( before, 1, live, out var remaining );
+					live = remaining.Count > 0 ? remaining : null;
+					seams = UVSeams.Subdivided( before, seams );
+				}
+			}
+		}
 
 		if ( solidify > 0f )
+		{
 			result = MeshSolidify.Solidify( result, solidify );
+			// The shell's vertex layout is its own; the cage's seams do not name its edges.
+			seams = null;
+		}
 
+		result.Seams = seams ?? new HashSet<EdgeKey>();
 		return result;
 	}
 
