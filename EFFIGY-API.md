@@ -359,8 +359,8 @@ save out/robot.effigy
 | `match` | `match view ref.png [diff.png]`, or several views at once: `match front=ref_front.png side=ref_side.png [out=dir]` adds a combined line (mean overlap, worst view) and writes `match_<view>.png` diffs to `out=` |
 | `material` | `material slot path.vmat` |
 | `pivot` | `pivot Body @landmark` |
-| `export` | `export folder [split=1] [assets=root] [name=x] [lods=0\|1\|0.5,0.25] [loddistance=a,b] [collision=none\|auto\|hulls\|render] [surface=default] [skin=auto\|0\|1] [fbx=1]`. Static: `.obj` + `.vmdl` (+ `_lodN.obj` and a LOD list with `lods=`; `lods=1` is half and a quarter, switching at 6x and 15x the model's diagonal unless `loddistance=` says). Skinned (default when the studio has bones and `split` is off): `.dmx` + `.smd` + a skinned `.vmdl`, bound like the editor's export (body→bone map, smoothing, weight paint), skeleton moved with the pivot; no LODs. `collision=auto` is the editor's choice (exact shapes from the history, else a hull per body; on a skinned model a hull per body on its bone), `hulls` a hull per body, `render` physics from the render mesh; default none. `fbx=1` adds a binary `.fbx` (skinned when the model is) for Blender; the `.vmdl` still loads the `.obj`/`.dmx`. Reference bodies are left out. Shape keys go into the skinned `.dmx` as flex controls, and the export turns `F_MORPH_SUPPORTED 1` on in every Effigy-written `.vmat` under `assets=` the model uses (`VmatMorph.EnableFiles`), naming any it cannot; a static export says it left them out (OBJ has none). |
-| `bake` | `bake LOW HIGH folder [size=1024] [maps=normal,ao,curvature,cavity,height,thickness\|all] [cage=0] [ss=1] [vmat=0]` (see [Baking](#baking)) |
+| `export` | `export folder [split=1] [assets=root] [name=x] [lods=0\|1\|0.5,0.25] [loddistance=a,b] [collision=none\|auto\|hulls\|render] [surface=default] [skin=auto\|0\|1] [fbx=1]`. Static: `.obj` + `.vmdl` (+ `_lodN.obj` and a LOD list with `lods=`; `lods=1` is half and a quarter, switching at 6x and 15x the model's diagonal unless `loddistance=` says). Skinned (default when the studio has bones and `split` is off): `.dmx` + `.smd` + a skinned `.vmdl`, bound like the editor's export (body→bone map, smoothing, weight paint), skeleton moved with the pivot; no LODs. `collision=auto` is the editor's choice (exact shapes from the history, else a hull per body; on a skinned model a hull per body on its bone), `hulls` a hull per body, `render` physics from the render mesh; default none. `fbx=1` adds a binary `.fbx` (skinned when the model is) for Blender; the `.vmdl` still loads the `.obj`/`.dmx`. Reference bodies are left out. |
+| `bake` | `bake LOW HIGH[,HIGH2…] folder` or `bake * folder` (pairs by _low/_high/_cage name) `[size=1024] [maps=normal,ao,curvature,cavity,height,thickness,bentnormal,objectnormal,position,id\|all\|everything] [cage=0\|CageBody] [ss=1] [bits=8\|16] [id=material\|body] [vmat=0] [shader=complex\|skin preset= k=]` (see [Baking](#baking)) |
 | `corrective` | `corrective bone=elbow_L angle=90 [axis=x,y,z]` adds a corrective shape (saved with the rig); `corrective remove bone= [angle=]`; bare `corrective` lists them. At a skinned export each becomes a morph `bone_bend90` built from the export's own 4-bone weights (`CorrectiveMorph`): it pushes the blend zone's in-plane offset from the joint out by 1/s(w) − 1, so at that bend the joint keeps its rest volume instead of cos(A/2) of it. Drive it 0 straight → 1 at the angle (`CorrectiveMorph.WeightAt` for in between). The export also logs when the 4-weight cap drops more than 5% of a vertex's weight (`SkinWeights.CapLoss`). |
 | `save` | `save path` |
 | `echo` | `echo text` |
@@ -445,6 +445,10 @@ Every map is sampled per texel from the high mesh, not interpolated from its ver
 | `curvature` | How fast the high normal turns across 1.5 texels. Mid grey is flat, brighter convex, darker concave. White's value is logged |
 | `cavity` | Depth below a ring of neighbours 4 texels out, measured against the cage so the cage's own curve doesn't count. White on flats and ridges, black in pits |
 | `height` | Signed distance from the cage along its normal. Mid grey is on the cage. The logged `+-range` is what black and white stand for |
+| `bentnormal` | The average unblocked direction of the AO rays, in the same tangent space and green convention as `normal`. Bound by the skin vmat as `TextureBentNormal` with `F_USE_BENT_NORMALS 1` |
+| `objectnormal` | The high normal in object space, x y z straight into R G B (−1 black, +1 white). Unhit texels mid grey |
+| `position` | The hit point across the highs' bounding box per axis; the box is logged (`BakeSet.PositionMin/Max`) |
+| `id` | A flat colour per material slot (`id=body`: per high body), padded by copying so no third colour appears. The colours are logged (`BakeSet.IdColors`, `NormalBake.IdColour( k )`) |
 | `thickness` | Mean distance through the sculpt behind the surface. White is a quarter of the diagonal or more. The straight path along −N is kept unquantised in `BakeSet.ThicknessUnits`, and `SkinMaterial.TransmissionMask( set, k )` turns it into a transmission mask (skin's red transmittance; `k` 1 = skin, 3–10 gel-like flesh) |
 
 | Key | Meaning |
@@ -455,12 +459,20 @@ Every map is sampled per texel from the high mesh, not interpolated from its ver
 | `green=dx` | DirectX green. The default `gl` is OpenGL-style (+green up the image), which is what s&box reads: its shader negates y and its bitangent is +dP/dv (read from `normal.hlsl` and sbox-public's `PolygonMesh`). Keep `flipv=0` (v = 0 at the top) for s&box |
 | `padding=` | Edge bleed in texels (default 4) |
 | `name=` | File prefix (default: the low body's name) |
+| `cage=CageBody` | A cage MESH: a copy of LOW pushed out (same vertices and faces). Each ray starts on it and runs through the matching LOW point, `distance=` beyond. In C#: `BakeOptions.CageMesh`; `NormalBake.CageMismatch` says why a mesh can't be one |
+| `HIGH,HIGH2` | Several high bodies, combined. `id=body` colours the ID map per high body |
+| `bake * folder` | By name: every `X_low` from its `X_high` bodies (`X_high_2`, `X_high3` …) and `X_cage`, case-insensitive. Each pair is baked against only its own highs (an exploded bake, without moving anything) into one shared map set, so the lows' UVs must not overlap each other. Unpaired bodies are logged as warnings. In C#: `BakePairs.Match` → `BakePairs.ToGroups` → `NormalBake.BakeGroups` |
+| `bits=16` | height, normal, bent normal, object normal and position as 16-bit PNGs (`BakeOptions.SixteenBit`, `BakedMap.Rgb16`, `PngWriter.WriteFile16`; `PngReader.Read16` reads 8- or 16-bit). Other maps stay 8-bit. Not yet confirmed in the s&box texture compiler, hence not the default |
+| `shader=skin` | The vmat is `shaders/skin.shader` with `preset=Body\|Head\|Mouth\|Wet flesh`; with thickness baked it also writes `<name>_transmission.png` at translucency `k=` (default 1), and binds a baked bent normal |
 | `vmat=1` | Also writes `<name>.vmat` for `complex.vfx`, binding the baked normal and AO (`BakeMaterial.VmatSource`). `color=` and `rough=` add those textures by asset path, `metal=` sets metalness, and texture paths are made relative to `assets=` (default: the script's folder). Height is written to disk but not bound, because complex reads it only under `F_PARALLAX_OCCLUSION` |
 
 **In the editor**, a Sculpt feature's **Bake** button writes the normal map plus whichever of AO,
 curvature, cavity, height and thickness (with its transmission mask) **Edit ▸ Settings ▸ Bake**
 switches on, and optionally a `.vmat`: Complex, or s&box's skin shader with a Facepunch preset. In C#
-that is `BakeMaterial.WriteSet( set, folder, name, flipV, assetsRoot, material )`.
+that is `BakeMaterial.WriteSet( set, folder, name, flipV, assetsRoot, material )`. **Paint ▸ Bake Selected
+to Active** bakes the other selected bodies onto the one selected last (a selected `…_cage` body is
+its cage) and **Paint ▸ Bake by Name** runs the `bake *` pairing; both use the same Settings ▸ Bake
+maps, size, material, cage distance and 16-bit switch.
 
 **Skin shader.** `SkinMaterial.VmatSource( SkinMaterial.Body() | Head() | Mouth() | WetFlesh(),
 color, normal, rough, ao, transmissiveMask, bentNormal )` writes `shaders/skin.shader` (subsurface

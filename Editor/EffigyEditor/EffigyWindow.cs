@@ -1966,6 +1966,22 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			Clicked = () => AddFeature( NewFeature( ToolKind.FleshMaterial, -1 ) ),
 		} );
 
+		stage.Add( new EffigyStageTool
+		{
+			Icon = EffigyIcon.SculptBake,
+			Label = "Bake Selected to Active",
+			Tip = "Bake the detail of the selected bodies into texture maps on the body you selected last. Maps, size, cage and material are in Edit > Settings > Bake",
+			Clicked = BakeSelectedToActive,
+		} );
+
+		stage.Add( new EffigyStageTool
+		{
+			Icon = EffigyIcon.SculptBake,
+			Label = "Bake by Name",
+			Tip = "Bake every body named X_low from the bodies named X_high (X_cage is its cage), each pair on its own so nearby parts do not bleed into each other, into one set of maps",
+			Clicked = BakeByName,
+		} );
+
 		return new List<EffigyStage> { stage };
 	}
 
@@ -2746,7 +2762,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			if ( name.EndsWith( "_normal", StringComparison.OrdinalIgnoreCase ) )
 				name = name[..^"_normal".Length];
 
-			var options = new BakeOptions { FlipGreen = _bakeFlipGreen };
+			var options = new BakeOptions { FlipGreen = _bakeFlipGreen, SixteenBit = _bakeSixteenBit, Cage = _bakeCage };
 			var set = NormalBake.BakeAll( cage, sculpt.Evaluate( sculpt.TopLevel ), _bakeSize, _bakeSize, _bakeMaps | BakeMaps.Normal, options );
 			var material = BakeMaterial.MaterialChoices[Math.Clamp( _bakeMaterial, 0, BakeMaterial.MaterialChoices.Length - 1 )];
 			var written = BakeMaterial.WriteSet( set, folder, name, _bakeFlipV, Project.Current?.GetAssetsPath(), material );
@@ -8803,6 +8819,8 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		BakeSize = _bakeSize,
 		BakeMaps = (int)_bakeMaps,
 		BakeMaterial = _bakeMaterial,
+		BakeSixteenBit = _bakeSixteenBit,
+		BakeCage = _bakeCage,
 	};
 
 	/// <summary>Take everything the settings window is showing and make it true, then remember it.
@@ -8858,6 +8876,11 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		EditorCookie.Set( BakeFlipVCookie, values.BakeFlipV );
 		EditorCookie.Set( BakeSizeCookie, values.BakeSize );
 
+		_bakeSixteenBit = values.BakeSixteenBit;
+		_bakeCage = Math.Max( 0f, values.BakeCage );
+		EditorCookie.Set( BakeSixteenBitCookie, _bakeSixteenBit );
+		EditorCookie.Set( BakeCageCookie, _bakeCage );
+
 		EditorCookie.Set( PlaneGridCookie, values.ShowGrid );
 		EditorCookie.Set( GridSpacingCookie, values.GridSpacing );
 		EditorCookie.Set( SnapGridCookie, values.SnapToGrid );
@@ -8882,6 +8905,8 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		_bakeSize = EditorCookie.Get( BakeSizeCookie, 1024 );
 		_bakeMaps = (BakeMaps)EditorCookie.Get( BakeMapsCookie, (int)(BakeMaps.Normal | BakeMaps.AmbientOcclusion) ) | BakeMaps.Normal;
 		_bakeMaterial = Math.Clamp( EditorCookie.Get( BakeMaterialCookie, 0 ), 0, BakeMaterial.MaterialChoices.Length - 1 );
+		_bakeSixteenBit = EditorCookie.Get( BakeSixteenBitCookie, false );
+		_bakeCage = Math.Max( 0f, EditorCookie.Get( BakeCageCookie, 0f ) );
 		_showUVChecker = EditorCookie.Get( CheckerCookie, false );
 
 		if ( !_viewport.IsValid() )

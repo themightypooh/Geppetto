@@ -308,10 +308,19 @@ internal sealed class EffigySettingsWindow : Window
 		/// <summary>Index into <see cref="Effigy.BakeMaterial.MaterialChoices"/>: the .vmat written
 		/// beside the maps, if any.</summary>
 		public int BakeMaterial;
+
+		/// <summary>Write height and the normal maps as 16-bit PNGs (BakeOptions.SixteenBit).</summary>
+		public bool BakeSixteenBit;
+
+		/// <summary>How far out the bake's rays start, in model units; 0 measures it (BakeOptions.Cage).</summary>
+		public float BakeCage;
 	}
 
 	/// <summary>The sizes the bake dropdown offers. A square map, so one number.</summary>
 	private static readonly int[] BakeSizes = { 256, 512, 1024, 2048, 4096 };
+
+	/// <summary>The cage distances the bake dropdown offers, in model units; 0 is Auto (measured).</summary>
+	private static readonly float[] BakeCages = { 0f, 0.1f, 0.25f, 0.5f, 1f, 2f, 4f };
 
 	/// <summary>The spacings the dropdown offers, in sketch units. Zero is Automatic — the adaptive
 	/// 1/2/5 step that keeps the grid about a constant size on screen at any zoom.</summary>
@@ -599,6 +608,42 @@ internal sealed class EffigySettingsWindow : Window
 		MapSwitch( "Height", Effigy.BakeMaps.Height, "Bake height too: mid grey is the cage, the range is in the prompt." );
 		MapSwitch( "Thickness and transmission", Effigy.BakeMaps.Thickness,
 			"Bake thickness too, and from it a transmission mask (light through thin parts) for the skin shader." );
+		MapSwitch( "Bent normal", Effigy.BakeMaps.BentNormal,
+			"Bake the direction light can still reach each spot from. The skin material uses it to soften lighting in creases." );
+		MapSwitch( "Object-space normal", Effigy.BakeMaps.ObjectNormal,
+			"Bake which way the surface faces in the model's own space. A mask for moss on top or dust on one side." );
+		MapSwitch( "Position", Effigy.BakeMaps.Position,
+			"Bake where each spot sits in the model, as colour. A mask for gradients from feet to head." );
+		MapSwitch( "Material ID", Effigy.BakeMaps.MaterialId,
+			"Bake a flat colour per material, so each material can be picked as a mask when painting." );
+
+		AddSwitch( bake, "16-bit height and normals",
+			"Write the height map and the normal maps as 16-bit images, so gentle slopes do not step. Larger files.",
+			_values.BakeSixteenBit,
+			value => { _values.BakeSixteenBit = value; Changed(); } );
+
+		var cageRow = bake.Layout.AddRow();
+
+		cageRow.Add( new Editor.Label( "Cage distance" ) );
+		cageRow.AddStretchCell();
+
+		var cage = new ComboBox( bake )
+		{
+			MinimumWidth = 150,
+			ToolTip = "How far outside the surface the bake starts looking for detail. Auto measures it; set it when "
+				+ "tall detail bakes flat (too small) or a neighbouring part shows up in the map (too big).",
+		};
+
+		foreach ( var distance in BakeCages )
+		{
+			var value = distance;
+
+			cage.AddItem( value == 0f ? "Auto" : $"{value:0.##} units",
+				onSelected: () => { _values.BakeCage = value; Changed(); },
+				selected: MathF.Abs( value - _values.BakeCage ) < 1e-4f );
+		}
+
+		cageRow.Add( cage );
 
 		var materialRow = bake.Layout.AddRow();
 
