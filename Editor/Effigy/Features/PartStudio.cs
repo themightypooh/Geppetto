@@ -164,6 +164,13 @@ public sealed class PartStudio
 	public Skeleton Rig = new();
 
 	/// <summary>
+	/// What StudioDocument.Read had to leave out of this studio, one sentence each - a bone with a
+	/// duplicate name, say. Not saved. An editor shows these on open, because the next save writes
+	/// the studio as it is and makes the loss permanent.
+	/// </summary>
+	public List<string> ReadWarnings = new();
+
+	/// <summary>
 	/// Rebuild cheaply, because a slider is being dragged. See FeatureContext.Preview.
 	///
 	/// ON THE STUDIO rather than passed to Rebuild, because the incremental rebuild caches each
@@ -444,8 +451,12 @@ public sealed class PartStudio
 			// Bodies added by this feature inherit its visibility. Doing it here rather than in
 			// every feature's Execute means a new feature type gets it for free and cannot forget.
 			var bodiesBefore = ctx.Bodies.Count;
+			var keysBefore = ShapeKeyCarry.Before( ctx );
 
 			feature.Run( ctx );
+
+			// Shape keys ride the mesh; a feature that hands a body a new mesh keeps them (ShapeKeyCarry).
+			ShapeKeyCarry.After( keysBefore, ctx, feature );
 
 			for ( var b = bodiesBefore; b < ctx.Bodies.Count; b++ )
 			{
@@ -466,6 +477,9 @@ public sealed class PartStudio
 
 			_cache.Add( Snapshot.Of( ctx ) );
 		}
+
+		// A Shape Key with no End Shape Key below it leaves its bodies shaped and its key unfinished.
+		ShapeKeyFeature.WarnUnclosed( Features.Take( count ), ctx, report );
 
 		// Features past the rollback bar are neither evaluated nor errors; just note them.
 		for ( var i = count; i < Features.Count; i++ )
@@ -533,14 +547,19 @@ public sealed class PartStudio
 	/// jacket from is on screen the whole time you work and must never end up inside the jacket's
 	/// .vmdl. See Body.IsReference and WearerFeature.
 	/// </summary>
-	public PolyMesh ToMesh()
+	public PolyMesh ToMesh( Func<Body, bool> include = null )
 	{
 		var merged = new PolyMesh();
 
 		foreach ( var b in Bodies )
 		{
-			if ( !b.IsReference )
-				MeshTransform.Append( merged, b.Mesh );
+			if ( b.IsReference )
+				continue;
+
+			if ( include is not null && !include( b ) )
+				continue;
+
+			MeshTransform.Append( merged, b.Mesh );
 		}
 
 		return merged;
@@ -569,7 +588,7 @@ public sealed class PartStudio
 	/// stable, so a rig stored as "body3 is the forearm" can be reapplied to the new geometry
 	/// instead of being invalidated by it. See SkinBinder.BindBodies.
 	/// </summary>
-	public (PolyMesh Mesh, List<BodyRange> Ranges) ToMeshWithBodies()
+	public (PolyMesh Mesh, List<BodyRange> Ranges) ToMeshWithBodies( Func<Body, bool> include = null )
 	{
 		var merged = new PolyMesh();
 		var ranges = new List<BodyRange>( Bodies.Count );
@@ -579,6 +598,9 @@ public sealed class PartStudio
 			// Left out for the same reason ToMesh leaves it out — this is the export/rig merge, and
 			// a wearer is neither shipped nor weighted.
 			if ( b.IsReference )
+				continue;
+
+			if ( include is not null && !include( b ) )
 				continue;
 
 			var start = merged.VertexCount;

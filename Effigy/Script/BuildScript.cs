@@ -23,6 +23,7 @@ namespace Effigy;
 ///   render out/torso.png view=sheet
 ///   describe
 ///   match front reference.png out/match.png
+///   bake Cage Sculpt out/bake size=2048 maps=normal,ao,curvature,cavity,height ss=2 vmat=1
 ///
 /// `add TYPE` takes a feature type (Primitive, Spline, Part, Profile, Transform, Mirror,
 /// Subdivide…) and `key=value` pairs naming its parameters by label or field. Anywhere a point
@@ -130,6 +131,33 @@ public static class BuildScript
 				return RebuildAndCheck( studio, feature, r, $"added {feature.TypeName} '{feature.Name ?? feature.Id}'" );
 			}
 
+			case "edit":
+			{
+				// edit Torso extrude select=normal:up distance=4 — an EditOp feature, replayed on every rebuild.
+				if ( args.Count < 2 )
+					return Fail( r, $"edit needs a body and an operation: edit Torso extrude select=normal:up distance=4. Operations: {string.Join( ", ", EditOpFeature.Operations.Select( o => Normalise( o ) ) )}." );
+
+				if ( ModelMeasure.FindBody( studio, args[0] ) is null )
+					return Fail( r, $"No body called '{args[0]}'. Bodies: {string.Join( ", ", studio.Bodies.Select( b => b.Name ?? b.Id ) )}." );
+
+				var op = Array.FindIndex( EditOpFeature.Operations, o => Normalise( o ) == Normalise( args[1] ) );
+
+				if ( op < 0 )
+					return Fail( r, $"No edit operation '{args[1]}'. Operations: {string.Join( ", ", EditOpFeature.Operations.Select( o => Normalise( o ) ) )}." );
+
+				var feature = new EditOpFeature();
+				feature.Op.Index = op;
+				var pairs = Pairs( args.Skip( 2 ) );
+				pairs["bodies"] = args[0];
+				pairs.TryAdd( "name", $"{args[0]} {Normalise( EditOpFeature.Operations[op] )}" );
+
+				if ( !Assign( studio, feature, pairs, r ) )
+					return false;
+
+				studio.Add( feature );
+				return RebuildAndCheck( studio, feature, r, $"{Normalise( EditOpFeature.Operations[op] )} on {args[0]}" );
+			}
+
 			case "set":
 			{
 				if ( args.Count < 2 )
@@ -194,6 +222,10 @@ public static class BuildScript
 
 				var path = Resolve( baseDir, args[0] );
 				var opts = Pairs( args.Skip( 1 ) );
+
+				if ( opts.TryGetValue( "shade", out var shade ) )
+					return RenderShaded( studio, path, opts, shade, r );
+
 				var viewName = opts.GetValueOrDefault( "view", "sheet" );
 				var size = (int)Number( opts.GetValueOrDefault( "size", "512" ) );
 				var options = new RenderOptions
@@ -334,74 +366,522 @@ public static class BuildScript
 			}
 
 			case "export":
+				return Export( studio, args, baseDir, r );
+
+			case "bake":
 			{
-				// export models/civic_art/orrery split=1 assets=C:/proj/Assets name=orrery
-				if ( args.Count < 1 )
-					return Fail( r, "export needs a folder under the assets root: export models/civic_art/orrery [split=1] [assets=root] [name=x]" );
+				// bake Low High out/bake size=2048 maps=normal,ao,curvature,height,cavity cage=0.2 ss=2 vmat=1
+				if ( args.Count < 3 )
+					return Fail( r, "bake needs the low body, the high body and a folder: bake Low High out/bake [size=1024] "
+						+ "[maps=normal,ao,curvature,cavity,height,thickness|all] [cage=0] [ss=1] [vmat=0]" );
 
-				var folder = args[0].Replace( '\\', '/' ).Trim( '/' );
-				var opts = Pairs( args.Skip( 1 ) );
-				var root = opts.TryGetValue( "assets", out var assets ) ? assets : baseDir;
-				var split = Truthy( opts.GetValueOrDefault( "split", "0" ) );
-				var name = opts.GetValueOrDefault( "name", folder.Contains( '/' ) ? folder[(folder.LastIndexOf( '/' ) + 1)..] : folder );
-				var dir = Path.Combine( root, folder );
+				var low = ModelMeasure.FindBody( studio, args[0] );
+				var high = ModelMeasure.FindBody( studio, args[1] );
+
+				if ( low?.Mesh is null || high?.Mesh is null )
+					return Fail( r, $"No body called '{(low?.Mesh is null ? args[0] : args[1])}'. Bodies: {string.Join( ", ", studio.Bodies.Select( b => b.Name ?? b.Id ) )}." );
+
+				var opts = Pairs( args.Skip( 3 ) );
+				var size = (int)Number( opts.GetValueOrDefault( "size", "1024" ) );
+
+				if ( size < 1 || size > 8192 )
+					return Fail( r, $"size={size}: a map is 1 to 8192 texels a side." );
+
+				if ( !BakeMapList( opts.GetValueOrDefault( "maps", "normal,ao" ), out var maps, out var whyMaps ) )
+					return Fail( r, whyMaps );
+
+				// Refused up front, with the reason: an overlapping bake does not fail, it writes a
+				// map that is wrong wherever two faces share texels.
+				var coverage = NormalBake.Measure( low.Mesh );
+
+				if ( !coverage.CanBake )
+					return Fail( r, $"{args[0]} cannot carry a bake: {coverage.Problem} Unwrap it first: add UVProject bodies={args[0]} mode=Unwrap" );
+
+				var options = new BakeOptions
+				{
+					Cage = opts.TryGetValue( "cage", out var cageText ) ? Number( cageText ) : 0f,
+					MaxDistance = opts.TryGetValue( "distance", out var distance ) ? Number( distance ) : 0f,
+					Supersample = (int)Number( opts.GetValueOrDefault( "ss", "1" ) ),
+					FlipGreen = opts.GetValueOrDefault( "green", "gl" ).Equals( "dx", StringComparison.OrdinalIgnoreCase ),
+					AoRays = (int)Number( opts.GetValueOrDefault( "rays", "64" ) ),
+					AoDistance = opts.TryGetValue( "aodistance", out var aoDistance ) ? Number( aoDistance ) : 0f,
+					Padding = (int)Number( opts.GetValueOrDefault( "padding", "4" ) ),
+				};
+
+				var dir = Resolve( baseDir, args[2] );
 				Directory.CreateDirectory( dir );
+				var name = Safe( opts.GetValueOrDefault( "name", low.Name ?? low.Id ) );
+				var flipV = Truthy( opts.GetValueOrDefault( "flipv", "0" ) );
+				var set = NormalBake.BakeAll( low.Mesh, high.Mesh, size, size, maps, options );
+				var written = new Dictionary<string, string>();
 
-				var layout = new StringBuilder();
-				layout.AppendLine( "# part\tmodel\tpivot x\ty\tz\tsize x\ty\tz" );
-
-				var bodies = studio.Bodies.Where( b => b?.Mesh is not null && b.Mesh.Faces.Count > 0 && b.Visible ).ToList();
-
-				if ( bodies.Count == 0 )
-					return Fail( r, "Nothing to export: no visible bodies." );
-
-				if ( split )
+				foreach ( var (mapName, map) in set.Maps )
 				{
-					foreach ( var body in bodies )
-					{
-						var partName = Safe( body.Name ?? body.Id );
-						var mesh = body.Mesh.Clone();
-						var (min, max) = ModelMeasure.Bounds( mesh );
-						var pivot = r.Pivots.TryGetValue( body.Name ?? "", out var p ) ? p : new Vec3( (min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f, min.z );
-
-						MeshTransform.Apply( mesh, Xform.Translate( -pivot ) );
-						WriteModel( studio, mesh, dir, folder, partName );
-						layout.AppendLine( $"{body.Name ?? body.Id}\t{folder}/{partName}.vmdl\t{N( pivot.x )}\t{N( pivot.y )}\t{N( pivot.z )}\t{N( max.x - min.x )}\t{N( max.y - min.y )}\t{N( max.z - min.z )}" );
-					}
-				}
-				else
-				{
-					var mesh = new PolyMesh();
-					foreach ( var body in bodies )
-						MeshTransform.Append( mesh, body.Mesh );
-
-					var (min, max) = ModelMeasure.Bounds( mesh );
-					var pivot = r.Pivots.TryGetValue( name, out var p ) ? p : new Vec3( (min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f, min.z );
-					MeshTransform.Apply( mesh, Xform.Translate( -pivot ) );
-					WriteModel( studio, mesh, dir, folder, Safe( name ) );
-					layout.AppendLine( $"{name}\t{folder}/{Safe( name )}.vmdl\t{N( pivot.x )}\t{N( pivot.y )}\t{N( pivot.z )}\t{N( max.x - min.x )}\t{N( max.y - min.y )}\t{N( max.z - min.z )}" );
+					var path = Path.Combine( dir, $"{name}_{mapName}.png" );
+					PngWriter.WriteFile( path, map, flipV );
+					written[mapName] = path;
+					r.Written.Add( path );
+					r.Log.Add( $"baked {mapName} {map.Width}x{map.Height} to {path}" );
 				}
 
-				var layoutPath = Path.Combine( dir, "layout.txt" );
-				File.WriteAllText( layoutPath, layout.ToString() );
-				r.Written.Add( layoutPath );
-				r.Log.Add( $"exported {(split ? bodies.Count : 1)} model(s) to {dir}; layout in layout.txt" );
+				foreach ( var line in set.Report.Split( '\n' ) )
+					r.Log.Add( $"bake: {line}" );
+
+				r.Log.Add( $"bake: {(options.FlipGreen ? "DirectX" : "OpenGL")} green, v = 0 at the {(flipV ? "bottom" : "top")}, "
+					+ (options.Cage > 0f ? $"cage {N( options.Cage )}" : "no cage") + $", {options.Supersample}x{options.Supersample} samples per texel" );
+
+				if ( Truthy( opts.GetValueOrDefault( "vmat", "0" ) ) )
+				{
+					// Texture paths in a .vmat are relative to the assets root, which is the base
+					// folder unless assets= says otherwise — the same rule export uses.
+					var root = opts.TryGetValue( "assets", out var assets ) ? assets : baseDir;
+					string Asset( string path ) => Path.GetRelativePath( root, path ).Replace( '\\', '/' );
+
+					var vmatPath = Path.Combine( dir, name + ".vmat" );
+					File.WriteAllText( vmatPath, BakeMaterial.VmatSource(
+						color: opts.GetValueOrDefault( "color" ),
+						normal: written.TryGetValue( "normal", out var normalPath ) ? Asset( normalPath ) : null,
+						roughness: opts.GetValueOrDefault( "rough" ),
+						ambientOcclusion: written.TryGetValue( "ao", out var aoPath ) ? Asset( aoPath ) : null,
+						metalness: opts.TryGetValue( "metal", out var metal ) ? Number( metal ) : 0f ) );
+
+					r.Written.Add( vmatPath );
+					r.Log.Add( $"wrote {vmatPath} (complex: normal {(normalPath is null ? "default" : Asset( normalPath ))}, "
+						+ $"ao {(aoPath is null ? "default" : Asset( aoPath ))}, colour {opts.GetValueOrDefault( "color", "default" )}, rough {opts.GetValueOrDefault( "rough", "default" )})" );
+
+					if ( Asset( dir ).StartsWith( "..", StringComparison.Ordinal ) )
+						r.Log.Add( $"bake: note: {dir} is outside the assets root {root}, so the vmat's texture paths will not resolve; pass assets=<root>" );
+				}
+
 				return true;
 			}
 
 			default:
-				return Fail( r, $"Unknown command '{verb}'. Commands: add, set, remove, rebuild, fix, render, describe, measure, distance, symmetry, match, material, pivot, export, save, echo." );
+				return Fail( r, $"Unknown command '{verb}'. Commands: add, edit, set, remove, rebuild, fix, render, describe, measure, distance, symmetry, match, material, pivot, export, bake, save, echo." );
 		}
 	}
 
-	/// <summary>One .obj and the .vmdl that loads it, materials bound from the studio's slots.</summary>
-	static void WriteModel( PartStudio studio, PolyMesh mesh, string dir, string folder, string name )
+	const string ExportUsage = "export folder [split=1] [assets=root] [name=x] [lods=0|1|0.5,0.25] [loddistance=a,b] "
+		+ "[collision=none|auto|hulls|render] [surface=default] [skin=auto|0|1] [fbx=0|1]";
+
+	/// <summary>
+	/// `export`: the .vmdl and the mesh files it loads, the same set the editor's Compile writes.
+	///
+	///   lods=      0 (default) none; 1 = half and a quarter detail (the editor's set); or a list of
+	///              triangle ratios, 0.5,0.25. loddistance= the switch distances in units; by default
+	///              6, 15, 30… times the model's diagonal. Static models only.
+	///   collision= none (default, what export always wrote); auto = the editor's choice (exact shapes
+	///              from the history, else a hull per body; on a skinned model a hull per body on the
+	///              bone that drives it); hulls = one hull per body; render = physics from the render mesh.
+	///   skin=      auto (default): skinned when the studio has bones and the export is not split.
+	///              Skinned writes .dmx (what the vmdl loads) and .smd, bound like the editor's export.
+	///   fbx=1      also a binary .fbx of each model, skinned when the model is, for Blender and other DCCs.
+	///              The .vmdl still loads the .obj/.dmx, whose import ModelDoc has been measured on.
+	/// </summary>
+	static bool Export( PartStudio studio, List<string> args, string baseDir, Result r )
+	{
+		// export models/civic_art/orrery split=1 assets=C:/proj/Assets name=orrery
+		if ( args.Count < 1 )
+			return Fail( r, $"export needs a folder under the assets root: {ExportUsage}" );
+
+		var folder = args[0].Replace( '\\', '/' ).Trim( '/' );
+		var opts = Pairs( args.Skip( 1 ) );
+
+		foreach ( var key in opts.Keys )
+			if ( key is not ("split" or "assets" or "name" or "lods" or "loddistance" or "collision" or "surface" or "skin" or "fbx") )
+				return Fail( r, $"export has no option '{key}'. {ExportUsage}" );
+
+		var root = opts.TryGetValue( "assets", out var assets ) ? assets : baseDir;
+		var split = Truthy( opts.GetValueOrDefault( "split", "0" ) );
+		var name = opts.GetValueOrDefault( "name", folder.Contains( '/' ) ? folder[(folder.LastIndexOf( '/' ) + 1)..] : folder );
+		var collision = opts.GetValueOrDefault( "collision", "none" ).ToLowerInvariant();
+		var surface = opts.GetValueOrDefault( "surface", "default" );
+		var fbx = Truthy( opts.GetValueOrDefault( "fbx", "0" ) );
+		var hasRig = studio.Rig is { Count: > 0 };
+
+		if ( collision is not ("none" or "auto" or "hulls" or "render") )
+			return Fail( r, $"collision={collision}: use none, auto, hulls or render." );
+
+		var skinText = opts.GetValueOrDefault( "skin", "auto" ).ToLowerInvariant();
+		bool skin;
+
+		if ( skinText == "auto" )
+			skin = hasRig && !split;
+		else if ( skinText is "1" or "0" or "true" or "false" or "on" or "off" or "yes" or "no" )
+			skin = Truthy( skinText );
+		else
+			return Fail( r, $"skin={skinText}: use auto, 1 or 0." );
+
+		if ( skin && !hasRig )
+			return Fail( r, "skin=1, but the studio has no bones to skin to. Build a rig first, or export without skin=." );
+
+		if ( skin && split )
+			return Fail( r, "skin=1 with split=1: a skinned model is one mesh on one skeleton. Export it whole, or split it as static parts (skin=0)." );
+
+		if ( !TryLods( opts, out var ratios, out var lodDistances, out var whyLods ) )
+			return Fail( r, whyLods );
+
+		if ( skin && ratios.Count > 0 )
+			return Fail( r, "lods= is for static models: a skinned .vmdl here has no LOD list, and decimating a skinned mesh would scramble its weights. Drop lods=, or export skin=0." );
+
+		var bodies = studio.Bodies.Where( b => b?.Mesh is not null && b.Mesh.Faces.Count > 0 && b.Visible && !b.IsReference ).ToList();
+
+		if ( bodies.Count == 0 )
+			return Fail( r, "Nothing to export: no visible bodies." );
+
+		var dir = Path.Combine( root, folder );
+		Directory.CreateDirectory( dir );
+
+		var layout = new StringBuilder();
+		layout.AppendLine( "# part\tmodel\tpivot x\ty\tz\tsize x\ty\tz" );
+
+		Vec3 DefaultPivot( Vec3 min, Vec3 max ) => new( (min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f, min.z );
+
+		if ( split )
+		{
+			foreach ( var body in bodies )
+			{
+				var partName = Safe( body.Name ?? body.Id );
+				var mesh = body.Mesh.Clone();
+				var (min, max) = ModelMeasure.Bounds( mesh );
+				var pivot = r.Pivots.TryGetValue( body.Name ?? "", out var p ) ? p : DefaultPivot( min, max );
+
+				MeshTransform.Apply( mesh, Xform.Translate( -pivot ) );
+				var physics = StaticPhysics( studio, collision, surface, pivot, b => b.Id == body.Id, r, partName );
+				WriteStatic( studio, mesh, dir, folder, partName, physics, ratios, lodDistances, fbx, r );
+				layout.AppendLine( $"{body.Name ?? body.Id}\t{folder}/{partName}.vmdl\t{N( pivot.x )}\t{N( pivot.y )}\t{N( pivot.z )}\t{N( max.x - min.x )}\t{N( max.y - min.y )}\t{N( max.z - min.z )}" );
+			}
+		}
+		else if ( skin )
+		{
+			// The editor's bind, in the editor's order: weights from the unpivoted mesh and bones,
+			// then both shifted together, so the weights still say what they said.
+			var (mesh, ranges) = studio.ToMeshWithBodies( b => bodies.Contains( b ) );
+			var skeleton = studio.Rig;
+			var weights = SkinBinder.BindBodies( mesh, ranges, studio.BodyBoneMap, skeleton );
+			weights = SkinBinder.SmoothWeights( mesh, weights );
+
+			if ( studio.WeightPaint is { Count: > 0 } paint )
+			{
+				paint.Apply( mesh, weights, skeleton, out var missing );
+				if ( paint.IsStale ) r.Log.Add( $"export: painted weights not used - the mesh changed since they were painted ({paint.Count} vertices)" );
+				else if ( missing.Count > 0 ) r.Log.Add( $"export: painted weights for missing bone(s) {string.Join( ", ", missing.Take( 4 ) )} were not used" );
+			}
+
+			mesh.Skin = weights;
+
+			var (min, max) = ModelMeasure.Bounds( mesh );
+			var pivot = r.Pivots.TryGetValue( name, out var p ) ? p : DefaultPivot( min, max );
+			var shapes = collision is "auto" or "hulls" ? BoneHulls( studio, skeleton ) : null;
+
+			MeshTransform.Apply( mesh, Xform.Translate( -pivot ) );
+			skeleton = Pivoted( skeleton, pivot );
+
+			if ( shapes is not null )
+				foreach ( var shape in shapes ) Shift( shape, -pivot );
+
+			var physics = collision switch
+			{
+				"render" => VmdlPhysics.MeshFromRender( surface ),
+				"none" => "",
+				_ => VmdlPhysics.ShapeList( shapes, surface ),
+			};
+
+			if ( collision is "auto" or "hulls" && physics.Length == 0 )
+			{
+				physics = VmdlPhysics.MeshFromRender( surface );
+				r.Log.Add( "export: no body made a hull, so collision is the render mesh (static: it will not follow the bones)" );
+			}
+
+			var safe = Safe( name );
+			var dmxPath = Path.Combine( dir, safe + ".dmx" );
+			var smdPath = Path.Combine( dir, safe + ".smd" );
+			DmxWriter.WriteFile( mesh, dmxPath, skeleton, materialName: studio.NameForSlot, modelName: safe );
+			SmdWriter.WriteFile( mesh, smdPath, skeleton, materialName: studio.NameForSlot );
+			var vmdlPath = Path.Combine( dir, safe + ".vmdl" );
+			File.WriteAllText( vmdlPath, VmdlDocument.Skinned( $"{folder}/{safe}.dmx", skeleton, physics, VmdlMaterials.GroupList( studio, mesh ) ) );
+			r.Written.AddRange( new[] { dmxPath, smdPath, vmdlPath } );
+
+			if ( fbx )
+			{
+				var fbxPath = Path.Combine( dir, safe + ".fbx" );
+				FbxWriter.WriteBinaryFile( mesh, fbxPath, skeleton, studio.NameForSlot, safe );
+				r.Written.Add( fbxPath );
+			}
+
+			r.Log.Add( $"export: {safe} skinned to {skeleton.Count} bone(s), {mesh.VertexCount} vertices; collision {Said( collision, physics )}{(fbx ? "; .fbx too" : "")}" );
+			layout.AppendLine( $"{name}\t{folder}/{safe}.vmdl\t{N( pivot.x )}\t{N( pivot.y )}\t{N( pivot.z )}\t{N( max.x - min.x )}\t{N( max.y - min.y )}\t{N( max.z - min.z )}" );
+		}
+		else
+		{
+			var mesh = new PolyMesh();
+			foreach ( var body in bodies )
+				MeshTransform.Append( mesh, body.Mesh );
+
+			var (min, max) = ModelMeasure.Bounds( mesh );
+			var pivot = r.Pivots.TryGetValue( name, out var p ) ? p : DefaultPivot( min, max );
+			MeshTransform.Apply( mesh, Xform.Translate( -pivot ) );
+			var physics = StaticPhysics( studio, collision, surface, pivot, b => bodies.Contains( b ), r, Safe( name ) );
+			WriteStatic( studio, mesh, dir, folder, Safe( name ), physics, ratios, lodDistances, fbx, r );
+			layout.AppendLine( $"{name}\t{folder}/{Safe( name )}.vmdl\t{N( pivot.x )}\t{N( pivot.y )}\t{N( pivot.z )}\t{N( max.x - min.x )}\t{N( max.y - min.y )}\t{N( max.z - min.z )}" );
+		}
+
+		var layoutPath = Path.Combine( dir, "layout.txt" );
+		File.WriteAllText( layoutPath, layout.ToString() );
+		r.Written.Add( layoutPath );
+		r.Log.Add( $"exported {(split ? bodies.Count : 1)} model(s) to {dir}; layout in layout.txt" );
+		return true;
+	}
+
+	/// <summary>`lods=1` is the editor's pair; `lods=0.5,0.25` names the ratios; `loddistance=` the
+	/// switch distances (default multiples of the model's diagonal, filled in by WriteStatic).</summary>
+	static bool TryLods( Dictionary<string, string> opts, out List<float> ratios, out List<float> distances, out string why )
+	{
+		ratios = new List<float>();
+		distances = null;
+		why = null;
+		var text = opts.GetValueOrDefault( "lods", "0" ).Trim();
+
+		if ( text is "0" or "" or "off" or "no" or "false" )
+		{
+			if ( opts.ContainsKey( "loddistance" ) ) { why = "loddistance= without lods=: say which levels to make, e.g. lods=0.5,0.25."; return false; }
+			return true;
+		}
+
+		if ( text is "1" or "on" or "yes" or "true" )
+			ratios.AddRange( new[] { 0.5f, 0.25f } );
+		else
+		{
+			foreach ( var part in text.Split( ',', StringSplitOptions.RemoveEmptyEntries ) )
+			{
+				if ( !TryNumber( part, out var ratio ) || ratio <= 0f || ratio >= 1f )
+				{
+					why = $"lods={text}: each level is a share of the triangles between 0 and 1, e.g. lods=0.5,0.25 (or lods=1 for that pair).";
+					return false;
+				}
+
+				if ( ratios.Count > 0 && ratio >= ratios[^1] )
+				{
+					why = $"lods={text}: each level must be coarser than the one before it.";
+					return false;
+				}
+
+				ratios.Add( ratio );
+			}
+		}
+
+		if ( opts.TryGetValue( "loddistance", out var distText ) )
+		{
+			distances = new List<float>();
+
+			foreach ( var part in distText.Split( ',', StringSplitOptions.RemoveEmptyEntries ) )
+			{
+				if ( !TryNumber( part, out var d ) || d <= 0f || (distances.Count > 0 && d <= distances[^1]) )
+				{
+					why = $"loddistance={distText}: rising distances in units, one per level.";
+					return false;
+				}
+
+				distances.Add( d );
+			}
+
+			if ( distances.Count != ratios.Count )
+			{
+				why = $"loddistance= has {distances.Count} distance(s) for {ratios.Count} level(s): give one per level.";
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	/// <summary>One static model: its mesh, any LOD meshes, the .vmdl that loads them, and an .fbx
+	/// when asked. Materials bound from the studio's slots.</summary>
+	static void WriteStatic( PartStudio studio, PolyMesh mesh, string dir, string folder, string name, string physics,
+		List<float> ratios, List<float> distances, bool fbx, Result r )
 	{
 		var objPath = Path.Combine( dir, name + ".obj" );
 		ObjWriter.WriteFile( mesh, objPath, name, materialName: studio.NameForSlot );
+		r.Written.Add( objPath );
 
 		var materials = VmdlMaterials.GroupList( studio, mesh );
-		File.WriteAllText( Path.Combine( dir, name + ".vmdl" ), VmdlDocument.Static( $"{folder}/{name}.obj", "", materials ) );
+		var vmdlPath = Path.Combine( dir, name + ".vmdl" );
+
+		if ( ratios.Count > 0 )
+		{
+			var files = new List<string> { $"{folder}/{name}.obj" };
+			var switchAt = new List<float> { 0f };
+			var size = MathF.Max( mesh.BoundsDiagonal, 1f );
+			var levels = new List<string>();
+			var full = Decimate.TriangleCount( mesh );
+
+			for ( var i = 0; i < ratios.Count; i++ )
+			{
+				var lod = Decimate.ToRatio( mesh, ratios[i] );
+				var lodName = $"{name}_lod{i + 1}";
+				var lodPath = Path.Combine( dir, lodName + ".obj" );
+				ObjWriter.WriteFile( lod, lodPath, lodName, materialName: studio.NameForSlot );
+				r.Written.Add( lodPath );
+				files.Add( $"{folder}/{lodName}.obj" );
+				var at = distances?[i] ?? size * (i == 0 ? 6f : i == 1 ? 15f : 15f * MathF.Pow( 2f, i - 1 ));
+				switchAt.Add( at );
+				levels.Add( $"{Decimate.TriangleCount( lod )} tris from {N( at )}" );
+			}
+
+			File.WriteAllText( vmdlPath, VmdlDocument.StaticWithLods( files, switchAt, physics, materials ) );
+			r.Log.Add( $"export: {name} LODs: {full} tris, then {string.Join( ", ", levels )}" );
+
+			if ( full < 64 )
+				r.Log.Add( $"export: note: {name} is only {full} triangles, so its LODs save next to nothing" );
+		}
+		else
+			File.WriteAllText( vmdlPath, VmdlDocument.Static( $"{folder}/{name}.obj", physics, materials ) );
+
+		r.Written.Add( vmdlPath );
+
+		if ( fbx )
+		{
+			var fbxPath = Path.Combine( dir, name + ".fbx" );
+			FbxWriter.WriteBinaryFile( mesh, fbxPath, materialName: studio.NameForSlot, modelName: name );
+			r.Written.Add( fbxPath );
+		}
+	}
+
+	/// <summary>The PhysicsShapeList for a static model, already shifted onto its pivot.</summary>
+	static string StaticPhysics( PartStudio studio, string collision, string surface, Vec3 pivot, Func<Body, bool> include, Result r, string name )
+	{
+		if ( collision == "none" )
+			return "";
+
+		if ( collision == "render" )
+		{
+			r.Log.Add( $"export: {name} collision from the render mesh" );
+			return VmdlPhysics.MeshFromRender( surface );
+		}
+
+		List<CollisionShape> shapes;
+		string how;
+
+		if ( collision == "auto" )
+		{
+			var report = CollisionBuilder.Build( studio );
+			shapes = report.Shapes.Where( s => s.BodyId is null || include( studio.Bodies.FirstOrDefault( b => b.Id == s.BodyId ) ?? new Body( s.BodyId, null, null ) ) ).ToList();
+			how = report.ToString();
+		}
+		else
+		{
+			shapes = CollisionBuilder.HullsPerBody( studio ).Where( s => s.BodyId is null || include( studio.Bodies.First( b => b.Id == s.BodyId ) ) ).ToList();
+			how = $"{shapes.Count} hull(s), one per body";
+		}
+
+		foreach ( var shape in shapes )
+			Shift( shape, -pivot );
+
+		var node = VmdlPhysics.ShapeList( shapes, surface );
+
+		if ( node.Length == 0 )
+		{
+			r.Log.Add( $"export: {name}: no collision shape could be built ({how}), so collision is the render mesh" );
+			return VmdlPhysics.MeshFromRender( surface );
+		}
+
+		r.Log.Add( $"export: {name} collision {how}" );
+		return node;
+	}
+
+	/// <summary>A skinned model's collision: one hull per body on the bone that drives it - the
+	/// assigned bone, else the nearest, as the editor's export does.</summary>
+	static List<CollisionShape> BoneHulls( PartStudio studio, Skeleton skeleton )
+	{
+		var shapes = CollisionBuilder.HullsPerBody( studio );
+
+		foreach ( var shape in shapes )
+		{
+			if ( shape.BodyId is not null && studio.BodyBoneMap.TryGetValue( shape.BodyId, out var named ) && skeleton.IndexOf( named ) >= 0 )
+			{
+				shape.Bone = named;
+				continue;
+			}
+
+			var centre = shape.Position;
+
+			if ( shape.Points is { Count: > 0 } points )
+			{
+				centre = Vec3.Zero;
+				foreach ( var q in points ) centre += q;
+				centre /= points.Count;
+			}
+
+			shape.Bone = skeleton.Bones[SkinBinder.NearestBone( centre, skeleton )].Name;
+		}
+
+		return shapes;
+	}
+
+	static void Shift( CollisionShape shape, Vec3 offset )
+	{
+		shape.Position += offset;
+
+		if ( shape.Points is null )
+			return;
+
+		for ( var i = 0; i < shape.Points.Count; i++ )
+			shape.Points[i] += offset;
+	}
+
+	/// <summary>The skeleton moved with the mesh onto the pivot: root bones only, children follow.</summary>
+	static Skeleton Pivoted( Skeleton skeleton, Vec3 pivot )
+	{
+		var copy = skeleton.Clone();
+		var shift = Xform.Translate( -pivot );
+
+		foreach ( var bone in copy.Bones )
+			if ( bone.Parent < 0 )
+				bone.Local = shift * bone.Local;
+
+		return copy;
+	}
+
+	static string Said( string collision, string physics ) =>
+		collision == "none" ? "none" : physics.Contains( "PhysicsMeshFromRender" ) ? "from the render mesh"
+			: $"{System.Text.RegularExpressions.Regex.Matches( physics, "PhysicsShape(Box|Sphere|Cylinder|Hull)\"" ).Count} hull(s) on their bones";
+
+	/// <summary>`maps=normal,ao,curvature,cavity,height,thickness` or `maps=all`.</summary>
+	static bool BakeMapList( string text, out BakeMaps maps, out string why )
+	{
+		maps = BakeMaps.None;
+		why = null;
+
+		foreach ( var part in text.Split( new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries ) )
+		{
+			var map = part.Trim().ToLowerInvariant() switch
+			{
+				"all" => BakeMaps.All,
+				"normal" or "normals" => BakeMaps.Normal,
+				"ao" or "occlusion" or "ambientocclusion" => BakeMaps.AmbientOcclusion,
+				"curvature" or "curv" => BakeMaps.Curvature,
+				"cavity" => BakeMaps.Cavity,
+				"height" => BakeMaps.Height,
+				"thickness" => BakeMaps.Thickness,
+				_ => BakeMaps.None,
+			};
+
+			if ( map == BakeMaps.None )
+			{
+				why = $"maps: '{part.Trim()}' is not a bake. Maps: normal, ao, curvature, cavity, height, thickness, all.";
+				return false;
+			}
+
+			maps |= map;
+		}
+
+		if ( maps == BakeMaps.None )
+		{
+			why = "maps: name at least one of normal, ao, curvature, cavity, height, thickness.";
+			return false;
+		}
+
+		return true;
 	}
 
 	static string Safe( string name )
@@ -524,6 +1004,14 @@ public static class BuildScript
 				return true;
 
 			case StringParam s:
+				// A selection rule names places by landmark; those resolve now, against the model as
+				// built so far, like every other point in a script, so the feature stores numbers.
+				if ( s.Label == "Select" && value.Contains( '@' ) )
+				{
+					if ( !ResolveLandmarks( studio, value, out var resolved, out why ) ) return false;
+					value = resolved;
+				}
+
 				s.Value = value;
 				return true;
 
@@ -681,6 +1169,39 @@ public static class BuildScript
 		return true;
 	}
 
+	/// <summary>Every `@landmark[+dx,dy,dz]` in a selection rule, as `x,y,z`. A landmark runs to the
+	/// next `~`, `&amp;`, `|` or the end.</summary>
+	static bool ResolveLandmarks( PartStudio studio, string text, out string resolved, out string why )
+	{
+		why = null;
+		var sb = new StringBuilder();
+		var i = 0;
+
+		while ( i < text.Length )
+		{
+			if ( text[i] != '@' )
+			{
+				sb.Append( text[i++] );
+				continue;
+			}
+
+			var end = text.IndexOfAny( new[] { '~', '&', '|' }, i );
+			if ( end < 0 ) end = text.Length;
+
+			if ( !Point( studio, text[i..end], out var p, out why ) )
+			{
+				resolved = text;
+				return false;
+			}
+
+			sb.Append( $"{N( p.x )},{N( p.y )},{N( p.z )}" );
+			i = end;
+		}
+
+		resolved = sb.ToString();
+		return true;
+	}
+
 	// --- features by type and name ----------------------------------------------------------------
 
 	static Feature Create( string typeName )
@@ -793,6 +1314,81 @@ public static class BuildScript
 			tokens.Add( sb.ToString() );
 
 		return tokens;
+	}
+
+	/// <summary>
+	/// `render out.png shade=material|clay [views=4] [size=512] [elevation=12] [preset=Wet gore] [focus=Body] [label=OURS]`:
+	/// a lit turnaround through ShadedRender, for judging how a thing LOOKS (wet, glossy, translucent)
+	/// rather than measuring it. shade=material shows each body as its Flesh Material feature baked it
+	/// (maps or per-vertex); a body with none takes `preset=` evaluated per vertex, else its vertex
+	/// colours, else clay.
+	/// </summary>
+	static bool RenderShaded( PartStudio studio, string path, Dictionary<string, string> opts, string shade, Result r )
+	{
+		var mode = shade.Trim().ToLowerInvariant();
+		if ( mode is not ("clay" or "material" or "flesh" or "wet") )
+			return Fail( r, $"shade={shade}: use shade=material (what the materials make it look like) or shade=clay (form only)." );
+
+		var views = (int)Number( opts.GetValueOrDefault( "views", "4" ) );
+		var size = (int)Number( opts.GetValueOrDefault( "size", "512" ) );
+		var elevation = Number( opts.GetValueOrDefault( "elevation", "12" ) );
+		var focus = opts.TryGetValue( "focus", out var f ) ? ModelMeasure.FindBody( studio, f ) : null;
+		FleshStack fallback = null;
+		if ( opts.TryGetValue( "preset", out var presetName ) && (fallback = FleshMaterial.Preset( presetName )) is null )
+			return Fail( r, $"No material preset '{presetName}'. Presets: {string.Join( ", ", FleshMaterial.Presets )}." );
+
+		var scene = new ShadeScene();
+		var flesh = studio.Features.OfType<FleshMaterialFeature>().Where( x => !x.Suppressed ).ToList();
+
+		foreach ( var body in studio.Bodies )
+		{
+			if ( body.Mesh is null || body.Mesh.Faces.Count == 0 || !body.Visible ) continue;
+			if ( focus is not null && body != focus ) continue;
+			var name = body.Name ?? body.Id;
+
+			if ( mode == "clay" ) { scene.Add( body.Mesh, ShadeMaterial.Clay() ); continue; }
+
+			var owner = flesh.LastOrDefault( x => x.Maps.ContainsKey( body.Id ) || x.VertexMaterials.ContainsKey( body.Id ) );
+			if ( owner is not null && owner.VertexMaterials.TryGetValue( body.Id, out var vm ) )
+			{
+				var coloured = body.Mesh.Clone();
+				coloured.VertexColors = vm.Colour;
+				scene.Add( coloured, FleshMaterial.Shade( owner.Stack, vertex: vm ) );
+				r.Log.Add( $"{name}: {owner.PresetName} (per vertex)" );
+			}
+			else if ( owner is not null && owner.Maps.TryGetValue( body.Id, out var maps ) )
+			{
+				scene.Add( body.Mesh, FleshMaterial.Shade( owner.Stack, maps ) );
+				r.Log.Add( $"{name}: {owner.PresetName} ({maps.Size}² maps)" );
+			}
+			else if ( fallback is not null )
+			{
+				var v = FleshMaterial.BakeVertices( body.Mesh, fallback );
+				var coloured = body.Mesh.Clone();
+				coloured.VertexColors = v.Colour;
+				scene.Add( coloured, FleshMaterial.Shade( fallback, vertex: v ) );
+				r.Log.Add( $"{name}: {fallback.Name} (preset, per vertex)" );
+			}
+			else if ( body.Mesh.HasVertexColors )
+			{
+				scene.Add( body.Mesh, new ShadeMaterial { Roughness = 0.35f, Coat = 0.3f } );
+				r.Log.Add( $"{name}: its vertex colours" );
+			}
+			else
+			{
+				scene.Add( body.Mesh, ShadeMaterial.Clay() );
+				r.Log.Add( $"{name}: clay (no Flesh Material on it; add one, or pass preset=)" );
+			}
+		}
+
+		if ( scene.Items.Count == 0 )
+			return Fail( r, focus is null ? "Nothing to render: no visible body has faces." : $"{focus.Name ?? focus.Id} has no faces to render." );
+
+		Directory.CreateDirectory( Path.GetDirectoryName( Path.GetFullPath( path ) ) ?? "." );
+		ShadedRender.Sheet( scene, views, size, elevation, 2, opts.GetValueOrDefault( "label", "OURS" ) ).SavePng( path );
+		r.Written.Add( path );
+		r.Log.Add( $"rendered shade={mode}, {Math.Clamp( views, 1, 12 )} views, to {path}" );
+		return true;
 	}
 
 	static Dictionary<string, string> Pairs( IEnumerable<string> tokens )

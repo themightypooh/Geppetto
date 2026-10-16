@@ -225,7 +225,7 @@ public static class EffigySkeletonProbe
 ///
 /// WHY REFLECTION RATHER THAN A CALL. The Wearer feature needs a body's actual surface, and the
 /// only mesh reader this codebase has proven is <c>Model.Physics</c>, which is a collision hull:
-/// far too coarse to cut a collar out of. s&box's render-mesh API has moved between SDK versions,
+/// far too coarse to cut a collar out of. s&amp;box's render-mesh API has moved between SDK versions,
 /// so this prints the members that exist in the engine actually running rather than the ones the
 /// docs last described — same argument EffigySkeletonProbe makes for existing at all.
 ///

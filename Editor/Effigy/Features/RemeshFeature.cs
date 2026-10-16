@@ -5,7 +5,8 @@ using System.Linq;
 namespace Effigy;
 
 /// <summary>
-/// Fewer triangles, same shape. <see cref="SubdivideFeature"/>'s opposite number.
+/// Fewer triangles, same shape — or, in Quad mode, a new quad mesh over the same shape.
+/// <see cref="SubdivideFeature"/>'s opposite number.
 ///
 /// THE FEATURE THE IMPORTER CREATED THE NEED FOR. Everything the tool built itself arrived at a
 /// sensible density because a primitive is a handful of quads and you add detail deliberately. A
@@ -27,6 +28,14 @@ namespace Effigy;
 /// because the tree everywhere else counts faces. A 500-face quad cage is 1000 triangles; typing
 /// 500 into a triangle budget and getting half of what you meant is the kind of confusion that
 /// looks like the algorithm being bad at its job.
+///
+/// QUAD MODE IS THE OTHER ANSWER to the same import, and the one a part that will be skinned or
+/// subdivided wants: <see cref="QuadRemesh"/> lays a new all-quad mesh over the surface at a face
+/// budget, the ZRemesher-style topology a pro organic asset ships with. Its target is in FACES,
+/// because a quad is the unit there, and it is a separate number from the triangle budget rather
+/// than the same field re-labelled, so switching modes back and forth does not quietly change what
+/// either one asks for. It throws away UVs, materials and skin weights — the vertices are new, so
+/// there is nothing to carry them on — and the feature says so when there were any.
 /// </summary>
 public sealed class RemeshFeature : Feature
 {
@@ -38,6 +47,40 @@ public sealed class RemeshFeature : Feature
 	public override GeometryKind Accepts => GeometryKind.Body;
 
 	public readonly BodySelectionParam Bodies = new( "Bodies" );
+
+	/// <summary>
+	/// Decimate or Quad. DECIMATE FIRST, and the default, because that is what every document
+	/// saved before Quad existed meant: the field is found by reflection on load, and a missing one
+	/// keeps the value it was constructed with.
+	/// </summary>
+	public readonly ChoiceParam Mode = new( "Mode", new[] { "Decimate", "Quad", "Voxel" } );
+
+	public const int ModeDecimate = 0;
+	public const int ModeQuad = 1;
+	public const int ModeVoxel = 2;
+
+	/// <summary>Voxel mode: the edge length of the new skin, in inches. Detail smaller than this is gone.</summary>
+	public readonly FloatParam Voxel = new( "Voxel", 0.25f, 0.01f, 50f, "in" );
+
+	/// <summary>Voxel mode: melt every picked part into one skin where they overlap (Dynamesh), rather
+	/// than re-skinning each on its own.</summary>
+	public readonly BoolParam Fuse = new( "Fuse parts", true );
+
+	/// <summary>Voxel mode, fused: the radius of the fillet where parts meet, in inches. 0 is a crisp seam.</summary>
+	public readonly FloatParam Fillet = new( "Fillet", 0f, 0f, 50f, "in" );
+
+	/// <summary>Voxel mode: Taubin smoothing passes over the new skin, to take off the voxel stair-steps.</summary>
+	public readonly IntParam Smooth = new( "Smooth", 2, 0, 20 );
+
+	const long MaxVoxels = 60_000_000;
+
+	/// <summary>Quads to aim for, per body, in Quad mode. A target rather than a promise — the
+	/// lattice decides where faces fall, and the count lands within about ten percent.</summary>
+	public readonly IntParam Faces = new( "Faces", 4000, 16, 400_000 ) { Slider = false };
+
+	/// <summary>Quad mode only: remesh the positive-X half and mirror it, so the topology is
+	/// exactly symmetric — the version a character wants, and one a mirrored cage already has.</summary>
+	public readonly BoolParam SymmetryX = new( "Symmetry X", false );
 
 	/// <summary>
 	/// Which of the two numbers below is the one being read.
@@ -68,13 +111,21 @@ public sealed class RemeshFeature : Feature
 	/// <see cref="Decimate.Options.Weld"/> — off, an unwelded export cannot be reduced at all.</summary>
 	public readonly BoolParam Weld = new( "Weld first", true );
 
-	public override IReadOnlyList<IParam> Parameters =>
-		new IParam[] { Bodies, Target, Percent, Triangles, HoldBorders, Weld };
+	public override IReadOnlyList<IParam> Parameters => Mode.Index switch
+	{
+		ModeQuad => new IParam[] { Bodies, Mode, Faces, SymmetryX },
+		ModeVoxel => new IParam[] { Bodies, Mode, Voxel, Fuse, Fillet, Smooth },
+		_ => new IParam[] { Bodies, Mode, Target, Percent, Triangles, HoldBorders, Weld },
+	};
 
 	/// <summary>The two protections are answered once, if ever. The target is the whole
 	/// question.</summary>
-	public override IReadOnlyList<IParam> AdvancedParameters =>
-		new IParam[] { HoldBorders, Weld };
+	public override IReadOnlyList<IParam> AdvancedParameters => Mode.Index switch
+	{
+		ModeQuad => Array.Empty<IParam>(),
+		ModeVoxel => new IParam[] { Smooth },
+		_ => new IParam[] { HoldBorders, Weld },
+	};
 
 	/// <summary>
 	/// What this will cost, for a dialog that can say "412,908 → 41,290" before you press anything.
@@ -82,6 +133,9 @@ public sealed class RemeshFeature : Feature
 	/// The same question <see cref="SubdivideFeature.PredictCost"/> answers, and needed more here:
 	/// subdivision's cost is arithmetic anybody can do in their head, and a percentage of a number
 	/// you have never seen is not.
+	///
+	/// In Quad mode the second number is the face target, which is what the result will be counted
+	/// in; the first stays the incoming triangles, because that is what the import is counted in.
 	/// </summary>
 	public (int From, int To) PredictCost( IEnumerable<Body> bodies )
 	{
@@ -93,7 +147,7 @@ public sealed class RemeshFeature : Feature
 			var count = Decimate.TriangleCount( body.Mesh );
 
 			from += count;
-			to += Math.Clamp( TargetFor( count ), 4, count );
+			to += Mode.Index == ModeQuad ? Faces.Clamped : Math.Clamp( TargetFor( count ), 4, count );
 		}
 
 		return (from, to);
@@ -115,6 +169,18 @@ public sealed class RemeshFeature : Feature
 				"The bodies this feature names are not in the model at this point in the tree.",
 				"Pick a part and try again",
 				"Or clear the selection to remesh every part" );
+		}
+
+		if ( Mode.Index == ModeQuad )
+		{
+			ExecuteQuad( targets );
+			return;
+		}
+
+		if ( Mode.Index == ModeVoxel )
+		{
+			ExecuteVoxel( ctx, targets );
+			return;
 		}
 
 		var missed = new List<string>();
@@ -167,6 +233,155 @@ public sealed class RemeshFeature : Feature
 					+ "what subdivision and skinning want, so a cage that had them has lost them.",
 				"Suppress this feature if the part was a cage rather than an import",
 				"Keep it if the triangles are what you wanted — a collision hull, or a distant LOD" );
+		}
+	}
+
+	/// <summary>
+	/// Voxel mode, ZBrush's Dynamesh and Blender's voxel remesh: each part becomes a distance field,
+	/// the fields are unioned (filleted by <see cref="Fillet"/>), and SurfaceNets lays one even quad
+	/// skin over the result at <see cref="Voxel"/> spacing. It is what lets a sculpt grow: a horn
+	/// pulled out of a head has stretched faces, and a voxel pass gives it fresh even ones; a part
+	/// pushed into another melts into it. Material slots survive (each face takes its part's slot);
+	/// UVs and weights do not, and the feature says so.
+	/// </summary>
+	void ExecuteVoxel( FeatureContext ctx, List<Body> targets )
+	{
+		var voxel = Voxel.Clamped;
+		var groups = Fuse.Value ? new List<List<Body>> { targets } : targets.Select( b => new List<Body> { b } ).ToList();
+		var open = new List<string>();
+		var lost = new List<string>();
+
+		foreach ( var group in groups )
+		{
+			var parts = group.Where( b => b.Mesh is not null && b.Mesh.FaceCount > 0 ).ToList();
+			if ( parts.Count == 0 ) continue;
+
+			var leaves = new List<Sdf>();
+			foreach ( var body in parts )
+			{
+				if ( IsOpen( body.Mesh ) ) open.Add( body.Name ?? body.Id );
+				if ( body.Mesh.Faces.Any( f => f.UVs.Any( uv => uv.x != 0f || uv.y != 0f ) ) || body.Mesh.IsRigged ) lost.Add( body.Name ?? body.Id );
+				leaves.Add( new SdfMesh( body.Mesh, voxel * 3f + Fillet.Clamped * 2f ) { Material = body.Mesh.Faces[0].Material } );
+			}
+
+			Sdf field = leaves.Count == 1 ? leaves[0] : new SdfBlend( Fillet.Clamped, leaves.ToArray() );
+			var size = field.Max - field.Min + Vec3.One * voxel * 4f;
+			var voxels = (long)(size.x / voxel + 1) * (long)(size.y / voxel + 1) * (long)(size.z / voxel + 1);
+
+			if ( voxels > MaxVoxels )
+			{
+				var fits = MathF.Cbrt( size.x * size.y * size.z / MaxVoxels );
+				FailOn( "Voxel", MathF.Ceiling( fits * 100f ) / 100f,
+					"The voxel is too small for the size of the part",
+					$"Meshing would sample {voxels:N0} voxels; the limit is {MaxVoxels:N0}.",
+					$"Set Voxel to {fits:0.##} or more" );
+			}
+
+			var result = SurfaceNets.Mesh( field, voxel );
+			if ( result.Mesh.FaceCount == 0 ) continue;
+			if ( Smooth.Clamped > 0 ) MeshSmooth.Taubin( result.Mesh, Smooth.Clamped );
+
+			foreach ( var face in result.Mesh.Faces )
+				face.Material = result.Nearest[face.Indices[0]]?.Material ?? leaves[0].Material;
+
+			parts[0].Mesh = result.Mesh;
+			foreach ( var gone in parts.Skip( 1 ) ) ctx.Bodies.Remove( gone );
+		}
+
+		if ( open.Count > 0 )
+		{
+			Warn(
+				open.Count == 1 ? $"{open[0]} is open" : $"{open.Count} parts are open",
+				"A voxel remesh reads a part as a solid, and an open surface has no inside, so its skin may "
+					+ "come out lumpy or holed: " + string.Join( ", ", open ) + ".",
+				"Close the holes upstream (Fill holes)",
+				"Or give a sheet thickness first (Shell)" );
+		}
+		else if ( lost.Count > 0 )
+		{
+			Warn(
+				lost.Count == 1 ? $"{lost[0]} lost its UVs or rig" : $"{lost.Count} parts lost their UVs or rig",
+				"The voxel skin is new vertices, so UVs and weights do not come across: " + string.Join( ", ", lost ) + ".",
+				"Unwrap and weight after this feature" );
+		}
+	}
+
+	/// <summary>True when some edge is used by only one face: the surface has a hole.</summary>
+	static bool IsOpen( PolyMesh mesh )
+	{
+		var uses = new Dictionary<EdgeKey, int>();
+		foreach ( var f in mesh.Faces )
+			for ( var i = 0; i < f.Count; i++ )
+			{
+				var k = new EdgeKey( f.Indices[i], f.Indices[(i + 1) % f.Count] );
+				uses[k] = uses.GetValueOrDefault( k ) + 1;
+			}
+		return uses.Values.Any( u => u == 1 );
+	}
+
+	/// <summary>
+	/// Quad mode: every target body replaced by a quad remesh of itself.
+	///
+	/// WHAT IT LOSES IS SAID, not discovered. A body that came in with UVs, more than one material
+	/// or a rig comes out with none of them, and that is a warning rather than a refusal because an
+	/// import that is about to be retopologised usually has nothing worth keeping on it — but a
+	/// part somebody already unwrapped does, and finding that out at export is too late.
+	/// </summary>
+	void ExecuteQuad( List<Body> targets )
+	{
+		var lost = new List<string>();
+		var empty = new List<string>();
+
+		foreach ( var body in targets )
+		{
+			if ( Decimate.TriangleCount( body.Mesh ) <= 4 )
+				continue;
+
+			var mesh = body.Mesh;
+			var hadUVs = mesh.Faces.Any( f => f.UVs.Any( uv => uv.x != 0f || uv.y != 0f ) );
+			var hadMaterials = mesh.Faces.Select( f => f.Material ).Distinct().Count() > 1;
+
+			var result = QuadRemesh.Run( mesh, new QuadRemesh.Options
+			{
+				TargetFaces = Faces.Clamped,
+				SymmetryX = SymmetryX.Value,
+			} );
+
+			if ( result.Mesh.FaceCount == 0 )
+			{
+				empty.Add( body.Name );
+				continue;
+			}
+
+			var material = mesh.FaceCount > 0 ? mesh.Faces[0].Material : 0;
+
+			foreach ( var f in result.Mesh.Faces )
+				f.Material = material;
+
+			body.Mesh = result.Mesh;
+
+			if ( hadUVs || hadMaterials || mesh.IsRigged )
+				lost.Add( body.Name );
+		}
+
+		if ( empty.Count > 0 )
+		{
+			Warn(
+				empty.Count == 1 ? $"{empty[0]} could not be remeshed" : $"{empty.Count} parts could not be remeshed",
+				"The surface had no area to lay a lattice on, so the part was left as it was: "
+					+ string.Join( ", ", empty ) + ".",
+				"Check the part is a surface and not a line of points",
+				"Or switch Mode back to Decimate" );
+		}
+		else if ( lost.Count > 0 )
+		{
+			Warn(
+				lost.Count == 1 ? $"{lost[0]} lost its UVs, materials or rig" : $"{lost.Count} parts lost their UVs, materials or rig",
+				"A quad remesh builds new vertices, so nothing that lived on the old ones comes across. "
+					+ "Everything is on the first material now, with no UVs and no weights: "
+					+ string.Join( ", ", lost ) + ".",
+				"Unwrap and weight the new mesh after this feature",
+				"Or suppress it if those were the point of the part" );
 		}
 	}
 }

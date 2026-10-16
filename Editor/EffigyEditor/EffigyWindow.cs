@@ -340,6 +340,31 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	/// </summary>
 	internal static Pixmap AppIcon()
 	{
+		var path = AppIconPath();
+		return path is null ? null : Pixmap.FromFile( path );
+	}
+
+	/// <summary>
+	/// WHEREVER THIS PACKAGE LIVES, which is only Project.Current when Geppetto itself is the open
+	/// project. Installed into a game, Project.Current is the game and the icon sits under its
+	/// Libraries/ folder - or in a package download with no project folder at all - so looking
+	/// only at the project root found nothing, every frame, for as long as the editor ran. The
+	/// mounted filesystem sees every library's Assets/, so it goes first.
+	/// </summary>
+	static string AppIconPath()
+	{
+		const string asset = "editor/effigy_icon.png";
+		try
+		{
+			var mounted = global::Editor.FileSystem.Mounted;
+			if ( mounted is not null && mounted.FileExists( asset ) && mounted.GetFullPath( asset ) is { } full && File.Exists( full ) )
+				return full;
+		}
+		catch ( Exception )
+		{
+			// Not mounted yet this early in startup; the project-root fallback below still runs.
+		}
+
 		var root = Project.Current?.GetRootPath();
 		if ( string.IsNullOrEmpty( root ) )
 			return null;
@@ -352,7 +377,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		{
 			var path = Path.Combine( root, rel );
 			if ( File.Exists( path ) )
-				return Pixmap.FromFile( path );
+				return path;
 		}
 
 		return null;
@@ -366,20 +391,22 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		file.Clear();
 		file.AddOption( "New Studio", "common/new.png", NewStudio );
 		file.AddOption( "Open...", "folder_open", Open );
-		file.AddOption( "Import OBJ...", "file_open", ImportObj );
+		file.AddOption( "Import OBJ...", "file_open", ImportObj ).ToolTip = "Bring in a Wavefront .obj as a body";
 		file.AddOption( "Body from Bones", "accessibility_new", BodyFromBones );
 		file.AddSeparator();
 		file.AddOption( "Save", "common/save.png", Save, "editor.save" );
 		file.AddOption( "Save As...", "save_alt", SaveAs );
 		file.AddSeparator();
-		file.AddOption( "Export OBJ", "file_download", ExportObj );
-		file.AddOption( "Export FBX", "file_download", ExportFbx );
-		file.AddOption( "Compile .vmdl", "build", CompileVmdl );
-		file.AddOption( "Compile Playermodel", "directions_walk", CompilePlayermodel );
-		file.AddOption( "Make Player", "sports_esports", MakePlayer );
+		file.AddOption( "Export OBJ", "file_download", () => GuardExport( "Export OBJ", ExportObj ) );
+		file.AddOption( "Export FBX", "file_download", () => GuardExport( "Export FBX", ExportFbx ) );
+		file.AddOption( "Compile .vmdl", "build", () => GuardExport( "Compile .vmdl", CompileVmdl ) ).ToolTip = "Write an s&box model with YOUR bones and clips — props, weapons, creatures";
+		file.AddOption( "Compile Playermodel", "directions_walk", () => GuardExport( "Compile Playermodel", CompilePlayermodel ) ).ToolTip = "Write a model on the citizen skeleton, so citizen's animations drive it — for something that will be a player";
+		file.AddOption( "Make Player", "sports_esports", () => GuardExport( "Make Player", MakePlayer ) ).ToolTip = "Compile Playermodel, then write a scene with a floor, a light and a player wearing it, to walk around in";
 		file.AddOption( "Animation Clips...", "movie", OpenAnimClips );
-		file.AddOption( "Collision Report", "fitness_center", ReportCollision );
+		file.AddOption( "Run Build Script...", "description", RunBuildScriptFile ).ToolTip = "Run an Effigy build script (.txt) on this studio as one undo step — the same scripts Claude writes";
+		file.AddOption( "Collision Report", "fitness_center", ReportCollision ).ToolTip = "List each part's physics shape, and which feature turned it into one hull instead of boxes";
 		var lods = file.AddOption( "Export with LODs", "layers" );
+		lods.ToolTip = "When on, Compile .vmdl also writes half- and quarter-detail copies that switch with distance";
 		lods.Checkable = true;
 		lods.Checked = _exportLods;
 		lods.Toggled += on => { _exportLods = on; Log.Info( on ? "[Effigy] Compile .vmdl will write half- and quarter-detail LODs for a static model, switching with distance" : "[Effigy] Compile .vmdl writes one level of detail" ); };
@@ -457,6 +484,12 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		_uvDockOption = AddDockOption( view, "UV Editor", "texture", "UV" );
 		view.AddOption( "Section View", "content_cut", ToggleSectionView );
 
+		// Transient on purpose. A saved dimension is an annotation, and this is a readout: click
+		// two faces, read the gap, Escape, carry on. See SolidMeasure.
+		_measureOption = view.AddOption( "Measure", "straighten", ToggleMeasure );
+		_measureOption.Checkable = true;
+		_measureOption.Checked = _viewport?.Measuring ?? false;
+
 		// Pictures to model against. One entry per view to add, then the list to adjust or drop.
 		var reference = view.AddMenu( "Reference Images", "image" );
 		reference.AddOption( "Add Front Image...", "add_photo_alternate", () => AddReferenceImage( "front" ) );
@@ -473,9 +506,37 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 				var one = reference.AddMenu( name, captured.Visible ? "image" : "hide_image" );
 				one.AddOption( captured.Visible ? "Hide" : "Show", captured.Visible ? "visibility_off" : "visibility", () => EditReferenceImage( captured, i => i.Visible = !i.Visible ) );
 				one.AddOption( "Bigger (+25%)", "zoom_in", () => EditReferenceImage( captured, i => i.Height *= 1.25f ) );
-				one.AddOption( "Smaller (-20%)", "zoom_out", () => EditReferenceImage( captured, i => i.Height *= 0.8f ) );
-				one.AddOption( "Fainter", "opacity", () => EditReferenceImage( captured, i => i.Opacity = MathF.Max( 0.1f, i.Opacity - 0.15f ) ) );
-				one.AddOption( "Stronger", "opacity", () => EditReferenceImage( captured, i => i.Opacity = MathF.Min( 1f, i.Opacity + 0.15f ) ) );
+				// The three with a limit say so at it, rather than taking a click and changing nothing.
+				one.AddOption( "Smaller (-20%)", "zoom_out", () =>
+				{
+					if ( captured.Height <= EffigyViewport.MinReferenceHeight + 1e-6f )
+					{
+						Refuse( $"This reference image is already at its smallest ({EffigyViewport.MinReferenceHeight}). Bigger brings it back." );
+						return;
+					}
+
+					EditReferenceImage( captured, i => i.Height = MathF.Max( i.Height * 0.8f, EffigyViewport.MinReferenceHeight ) );
+				} );
+				one.AddOption( "Fainter", "opacity", () =>
+				{
+					if ( captured.Opacity <= 0.1f + 1e-4f )
+					{
+						Refuse( "This reference image is already at its faintest. Hide it to take it away altogether." );
+						return;
+					}
+
+					EditReferenceImage( captured, i => i.Opacity = MathF.Max( 0.1f, i.Opacity - 0.15f ) );
+				} );
+				one.AddOption( "Stronger", "opacity", () =>
+				{
+					if ( captured.Opacity >= 1f - 1e-4f )
+					{
+						Refuse( "This reference image is already at full strength." );
+						return;
+					}
+
+					EditReferenceImage( captured, i => i.Opacity = MathF.Min( 1f, i.Opacity + 0.15f ) );
+				} );
 				one.AddOption( "Up", "arrow_upward", () => EditReferenceImage( captured, i => i.Offset = new Vec2( i.Offset.x, i.Offset.y + i.Height * 0.05f ) ) );
 				one.AddOption( "Down", "arrow_downward", () => EditReferenceImage( captured, i => i.Offset = new Vec2( i.Offset.x, i.Offset.y - i.Height * 0.05f ) ) );
 				one.AddOption( "Left", "arrow_back", () => EditReferenceImage( captured, i => i.Offset = new Vec2( i.Offset.x - i.Height * 0.05f, i.Offset.y ) ) );
@@ -586,9 +647,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	/// <summary>
 	/// Make the current panel arrangement the default, saved to disk.
 	///
-	/// The layout itself is DockManager.State - the same serialised dock tree s&box restores from,
+	/// The layout itself is DockManager.State - the same serialised dock tree s&amp;box restores from,
 	/// positions, splitter proportions and open state all in. Storing it here rather than leaning on
-	/// s&box's own last-layout memory is what gives the Reset button something fixed to return to:
+	/// s&amp;box's own last-layout memory is what gives the Reset button something fixed to return to:
 	/// without a saved default, the window only ever knows where it was, never where you meant it
 	/// to be.
 	/// </summary>
@@ -596,7 +657,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	{
 		if ( string.IsNullOrWhiteSpace( DockManager.State ) )
 		{
-			SetPrompt( "There is no panel layout to save yet." );
+			Refuse( "There is no panel layout to save yet." );
 			return;
 		}
 
@@ -655,6 +716,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		// six NAMED buttons is chrome you read rather than a wall you want off your part, so it
 		// takes its own band and gives the 3D view back its corner.
 		_stageBar = new EffigyStageBar( _viewport ) { StageChanged = OnStageChanged };
+		_stageBar.Refused = Refuse;
 
 		// ABOVE the stage bar, and the outermost ring of chrome in the window: which part of the
 		// pipeline you are in is the coarsest question the tool asks, so it is answered furthest
@@ -673,7 +735,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		// The sculpt number bar keeps its floating spot - it belongs to the stroke you are making,
 		// not to the tool you picked, and it wants to be near the model rather than up in chrome.
-		_sculptBar = new EffigySculptBar( _viewport.Canvas ) { Changed = OnSculptBarChanged };
+		_sculptBar = new EffigySculptBar( _viewport.Canvas ) { Changed = OnSculptBarChanged, FilterApplied = OnSculptFilterApplied };
 
 		_viewport.AddSculptOverlay( _sculptBar );
 
@@ -769,6 +831,8 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			_partStage = _stageBar.SelectedIndex;
 		else if ( BarMode == EffigyBarMode.Rig )
 			_rigStage = _stageBar.SelectedIndex;
+		else if ( BarMode == EffigyBarMode.Clothing )
+			_clothingStage = _stageBar.SelectedIndex;
 
 		ApplyToolHighlight();
 	}
@@ -818,6 +882,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		_paintHomeStages = BuildPaintHomeStages();
 		_rigStages = BuildRigStages();
 		_meshEditStages = BuildMeshEditStages();
+		_clothingStages = BuildClothingStages();
 
 		// Object mode's tools cache themselves; dropping the cache is what makes the next
 		// ShowObjectModeBar build them against this assembly.
@@ -1507,6 +1572,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 				if ( fresh < 0 )
 				{
 					Log.Warning( $"[Effigy] paint on {body.Name}: no free material slot left" );
+					ReportFailure( $"Can't paint {body.Name}: it has no free material slot left. Merge or remove a material on it first." );
 					continue;
 				}
 
@@ -1546,6 +1612,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	}
 
 	private readonly List<(EffigyStageTool Tool, BrushKind Kind)> _brushTools = new();
+
+	/// <summary>The sculpt brushes by group (Build, Move, Surface), for the palette.</summary>
+	private EffigyStage[] _sculptBrushGroups = Array.Empty<EffigyStage>();
 	private EffigyStageTool _maskTool;
 	private EffigyStageTool _remeshHomeTool;
 	private EffigyStageTool _symmetryTool;
@@ -1579,7 +1648,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		{
 			Icon = EffigyIcon.Remesh,
 			Label = "Remesh",
-			Tip = "Add a Remesh — reduce a dense part to a triangle budget, keeping its shape",
+			Tip = "Add a Remesh — reduce a dense part to a triangle budget (Decimate), or rebuild it as even quads (Quad) or a watertight voxel skin (Voxel). Pick the mode in its settings",
 			Clicked = () => AddFeature( NewFeature( ToolKind.Remesh, -1 ) ),
 		};
 
@@ -1601,14 +1670,49 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 	private List<EffigyStage> BuildSculptStages()
 	{
-		var brush = new EffigyStage { Name = "Brush" };
+		// Grouped as Blender groups them: brushes that add form, brushes that move it, brushes that
+		// work the surface. Each is measured against Blender's own (Effigy.Tests --parity).
+		var brush = new EffigyStage { Name = "Build" };
 
 		brush.Add( BrushTool( EffigyIcon.SculptDraw, "Draw", "Draw — push the surface out along its normal", BrushKind.Draw ) );
-		brush.Add( BrushTool( EffigyIcon.SculptSmooth, "Smooth", "Smooth — pull a region towards its own neighbours", BrushKind.Smooth ) );
+		brush.Add( BrushTool( EffigyIcon.SculptInflate, "Clay", "Clay — build up toward a plane just above the surface", BrushKind.Clay ) );
+		brush.Add( BrushTool( EffigyIcon.SculptFlatten, "Strips", "Clay Strips — lay square strips of clay along the stroke", BrushKind.ClayStrips ) );
+		brush.Add( BrushTool( EffigyIcon.SculptDraw, "Layer", "Layer — raise to a set height, never higher however often you pass", BrushKind.Layer ) );
+		brush.Add( BrushTool( EffigyIcon.SculptInflate, "Blob", "Blob — push out into a rounded swelling", BrushKind.Blob ) );
 		brush.Add( BrushTool( EffigyIcon.SculptInflate, "Inflate", "Inflate — push out in every direction at once", BrushKind.Inflate ) );
-		brush.Add( BrushTool( EffigyIcon.SculptGrab, "Grab", "Grab — drag the surface sideways", BrushKind.Grab ) );
-		brush.Add( BrushTool( EffigyIcon.SculptFlatten, "Flatten", "Flatten — cut a region back towards a plane", BrushKind.Flatten ) );
-		brush.Add( BrushTool( EffigyIcon.SculptPinch, "Pinch", "Pinch — gather the surface towards the stroke", BrushKind.Pinch ) );
+
+		var move = new EffigyStage { Name = "Move" };
+
+		move.Add( BrushTool( EffigyIcon.SculptGrab, "Grab", "Grab — drag the surface sideways", BrushKind.Grab ) );
+		move.Add( BrushTool( EffigyIcon.SculptGrab, "Elastic", "Elastic Grab — drag with a soft, long reach, like pulling rubber", BrushKind.ElasticGrab ) );
+		move.Add( BrushTool( EffigyIcon.SculptGrab, "Snake", "Snake Hook — pull out tentacles and limbs along the stroke", BrushKind.SnakeHook ) );
+		move.Add( BrushTool( EffigyIcon.SculptGrab, "Thumb", "Thumb — smear and press the surface like a thumb through clay", BrushKind.Thumb ) );
+		move.Add( BrushTool( EffigyIcon.SculptSmooth, "Slide", "Slide — move the surface along itself, carrying its detail", BrushKind.Slide ) );
+		move.Add( BrushTool( EffigyIcon.SculptGrab, "Pose", "Pose — swing a whole region about the brush point, like posing a limb", BrushKind.Pose ) );
+		move.Add( BrushTool( EffigyIcon.SculptGrab, "Boundary", "Boundary — grab an open edge and bend it", BrushKind.Boundary ) );
+		move.Add( BrushTool( EffigyIcon.SculptPinch, "Twist", "Twist — wring the surface about its normal", BrushKind.Twist ) );
+
+		var surface = new EffigyStage { Name = "Surface" };
+
+		surface.Add( BrushTool( EffigyIcon.SculptSmooth, "Smooth", "Smooth — pull a region towards its own neighbours", BrushKind.Smooth ) );
+		surface.Add( BrushTool( EffigyIcon.SculptSmooth, "Relax", "Relax — even out the surface's spacing without changing its shape", BrushKind.Relax ) );
+		surface.Add( BrushTool( EffigyIcon.SculptFlatten, "Flatten", "Flatten — cut a region back towards a plane", BrushKind.Flatten ) );
+		surface.Add( BrushTool( EffigyIcon.SculptFlatten, "Fill", "Fill — lift the hollows up to the surface around them", BrushKind.Fill ) );
+		surface.Add( BrushTool( EffigyIcon.SculptFlatten, "Scrape", "Scrape — cut the high points down to the surface around them", BrushKind.Scrape ) );
+		surface.Add( BrushTool( EffigyIcon.SculptPinch, "Pinch", "Pinch — gather the surface towards the stroke", BrushKind.Pinch ) );
+		surface.Add( BrushTool( EffigyIcon.SculptPinch, "Crease", "Crease — cut a groove and pinch its sides in (folds, seams, wrinkles)", BrushKind.Crease ) );
+		surface.Add( BrushTool( EffigyIcon.SculptDraw, "Sharp", "Draw Sharp — fine lines with a hard edge", BrushKind.DrawSharp ) );
+		// Cloth: the surface under the brush behaves as fabric, so it folds instead of moving like clay.
+		var cloth = new EffigyStage { Name = "Cloth" };
+
+		cloth.Add( BrushTool( EffigyIcon.SculptGrab, "Grab", "Cloth Grab — drag the surface as fabric; it folds around the pull", BrushKind.ClothGrab ) );
+		cloth.Add( BrushTool( EffigyIcon.SculptPinch, "Folds", "Cloth Pinch Folds — gather fabric toward the stroke into folds", BrushKind.ClothPinchFolds ) );
+		cloth.Add( BrushTool( EffigyIcon.SculptInflate, "Expand", "Cloth Expand — grow the fabric so it buckles (Ctrl to shrink it)", BrushKind.ClothExpand ) );
+		cloth.Add( BrushTool( EffigyIcon.SculptInflate, "Inflate", "Cloth Inflate — puff the fabric out along its normals", BrushKind.ClothInflate ) );
+		cloth.Add( BrushTool( EffigyIcon.SculptFlatten, "Push", "Cloth Push — press the fabric in", BrushKind.ClothPush ) );
+		cloth.Add( BrushTool( EffigyIcon.SculptSmooth, "Drag", "Cloth Drag — drag the fabric along the stroke", BrushKind.ClothDrag ) );
+		cloth.Add( BrushTool( EffigyIcon.SculptPinch, "Twist", "Cloth Twist — wring the fabric about the brush", BrushKind.ClothTwist ) );
+		_sculptBrushGroups = new[] { brush, move, surface, cloth };
 
 		// The two that change what a stroke DOES rather than which stroke it is. Their own stage
 		// because they compose with all six brushes above - they are not a seventh brush.
@@ -1659,11 +1763,11 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		{
 			Icon = EffigyIcon.SculptBake,
 			Label = "Bake",
-			Tip = "Bake a normal map from this sculpt onto the cage",
+			Tip = "Bake a normal map (and the maps picked in Settings > Bake) from this sculpt onto the cage",
 			Clicked = BakeSculpt,
 		} );
 
-		return new List<EffigyStage> { brush, stroke, levels };
+		return new List<EffigyStage> { brush, move, surface, cloth, stroke, levels };
 	}
 
 	private EffigyStageTool BrushTool( EffigyIcon icon, string label, string tip, BrushKind kind )
@@ -1722,7 +1826,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			// The feature errored, so there is nothing to sculpt on. Its own diagnostic says why far
 			// better than anything this could invent. The dialog stays open so a missing body can
 			// still be picked — that pick is what produces the cage.
-			SetPrompt( feature.Error ?? "This sculpt has no cage yet — the feature below it did not build." );
+			Refuse( feature.Error ?? "This sculpt has no cage yet — the feature below it did not build." );
 			return;
 		}
 
@@ -1815,7 +1919,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		{
 			Icon = EffigyIcon.UVProject,
 			Label = "UV Project",
-			Tip = "Add a UV Project — re-project UVs (box or planar)",
+			Tip = "Add a UV Project — re-project UVs: box, planar, or Unwrap (flatten at seams)",
 			Clicked = () => AddFeature( NewFeature( ToolKind.UVProject, -1 ) ),
 		} );
 
@@ -1835,6 +1939,14 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			Label = "Material",
 			Tip = "Material brush — drag to lay the Materials browser's selection onto faces",
 			Clicked = EnterMaterialBrush,
+		} );
+
+		stage.Add( new EffigyStageTool
+		{
+			Icon = EffigyIcon.FaceMaterial,
+			Label = "Flesh Material",
+			Tip = "Add a Flesh Material — wet flesh, raw meat, gut, lung, bone, tooth or gum on the selected body, baked into colour and roughness textures and a .vmat. Creases darken and ridges dry from the shape itself. Set a Folder in its settings to write the files",
+			Clicked = () => AddFeature( NewFeature( ToolKind.FleshMaterial, -1 ) ),
 		} );
 
 		return new List<EffigyStage> { stage };
@@ -2005,7 +2117,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		if ( bodies.Count == 0 )
 		{
-			SetPrompt( "The material brush needs a body to paint on — add a primitive or extrude a sketch first." );
+			Refuse( "The material brush needs a body to paint on — add a primitive or extrude a sketch first." );
 			return;
 		}
 
@@ -2069,7 +2181,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	{
 		if ( string.IsNullOrWhiteSpace( _materialsPanel?.SelectedMaterial ) )
 		{
-			SetPrompt( "No material chosen — pick one in the Materials browser and the ring turns "
+			Refuse( "No material chosen — pick one in the Materials browser and the ring turns "
 				+ "amber. Nothing was painted." );
 			return;
 		}
@@ -2115,22 +2227,39 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	/// </summary>
 	private void OnMaterialDabbed( IReadOnlyList<int> faces )
 	{
+		if ( faces is null || faces.Count == 0 )
+			return;
+
 		var material = _materialsPanel?.SelectedMaterial;
 
-		if ( string.IsNullOrWhiteSpace( material ) || faces is null || faces.Count == 0 )
+		if ( string.IsNullOrWhiteSpace( material ) )
+		{
+			Refuse( "Can't brush a material: none is picked. Click one in the Materials panel first." );
 			return;
+		}
 
+		// NO FALLBACK TO THE FIRST BODY. The faces are indices into the body under the brush; laid
+		// on any other body they land on whatever faces happen to share those numbers.
 		var bodyId = _viewport?.MaterialBrush?.HoverBodyId;
-		var body = _studio?.Bodies.FirstOrDefault( b => b.Id == bodyId )
-			?? _studio?.Bodies.FirstOrDefault();
+		var body = _studio?.Bodies.FirstOrDefault( b => b.Id == bodyId );
 
 		if ( body is null )
+		{
+			Refuse( "Can't brush here: the part under the brush changed since the stroke began. Lift the brush and start again." );
 			return;
+		}
 
 		var fresh = MaterialDrop.SlotCarrying( _studio, material ) < 0;
 
 		if ( MaterialDrop.Brush( _studio, body, faces, material, out var slot, out var released ) <= 0 )
+		{
+			// Faces already on the material are the held-still brush and say nothing; no slot at all
+			// is the wall the drop path names too.
+			if ( slot < 0 )
+				Refuse( $"Can't brush {MaterialFileName( material )}: all {MaterialDrop.HighestSlot} material slots are in use. Free one from the Materials panel." );
+
 			return;
+		}
 
 		// Same rule the drop follows: only a slot this gesture INVENTED gets a guessed world size,
 		// so re-brushing a material never rewrites a number somebody typed.
@@ -2352,27 +2481,14 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		// The same one-field popup every tree in this tool renames with - see
 		// EffigyRigPanel.BeginRename. A note's caption is a rename in everything but name, and
 		// inventing a second way to type one short string would be a second thing to get wrong.
-		var menu = new Menu( _viewport );
-		var edit = new LineEdit( note.Text ?? "", menu ) { FixedWidth = 260, PlaceholderText = "What does this one say?" };
-
-		edit.ReturnPressed += () =>
+		EffigyRenamePopup.Open( _viewport, note.Text ?? "", 260, text =>
 		{
-			var text = edit.Text?.Trim();
-
-			menu.Close();
-
 			// Trimmed to null rather than kept as an empty string: a caption of "" would still draw
 			// its leader line up to a label with nothing in it, which reads as a bug rather than as
 			// a note somebody cleared.
 			if ( session.SetText( note, string.IsNullOrWhiteSpace( text ) ? null : text ) )
 				OnNoteEdited();
-		};
-
-		menu.AddWidget( edit );
-		menu.OpenAtCursor();
-
-		edit.Focus();
-		edit.SelectAll();
+		}, placeholder: "What does this one say?" );
 	}
 
 	/// <summary>
@@ -2542,26 +2658,29 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	/// this tool's own default - overlaps by construction. Naming that is worth more than a file.
 	/// </summary>
 	/// <summary>
-	/// The two normal-map conventions, and the size.
+	/// The bake's conventions, size, map set and material, set in Edit > Settings under "Bake" and
+	/// remembered between sessions.
 	///
-	/// THESE EXIST AS CONTROLS BECAUSE NOBODY KNOWS THE ANSWER YET. Which way s&amp;box wants the green
-	/// channel, and which end of the image v = 0 belongs at, are the two things the suite explicitly
-	/// cannot judge and the sitting is meant to settle. A bake button that could only write one of
-	/// the four combinations would make that sitting impossible to finish - you would find out the
-	/// map was wrong and have no way to write the right one.
-	///
-	/// They live in Edit > Settings now, under "Normal map bake", rather than as three verbs on the
-	/// Edit menu. A toggle whose whole state was a one-line prompt that had already scrolled away is
-	/// a control you cannot read; the settings window shows the switch position and the size at once,
-	/// and remembers them between sessions the way every other setting there does.
-	///
-	/// Defaults are OpenGL-style green and no vertical flip, which is what the sample in
-	/// Effigy.Tests/out was written with, so the two can be compared directly.
+	/// The green default is s&amp;box's: OpenGL-style, +green up the image. That was read off the
+	/// engine's own source on 2026-10-16 (normal.hlsl negates y; the mesh tool's bitangent is +dP/dv),
+	/// see BakeOptions.FlipGreen. The switch stays for other engines, and so does the vertical flip.
 	/// </summary>
 	private bool _bakeFlipGreen;
 	private bool _bakeFlipV;
 	private int _bakeSize = 1024;
+	private BakeMaps _bakeMaps = BakeMaps.Normal | BakeMaps.AmbientOcclusion;
+	private int _bakeMaterial;
 
+	/// <summary>
+	/// Bake the sculpt down onto the cage's UVs: the normal map and whichever of AO, curvature,
+	/// cavity, height and thickness (with its transmission mask) Settings asks for, each per texel
+	/// off the sculpt, written beside the chosen file as &lt;name&gt;_&lt;map&gt;.png — plus a complex or
+	/// skin .vmat binding them when Settings picks one (BakeMaterial.WriteSet).
+	///
+	/// The UVs are checked BEFORE anything is written. A bake over overlapping UVs does not fail: it
+	/// produces a plausible map that is wrong wherever two faces shared a texel, and box projection -
+	/// this tool's own default - overlaps by construction. Naming that is worth more than a file.
+	/// </summary>
 	private void BakeSculpt()
 	{
 		if ( _viewport?.SculptSession is not { } session )
@@ -2573,13 +2692,13 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		if ( !coverage.CanBake )
 		{
-			SetPrompt( $"Cannot bake: {coverage.Problem}" );
+			Refuse( $"Cannot bake: {coverage.Problem}" );
 			return;
 		}
 
 		var fd = new FileDialog( null )
 		{
-			Title = "Bake normal map to...",
+			Title = "Bake maps to...",
 			DefaultSuffix = ".png",
 			Directory = Project.Current?.GetAssetsPath() ?? "",
 		};
@@ -2594,27 +2713,33 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		try
 		{
-			var options = new BakeOptions { FlipGreen = _bakeFlipGreen };
-			var map = NormalBake.Bake( cage, sculpt.Evaluate( sculpt.TopLevel ), _bakeSize, _bakeSize, options );
+			// The chosen file names the set: "Arm_normal.png" bakes Arm_normal.png, Arm_ao.png, ...
+			var folder = Path.GetDirectoryName( fd.SelectedFile ) ?? "";
+			var name = Path.GetFileNameWithoutExtension( fd.SelectedFile );
 
-			PngWriter.WriteFile( fd.SelectedFile, map, _bakeFlipV );
+			if ( name.EndsWith( "_normal", StringComparison.OrdinalIgnoreCase ) )
+				name = name[..^"_normal".Length];
+
+			var options = new BakeOptions { FlipGreen = _bakeFlipGreen };
+			var set = NormalBake.BakeAll( cage, sculpt.Evaluate( sculpt.TopLevel ), _bakeSize, _bakeSize, _bakeMaps | BakeMaps.Normal, options );
+			var material = BakeMaterial.MaterialChoices[Math.Clamp( _bakeMaterial, 0, BakeMaterial.MaterialChoices.Length - 1 )];
+			var written = BakeMaterial.WriteSet( set, folder, name, _bakeFlipV, Project.Current?.GetAssetsPath(), material );
 
 			// The convention is named in the message on purpose. Two files that differ only in the
-			// sign of one channel are indistinguishable once they are on disk, and the whole point of
-			// the sitting is to work out which one is right.
-			var convention = $"{(_bakeFlipGreen ? "DirectX" : "OpenGL")} green, v = 0 at the "
+			// sign of one channel are indistinguishable once they are on disk.
+			var convention = $"{(_bakeFlipGreen ? "DirectX" : "OpenGL (s&box)")} green, v = 0 at the "
 				+ $"{(_bakeFlipV ? "bottom" : "top")}";
 
-			SetPrompt( $"Baked {map.Width}×{map.Height} to {fd.SelectedFile} — {map.FilledCount:N0} texels hit, "
-				+ convention + "." );
+			SetPrompt( $"Baked {written.Count} file(s) at {_bakeSize}×{_bakeSize} to {folder} — {set.Normal.FilledCount:N0} texels hit, "
+				+ convention + ". " + set.Report.Replace( "\n", "; " ) );
 
-			Log.Info( $"[Effigy] baked normal map to {fd.SelectedFile} ({convention})" );
+			Log.Info( $"[Effigy] baked {string.Join( ", ", written.Select( Path.GetFileName ) )} to {folder} ({convention})" );
 		}
 		catch ( Exception e )
 		{
 			// Writing a file is the one place failing quietly is unforgivable, same as Save.
 			Log.Error( $"[Effigy] could not bake to {fd.SelectedFile}: {e.Message}" );
-			SetPrompt( $"Bake failed: {e.Message}" );
+			ReportFailure( $"Bake failed: {e.Message}" );
 		}
 	}
 
@@ -2657,7 +2782,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		session = _viewport?.SculptSession;
 
 		if ( session is null )
-			SetPrompt( "That is a sculpting action — open a Sculpt feature first." );
+			Refuse( "That is a sculpting action — open a Sculpt feature first." );
 
 		return session is not null;
 	}
@@ -2764,6 +2889,13 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	/// <summary>The radius or strength box was typed in. The viewport only needs to know so the
 	/// brush ring is drawn at the new size.</summary>
 	private void OnSculptBarChanged() => _viewport?.Update();
+
+	/// <summary>A filter ran over the level: the same as a stroke landing — preview stale, document unsaved.</summary>
+	private void OnSculptFilterApplied()
+	{
+		_viewport?.MarkSculptChanged();
+		NoteSculptEdited();
+	}
 
 	/// <summary>Put the strip's ticks and the bar's readout back in step with the session after a
 	/// sculpt shortcut changed a brush setting — the radius keys, X and M.</summary>
@@ -3347,6 +3479,121 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			_promptLabel.Text = prompt;
 	}
 
+	/// <summary>A number box held what was typed at its limit. Said by the box's name when it has
+	/// one: "Strength can't go above 1, so it's set to 1."</summary>
+	private void SayFieldLimit( string label, float asked, float used, string unit )
+	{
+		var suffix = unit == "deg" ? "°" : !string.IsNullOrEmpty( unit ) && unit != "u" ? " " + unit : "";
+		var value = Expression.Format( used );
+		var name = string.IsNullOrEmpty( label ) ? "That value" : label;
+
+		_viewport?.ShowCallout( "limit:" + name, EffigyCalloutKind.Refusal,
+			$"{name} can't go {(asked > used ? "above" : "below")} {value}{suffix}, so it's set to {value}{suffix}.",
+			lifetime: 5f );
+	}
+
+	/// <summary>Seconds a refusal stays up when nobody touches it — long enough to read twice.</summary>
+	private const float RefusalSeconds = 6f;
+
+	/// <summary>Seconds a failure stays up — longer than a refusal, since it usually needs a fix.</summary>
+	private const float FailureSeconds = 12f;
+
+	/// <summary>
+	/// The editor would not do what was just asked: say why, in an amber callout over the
+	/// viewport. Also on the status bar, which is where the next prompt will replace it.
+	///
+	/// Not for prompts. "Click a point to start the line" is the tool asking for something and
+	/// stays a SetPrompt; "Click a body first" is the tool turning you down.
+	/// </summary>
+	private void Refuse( string why )
+	{
+		SetPrompt( why );
+		_viewport?.ShowCallout( "refusal", EffigyCalloutKind.Refusal, why, lifetime: RefusalSeconds );
+	}
+
+	/// <summary>Something failed — a save, an export, a bake. A red callout and the status bar;
+	/// the caller logs the detail to the console, where the stack trace belongs.</summary>
+	private void ReportFailure( string what )
+	{
+		SetPrompt( what );
+		_viewport?.ShowCallout( "failure:" + what, EffigyCalloutKind.Error, what, lifetime: FailureSeconds );
+	}
+
+	/// <summary>
+	/// One callout per feature in trouble — red when it failed, amber when it built with a warning — each with Open, and — when the feature knows the
+	/// value that would fix it — a button that sets it. Each one goes the moment its feature
+	/// builds again, so the stack is always the features that are broken right now.
+	///
+	/// Shown for the feature whose dialog is open too — that is exactly when you have just typed
+	/// the number it cannot build with — but without Open, since it already is.
+	/// </summary>
+	private void SyncFeatureCallouts()
+	{
+		if ( _viewport is null )
+			return;
+
+		var failing = new HashSet<string>();
+
+		foreach ( var feature in _studio.Features )
+		{
+			if ( feature.Diagnostic is not { } diagnostic )
+				continue;
+
+			var error = diagnostic.Severity == DiagnosticSeverity.Error;
+
+			var key = "feature:" + feature.Id;
+			failing.Add( key );
+
+			var actions = new List<(string, Action)>();
+			var target = feature;
+
+			if ( !ReferenceEquals( _dialog?.Feature, feature ) )
+				actions.Add( ("Open " + feature.Name, () => EditFeature( target )) );
+
+			if ( diagnostic.SuggestedValue is float value && !string.IsNullOrEmpty( diagnostic.ParameterLabel )
+				&& diagnostic.Remedies.Count > 0 )
+			{
+				actions.Add( (diagnostic.Remedies[0], () => ApplySuggestedValue( target, diagnostic.ParameterLabel, value )) );
+			}
+
+			// An error built nothing; a warning built something, but not what you probably meant.
+			var text = error ? $"{feature.Name} failed: {diagnostic.Problem}" : $"{feature.Name}: {diagnostic.Problem}";
+
+			if ( !string.IsNullOrEmpty( diagnostic.Cause ) )
+				text += "\n" + diagnostic.Cause;
+
+			_viewport.ShowCallout( key, error ? EffigyCalloutKind.Error : EffigyCalloutKind.Refusal, text, actions.ToArray() );
+		}
+
+		_viewport.ClearCallouts( k => k.StartsWith( "feature:" ) && !failing.Contains( k ) );
+	}
+
+	/// <summary>Write the value a failed feature's diagnostic suggested into the parameter it
+	/// named, and rebuild — the callout's version of the dialog's fix button.</summary>
+	private void ApplySuggestedValue( Feature feature, string label, float value )
+	{
+		foreach ( var p in feature.Parameters )
+		{
+			if ( p.Label != label )
+				continue;
+
+			switch ( p )
+			{
+				case FloatParam fp:
+					fp.Value = value;
+					break;
+				case IntParam ip:
+					ip.Value = (int)MathF.Round( value );
+					break;
+				default:
+					return;
+			}
+
+			OnFeatureEdited();
+			return;
+		}
+	}
+
 	// --- which creation tools are on the strip -------------------------------------------------
 
 	/// <summary>
@@ -3364,9 +3611,10 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		Sketch, Plane, Primitive, Import, Extrude, Revolve, Sweep, Loft, Chamfer, Fillet, Shell, Subdivide,
 		Remesh,
 		Draft, Hole, Sculpt, Mirror, LinearPattern, CircularPattern, Transform, UVProject, FaceMaterial,
-		MoveFace, Paint, Boolean,
+		MoveFace, DeleteFace, Paint, Boolean,
 		Garment, Fur, Trim, Fabric,
 		Spline, CurveDeform, Part, Profile,
+		Blob, SurfaceDetail, FleshMaterial, ShapeKey, ShapeKeyEnd,
 	}
 
 	/// <summary>Build one, and apply the variant chosen from its dropdown where it has one.</summary>
@@ -3399,12 +3647,18 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		ToolKind.UVProject => new UVProjectFeature(),
 		ToolKind.FaceMaterial => new FaceMaterialFeature(),
 		ToolKind.MoveFace => new MoveFaceFeature(),
+		ToolKind.DeleteFace => new DeleteFaceFeature(),
 		ToolKind.Paint => new PaintFeature(),
 		ToolKind.Boolean => NewBoolean( choice ),
 		ToolKind.Garment => new GarmentFeature(),
 		ToolKind.Fur => new FurFeature(),
 		ToolKind.Trim => new TrimFeature(),
 		ToolKind.Fabric => new FabricFeature(),
+		ToolKind.Blob => new BlobFeature(),
+		ToolKind.SurfaceDetail => new DetailFeature(),
+		ToolKind.FleshMaterial => new FleshMaterialFeature(),
+		ToolKind.ShapeKey => new ShapeKeyFeature(),
+		ToolKind.ShapeKeyEnd => new ShapeKeyEndFeature(),
 		_ => throw new ArgumentOutOfRangeException( nameof( kind ), kind, "no feature for this tool" )
 	};
 
@@ -3608,6 +3862,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		new() { Icon = EffigyIcon.MoveFace, Label = "Move Face", Stage = StageDetail, MenuIcon = "open_with",
 			Tip = "Add a Move Face — push, pull or slide picked faces of a part",
 			Kind = ToolKind.MoveFace },
+		new() { Icon = EffigyIcon.DeleteGeometry, Label = "Delete Face", Stage = StageDetail, MenuIcon = "delete",
+			Tip = "Add a Delete Face — remove picked faces and close the flat opening they leave",
+			Kind = ToolKind.DeleteFace },
 
 		// Both act on picked faces of a solid that already exists, which is what puts them with
 		// Shell rather than with Extrude.
@@ -3622,16 +3879,16 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		new() { Icon = EffigyIcon.Mirror, Label = "Mirror", Stage = StageRepeat,
 			Tip = "Add a Mirror — reflect bodies across a plane",
 			Kind = ToolKind.Mirror },
-		new() { Icon = EffigyIcon.LinearPattern, Label = "Linear", Stage = StageRepeat,
+		new() { Icon = EffigyIcon.LinearPattern, Label = "Linear Pattern", Stage = StageRepeat,
 			Tip = "Add a Linear Pattern — copy bodies along a direction",
 			Kind = ToolKind.LinearPattern },
-		new() { Icon = EffigyIcon.CircularPattern, Label = "Circular", Stage = StageRepeat,
+		new() { Icon = EffigyIcon.CircularPattern, Label = "Circular Pattern", Stage = StageRepeat,
 			Tip = "Add a Circular Pattern — copy bodies around an axis",
 			Kind = ToolKind.CircularPattern },
 		new() { Icon = EffigyIcon.Transform, Label = "Transform", Stage = StageRepeat,
 			Tip = "Add a Transform — move, rotate or scale bodies",
 			Kind = ToolKind.Transform },
-		new() { Icon = EffigyIcon.Drape, Label = "Bend", Stage = StageRepeat, MenuIcon = "gesture",
+		new() { Icon = EffigyIcon.Drape, Label = "Bend Along Curve", Stage = StageRepeat, MenuIcon = "gesture",
 			Tip = "Add a Bend along curve — a body's length follows the spline above it",
 			Kind = ToolKind.CurveDeform },
 
@@ -3965,6 +4222,8 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		{
 			Changing = RecordUndo,
 			Changed = OnVariablesChanged,
+			Refused = Refuse,
+			Noted = why => _viewport?.ShowCallout( "variables", EffigyCalloutKind.Refusal, why, lifetime: 8f ),
 		};
 
 		// Built here with the rest so the dock's CreateAction has something to hand back. The
@@ -3978,6 +4237,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		{
 			RunOp = RunMeshOp,
 			Changed = OnMeshEditChanged,
+			Refused = Refuse,
 		};
 
 		_tutorialPanel = new EffigyTutorialPanel( this )
@@ -4036,6 +4296,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		_viewport.IdleSelectionChanged = OnIdleSelectionChanged;
 		_viewport.FaceContextMenuRequested = OpenFaceMenu;
+
+		// A tap of the right button opens the radial menu — see EffigyWindow.Radial.cs.
+		WireRadial();
 		_viewport.MaterialDropped = OnMaterialDropped;
 		_viewport.SketchConstraintMenuRequested = OpenSketchConstraintMenu;
 
@@ -4046,6 +4309,11 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		// exists to snapshot.
 		_viewport.SketchEditing = RecordUndo;
 		_viewport.SketchPromptChanged = SetPrompt;
+
+		// Every number box held at a limit says so — see EffigyNumericField.AnyLimitHit.
+		EffigyNumericField.AnyLimitHit = SayFieldLimit;
+		EffigyNumericField.AnyUnreadable = ( label, text ) => Refuse(
+			$"{(string.IsNullOrEmpty( label ) ? "That box" : label)}: '{text}' isn't a number or a #variable this document has, so it kept its old value." );
 
 		// Same "before" moment, for the rig: a bone placed, deleted, renamed, or mirrored.
 		_rigPanel.RigChanging = RecordUndo;
@@ -4435,6 +4703,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 					? "[Effigy] collision is automatic again for every part"
 					: $"[Effigy] collision set on {collisions} part(s); the model's collision is now built per part. File > Collision Report shows it." );
 				RebuildStudio();
+				SetPrompt( collisions == 0
+					? "Collision is automatic again for every part."
+					: $"Collision set on {collisions} part{(collisions == 1 ? "" : "s")}; the model's collision is now built per part. File > Collision Report shows it." );
 				break;
 		}
 	}
@@ -4458,8 +4729,14 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	/// </summary>
 	private void JoinParts( IReadOnlyList<string> bodyIds )
 	{
-		if ( _studio is null || bodyIds is null || bodyIds.Count < 2 )
+		if ( _studio is null )
 			return;
+
+		if ( bodyIds is null || bodyIds.Count < 2 )
+		{
+			Refuse( "Can't join: select two or more parts first (Shift+click to add to the selection)." );
+			return;
+		}
 
 		var joined = new PolyMesh();
 		var names = new List<string>();
@@ -4475,19 +4752,41 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		if ( names.Count < 2 )
 		{
-			SetPrompt( "Join needs two or more parts with faces." );
+			Refuse( "Can't join: Join needs two or more parts with faces. Select another part too." );
 			return;
 		}
 
 		var import = new ImportFeature { Name = $"Joined {names[0]}" };
 		import.LoadMesh( System.Text.Encoding.UTF8.GetBytes( ObjWriter.Write( joined, "joined", materialName: _studio.NameForSlot ) ) );
 
+		// What does NOT come across, worked out before the parts go: a join that quietly unrigged
+		// or unpainted something is only found out at export.
+		var lost = new List<string>();
+		var boned = bodyIds.Count( id => _studio.BodyBoneMap.ContainsKey( id ) );
+		if ( boned > 0 )
+			lost.Add( boned == 1 ? "a bone assignment" : $"{boned} bone assignments" );
+		if ( _studio.WeightPaint is { Count: > 0 } )
+			lost.Add( "painted weights" );
+		if ( _studio.Features.OfType<PaintFeature>().Any( p => p.Bodies.BodyIds.Any( id => bodyIds.Contains( id ) ) ) )
+			lost.Add( "texture paint" );
+
 		RecordUndo();
 		DeleteParts( bodyIds, recordUndo: false );
 		InsertAtRollback( import );
 		RebuildStudio();
 		_featureTree?.Select( import );
-		SetPrompt( $"Joined {names.Count} parts into one: {string.Join( ", ", names )}. Merge by distance in Edit mode welds the seams if they touch." );
+
+		var joinedText = $"Joined {names.Count} parts into one: {string.Join( ", ", names )}. Merge by distance in Edit mode welds the seams if they touch.";
+
+		if ( lost.Count > 0 )
+		{
+			var lostText = $"Joined {names.Count} parts, but their {string.Join( " and ", lost )} didn't come across: a join makes a new mesh. Redo them on the joined part, or Ctrl+Z.";
+			SetPrompt( lostText );
+			_viewport?.ShowCallout( "join", EffigyCalloutKind.Refusal, lostText, lifetime: FailureSeconds );
+			return;
+		}
+
+		SetPrompt( joinedText );
 	}
 
 	private void DeleteParts( IReadOnlyList<string> bodyIds, bool recordUndo )
@@ -4563,9 +4862,14 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		if ( string.IsNullOrEmpty( bodyId ) )
 			return;
 
-		RecordUndo();
-
 		var trimmed = string.IsNullOrWhiteSpace( name ) ? null : name.Trim();
+
+		// Same name back (the box closed without a change): no undo step for nothing.
+		if ( trimmed == (_studio.BodyNames.TryGetValue( bodyId, out var current ) ? current : null)
+			|| (trimmed is not null && _studio.Bodies.FirstOrDefault( b => b.Id == bodyId )?.Name == trimmed) )
+			return;
+
+		RecordUndo();
 
 		if ( trimmed is null )
 			_studio.BodyNames.Remove( bodyId );
@@ -4614,7 +4918,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		if ( bodies.Count == 0 )
 		{
-			SetPrompt( "Select a part first — in the Parts list or the viewport." );
+			Refuse( "Select a part first — in the Parts list or the viewport." );
 			return;
 		}
 
@@ -4666,6 +4970,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			// No undo step, because nothing happened. Said out loud rather than silently, since a
 			// menu item that appears to do nothing is indistinguishable from a broken one.
 			Log.Warning( $"[Effigy] nothing to measure a bone along in {string.Join( ", ", skipped )}" );
+			Refuse( $"Can't make a bone from {string.Join( ", ", skipped )}: {(skipped.Count == 1 ? "it has" : "they have")} no long axis to lay a bone along (a sphere or a cube has none). Place the bone by hand instead." );
 			return;
 		}
 
@@ -4697,10 +5002,14 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		{
 			Log.Warning( $"[Effigy] {derived.Count} bone(s) made; "
 				+ $"no axis to measure along in {string.Join( ", ", skipped )}" );
+			Refuse( $"Made {derived.Count} bone{(derived.Count == 1 ? "" : "s")}, but not for {string.Join( ", ", skipped )}: no long axis to lay a bone along. Place {(skipped.Count == 1 ? "that one" : "those")} by hand." );
 		}
 		else
 		{
 			Log.Info( $"[Effigy] {derived.Count} bone(s) made from the part's shape" );
+			SetPrompt( derived.Count == 1
+				? $"Made bone {lastName} from the part's shape."
+				: $"Made {derived.Count} bones from the parts' shapes." );
 		}
 	}
 
@@ -4731,8 +5040,25 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	/// reset: the pose is a scratchpad, never a saved state.</summary>
 	private void OnPoseToggled()
 	{
-		if ( _viewport is null || _rigPanel is not { HasBones: true } rig )
+		if ( _viewport is null )
 			return;
+
+		if ( _rigPanel is not { HasBones: true } rig )
+		{
+			// Toggling OFF never needs bones; a preview armed before the last bone was deleted
+			// still has to be able to leave.
+			if ( _viewport.PosePreviewActive )
+			{
+				_viewport.DisarmPosePreview();
+				_rigPanel?.RefreshPoseState();
+				RefreshPreview();
+				return;
+			}
+
+			Refuse( "Can't pose: there are no bones yet. Place a bone first, or Make Bones from the parts." );
+			_rigPanel?.RefreshPoseState();
+			return;
+		}
 
 		if ( _viewport.PosePreviewActive )
 		{
@@ -4754,16 +5080,52 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		var weights = SkinBinder.BindBodies( mesh, ranges, rig.BodyBoneMap, rig.Skeleton );
 		weights = SkinBinder.SmoothWeights( mesh, weights );
 
-		if ( _studio.WeightPaint is { Count: > 0 } )
-			_studio.WeightPaint.Apply( mesh, weights, rig.Skeleton, out _ );
+		ApplyWeightPaint( mesh, weights, rig.Skeleton, "the pose preview" );
 
 		if ( _viewport.ArmPosePreview( mesh, weights, rig.Skeleton ) )
 		{
 			_rigPanel.RefreshPoseState();
 			RefreshPosePreview();
 		}
+		else
+		{
+			// The only ways in: nothing built, or a mesh with no vertices to weight.
+			Refuse( mesh.VertexCount == 0
+				? "Can't pose: there is no mesh to bend. Add a body first."
+				: "Can't pose: the model has no weights to bend it with. Check the rig has bones and the parts are assigned." );
+			_rigPanel.RefreshPoseState();
+		}
 
 		RefreshTutorial();
+	}
+
+	/// <summary>
+	/// Put the document's painted weights on top of freshly bound ones, and say so when they could
+	/// not all go on. Paint made before the mesh changed shape is kept but cannot be placed, and
+	/// paint naming a deleted bone is dropped - either way the model ships with weights other than
+	/// the ones that were painted, which nobody finds out from a plain "Compiled".
+	/// </summary>
+	private void ApplyWeightPaint( PolyMesh mesh, SkinWeights weights, Skeleton skeleton, string where )
+	{
+		if ( _studio.WeightPaint is not { Count: > 0 } layer )
+			return;
+
+		layer.Apply( mesh, weights, skeleton, out var missing );
+
+		string why = null;
+
+		if ( layer.IsStale )
+			why = $"Painted weights were not used in {where}: the mesh changed shape since they were painted, so the "
+				+ $"{layer.Count} painted vertices no longer line up. They are kept - undo the edit that changed the mesh to get them back, or repaint.";
+		else if ( missing.Count > 0 )
+			why = $"Some painted weights were not used in {where}: they name bone{(missing.Count == 1 ? "" : "s")} "
+				+ $"{string.Join( ", ", missing.Take( 4 ) )}{(missing.Count > 4 ? " ..." : "")}, which no longer exist{(missing.Count == 1 ? "s" : "")}. Those vertices use the automatic weights.";
+
+		if ( why is null )
+			return;
+
+		Log.Warning( $"[Effigy] {why}" );
+		_viewport?.ShowCallout( "weight-paint", EffigyCalloutKind.Refusal, why, lifetime: FailureSeconds );
 	}
 
 	private void OnPoseReset()
@@ -4787,6 +5149,17 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		if ( deformed is null )
 		{
+			// Armed but nothing to show: a bone was placed or deleted mid-pose, so the weights no
+			// longer index this skeleton. The preview stops and says so, rather than freezing in a
+			// state where dragging bones moves nothing.
+			if ( _viewport.PosePreviewActive )
+			{
+				_viewport.ResetPose();
+				_viewport.DisarmPosePreview();
+				_rigPanel?.RefreshPoseState();
+				Refuse( "Pose preview stopped: a bone was added or removed while posing, so the old weights no longer fit. Press Pose again." );
+			}
+
 			RefreshPreview();
 			return;
 		}
@@ -5132,6 +5505,8 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		if ( report.HasErrors )
 			Log.Warning( $"[Effigy] rebuild: {string.Join( "; ", report.Errors.Select( e => e.Message ) )}" );
+
+		SyncFeatureCallouts();
 	}
 
 	/// <summary>The engine's dev checker, worn as a whole-part material when the UV checker overlay
@@ -5296,6 +5671,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		catch ( Exception e )
 		{
 			Log.Error( $"[Effigy] could not use that picture: {e.Message}" );
+			ReportFailure( $"Can't use {System.IO.Path.GetFileName( fd.SelectedFile )} as a reference: it couldn't be copied into the project ({e.Message})." );
 			return;
 		}
 
@@ -5337,6 +5713,27 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			_dirty = true;
 			UpdateTitle();
 		}
+	}
+
+	private Option _measureOption;
+
+	private void ToggleMeasure()
+	{
+		if ( _viewport is null )
+			return;
+
+		_viewport.Measuring = !_viewport.Measuring;
+		_viewport.MeasureStatus = SetPrompt;
+
+		if ( _measureOption is not null )
+			_measureOption.Checked = _viewport.Measuring;
+
+		if ( !_viewport.Measuring )
+			_viewport.ClearMeasure();
+
+		SetPrompt( _viewport.Measuring
+			? "Measure: click an edge for its length, or two faces, edges or vertices. Escape clears."
+			: "Measure off." );
 	}
 
 	private void ToggleSectionView()
@@ -5682,6 +6079,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		if ( _animClipsWindow.IsValid() )
 			_animClipsWindow.Close();
 		_animClips.Clear();
+		_animClipsUnreadFrom = null;
 		_featureTree?.SetStudio( _studio );
 		_partsPanel?.SetStudio( _studio );
 		_materialsPanel?.SetStudio( _studio );
@@ -5717,6 +6115,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		if ( _animClipsWindow.IsValid() )
 			_animClipsWindow.Close();
 		_animClips.Clear();
+		_animClipsUnreadFrom = null;
 		_featureTree?.SetStudio( _studio );
 		_partsPanel?.SetStudio( _studio );
 		_materialsPanel?.SetStudio( _studio );
@@ -5745,43 +6144,36 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		RefreshTutorial();
 	} );
 
-	private void DeleteSelectedFeature()
+	// The Edit menu's four feature commands. The menu bar is built once and has no hook to grey an
+	// item before it opens, so each one says why when there is nothing for it to do - "nothing is
+	// selected" and "already at the top" are the two ways these used to do nothing at all.
+
+	/// <summary>The feature tree's selection, or null after refusing with what to do instead.</summary>
+	private Feature SelectedFeatureOrSaySo( string verb )
 	{
 		if ( _featureTree?.SelectedFeature is { } feature )
-		{
-			RecordUndo();
-			_studio.Remove( feature );
-			_dialog?.Close();
-			RebuildStudio();
-		}
+			return feature;
+
+		Refuse( $"Can't {verb}: no feature is selected. Click one in the feature tree first (CAD workspace)." );
+		return null;
+	}
+
+	private void DeleteSelectedFeature()
+	{
+		if ( SelectedFeatureOrSaySo( "delete a feature" ) is { } feature )
+			OnFeatureCommand( feature, EffigyFeatureCommand.Delete );
 	}
 
 	private void MoveFeatureUp()
 	{
-		if ( _featureTree?.SelectedFeature is not { } feature )
-			return;
-
-		var idx = _studio.Features.IndexOf( feature );
-		if ( idx > 0 )
-		{
-			RecordUndo();
-			_studio.Move( idx, idx - 1 );
-			RebuildStudio();
-		}
+		if ( SelectedFeatureOrSaySo( "move a feature" ) is { } feature )
+			OnFeatureCommand( feature, EffigyFeatureCommand.MoveUp );
 	}
 
 	private void MoveFeatureDown()
 	{
-		if ( _featureTree?.SelectedFeature is not { } feature )
-			return;
-
-		var idx = _studio.Features.IndexOf( feature );
-		if ( idx < _studio.Features.Count - 1 )
-		{
-			RecordUndo();
-			_studio.Move( idx, idx + 1 );
-			RebuildStudio();
-		}
+		if ( SelectedFeatureOrSaySo( "move a feature" ) is { } feature )
+			OnFeatureCommand( feature, EffigyFeatureCommand.MoveDown );
 	}
 
 	/// <summary>
@@ -5836,10 +6228,18 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 				RebuildStudio();
 				break;
 
+			case EffigyFeatureCommand.MoveUp:
+				Refuse( $"Can't move {feature.Name ?? feature.TypeName} up: it is already the first feature." );
+				break;
+
 			case EffigyFeatureCommand.MoveDown when index >= 0 && index < _studio.Features.Count - 1:
 				RecordUndo();
 				_studio.Move( index, index + 1 );
 				RebuildStudio();
+				break;
+
+			case EffigyFeatureCommand.MoveDown:
+				Refuse( $"Can't move {feature.Name ?? feature.TypeName} down: it is already the last feature." );
 				break;
 
 			// An explicit move of the bar STICKS. Forgetting the pre-edit position is the point:
@@ -5871,11 +6271,17 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		if ( feature is null )
 			return;
 
-		RecordUndo();
-
 		// Blank means "no name of your own", which is what a feature starts with - the tree falls
 		// back to the type name. Storing "" instead would print an empty row.
-		feature.Name = string.IsNullOrWhiteSpace( name ) ? null : name.Trim();
+		var renamed = string.IsNullOrWhiteSpace( name ) ? null : name.Trim();
+
+		// A rename that changed nothing (the box closed on the name it showed) is not an undo step.
+		if ( renamed == feature.Name || (feature.Name is null && renamed == feature.TypeName) )
+			return;
+
+		RecordUndo();
+
+		feature.Name = renamed;
 
 		_featureTree?.Rebuild();
 		_partsPanel?.Refresh();
@@ -5962,7 +6368,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 	private void ToggleSuppressFeature()
 	{
-		if ( _featureTree?.SelectedFeature is { } feature )
+		if ( SelectedFeatureOrSaySo( "suppress a feature" ) is { } feature )
 		{
 			RecordUndo();
 			feature.Suppressed = !feature.Suppressed;
@@ -6011,7 +6417,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		WriteDocument( fd.SelectedFile );
 	}
 
-	private void WriteDocument( string path )
+	/// <summary>Save to <paramref name="path"/>. Returns what happened in one line — the same line the
+	/// status bar shows — so the bridge can hand a failure back instead of "Saved".</summary>
+	private string WriteDocument( string path )
 	{
 		// A rig bent by a clothing test pose must not be what gets written. See TestRelax.
 		TestRelax( false );
@@ -6025,8 +6433,14 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			// Saving is the one operation where failing quietly is unforgivable: the whole point of
 			// pressing it is to be able to close the window.
 			Log.Error( $"[Effigy] could not save to {path}: {e.Message}" );
-			return;
+			var failed = $"Could not save {Path.GetFileName( path )}: {e.Message}";
+			ReportFailure( failed );
+			return failed;
 		}
+
+		// Each side-car that fails is named in the status bar, and the document stays dirty: a save
+		// that half worked must not let the window close without asking.
+		var unsaved = new List<string>();
 
 		// THE DELTAS ARE NOT IN THE DOCUMENT. StudioDocument saves a feature's public fields, and a
 		// sculpt's state is megabytes of per-vertex deltas that deliberately do not go into a text
@@ -6044,6 +6458,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			// The document itself is already on disk, so this is not fatal - but it must be loud. A
 			// sculpt that quietly did not save is the thing this whole side-car exists to avoid.
 			Log.Error( $"[Effigy] saved {path} but could NOT write its sculpt data: {e.Message}" );
+			unsaved.Add( "sculpt data" );
 		}
 
 		try
@@ -6056,6 +6471,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		catch ( Exception e )
 		{
 			Log.Error( $"[Effigy] saved {path} but could NOT write its imported mesh: {e.Message}" );
+			unsaved.Add( "imported mesh" );
 		}
 
 		try
@@ -6068,24 +6484,49 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		catch ( Exception e )
 		{
 			Log.Error( $"[Effigy] saved {path} but could NOT write its mesh edits: {e.Message}" );
+			unsaved.Add( "mesh edits" );
 		}
 
 		try
 		{
-			var clips = AnimClipsSidecar.Save( _animClips, path );
+			// A clip list that could not be read when this file was opened is still on disk. Saving the
+			// empty list in its place would delete it, so it is left alone until clips are added.
+			if ( _animClipsUnreadFrom == path && _animClips.Count == 0 )
+			{
+				Log.Warning( $"[Effigy] left the unreadable animation clip list beside {path} as it was" );
+			}
+			else
+			{
+				var clips = AnimClipsSidecar.Save( _animClips, path );
+				_animClipsUnreadFrom = null;
 
-			if ( clips > 0 )
-				Log.Info( $"[Effigy] wrote {clips} animation clip(s) beside {path}" );
+				if ( clips > 0 )
+					Log.Info( $"[Effigy] wrote {clips} animation clip(s) beside {path}" );
+			}
 		}
 		catch ( Exception e )
 		{
 			Log.Error( $"[Effigy] saved {path} but could NOT write its animation clips: {e.Message}" );
+			unsaved.Add( "animation clips" );
 		}
 
 		_documentPath = path;
+
+		if ( unsaved.Count > 0 )
+		{
+			_dirty = true;
+			UpdateTitle();
+			var half = $"Saved {Path.GetFileName( path )}, but its {string.Join( ", ", unsaved )} could not be written. See the console.";
+			ReportFailure( half );
+			return half;
+		}
+
 		MarkClean();
 
 		Log.Info( $"[Effigy] saved {path}" );
+		var saved = $"Saved {Path.GetFileName( path )}.";
+		SetPrompt( saved );
+		return saved;
 	}
 
 	/// <summary>Pick a Wavefront OBJ to import. False if the dialog was cancelled.</summary>
@@ -6123,7 +6564,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	{
 		if ( _rigPanel is not { HasBones: true } rig )
 		{
-			SetPrompt( "Body from Bones needs a rig. Switch to Rig and draw the bones first - or Make a bone from a part." );
+			Refuse( "Body from Bones needs a rig. Switch to Rig and draw the bones first - or Make a bone from a part." );
 			Log.Info( "[Effigy] Body from Bones: there are no bones yet" );
 			return;
 		}
@@ -6135,7 +6576,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		}
 		catch ( InvalidOperationException e )
 		{
-			SetPrompt( e.Message );
+			Refuse( e.Message );
 			Log.Warning( $"[Effigy] Body from Bones: {e.Message}" );
 			return;
 		}
@@ -6175,7 +6616,8 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		} );
 	}
 
-	private void LoadDocument( string path )
+	/// <summary>Open <paramref name="path"/>. False, with the reason on screen, when it could not be read.</summary>
+	private bool LoadDocument( string path )
 	{
 		PartStudio loaded;
 
@@ -6188,8 +6630,11 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			// StudioDocument's errors name the line and what was wrong with it, so they are worth
 			// passing through rather than replacing with "could not open".
 			Log.Error( $"[Effigy] could not open {path}: {e.Message}" );
-			return;
+			ReportFailure( $"Can't open {Path.GetFileName( path )}: {e.Message}" );
+			return false;
 		}
+
+		var unread = new List<string>();
 
 		// BEFORE the rebuild, because that is when the deltas are consumed: SculptSidecar hands each
 		// feature its bytes, and the feature turns them into a sculpt on the first rebuild, once the
@@ -6201,6 +6646,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		catch ( Exception e )
 		{
 			Log.Error( $"[Effigy] opened {path} but could not read its sculpt data: {e.Message}" );
+			unread.Add( "sculpt data" );
 		}
 
 		try
@@ -6210,6 +6656,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		catch ( Exception e )
 		{
 			Log.Error( $"[Effigy] opened {path} but could not read its imported mesh: {e.Message}" );
+			unread.Add( "imported mesh" );
 		}
 
 		try
@@ -6219,6 +6666,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		catch ( Exception e )
 		{
 			Log.Error( $"[Effigy] opened {path} but could not read its mesh edits: {e.Message}" );
+			unread.Add( "mesh edits" );
 		}
 
 		// The clip list belongs to the document now, so the previous one's clips must not survive
@@ -6227,6 +6675,8 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		if ( _animClipsWindow.IsValid() )
 			_animClipsWindow.Close();
 
+		_animClipsUnreadFrom = null;
+
 		try
 		{
 			AnimClipsSidecar.Load( _animClips, path );
@@ -6234,7 +6684,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		catch ( Exception e )
 		{
 			_animClips.Clear();
+			_animClipsUnreadFrom = path;
 			Log.Error( $"[Effigy] opened {path} but could not read its animation clips: {e.Message}" );
+			unread.Add( "animation clips" );
 		}
 
 		_studio = loaded;
@@ -6262,9 +6714,19 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		_documentPath = path;
 		MarkClean();
 
+		foreach ( var warning in loaded.ReadWarnings )
+			Log.Warning( $"[Effigy] {path} {warning}" );
+
+		if ( loaded.ReadWarnings.Count > 0 )
+			unread.Add( loaded.ReadWarnings.Count == 1 ? "1 bone" : $"{loaded.ReadWarnings.Count} bones" );
+
+		if ( unread.Count > 0 )
+			ReportFailure( $"Opened {Path.GetFileName( path )}, but its {string.Join( ", ", unread )} could not be read. See the console." );
+
 		// Deliberately AFTER the rebuild: a file that opens with a broken feature is exactly the
 		// file you opened it to fix, and it should be on screen rather than refused.
 		Log.Info( $"[Effigy] opened {path}" );
+		return true;
 	}
 
 	/// <summary>
@@ -6289,7 +6751,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			new Dictionary<string, Action>
 			{
 				{ "Don\'t Save", proceed },
-				{ "Save", () => { Save(); proceed(); } }
+				// Only on a save that landed: a failed write or a cancelled Save As leaves the document
+				// dirty, and proceeding would throw away the work the button was pressed to keep.
+				{ "Save", () => { Save(); if ( !_dirty ) proceed(); } }
 			} );
 
 		confirm.Show();
@@ -6528,6 +6992,41 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	/// every call, so this never touches geometry the studio is still holding. Handing it a body's
 	/// own mesh would move the model itself, one export at a time.
 	/// </summary>
+	/// <summary>
+	/// F_MORPH_SUPPORTED on every Effigy-written material the mesh's faces use (VmatMorph.Enable), so
+	/// its compiled morphs render. A material Effigy did not write is left alone and named.
+	/// </summary>
+	void EnableMorphMaterials( PolyMesh mesh )
+	{
+		var root = Project.Current?.GetAssetsPath();
+
+		foreach ( var slot in mesh.Faces.Select( f => f.Material ).Distinct() )
+		{
+			var name = _studio.NameForSlot( slot );
+
+			if ( string.IsNullOrWhiteSpace( name ) || root is null )
+				continue;
+
+			var path = AssetSystem.FindByPath( name )?.AbsolutePath ?? Path.Combine( root, name );
+
+			if ( !File.Exists( path ) )
+				continue;
+
+			var text = File.ReadAllText( path );
+
+			if ( VmatMorph.IsOn( text ) )
+				continue;
+
+			if ( VmatMorph.Enable( text ) is { } on )
+			{
+				File.WriteAllText( path, on );
+				Log.Info( $"[Effigy] {name}: F_MORPH_SUPPORTED on, for the shape keys" );
+			}
+			else
+				Log.Warning( $"[Effigy] {name} is not an Effigy-written material, so its morphs will not show until it sets F_MORPH_SUPPORTED 1 (Animation)" );
+		}
+	}
+
 	private void ApplyPivot( PolyMesh mesh )
 	{
 		if ( mesh is not null && HasPivot )
@@ -6629,6 +7128,10 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	/// </summary>
 	private RebuildReport RebuildForExport( string what )
 	{
+		// A test pose bends the rig in place. Rebuilding on it would cut the garment to the pose
+		// and write that pose out as the bind. See TestRelax.
+		TestRelax( false );
+
 		Log.Info( $"[Effigy] rebuilding before {what} — {_studio.Features.Count} features" );
 		return _studio.Rebuild();
 	}
@@ -6645,6 +7148,10 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	private readonly List<EffigyAnimExport.ClipSource> _animClips = new();
 
 	private EffigyAnimClipsWindow _animClipsWindow;
+
+	/// <summary>The document whose clip list failed to read on open. Save leaves that file alone
+	/// rather than deleting it for being empty; see WriteDocument.</summary>
+	private string _animClipsUnreadFrom;
 
 	private void OpenAnimClips()
 	{
@@ -6690,11 +7197,13 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		if ( _documentPath is not null )
 			return SanitiseAssetName( Path.GetFileNameWithoutExtension( _documentPath ) );
 
+		var exportFolder = EffigyAssetFolder.ResolveAssetFolder( "models/effigy" );
+
 		var fd = new FileDialog( null )
 		{
-			Title = "Name the exported model",
+			Title = "Name the exported model (it goes in models/effigy)",
 			DefaultSuffix = ".vmdl",
-			Directory = EffigyAssetFolder.ResolveAssetFolder( "models/effigy" ),
+			Directory = exportFolder,
 		};
 
 		fd.SelectFile( "untitled.vmdl" );
@@ -6705,7 +7214,21 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		if ( !fd.Execute() )
 			return null;
 
-		return SanitiseAssetName( Path.GetFileNameWithoutExtension( fd.SelectedFile ) );
+		var chosen = SanitiseAssetName( Path.GetFileNameWithoutExtension( fd.SelectedFile ) );
+
+		// ONLY THE NAME IS TAKEN. Every export lands in models/effigy, because that is the folder the
+		// .vmdl's own paths point into. A folder picked in the dialog cannot be honoured, so it is
+		// said rather than quietly ignored - otherwise the file is simply "not there" afterwards.
+		var pickedFolder = Path.GetDirectoryName( Path.GetFullPath( fd.SelectedFile ) );
+		if ( pickedFolder is not null && !string.Equals( Path.GetFullPath( exportFolder ).TrimEnd( Path.DirectorySeparatorChar ),
+			pickedFolder.TrimEnd( Path.DirectorySeparatorChar ), StringComparison.OrdinalIgnoreCase ) )
+		{
+			_viewport?.ShowCallout( "export-folder", EffigyCalloutKind.Refusal,
+				$"Exports always go in models/effigy, so {chosen} is written there, not in {Path.GetFileName( pickedFolder )}. Save the document to give it a name without asking.",
+				lifetime: RefusalSeconds );
+		}
+
+		return chosen;
 	}
 
 	/// <summary>
@@ -6731,12 +7254,40 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		return name.Length == 0 ? "export" : name;
 	}
 
+	/// <summary>
+	/// Run a File menu export, and say so when it throws. The writers touch the disk, and a locked
+	/// file or a missing folder otherwise escapes the menu handler with nothing in the window.
+	/// </summary>
+	private void GuardExport( string what, Action export )
+	{
+		try
+		{
+			export();
+		}
+		catch ( Exception e )
+		{
+			Log.Error( $"[Effigy] {what} failed: {e}" );
+			ReportFailure( $"{what} failed: {e.Message}" );
+		}
+	}
+
+	/// <summary>Why an export was refused, in the status bar as well as the console.</summary>
+	private void CannotExport( string verb, RebuildReport report )
+	{
+		var why = report.HasErrors
+			? $"Can't {verb}: {(report.Errors.Count == 1 ? "a feature has an error" : $"{report.Errors.Count} features have errors")}. Fix the ones marked in the feature tree first."
+			: $"Can't {verb}: there are no bodies to {verb} yet.";
+
+		Log.Warning( $"[Effigy] {why}" );
+		Refuse( why );
+	}
+
 	private void ExportObj()
 	{
 		var report = RebuildForExport( "OBJ export" );
 		if ( report.HasErrors || _studio.Bodies.Count == 0 )
 		{
-			Log.Warning( "[Effigy] cannot export — studio has errors or no bodies" );
+			CannotExport( "export", report );
 			return;
 		}
 
@@ -6758,6 +7309,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		ObjWriter.WriteFile( mesh, objPath, name,
 			materialName: _studio.NameForSlot );
 		Log.Info( $"[Effigy] exported {objPath}" );
+		SetPrompt( $"Exported {objPath}" );
 	}
 
 	/// <summary>
@@ -6771,7 +7323,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		var report = RebuildForExport( "FBX export" );
 		if ( report.HasErrors || _studio.Bodies.Count == 0 )
 		{
-			Log.Warning( "[Effigy] cannot export — studio has errors or no bodies" );
+			CannotExport( "export", report );
 			return;
 		}
 
@@ -6794,8 +7346,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			var weights = SkinBinder.BindBodies( mesh, ranges, rig.BodyBoneMap, skeleton );
 			weights = SkinBinder.SmoothWeights( mesh, weights );
 
-			if ( _studio.WeightPaint is { Count: > 0 } )
-				_studio.WeightPaint.Apply( mesh, weights, skeleton, out _ );
+			ApplyWeightPaint( mesh, weights, skeleton, "this export" );
 
 			mesh.Skin = weights;
 
@@ -6804,6 +7355,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 			FbxWriter.WriteBinaryFile( mesh, fbxPath, skeleton, _studio.NameForSlot, name );
 			Log.Info( $"[Effigy] exported {fbxPath} - {skeleton.Count} bones, {mesh.VertexCount} vertices" );
+			SetPrompt( $"Exported {fbxPath} with {skeleton.Count} bones" );
 			return;
 		}
 
@@ -6812,6 +7364,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		FbxWriter.WriteBinaryFile( staticMesh, fbxPath, materialName: _studio.NameForSlot, modelName: name );
 		Log.Info( $"[Effigy] exported {fbxPath}" );
+		SetPrompt( $"Exported {fbxPath}" );
 	}
 
 	/// <summary>The skinned model the last CompileVmdl produced, as an asset path, or null when it
@@ -6822,6 +7375,14 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	/// distance switch. Off by default — a character or a one-off prop does not need them.</summary>
 	private bool _exportLods;
 
+	/// <summary>When set, <see cref="CompileVmdl"/> ships only these bodies. Clothing sets it so
+	/// the body the garment was cut from is not written into the clothing model.</summary>
+	private Func<Body, bool> _compileInclude;
+
+	/// <summary>When set, <see cref="CompileVmdl"/> writes this asset name instead of the
+	/// document's, so publishing a shirt does not overwrite <c>models/effigy/{doc}.vmdl</c>.</summary>
+	private string _compileName;
+
 	private void CompileVmdl()
 	{
 		_lastSkinnedVmdl = null;
@@ -6829,11 +7390,11 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		var report = RebuildForExport( "vmdl compile" );
 		if ( report.HasErrors || _studio.Bodies.Count == 0 )
 		{
-			Log.Warning( "[Effigy] cannot compile — studio has errors or no bodies" );
+			CannotExport( "compile", report );
 			return;
 		}
 
-		var name = ExportBaseName();
+		var name = _compileName ?? ExportBaseName();
 		if ( name is null )
 			return;
 
@@ -6844,7 +7405,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		// and per-vertex weights) instead of a weightless OBJ.
 		if ( _rigPanel is { HasBones: true } rig )
 		{
-			var (mesh, ranges) = _studio.ToMeshWithBodies();
+			var (mesh, ranges) = _studio.ToMeshWithBodies( _compileInclude );
 			var skeleton = rig.Skeleton;
 
 			// BindBodies assigns each body's vertices to the bone it was assigned to in the rig
@@ -6853,8 +7414,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			var weights = SkinBinder.BindBodies( mesh, ranges, rig.BodyBoneMap, skeleton );
 			weights = SkinBinder.SmoothWeights( mesh, weights );
 
-			if ( _studio.WeightPaint is { Count: > 0 } )
-				_studio.WeightPaint.Apply( mesh, weights, skeleton, out _ );
+			ApplyWeightPaint( mesh, weights, skeleton, "this export" );
 
 			mesh.Skin = weights;
 
@@ -6883,6 +7443,11 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 			Log.Info( $"[Effigy] wrote {dmxPath} - {skeleton.Count} bones, {mesh.VertexCount} vertices" );
 
+			// Shape keys went into the DMX (DmxMorphs); their materials need F_MORPH_SUPPORTED or the
+			// GPU never applies them.
+			if ( mesh.HasMorphs )
+				EnableMorphMaterials( mesh );
+
 			// The clips, written beside the mesh and BEFORE the folder is registered, so the asset
 			// system sees the .dmx files at the same moment it sees the .vmdl that names them.
 			//
@@ -6890,7 +7455,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			// against. A clip sampled against the unpivoted rig would pose the model correctly
 			// relative to bones that had since moved, which is a whole-model offset that only
 			// appears once the clip plays.
-			var clips = EffigyAnimExport.WriteClips( _animClips, folder, "models/effigy", skeleton );
+			var clips = EffigyAnimExport.WriteClips( _animClips, folder, "models/effigy", skeleton, out var skippedClips );
 
 			var vmdlPath = Path.Combine( folder, $"{name}.vmdl" );
 			File.WriteAllText( vmdlPath, BuildSkinnedVmdl( $"models/effigy/{name}.dmx", skeleton,
@@ -6905,6 +7470,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			if ( asset is null )
 			{
 				Log.Warning( $"[Effigy] {name}.vmdl was written but the asset system couldn't find it" );
+				SetPrompt( $"{name}.vmdl was written, but the asset system can't find it to compile. See the console." );
 				return;
 			}
 
@@ -6914,24 +7480,48 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			{
 				Log.Warning( $"[Effigy] {name}.vmdl compile FAILED - the compiler's own output above "
 					+ "says why. The .dmx and .smd are both on disk either way." );
+				ReportFailure( $"{name}.vmdl failed to compile. The compiler's output in the console says why." );
 				return;
 			}
 
 			_lastSkinnedVmdl = $"models/effigy/{name}.vmdl";
 			Log.Info( $"[Effigy] {name}.vmdl compiled - {skeleton.Count} bone(s), loading into viewport" );
 			_viewport?.SetModel( Model.Load( $"models/effigy/{name}.vmdl" ) );
+
+			// A clip left out still compiles a model; it just is not in it. "Compiled" alone over a
+			// model missing its walk is the silent kind of failure, so the list is said.
+			if ( skippedClips.Count > 0 )
+			{
+				var left = skippedClips.Count == 1 ? "1 clip was" : $"{skippedClips.Count} clips were";
+				var text = $"Compiled models/effigy/{name}.vmdl, but {left} left out: {string.Join( "; ", skippedClips )}.";
+				SetPrompt( text );
+				_viewport?.ShowCallout( "clips-skipped", EffigyCalloutKind.Refusal, text, lifetime: FailureSeconds );
+				return;
+			}
+
+			SetPrompt( $"Compiled models/effigy/{name}.vmdl" );
 			return;
 		}
 
 		// STATIC PATH: no bones — export a weightless OBJ.
 		var staticObjPath = Path.Combine( folder, $"{name}.obj" );
-		var staticMesh = _studio.ToMesh();
+		var staticMesh = _studio.ToMesh( _compileInclude );
 		ApplyPivot( staticMesh );
+
+		// OBJ has no shape keys. Say so rather than drop them without a word.
+		if ( staticMesh.HasMorphs )
+		{
+			var text = $"{staticMesh.ValidMorphs.Count()} shape key(s) were left out: a model with no bones exports as OBJ, which has no morphs. Add a bone to export them (the rigged DMX path keeps them).";
+			Log.Warning( $"[Effigy] {text}" );
+			_viewport?.ShowCallout( "morphs-dropped", EffigyCalloutKind.Refusal, text, lifetime: FailureSeconds );
+		}
 
 		AuthorPaint( staticMesh, name, folder );
 
+		// Triangulated the bake's way (NormalBake.FaceTriangles), so ModelDoc shades a baked normal
+		// map across the triangles it was baked on. OBJ carries no tangents; the rigged DMX path does.
 		ObjWriter.WriteFile( staticMesh, staticObjPath, name,
-			materialName: _studio.NameForSlot );
+			materialName: _studio.NameForSlot, triangulate: true );
 
 		var staticVmdlPath = Path.Combine( folder, $"{name}.vmdl" );
 		var staticPhysics = BuildPhysics( rigged: false );
@@ -6970,19 +7560,22 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		if ( staticAsset is null )
 		{
 			Log.Warning( $"[Effigy] {name}.vmdl was written but asset system couldn't find it" );
+			SetPrompt( $"{name}.vmdl was written, but the asset system can't find it to compile. See the console." );
 			return;
 		}
 
 		staticAsset.Compile( true );
-		Log.Info( staticAsset.IsCompileFailed
-			? $"[Effigy] {name}.vmdl compile FAILED"
-			: $"[Effigy] {name}.vmdl compiled — loading into viewport" );
 
-		if ( !staticAsset.IsCompileFailed )
+		if ( staticAsset.IsCompileFailed )
 		{
-			var model = Model.Load( $"models/effigy/{name}.vmdl" );
-			_viewport?.SetModel( model );
+			Log.Warning( $"[Effigy] {name}.vmdl compile FAILED - the compiler's own output above says why" );
+			ReportFailure( $"{name}.vmdl failed to compile. The compiler's output in the console says why." );
+			return;
 		}
+
+		Log.Info( $"[Effigy] {name}.vmdl compiled — loading into viewport" );
+		_viewport?.SetModel( Model.Load( $"models/effigy/{name}.vmdl" ) );
+		SetPrompt( $"Compiled models/effigy/{name}.vmdl" );
 	}
 
 	/// <summary>
@@ -7004,14 +7597,16 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		if ( report.HasErrors || _studio.Bodies.Count == 0 )
 		{
-			Log.Warning( "[Effigy] cannot compile - studio has errors or no bodies" );
+			CannotExport( "compile", report );
 			return;
 		}
 
 		// WARNED, NOT BLOCKED. Somebody who has modelled a humanoid and not yet rigged it gets a
 		// model out of this - a rigid statue that slides rather than walks - and being told why is
 		// more use than being refused. The export says the same thing again from its own side.
-		if ( _rigPanel is not { HasBones: true } )
+		var boneless = _rigPanel is not { HasBones: true };
+
+		if ( boneless )
 			Log.Warning( "[Effigy] this model has no bones, so there is nothing for citizen's "
 				+ "animations to drive. Switch to Rig and make a bone per part first - Help → Start "
 				+ "Playermodel Tutorial walks through it." );
@@ -7024,7 +7619,40 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		// NO ApplyPivot, unlike CompileVmdl. A playermodel's origin has to be between its feet
 		// because that is where the engine stands a player; honouring a pivot the modeller set for
 		// some other export would sink or float the whole character. See EffigyPlayermodelExport.
-		EffigyPlayermodelExport.Export( _studio, $"{name}_citizen" );
+		var model = EffigyPlayermodelExport.Export( _studio, $"{name}_citizen", out var outcome );
+
+		SayPlayermodelOutcome( model, outcome, boneless );
+	}
+
+	/// <summary>
+	/// Put a playermodel export's result on screen: red when nothing usable came out, amber when it
+	/// compiled with warnings (the first one in full - it is usually the one that matters), and the
+	/// path when it was clean. A compiled model with a problem looks exactly like one without until
+	/// it is standing wrong in a game, so the warnings cannot live in the console alone.
+	/// </summary>
+	private void SayPlayermodelOutcome( string model, EffigyPlayermodelExport.Outcome outcome, bool boneless )
+	{
+		if ( model is null )
+		{
+			ReportFailure( $"Can't compile the playermodel: {outcome?.Failure ?? "the export stopped"}." );
+			return;
+		}
+
+		var warnings = outcome?.Warnings ?? new List<string>();
+
+		if ( boneless )
+			warnings.Insert( 0, "This model has no bones, so it will slide around as a rigid statue. Switch to Rig and make a bone per part first" );
+
+		if ( warnings.Count > 0 )
+		{
+			var more = warnings.Count > 1 ? $" (+{warnings.Count - 1} more in the console)" : "";
+			var text = $"Compiled {model}, with a problem: {warnings[0].TrimEnd( '.' )}.{more}";
+			SetPrompt( text );
+			_viewport?.ShowCallout( "playermodel", EffigyCalloutKind.Refusal, text, lifetime: FailureSeconds );
+			return;
+		}
+
+		SetPrompt( $"Compiled {model}" );
 	}
 
 	/// <summary>
@@ -7044,10 +7672,15 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		if ( report.HasErrors || _studio.Bodies.Count == 0 )
 		{
 			Log.Warning( "[Effigy] cannot make a player - studio has errors or no bodies" );
+			Refuse( report.HasErrors
+				? "Can't make a player: a feature has an error. Fix the ones marked in the feature tree first."
+				: "Can't make a player: there are no bodies yet." );
 			return;
 		}
 
-		if ( _rigPanel is not { HasBones: true } )
+		var boneless = _rigPanel is not { HasBones: true };
+
+		if ( boneless )
 			Log.Warning( "[Effigy] this model has no bones, so the player will be a rigid statue. "
 				+ "Switch to Rig and make a bone per part first." );
 
@@ -7056,13 +7689,14 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		if ( name is null )
 			return;
 
-		var model = EffigyPlayermodelExport.Export( _studio, $"{name}_citizen" );
+		var model = EffigyPlayermodelExport.Export( _studio, $"{name}_citizen", out var outcome );
 
 		if ( model is null )
 		{
 			// The export has already said what went wrong in its own words. Adding "and therefore no
 			// scene" is the part it cannot know.
 			Log.Warning( "[Effigy] the playermodel did not compile, so no scene was written" );
+			ReportFailure( $"Can't make a player: the playermodel didn't compile ({outcome?.Failure ?? "see the console"}), so no test scene was written." );
 			return;
 		}
 
@@ -7072,12 +7706,22 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		{
 			Log.Warning( $"[Effigy] {model} compiled but the scene could not be written - "
 				+ "Assets/scenes could not be resolved" );
+			ReportFailure( $"{model} compiled, but the test scene couldn't be written: the project has no Assets/scenes folder it can reach." );
 			return;
 		}
 
 		Log.Info( $"[Effigy] wrote {scene} - open it from the asset browser and press Play to walk "
 			+ "your model around. It is not opened for you: that would close whatever scene you "
 			+ "have open, unsaved changes included." );
+
+		// The playermodel's own warnings first, if it has any - a test scene of a broken model is
+		// exactly when they matter - then where the scene is, since nothing opens it for you.
+		SayPlayermodelOutcome( model, outcome, boneless );
+		var wrote = $"Wrote {scene}. Open it from the asset browser and press Play to walk around in it.";
+		if ( boneless || outcome.Warnings.Count > 0 )
+			SetPrompt( wrote + " The model has a problem: see the callout." );
+		else
+			SetPrompt( wrote );
 	}
 
 	/// <summary>
@@ -7398,6 +8042,14 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			_undoStack.RemoveAt( 0 );
 	}
 
+	/// <summary>The edit after a RecordUndo turned out to change nothing: take its step back off,
+	/// so Ctrl+Z is not spent on nothing. Only removes the top step when it still IS the model.</summary>
+	private void ForgetUnusedUndo()
+	{
+		if ( _undoStack.Count > 0 && Same( _undoStack[^1], Capture() ) )
+			_undoStack.RemoveAt( _undoStack.Count - 1 );
+	}
+
 	/// <summary>Whether two snapshots describe the same model - same features in the same order,
 	/// same parameter values, same sketch geometry.</summary>
 	private static bool Same( StudioSnapshot a, StudioSnapshot b )
@@ -7645,7 +8297,10 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		}
 
 		if ( _undoStack.Count == 0 )
+		{
+			SetPrompt( "Nothing to undo." );
 			return;
+		}
 
 		_redoStack.Add( Capture() );
 
@@ -7679,7 +8334,10 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		}
 
 		if ( _redoStack.Count == 0 )
+		{
+			SetPrompt( "Nothing to redo." );
 			return;
+		}
 
 		_undoStack.Add( Capture() );
 
@@ -7833,6 +8491,12 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		_viewport.ShowNotes = !_viewport.ShowNotes;
 		_viewport.Update();
+
+		// The pen stays armed with its notes hidden, so a stroke drawn now lands on nothing you can
+		// see. Said, or H reads as "the pen stopped working".
+		SetPrompt( _viewport.ShowNotes
+			? "Notes shown."
+			: "Notes hidden (H shows them again). The pen is still armed: new strokes are drawn hidden." );
 	}
 
 	// W/E/R drive whichever handle is up — the selected bone's and an open Transform's. Each setter
@@ -7843,8 +8507,42 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		if ( MeshEditKey( 'W' ) )
 			return;
 
-		_viewport?.SetBoneDragMode( EffigyViewport.BoneDragMode.Move );
-		_viewport?.SetBodyDragMode( EffigyViewport.BodyDragMode.Move );
+		DriveHandle( EffigyViewport.BoneDragMode.Move, EffigyViewport.BodyDragMode.Move );
+	}
+
+	/// <summary>
+	/// W/E/R's one body. Drives the bone handle and an open Transform's handle as before; in Object
+	/// mode with a body selected and no handle up yet, it STARTS the Move/Rotate/Scale the toolbar
+	/// button would - a key that does nothing until you have found the button is a key that looks
+	/// broken. With nothing selected there, it says so.
+	/// </summary>
+	private void DriveHandle( EffigyViewport.BoneDragMode bone, EffigyViewport.BodyDragMode body )
+	{
+		if ( _viewport is null )
+			return;
+
+		var boneTook = _viewport.SetBoneDragMode( bone );
+
+		var handleUp = _dialog?.Feature is TransformFeature && _viewport.BodyDragEnabled;
+
+		if ( InObjectMode && !handleUp && !boneTook )
+		{
+			// StartBodyTransform refuses with "Click a body first" when nothing is selected.
+			StartBodyTransform( body );
+			return;
+		}
+
+		var bodyTook = _viewport.SetBodyDragMode( body );
+
+		// Neither handle is up: the key did nothing, and says why.
+		if ( !boneTook && !bodyTook )
+		{
+			Refuse( EffigyViewport.HandleKeysIdleReason );
+			return;
+		}
+
+		if ( handleUp )
+			UpdateObjectChecks();
 	}
 
 	[Shortcut( "effigy.bone.rotate", "E", typeof( EffigyViewport ) )]
@@ -7855,8 +8553,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		if ( _viewport?.IsMeshEditing == true )
 			return;
 
-		_viewport?.SetBoneDragMode( EffigyViewport.BoneDragMode.Rotate );
-		_viewport?.SetBodyDragMode( EffigyViewport.BodyDragMode.Rotate );
+		DriveHandle( EffigyViewport.BoneDragMode.Rotate, EffigyViewport.BodyDragMode.Rotate );
 	}
 
 	[Shortcut( "effigy.bone.scale", "R", typeof( EffigyViewport ) )]
@@ -7865,8 +8562,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		if ( MeshEditKey( 'R' ) )
 			return;
 
-		_viewport?.SetBoneDragMode( EffigyViewport.BoneDragMode.Scale );
-		_viewport?.SetBodyDragMode( EffigyViewport.BodyDragMode.Scale );
+		DriveHandle( EffigyViewport.BoneDragMode.Scale, EffigyViewport.BodyDragMode.Scale );
 	}
 
 	/// <summary>The index is into <see cref="_brushTools"/>, so the keyboard order and the stage
@@ -7945,9 +8641,13 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	/// <summary>Defaults to off. The checker is a diagnostic, not how the part looks.</summary>
 	private const string CheckerCookie = "Effigy.ShowUVChecker";
 
-	/// <summary>The normal-map bake conventions and size. Defaults match the reference sample in
-	/// Effigy.Tests/out: OpenGL green, no vertical flip, 1024.</summary>
-	private const string BakeGreenCookie = "Effigy.BakeDirectXGreen";
+	/// <summary>The bake conventions, size, map set and material. Defaults: OpenGL green (what
+	/// s&amp;box reads), no vertical flip, 1024, normal + AO, no vmat. The green cookie was renamed on
+	/// 2026-10-16 when the default flipped to s&amp;box's convention, so a switch set against the old
+	/// (inverted) default does not carry over and invert the new one.</summary>
+	private const string BakeGreenCookie = "Effigy.BakeDirectXGreen.Sbox";
+	private const string BakeMapsCookie = "Effigy.BakeMaps";
+	private const string BakeMaterialCookie = "Effigy.BakeMaterial";
 	private const string BakeFlipVCookie = "Effigy.BakeFlipV";
 	private const string BakeSizeCookie = "Effigy.BakeSize";
 
@@ -8020,6 +8720,8 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		BakeDirectXGreen = _bakeFlipGreen,
 		BakeFlipV = _bakeFlipV,
 		BakeSize = _bakeSize,
+		BakeMaps = (int)_bakeMaps,
+		BakeMaterial = _bakeMaterial,
 	};
 
 	/// <summary>Take everything the settings window is showing and make it true, then remember it.
@@ -8066,7 +8768,11 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		_bakeFlipGreen = values.BakeDirectXGreen;
 		_bakeFlipV = values.BakeFlipV;
 		_bakeSize = values.BakeSize;
+		_bakeMaps = (BakeMaps)values.BakeMaps | BakeMaps.Normal;
+		_bakeMaterial = Math.Clamp( values.BakeMaterial, 0, BakeMaterial.MaterialChoices.Length - 1 );
 
+		EditorCookie.Set( BakeMapsCookie, (int)_bakeMaps );
+		EditorCookie.Set( BakeMaterialCookie, _bakeMaterial );
 		EditorCookie.Set( BakeGreenCookie, values.BakeDirectXGreen );
 		EditorCookie.Set( BakeFlipVCookie, values.BakeFlipV );
 		EditorCookie.Set( BakeSizeCookie, values.BakeSize );
@@ -8093,6 +8799,8 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		_bakeFlipGreen = EditorCookie.Get( BakeGreenCookie, false );
 		_bakeFlipV = EditorCookie.Get( BakeFlipVCookie, false );
 		_bakeSize = EditorCookie.Get( BakeSizeCookie, 1024 );
+		_bakeMaps = (BakeMaps)EditorCookie.Get( BakeMapsCookie, (int)(BakeMaps.Normal | BakeMaps.AmbientOcclusion) ) | BakeMaps.Normal;
+		_bakeMaterial = Math.Clamp( EditorCookie.Get( BakeMaterialCookie, 0 ), 0, BakeMaterial.MaterialChoices.Length - 1 );
 		_showUVChecker = EditorCookie.Get( CheckerCookie, false );
 
 		if ( !_viewport.IsValid() )
@@ -8272,12 +8980,28 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 			// the same evaluator every numeric field in the dialog goes through.
 			if ( !Expression.TryEvaluate( edit.Text, string.IsNullOrEmpty( offer.Unit ) ? null : offer.Unit, out var value ) )
 			{
-				SetPrompt( $"'{edit.Text}' is not a number" );
+				Refuse( $"Can't use '{edit.Text}': it isn't a number. Type one, or a sum like 25/2, and right-click to try again." );
+				return;
+			}
+
+			// A SIZE HAS TO BE MORE THAN NOTHING. A length, distance, radius or diameter of zero or
+			// less used to be handed straight to the solver, which either collapsed the geometry onto
+			// a point or failed with a message about contradictions that did not name the number.
+			// An angle may be any value - minus thirty degrees is a direction, not a mistake.
+			if ( offer.Kind is SketchConstraintKind.Distance or SketchConstraintKind.Radius or SketchConstraintKind.Diameter
+				&& value <= 0f )
+			{
+				Refuse( offer.Kind == SketchConstraintKind.Distance && _viewport.SketchSelection.Points.Count == 2
+					? $"Can't set a distance of {Expression.Format( value )}: it has to be more than 0. To put two points together, use Coincident."
+					: $"Can't set {offer.Label.ToLowerInvariant()} to {Expression.Format( value )}: it has to be more than 0." );
 				return;
 			}
 
 			offer.Value = value;
-			ApplyConstraint( offer );
+
+			// The undo step is taken by the viewport, and only once the rule has gone on - a refused
+			// one used to leave a step behind that changed nothing.
+			_viewport.ApplySketchConstraintWithUndo( offer );
 		};
 
 		menu.AddWidget( edit );
@@ -8291,9 +9015,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	/// the solve has moved geometry that features downstream are standing on.</summary>
 	private void ApplyConstraint( ConstraintOffer offer )
 	{
-		RecordUndo();
-
-		if ( !_viewport.ApplySketchConstraint( offer ) )
+		// The undo step is taken only once the constraint has actually gone in. Taken first, a
+		// refused constraint left an empty step behind and the next Ctrl+Z appeared to do nothing.
+		if ( !_viewport.ApplySketchConstraintWithUndo( offer ) )
 			return;
 
 		OnSketchEdited();
@@ -8443,6 +9167,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		menu.AddHeading( $"Face of {hit.Body.Name ?? "part"}" );
 
+		var both = menu.AddOption( "Select both sides", "flip", () => SelectBothSides( hit ) );
+		both.StatusTip = "This face and the one across the wall. Move Face then slides it or changes its thickness.";
+
 		foreach ( var tool in tools )
 		{
 			// The KIND, captured, never the table entry — same rule as the strip: an enum crosses a
@@ -8456,6 +9183,19 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		}
 
 		menu.AddSeparator();
+	}
+
+	/// <summary>The face under the cursor and the one across the material, as the selection Move
+	/// Face reads when it opens.</summary>
+	private void SelectBothSides( EffigyFaceHit hit )
+	{
+		if ( _viewport is null )
+			return;
+
+		if ( _viewport.SelectFacingPair( hit ) )
+			SetPrompt( "Both sides selected. Move Face slides that wall, or thickens it in Offset." );
+		else
+			Refuse( "No face across from that one." );
 	}
 
 	/// <summary>Point a tool at the face that was right-clicked.</summary>
@@ -8540,7 +9280,7 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		scaleMenu.AddSeparator();
 
-		var reset = scaleMenu.AddOption( "Reset to 1:1", "restart_alt",
+		var reset = scaleMenu.AddOption( "Reset to 1:1", "settings_backup_restore",
 			() => SetMaterialScale( slot, MaterialScale.Unscaled ) );
 
 		reset.StatusTip = "One repeat per unit — how the model was mapped before anything was set";
@@ -8583,10 +9323,35 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		if ( _studio is null )
 			return;
 
+		// Refused here rather than quietly reset to 1:1 by MaterialScale.Sanitise - a typed 0 that
+		// comes back as "1 u/tile" looks like the field ignored you.
+		if ( !float.IsFinite( scale.x ) || !float.IsFinite( scale.y ) || scale.x <= 1e-6f || scale.y <= 1e-6f )
+		{
+			Refuse( $"Can't size {_studio.NameForSlot( slot )} to {Round( scale.x )} × {Round( scale.y )}: units per tile have to be more than 0." );
+			return;
+		}
+
+		if ( slot < 0 || slot > MaterialDrop.HighestSlot )
+		{
+			Refuse( $"Can't size slot {slot}: material slots go from 0 to {MaterialDrop.HighestSlot}." );
+			return;
+		}
+
+		var before = MaterialScale.ScaleFor( _studio, slot );
+
+		if ( MathF.Abs( before.x - scale.x ) < 1e-6f && MathF.Abs( before.y - scale.y ) < 1e-6f )
+		{
+			SetPrompt( $"{_studio.NameForSlot( slot )} is already at {Round( before.x )} × {Round( before.y )} units per tile." );
+			return;
+		}
+
 		RecordUndo();
 
 		if ( !MaterialScale.SetScale( _studio, slot, scale ) )
+		{
+			ForgetUnusedUndo();
 			return;
+		}
 
 		RebuildStudio();
 
@@ -8624,24 +9389,9 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	/// <summary>Name a slot, in the one-field popup the feature tree renames with.</summary>
 	private void BeginMaterialSlotRename( int slot )
 	{
-		var menu = new Menu( this );
-		var edit = new LineEdit( _studio.NameForSlot( slot ), menu ) { FixedWidth = 190 };
-
-		edit.ReturnPressed += () =>
-		{
-			// Closed BEFORE the edit, because SetSlotMaterial rebuilds and this menu is a child of
-			// the window it is rebuilding.
-			var name = edit.Text?.Trim();
-			menu.Close();
-
-			SetSlotMaterial( slot, name );
-		};
-
-		menu.AddWidget( edit );
-		menu.OpenAtCursor();
-
-		edit.Focus();
-		edit.SelectAll();
+		// The popup closes BEFORE the commit, because SetSlotMaterial rebuilds and the popup is a
+		// child of the window it is rebuilding.
+		EffigyRenamePopup.Open( this, _studio.NameForSlot( slot ), 190, name => SetSlotMaterial( slot, name ) );
 	}
 
 	/// <summary>
@@ -8694,13 +9444,31 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 	/// FaceMaterialEdit in the kernel, where FaceMenuTests can hold it to account.</summary>
 	private void AssignFaceMaterial( EffigyFaceHit hit, int slot )
 	{
-		if ( _studio is null || hit.Body is null || hit.Material == slot )
+		if ( _studio is null )
 			return;
+
+		if ( hit.Body is null || hit.FaceIndex < 0 )
+		{
+			Refuse( "Can't assign a material: there is no face under the cursor any more. Right-click the face again." );
+			return;
+		}
+
+		if ( hit.Material == slot )
+		{
+			SetPrompt( $"That face is already on {_studio.NameForSlot( slot )}." );
+			return;
+		}
 
 		RecordUndo();
 
 		if ( FaceMaterialEdit.Assign( _studio, hit.Body.Id, hit.FaceIndex, hit.Reference, slot ) )
+		{
 			RebuildStudio();
+			return;
+		}
+
+		ForgetUnusedUndo();
+		Refuse( $"Can't put that face on {_studio.NameForSlot( slot )}: the face couldn't be found in the history. Rebuild and try again." );
 	}
 
 	/// <summary>
@@ -8749,9 +9517,12 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		// Nothing happened, which is two different situations and worth telling apart. A drop on a
 		// face that already wears the material is an ordinary near-miss and needs no alarm; running
 		// out of slots is a wall you have hit, and saying nothing there looks like the drag failed.
-		SetPrompt( slot < 0
-			? $"All {MaterialDrop.HighestSlot} material slots are in use — free one from the Materials panel."
-			: $"That face is already on slot {slot}." );
+		ForgetUnusedUndo();
+
+		if ( slot < 0 )
+			Refuse( $"Can't drop {MaterialFileName( material )}: all {MaterialDrop.HighestSlot} material slots are in use. Free one from the Materials panel." );
+		else
+			SetPrompt( $"That face is already on slot {slot}." );
 	}
 
 	/// <summary>
@@ -8811,6 +9582,55 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 /// SecondaryTextRightMargin so a row's own text picks a margin that is provably wide enough
 /// rather than tracking Width by memory in a second place.
 /// </summary>
+/// <summary>
+/// The one-field rename popup every list in this window uses: a LineEdit in a Menu at the cursor.
+///
+/// IT COMMITS ON CLOSE, NOT ONLY ON ENTER. It used to listen for Return alone, so typing a name and
+/// clicking away - which is how a popup is usually dismissed - threw the typing away without a word.
+/// Now Enter, a click elsewhere and the popup closing all commit, once; the text is tracked as it is
+/// typed so the commit never reads a widget that is already being torn down. A commit of the name
+/// that was already there is the caller's to ignore (and every caller does, without an undo step).
+/// </summary>
+internal static class EffigyRenamePopup
+{
+	public static void Open( Widget parent, string text, int width, Action<string> commit, string placeholder = null )
+	{
+		var menu = new Menu( parent );
+		var edit = new LineEdit( text ?? "", menu ) { FixedWidth = width };
+
+		if ( placeholder is not null )
+			edit.PlaceholderText = placeholder;
+
+		var typed = text ?? "";
+		var done = false;
+
+		edit.TextEdited += t => typed = t;
+
+		void Commit()
+		{
+			if ( done )
+				return;
+
+			done = true;
+
+			// Closed before the commit: the commit usually rebuilds the window this popup is a child of.
+			if ( menu.IsValid() )
+				menu.Close();
+
+			commit?.Invoke( typed?.Trim() );
+		}
+
+		edit.ReturnPressed += Commit;
+		edit.EditingFinished += Commit;
+
+		menu.AddWidget( edit );
+		menu.OpenAtCursor();
+
+		edit.Focus();
+		edit.SelectAll();
+	}
+}
+
 internal static class TreeEyeIcon
 {
 	/// <summary>Width of the eye's own hit/paint rect, right-aligned to the tree.</summary>
@@ -8995,20 +9815,7 @@ internal sealed class EffigyFeatureTreePanel : Widget
 		if ( feature is null )
 			return;
 
-		var menu = new Menu( this );
-		var edit = new LineEdit( feature.Name ?? feature.TypeName, menu ) { FixedWidth = 190 };
-
-		edit.ReturnPressed += () =>
-		{
-			RenameCommitted?.Invoke( feature, edit.Text );
-			menu.Close();
-		};
-
-		menu.AddWidget( edit );
-		menu.OpenAtCursor();
-
-		edit.Focus();
-		edit.SelectAll();
+		EffigyRenamePopup.Open( this, feature.Name ?? feature.TypeName, 190, text => RenameCommitted?.Invoke( feature, text ) );
 	}
 
 	/// <summary>The right-click menu on a feature. Every entry acts on the feature that was
@@ -9048,8 +9855,23 @@ internal sealed class EffigyFeatureTreePanel : Widget
 
 		menu.AddSeparator();
 
-		menu.AddOption( "Move up", "arrow_upward", () => CommandRequested?.Invoke( feature, EffigyFeatureCommand.MoveUp ) );
-		menu.AddOption( "Move down", "arrow_downward", () => CommandRequested?.Invoke( feature, EffigyFeatureCommand.MoveDown ) );
+		// Greyed at the ends, with the reason, rather than offered and then doing nothing.
+		var at = _studio?.Features.IndexOf( feature ) ?? -1;
+		var count = _studio?.Features.Count ?? 0;
+
+		var up = menu.AddOption( "Move up", "arrow_upward", () => CommandRequested?.Invoke( feature, EffigyFeatureCommand.MoveUp ) );
+		if ( at <= 0 )
+		{
+			up.Enabled = false;
+			up.StatusTip = "Already the first feature";
+		}
+
+		var down = menu.AddOption( "Move down", "arrow_downward", () => CommandRequested?.Invoke( feature, EffigyFeatureCommand.MoveDown ) );
+		if ( at < 0 || at >= count - 1 )
+		{
+			down.Enabled = false;
+			down.StatusTip = "Already the last feature";
+		}
 
 		menu.AddSeparator();
 
@@ -9631,20 +10453,7 @@ internal sealed class EffigyPartsPanel : Widget
 		if ( body is null )
 			return;
 
-		var menu = new Menu( this );
-		var edit = new LineEdit( body.Name ?? "Part", menu ) { FixedWidth = 190 };
-
-		edit.ReturnPressed += () =>
-		{
-			RenameCommitted?.Invoke( bodyId, edit.Text );
-			menu.Close();
-		};
-
-		menu.AddWidget( edit );
-		menu.OpenAtCursor();
-
-		edit.Focus();
-		edit.SelectAll();
+		EffigyRenamePopup.Open( this, body.Name ?? "Part", 190, text => RenameCommitted?.Invoke( bodyId, text ) );
 	}
 
 	/// <summary>The right-click menu on a part. Every entry acts on the row that was clicked

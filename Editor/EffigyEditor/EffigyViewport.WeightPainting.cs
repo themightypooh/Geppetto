@@ -46,6 +46,9 @@ internal sealed partial class EffigyViewport
 		if ( WeightSession is { IsStroking: true } )
 			WeightSession.EndStroke();
 
+		_weightStrokeArmed = false;
+		ClearCallout( "weight-material" );
+		ClearCallout( "weight-locked" );
 		WeightSession = null;
 		_weightCursor = null;
 		_weightTexture = null;
@@ -72,6 +75,82 @@ internal sealed partial class EffigyViewport
 
 		_weightMaterial = Material.Load( "materials/default.vmat" )?.CreateCopy( "effigy_weights" );
 		_weightMaterial?.Set( "g_tColor", _weightTexture );
+
+		// No material, no heat map: strokes would still change the weights, blind.
+		if ( _weightMaterial is null )
+			ShowCallout( "weight-material", EffigyCalloutKind.Error,
+				"Can't show weights: materials/default.vmat would not load, so the heat map can't be drawn. Strokes still paint, blind. Check the engine's core content is installed.",
+				lifetime: null );
+	}
+
+	/// <summary>Raised when the brush's bone changes mid-session, with the new index.</summary>
+	public Action<int> WeightBoneChanged { get; set; }
+
+	/// <summary>
+	/// Point the brush at another bone without leaving the mode.
+	///
+	/// Picking a bone in the Rig tree (or in the viewport) while painting is how anyone expects to
+	/// move on to the next bone; the session used to keep the one it was started with, so the
+	/// heat map, the label and every stroke went on being about the old bone while the tree said
+	/// otherwise. A stroke in flight is committed first — switching mid-gesture must not turn
+	/// half a stroke into paint for a bone it was never meant for.
+	/// </summary>
+	public void SetWeightBone( int bone )
+	{
+		if ( WeightSession is not { } session || bone < 0 || bone >= session.Skeleton.Count || session.Bone == bone )
+			return;
+
+		if ( session.IsStroking && session.EndStroke() is not null )
+			WeightStrokeFinished?.Invoke();
+
+		session.Bone = bone;
+		RefreshWeightRamp();
+
+		(_weightBarOverlay as EffigyWeightBar)?.Refresh();
+		SketchPromptChanged?.Invoke( $"Painting {session.Skeleton.Bones[bone].Name}. Drag on the mesh." );
+		WeightBoneChanged?.Invoke( bone );
+		Update();
+	}
+
+	/// <summary>Pressed, and the stroke has not reached the surface yet. See WeightPaintFrame.</summary>
+	private bool _weightStrokeArmed;
+
+	/// <summary>The locked-vertices warning has been given for the stroke in flight.</summary>
+	private bool _weightLockedWarned;
+
+	/// <summary>
+	/// Say — once per stroke — that the brush is over vertices it cannot lower.
+	///
+	/// A vertex whose only influence is the painted bone has nowhere for removed weight to go: the
+	/// weights must still sum to one. So Subtract, and Set below 1, leave it exactly as it was, and
+	/// over a patch made of them a stroke does visibly nothing. That is the kernel being right, but
+	/// it looks like the brush being broken unless something says why.
+	/// </summary>
+	private void WarnLockedUnder( Vec3 point )
+	{
+		if ( _weightLockedWarned || WeightSession is not { } session )
+			return;
+
+		// Set to 1 on a vertex that already has all of it is not a stuck brush, it is a finished one.
+		var lowering = session.Brush == WeightBrushKind.Subtract
+			|| (session.Brush == WeightBrushKind.Set && session.Target < 1f - 1e-4f);
+
+		if ( !lowering )
+			return;
+
+		var locked = session.LockedUnder( point );
+
+		if ( locked == 0 )
+			return;
+
+		_weightLockedWarned = true;
+
+		var bone = session.Bone >= 0 && session.Bone < session.Skeleton.Count ? session.Skeleton.Bones[session.Bone].Name : "this bone";
+
+		ShowCallout( "weight-locked", EffigyCalloutKind.Refusal,
+			$"Can't take weight off {locked} vertices here: {bone} is their only bone, and the weights must add up to 1. "
+			+ "Add weight to a neighbouring bone there first (pick it, brush Add) — that takes it from this one.",
+			lifetime: 8f );
 	}
 
 	void RefreshWeightPreview()
@@ -106,11 +185,30 @@ internal sealed partial class EffigyViewport
 
 			_weightCursor = WeightSession.Hover( origin, direction );
 
-			if ( !stroking && Gizmo.WasLeftMousePressed )
+			if ( !stroking && !_weightStrokeArmed && Gizmo.WasLeftMousePressed )
+			{
+				// BeginStroke throws for a bone-less brush other than Smooth. Asked here instead, so
+				// the answer is a sentence rather than an exception.
+				if ( WeightSession.Brush != WeightBrushKind.Smooth
+					&& (WeightSession.Bone < 0 || WeightSession.Bone >= WeightSession.Skeleton.Count) )
+				{
+					RefuseOncePerPress( "weight-no-bone", "Can't paint weights: no bone is picked. Pick one in the Rig tree, then drag on the mesh." );
+				}
+				else
+				{
+					_weightStrokeArmed = true;
+					_weightLockedWarned = false;
+				}
+			}
+
+			// Armed at the press, begun on the first frame the held button is over the surface — a
+			// stroke started just off the silhouette and dragged on paints, as sculpt's does.
+			if ( !stroking && _weightStrokeArmed && Gizmo.IsLeftMouseDown )
 			{
 				if ( WeightSession.BeginStroke( origin, direction ) )
 				{
 					stroking = true;
+					_weightStrokeArmed = false;
 					_weightPreviewStale = true;
 				}
 			}
@@ -119,6 +217,16 @@ internal sealed partial class EffigyViewport
 				if ( WeightSession.MoveTo( origin, direction ) > 0 )
 					_weightPreviewStale = true;
 			}
+
+			if ( stroking && _weightCursor is { } over )
+				WarnLockedUnder( over.Point );
+		}
+
+		// Released without ever reaching the model.
+		if ( _weightStrokeArmed && !Gizmo.IsLeftMouseDown )
+		{
+			_weightStrokeArmed = false;
+			Refuse( "Missed the model — start or drag the stroke onto the part." );
 		}
 
 		if ( stroking && !Gizmo.IsLeftMouseDown )

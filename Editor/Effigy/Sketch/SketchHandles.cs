@@ -175,8 +175,19 @@ public static class SketchHandles
 	/// point means here (see SketchCurve) and it is what dragging a wall of a closed profile should
 	/// do: the profile stays closed.
 	/// </summary>
-	public static bool Drag( Sketch sketch, string curveId, CurveHandleKind kind, Vec2 target )
+	public static bool Drag( Sketch sketch, string curveId, CurveHandleKind kind, Vec2 target ) =>
+		Drag( sketch, curveId, kind, target, out _ );
+
+	/// <summary>
+	/// <see cref="Drag(Sketch, string, CurveHandleKind, Vec2)"/>, saying why when the geometry
+	/// refused. <paramref name="refusal"/> stays null when nothing changed only because the grip is
+	/// already where the cursor is - that is not a refusal, and reporting it as one would put a
+	/// complaint on screen every frame a held grip sits still.
+	/// </summary>
+	public static bool Drag( Sketch sketch, string curveId, CurveHandleKind kind, Vec2 target, out string refusal )
 	{
+		refusal = null;
+
 		if ( sketch is null || curveId is null )
 			return false;
 
@@ -190,7 +201,10 @@ public static class SketchHandles
 			case SketchLine line when kind == CurveHandleKind.LineMiddle:
 			{
 				if ( line.Start == line.End )
+				{
+					refusal = "That line has no length - both its ends are one point - so there is nothing to move.";
 					return false;
+				}
 
 				var a = sketch.Points[line.Start];
 				var b = sketch.Points[line.End];
@@ -211,7 +225,10 @@ public static class SketchHandles
 				var e = sketch.Points[arc.End];
 
 				if ( Circumcentre( s, e, target ) is not { } centre )
+				{
+					refusal = "An arc can't be flattened onto the straight line between its ends. Pull the grip off that line.";
 					return false;
+				}
 
 				if ( (centre - sketch.Points[arc.Center]).Length < Epsilon )
 					return false;
@@ -231,7 +248,13 @@ public static class SketchHandles
 			{
 				var radius = (target - sketch.Points[circle.Center]).Length;
 
-				if ( radius < Epsilon || MathF.Abs( radius - circle.Radius ) < Epsilon )
+				if ( radius < Epsilon )
+				{
+					refusal = "A circle can't shrink to nothing. Pull the grip away from the centre.";
+					return false;
+				}
+
+				if ( MathF.Abs( radius - circle.Radius ) < Epsilon )
 					return false;
 
 				circle.Radius = radius;
@@ -246,7 +269,10 @@ public static class SketchHandles
 				var major = axis.Length;
 
 				if ( major < Epsilon )
+				{
+					refusal = "This ellipse has no long axis - its centre and axis end are one point.";
 					return false;
+				}
 
 				// Only the component across the major axis counts. Dragging the grip along the
 				// major axis is asking for nothing, and taking the raw distance instead would grow
@@ -255,7 +281,13 @@ public static class SketchHandles
 				var d = target - c;
 				var minor = MathF.Abs( d.x * -u.y + d.y * u.x );
 
-				if ( minor < Epsilon || MathF.Abs( minor - ellipse.MinorRadius ) < Epsilon )
+				if ( minor < Epsilon )
+				{
+					refusal = "An ellipse can't be flattened onto its long axis. Pull the grip off that axis.";
+					return false;
+				}
+
+				if ( MathF.Abs( minor - ellipse.MinorRadius ) < Epsilon )
 					return false;
 
 				ellipse.MinorRadius = minor;

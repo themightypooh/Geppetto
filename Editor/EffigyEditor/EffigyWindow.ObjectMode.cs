@@ -1,4 +1,4 @@
-using Editor;
+﻿using Editor;
 using Effigy;
 using Sandbox;
 using System;
@@ -106,8 +106,9 @@ public sealed partial class EffigyWindow
 		add.Add( _objSplineTool );
 		add.Add( _objPartTool );
 		add.Add( _objProfileTool );
+		add.Add( Tool( EffigyIcon.Sculpt, "Blob (metaballs)", "Spheres, capsules, cones and tubes melted into one smooth skin — a heart, a gut pile, a creature block-out. Type the shapes in its settings; a shape starting with - cuts a hole", () => AddFeature( NewFeature( ToolKind.Blob, -1 ) ) ) );
 		add.Add( null );
-		add.Add( Tool( EffigyIcon.Primitive, "Import mesh...", "Bring in an .obj, .fbx or .vmdl as a body", () => AddFeature( NewFeature( ToolKind.Import, -1 ) ) ) );
+		add.Add( Tool( EffigyIcon.Primitive, "Import mesh...", "Bring in a Wavefront .obj as a body", () => AddFeature( NewFeature( ToolKind.Import, -1 ) ) ) );
 		add.Add( Tool( EffigyIcon.Bone, "Body from Bones", "A skin block-out built on the rig, ready to edit", BodyFromBones ) );
 		add.Add( null );
 		add.Add( Tool( EffigyIcon.Plane, "Front reference image...", "A picture behind the model to draw against, seen from the front", () => AddReferenceImage( "front" ) ) );
@@ -117,6 +118,12 @@ public sealed partial class EffigyWindow
 		var mesh = new EffigyStage { Name = "Mesh" };
 		foreach ( var tool in new[] { _objEditTool, _objSculptTool, _objRetopoTool, null, _objSubdivideTool, _objRemeshTool, _objBendTool, null, _objCadTool } )
 			mesh.Add( tool );
+
+		// Features that only a build script could add until the usability audit (2026-10-16).
+		mesh.Add( null );
+		mesh.Add( Tool( EffigyIcon.Sculpt, "Surface detail", "Skin grain, pustules, scattered bumps or pits, or sag folds over the selected body, kept to creases or ridges if you like. Needs enough mesh: subdivide first", () => AddFeature( NewFeature( ToolKind.SurfaceDetail, -1 ) ) ) );
+		mesh.Add( Tool( EffigyIcon.Sculpt, "Shape key", "Start a shape key (a morph: a sac swelling, a jaw gaping). Sculpt, edit or add detail after it, then add End shape key — what moved becomes the key and the body goes back. Exported with the model, animated in Marionette", () => AddFeature( NewFeature( ToolKind.ShapeKey, -1 ) ) ) );
+		mesh.Add( Tool( EffigyIcon.Sculpt, "End shape key", "Finish the shape key opened by the last Shape key: everything since then becomes the key, and the body goes back to how it was", () => AddFeature( NewFeature( ToolKind.ShapeKeyEnd, -1 ) ) ) );
 
 		_objectMenus = new List<EffigyStage> { objectMenu, add, mesh };
 	}
@@ -243,7 +250,7 @@ public sealed partial class EffigyWindow
 		{
 			if ( _viewport.IdleBodyIds.Count == 0 )
 			{
-				SetPrompt( "Click a body first, then Move, Rotate or Scale it." );
+				Refuse( "Click a body first, then Move, Rotate or Scale it." );
 				return;
 			}
 
@@ -269,7 +276,7 @@ public sealed partial class EffigyWindow
 
 		if ( ids.Count == 0 )
 		{
-			SetPrompt( "Click a body first, then Duplicate it." );
+			Refuse( "Click a body first, then Duplicate it." );
 			return;
 		}
 
@@ -303,7 +310,7 @@ public sealed partial class EffigyWindow
 
 		if ( ids.Count == 0 )
 		{
-			SetPrompt( "Click a body first." );
+			Refuse( "Click a body first." );
 			return;
 		}
 

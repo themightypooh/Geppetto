@@ -35,31 +35,31 @@ internal sealed partial class EffigyViewport
 	{
 		if ( !HasSketchSelection )
 		{
-			SetSketchPrompt( "Mirror - pick what to mirror with the Select tool first (drag a box "
+			RefuseTool( "Mirror - pick what to mirror with the Select tool first (drag a box "
 				+ "round it), then click the line to reflect it across." );
 			return;
 		}
 
 		if ( CurveUnderCursor() is not { } id || FindCurve( id ) is not { } curve )
 		{
-			SetSketchPrompt( "Mirror - click the line to reflect the selection across." );
+			RefuseTool( "Mirror - that click isn't on a line. Click the line to reflect the selection across." );
 			return;
 		}
 
 		if ( curve is not SketchLine axis )
 		{
-			SetSketchPrompt( "Mirror - the mirror line has to be a straight line; that is a "
+			RefuseTool( "Mirror - the mirror line has to be a straight line; that is a "
 				+ $"{curve.GetType().Name.Replace( "Sketch", "" ).ToLower()}." );
 			return;
 		}
 
-		// NO SketchEditing HERE. ClickTool took the undo snapshot before handing the click on, the
-		// same as Trim and Extend - a second snapshot makes the first Ctrl+Z look like it did
-		// nothing.
+		// NO SketchEditing HERE. ClickTool takes the undo step itself once it sees the click changed
+		// the sketch, the same as Trim and Extend - a second snapshot makes the first Ctrl+Z look
+		// like it did nothing.
 		if ( !SketchEdit.Mirror( ActiveSketch, SelectedSketchCurves(), SketchSelection.Points,
 			axis, out var created, out var error ) )
 		{
-			SetSketchPrompt( $"Mirror - {error}" );
+			RefuseTool( $"Mirror - {error}" );
 			return;
 		}
 

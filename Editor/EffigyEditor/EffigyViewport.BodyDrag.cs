@@ -67,12 +67,70 @@ internal sealed partial class EffigyViewport
 	/// REFUSED MID-DRAG. Swapping the control under a held button leaves the old one believing it is
 	/// still grabbed, and the new one takes the next frame's mouse as the start of a drag.
 	/// </summary>
-	public void SetBodyDragMode( BodyDragMode mode )
+	/// <returns>Whether the key was answered — switched, or refused with a reason — so the caller
+	/// can tell "nothing here takes W/E/R" from "the body handle took it".</returns>
+	public bool SetBodyDragMode( BodyDragMode mode )
 	{
-		if ( !BodyDragEnabled || _draggingBody )
-			return;
+		if ( !BodyDragEnabled )
+			return false;
+
+		if ( _draggingBody )
+		{
+			Refuse( "Finish the drag first — let go of the handle, then switch between move, rotate and scale." );
+			return true;
+		}
 
 		_bodyDragMode = mode;
+		return true;
+	}
+
+	/// <summary>What W/E/R do, for when nothing on screen can take them.</summary>
+	public const string HandleKeysIdleReason =
+		"W / E / R switch the handle between move, rotate and scale — select a bone, or open a Transform, first.";
+
+	/// <summary>
+	/// The tool whose click would fight a drag handle, as a phrase, or null when the handles can show.
+	/// The same list BodyDragFrame and FaceDragFrame stand down for.
+	/// </summary>
+	private string HandlesHiddenBy =>
+		IsSketching ? "a sketch is open"
+		: IsSculpting ? "sculpting"
+		: IsMeshEditing ? "editing the mesh"
+		: IsPainting ? "painting"
+		: IsMaterialBrushing ? "the material brush is on"
+		: IsNoting ? "the notes pen is on"
+		: Measuring ? "Measure is on"
+		: BoneToolActive ? "Add Bone is placing"
+		: null;
+
+	private string _handlesHiddenSaid;
+
+	/// <summary>
+	/// The open feature's drag handle is wanted but a live tool has stood it down: say so ONCE, on
+	/// the frame it goes, and take the callout away when it comes back. A handle that silently
+	/// vanishes because Measure was left on reads as the feature having lost it.
+	/// </summary>
+	private void HandlesHiddenFrame()
+	{
+		var wanted = (BodyDragEnabled && HasBodyDragConsumer())
+			|| (FaceDragEnabled && FaceDragMoved is not null && SelectedFaces is { Count: > 0 });
+
+		var by = wanted && !_draggingBody && !_draggingFace ? HandlesHiddenBy : null;
+
+		if ( by == _handlesHiddenSaid )
+			return;
+
+		_handlesHiddenSaid = by;
+
+		if ( by is null )
+		{
+			ClearCallout( "handles-hidden" );
+			return;
+		}
+
+		ShowCallout( "handles-hidden", EffigyCalloutKind.Refusal,
+			$"The drag handle is hidden while {by} — that tool owns the click. Turn it off to get the handle back.",
+			lifetime: 6f );
 	}
 
 	/// <summary>
@@ -142,7 +200,7 @@ internal sealed partial class EffigyViewport
 			return;
 		}
 
-		if ( (IsSketching || IsSculpting || IsMeshEditing || IsPainting || IsMaterialBrushing || IsNoting || BoneToolActive) && !_draggingBody )
+		if ( (IsSketching || IsSculpting || IsMeshEditing || IsPainting || IsMaterialBrushing || IsNoting || Measuring || BoneToolActive) && !_draggingBody )
 		{
 			EndBodyDrag();
 			return;
@@ -220,7 +278,13 @@ internal sealed partial class EffigyViewport
 
 				// Clamped as the rig's scale handle is (RigViewport.cs:2472): a factor reaching zero
 				// makes the Transform refuse to rebuild, which reads as the drag breaking the model.
-				BodyScaleDragged?.Invoke( scale.Clamp( 0.01f, 100f ) );
+				// Said once per drag when it bites, or the handle just stops for no visible reason.
+				var factor = scale.Clamp( 0.01f, 100f );
+
+				if ( factor != scale )
+					RefuseOncePerPress( "body-scale-limit", "Scale stops at 0.01× and 100× in one drag. Let go and drag again (or type the Scale) to go further." );
+
+				BodyScaleDragged?.Invoke( factor );
 				return;
 			}
 

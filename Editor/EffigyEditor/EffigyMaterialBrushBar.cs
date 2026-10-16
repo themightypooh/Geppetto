@@ -1,4 +1,4 @@
-using Editor;
+﻿using Editor;
 using Effigy;
 using Sandbox;
 using System;
@@ -51,6 +51,7 @@ internal sealed class EffigyMaterialBrushBar : Widget
 
 		_radius = new EffigyNumericField( this, 0.25f, "u" )
 		{
+			Label = "Brush radius",
 			Min = 1e-4f,
 			ValueEdited = OnRadiusEdited,
 			FixedWidth = 90f,

@@ -1102,6 +1102,8 @@ internal sealed class EffigyFeatureDialog : Widget
 					DraftFeature => "Faces to taper",
 					HoleFeature => "Faces to drill",
 					SubdivideFeature => "Faces (empty = whole body or all)",
+					MoveFaceFeature => "Faces to move",
+					DeleteFaceFeature => "Faces to delete",
 					_ => "Faces",
 				} );
 
@@ -1263,6 +1265,13 @@ internal sealed class EffigyFeatureDialog : Widget
 
 		foreach ( var param in advanced )
 		{
+			// Looseness is the number behind Fit = Custom. Showing it beside Close or Regular
+			// is a slider that does nothing, and the messages used to tell people to drag it.
+			if ( _feature is GarmentFeature garment
+				&& ReferenceEquals( param, garment.Looseness )
+				&& garment.Fit.Index != 4 )
+				continue;
+
 			if ( BuildParamRow( param ) is not { } row )
 				continue;
 
@@ -1466,6 +1475,8 @@ internal sealed class EffigyFeatureDialog : Widget
 		DraftFeature draft => draft.Faces,
 		HoleFeature hole => hole.Faces,
 		SubdivideFeature subdivide => subdivide.Faces,
+		MoveFaceFeature move => move.Faces,
+		DeleteFaceFeature deleted => deleted.Faces,
 		_ => null,
 	};
 
@@ -1579,6 +1590,21 @@ internal sealed class EffigyFeatureDialog : Widget
 	/// a unit. Real units - "deg" - still earn their label.</summary>
 	private static bool ShowUnit( string unit ) => !string.IsNullOrEmpty( unit ) && unit != "u";
 
+	/// <summary>
+	/// A value was asked for past what the parameter allows and was held at the limit. Said in a
+	/// callout over the viewport, by name — "Angle can't go above 360°" — because the field's
+	/// own faint "= 360" next to it read as the box ignoring you.
+	/// </summary>
+	private void SayLimit( string label, float asked, float used, string unit )
+	{
+		var suffix = unit == "deg" ? "°" : ShowUnit( unit ) ? " " + unit : "";
+		var direction = asked > used ? "above" : "below";
+		var value = Expression.Format( used );
+
+		_viewport.ShowCallout( "limit:" + label, EffigyCalloutKind.Refusal,
+			$"{label} can't go {direction} {value}{suffix}, so it's set to {value}{suffix}.", lifetime: 5f );
+	}
+
 	private Widget BuildFloatRow( FloatParam fp )
 	{
 		var row = NewRow( out var layout, highlightLabel: fp.Label );
@@ -1587,6 +1613,7 @@ internal sealed class EffigyFeatureDialog : Widget
 
 		var field = new EffigyNumericField( row, fp.Clamped, fp.Unit )
 		{
+			Label = fp.Label,
 			Min = fp.Min,
 			Max = fp.Max,
 			Resolver = name => VariableResolve?.Invoke( name ),
@@ -1652,6 +1679,8 @@ internal sealed class EffigyFeatureDialog : Widget
 		};
 
 		field.ExpressionEdited = expr => fp.Expr = expr;
+		field.LimitHit = ( asked, used ) => SayLimit( fp.Label, asked, used, fp.Unit );
+		scrub.LimitHit = ( asked, used ) => SayLimit( fp.Label, asked, used, fp.Unit );
 
 		layout.Add( scrub );
 
@@ -1691,6 +1720,7 @@ internal sealed class EffigyFeatureDialog : Widget
 
 		var field = new EffigyNumericField( row, ip.Clamped )
 		{
+			Label = ip.Label,
 			Min = ip.Min,
 			Max = ip.Max,
 			Integer = true,
@@ -1716,6 +1746,8 @@ internal sealed class EffigyFeatureDialog : Widget
 			};
 		}
 
+		field.LimitHit = ( asked, used ) => SayLimit( ip.Label, asked, used, null );
+
 		field.ValueEdited = v =>
 		{
 			ip.Value = (int)v;
@@ -1735,6 +1767,7 @@ internal sealed class EffigyFeatureDialog : Widget
 				Max = ip.Max,
 				Sensitivity = 0.1f,
 				Value = () => ip.Value,
+				LimitHit = ( asked, used ) => SayLimit( ip.Label, asked, used, null ),
 				Dragged = v =>
 				{
 					ip.Value = (int)MathF.Round( v );
@@ -1837,7 +1870,7 @@ internal sealed class EffigyFeatureDialog : Widget
 
 			if ( model is null || model.IsError )
 			{
-				Log.Warning( $"[Effigy] {asset.Name} did not load as a model" );
+				_viewport?.Refuse( $"Can't dress {asset.Name}: it didn't load as a model. Pick another model, or check it compiles in the asset browser." );
 				return;
 			}
 
@@ -1845,7 +1878,7 @@ internal sealed class EffigyFeatureDialog : Widget
 
 			if ( mesh is null || mesh.FaceCount == 0 )
 			{
-				Log.Warning( $"[Effigy] {asset.Name} has no render mesh to dress" );
+				_viewport?.Refuse( $"Can't dress {asset.Name}: it has no render mesh to fit clothes to. Pick a model with a visible body." );
 				return;
 			}
 
@@ -1856,8 +1889,9 @@ internal sealed class EffigyFeatureDialog : Widget
 			if ( edit.IsValid() )
 				edit.Text = asset.Path;
 
-			Log.Info( $"[Effigy] wearer is now {asset.Name}. The rig is unchanged - a garment still "
-				+ "fits to the bones that are there, so check it still lines up." );
+			_viewport?.ShowCallout( "wearer-swapped", EffigyCalloutKind.Refusal,
+				$"Wearer is now {asset.Name}, but the rig didn't change: garments still fit to the old bones. "
+				+ "Check they line up, or start a new document to use this model's own skeleton.", lifetime: 10f );
 
 			RaiseEdited();
 		};
@@ -2048,6 +2082,18 @@ internal sealed class EffigyFeatureDialog : Widget
 					return;
 
 				cp.Index = idx;
+
+				// A garment's Length and Sleeve belong to the recipe. Leaving the previous
+				// recipe's numbers in place is how Long sleeve comes out as a T-shirt.
+				if ( _feature is GarmentFeature garment && ReferenceEquals( cp, garment.Recipe ) )
+				{
+					var (length, sleeve) = GarmentRecipe.Defaults( idx );
+					garment.Length.Value = length;
+					garment.Length.Expr = null;
+					garment.Sleeve.Value = sleeve;
+					garment.Sleeve.Expr = null;
+				}
+
 				RaiseEdited();
 
 				// Which parameters exist can depend on this choice, so the dialog redraws itself.
@@ -2825,12 +2871,18 @@ internal sealed class EffigySketchSelector : Widget, IArmableSelection
 	public void PickedFace( FaceRef face )
 	{
 		if ( _faces is null )
+		{
+			_viewport.Refuse( "Can't use a face here: this feature takes a sketch region. Click a closed region of a sketch instead." );
 			return;
+		}
 
 		var bodies = _viewport.PickableBodies;
 
 		if ( !FacePlane.TryResolveFace( bodies, face, out var body, out var index ) )
+		{
+			_viewport.Refuse( "Can't pick that face: it isn't on a part this feature can use." );
 			return;
+		}
 
 		for ( var i = 0; i < _faces.Count; i++ )
 		{
@@ -2862,7 +2914,10 @@ internal sealed class EffigySketchSelector : Widget, IArmableSelection
 		var incoming = _viewport.PickableSketches.FirstOrDefault( s => s.FeatureId == featureId );
 
 		if ( incoming is null )
+		{
+			_viewport.Refuse( "Can't use that sketch: this feature can only take a sketch made before it. Pick an earlier one." );
 			return;
+		}
 
 		// Clicking a CURVE names no region: every closed region of that sketch, which is also
 		// how a face pick is undone back to "the whole sketch".
@@ -2884,6 +2939,16 @@ internal sealed class EffigySketchSelector : Widget, IArmableSelection
 		// First pick, or a click on a different plane: that sketch and this one face.
 		if ( awaiting || !SketchArrangement.Coplanar( existing.Sketch.Plane, incoming.Sketch.Plane ) )
 		{
+			// A profile is flat, so a region on another plane cannot join it - but throwing the
+			// earlier picks away without a word read as the click having eaten them.
+			if ( !awaiting )
+			{
+				_viewport.ShowCallout( "profile-restarted", EffigyCalloutKind.Refusal,
+					$"Started a new profile from '{incoming.Name}': it's on a different plane from '{existing.Name}', "
+					+ "and a profile has to be flat, so it replaced your earlier picks. Pick regions on one plane to combine them.",
+					lifetime: 8f );
+			}
+
 			_consumer.SketchFeatureId = featureId;
 			_consumer.RegionSeeds.Clear();
 			_consumer.RegionSeeds.Add( seed );
@@ -3300,9 +3365,11 @@ internal sealed class EffigyFaceSetSelector : Widget, IArmableSelection
 
 		_armed = true;
 		_viewport.FacePickMode = true;
+		_viewport.PickFacingPair = true;
 		_viewport.FacePicked = OnFacePicked;
+		_viewport.FacingPairPicked = OnFacingPairPicked;
 		Push();
-		_viewport.SetPickPrompt( $"Click the {_label.ToLowerInvariant()}. Escape when done." );
+		_viewport.SetPickPrompt( $"Click the {_label.ToLowerInvariant()}. Alt-click selects both sides of a wall. Escape when done." );
 		Update();
 	}
 
@@ -3313,10 +3380,54 @@ internal sealed class EffigyFaceSetSelector : Widget, IArmableSelection
 
 		_armed = false;
 		_viewport.FacePickMode = false;
+		_viewport.PickFacingPair = false;
 		_viewport.FacePicked = null;
+		_viewport.FacingPairPicked = null;
 		_viewport.SelectedFaces = null;
 		_viewport.SetPickPrompt( "" );
 		Update();
+	}
+
+	/// <summary>Alt-click: keep both faces of the wall. Adding, never toggling — a click that
+	/// meant "both sides" must not drop the side you pointed at on the way.</summary>
+	private void OnFacingPairPicked( FaceRef front, FaceRef back )
+	{
+		var frontOk = AddFaceIfMissing( front );
+		var backOk = AddFaceIfMissing( back );
+
+		if ( !frontOk && !backOk )
+		{
+			_viewport.Refuse( "Can't pick that face: it isn't on a part this feature can use." );
+			return;
+		}
+
+		if ( !frontOk || !backOk )
+			_viewport.Refuse( "Kept one face of that wall: the other side isn't on a part this feature can use." );
+
+		Push();
+		Update();
+		_changed?.Invoke();
+	}
+
+	/// <summary>False when the face does not resolve on a pickable part, so the caller can say so.</summary>
+	private bool AddFaceIfMissing( FaceRef face )
+	{
+		var bodies = _viewport.PickableBodies;
+
+		if ( !FacePlane.TryResolveFace( bodies, face, out var body, out var index ) )
+			return false;
+
+		for ( var i = 0; i < _faces.Count; i++ )
+		{
+			if ( !FacePlane.TryResolveFace( bodies, _faces[i], out var existing, out var existingIndex ) )
+				continue;
+
+			if ( existing.Id == body.Id && existingIndex == index )
+				return true;
+		}
+
+		_faces.Add( face );
+		return true;
 	}
 
 	/// <summary>
@@ -3332,7 +3443,10 @@ internal sealed class EffigyFaceSetSelector : Widget, IArmableSelection
 		var bodies = _viewport.PickableBodies;
 
 		if ( !FacePlane.TryResolveFace( bodies, face, out var body, out var index ) )
+		{
+			_viewport.Refuse( "Can't pick that face: it isn't on a part this feature can use." );
 			return;
+		}
 
 		for ( var i = 0; i < _faces.Count; i++ )
 		{
@@ -3492,7 +3606,10 @@ internal sealed class EffigyEdgeSetSelector : Widget, IArmableSelection
 		var bodies = _viewport.PickableBodies;
 
 		if ( !FacePlane.TryResolveEdge( bodies, edge, out var body, out var key ) )
+		{
+			_viewport.Refuse( "Can't pick that edge: it isn't on a part this feature can use." );
 			return;
+		}
 
 		for ( var i = 0; i < _edges.Count; i++ )
 		{

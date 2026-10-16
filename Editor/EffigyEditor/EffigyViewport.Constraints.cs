@@ -31,8 +31,25 @@ internal sealed partial class EffigyViewport
 
 	/// <summary>Raised when the right button asks for the constraint menu while a sketch is open.
 	/// The viewport resolves what is selected and stops there — WHICH constraints that allows is a
-	/// question for the kernel, and the window is what owns the answer.</summary>
-	public Action SketchConstraintMenuRequested { get; set; }
+	/// question for the kernel, and the window is what owns the answer.
+	///
+	/// WRAPPED, so whoever raises it also gets told what the menu will leave out. Offers reads
+	/// lines, arcs, circles and points and quietly skips the rest, so a line and an ellipse
+	/// right-clicked together offered the line's rules as if the ellipse had never been picked -
+	/// see ConstraintTools.LeftOut. Said here, on the way to the menu, so it arrives with it.</summary>
+	public Action SketchConstraintMenuRequested
+	{
+		get => _constraintMenuRequested is null ? null : () =>
+		{
+			if ( ActiveSketch is not null && ConstraintTools.LeftOut( ActiveSketch, SketchSelection ) is { } leftOut )
+				ShowCallout( "constraint-left-out", EffigyCalloutKind.Refusal, leftOut, lifetime: 8f );
+
+			_constraintMenuRequested();
+		};
+		set => _constraintMenuRequested = value;
+	}
+
+	private Action _constraintMenuRequested;
 
 	/// <summary>Raised after a constraint is applied and the sketch re-solved, so the window can
 	/// snapshot undo and rebuild.</summary>
@@ -275,25 +292,43 @@ internal sealed partial class EffigyViewport
 		var min = new Vec2( MathF.Min( _boxFrom.x, _boxTo.x ), MathF.Min( _boxFrom.y, _boxTo.y ) );
 		var max = new Vec2( MathF.Max( _boxFrom.x, _boxTo.x ), MathF.Max( _boxFrom.y, _boxTo.y ) );
 		var crossing = BoxIsCrossing();
+		var caught = 0;
 
 		for ( var i = 0; i < ActiveSketch.Points.Count; i++ )
 		{
 			// A point has no size, so there is nothing for a crossing box to catch that a window
 			// box would not - the two modes are the same test here, and only differ for curves.
-			if ( Inside( ActiveSketch.Points[i], min, max ) && !SketchSelection.Points.Contains( i ) )
+			if ( !Inside( ActiveSketch.Points[i], min, max ) )
+				continue;
+
+			caught++;
+
+			if ( !SketchSelection.Points.Contains( i ) )
 				SketchSelection.Points.Add( i );
 		}
 
 		foreach ( var curve in ActiveSketch.Curves )
 		{
-			if ( SketchSelection.Curves.Contains( curve.Id ) )
+			if ( !CurveInBox( curve, min, max, crossing ) )
 				continue;
 
-			if ( CurveInBox( curve, min, max, crossing ) )
+			caught++;
+
+			if ( !SketchSelection.Curves.Contains( curve.Id ) )
 				SketchSelection.Curves.Add( curve.Id );
 		}
 
 		PushPrompt();
+
+		// A box that took nothing says why. The window box is the one that catches people out: it
+		// is drawn across a shape that is plainly under it, and takes none of it because none of it
+		// is WHOLLY inside - which looks like box select not working at all.
+		if ( caught == 0 )
+		{
+			Refuse( crossing
+				? "Nothing was under the box. Drag it across the geometry you want."
+				: "Nothing was fully inside the box. Drag right-to-left to take anything it touches." );
+		}
 	}
 
 	/// <summary>
@@ -561,7 +596,7 @@ internal sealed partial class EffigyViewport
 
 		if ( !result.Applied )
 		{
-			SketchPromptChanged?.Invoke( result.Message );
+			Refuse( result.Message );
 			return false;
 		}
 
@@ -576,6 +611,29 @@ internal sealed partial class EffigyViewport
 		return true;
 	}
 
+
+	/// <summary>
+	/// <see cref="ApplySketchConstraint"/>, taking its own undo step - and only when the rule
+	/// actually went on.
+	///
+	/// The window's path takes the step BEFORE applying, so a refused rule (one the sketch already
+	/// has, or one that contradicts it) left an undo step that restored an identical sketch, and
+	/// the next Ctrl+Z looked broken. Here the step is taken from a copy once the rule has landed -
+	/// see RecordUndoFrom.
+	/// </summary>
+	public bool ApplySketchConstraintWithUndo( ConstraintOffer offer )
+	{
+		if ( ActiveSketch is null )
+			return false;
+
+		var before = ActiveSketch.Clone();
+
+		if ( !ApplySketchConstraint( offer ) )
+			return false;
+
+		RecordUndoFrom( before );
+		return true;
+	}
 
 	// --- the marks on the sketch ------------------------------------------------------------------
 
@@ -668,18 +726,62 @@ internal sealed partial class EffigyViewport
 		if ( ActiveSketch is null || constraint is null )
 			return;
 
-		SketchEditing?.Invoke();
+		// The undo step is taken from a copy once the rule has actually gone - see RecordUndoFrom.
+		var before = ActiveSketch.Clone();
 
 		if ( !ActiveSketch.Constraints.Remove( constraint ) )
+		{
+			// The mark was drawn from this frame's rules, so this is a rebuild landing between the
+			// draw and the click. Rare, but a click that does nothing still says so.
+			Refuse( "That rule had already gone from the sketch. Click a mark again if one is still there." );
 			return;
+		}
 
 		var result = SketchSolver.Solve( ActiveSketch );
 
+		RecordUndoFrom( before );
 		SketchConstraintApplied?.Invoke();
+
+		if ( !result.Converged )
+		{
+			// STILL OVER-CONSTRAINED, and worth more than a degrees-of-freedom count: the user just
+			// removed a rule to fix something, and it was not the one. Which of the remaining rules
+			// would be is found by trying without each in turn on a copy - a sketch has a handful of
+			// rules, and the answer is the next click they need.
+			Refuse( StillContradicts() );
+			return;
+		}
 
 		SketchPromptChanged?.Invoke( result.DegreesOfFreedom == 0
 			? "Constraint removed — the sketch is still fully defined"
 			: $"Constraint removed — {result.DegreesOfFreedom} degree{(result.DegreesOfFreedom == 1 ? "" : "s")} of freedom" );
+	}
+
+	/// <summary>The sentence for a sketch whose rules still contradict each other, naming the ones
+	/// whose removal would let it solve.</summary>
+	private string StillContradicts()
+	{
+		const int MostToTry = 60;
+
+		var culprits = new List<string>();
+
+		if ( ActiveSketch.Constraints.Count <= MostToTry )
+		{
+			for ( var i = 0; i < ActiveSketch.Constraints.Count; i++ )
+			{
+				var trial = ActiveSketch.Clone();
+				trial.Constraints.RemoveAt( i );
+
+				if ( SketchSolver.Solve( trial ).Converged )
+					culprits.Add( Name( ActiveSketch.Constraints[i].Kind ) );
+			}
+		}
+
+		var named = culprits.Distinct().ToList();
+
+		return named.Count == 0
+			? "Constraint removed, but the sketch still can't solve: the rules left on it contradict each other in more than one place. Remove more of them (click their marks)."
+			: $"Constraint removed, but the sketch still can't solve: the rules left on it contradict each other. Removing one of these would fix it: {string.Join( ", ", named )}.";
 	}
 
 	/// <summary>Whether a click this frame landed on a glyph, so the selection code can leave it
@@ -725,8 +827,12 @@ internal sealed partial class EffigyViewport
 
 		var offers = ConstraintTools.Offers( ActiveSketch, SketchSelection ).Count;
 
+		// What the menu will skip, said up front rather than discovered from what it offers.
+		var leftOut = ConstraintTools.LeftOut( ActiveSketch, SketchSelection );
+		var note = leftOut is null ? "" : $" ({leftOut})";
+
 		return offers > 0
-			? $"{string.Join( " and ", parts )} selected — right-click for {offers} constraint{(offers == 1 ? "" : "s")}"
-			: $"{string.Join( " and ", parts )} selected — nothing can be constrained from this; click empty space to start again";
+			? $"{string.Join( " and ", parts )} selected — right-click for {offers} constraint{(offers == 1 ? "" : "s")}{note}"
+			: $"{string.Join( " and ", parts )} selected — nothing can be constrained from this{note}; click empty space to start again";
 	}
 }

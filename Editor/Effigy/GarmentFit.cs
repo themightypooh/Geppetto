@@ -32,6 +32,18 @@ public sealed class GarmentRecipe
 {
 	public string Name;
 
+	/// <summary>A top: it hangs from the shoulders and chest over the hollows below them, instead
+	/// of following the skin. See GarmentHang.</summary>
+	public bool Hangs;
+
+	/// <summary>The collar is a crew neck cut round the base of the neck - higher at the back than
+	/// the front - rather than wherever the neck's bone happens to stop claiming skin.</summary>
+	public bool CrewNeck;
+
+	/// <summary>For a top: where the hem sits, 0 at the waist to 1 at mid-thigh, measured down
+	/// the body rather than along the hips' bone. Negative for everything else.</summary>
+	public float HemLength = -1f;
+
 	/// <summary>
 	/// Region, the span of the bone it covers (0 at the bone's head, 1 at its tail), and which side
 	/// of the body it is on: 0 both, +1 left, -1 right.
@@ -111,8 +123,17 @@ public sealed class GarmentRecipe
 			case "T-shirt":
 			case "Long sleeve":
 			case "Tank top":
+				r.Hangs = true;
+				r.CrewNeck = true;
+				r.HemLength = length;
+				// The neck goes in whole and the crew cut takes it back out, so the collar is the
+				// cut's line. Left out, the collar was wherever the neck bone stops claiming skin -
+				// out on the trapezius, a 35-inch collar on the s&box human.
+				if ( r.CrewNeck ) r.Spans.Add( (BodyRegion.Neck, 0f, 1f, 0) );
 				r.Spans.Add( (BodyRegion.Torso, neckline, 1f, 0) );
-				r.Spans.Add( (BodyRegion.Hips, 0f, length, 0) );
+				// Short of the hip joints, always. Everything between the legs reads as the far end
+				// of the hips, so a top allowed all the way down wraps under like a leotard.
+				r.Spans.Add( (BodyRegion.Hips, 0f, Math.Min( length, 0.92f ), 0) );
 				Arms( r.Name == "Tank top" ? 0f : sleeve );
 				break;
 
@@ -150,9 +171,11 @@ public sealed class GarmentRecipe
 	/// <summary>The defaults a recipe opens with: (length, sleeve).</summary>
 	public static (float Length, float Sleeve) Defaults( int index ) => Names[Math.Clamp( index, 0, Names.Length - 1 )] switch
 	{
-		"T-shirt" => (0.6f, 0.3f),
-		"Long sleeve" => (0.7f, 1f),
-		"Tank top" => (0.6f, 0f),
+		// Tops: Length is waist (0) to mid-thigh (1). 0.62 is a classic tee - 29 inches from the
+		// shoulder on the s&box human, a Gildan 5000 size M.
+		"T-shirt" => (0.62f, 0.3f),
+		"Long sleeve" => (0.68f, 1f),
+		"Tank top" => (0.62f, 0f),
 		"Trousers" => (1f, 0f),
 		"Shorts" => (0.4f, 0f),
 		"Beanie" => (0.55f, 0f),
@@ -230,16 +253,73 @@ public static class BodyRegions
 				if ( region == BodyRegion.None )
 					continue;
 
-				var a = skeleton.HeadWorld( i );
-				var b = skeleton.TailWorld( i );
-
-				if ( (b - a).LengthSquared < 1e-8f )
+				// The limb, not the authored +Y tail. Citizen's bones are +X-down-the-bone with
+				// Length left at an inch, and measuring along that tail puts the whole thigh
+				// nearest a one-inch stub at the hip.
+				if ( !skeleton.TryBodySpan( i, out var a, out var b ) )
 					continue;
+
+				if ( region == BodyRegion.Hips )
+					(a, b) = HipSpan( skeleton, i, a, b );
 
 				_segments.Add( (region, a, b) );
 				_segmentBones.Add( i );
 			}
 
+		}
+
+		/// <summary>
+		/// The hips as the stretch of body they are: from where the spine leaves the pelvis down to
+		/// the hip joints.
+		///
+		/// THE PELVIS IS A FAN, so TryBodySpan keeps its authored tail - on Citizen an inch along +X,
+		/// pointing out of the belly. Measured along that, a top's Length cut the hips FRONT TO BACK:
+		/// the back of the hips was "near the waist" and the front "near the hem", and everything
+		/// between the legs sat at the waist end - so every T-shirt came out with a patch of cloth
+		/// in the crotch, joined to the shirt at two points, and two extra openings round the thighs.
+		/// A segment that is already a downward run (a hand-placed Effigy rig) is left alone.
+		/// </summary>
+		static (Vec3 A, Vec3 B) HipSpan( Skeleton skeleton, int pelvis, Vec3 a, Vec3 b )
+		{
+			var run = b - a;
+
+			if ( run.LengthSquared > 1e-6f && -run.z > 0.7f * run.Length )
+				return (a, b);
+
+			var head = skeleton.HeadWorld( pelvis );
+			Vec3? top = null;
+			var legs = Vec3.Zero;
+			var legCount = 0;
+
+			foreach ( var c in skeleton.Children( pelvis ) )
+			{
+				if ( Skeleton.IsAuxiliaryBone( skeleton.Bones[c].Name ) )
+					continue;
+
+				var at = skeleton.HeadWorld( c );
+
+				switch ( Classify( skeleton.Bones[c].Name ) )
+				{
+					case BodyRegion.Torso when top is null || at.z > top.Value.z:
+						top = at;
+						break;
+
+					case BodyRegion.UpperLeg:
+						legs += at;
+						legCount++;
+						break;
+				}
+			}
+
+			var from = top is { } t && t.z > head.z ? t : head;
+			var to = legCount > 0 ? legs / legCount : head;
+
+			// Legs that leave from the pelvis's own height still need the hips to have a length;
+			// the spine's rise above the pelvis is the same body measured the other way.
+			if ( from.z - to.z < 1f )
+				return (a, b);
+
+			return (from, to);
 		}
 
 		/// <summary>Nearest region to <paramref name="p"/>, and t along it (0 at the joint nearest
@@ -254,6 +334,8 @@ public static class BodyRegions
 			var best = float.MaxValue;
 			var region = BodyRegion.None;
 			var chainT = 0f;
+			var above = false;
+			var past = false;
 
 			foreach ( var (r, a, b ) in _segments )
 			{
@@ -261,7 +343,8 @@ public static class BodyRegions
 					continue;
 
 				var ab = b - a;
-				var t = Math.Clamp( Vec3.Dot( p - a, ab ) / ab.LengthSquared, 0f, 1f );
+				var raw = Vec3.Dot( p - a, ab ) / ab.LengthSquared;
+				var t = Math.Clamp( raw, 0f, 1f );
 				var d = (a + ab * t - p).LengthSquared;
 
 				if ( d < best )
@@ -269,11 +352,29 @@ public static class BodyRegions
 					best = d;
 					region = r;
 					chainT = t;
+					above = raw < 0f;
+					past = raw > 1f;
 				}
 			}
 
 			if ( region == BodyRegion.None )
 				return (region, 0f);
+
+			// ABOVE THE TOP OF A THIGH IS HIP. The front of the hips sits about as far from the
+			// thigh's first joint as from the hips' own line, and when the thigh won, a T-shirt -
+			// which covers hips and not legs - had a hole punched in it over each hip bone.
+			// Trousers cover both, so moving these points across changes nothing for them.
+			if ( region == BodyRegion.UpperLeg && above && only == BodyRegion.None
+				&& _segments.Any( s => s.Region == BodyRegion.Hips ) )
+				return Locate( p, BodyRegion.Hips );
+
+			// PAST THE END OF A LIMB IS THE NEXT PART DOWN, for the same reason the other way. A
+			// hand is a fan of fingers, so its own segment is an inch-long stub, and the palm was
+			// nearer the end of the forearm: a sleeve "to the wrist" carried on over the back of
+			// the hand and into the fingers, in scraps, each one an opening Check counted.
+			if ( past && only == BodyRegion.None && NextDown( region ) is var next and not BodyRegion.None
+				&& _segments.Any( s => s.Region == next ) )
+				return Locate( p, next );
 
 			// Chains: measure t over the whole region on this side, start to end, so a limb reads
 			// 0..1 shoulder to wrist whether it is one bone or a bone with twist bones laid over it
@@ -322,8 +423,24 @@ public static class BodyRegions
 			var start = from;
 			to = ends.OrderByDescending( e => (e - start).LengthSquared ).First();
 
+			// The middle of the body is measured straight down. A spine leans, and a hem or a
+			// waistband cut square to a leaning spine runs downhill from back to front; clothes
+			// are hemmed level with the floor.
+			if ( IsCentral( region ) && region != BodyRegion.Head )
+				to = new Vec3( from.x, from.y, to.z );
+
 			return (to - from).LengthSquared > 1e-8f;
 		}
+
+		/// <summary>The part a limb leads into, or None.</summary>
+		static BodyRegion NextDown( BodyRegion r ) => r switch
+		{
+			BodyRegion.UpperArm => BodyRegion.LowerArm,
+			BodyRegion.LowerArm => BodyRegion.Hand,
+			BodyRegion.UpperLeg => BodyRegion.LowerLeg,
+			BodyRegion.LowerLeg => BodyRegion.Foot,
+			_ => BodyRegion.None,
+		};
 
 		public static bool IsCentral( BodyRegion r ) => r is BodyRegion.Head or BodyRegion.Neck or BodyRegion.Torso or BodyRegion.Hips;
 
@@ -338,7 +455,7 @@ public static class BodyRegions
 ///
 /// THE BODY DOES MOST OF THE WORK. The rig only says which faces a recipe covers; the garment is then
 /// lifted off the body's own surface, so it starts with that body's proportions and topology - which
-/// is also the topology the s&box quality bar asks clothing to follow. After that:
+/// is also the topology the s&amp;box quality bar asks clothing to follow. After that:
 ///
 /// 1. every vertex is pushed out to the fit offset along its normal,
 /// 2. collision: any vertex closer than the clearance to ANY body - the chest pressing into an arm, a
@@ -468,7 +585,7 @@ public static class GarmentFit
 	}
 
 	/// <summary>
-	/// Build <paramref name="recipe"/> on <paramref name="bodies"/>, located with <paramref name="map"/>.
+	/// Build <paramref name="recipe"/> on <paramref name="wearers"/>, located with <paramref name="map"/>.
 	/// Returns null when the recipe covers no face at all.
 	/// </summary>
 	public static Result Fit( IReadOnlyList<PolyMesh> wearers, BodyRegions.Map map, GarmentRecipe recipe, Options o,
@@ -482,6 +599,32 @@ public static class GarmentFit
 		var garment = result.Mesh;
 		var remap = new Dictionary<(int Body, int Vertex), int>();
 		var cutRemap = new Dictionary<(int Body, int A, int B, BodyRegion Region, int End), int>();
+
+		// A top's hem is a height, not a fraction of the hips' bone: waist to mid-thigh. Within the
+		// hips it is where the cut goes; below the hip joints the body splits into legs, so the cut
+		// stops short of them and the hem is carried on down as a tube (ExtendHem) - which is how a
+		// T-shirt actually hangs, three inches past the crotch on a size M.
+		var cutSpans = recipe.Spans;
+		var hemZ = float.NaN;
+
+		if ( recipe.HemLength >= 0f && map.Chain( BodyRegion.Torso, 0, out _, out var waist )
+			&& map.Chain( BodyRegion.Hips, 0, out var hipsTop, out var hipsBottom )
+			&& map.Chain( BodyRegion.UpperLeg, 1, out var hip, out var knee ) )
+		{
+			var midThigh = hip.z - (hip.z - knee.z) * 0.5f;
+			hemZ = waist.z + (midThigh - waist.z) * Math.Clamp( recipe.HemLength, 0f, 1f );
+
+			var t = (hipsTop.z - hemZ) / MathF.Max( hipsTop.z - hipsBottom.z, 1e-3f );
+			cutSpans = recipe.Spans.Select( sp => sp.Region == BodyRegion.Hips ? (sp.Region, sp.From, Math.Clamp( t, 0f, 0.92f ), sp.Side) : sp ).ToList();
+		}
+
+		var crew = recipe.CrewNeck ? CrewNeck.Measure( wearers, map, recipe, wearerRegions ) : null;
+
+		// A top with no sleeves has armholes to cut; one with sleeves is sewn on there instead.
+		var armholes = recipe.Hangs && !recipe.Spans.Any( sp => sp.Region == BodyRegion.UpperArm )
+			? new[] { Armhole.Measure( map, 1 ), Armhole.Measure( map, -1 ) }.Where( h => h is not null ).ToArray()
+			: Array.Empty<Armhole>();
+
 
 		for ( var bi = 0; bi < wearers.Count; bi++ )
 		{
@@ -519,7 +662,7 @@ public static class GarmentFit
 				// way Source measures it. Taken from the face rather than from the bone name so an
 				// imported skeleton with no _L / _R convention still makes a one-sleeved shirt.
 				var side = centroid.y > 0 ? 1 : -1;
-				var spans = recipe.Spans.Where( s => s.Region == region && (s.Side == 0 || s.Side == side) ).ToList();
+				var spans = cutSpans.Where( s => s.Region == region && (s.Side == 0 || s.Side == side) ).ToList();
 
 				if ( spans.Count == 0 )
 					continue;
@@ -549,7 +692,15 @@ public static class GarmentFit
 					{
 						var vi = face.Indices[c];
 						var p = body.Positions[vi];
-						nodes.Add( new CutNode( vi, vi, -1, p, Vec3.Dot( p - from, axis ) / lengthSq ) );
+						var along = Vec3.Dot( p - from, axis ) / lengthSq;
+
+						// Chain measures a central bone from its high end. Locate flips the head
+						// so 1 is the crown — a beanie's span is written in that measure. The cut
+						// has to use it too, or the crown is the part that gets clipped off.
+						if ( region == BodyRegion.Head )
+							along = 1f - along;
+
+						nodes.Add( new CutNode( vi, vi, -1, p, along ) );
 					}
 
 					var covering = spans.FirstOrDefault( s => Within( s, t ) );
@@ -591,6 +742,33 @@ public static class GarmentFit
 						nodes.Add( new CutNode( face.Indices[c], face.Indices[c], -1, body.Positions[face.Indices[c]], 0f ) );
 				}
 
+				// Every face, not only neck and torso: a sleeve claims the top of the shoulder right up
+				// to the neck, and left uncut it stood up beside the collar in fins.
+				if ( crew is not null )
+				{
+					for ( var c = 0; c < nodes.Count; c++ )
+						nodes[c] = nodes[c] with { T = crew.Value( nodes[c].P ) };
+
+					nodes = ClipSpan( nodes, 1f, keepAbove: true, end: 2 );
+
+					if ( nodes.Count < 3 )
+						continue;
+				}
+
+				foreach ( var hole in armholes )
+				{
+					if ( nodes.Count < 3 )
+						break;
+
+					for ( var c = 0; c < nodes.Count; c++ )
+						nodes[c] = nodes[c] with { T = hole.Value( nodes[c].P ) };
+
+					nodes = ClipSpan( nodes, 1f, keepAbove: true, end: hole.Side > 0 ? 3 : 4 );
+				}
+
+				if ( nodes.Count < 3 )
+					continue;
+
 				var indices = new int[nodes.Count];
 
 				for ( var c = 0; c < nodes.Count; c++ )
@@ -604,7 +782,10 @@ public static class GarmentFit
 					else if ( node.A >= 0 )
 					{
 						var (lo, hi) = node.A < node.B ? (node.A, node.B) : (node.B, node.A);
-						var key = (bi, lo, hi, region, node.End);
+
+						// The collar crosses from neck skin into torso skin, so its cut points are
+						// shared across regions; a span's end belongs to its own region.
+						var key = (bi, lo, hi, node.End >= 2 ? BodyRegion.None : region, node.End);
 
 						if ( !cutRemap.TryGetValue( key, out var index ) )
 						{
@@ -623,8 +804,16 @@ public static class GarmentFit
 			}
 		}
 
+		if ( crew is not null )
+			TrimCollar( garment, crew );
+
+		if ( recipe.Hangs )
+			CloseSpecks( garment, o.MaterialSlot );
+
 		if ( garment.FaceCount == 0 )
 			return null;
+
+		var extended = float.IsNaN( hemZ ) ? null : ExtendHem( garment, hemZ, o.MaterialSlot );
 
 		var start = garment.Positions.ToArray();
 		var normals = garment.ComputeVertexNormals();
@@ -632,8 +821,27 @@ public static class GarmentFit
 		var flare = FlareWeights( garment, boundary, o.FlareReach );
 
 		// 1. Out to the fit offset, flaring toward the openings.
+		// A top only lifts off the skin by the clearance here; its ease comes from the hang, part by
+		// part - the body's on the body, a sleeve's on the sleeve. Given the body's ease everywhere
+		// first, a sleeve kept it (the hang only ever moves cloth out) and a size M's sleeve came
+		// out 16.7 inches round against a real one's 12.6.
+		var lift = recipe.Hangs ? o.Clearance : o.Offset;
+
 		for ( var i = 0; i < garment.VertexCount; i++ )
-			garment.Positions[i] = start[i] + normals[i] * (o.Offset + o.Flare * flare[i]);
+			garment.Positions[i] = start[i] + normals[i] * (lift + o.Flare * flare[i]);
+
+		// 1b. A top hangs: over the hollows of the torso, and straight down from the chest. What
+		// it hangs FROM - the shoulders and the top of the chest - is held through the drape.
+		List<int> resting = null;
+
+		if ( recipe.Hangs )
+		{
+			resting = HangTorso( garment, start, normals, wearers, map, o.Offset, wearerRegions, extended );
+
+			foreach ( var side in new[] { 1, -1 } )
+				if ( HangSleeve( garment, start, wearers, map, side, o.Offset, wearerRegions ) is { } top )
+					resting?.AddRange( top );
+		}
 
 		// 2. Collision against every body, with a relax between passes so a push does not leave a dent.
 		var neighbours = Neighbours( garment );
@@ -648,7 +856,18 @@ public static class GarmentFit
 		PushOut( garment, bodies, trees, o.Clearance, reach );
 
 		if ( o.Drape && o.DrapeSteps > 0 )
-			Drape( garment, bodies, o );
+		{
+			Drape( garment, bodies, o, resting );
+
+			// THE SOLVER'S KINKS OUT, ITS FOLDS KEPT. A drape leaves creases tighter than the
+			// cloth is thick, and the thickness pass turns any such crease inside out - the inner
+			// wall showed through the outer one in dark specks all down the sleeves. Two light
+			// relaxes take out what is sharper than cloth can fold and leave the drape's shape;
+			// then off the body again, since smoothing can pull a fold back into it.
+			Relax( garment, neighbours, boundary, 0.3f );
+			Relax( garment, neighbours, boundary, 0.3f );
+			PushOut( garment, bodies, trees, o.Clearance, reach );
+		}
 
 		// SHAPING COMES AFTER THE DRAPE AND BEFORE THE THICKNESS, and the order is the whole
 		// correctness argument. After the drape, because these are deliberate style decisions and
@@ -676,7 +895,7 @@ public static class GarmentFit
 		{
 			try
 			{
-				garment = MeshSolidify.Solidify( garment, o.Thickness );
+				garment = MeshSolidify.Solidify( garment, o.Thickness, smooth: true );
 				result.Solidified = true;
 			}
 			catch ( Exception e )
@@ -687,6 +906,501 @@ public static class GarmentFit
 
 		result.Mesh = garment;
 		return result;
+	}
+
+	/// <summary>
+	/// The torso of a top, hung. The wearer's torso and hips are sliced every half inch down the
+	/// body; from the armpit down each slice also holds the one above it, so the cloth falls
+	/// straight from the chest; and every torso point of the garment goes out onto that, plus the
+	/// ease. See GarmentHang for why.
+	/// </summary>
+	/// <returns>The garment vertices resting on the shoulders and upper chest, above the armpit:
+	/// what the cloth hangs from, for the drape to hold where it is.</returns>
+	static List<int> HangTorso( PolyMesh garment, Vec3[] start, Vec3[] normals, IReadOnlyList<PolyMesh> wearers, BodyRegions.Map map,
+		float ease, IReadOnlyList<BodyRegion> wearerRegions, List<int> extended = null )
+	{
+		var torso = new List<Vec3>();
+
+		for ( var bi = 0; bi < wearers.Count; bi++ )
+		{
+			var only = wearerRegions is not null && bi < wearerRegions.Count ? wearerRegions[bi] : BodyRegion.None;
+
+			// The thighs too: a shirt that reaches past the crotch hangs round both of them and the
+			// seat, the way a tape would go. Without them the legs came through the hem and were
+			// pushed out leg by leg, a 48-inch hem on a 40-inch body.
+			foreach ( var p in wearers[bi].Positions )
+				if ( map.Locate( p, only ).Region is BodyRegion.Torso or BodyRegion.Hips or BodyRegion.UpperLeg )
+					torso.Add( p );
+		}
+
+		if ( torso.Count < 16 )
+			return null;
+
+		var top = torso.Max( p => p.z );
+		var cx = torso.Average( p => p.x );
+		var cy = torso.Average( p => p.y );
+
+		// Where the cloth leaves the body and starts to hang: the armpit, a quarter of the way down
+		// the upper arm from the shoulder. Above that the shirt lies on the shoulders and the top
+		// of the chest; below it, it falls. No arms, no armpit: hang from a third of the way down.
+		var fallZ = top - (top - torso.Min( p => p.z )) / 3f;
+		var armpits = new List<float>();
+
+		foreach ( var side in new[] { 1, -1 } )
+			if ( map.Chain( BodyRegion.UpperArm, side, out var shoulder, out var elbow ) )
+				armpits.Add( shoulder.z - (shoulder - elbow).Length * 0.25f );
+
+		if ( armpits.Count > 0 )
+			fallZ = armpits.Average();
+
+		var slices = GarmentHang.Build( torso, new Vec3( cx, cy, top ), new Vec3( 0, 0, -1 ), 0.5f, top - fallZ );
+		var hung = new List<int>();
+
+		// The neck's skin spreads onto the shoulders, and what of it is below the neckline is part
+		// of the yoke. Left unhung it stayed folded under the hung cloth round it, in slivers.
+		// Above the armpit only what faces sideways is hung. The slices run across the body, so
+		// they can only push cloth outward across it: a point on TOP of the shoulder, beside the
+		// neck, inside the slice that holds the whole width of the shoulders, went out sideways to
+		// the shoulder's edge and left the collar in long fins. Cloth lying on a top-facing surface
+		// stays lying on it.
+		//
+		// Not the neck either. The torso's slices at the base of the neck hold the whole width of
+		// the trapezius, and the side of the neck hung on them pushed the collar out to the
+		// shoulders - a 38-inch collar on the s&box human.
+		for ( var i = 0; i < garment.VertexCount; i++ )
+			if ( map.Locate( start[i] ).Region is BodyRegion.Torso or BodyRegion.Hips
+				&& (start[i].z < fallZ || MathF.Abs( normals[i].z ) < 0.5f) )
+				hung.Add( i );
+
+		// The hem carried on below the legs' split is all hanging cloth, whatever it is nearest.
+		if ( extended is not null )
+			hung.AddRange( extended.Where( i => !hung.Contains( i ) ) );
+
+		// Not into the sleeves: each is hung on its own arm, and a short sleeve is only a few rings
+		// long - it took the torso's whole bridging and came out four inches too big round.
+		GarmentHang.Hang( garment, hung, slices, ease,
+			blendInto: i => map.Locate( start[i] ).Region is not (BodyRegion.UpperArm or BodyRegion.LowerArm) );
+
+		// NOT PINNING THESE LET THE SHIRT SLIDE OFF. With a turtleneck the collar held the yoke up
+		// by its own length; cut a crew neck and the drape slid the shoulders down into the body.
+		// Friction holds a real shirt there, and pinning is how the solver says friction.
+		return hung.Where( i => start[i].z > fallZ + 1f ).ToList();
+	}
+
+	/// <summary>
+	/// Carry a top's hem straight down to <paramref name="hemZ"/>, in rings, ending level. The
+	/// cut cannot go there - below the hip joints the skin is two legs - and a shirt does not
+	/// follow them: it falls past them as one tube, which the hang then sizes. Returns the new
+	/// vertices; nothing when the hem is already there.
+	/// </summary>
+	static List<int> ExtendHem( PolyMesh garment, float hemZ, int slot )
+	{
+		var loops = GarmentTrim.OrderedBoundaryLoops( garment );
+
+		if ( loops.Count == 0 )
+			return null;
+
+		Vec3 Centre( List<int> l ) => l.Aggregate( Vec3.Zero, ( acc, i ) => acc + garment.Positions[i] ) / l.Count;
+
+		// The hem: the lowest opening round the middle of the body (not a sleeve's).
+		var hem = loops.Where( l => MathF.Abs( Centre( l ).y ) < 2f ).OrderBy( l => Centre( l ).z ).FirstOrDefault();
+
+		if ( hem is null || hem.Count < 3 )
+			return null;
+
+		var drop = hem.Average( i => garment.Positions[i].z ) - hemZ;
+
+		if ( drop < 0.3f )
+			return null;
+
+		// Wind the new strip the way the face on the hem's edge is wound.
+		var edgeFaces = garment.BuildEdgeFaces();
+		var forward = true;
+
+		if ( edgeFaces.TryGetValue( new EdgeKey( hem[0], hem[1] ), out var users ) && users.Count > 0 )
+		{
+			var f = garment.Faces[users[0]].Indices;
+			var at = Array.IndexOf( f, hem[0] );
+			forward = f[(at + 1) % f.Length] != hem[1];
+		}
+
+		var rings = Math.Max( 1, (int)MathF.Ceiling( drop / 0.75f ) );
+		var previous = hem.ToArray();
+		var added = new List<int>();
+
+		for ( var k = 1; k <= rings; k++ )
+		{
+			var t = k / (float)rings;
+			var ring = new int[previous.Length];
+
+			for ( var i = 0; i < hem.Count; i++ )
+			{
+				var p = garment.Positions[hem[i]];
+				ring[i] = garment.AddVertex( new Vec3( p.x, p.y, p.z + (hemZ - p.z) * t ) );
+				added.Add( ring[i] );
+			}
+
+			for ( var i = 0; i < hem.Count; i++ )
+			{
+				var j = (i + 1) % hem.Count;
+
+				garment.AddFace( forward
+					? new[] { previous[i], previous[j], ring[j], ring[i] }
+					: new[] { previous[j], previous[i], ring[i], ring[j] }, null, slot );
+			}
+
+			previous = ring;
+		}
+
+		return added;
+	}
+
+	/// <summary>
+	/// A sleeve, hung on its arm: the arm sliced across every half inch from the shoulder joint,
+	/// each slice's outline taken, and the sleeve put out onto that plus the ease.
+	///
+	/// A T-SHIRT SLEEVE IS A TUBE, not a second skin. It is cut as wide as the arm is at the
+	/// armhole and falls straight from there, so it stands off the arm below the shoulder - that
+	/// gap is what makes a sleeve read as a sleeve. That is the fall here, over the upper arm. A
+	/// long sleeve past the elbow follows the forearm's outline loosely instead of staying as wide
+	/// as the bicep all the way to the wrist, the way a drafted sleeve tapers to its cuff.
+	/// </summary>
+	/// <returns>The top inch of the sleeve, where it is sewn on, for the drape to hold.</returns>
+	static List<int> HangSleeve( PolyMesh garment, Vec3[] start, IReadOnlyList<PolyMesh> wearers, BodyRegions.Map map,
+		int side, float ease, IReadOnlyList<BodyRegion> wearerRegions )
+	{
+		if ( !map.Chain( BodyRegion.UpperArm, side, out var shoulder, out var elbow ) )
+			return null;
+
+		var wrist = map.Chain( BodyRegion.LowerArm, side, out _, out var w ) ? w : elbow;
+		var axis = wrist - shoulder;
+		var upper = (elbow - shoulder).Length;
+		var arm = new List<Vec3>();
+
+		for ( var bi = 0; bi < wearers.Count; bi++ )
+		{
+			var only = wearerRegions is not null && bi < wearerRegions.Count ? wearerRegions[bi] : BodyRegion.None;
+
+			foreach ( var p in wearers[bi].Positions )
+				if ( (p.y > 0 ? 1 : -1) == side && map.Locate( p, only ).Region is BodyRegion.UpperArm or BodyRegion.LowerArm )
+					arm.Add( p );
+		}
+
+		if ( arm.Count < 16 )
+			return null;
+
+		// ONLY THE ARM. A slice across the upper arm near the armpit runs on into the side of the
+		// chest, and skin there is as near the arm's bone as the chest's - an 8-inch-deep "arm" on
+		// the s&box human. Points much further from the arm's line than the arm's own surface is
+		// are not arm.
+		float FromLine( Vec3 p )
+		{
+			var t = Math.Clamp( Vec3.Dot( p - shoulder, axis ) / axis.LengthSquared, 0f, 1f );
+			return (shoulder + axis * t - p).Length;
+		}
+
+		var spread = arm.Select( FromLine ).OrderBy( d => d ).ToList();
+		var limit = spread[spread.Count / 2] * 1.5f;
+		arm = arm.Where( p => FromLine( p ) <= limit ).ToList();
+
+		// The fall runs from the bicep to the elbow; past it each slice is its own. NOT FROM THE
+		// JOINT: the first inches of the arm still hold the deltoid and the skin of the armpit, and
+		// a sleeve as wide as those all the way down was a wing - thirty inches round on the s&box
+		// human, twice a real T-shirt's.
+		var slices = GarmentHang.Build( arm, shoulder, axis, 0.5f, fallFrom: upper * 0.6f, fallTo: upper );
+		var hung = new List<int>();
+
+		for ( var i = 0; i < garment.VertexCount; i++ )
+		{
+			var p = start[i];
+
+			if ( (p.y > 0 ? 1 : -1) != side || map.Locate( p ).Region is not (BodyRegion.UpperArm or BodyRegion.LowerArm) )
+				continue;
+
+			// Not far above the shoulder joint: the cap over the top of the shoulder lies on it, and
+			// pushing it out across the arm's slices stood it up off the shoulder. Faded in over the
+			// two inches before the joint rather than cut off there: a sleeve hung from one ring
+			// and a cap left lying from the next lapped over each other, and the two layers fought.
+			if ( slices.SliceOf( p ) * slices.Step < -2f )
+				continue;
+
+			hung.Add( i );
+		}
+
+		float Fade( int i )
+		{
+			var t = Math.Clamp( 1f + slices.SliceOf( start[i] ) * slices.Step / 2f, 0f, 1f );
+			return t * t * (3f - 2f * t);
+		}
+
+		// A sleeve carries far less ease than the body: a size M tee's sleeve opening is 12.6
+		// inches round on an arm of 11.5 - an inch, which the clearance and the cloth's own
+		// thickness already make. The hang is for the shape (the fall from the bicep), not size.
+		GarmentHang.Hang( garment, hung, slices, ease * 0.15f, weight: Fade,
+			blendInto: i => map.Locate( start[i] ).Region is not (BodyRegion.Torso or BodyRegion.Hips) );
+
+		return hung.Where( i => slices.SliceOf( start[i] ) * slices.Step < 1f ).ToList();
+	}
+
+	/// <summary>
+	/// A sleeveless top's armhole, as a cut: a plane an inch and a bit inboard of the shoulder
+	/// joint, leaning so it reaches further in the lower it goes - the scoop under the arm - and
+	/// nothing cut below an inch and a half under the armpit. Everything on the arm's side of it
+	/// goes. Without it the armhole was wherever the arm's bone stopped claiming skin: a ragged
+	/// edge and a strap that stood out over the shoulder like an epaulette.
+	/// </summary>
+	sealed class Armhole
+	{
+		public int Side;
+		Vec3 _at, _normal;
+		float _floor;
+
+		public static Armhole Measure( BodyRegions.Map map, int side )
+		{
+			if ( !map.Chain( BodyRegion.UpperArm, side, out var shoulder, out var elbow ) )
+				return null;
+
+			var upper = (elbow - shoulder).Length;
+
+			return new Armhole
+			{
+				Side = side,
+				_at = shoulder - new Vec3( 0, side * upper * 0.12f, 0 ),
+				_normal = new Vec3( 0, side, -0.45f ).Normal,
+				_floor = shoulder.z - upper * 0.42f,
+			};
+		}
+
+		/// <summary>Below 1 is in the armhole, and cut.</summary>
+		/// <remarks>Below the floor the cut has to reach further out the lower it goes, so the bottom
+		/// of the armhole curves round into the side seam instead of stopping in a shelf.</remarks>
+		public float Value( Vec3 p ) => 1f - Vec3.Dot( p - _at, _normal ) * 0.5f + MathF.Max( 0f, _floor - p.z ) * 0.6f;
+	}
+
+	/// <summary>
+	/// Clean the collar's edge: a face on the collar that holds on to the rest by one edge or less
+	/// is a flap the cut left standing, not cloth. The line crosses skin that is not smooth - a
+	/// shoulder rising to meet the neck - and where it wanders it leaves little ears that fold
+	/// over in the drape and read as a torn collar. Only near the neckline; a hem is left alone.
+	/// Unused vertices are left where they are (nothing indexes them).
+	/// </summary>
+	static void TrimCollar( PolyMesh garment, CrewNeck crew )
+	{
+		for ( var pass = 0; pass < 4; pass++ )
+		{
+			var edgeFaces = garment.BuildEdgeFaces();
+			var drop = new HashSet<int>();
+
+			for ( var fi = 0; fi < garment.FaceCount; fi++ )
+			{
+				var face = garment.Faces[fi];
+
+				if ( crew.Value( garment.FaceCentroid( face ) ) > 1.6f )
+					continue;
+
+				var shared = 0;
+
+				for ( var c = 0; c < face.Count; c++ )
+					if ( edgeFaces.TryGetValue( new EdgeKey( face.Indices[c], face.Indices[(c + 1) % face.Count] ), out var users ) && users.Count > 1 )
+						shared++;
+
+				if ( shared <= 1 )
+					drop.Add( fi );
+			}
+
+			if ( drop.Count == 0 )
+				break;
+
+			var kept = garment.Faces.Where( ( _, fi ) => !drop.Contains( fi ) ).ToList();
+			garment.Faces.Clear();
+			garment.Faces.AddRange( kept );
+		}
+
+		// Drop the corners nothing uses any more. The garment has no weights or colours yet, so
+		// positions and face indices are all there is to renumber; and a vertex left hanging is
+		// one Solidify would lift into a wall of its own.
+		var map = new int[garment.VertexCount];
+		Array.Fill( map, -1 );
+		var positions = new List<Vec3>();
+
+		foreach ( var face in garment.Faces )
+			for ( var c = 0; c < face.Count; c++ )
+			{
+				var vi = face.Indices[c];
+
+				if ( map[vi] < 0 )
+				{
+					map[vi] = positions.Count;
+					positions.Add( garment.Positions[vi] );
+				}
+
+				face.Indices[c] = map[vi];
+			}
+
+		garment.Positions.Clear();
+		garment.Positions.AddRange( positions );
+	}
+
+	/// <summary>
+	/// Close the pinholes a cut leaves: an opening a few corners round and a few inches long is
+	/// never a neck, a hem or a cuff - it is the cut line catching a bump in the skin. A shirt has
+	/// four openings, and a fifth the size of a fingertip below the collar is a hole in it.
+	/// </summary>
+	static void CloseSpecks( PolyMesh garment, int slot )
+	{
+		var edgeFaces = garment.BuildEdgeFaces();
+
+		foreach ( var loop in GarmentTrim.OrderedBoundaryLoops( garment ) )
+		{
+			if ( loop.Count < 3 || loop.Count > 8 )
+				continue;
+
+			var round = 0f;
+
+			for ( var i = 0; i < loop.Count; i++ )
+				round += (garment.Positions[loop[(i + 1) % loop.Count]] - garment.Positions[loop[i]]).Length;
+
+			if ( round > 4f )
+				continue;
+
+			// Wound against the face already on its first edge, so the patch faces the same way.
+			var forward = true;
+
+			if ( edgeFaces.TryGetValue( new EdgeKey( loop[0], loop[1] ), out var users ) && users.Count > 0 )
+			{
+				var f = garment.Faces[users[0]].Indices;
+				var at = Array.IndexOf( f, loop[0] );
+				forward = f[(at + 1) % f.Length] != loop[1];
+			}
+
+			garment.AddFace( forward ? loop.ToArray() : Enumerable.Reverse( loop ).ToArray(), null, slot );
+		}
+	}
+
+	/// <summary>
+	/// A crew neck, as a line round the body: level with the base of the neck at the sides (where
+	/// the shoulder seam meets the collar), a little lower at the back, and a few inches lower at
+	/// the front, curving between. Everything above it is cut away.
+	///
+	/// A HEIGHT, NOT A HOLE SEEN FROM ABOVE. That was tried first: an ellipse round the neck in
+	/// plan view. Citizen's neck is nearly as thick as its chest is deep, so any ellipse wide
+	/// enough to be a collar took the whole top of the chest and back with it. A neckline is
+	/// drafted as drops from the base of the neck - front, side, back - and that is what this is.
+	/// </summary>
+	sealed class CrewNeck
+	{
+		float _cx, _cy, _base, _front, _back, _radius, _sideRise;
+
+		public static CrewNeck Measure( IReadOnlyList<PolyMesh> wearers, BodyRegions.Map map, GarmentRecipe recipe,
+			IReadOnlyList<BodyRegion> wearerRegions )
+		{
+			if ( !map.Chain( BodyRegion.Neck, 0, out var crown, out var root ) )
+				return null;
+
+			var neck = new List<Vec3>();
+
+			for ( var bi = 0; bi < wearers.Count; bi++ )
+			{
+				var only = wearerRegions is not null && bi < wearerRegions.Count ? wearerRegions[bi] : BodyRegion.None;
+
+				foreach ( var p in wearers[bi].Positions )
+					if ( map.Locate( p, only ).Region == BodyRegion.Neck )
+						neck.Add( p );
+			}
+
+			// The neck's thickness, measured on the middle of its own line (the skin it claims
+			// spreads over the shoulders, and its width there is not the neck's).
+			var low = MathF.Min( crown.z, root.z );
+			var high = MathF.Max( crown.z, root.z );
+			var ring = neck.Where( p => p.z >= low + (high - low) * 0.25f && p.z <= low + (high - low) * 0.75f ).ToList();
+
+			if ( ring.Count < 8 )
+				return null;
+
+			// THE CORE OF THE NECK, not everything the neck bone is nearest to: at that height the
+			// jaw and the trapezius are nearer the neck bone than to anything else, and counting them
+			// made the s&box human's neck seven inches across. The nearest two fifths of the points
+			// are neck; their extremes give its middle (a bone runs nearer the back of a neck than
+			// its centre) and their spread its size.
+			float Dist( Vec3 p, float cx, float cy ) => MathF.Sqrt( (p.x - cx) * (p.x - cx) + (p.y - cy) * (p.y - cy) );
+
+			var core = ring.OrderBy( p => Dist( p, root.x, root.y ) ).Take( Math.Max( 8, ring.Count * 2 / 5 ) ).ToList();
+			var ncx = (core.Min( p => p.x ) + core.Max( p => p.x )) * 0.5f;
+			var ncy = (core.Min( p => p.y ) + core.Max( p => p.y )) * 0.5f;
+			var band = core.Select( p => Dist( p, ncx, ncy ) ).OrderBy( d => d ).ToList();
+			var radius = band[band.Count / 2];
+			root = new Vec3( ncx, ncy, root.z );
+
+			// THE HIGH POINT OF THE SHOULDER, where the shoulder line meets the neck: every neckline
+			// on a spec sheet is measured from there, not from the neck bone. The skin just outside
+			// the neck at the sides tells where it is; the trapezius rises well above the bone's
+			// root, and a collar hung from the root stayed open out to the shoulders.
+			var sides = wearers.SelectMany( w => w.Positions ).Where( p =>
+			{
+				var dx = p.x - ncx;
+				var dy = p.y - ncy;
+				var d = MathF.Sqrt( dx * dx + dy * dy );
+				return MathF.Abs( dy ) > 2f * MathF.Abs( dx ) && d > radius + 0.1f && d < radius + 0.7f && p.z > low - 4f && p.z < high;
+			} ).Select( p => p.z ).OrderBy( z => z ).ToList();
+			// The lower quarter: the band just outside the neck is part neck, part shoulder, and the
+			// shoulder is the low end of it.
+			var hps = sides.Count > 0 ? sides[sides.Count / 4] : low;
+
+			// A size M crew drops three inches at the front and half an inch at the back from the
+			// HPS (a German brand's regular-fit chart: 7.5 and 1 cm), scaled by the neck so a
+			// thick-necked character gets a proportionate collar. A tank top scoops.
+			var scoop = recipe.Name == "Tank top" ? 1f : 0f;
+			var size = radius / 2.3f;
+
+			return new CrewNeck
+			{
+				_cx = root.x,
+				_cy = root.y,
+				_base = hps,
+				_radius = radius,
+				// A scooped neck runs down from the shoulder, not up the side of the neck: rising
+				// there left a horn at the top of each strap.
+				// The collar sits ON the base of the neck at the sides. Any rise there and the neck's
+				// flare into the shoulders stayed in the opening: 8.7 inches across against a size
+				// M's 6.5.
+				_sideRise = 0f,
+				_front = 2.2f * size + scoop * 3f,
+				_back = 0.5f * size + scoop * 1f,
+			};
+		}
+
+		/// <summary>Below 1 is above the neckline, and cut. Smooth round the body, so a cut along
+		/// an edge lands near where the true curve crosses it.</summary>
+		public float Value( Vec3 p )
+		{
+			var dx = p.x - _cx;
+			var dy = p.y - _cy;
+			var len = MathF.Sqrt( dx * dx + dy * dy );
+			var c = len > 1e-5f ? dx / len : 0f;
+
+			// +x is the front. The front drop eases in so the collar curves rather than notches.
+			// A U at the front, not a notch: the drop is shared across the front of the neck.
+			var front = MathF.Pow( MathF.Max( 0f, c ), 0.7f );
+			var back = MathF.Max( 0f, -c );
+			var side = 1f - MathF.Abs( c );
+
+			// The sides sit an inch up the neck, where the shoulder seam meets the collar: the
+			// shoulder rises to meet the neck there, and a line at the very base wandered over the
+			// top of it, cutting islands that left the collar in fins.
+			var line = _base + side * _sideRise - _front * front - _back * back;
+
+			// ONLY ROUND THE NECK. A shoulder that rises above the base of the neck - Citizen's
+			// trapezius does - is not the collar's business; the line hugs the neck at the sides,
+			// stands a little off it at the back, and reaches down the chest at the front.
+			// The scoop's reach is only down the middle of the front; to the sides the opening
+			// stays as wide as the neck, the way a crew neck is narrower than it is deep.
+			var reach = _radius + 0.25f + 2.6f * MathF.Pow( MathF.Max( 0f, c ), 3f ) + 0.6f * back;
+
+			// And nothing well above the base of the neck stays, however far out: the neck bone
+			// claims skin behind the ears too, and that came through as islands at head height.
+			return MathF.Min( MathF.Max( 1f + (line - p.z) * 0.5f, 1f + (len - reach) * 0.5f ),
+				1f + (_base + 1.6f - p.z) * 0.5f );
+		}
 	}
 
 	/// <summary>A corner of a face being cut: an original vertex (A == B, End -1), or a point on
@@ -976,13 +1690,13 @@ public static class GarmentFit
 	/// holds its fitted length, 0 is jersey that gives — and <see cref="Options.PinTop"/> pins the
 	/// top slice of the mesh so a waistband stays where it was fitted.
 	/// </summary>
-	static void Drape( PolyMesh garment, IReadOnlyList<PolyMesh> bodies, Options o )
+	static void Drape( PolyMesh garment, IReadOnlyList<PolyMesh> bodies, Options o, IEnumerable<int> resting = null )
 	{
 		// The fabric first, then the garment's own settings over the top. Order matters: the preset
 		// is what the cloth IS and Stiffness is the adjustment somebody made to it, so the
 		// adjustment has to win - the other way round, moving the slider would do nothing on any
 		// fabric that sets its own stretch.
-		var sim = ClothSim.WithFabric( garment, PinnedTop( garment, o.PinTop ), o.Fabric );
+		var sim = ClothSim.WithFabric( garment, PinnedTop( garment, o.PinTop ).Concat( resting ?? Enumerable.Empty<int>() ).Distinct(), o.Fabric );
 
 		sim.Thickness = MathF.Max( o.Clearance, 1e-3f );
 		sim.SelfCollision = o.SelfCollision;
@@ -1251,7 +1965,7 @@ public sealed class GarmentReport
 	{
 		if ( Clipping > 0 )
 			yield return $"{Clipping} {(Clipping == 1 ? "vertex clips" : "vertices clip")} through the body, "
-				+ $"deepest {DeepestClip:0.##} in. Raise Looseness or Clearance, or shrinkwrap it back out.";
+				+ $"deepest {DeepestClip:0.##} in. Choose a looser Fit or raise Clearance, or shrinkwrap it back out.";
 
 		if ( Degenerate > 0 )
 			yield return $"{Degenerate} face{(Degenerate == 1 ? " has" : "s have")} no area. "
@@ -1308,7 +2022,9 @@ public static class GarmentCheck
 		var validation = MeshValidator.Validate( garment );
 		report.Structure.AddRange( validation.Errors );
 
-		report.Openings = BoundaryLoops( garment );
+		// Counted on the outer wall when it has one: a solidified garment is closed by its rim, and
+		// "0 openings" on a T-shirt reads as a fault. See MeshSolidify.OuterSheet.
+		report.Openings = BoundaryLoops( MeshSolidify.OuterSheet( garment, out _ ) ?? garment );
 
 		// The same signed-distance test the fitter uses to push a garment out - see
 		// GarmentFit.PushOut. Reusing the idiom matters: a check that disagreed with the solver
@@ -1511,6 +2227,7 @@ public static class GarmentTrim
 		}
 
 		var normals = garment.ComputeVertexNormals();
+		var edgeFaces = garment.BuildEdgeFaces();
 		var rows = Math.Clamp( o.Rows, 1, 12 );
 
 		for ( var li = 0; li < loops.Count; li++ )
@@ -1521,7 +2238,7 @@ public static class GarmentTrim
 			if ( loops[li].Count < 3 )
 				continue;
 
-			AddStrip( result.Mesh, garment, loops[li], normals, rows, o );
+			AddStrip( result.Mesh, garment, loops[li], normals, rows, o, edgeFaces );
 			result.Openings++;
 		}
 
@@ -1531,8 +2248,11 @@ public static class GarmentTrim
 		return result;
 	}
 
+	/// <summary>A foot to a UV unit, the same density LimbUVs gives the garment.</summary>
+	const float TrimUnitsPerUv = 12f;
+
 	static void AddStrip( PolyMesh into, PolyMesh garment, List<int> ring, Vec3[] normals, int rows,
-		Options o )
+		Options o, Dictionary<EdgeKey, List<int>> edgeFaces )
 	{
 		var n = ring.Count;
 
@@ -1553,38 +2273,39 @@ public static class GarmentTrim
 		if ( total <= 1e-5f )
 			return;
 
-		var centre = Vec3.Zero;
-
-		foreach ( var v in ring )
-			centre += garment.Positions[v];
-
-		centre /= n;
-
 		// Which way the trim hangs: the direction the cloth would carry on in if the garment did not
 		// stop at its own hem. Taken from the edge rather than as "straight down", so a cuff's frill
 		// runs on down the arm and a collar's stands off the neck.
+		//
+		// AWAY FROM THE FACE ON THE EDGE, not away from the ring's centre. That was the test once,
+		// and it is a coin toss on a hem: the hang lies along the cloth, the centre is across it, so
+		// the two are at right angles and the sign came out of rounding - half a frill hung down
+		// off the hem and the other half ran back up inside the shirt. The face the boundary edge
+		// belongs to is on the garment's side by definition, so away from it is off the garment.
+		var edgeAway = new Vec3[n];
+
+		for ( var i = 0; i < n; i++ )
+		{
+			var a = ring[i];
+			var b = ring[(i + 1) % n];
+			var pa = garment.Positions[a];
+			var pb = garment.Positions[b];
+			var tangent = (pb - pa).Normal;
+
+			if ( !edgeFaces.TryGetValue( new EdgeKey( a, b ), out var faces ) || faces.Count == 0 )
+				continue;
+
+			var inward = garment.FaceCentroid( garment.Faces[faces[0]] ) - (pa + pb) * 0.5f;
+			inward -= tangent * Vec3.Dot( inward, tangent );
+			edgeAway[i] = inward.LengthSquared > 1e-12f ? -inward.Normal : default;
+		}
+
 		var away = new Vec3[n];
 
 		for ( var i = 0; i < n; i++ )
 		{
-			var p = garment.Positions[ring[i]];
-			var prev = garment.Positions[ring[(i - 1 + n) % n]];
-			var next = garment.Positions[ring[(i + 1) % n]];
-
-			var tangent = (next - prev).Normal;
-			var outward = Vec3.Cross( tangent, normals[ring[i]] );
-
-			if ( outward.LengthSquared < 1e-8f )
-				outward = p - centre;
-
-			outward = outward.Normal;
-
-			// The cross product's sign flips with the ring's winding, which is not something a
-			// caller should have to know about. Point it away from the ring's own centre.
-			if ( Vec3.Dot( outward, p - centre ) < 0f )
-				outward = -outward;
-
-			away[i] = outward;
+			var outward = edgeAway[i] + edgeAway[(i - 1 + n) % n];
+			away[i] = outward.LengthSquared > 1e-12f ? outward.Normal : default;
 		}
 
 		var waves = Math.Max( 1, o.Waves );
@@ -1615,8 +2336,10 @@ public static class GarmentTrim
 
 				// The gather grows with distance from the seam, which is what keeps the seam itself
 				// from rippling. A ribbon has no gather at all and stays a flat band.
+				// The wave goes OUT from the cloth, never in: a frill swinging both ways put half its
+				// waves through whatever the hem sits on, which on a fitted top is the wearer.
 				var offset = away[i] * (width * t)
-					+ normals[ring[i]] * (swing * gather * width * 0.6f * t);
+					+ normals[ring[i]] * ((swing + 1f) * 0.5f * gather * width * 0.6f * t);
 
 				grid[r][i] = into.Positions.Count;
 				into.Positions.Add( p + offset );
@@ -1642,9 +2365,16 @@ public static class GarmentTrim
 						continue;
 				}
 
+				// Around the ring and down the strip, a foot to a UV unit like the garment it hangs
+				// off, so a fabric dropped on both weaves at the same size. The closing quad runs to
+				// the full length rather than back to zero, or it would smear the whole texture.
+				float U( int k ) => (k == 0 && i == n - 1 ? total : arc[k]) / TrimUnitsPerUv;
+				float V( int row ) => width * row / rows / TrimUnitsPerUv;
+
 				into.Faces.Add( new Face( new[] { grid[r][i], grid[r][j], grid[r + 1][j], grid[r + 1][i] } )
 				{
 					Material = o.MaterialSlot,
+					UVs = new[] { new Vec2( U( i ), V( r ) ), new Vec2( U( j ), V( r ) ), new Vec2( U( j ), V( r + 1 ) ), new Vec2( U( i ), V( r + 1 ) ) },
 				} );
 			}
 		}
@@ -1794,8 +2524,13 @@ public static class ClothingDefinition
 					break;
 
 				case BodyRegion.Hips:
-					Add( "Groin" );
-					Add( "Waist" );
+					// A shirt's hip span is the shirttail, not the groin. Claiming Groin and Waist
+					// for every recipe makes a top fight trousers, and stock jeans, for the slot.
+					if ( recipe.Name is "Trousers" or "Shorts" or "Bodysuit" )
+					{
+						Add( "Groin" );
+						Add( "Waist" );
+					}
 					break;
 
 				case BodyRegion.UpperArm:

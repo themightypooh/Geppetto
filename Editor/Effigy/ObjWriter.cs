@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Text;
 
 namespace Effigy;
@@ -35,17 +36,22 @@ public static class ObjWriter
 	/// exported three ways names its materials the same three times.</summary>
 	public static string DefaultMaterialName( int slot ) => $"material_{slot}";
 
+	/// <param name="triangulate">Split every face the bake's way (NormalBake.FaceTriangles) on the
+	/// way out. On for a model the engine compiles against a baked normal map, so ModelDoc does not
+	/// pick its own diagonal across a non-planar quad; off for a file a person will edit.</param>
 	public static void WriteFile( PolyMesh mesh, string path, string objectName = "model",
-		float smoothingAngleDegrees = DefaultSmoothingAngleDegrees, Func<int, string> materialName = null )
+		float smoothingAngleDegrees = DefaultSmoothingAngleDegrees, Func<int, string> materialName = null,
+		bool triangulate = false )
 	{
-		File.WriteAllText( path, Write( mesh, objectName, smoothingAngleDegrees, materialName ) );
+		File.WriteAllText( path, Write( mesh, objectName, smoothingAngleDegrees, materialName, triangulate ) );
 	}
 
 	/// <param name="materialName">What to call each material slot. Defaults to material_0, material_1
 	/// and so on — a name a person chose is the difference between binding by meaning and binding by
 	/// number in whatever the model lands in.</param>
 	public static string Write( PolyMesh mesh, string objectName = "model",
-		float smoothingAngleDegrees = DefaultSmoothingAngleDegrees, Func<int, string> materialName = null )
+		float smoothingAngleDegrees = DefaultSmoothingAngleDegrees, Func<int, string> materialName = null,
+		bool triangulate = false )
 	{
 		var sb = new StringBuilder();
 
@@ -53,7 +59,7 @@ public static class ObjWriter
 		sb.Append( $"# {mesh.VertexCount} vertices, {mesh.FaceCount} faces\n" );
 
 		var offsets = (Vertices: 0, UVs: 0, Normals: 0);
-		AppendPiece( sb, mesh, objectName, smoothingAngleDegrees, materialName, ref offsets );
+		AppendPiece( sb, mesh, objectName, smoothingAngleDegrees, materialName, ref offsets, triangulate );
 
 		return sb.ToString();
 	}
@@ -119,7 +125,7 @@ public static class ObjWriter
 	/// </summary>
 	private static void AppendPiece( StringBuilder sb, PolyMesh mesh, string objectName,
 		float smoothingAngleDegrees, Func<int, string> materialName,
-		ref (int Vertices, int UVs, int Normals) offsets )
+		ref (int Vertices, int UVs, int Normals) offsets, bool triangulate = false )
 	{
 		var c = CultureInfo.InvariantCulture;
 
@@ -194,18 +200,25 @@ public static class ObjWriter
 				sb.Append( $"usemtl {(materialName ?? DefaultMaterialName)( currentMaterial )}\n" );
 			}
 
-			sb.Append( 'f' );
+			var polygons = triangulate && f.Count > 3
+				? NormalBake.FaceTriangles( mesh, fi ).ConvertAll( t => new[] { t.A, t.B, t.C } )
+				: new List<int[]> { Enumerable.Range( 0, f.Count ).ToArray() };
 
-			for ( var i = 0; i < f.Count; i++ )
+			foreach ( var polygon in polygons )
 			{
-				// OBJ indices are 1-based, and counted from the top of the FILE rather than from
-				// the top of this object — hence the offsets, which are zero for a one-piece write.
-				sb.Append( $" {f.Indices[i] + 1 + offsets.Vertices}"
-					+ $"/{faceUVRefs[fi][i] + 1 + offsets.UVs}"
-					+ $"/{cornerNormals[fi][i] + 1 + offsets.Normals}" );
-			}
+				sb.Append( 'f' );
 
-			sb.Append( '\n' );
+				foreach ( var i in polygon )
+				{
+					// OBJ indices are 1-based, and counted from the top of the FILE rather than from
+					// the top of this object — hence the offsets, which are zero for a one-piece write.
+					sb.Append( $" {f.Indices[i] + 1 + offsets.Vertices}"
+						+ $"/{faceUVRefs[fi][i] + 1 + offsets.UVs}"
+						+ $"/{cornerNormals[fi][i] + 1 + offsets.Normals}" );
+				}
+
+				sb.Append( '\n' );
+			}
 		}
 
 		offsets = (offsets.Vertices + mesh.VertexCount, offsets.UVs + uvIndex.Count,

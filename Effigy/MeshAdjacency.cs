@@ -590,7 +590,7 @@ public sealed class EditableMesh
 	/// <summary>
 	/// Inset a region of faces, Blender's Inset Faces.
 	///
-	/// Same band construction as <see cref="ExtrudeRegion"/>, but the duplicated boundary vertices
+	/// Same band construction as <see cref="ExtrudeRegion(IReadOnlyCollection{int}, Vec3)"/>, but the duplicated boundary vertices
 	/// move inward within the surface instead of being lifted off it, so the region shrinks and a
 	/// ring of faces fills the border while the whole thing stays on the same surface. The inset is
 	/// the even-thickness solve: each boundary edge ends up exactly <paramref name="distance"/>
@@ -1343,8 +1343,8 @@ public sealed class EditableMesh
 
 	/// <summary>
 	/// The shared machinery of extrude and inset: duplicate the region's boundary vertices at the
-	/// positions <paramref name="targetForVertex"/> supplies, optionally move interior vertices by
-	/// <paramref name="interiorOffset"/>, rewire the region onto the copies, and build the band of
+	/// positions <paramref name="targetForVertex"/> supplies, optionally move the interior vertices too
+	/// (<paramref name="moveInterior"/>), rewire the region onto the copies, and build the band of
 	/// faces joining the old boundary to the new one.
 	/// </summary>
 	void BandRegion( IReadOnlyCollection<int> regionFaces, Func<int, Vec3> targetForVertex, bool moveInterior )
@@ -1498,7 +1498,7 @@ public enum EditElement
 ///
 /// ENGINE-FREE ON PURPOSE. The editor owns picking, drawing and the mouse; everything that decides
 /// what an operation DOES lives here, so the headless suite can drive a whole session — select,
-/// extrude, drag, undo, commit — without s&box.
+/// extrude, drag, undo, commit — without s&amp;box.
 ///
 /// THE WORKING MESH IS A <see cref="PolyMesh"/>, and each operation round-trips through
 /// <see cref="EditableMesh"/>. Selection is by vertex index, <see cref="EdgeKey"/> and face index,
@@ -2097,6 +2097,9 @@ public sealed class MeshEditSession
 			Restore( _preview.Value );
 		}
 
+		ClearNotice();
+		_previewNoChange = false;
+
 		try
 		{
 			_inPreview = true;
@@ -2120,8 +2123,19 @@ public sealed class MeshEditSession
 		if ( _preview is null )
 			return;
 
-		_undo.Add( _preview.Value );
-		_redo.Clear();
+		// A preview that changed nothing is put back rather than accepted: an undo step for nothing
+		// is a Ctrl+Z that appears broken.
+		if ( _previewNoChange )
+		{
+			Restore( _preview.Value );
+			_previewNoChange = false;
+		}
+		else
+		{
+			_undo.Add( _preview.Value );
+			_redo.Clear();
+		}
+
 		_preview = null;
 		_previewLabel = null;
 	}
@@ -2131,15 +2145,92 @@ public sealed class MeshEditSession
 		if ( _preview is null )
 			return;
 
+		_previewNoChange = false;
 		Restore( _preview.Value );
 		_preview = null;
 		_previewLabel = null;
+	}
+
+	// --- what an operation had to say -----------------------------------------------------------
+
+	/// <summary>
+	/// The last operation's word to the reader when it did not do all that was asked: why it did
+	/// nothing ("nothing close enough to weld"), or what it left out ("3 boundary edges were
+	/// skipped"). Null when it simply did the job. Cleared at the start of every operation and
+	/// preview, so it always belongs to the last one.
+	///
+	/// A PROPERTY, NOT AN EXCEPTION. A no-op is not an error - tests and scripts run these on meshes
+	/// where nothing applies and expect them to return - but the editor must never let one pass in
+	/// silence, so it reads this after every operation and puts it on screen.
+	/// </summary>
+	public string Notice { get; private set; }
+
+	/// <summary>True when the last operation changed nothing and said so through <see cref="NoChange"/>.</summary>
+	public bool LastChangedNothing { get; private set; }
+
+	string _noChange;
+	bool _previewNoChange;
+
+	/// <summary>Called from inside an operation that turned out to have nothing to do. The step it
+	/// opened is taken back - mesh AND selection as they were - so there is no empty Ctrl+Z, and
+	/// <see cref="Notice"/> says why.</summary>
+	void NoChange( string why ) => _noChange = why ?? "Nothing changed.";
+
+	/// <summary>Called from inside an operation that did its job but not all of it; the step stays.</summary>
+	void Remark( string what ) => Notice = Notice is null ? what : $"{Notice} {what}";
+
+	/// <summary>What an operation did, as a count worth reading ("Welded 12 vertices"). Not a
+	/// complaint - the editor puts it on the status bar. Cleared with <see cref="Notice"/>.</summary>
+	public string Outcome { get; private set; }
+
+	void Report( string what ) => Outcome = what;
+
+	/// <summary>Called from an operation that only SELECTS, and found nothing to select: the
+	/// selection is left as it was rather than emptied, and <see cref="Notice"/> says so.</summary>
+	void NothingFound( string why )
+	{
+		Notice = why;
+		LastChangedNothing = true;
+	}
+
+	/// <summary>A typed amount held to the range the operation can use - said rather than done
+	/// quietly, because "I typed 2 and it did 1" otherwise reads as the tool ignoring you.</summary>
+	float Held( string what, float asked, float min, float max )
+	{
+		if ( float.IsNaN( asked ) )
+			throw new InvalidOperationException( $"{what} needs a number." );
+
+		var used = Math.Clamp( asked, min, max );
+
+		if ( used != asked )
+			Remark( $"{what} goes from {min:0.###} to {max:0.###}, so {asked:0.###} was used as {used:0.###}." );
+
+		return used;
+	}
+
+	/// <summary>Clear what the previous operation said, at the start of the next one. Public so a
+	/// caller about to run a plain selection call can read <see cref="Notice"/> afterwards cleanly.</summary>
+	public void ClearNotice()
+	{
+		Notice = null;
+		Outcome = null;
+		_noChange = null;
+		LastChangedNothing = false;
 	}
 
 	/// <summary>Every operation below goes through this: one undo step, unless it is running inside
 	/// a Preview, which owns the step.</summary>
 	void Step( string label, Action body, bool tail = false )
 	{
+		// Notice is NOT cleared here: a typed value held to its range is noted before the step
+		// opens. The caller clears it (ClearNotice, or Preview) before the operation starts.
+		_noChange = null;
+		LastChangedNothing = false;
+
+		// Kept so a step that turns out to change nothing can hand back the redo history it would
+		// otherwise have cost.
+		var redo = _inPreview ? null : new List<Snapshot>( _redo );
+
 		if ( !_inPreview )
 			Push( label, tail );
 
@@ -2156,6 +2247,26 @@ public sealed class MeshEditSession
 			}
 
 			throw;
+		}
+
+		if ( _noChange is not null )
+		{
+			Notice = _noChange;
+			LastChangedNothing = true;
+			_noChange = null;
+
+			if ( !_inPreview )
+			{
+				Restore( _undo[^1] );
+				_undo.RemoveAt( _undo.Count - 1 );
+				_redo.AddRange( redo );
+			}
+			else
+			{
+				_previewNoChange = true;
+			}
+
+			return;
 		}
 
 		Changed();
@@ -2328,6 +2439,10 @@ public sealed class MeshEditSession
 					m.Positions[v] = p - normal * dist;
 				}
 				Mesh = m;
+			}
+			else
+			{
+				NoChange( "The selected vertices lie on one line, so there is no plane to flatten them onto. Select a patch, not a row." );
 			}
 		} );
 	}
@@ -2534,7 +2649,10 @@ public sealed class MeshEditSession
 			}
 
 			if ( orderedVerts.Count < 3 )
+			{
+				NoChange( "The selected vertices don't run along the mesh's edges as a chain. Select an edge loop, or a run of connected vertices." );
 				return;
+			}
 
 			if ( isClosed && !edgeMap[orderedVerts[^1]].Contains( orderedVerts[0] ) )
 				isClosed = false;
@@ -2690,7 +2808,7 @@ public sealed class MeshEditSession
 		if ( moving.Count == 0 )
 			throw new InvalidOperationException( "There is nothing to relax." );
 
-		strength = Math.Clamp( strength, 0f, 1f );
+		strength = Held( "Strength", strength, 0f, 1f );
 		iterations = Math.Clamp( iterations, 1, 100 );
 
 		Step( "Relax", () =>
@@ -2747,6 +2865,10 @@ public sealed class MeshEditSession
 				Mesh = m;
 				ClearSelection();
 			}
+			else
+			{
+				NoChange( "No neighbouring faces lie flat enough together to merge, so the mesh is already as simple as this gets." );
+			}
 		} );
 	}
 
@@ -2771,6 +2893,16 @@ public sealed class MeshEditSession
 
 		Step( "Triangulate", () =>
 		{
+			var anyToSplit = false;
+			foreach ( var f in faces )
+				anyToSplit |= f >= 0 && f < Mesh.FaceCount && Mesh.Faces[f].Indices.Length > 3;
+
+			if ( !anyToSplit )
+			{
+				NoChange( "The selected faces are already triangles." );
+				return;
+			}
+
 			var m = Mesh.Clone();
 			var newFaces = new List<Face>( m.Faces.Count );
 			var selectionSet = new HashSet<int>( faces );
@@ -3040,6 +3172,7 @@ public sealed class MeshEditSession
 			var cuts = new Dictionary<(int v, int w), int>();
 			var cutT = new Dictionary<(int v, int w), float>();
 			var capped = new List<int>();
+			var heldSpokes = 0;
 			foreach ( var (v, others) in spokes )
 			{
 				if ( boundary.Contains( v ) || others.Count < 3 )
@@ -3053,6 +3186,9 @@ public sealed class MeshEditSession
 					if ( len < 1e-6f )
 						continue;
 
+					if ( width / len > 0.49f )
+						heldSpokes++;
+
 					var t = MathF.Min( width / len, 0.49f );
 					cuts[(v, w)] = m.Positions.Count;
 					cutT[(v, w)] = t;
@@ -3063,6 +3199,13 @@ public sealed class MeshEditSession
 
 			if ( capped.Count == 0 )
 				throw new InvalidOperationException( "None of the selected vertices can be bevelled: each needs three or more edges and no open boundary." );
+
+			// Done, but not all of it: say what was left alone and what was held short.
+			var skipped = verts.Count - capped.Count;
+			if ( skipped > 0 )
+				Remark( $"{skipped} of the selected vertices {(skipped == 1 ? "was" : "were")} left alone: on an open edge, or with fewer than three edges, there is no corner to cut." );
+			if ( heldSpokes > 0 )
+				Remark( $"The width was held to just under half of {heldSpokes} short edge(s), so the cuts from both ends never cross." );
 
 			if ( m.VertexColors is not null )
 			{
@@ -3161,12 +3304,107 @@ public sealed class MeshEditSession
 	{
 		var faces = RequireFaces( "Inset" );
 
+		if ( !float.IsFinite( distance ) || distance <= 0f )
+			throw new InvalidOperationException( "The inset has to be more than 0: it is how far in the new ring of faces sits. Type a positive number." );
+
 		Step( "Inset", () =>
 		{
-			var e = EditableMesh.FromPolyMesh( Mesh );
-			e.InsetFaces( faces, distance );
-			Mesh = e.ToPolyMesh();
+			var inset = InsetResult( faces, distance );
+
+			// PAST THE MIDDLE the inner faces cross over and come out inside out - a mesh that looks
+			// fine from one side and renders black from the other. Refused with the number that fits.
+			if ( InsetFolds( faces, inset ) )
+			{
+				var fits = LargestInset( faces, distance );
+				throw new InvalidOperationException( fits > 1e-5f
+					? $"An inset of {distance:0.###} goes past the middle of the selected faces and turns them inside out. The most that fits is about {fits:0.###}."
+					: "The selected faces are too thin to inset at all without turning inside out." );
+			}
+
+			Mesh = inset;
 		} );
+	}
+
+	PolyMesh InsetResult( IReadOnlyCollection<int> faces, float distance )
+	{
+		var e = EditableMesh.FromPolyMesh( Mesh );
+		e.InsetFaces( faces, distance );
+		return e.ToPolyMesh();
+	}
+
+	/// <summary>Whether insetting turned any of the selected faces over or squeezed it to nothing.
+	/// The region keeps its face indices through an inset (the band is appended), so each one is
+	/// compared with itself.</summary>
+	bool InsetFolds( IReadOnlyCollection<int> faces, PolyMesh after )
+	{
+		foreach ( var f in faces )
+		{
+			if ( f < 0 || f >= Mesh.FaceCount || f >= after.FaceCount )
+				continue;
+
+			var before = AreaVector( Mesh, Mesh.Faces[f] );
+			var now = AreaVector( after, after.Faces[f] );
+
+			if ( Vec3.Dot( before, now ) <= before.LengthSquared * 1e-4f )
+				return true;
+
+			// AN EDGE THAT TURNED ROUND is a fold too, even when the area vector says otherwise: a
+			// square inset past its middle flips over in both directions at once, which is a
+			// half-turn in the plane, and its area vector comes back pointing the same way.
+			var fb = Mesh.Faces[f].Indices;
+			var fa = after.Faces[f].Indices;
+
+			if ( fa.Length != fb.Length )
+				continue;
+
+			for ( var i = 0; i < fb.Length; i++ )
+			{
+				var j = (i + 1) % fb.Length;
+				var eb = Mesh.Positions[fb[j]] - Mesh.Positions[fb[i]];
+				var ea = after.Positions[fa[j]] - after.Positions[fa[i]];
+
+				if ( Vec3.Dot( eb, ea ) <= eb.LengthSquared * 1e-4f )
+					return true;
+			}
+		}
+
+		return false;
+	}
+
+	/// <summary>The biggest inset under <paramref name="tooFar"/> that folds nothing, by bisection.</summary>
+	float LargestInset( IReadOnlyCollection<int> faces, float tooFar )
+	{
+		var lo = 0f;
+		var hi = tooFar;
+
+		for ( var i = 0; i < 14; i++ )
+		{
+			var mid = (lo + hi) * 0.5f;
+
+			if ( mid > 0f && !InsetFolds( faces, InsetResult( faces, mid ) ) )
+				lo = mid;
+			else
+				hi = mid;
+		}
+
+		return lo;
+	}
+
+	/// <summary>A face's area vector by Newell's method: its normal times twice its area, and still
+	/// meaningful for a face that has turned over, which a unit normal is not.</summary>
+	static Vec3 AreaVector( PolyMesh mesh, Face face )
+	{
+		var n = Vec3.Zero;
+		var k = face.Indices.Length;
+
+		for ( var i = 0; i < k; i++ )
+		{
+			var a = mesh.Positions[face.Indices[i]];
+			var b = mesh.Positions[face.Indices[(i + 1) % k]];
+			n += new Vec3( (a.y - b.y) * (a.z + b.z), (a.z - b.z) * (a.x + b.x), (a.x - b.x) * (a.y + b.y) );
+		}
+
+		return n;
 	}
 
 	/// <summary>
@@ -3284,7 +3522,7 @@ public sealed class MeshEditSession
 
 	/// <summary>
 	/// Delete the selected edges but keep the faces round them, joined into one — Blender's
-	/// Delete ▸ Edges & Faces is a hole; this is Dissolve Edges by another name, offered where
+	/// Delete ▸ Edges &amp; Faces is a hole; this is Dissolve Edges by another name, offered where
 	/// people look for it. In Face mode, every edge inside the selection goes, leaving one face.
 	/// </summary>
 	public void DeleteEdgesKeepFaces()
@@ -3413,15 +3651,26 @@ public sealed class MeshEditSession
 	/// <paramref name="orMore"/> selects faces with that many corners or more.</summary>
 	public void SelectFacesBySides( int sides, bool orMore = false, Combine how = Combine.Replace )
 	{
-		if ( how == Combine.Replace )
-			ClearSelection();
+		var found = new List<int>();
 
 		foreach ( var f in VisibleFaceMap )
 		{
 			var n = Mesh.Faces[f].Indices.Length;
 			if ( orMore ? n >= sides : n == sides )
-				Apply( SelectedFaces, f, how == Combine.Remove ? Combine.Remove : Combine.Add );
+				found.Add( f );
 		}
+
+		if ( found.Count == 0 )
+		{
+			NothingFound( $"None found: no {(orMore ? $"face has {sides} or more sides" : sides == 3 ? "face is a triangle" : $"face has {sides} sides")}." );
+			return;
+		}
+
+		if ( how == Combine.Replace )
+			ClearSelection();
+
+		foreach ( var f in found )
+			Apply( SelectedFaces, f, how == Combine.Remove ? Combine.Remove : Combine.Add );
 
 		SelectionRevision++;
 	}
@@ -3433,21 +3682,31 @@ public sealed class MeshEditSession
 	/// </summary>
 	public void SelectInteriorFaces( Combine how = Combine.Replace )
 	{
-		if ( how == Combine.Replace )
-			ClearSelection();
-
 		// A face is interior when its normal points into the model, tested by casting from just
 		// off its front: hitting the model from the inside of another face means we are inside.
 		var tree = MeshBVH.Build( Mesh );
 		var eps = MathF.Max( Mesh.BoundsDiagonal, 1e-3f ) * 1e-4f;
+		var found = new List<int>();
 		foreach ( var f in VisibleFaceMap )
 		{
 			var face = Mesh.Faces[f];
 			var n = Mesh.FaceNormal( face );
 			var from = Mesh.FaceCentroid( face ) + n * eps;
 			if ( tree.Raycast( Mesh, from, n ) is { } hit && Vec3.Dot( hit.Normal, n ) > 0f )
-				Apply( SelectedFaces, f, how == Combine.Remove ? Combine.Remove : Combine.Add );
+				found.Add( f );
 		}
+
+		if ( found.Count == 0 )
+		{
+			NothingFound( "None found: every face points outward." );
+			return;
+		}
+
+		if ( how == Combine.Replace )
+			ClearSelection();
+
+		foreach ( var f in found )
+			Apply( SelectedFaces, f, how == Combine.Remove ? Combine.Remove : Combine.Add );
 
 		SelectionRevision++;
 	}
@@ -3982,10 +4241,8 @@ public sealed class MeshEditSession
 	/// — Blender's Select Sharp Edges. The edges to crease, harden or bevel.</summary>
 	public void SelectSharpEdges( float angleDegrees = 30f, Combine how = Combine.Replace )
 	{
-		if ( how == Combine.Replace )
-			ClearSelection();
-
 		var limit = MathF.Cos( angleDegrees * MathF.PI / 180f );
+		var found = new List<EdgeKey>();
 		foreach ( var (key, owners) in VisibleMesh.BuildEdgeFaces() )
 		{
 			if ( owners.Count != 2 )
@@ -3993,8 +4250,20 @@ public sealed class MeshEditSession
 
 			var visible = VisibleMesh;
 			if ( Vec3.Dot( visible.FaceNormal( visible.Faces[owners[0]] ), visible.FaceNormal( visible.Faces[owners[1]] ) ) < limit )
-				Apply( SelectedEdges, key, how == Combine.Remove ? Combine.Remove : Combine.Add );
+				found.Add( key );
 		}
+
+		if ( found.Count == 0 )
+		{
+			NothingFound( $"None found: no edge folds more than {angleDegrees:0.#}°." );
+			return;
+		}
+
+		if ( how == Combine.Replace )
+			ClearSelection();
+
+		foreach ( var key in found )
+			Apply( SelectedEdges, key, how == Combine.Remove ? Combine.Remove : Combine.Add );
 
 		Mode = EditElement.Edge;
 		SelectionRevision++;
@@ -4735,10 +5004,25 @@ public sealed class MeshEditSession
 	/// <summary>Merge vertices closer than <paramref name="tolerance"/> anywhere in the mesh.</summary>
 	public void MergeByDistance( float tolerance )
 	{
+		if ( !float.IsFinite( tolerance ) || tolerance <= 0f )
+			throw new InvalidOperationException( "The merge distance has to be more than 0: it is how close two vertices must be to weld." );
+
 		Step( "Merge by distance", () =>
 		{
-			Mesh = Compact( MeshWeld.Weld( Mesh, tolerance ) );
+			var before = Mesh.VertexCount;
+			var welded = Compact( MeshWeld.Weld( Mesh, tolerance ) );
+			var gone = before - welded.VertexCount;
+
+			// Nothing within reach: the mesh and the selection stay exactly as they were.
+			if ( gone <= 0 )
+			{
+				NoChange( $"Nothing was close enough to weld within {tolerance:0.####}. Raise the distance to reach further." );
+				return;
+			}
+
+			Mesh = welded;
 			ClearSelection();
+			Report( gone == 1 ? "Welded 1 vertex." : $"Welded {gone} vertices." );
 		} );
 	}
 
@@ -4747,6 +5031,12 @@ public sealed class MeshEditSession
 	{
 		Step( "Solidify", () =>
 		{
+			if ( MathF.Abs( thickness ) < 1e-6f )
+			{
+				NoChange( "A thickness of 0 adds nothing. Type how thick the surface should be." );
+				return;
+			}
+
 			Mesh = MeshSolidify.Solidify( Mesh, thickness );
 			ClearSelection();
 		} );
@@ -4754,9 +5044,15 @@ public sealed class MeshEditSession
 
 	/// <summary>Wrap the selection (or the whole mesh, if nothing is selected) onto
 	/// <see cref="SnapTarget"/>, keeping <paramref name="offset"/> off it.</summary>
-	public void Shrinkwrap( float offset, float maxDistance )
+	public void Shrinkwrap( float offset, float maxDistance ) => Shrinkwrap( offset, maxDistance, null );
+
+	/// <summary>Shrinkwrap onto <paramref name="target"/>, or onto <see cref="SnapTarget"/> when it is
+	/// null - so the editor can wrap onto the other bodies without switching Snap on first.</summary>
+	public void Shrinkwrap( float offset, float maxDistance, PolyMesh target )
 	{
-		if ( _snapTarget is null )
+		var onto = target ?? _snapTarget;
+
+		if ( onto is null )
 			throw new InvalidOperationException( "Pick a body to wrap onto first." );
 
 		var verts = AffectedVertices();
@@ -4771,7 +5067,7 @@ public sealed class MeshEditSession
 
 		Step( "Shrinkwrap", () =>
 		{
-			Mesh = MeshShrinkwrap.Apply( Mesh, _snapTarget, maxDistance, offset, out _, weights );
+			Mesh = MeshShrinkwrap.Apply( Mesh, onto, maxDistance, offset, out _, weights );
 		} );
 	}
 
@@ -5012,6 +5308,9 @@ public sealed class MeshEditSession
 		if ( edges.Count == 0 )
 			throw new InvalidOperationException( "Bevel needs edges selected. Switch to Edge mode (2) and pick the edges to round off." );
 
+		if ( !float.IsFinite( width ) || width <= 0f )
+			throw new InvalidOperationException( "The bevel width has to be more than 0. Type how far back from the edge to cut." );
+
 		Step( "Bevel", () =>
 		{
 			var report = segments <= 1
@@ -5023,6 +5322,15 @@ public sealed class MeshEditSession
 
 			Mesh = report.Mesh;
 			ClearSelection();
+
+			// What the blend left out or held back - boundary edges it skipped, setbacks it clamped,
+			// corners it squared off - is said, not dropped.
+			var skipped = edges.Count - report.SelectedEdges;
+			if ( skipped > 0 )
+				Remark( $"{skipped} picked edge(s) were skipped: an edge on an open boundary has only one face, so there is nothing to round it into." );
+
+			foreach ( var warning in report.Warnings )
+				Remark( warning.Problem.TrimEnd( '.' ) + "." );
 		} );
 	}
 
@@ -5037,7 +5345,7 @@ public sealed class MeshEditSession
 		if ( SelectedEdges.Count == 0 )
 			throw new InvalidOperationException( "Edge slide needs an edge loop selected. Alt+click an edge in Edge mode (2)." );
 
-		amount = Math.Clamp( amount, -1f, 1f );
+		amount = Held( "Slide", amount, -1f, 1f );
 
 		var rails = SlideRails( amount >= 0f );
 
@@ -5078,7 +5386,7 @@ public sealed class MeshEditSession
 		if ( direction.LengthSquared < 1e-12f )
 			throw new InvalidOperationException( "Vertex slide needs a direction to choose an edge along." );
 
-		amount = Math.Clamp( amount, -1f, 1f );
+		amount = Held( "Slide", amount, -1f, 1f );
 		direction = direction / direction.Length;
 
 		var neighbours = VertexNeighbours();
@@ -5964,7 +6272,15 @@ public sealed class MeshEditSession
 	public int TransferWeights( PolyMesh source )
 	{
 		var reached = 0;
-		Step( "Copy weights", () => reached = SkinBinder.TransferFrom( Mesh, source ) );
+		Step( "Copy weights", () =>
+		{
+			reached = SkinBinder.TransferFrom( Mesh, source );
+
+			// Reaching nothing is put back whole: a garment with an empty or half-written skin is
+			// worse than the one it had.
+			if ( reached == 0 )
+				NoChange( "No vertex of this mesh is near enough to the rigged body to take its weights. Fit it onto the body first (Shrinkwrap does that), then copy again." );
+		} );
 		return reached;
 	}
 
@@ -6886,7 +7202,7 @@ public sealed class MeshEditSession
 		if ( moving.Count < 2 )
 			throw new InvalidOperationException( "Select the vertices to round off." );
 
-		factor = Math.Clamp( factor, 0f, 1f );
+		factor = Held( "To sphere", factor, 0f, 1f );
 
 		Step( "To Sphere", () =>
 		{
@@ -7102,11 +7418,15 @@ public sealed class MeshEditSession
 	{
 		var moving = RequireVertices( "Bend" );
 
-		if ( MathF.Abs( degrees ) < 1e-3f )
-			return;
-
 		Step( "Bend", () =>
 		{
+			// Inside the step, so a preview at 0 is a live "nothing yet" rather than a silent return.
+			if ( MathF.Abs( degrees ) < 1e-3f )
+			{
+				NoChange( "A bend of 0° leaves it straight. Type how many degrees to curl it." );
+				return;
+			}
+
 			var minX = float.MaxValue;
 			var maxX = float.MinValue;
 			var middle = 0f;
@@ -7156,7 +7476,7 @@ public sealed class MeshEditSession
 	public void ArrayFaces( int count, float gap = 0f )
 	{
 		var faces = RequireFaces( "Array" );
-		count = Math.Clamp( count, 2, 256 );
+		count = (int)Held( "Array count", count, 2, 256 );
 
 		Step( "Array", () =>
 		{
@@ -7197,13 +7517,22 @@ public sealed class MeshEditSession
 	/// </summary>
 	public void SelectNonManifold()
 	{
-		ClearSelection();
-		Mode = EditElement.Edge;
+		var found = new List<EdgeKey>();
 
 		foreach ( var pair in Mesh.BuildEdgeFaces() )
 			if ( pair.Value.Count != 2 )
-				SelectedEdges.Add( pair.Key );
+				found.Add( pair.Key );
 
+		// None: the selection you had stays, and the answer is said rather than shown as nothing.
+		if ( found.Count == 0 )
+		{
+			NothingFound( "None found: every edge has exactly two faces, so the mesh is closed and clean." );
+			return;
+		}
+
+		ClearSelection();
+		Mode = EditElement.Edge;
+		SelectedEdges.UnionWith( found );
 		SelectionRevision++;
 	}
 
@@ -8068,7 +8397,7 @@ public sealed class MeshEditSession
 		if ( moving.Count == 0 )
 			throw new InvalidOperationException( "There is no new topology to relax yet." );
 
-		strength = Math.Clamp( strength, 0f, 1f );
+		strength = Held( "Strength", strength, 0f, 1f );
 		iterations = Math.Clamp( iterations, 1, 100 );
 
 		Step( "Relax", () =>
@@ -8603,7 +8932,7 @@ public sealed class MeshEditSession
 				moving.Add( i );
 		}
 
-		strength = Math.Clamp( strength, 0f, 1f );
+		strength = Held( "Strength", strength, 0f, 1f );
 		iterations = Math.Clamp( iterations, 1, 50 );
 
 		Step( "Smooth weights", () =>
@@ -8709,6 +9038,12 @@ public sealed class MeshEditSession
 				copied++;
 			}
 
+			if ( copied == 0 )
+			{
+				NoChange( "No vertex on the receiving side lines up with one on the other. Symmetrize the geometry first: mirrored weights need mirrored vertices." );
+				return;
+			}
+
 			for ( var i = 0; i < skin.Count; i++ )
 				skin.Vertices[i] = updated[i];
 		} );
@@ -8745,7 +9080,7 @@ public sealed class MeshEditSession
 		if ( moving.Count == 0 )
 			throw new InvalidOperationException( "There is nothing to smooth." );
 
-		strength = Math.Clamp( strength, 0f, 1f );
+		strength = Held( "Strength", strength, 0f, 1f );
 		iterations = Math.Clamp( iterations, 1, 100 );
 
 		Step( "Smooth", () =>
@@ -9307,7 +9642,7 @@ public sealed class MeshEditSession
 
 	/// <summary>Drop vertices no face uses, keeping skin and colour parallel.</summary>
 	/// <summary>
-	/// <see cref="RemoveUnusedVertices"/> for the session's own mesh: the seams and creases are
+	/// <see cref="RemoveUnusedVertices(PolyMesh)"/> for the session's own mesh: the seams and creases are
 	/// renumbered along with the vertices, so a mark on an edge that survives stays on that edge
 	/// instead of drifting onto whichever edge inherits its index.
 	/// </summary>

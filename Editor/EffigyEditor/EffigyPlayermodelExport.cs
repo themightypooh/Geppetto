@@ -100,19 +100,39 @@ public static class EffigyPlayermodelExport
 	/// from; honouring a pivot the modeller set for some other export would sink or float the whole
 	/// character.
 	/// </summary>
-	public static string Export( PartStudio studio, string name )
+	public static string Export( PartStudio studio, string name ) => Export( studio, name, out _ );
+
+	/// <summary>What an export has to tell the window: why it produced nothing, and the warnings
+	/// it shipped with. The console gets every line either way; this is the part that has to be
+	/// on screen, because a playermodel that compiled with a problem looks exactly like one that
+	/// compiled without.</summary>
+	public sealed class Outcome
+	{
+		/// <summary>Why nothing usable came out, in a sentence. Null when it compiled.</summary>
+		public string Failure;
+
+		/// <summary>Each warning the fit check raised, as "problem. remedy". Notes are not here.</summary>
+		public readonly System.Collections.Generic.List<string> Warnings = new();
+	}
+
+	/// <inheritdoc cref="Export(PartStudio, string)"/>
+	public static string Export( PartStudio studio, string name, out Outcome outcome )
 	{
 		ArgumentNullException.ThrowIfNull( studio );
+
+		outcome = new Outcome();
 
 		if ( string.IsNullOrWhiteSpace( name ) )
 		{
 			Log.Error( "[pm] no name to write the playermodel under" );
+			outcome.Failure = "there is no name to write it under";
 			return null;
 		}
 
 		if ( studio.Bodies.Count == 0 )
 		{
 			Log.Error( "[pm] the studio has no bodies" );
+			outcome.Failure = "there are no bodies to put in it";
 			return null;
 		}
 
@@ -137,9 +157,14 @@ public static class EffigyPlayermodelExport
 			var line = $"[pm] {finding.Problem}. {finding.Remedy}";
 
 			if ( finding.Severity == Playermodel.Severity.Note )
+			{
 				Log.Info( line );
+			}
 			else
+			{
 				Log.Warning( line );
+				outcome.Warnings.Add( $"{finding.Problem}. {finding.Remedy}" );
+			}
 		}
 
 		var ordered = fit.Skeleton;
@@ -161,6 +186,7 @@ public static class EffigyPlayermodelExport
 		if ( asset is null )
 		{
 			Log.Warning( $"[pm] wrote {name}.dmx and {name}.vmdl but the asset system could not find the .vmdl" );
+			outcome.Failure = $"{name}.vmdl was written, but the asset system can't find it to compile";
 			return null;
 		}
 
@@ -170,6 +196,7 @@ public static class EffigyPlayermodelExport
 		{
 			Log.Warning( $"[pm] {name}.vmdl compile FAILED - the compiler's output above says why. "
 				+ "The .dmx is on disk either way." );
+			outcome.Failure = $"{name}.vmdl failed to compile. The compiler's output in the console says why";
 			return null;
 		}
 

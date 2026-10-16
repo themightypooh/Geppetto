@@ -255,7 +255,16 @@ public sealed class UVProjectFeature : Feature
 	public override GeometryKind Accepts => GeometryKind.Body;
 
 	public readonly BodySelectionParam Bodies = new( "Bodies" );
-	public readonly ChoiceParam Mode = new( "Mode", new[] { "Box", "Planar", "Unwrap" } );
+	/// <summary>
+	/// Box and Planar tile; Unwrap and Organic lay every face out once for a bake. Unwrap cuts
+	/// where the surface turns past the chart angle - right for hard-surface parts. Organic cuts
+	/// few, long seams through creases and undersides, for closed sculpted forms where the angle
+	/// rule would shatter a lobe into dozens of islands. See UnwrapMode.
+	///
+	/// Appended rather than inserted: a ChoiceParam is saved by its option, but an older document
+	/// read back by index must still find "Unwrap" where it was.
+	/// </summary>
+	public readonly ChoiceParam Mode = new( "Mode", new[] { "Box", "Planar", "Unwrap", "Organic" } );
 	public readonly Vec3Param Direction = new( "Direction", new Vec3( 0, 0, 1 ) );
 	public readonly FloatParam Scale = new( "Units per tile", 1f, 0.0001f, unit: "u" );
 
@@ -266,6 +275,15 @@ public sealed class UVProjectFeature : Feature
 	/// <summary>Gutter between islands. The bake bleeds its islands outward so seams do not glow
 	/// under mipmapping, and without a gutter that bleed runs into the neighbour.</summary>
 	public readonly FloatParam Margin = new( "Island margin", 0.01f, 0f, 0.2f );
+
+	/// <summary>
+	/// Unwrap and Organic only: pack every picked body's charts into ONE shared square, at one texel
+	/// density, instead of giving each body a square of its own. Off, a model of several bodies
+	/// exported as one has every body's UVs on top of each other - right for separate materials,
+	/// useless for one texture set baked across the whole model. On, the model is a single atlas
+	/// a bake can fill.
+	/// </summary>
+	public readonly BoolParam Atlas = new( "Atlas", false );
 
 	/// <summary>
 	/// What the last Unwrap produced, so the editor can say "12 charts, 340 faces, 1.4 units per
@@ -289,7 +307,8 @@ public sealed class UVProjectFeature : Feature
 	public override IReadOnlyList<IParam> Parameters => Mode.Value switch
 	{
 		"Planar" => new IParam[] { Bodies, Mode, Direction, Scale },
-		"Unwrap" => new IParam[] { Bodies, Mode, ChartAngle, Margin },
+		"Unwrap" => new IParam[] { Bodies, Mode, ChartAngle, Margin, Atlas },
+		"Organic" => new IParam[] { Bodies, Mode, Margin, Atlas },
 		_ => new IParam[] { Bodies, Mode, Scale },
 	};
 
@@ -313,20 +332,53 @@ public sealed class UVProjectFeature : Feature
 		var faces = 0;
 		var skipped = 0;
 		var scale = 1f;
+		var stretchSum = 0f;
+		var stretchMax = 0f;
+		var unwrapping = Mode.Value is "Unwrap" or "Organic";
 
-		foreach ( var body in RequireBodies( ctx, Bodies ) )
+		var bodies = RequireBodies( ctx, Bodies ).ToList();
+
+		if ( unwrapping && Atlas.Value )
 		{
-			// Unwrap is the only one of the three a BAKE can use. Box and planar tile on purpose and
+			// One pack across every body: one report, one coverage measure of the whole model.
+			var meshes = bodies.Select( b => b.Mesh ).Where( m => m is not null ).ToList();
+			var report = UVUnwrap.UnwrapAll( meshes, ChartAngle.Clamped, Margin.Clamped,
+				mode: Mode.Value == "Organic" ? UnwrapMode.Organic : UnwrapMode.Angle );
+
+			LastUnwrap = report;
+			var whole = new PolyMesh();
+			foreach ( var m in meshes ) MeshTransform.Append( whole, m );
+			LastCoverage = NormalBake.Measure( whole );
+
+			if ( report.SkippedFaces > 0 )
+			{
+				Warn(
+					"Some faces could not be unwrapped",
+					$"{report}. A face with no area has no direction to flatten onto.",
+					"Check the bodies for degenerate faces" );
+			}
+
+			return;
+		}
+
+		foreach ( var body in bodies )
+		{
+			// Unwrap and Organic are the only modes a BAKE can use. Box and planar tile on purpose and
 			// overlap by construction, which is right for a texture and useless for a normal map -
 			// see UVUnwrap and NormalBake.Measure.
-			if ( Mode.Value == "Unwrap" )
+			if ( unwrapping )
 			{
-				var report = UVUnwrap.Unwrap( body.Mesh, ChartAngle.Clamped, Margin.Clamped );
+				var report = UVUnwrap.Unwrap( body.Mesh, ChartAngle.Clamped, Margin.Clamped,
+					mode: Mode.Value == "Organic" ? UnwrapMode.Organic : UnwrapMode.Angle );
 
 				charts += report.Charts;
 				faces += report.Faces;
 				skipped += report.SkippedFaces;
 				scale = report.Scale;
+
+				// Face-weighted across bodies, so a tiny button does not count as much as the torso.
+				stretchSum += report.MeanStretch * report.Faces;
+				stretchMax = MathF.Max( stretchMax, report.MaxStretch );
 
 				// Measured AFTER the unwrap, so it reflects what the unwrap actually wrote, and kept
 				// for the panel to say "these UVs still will not bake" when a degenerate face was
@@ -351,8 +403,8 @@ public sealed class UVProjectFeature : Feature
 			}
 		}
 
-		if ( Mode.Value == "Unwrap" )
-			LastUnwrap = new UnwrapReport( charts, faces, skipped, scale );
+		if ( unwrapping )
+			LastUnwrap = new UnwrapReport( charts, faces, skipped, scale, faces > 0 ? stretchSum / faces : 0f, stretchMax );
 	}
 }
 
@@ -613,6 +665,15 @@ public sealed class MoveFaceFeature : Feature
 				"Click a face of the part in the viewport, then press Move Face" );
 		}
 
+		if ( MathF.Abs( Distance.Value ) < 1e-5f )
+		{
+			// Nothing to move: said rather than quietly passed, the same as Subdivide at 0 levels.
+			Warn( "Distance is 0, so the faces don't move",
+				"Move face pushes the picked faces along by Distance; at 0 they stay where they are.",
+				"Enter a distance, or drag the arrow on the face" );
+			return;
+		}
+
 		if ( Mode.Index == ModeTranslate && Direction.Value.LengthSquared < 1e-12f )
 		{
 			FailOn( "Direction",
@@ -686,6 +747,96 @@ public sealed class MoveFaceFeature : Feature
 	PolyMesh Solve( PolyMesh mesh, List<int> faces ) => Mode.Index == ModeTranslate
 		? FaceMove.Translate( mesh, faces, Direction.Value.Normal * Distance.Value )
 		: FaceMove.Offset( mesh, faces, Distance.Value );
+}
+
+/// <summary>
+/// Delete picked faces of a solid that already exists, and close the flat opening they leave.
+///
+/// THE OTHER DIRECT EDIT, next to Move Face. Push-pull changes a wall. This removes one: a boss
+/// comes off, or the walls of a hole go, and the surface underneath is continuous again. See
+/// FaceDelete for which openings can be closed and which are refused.
+///
+/// IT LIVES IN THE FEATURE TREE LIKE MOVE FACE. The faces are FaceRefs, so an upstream edit that
+/// destroys one makes this feature say so rather than attaching itself to whatever is nearest.
+/// </summary>
+public sealed class DeleteFaceFeature : Feature
+{
+	public override string TypeName => "Delete face";
+
+	public override GeometryKind Accepts => GeometryKind.Face;
+
+	/// <summary>The faces to remove. Not an IParam, for the reason FaceMaterialFeature gives: a
+	/// list of picked geometry has no generic control to render it.</summary>
+	public List<FaceRef> Faces = new();
+
+	public override IReadOnlyList<IParam> Parameters => Array.Empty<IParam>();
+
+	protected override void Execute( FeatureContext ctx )
+	{
+		if ( Faces.Count == 0 )
+		{
+			Fail(
+				"No faces picked - click the faces to delete",
+				"This removes faces of a part that already exists, and none have been chosen yet.",
+				"Click a face of the part in the viewport, then press Delete Face" );
+		}
+
+		var byBody = new Dictionary<Body, List<int>>();
+		var lost = 0;
+
+		foreach ( var reference in Faces )
+		{
+			if ( !FacePlane.TryResolveFace( ctx.Bodies, reference, out var body, out var faceIndex ) )
+			{
+				lost++;
+				continue;
+			}
+
+			if ( !byBody.TryGetValue( body, out var list ) )
+				byBody[body] = list = new List<int>();
+
+			if ( !list.Contains( faceIndex ) )
+				list.Add( faceIndex );
+		}
+
+		if ( byBody.Count == 0 )
+		{
+			Fail(
+				"None of the picked faces are on the model any more",
+				$"All {Faces.Count} of them named geometry that the features above this one no longer produce.",
+				"Pick the faces again on the current model",
+				"Move this feature back below the edit that changed them" );
+		}
+
+		var healed = new List<(Body Body, PolyMesh Mesh)>();
+
+		foreach ( var (body, faceList) in byBody )
+		{
+			try
+			{
+				healed.Add( (body, FaceDelete.Remove( body.Mesh, faceList )) );
+			}
+			catch ( InvalidOperationException e )
+			{
+				Fail(
+					"Those faces cannot be deleted and closed",
+					e.Message,
+					"Delete the whole boss or the whole hole, including its lid",
+					"Leave a face whose opening is not flat" );
+			}
+		}
+
+		foreach ( var (body, mesh) in healed )
+			body.Mesh = mesh;
+
+		if ( lost > 0 )
+		{
+			Warn(
+				$"{lost} of {Faces.Count} picked faces are no longer on the model",
+				"They named geometry the features above this one no longer produce, so they were skipped.",
+				"Pick them again on the current model" );
+		}
+	}
 }
 
 /// <summary>

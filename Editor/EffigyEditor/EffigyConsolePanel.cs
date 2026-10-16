@@ -52,8 +52,8 @@ internal sealed class EffigyConsolePanel : Widget
 			return;
 		}
 
-		var note = new Editor.Label( "This build of s&box does not expose Editor.ConsoleWidget — "
-			+ "use the main editor window's console instead." )
+		var note = new Editor.Label( "The console can't be embedded in this version of s&box. "
+			+ "Use the main editor window's Console instead." )
 		{
 			WordWrap = true,
 			Color = Theme.TextLight.WithAlpha( 0.7f ),

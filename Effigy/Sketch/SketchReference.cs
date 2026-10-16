@@ -66,46 +66,90 @@ public sealed class SketchReference
 	/// nothing at all.
 	/// </summary>
 	/// <returns>The line added, or null when the edge is degenerate or the sketch already has it.</returns>
-	public SketchLine UseEdge( Sketch sketch, int edgeIndex )
+	public SketchLine UseEdge( Sketch sketch, int edgeIndex ) =>
+		UseEdge( sketch, edgeIndex, construction: false, out var line ) == UseEdgeResult.Added ? line : null;
+
+	/// <summary>
+	/// <see cref="UseEdge(Sketch, int)"/>, saying WHY when nothing was added, and stamping the
+	/// construction flag on what was.
+	///
+	/// The reason is the whole point of this overload. The editor used to answer every null with
+	/// "already in the sketch", which was wrong for an edge too short to be a line - the user went
+	/// looking for a copy that did not exist.
+	///
+	/// Both refusals are decided BEFORE a point is added. PointIndex appends when it finds nothing,
+	/// so checking afterwards left a stray point behind on every refused click.
+	/// </summary>
+	public UseEdgeResult UseEdge( Sketch sketch, int edgeIndex, bool construction, out SketchLine line )
 	{
+		line = null;
+
 		if ( sketch is null || edgeIndex < 0 || edgeIndex >= Edges.Count )
-			return null;
+			return UseEdgeResult.NoSuchEdge;
 
 		var (a, b) = Segment( edgeIndex );
 
-		var start = SketchSnapper.PointIndex( sketch, a );
-		var end = SketchSnapper.PointIndex( sketch, b );
-
 		// A zero-length line is not geometry - ProfileFinder links it into the adjacency map twice
-		// at one point and calls the sketch branching. The line tool has the same guard.
-		if ( start == end )
-			return null;
+		// at one point and calls the sketch branching. The line tool has the same guard. Tested on
+		// the positions with PointIndex's own tolerance, since that is what would weld the two ends.
+		if ( (a - b).LengthSquared < 1e-8f )
+			return UseEdgeResult.TooShort;
+
+		var existingStart = Find( sketch, a );
+		var existingEnd = Find( sketch, b );
 
 		// USING THE SAME EDGE TWICE MUST NOT LAY A SECOND LINE ON THE FIRST. Two curves between the
 		// same pair of points is exactly the branching case ProfileFinder refuses, so clicking an
 		// edge you already used would quietly destroy the profile you were building.
-		foreach ( var curve in sketch.Curves )
+		if ( existingStart >= 0 && existingEnd >= 0 )
 		{
-			var (from, to) = curve.Endpoints;
+			foreach ( var curve in sketch.Curves )
+			{
+				var (from, to) = curve.Endpoints;
 
-			if ( (from == start && to == end) || (from == end && to == start) )
-				return null;
+				if ( (from == existingStart && to == existingEnd) || (from == existingEnd && to == existingStart) )
+					return UseEdgeResult.AlreadyInSketch;
+			}
 		}
 
-		return sketch.Add( new SketchLine( start, end ) );
+		var start = SketchSnapper.PointIndex( sketch, a );
+		var end = SketchSnapper.PointIndex( sketch, b );
+
+		line = sketch.Add( new SketchLine( start, end ) { Construction = construction } );
+		return UseEdgeResult.Added;
+	}
+
+	/// <summary>The index PointIndex would reuse for this position, or -1 when it would add one.</summary>
+	static int Find( Sketch sketch, Vec2 p )
+	{
+		for ( var i = 0; i < sketch.Points.Count; i++ )
+		{
+			if ( (sketch.Points[i] - p).LengthSquared < 1e-8f )
+				return i;
+		}
+
+		return -1;
 	}
 
 	/// <summary>Copy every reference edge in, which is the common case: the whole face outline, so a
 	/// single line drawn across it closes two regions. Returns how many were added — edges already
 	/// in the sketch are skipped, so running it twice is harmless.</summary>
-	public int UseAll( Sketch sketch )
+	public int UseAll( Sketch sketch ) => UseAll( sketch, construction: false, out _ );
+
+	/// <summary>As <see cref="UseAll(Sketch)"/>, as construction geometry when asked, and counting the
+	/// edges too short to be lines so the caller can say why fewer came in than it can see.</summary>
+	public int UseAll( Sketch sketch, bool construction, out int tooShort )
 	{
 		var added = 0;
+		tooShort = 0;
 
 		for ( var i = 0; i < Edges.Count; i++ )
 		{
-			if ( UseEdge( sketch, i ) is not null )
-				added++;
+			switch ( UseEdge( sketch, i, construction, out _ ) )
+			{
+				case UseEdgeResult.Added: added++; break;
+				case UseEdgeResult.TooShort: tooShort++; break;
+			}
 		}
 
 		return added;
@@ -181,4 +225,19 @@ public sealed class SketchReference
 
 		return result.Points.Count - 1;
 	}
+}
+
+/// <summary>What <see cref="SketchReference.UseEdge(Sketch, int, bool, out SketchLine)"/> did.</summary>
+public enum UseEdgeResult
+{
+	Added,
+
+	/// <summary>The edge's two ends are one point at sketch precision - there is no line to make.</summary>
+	TooShort,
+
+	/// <summary>A curve already runs between those two points.</summary>
+	AlreadyInSketch,
+
+	/// <summary>Not one of this reference's edges - a rebuild changed the face under it.</summary>
+	NoSuchEdge,
 }

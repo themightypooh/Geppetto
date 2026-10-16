@@ -21,6 +21,13 @@ namespace Marionette.EditorTools;
 /// </summary>
 internal sealed partial class EffigyViewport
 {
+	/// <summary>The sculpt changed outside a stroke (a filter ran): redraw it from the session.</summary>
+	public void MarkSculptChanged()
+	{
+		_sculptPreviewStale = true;
+		Update();
+	}
+
 	/// <summary>The live sculpt, or null when not in sculpt mode.</summary>
 	public SculptSession SculptSession { get; private set; }
 
@@ -84,6 +91,7 @@ internal sealed partial class EffigyViewport
 		SculptSession = null;
 		_sculptCursor = null;
 		_sculptPreview = null;
+		_sculptStrokeArmed = false;
 	}
 
 	/// <summary>Push the sculpted surface into the viewport, replacing the model in place.</summary>
@@ -145,15 +153,24 @@ internal sealed partial class EffigyViewport
 			if ( _sculptCursor is not null )
 				_sculptCursorLast = _sculptCursor;
 
+			// A press arms the stroke; it BEGINS on the first frame the held button is over the
+			// surface. Pressing just off the silhouette and dragging on is how half of all strokes
+			// start, and one that only ever began on the press frame never painted at all.
 			if ( !stroking && Gizmo.WasLeftMousePressed )
 			{
-				// Invert is read ONCE, when the stroke starts. Reading the modifier every frame
-				// would reverse the brush halfway through a gesture the moment Ctrl is released.
-				SculptSession.Inverted = Editor.Application.IsKeyDown( KeyCode.Control );
+				_sculptStrokeArmed = true;
 
+				// Invert is read ONCE, at the press. Reading the modifier every frame would reverse
+				// the brush halfway through a gesture the moment Ctrl is released.
+				SculptSession.Inverted = Editor.Application.IsKeyDown( KeyCode.Control );
+			}
+
+			if ( !stroking && _sculptStrokeArmed && Gizmo.IsLeftMouseDown )
+			{
 				if ( SculptSession.BeginStroke( origin, direction ) )
 				{
 					stroking = true;
+					_sculptStrokeArmed = false;
 					_sculptPreviewStale = true;
 				}
 			}
@@ -169,9 +186,20 @@ internal sealed partial class EffigyViewport
 		// needs no API that might not be there.
 		if ( stroking && !Gizmo.IsLeftMouseDown )
 		{
-			SculptSession.EndStroke();
+			// Null is a stroke that touched the model and moved nothing. Said, once, on release —
+			// otherwise the brush just looks broken.
+			if ( SculptSession.EndStroke() is null && SculptNothingMovedReason() is { } why )
+				Refuse( why );
+
 			_sculptPreviewStale = true;
 			SculptStrokeFinished?.Invoke();
+		}
+
+		// Released without ever reaching the model: the whole drag was over empty space.
+		if ( _sculptStrokeArmed && !Gizmo.IsLeftMouseDown )
+		{
+			_sculptStrokeArmed = false;
+			Refuse( "Missed the model — start or drag the stroke onto the part." );
 		}
 
 		if ( _sculptPreviewStale )
@@ -181,6 +209,41 @@ internal sealed partial class EffigyViewport
 		}
 
 		DrawBrushCursor();
+	}
+
+	/// <summary>The button went down in sculpt mode and no stroke has begun yet — the cursor has not
+	/// reached the surface. Cleared when the stroke begins or the button comes up.</summary>
+	private bool _sculptStrokeArmed;
+
+	/// <summary>
+	/// Why a stroke that landed on the model left it exactly as it was. Read off the session's
+	/// own settings, in the order most likely to be the answer.
+	/// </summary>
+	private string SculptNothingMovedReason()
+	{
+		var s = SculptSession;
+
+		if ( s is null )
+			return null;
+
+		if ( s.Masking )
+			return s.Erasing
+				? "Nothing to unmask there — that area isn't masked."
+				: "Nothing changed — that area is already fully masked.";
+
+		// See SculptSession.Inverted: these three clamp a negative strength to nothing.
+		if ( s.Inverted && s.Brush is BrushKind.Smooth or BrushKind.Flatten or BrushKind.Pinch or BrushKind.Relax )
+			return $"Can't invert {s.Brush}: it has no reverse. Let go of Ctrl.";
+
+		if ( s.ActiveMask is not null )
+			return "Nothing moved: the area under the stroke is masked. Unmask it (Masking, Erase) or clear the mask.";
+
+		if ( s.Strength <= 0f )
+			return "Nothing moved: Strength is 0. Raise it in the sculpt bar.";
+
+		return s.Brush is BrushKind.Smooth or BrushKind.Flatten or BrushKind.Pinch or BrushKind.Relax or BrushKind.Fill or BrushKind.Scrape
+			? $"Nothing moved: {s.Brush} had nothing to change there — the patch is already that shape."
+			: "Nothing moved: the stroke was too faint. Raise Strength in the sculpt bar.";
 	}
 
 	/// <summary>
@@ -487,6 +550,11 @@ internal sealed partial class EffigyViewport
 			return;
 		}
 
+		// An operation is open and its number is live: a click on the model would change the
+		// selection under it, so the click is not taken — and says so.
+		if ( _canvasHasCursor && session.IsPreviewing && Gizmo.WasLeftMousePressed && !Gizmo.HasHovered )
+			RefuseOncePerPress( "mesh-edit-open-op", "Can't select while an operation is open. Press Enter to keep it or Escape to cancel, then click." );
+
 		if ( _canvasHasCursor && !_meshEditDragging && !session.IsPreviewing )
 		{
 			var ray = Gizmo.CurrentRay;
@@ -523,6 +591,10 @@ internal sealed partial class EffigyViewport
 							_retopoStroke = new List<Vec3> { place.Point };
 						else
 							MeshPolyBuild?.Invoke( place.Point, shift, PolyBuildWeld( place.Point ) );
+					}
+					else
+					{
+						RefuseOncePerPress( "retopo-miss", "Ctrl+click missed the surface — Poly Build places points on the model. Click on it." );
 					}
 				}
 				else if ( _meshEditHover is { } h )
@@ -685,6 +757,9 @@ internal sealed partial class EffigyViewport
 
 					var f = scale.Clamp( 0.01f, 100f );
 
+					if ( f != scale )
+						RefuseOncePerPress( "mesh-scale-limit", "Scale stops at 0.01× and 100× in one drag. Let go and drag again to go further." );
+
 					// Ctrl snaps the factor to tenths.
 					if ( Editor.Application.IsKeyDown( KeyCode.Control ) )
 						f = MathF.Max( 0.1f, MathF.Round( f * 10f ) / 10f );
@@ -713,6 +788,8 @@ internal sealed partial class EffigyViewport
 						{
 							if ( NearestSnapVertex( session, ToVec( _meshEditDragAnchor + moved ) ) is { } target )
 								moved = ToVector( target ) - _meshEditDragAnchor;
+							else
+								RefuseOncePerPress( "mesh-snap-none", "Nothing to snap to: Ctrl+Shift snaps to a vertex within a twentieth of the model. Drag closer to one." );
 						}
 						else
 						{
@@ -823,6 +900,8 @@ internal sealed partial class EffigyViewport
 		_meshLoopCutPreview = null;
 		_meshLoopCutEdge = null;
 
+		var overModel = false;
+
 		if ( _canvasHasCursor )
 		{
 			var ray = Gizmo.CurrentRay;
@@ -832,6 +911,8 @@ internal sealed partial class EffigyViewport
 			if ( MeshEditRaycast( session, origin, direction ) is { } hit
 				&& hit.FaceIndex >= 0 && hit.FaceIndex < session.Mesh.FaceCount )
 			{
+				overModel = true;
+
 				// The cut runs ACROSS the edge nearest the cursor, so the loop follows the face's
 				// other axis - which is exactly the loop that appears under the mouse in Blender.
 				var edge = NearestEdgeOnFace( session.Mesh, hit.FaceIndex, hit.Point );
@@ -847,10 +928,19 @@ internal sealed partial class EffigyViewport
 
 		DrawLoopCutPreview();
 
-		if ( Gizmo.WasLeftMousePressed && !Gizmo.HasHovered && _meshLoopCutEdge is { } chosen )
+		if ( Gizmo.WasLeftMousePressed && !Gizmo.HasHovered && _canvasHasCursor )
 		{
-			MeshLoopCutArmed = false;
-			MeshLoopCutPlaced?.Invoke( chosen );
+			if ( _meshLoopCutEdge is { } chosen )
+			{
+				MeshLoopCutArmed = false;
+				MeshLoopCutPlaced?.Invoke( chosen );
+			}
+			else
+			{
+				RefuseOncePerPress( "loop-cut-none", overModel
+					? "No loop to cut there: the faces across that edge don't make a ring (a triangle or a pole stops it). Try another edge."
+					: "Loop cut missed the model — click on a face, near the edge to cut across." );
+			}
 		}
 	}
 
@@ -910,6 +1000,9 @@ internal sealed partial class EffigyViewport
 
 			if ( MeshEditRaycast( session, origin, direction ) is { } hit )
 				cursor = hit.Point;
+
+			if ( Gizmo.WasLeftMousePressed && cursor is null && !Gizmo.HasHovered )
+				RefuseOncePerPress( "knife-miss", "Knife missed the model — each point has to land on a face." );
 
 			if ( Gizmo.WasLeftMousePressed && cursor is { } p )
 			{

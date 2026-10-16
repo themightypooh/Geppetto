@@ -27,13 +27,14 @@ namespace Effigy;
 /// WHAT COMES OUT IS TRIANGLES. Even where quads went in. That is a real loss — see PolyMesh's note
 /// on why every primitive here is quad-dominant, and the rig's on quads deforming where triangles
 /// pinch — and it is why this is not a general "make it simpler" button to reach for on a CAD part.
-/// Quad retopology is a different and much larger problem, and the honest thing is to say so rather
-/// than to ship a triangle soup that claims to be a cage. Use this on the dense import it was
-/// written for; build the cage the CAD way.
+/// Quad retopology is a different and much larger problem, and it lives in its own file:
+/// <see cref="QuadRemesh"/>, which Remesh runs in its Quad mode. This one stays the triangle
+/// reducer — use it on the dense import it was written for, or for a collision hull or a distant
+/// LOD, where triangles are what you want.
 ///
 /// THINGS IT REFUSES TO DO, each of which is a way a naive collapse loop wrecks a mesh:
 ///
-/// - <b>Punch through the surface.</b> The link condition (see <see cref="LinkConditionHolds"/>)
+/// - <b>Punch through the surface.</b> The link condition (see <c>LinkConditionHolds</c>)
 ///   rejects a collapse that would weld two parts of the mesh that were only near each other, which
 ///   is what turns a manifold into a non-manifold and what makes the result unexportable.
 /// - <b>Turn a triangle inside out.</b> Moving a vertex can flip a neighbour it was not part of the

@@ -840,7 +840,7 @@ internal sealed class EffigyTutorial
 	///
 	/// "THE BUILT-IN CHARACTER" RATHER THAN "CITIZEN", in every line the reader sees. Citizen is
 	/// what the model is called in the engine and in every comment in this codebase, and it means
-	/// nothing at all to somebody who has used s&box for a week.
+	/// nothing at all to somebody who has used s&amp;box for a week.
 	/// </summary>
 	static List<Step> PlayermodelSteps() => new()
 		{

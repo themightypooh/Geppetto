@@ -153,6 +153,13 @@ internal sealed partial class EffigyViewport
 				points.Add( at );
 				SplineEdited?.Invoke();
 			}
+			else
+			{
+				// Nowhere for the point to go: no model under the cursor, no point yet to set a depth
+				// from, and the ground plane is behind the camera or edge-on. The click used to
+				// vanish, which looks like the tool ignoring it.
+				Refuse( "There's nothing there to put the first point on. Click the model, or below the horizon so it lands on the ground." );
+			}
 		}
 
 		// --- drawing ---

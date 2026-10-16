@@ -44,6 +44,25 @@ public readonly struct Quat
 	public static Quat FromAxisAngle( Vec3 axis, float radians ) =>
 		From( System.Numerics.Quaternion.CreateFromAxisAngle( new System.Numerics.Vector3( axis.x, axis.y, axis.z ), radians ) );
 
+	/// <summary>
+	/// s&amp;box's Rotation.From( Angles ), in degrees: roll about x, then pitch about y, then yaw
+	/// about z - the closed form the engine itself uses, so a placement read from a .riganim turns
+	/// exactly as the editor drew it.
+	/// </summary>
+	public static Quat FromAngles( float pitch, float yaw, float roll )
+	{
+		const float half = MathF.PI / 360f;
+		var (sp, cp) = MathF.SinCos( pitch * half );
+		var (sy, cy) = MathF.SinCos( yaw * half );
+		var (sr, cr) = MathF.SinCos( roll * half );
+
+		return new Quat(
+			sr * cp * cy - cr * sp * sy,
+			cr * sp * cy + sr * cp * sy,
+			cr * cp * sy - sr * sp * cy,
+			cr * cp * cy + sr * sp * sy );
+	}
+
 	public static Quat Slerp( Quat a, Quat b, float t ) =>
 		From( System.Numerics.Quaternion.Slerp( ToNumerics( a ), ToNumerics( b ), t ) );
 

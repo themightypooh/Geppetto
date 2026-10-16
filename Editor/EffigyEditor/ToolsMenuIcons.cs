@@ -42,7 +42,10 @@ internal static class ToolsMenuIcons
 	};
 
 	/// <summary>Frames spent with something still unstamped, used to complain exactly once instead
-	/// of never (the old silence) or every frame. At editor framerate this is a few seconds.</summary>
+	/// of never (the old silence) or every frame. At editor framerate this is a few seconds. It is
+	/// also where the retry stops: an entry that has failed this long is not going to start
+	/// working on frame 601, and before this cap a host project paid a menu lookup and two disk
+	/// probes per frame for the whole session. A hotload or refresh re-arms it.</summary>
 	static int _attempts;
 
 	const int ComplainAfter = 600;
@@ -70,6 +73,9 @@ internal static class ToolsMenuIcons
 	[EditorEvent.Frame]
 	static void OnFrame()
 	{
+		if ( _attempts >= ComplainAfter )
+			return;
+
 		var pending = false;
 
 		foreach ( var entry in Entries )

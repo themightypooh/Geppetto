@@ -295,11 +295,19 @@ internal sealed class EffigySettingsWindow : Window
 		/// and seams are visible on the surface. A diagnostic, not how the part looks.</summary>
 		public bool ShowUVChecker;
 
-		/// <summary>Normal-map bake: DirectX green (-Y) rather than OpenGL (+Y), the row order, and
-		/// the square size in texels. Read by the Bake button, not by the viewport.</summary>
+		/// <summary>Normal-map bake: DirectX green (-Y) rather than OpenGL (+Y, what s&amp;box reads), the
+		/// row order, and the square size in texels. Read by the Bake button, not by the viewport.</summary>
 		public bool BakeDirectXGreen;
 		public bool BakeFlipV;
 		public int BakeSize;
+
+		/// <summary>Which maps the Bake button writes, as <see cref="Effigy.BakeMaps"/> flags. The
+		/// normal map is always one of them.</summary>
+		public int BakeMaps;
+
+		/// <summary>Index into <see cref="Effigy.BakeMaterial.MaterialChoices"/>: the .vmat written
+		/// beside the maps, if any.</summary>
+		public int BakeMaterial;
 	}
 
 	/// <summary>The sizes the bake dropdown offers. A square map, so one number.</summary>
@@ -542,12 +550,12 @@ internal sealed class EffigySettingsWindow : Window
 
 		// --- normal map bake ----------------------------------------------------------------
 
-		var bake = Section( body, "Normal map bake", "Effigy.Settings.Bake" );
+		var bake = Section( body, "Bake", "Effigy.Settings.Bake" );
 
 		AddSwitch( bake, "DirectX green channel",
-			"Which way the green channel points. On is DirectX-style (-Y), off is OpenGL-style "
-			+ "(+Y). If a baked map looks inverted where a surface curves, this is the switch. Only "
-			+ "the Bake button in a Sculpt feature reads it.",
+			"Which way the green channel points. Off is OpenGL-style (+Y up the image), which is what "
+			+ "s&box reads - leave it off for s&box. On is DirectX-style, for other engines. Only the "
+			+ "Bake button in a Sculpt feature reads it.",
 			_values.BakeDirectXGreen,
 			value => { _values.BakeDirectXGreen = value; Changed(); } );
 
@@ -578,6 +586,42 @@ internal sealed class EffigySettingsWindow : Window
 		}
 
 		bakeSizeRow.Add( bakeSize );
+
+		// Which maps besides the normal one. Each is a per-texel bake off the sculpt (NormalBake.BakeAll),
+		// written beside the normal map as <name>_<map>.png.
+		void MapSwitch( string label, Effigy.BakeMaps map, string tip ) =>
+			AddSwitch( bake, label, tip, (_values.BakeMaps & (int)map) != 0,
+				value => { _values.BakeMaps = value ? _values.BakeMaps | (int)map : _values.BakeMaps & ~(int)map; Changed(); } );
+
+		MapSwitch( "Ambient occlusion", Effigy.BakeMaps.AmbientOcclusion, "Bake AO too: white is open, black is shut in. Bound by the vmat." );
+		MapSwitch( "Curvature", Effigy.BakeMaps.Curvature, "Bake curvature too: mid grey flat, bright convex, dark concave. A mask for wear and dirt." );
+		MapSwitch( "Cavity", Effigy.BakeMaps.Cavity, "Bake cavity too: dark where a texel sits below its neighbours. A mask for grime in pores and creases." );
+		MapSwitch( "Height", Effigy.BakeMaps.Height, "Bake height too: mid grey is the cage, the range is in the prompt." );
+		MapSwitch( "Thickness and transmission", Effigy.BakeMaps.Thickness,
+			"Bake thickness too, and from it a transmission mask (light through thin parts) for the skin shader." );
+
+		var materialRow = bake.Layout.AddRow();
+
+		materialRow.Add( new Editor.Label( "Material" ) );
+		materialRow.AddStretchCell();
+
+		var material = new ComboBox( bake )
+		{
+			MinimumWidth = 150,
+			ToolTip = "Also write a .vmat binding the maps. Skin is s&box's skin shader (subsurface scattering and "
+				+ "transmission) with Facepunch's human values; Complex is the general shader.",
+		};
+
+		for ( var i = 0; i < Effigy.BakeMaterial.MaterialChoices.Length; i++ )
+		{
+			var index = i;
+
+			material.AddItem( Effigy.BakeMaterial.MaterialChoices[index],
+				onSelected: () => { _values.BakeMaterial = index; Changed(); },
+				selected: index == _values.BakeMaterial );
+		}
+
+		materialRow.Add( material );
 
 		// --- hotkeys -------------------------------------------------------------------------
 

@@ -59,7 +59,7 @@ internal sealed partial class EffigyViewport
 	/// <summary>Whether a left click on a face is a selection rather than an answer to a dialog.
 	/// Anything else with a click of its own owns the mouse while it is armed.</summary>
 	private bool IdlePickingAllowed =>
-		!IsSketching && !IsSplineEditing && !IsSculpting && !IsMeshEditing && !IsPainting && !IsMaterialBrushing && !IsNoting && !IsWeightPainting
+		!IsSketching && !IsSplineEditing && !IsSculpting && !IsMeshEditing && !IsPainting && !IsMaterialBrushing && !IsNoting && !IsWeightPainting && !Measuring
 		&& !PlanePickMode && !SketchPickMode && !FacePickMode && !EdgePickMode && !BodyPickMode
 		&& !BoneToolActive
 		&& !_draggingOrigin && !_draggingLight && !_draggingFace;
@@ -281,6 +281,18 @@ internal sealed partial class EffigyViewport
 				if ( OriginSelected )
 					DeselectOrigin();
 
+				if ( WantsFacingPair() )
+				{
+					if ( SelectFacingPair( hit ) )
+						return;
+
+					// Alt asked for two faces and gets one. Still selected — it is a perfectly good
+					// pick — but said, or the missing second face reads as the gesture not working.
+					SelectIdleFace( hit, add: false );
+					Refuse( "Nothing faces this one across the part, so just this face is selected. Alt+click a wall with a parallel face behind it to get the pair." );
+					return;
+				}
+
 				SelectIdleFace( hit, Gizmo.IsShiftPressed );
 			}
 
@@ -442,6 +454,29 @@ internal sealed partial class EffigyViewport
 		IdleSelectionChanged?.Invoke();
 	}
 
+	/// <summary>Alt-click: this face and the one across the material. Shift stays "add this one".</summary>
+	private static bool WantsFacingPair() =>
+		Editor.Application.KeyboardModifiers.HasFlag( KeyboardModifiers.Alt );
+
+	/// <summary>Replace the selection with a face and the face across the wall from it. False when
+	/// there is no face across, and the caller then selects the one face as usual.</summary>
+	public bool SelectFacingPair( EffigyFaceHit hit )
+	{
+		if ( hit.Body?.Mesh is not { } mesh
+			|| !MeshRaycast.TryOpposite( mesh, hit.FaceIndex, out var other, out var point ) )
+			return false;
+
+		_idleFaces.Clear();
+		_idleEdges.Clear();
+		_idleBodyIds.Clear();
+		ClearIdleSketch();
+		_idleFaces.Add( hit.Reference );
+		_idleFaces.Add( FacePlane.Capture( hit.Body, other, point ) );
+		_idleBodyIds.Add( hit.Body.Id );
+		IdleSelectionChanged?.Invoke();
+		return true;
+	}
+
 	/// <summary>Click a face: replace the selection, or Shift-click to toggle it in.</summary>
 	private void SelectIdleFace( EffigyFaceHit hit, bool add )
 	{
@@ -459,6 +494,11 @@ internal sealed partial class EffigyViewport
 				IdleSelectionChanged?.Invoke();
 				return;
 			}
+
+			// A selection is one kind of thing — every command that reads it takes faces OR edges —
+			// so adding a face lets the edges go. Said, because Shift is supposed to ADD.
+			if ( _idleEdges.Count > 0 )
+				Refuse( $"Faces and edges can't share a selection, so the {Plural( _idleEdges.Count, "selected edge" )} {(_idleEdges.Count == 1 ? "was" : "were")} dropped. Shift-click more faces to keep adding." );
 
 			_idleEdges.Clear();
 			ClearIdleSketch();
@@ -495,6 +535,10 @@ internal sealed partial class EffigyViewport
 				return;
 			}
 
+			// The other way round from SelectIdleFace, for the same reason.
+			if ( _idleFaces.Count > 0 )
+				Refuse( $"Faces and edges can't share a selection, so the {Plural( _idleFaces.Count, "selected face" )} {(_idleFaces.Count == 1 ? "was" : "were")} dropped. Shift-click more edges to keep adding." );
+
 			_idleFaces.Clear();
 			ClearIdleSketch();
 			_idleEdges.Add( edge );
@@ -514,6 +558,9 @@ internal sealed partial class EffigyViewport
 
 		IdleSelectionChanged?.Invoke();
 	}
+
+	/// <summary>"1 selected edge", "3 selected edges".</summary>
+	private static string Plural( int count, string noun ) => count == 1 ? $"{count} {noun}" : $"{count} {noun}s";
 
 	private bool TryIdleEdge( EffigyFaceHit hit, out EdgeRef edge, out EdgeKey key )
 	{

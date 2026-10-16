@@ -169,6 +169,33 @@ public static class ClothExport
 		} ) ) );
 		sb.Append( "],\n" );
 
+		// WHERE THE CLOTH SAT, for each capsule it sat close to: its distance from the capsule's
+		// core when it was fitted. A capsule is a rough stand-in for an arm or a chest - fatter
+		// than the body in places, thinner in others - and a close-fitting top lies inside the fat
+		// parts. Pushed out to the capsule's surface on the first frame, it blew apart. With this,
+		// the component holds the cloth no closer than it was fitted and no further in, and the
+		// capsule still catches it when the body moves into it. Only the close pairs are written:
+		// a particle and the capsule core, nearer than the radius plus an inch (the component's
+		// Skin is well under that).
+		var inside = new List<string>();
+
+		for ( var c = 0; c < usable.Count; c++ )
+			for ( var v = 0; v < garment.VertexCount; v++ )
+			{
+				var p = garment.Positions[v];
+				var gap = (usable[c].Closest( p ) - p).Length;
+
+				if ( gap < usable[c].Radius + 1f )
+					inside.Add( $"{v},{c},{F( gap )}" );
+			}
+
+		if ( inside.Count > 0 )
+		{
+			sb.Append( "  \"Fitted\": [" );
+			sb.Append( string.Join( ",", inside ) );
+			sb.Append( "],\n" );
+		}
+
 		sb.Append( "  \"Capsules\": [" );
 		sb.Append( string.Join( ",", usable.Select( c =>
 			$"{{\"Bone\":\"{Escape( Name( c.Bone ) )}\",\"A\":[{F( c.A.x )},{F( c.A.y )},{F( c.A.z )}],"

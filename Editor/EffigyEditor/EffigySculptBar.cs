@@ -21,10 +21,17 @@ internal sealed class EffigySculptBar : Widget
 {
 	public const float BarHeight = 28f;
 
+	public const float MinStrength = 0.001f;
+	public const float MaxStrength = 1f;
+
 	private readonly EffigyNumericField _radius;
 	private readonly EffigyNumericField _strength;
 	private readonly ComboBox _falloff;
 	private readonly Editor.Label _level;
+	private readonly Button _auto;
+	private readonly Button _filter;
+	private readonly Button _alpha;
+	private string _alphaName;
 
 	private SculptSession _session;
 
@@ -46,7 +53,7 @@ internal sealed class EffigySculptBar : Widget
 		FixedHeight = BarHeight;
 		// Wide enough for the Falloff dropdown that joined the two stroke controls; the row does not
 		// wrap, so a short bar clips the last thing on it rather than pushing it onto a second line.
-		FixedWidth = 640f;
+		FixedWidth = 860f;
 
 		Layout = Layout.Row();
 		Layout.Spacing = 8;
@@ -56,6 +63,7 @@ internal sealed class EffigySculptBar : Widget
 
 		_radius = new EffigyNumericField( this, 0.25f, "u" )
 		{
+			Label = "Brush radius",
 			Min = 1e-4f,
 			ValueEdited = OnRadiusEdited,
 			FixedWidth = 90f,
@@ -65,8 +73,16 @@ internal sealed class EffigySculptBar : Widget
 
 		Layout.Add( new Editor.Label( "Strength" ) { Color = Theme.TextControl.WithAlpha( 0.6f ) } );
 
+		// 0 to 1, because that is what the kernel reads it as: a per-dab weight that is multiplied by
+		// the falloff and the mask. Smooth, Flatten and Pinch clamp that weight to [0, 1] anyway, so
+		// past 1 they stop changing and Draw, Inflate and Grab just blow the surface apart; at or
+		// below 0 nothing moves at all, and a negative is what Ctrl is for. The floor is a whisker
+		// above zero rather than zero, so a box can never be set to a strength that sculpts nothing.
 		_strength = new EffigyNumericField( this, 0.05f )
 		{
+			Label = "Sculpt strength",
+			Min = MinStrength,
+			Max = MaxStrength,
 			ValueEdited = OnStrengthEdited,
 			FixedWidth = 90f,
 		};
@@ -84,6 +100,14 @@ internal sealed class EffigySculptBar : Widget
 		};
 
 		Layout.Add( _falloff );
+
+		// Auto-masking, whole-level filters and brush alphas: each a menu, so the row stays one row.
+		_auto = new Button( "Auto" ) { ToolTip = "Auto-masking: limit strokes to the piece they start on, hold open edges, or work only the crevices (or only the ridges)", Clicked = OpenAutoMenu };
+		Layout.Add( _auto );
+		_filter = new Button( "Filter" ) { ToolTip = "Run a filter over the whole level at the current Strength (the mask still holds)", Clicked = OpenFilterMenu };
+		Layout.Add( _filter );
+		_alpha = new Button( "Alpha" ) { ToolTip = "A greyscale image over the brush that scales its strength: stamp pores, scales, wrinkles", Clicked = OpenAlphaMenu };
+		Layout.Add( _alpha );
 
 		_level = new Editor.Label( "" ) { Color = Theme.TextControl.WithAlpha( 0.75f ) };
 		Layout.Add( _level, 1 );
@@ -137,6 +161,12 @@ internal sealed class EffigySculptBar : Widget
 		if ( _session.Mirror != MirrorAxis.None )
 			text += " · mirrored";
 
+		if ( _session.AutoTopology || _session.AutoBoundary || _session.AutoCavity )
+			text += " · auto-mask";
+
+		if ( _alphaName is not null )
+			text += $" · alpha {_alphaName}";
+
 		if ( _session.Masking )
 			text += _session.Erasing ? " · unmasking" : " · masking";
 		else if ( _session.ActiveMask is not null )
@@ -186,6 +216,101 @@ internal sealed class EffigySculptBar : Widget
 		Changed?.Invoke();
 	}
 
+	private void OpenAutoMenu()
+	{
+		if ( _session is null )
+			return;
+
+		var menu = new Menu( this );
+		menu.AddHeading( "Auto-masking" );
+
+		void Toggle( string label, string tip, Func<bool> get, Action<bool> set )
+		{
+			var option = menu.AddOption( label, null, () => { set( !get() ); Refresh(); Changed?.Invoke(); } );
+			option.StatusTip = tip;
+			option.Checkable = true;
+			option.Checked = get();
+		}
+
+		Toggle( "Topology", "Only the piece the stroke starts on moves", () => _session.AutoTopology, v => _session.AutoTopology = v );
+		Toggle( "Open edges", "Hold the mesh's open edges still", () => _session.AutoBoundary, v => _session.AutoBoundary = v );
+		Toggle( "Cavity", "Work only the crevices", () => _session.AutoCavity && !_session.AutoCavityInverted, v => { _session.AutoCavity = v; _session.AutoCavityInverted = false; } );
+		Toggle( "Cavity, inverted", "Work only the ridges", () => _session.AutoCavity && _session.AutoCavityInverted, v => { _session.AutoCavity = v; _session.AutoCavityInverted = v; } );
+		menu.OpenAtCursor();
+	}
+
+	private void OpenFilterMenu()
+	{
+		if ( _session is null )
+			return;
+
+		var menu = new Menu( this );
+		menu.AddHeading( $"Filter the whole level (Strength {_session.Strength:0.###})" );
+
+		foreach ( var kind in Enum.GetValues<MeshFilterKind>() )
+		{
+			var k = kind;
+			menu.AddOption( k.ToString(), null, () =>
+			{
+				// Inflate and Scale read Strength as distance and share; the others as how far toward
+				// their target per pass.
+				if ( _session.ApplyFilter( k, _session.Strength ) is not null )
+					FilterApplied?.Invoke();
+			} );
+		}
+
+		menu.OpenAtCursor();
+	}
+
+	private void OpenAlphaMenu()
+	{
+		if ( _session is null )
+			return;
+
+		var menu = new Menu( this );
+		menu.AddHeading( _alphaName is null ? "No alpha" : $"Alpha: {_alphaName}" );
+		menu.AddOption( "Load image...", "image", LoadAlpha );
+
+		if ( _session.Alpha is not null )
+			menu.AddOption( "None", "close", () => { _session.Alpha = null; _alphaName = null; Refresh(); Changed?.Invoke(); } );
+
+		menu.OpenAtCursor();
+	}
+
+	private void LoadAlpha()
+	{
+		var fd = new FileDialog( null )
+		{
+			Title = "Brush alpha...",
+			DefaultSuffix = ".png",
+			Directory = Project.Current?.GetAssetsPath() ?? "",
+		};
+
+		fd.SetFindFile();
+		fd.SetNameFilter( "PNG image (*.png)" );
+
+		if ( !fd.Execute() || string.IsNullOrWhiteSpace( fd.SelectedFile ) )
+			return;
+
+		try
+		{
+			_session.Alpha = BrushAlpha.FromPng( System.IO.File.ReadAllBytes( fd.SelectedFile ) );
+			_alphaName = System.IO.Path.GetFileName( fd.SelectedFile );
+		}
+		catch ( Exception e )
+		{
+			// Say why rather than doing nothing: a paletted or 16-bit PNG is the usual reason.
+			Log.Warning( $"Couldn't use {fd.SelectedFile} as a brush alpha: {e.Message}" );
+			return;
+		}
+
+		Refresh();
+		Changed?.Invoke();
+	}
+
+	/// <summary>Raised after a filter changed the level, for the window to mark the sculpt dirty and redraw.</summary>
+	public Action FilterApplied { get; set; }
+
 	private void OnRadiusEdited( float value )
 	{
 		if ( _session is null )
@@ -202,7 +327,7 @@ internal sealed class EffigySculptBar : Widget
 		if ( _session is null )
 			return;
 
-		_session.Strength = value;
+		_session.Strength = Math.Clamp( value, MinStrength, MaxStrength );
 		Changed?.Invoke();
 	}
 }
@@ -254,6 +379,7 @@ internal sealed class EffigyMeshEditBar : Widget
 
 		_amount = new EffigyNumericField( this, 0.1f, "u" )
 		{
+			Label = "Amount",
 			ValueEdited = v => _amountChanged?.Invoke( v ),
 			FixedWidth = 90f,
 		};

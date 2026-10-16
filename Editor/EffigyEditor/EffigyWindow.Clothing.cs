@@ -1,4 +1,4 @@
-using Editor;
+﻿using Editor;
 using Effigy;
 using Sandbox;
 using System;
@@ -98,25 +98,29 @@ public sealed partial class EffigyWindow
 		if ( _studio is null )
 			return;
 
+		var liveFabrics = new HashSet<string>( StringComparer.OrdinalIgnoreCase );
+
 		foreach ( var fabric in _studio.Features.OfType<FabricFeature>() )
 		{
+			var tag = new string( fabric.Id.Select( c => char.IsLetterOrDigit( c ) ? c : '_' ).ToArray() );
+			var relVmat = $"models/effigy/fabric/fabric_{tag}.vmat";
+
 			if ( fabric.Suppressed || fabric.ResolvedSlots.Count == 0 || fabric.Error is not null )
 				continue;
+
+			liveFabrics.Add( relVmat );
 
 			try
 			{
 				var folder = EffigyAssetFolder.ResolveAssetFolder( "models/effigy/fabric" );
 				Directory.CreateDirectory( folder );
 
-				var tag = new string( fabric.Id.Select( c => char.IsLetterOrDigit( c ) ? c : '_' ).ToArray() );
 				var colour = FurMaterial.ParseHex( fabric.Colour.Value, new Vec3( 0.35f, 0.43f, 0.55f ) );
 				var accent = FurMaterial.ParseHex( fabric.Accent.Value, new Vec3( 0.91f, 0.89f, 0.83f ) );
 
 				var relColor = $"models/effigy/fabric/fabric_{tag}_color.png";
 				var relNormal = $"models/effigy/fabric/fabric_{tag}_normal.png";
 				var relRough = $"models/effigy/fabric/fabric_{tag}_rough.png";
-				var relVmat = $"models/effigy/fabric/fabric_{tag}.vmat";
-
 				// The maps are half a second of maths at 512; a recipe string over the settings says
 				// whether that has to be paid again, so a rebuild for an unrelated slider does not.
 				var recipe = $"{fabric.PresetName}|{fabric.Colour.Value}|{fabric.Accent.Value}|{fabric.Scale.Clamped:0.##}|{fabric.Wear.Clamped:0.###}";
@@ -153,8 +157,16 @@ public sealed partial class EffigyWindow
 					Log.Info( $"[Effigy] fabric material {relVmat} written ({fabric.PresetName})" );
 				}
 
+				var furSlots = _studio.Features.OfType<FurFeature>()
+					.Where( f => !f.Suppressed && f.ResolvedSlot >= 0 )
+					.Select( f => f.ResolvedSlot )
+					.ToHashSet();
+
 				foreach ( var slot in fabric.ResolvedSlots )
 				{
+					if ( furSlots.Contains( slot ) )
+						continue;
+
 					if ( !_studio.MaterialNames.TryGetValue( slot, out var bound ) || bound != relVmat )
 					{
 						_studio.MaterialNames[slot] = relVmat;
@@ -165,7 +177,19 @@ public sealed partial class EffigyWindow
 			catch ( Exception e )
 			{
 				Log.Warning( $"[Effigy] could not write the fabric material for {fabric.Name ?? fabric.Id}: {e.Message}" );
+				ReportFailure( $"Can't show {fabric.Name ?? "the fabric"}'s fabric material: its .vmat couldn't be written ({e.Message}). The slot keeps its old material." );
 			}
+		}
+
+		// A suppressed or deleted fabric must not leave its weave bound. The slot goes back to
+		// whatever the next sync (or the user) puts there.
+		foreach ( var kv in _studio.MaterialNames.ToList() )
+		{
+			var path = (kv.Value ?? "").Replace( '\\', '/' );
+
+			if ( path.StartsWith( "models/effigy/fabric/", StringComparison.OrdinalIgnoreCase )
+				&& !liveFabrics.Contains( path ) )
+				_studio.MaterialNames.Remove( kv.Key );
 		}
 	}
 
@@ -234,13 +258,13 @@ public sealed partial class EffigyWindow
 
 		if ( _studio.Rig.Count == 0 )
 		{
-			SetPrompt( "Nothing to pose - load a Wearer or rig the body first." );
+			Refuse( "Nothing to pose - load a Wearer or rig the body first." );
 			return;
 		}
 
 		if ( !_studio.Bodies.Any( b => b.IsGarment ) )
 		{
-			SetPrompt( "Nothing to test yet - add a Garment first." );
+			Refuse( "Nothing to test yet - add a Garment first." );
 			return;
 		}
 
@@ -255,6 +279,9 @@ public sealed partial class EffigyWindow
 
 		if ( turned == 0 )
 		{
+			// Apply moved nothing, but the previous pose is still on screen and _testBind is still
+			// held. Put the picture back with the rig, or the next export ships the old pose.
+			TestRelax( true );
 			SetPrompt( $"{pose.Name}: nothing moved - Effigy does not recognise the bones this pose bends "
 				+ "(it reads names like arm_upper_L, spine_1, leg_upper_R)." );
 			return;
@@ -272,7 +299,7 @@ public sealed partial class EffigyWindow
 			posed[i] = _studio.Rig.WorldBind( i );
 
 		var shown = new PolyMesh();
-		var garments = new List<(string Name, PolyMesh Mesh)>();
+		var garments = new List<(string Id, string Name, PolyMesh Mesh)>();
 		var worn = new List<PolyMesh>();
 
 		foreach ( var body in _studio.Bodies )
@@ -283,7 +310,7 @@ public sealed partial class EffigyWindow
 			var deformed = DeformForTest( body, bind, posed );
 
 			if ( body.IsGarment )
-				garments.Add( (body.Name, deformed) );
+				garments.Add( (body.FeatureId, body.Name, deformed) );
 			else
 				worn.Add( deformed );
 
@@ -297,7 +324,7 @@ public sealed partial class EffigyWindow
 		SetPrompt( clipping == 0
 			? $"{pose.Name}: nothing clips. Scrub the bar to see where it starts; try the others, then Relax."
 			: $"{pose.Name}: {clipping} {(clipping == 1 ? "vertex clips" : "vertices clip")} through the body, deepest "
-				+ $"{deepest:0.##} in - marked yellow to red. Push out on Check fixes it, or more Looseness there." );
+				+ $"{deepest:0.##} in - marked yellow to red. Push out on Check fixes it, or a looser Fit there." );
 	}
 
 	/// <summary>
@@ -306,19 +333,26 @@ public sealed partial class EffigyWindow
 	/// the per-garment detail goes to the console. Shared by Test and Check: the picture is the
 	/// same, only the pose differs.
 	/// </summary>
-	private (int Clipping, float Deepest) MarkClipping( List<(string Name, PolyMesh Mesh)> garments, List<PolyMesh> worn, string label )
+	private (int Clipping, float Deepest) MarkClipping( List<(string Id, string Name, PolyMesh Mesh)> garments, List<PolyMesh> worn, string label )
 	{
 		var marks = new List<(Vector3, float)>();
 		var clipping = 0;
 		var deepest = 0f;
 		var reports = new List<(string Name, GarmentReport Report)>();
 
-		foreach ( var (name, mesh) in garments )
+		var furSlots = FurSlots();
+
+		foreach ( var (id, name, mesh) in garments )
 		{
-			var report = GarmentCheck.Run( mesh, worn );
+			// The cloth, not its fur: shells are a shader effect that droops by design, and counting
+			// them sent Push out inflating a shirt to make room for its own collar fur.
+			var report = GarmentCheck.Run( WithoutFur( mesh, furSlots ), worn );
 			reports.Add( (name, report) );
 			clipping += report.Clipping;
 			deepest = Math.Max( deepest, report.DeepestClip );
+
+			if ( report.Clipping > 0 && !string.IsNullOrEmpty( id ) )
+				_poseClipDepth[id] = Math.Max( _poseClipDepth.GetValueOrDefault( id ), report.DeepestClip );
 		}
 
 		// Heat is depth against the worst in this check, so the picture always has a red end
@@ -479,8 +513,13 @@ public sealed partial class EffigyWindow
 		return stage;
 	}
 
-	/// <summary>What the last Check found clipping, per garment feature, for Push out.</summary>
+	/// <summary>What the last Check found clipping, per feature id, for Push out. Bind pose only.</summary>
 	private readonly Dictionary<string, float> _lastClipDepth = new();
+
+	/// <summary>The deepest clip any Test pose has found since the last Push out. Check does not
+	/// see a posed rig, and Push out has to, or a shoulder that only clips with the arms up never
+	/// gets the clearance.</summary>
+	private readonly Dictionary<string, float> _poseClipDepth = new();
 
 	/// <summary>
 	/// Push out: the one-click answer to a red mark.
@@ -495,18 +534,39 @@ public sealed partial class EffigyWindow
 		if ( _studio is null )
 			return;
 
-		if ( _lastClipDepth.Count == 0 )
+		var depths = new Dictionary<string, float>( _lastClipDepth );
+
+		foreach ( var kv in _poseClipDepth )
+			depths[kv.Key] = Math.Max( depths.GetValueOrDefault( kv.Key ), kv.Value );
+
+		if ( depths.Count == 0 )
 		{
-			SetPrompt( "Nothing to push out - run Check first, or the last Check found no clipping." );
+			Refuse( "Nothing to push out - run Check or Test first, or the last one found no clipping." );
 			return;
 		}
 
-		var targets = _lastClipDepth
-			.Select( kv => (Garment: _studio.Features.FirstOrDefault( f => f.Id == kv.Key ) as GarmentFeature, Depth: kv.Value) )
-			.Where( t => t.Garment is not null )
-			.ToList();
+		var targets = new List<(GarmentFeature Garment, float Depth)>();
+
+		foreach ( var kv in depths )
+		{
+			var feature = _studio.Features.FirstOrDefault( f => f.Id == kv.Key );
+
+			// A frill is its own body, so its clip is filed under the Trim, not the shirt. The
+			// lever that moves it is still the garment's clearance: the trim is rebuilt off the
+			// openings. Width would only hang it further into whatever it hit.
+			var garments = feature switch
+			{
+				GarmentFeature garment => new[] { garment },
+				TrimFeature trim => GarmentsUnder( trim ),
+				_ => Array.Empty<GarmentFeature>(),
+			};
+
+			foreach ( var garment in garments )
+				targets.Add( (garment, kv.Value) );
+		}
 
 		_lastClipDepth.Clear();
+		_poseClipDepth.Clear();
 
 		if ( targets.Count == 0 )
 		{
@@ -517,15 +577,45 @@ public sealed partial class EffigyWindow
 		// The snapshot goes on the stack BEFORE the change, the way every other edit here does.
 		RecordUndo();
 
-		foreach ( var (garment, depth) in targets )
+		var hitCap = false;
+
+		foreach ( var group in targets.GroupBy( t => t.Garment ) )
 		{
-			garment.Clearance.Value = MathF.Round( garment.Clearance.Clamped + depth + 0.05f, 2 );
+			var garment = group.Key;
+			var depth = group.Max( t => t.Depth );
+			var next = garment.Clearance.Clamped + depth + 0.05f;
+
+			if ( next > garment.Clearance.Max )
+				hitCap = true;
+
+			garment.Clearance.Value = MathF.Round( MathF.Min( next, garment.Clearance.Max ), 2 );
 			garment.Clearance.Expr = null;
 			_studio.MarkDirty( garment );
 		}
 
 		RebuildStudio();
 		CheckGarments();
+
+		if ( hitCap )
+			Refuse( $"Pushed out as far as Clearance goes ({targets[0].Garment.Clearance.Max:0.##} in). A deeper clip needs a looser Fit." );
+	}
+
+	/// <summary>The garments a trim hangs off. An empty On list is every garment, which is also
+	/// what TrimFeature builds on.</summary>
+	private GarmentFeature[] GarmentsUnder( TrimFeature trim )
+	{
+		var all = _studio.Features.OfType<GarmentFeature>().ToArray();
+
+		if ( trim.Bodies.BodyIds.Count == 0 )
+			return all;
+
+		var ids = _studio.Bodies
+			.Where( b => trim.Bodies.Matches( b ) )
+			.Select( b => b.FeatureId )
+			.ToHashSet();
+
+		var named = all.Where( g => ids.Contains( g.Id ) ).ToArray();
+		return named.Length > 0 ? named : all;
 	}
 
 	/// <summary>Run GarmentCheck over every garment in the document and report it.</summary>
@@ -534,11 +624,15 @@ public sealed partial class EffigyWindow
 		if ( _studio is null )
 			return;
 
+		// Check measures the bind pose. A test pose still on the rig would mark the wrong mesh
+		// and leave the pose in place for the next save. See TestRelax.
+		TestRelax( true );
+
 		var garments = _studio.Bodies.Where( b => b.IsGarment ).ToList();
 
 		if ( garments.Count == 0 )
 		{
-			SetPrompt( "Nothing to check yet - add a Garment first." );
+			Refuse( "Nothing to check yet - add a Garment first." );
 			return;
 		}
 
@@ -555,9 +649,12 @@ public sealed partial class EffigyWindow
 
 		_lastClipDepth.Clear();
 
+		var furSlots = FurSlots();
+
 		foreach ( var garment in garments )
 		{
-			var report = GarmentCheck.Run( garment.Mesh, worn );
+			// Without its fur, for the reason MarkClipping gives.
+			var report = GarmentCheck.Run( WithoutFur( garment.Mesh, furSlots ), worn );
 			report.Name = garment.Name;
 			reports.Add( (garment, report) );
 			deepest = Math.Max( deepest, report.DeepestClip );
@@ -595,7 +692,7 @@ public sealed partial class EffigyWindow
 		SetPrompt( faults == 0
 			? $"Checked {garments.Count} garment{(garments.Count == 1 ? "" : "s")}: nothing wrong. Details in the console."
 			: clipping > 0
-				? $"{clipping} vertices clip, deepest {deepest:0.##} in - marked yellow to red. Push out fixes it; the rest is in the console."
+				? $"{clipping} vertices clip, deepest {deepest:0.##} in - marked yellow to red. Push out fixes it, or choose a looser Fit; the rest is in the console."
 				: $"{faults} of {garments.Count} garments have something to fix - see the console." );
 	}
 
@@ -652,28 +749,45 @@ public sealed partial class EffigyWindow
 
 		if ( garments.Count == 0 )
 		{
-			SetPrompt( "Nothing to make live - add a Garment first." );
+			Refuse( "Nothing to make live - add a Garment first." );
 			return;
 		}
 
 		if ( _studio.Rig.Count == 0 )
 		{
-			SetPrompt( "Live cloth hangs on the wearer's bones - load a Wearer first." );
+			Refuse( "Live cloth hangs on the wearer's bones - load a Wearer first." );
 			return;
 		}
+
+		// The file is the bind pose. A test pose still on the rig would bake the pose into the cloth.
+		TestRelax( false );
 
 		var mesh = new PolyMesh();
 		var pins = new List<float>();
 		ClothExport.Settings fabric = null;
 
+		// Fur shells live on the garment mesh, on their own slot. They are a shader trick, not
+		// cloth, and simulating them makes the fur swing like a second shirt.
+		var furSlots = FurSlots();
+
 		foreach ( var body in garments )
 		{
+			// ONE SHEET, NOT TWO WALLS. A garment with Thickness is two walls joined at the rim, and
+			// as cloth the walls are held together by nothing but that rim: the inner one fell
+			// through the outer, and the rim edges stretched to five times their length. The
+			// component draws both sides of whatever it is given, so the outer wall alone is the
+			// garment. Its fur shells are left behind with the inner wall.
+			var cloth = WithoutFur( MeshSolidify.OuterSheet( body.Mesh, out _ ) ?? body.Mesh, furSlots );
+
+			if ( cloth.VertexCount == 0 )
+				continue;
+
 			var offset = mesh.VertexCount;
 
-			foreach ( var p in body.Mesh.Positions )
+			foreach ( var p in cloth.Positions )
 				mesh.AddVertex( p );
 
-			foreach ( var face in body.Mesh.Faces )
+			foreach ( var face in cloth.Faces )
 				mesh.AddFace( face.Indices.Select( i => i + offset ).ToArray(), face.UVs, face.Material );
 
 			// The feature that made it says what it is made of and where it is held on. One fabric
@@ -681,7 +795,7 @@ public sealed partial class EffigyWindow
 			// jacket over a shirt is two files and two components.
 			var feature = _studio.Features.OfType<GarmentFeature>().FirstOrDefault( g => g.Id == body.FeatureId );
 			fabric ??= feature is null ? null : ClothExport.FabricSettings( feature.FabricValue, feature.Stiffness.Clamped );
-			pins.AddRange( ClothExport.PinTop( body.Mesh, feature?.LivePinFraction ?? 0.12f ) );
+			pins.AddRange( ClothExport.PinTop( cloth, feature?.LivePinFraction ?? 0.12f ) );
 		}
 
 		var map = new BodyRegions.Map( _studio.Rig );
@@ -690,7 +804,7 @@ public sealed partial class EffigyWindow
 
 		if ( capsules.Count == 0 )
 		{
-			SetPrompt( "No bones to hang the cloth on - the wearer's skeleton has no torso or arms Effigy recognises." );
+			Refuse( "No bones to hang the cloth on - the wearer's skeleton has no torso or arms Effigy recognises." );
 			return;
 		}
 
@@ -717,6 +831,7 @@ public sealed partial class EffigyWindow
 		catch ( Exception e )
 		{
 			Log.Warning( $"[Effigy] could not write the live cloth for {name}: {e.Message}" );
+			ReportFailure( $"Could not write the live cloth: {e.Message}" );
 		}
 	}
 
@@ -823,6 +938,7 @@ public sealed partial class EffigyWindow
 
 			cloth.Wearer = wearer;
 			cloth.Cloth = clothPath;
+			cloth.Reload();
 		}
 
 		EditorScene.Selection.Set( wearer.GameObject );
@@ -870,17 +986,38 @@ public sealed partial class EffigyWindow
 
 		if ( garments.Count == 0 )
 		{
-			SetPrompt( "Nothing to publish - add a Garment first." );
+			Refuse( "Nothing to publish - add a Garment first." );
 			return;
 		}
 
 		if ( _rigPanel is not { HasBones: true } )
 		{
-			SetPrompt( "Clothing needs a rig to move with its wearer - load a Wearer first." );
+			Refuse( "Clothing needs a rig to move with its wearer - load a Wearer first." );
 			return;
 		}
 
-		CompileVmdl();
+		// Garments only, under their own name. Compile .vmdl from the menu still ships the whole
+		// document; this must not, and it must not overwrite that document's model.
+		var garmentName = SanitiseAssetName( garments.Count == 1
+			? garments[0].Name ?? garments[0].BuildRecipe().Name
+			: "outfit" );
+		var docName = _documentPath is null ? null : SanitiseAssetName( Path.GetFileNameWithoutExtension( _documentPath ) );
+
+		if ( string.IsNullOrEmpty( garmentName ) || string.Equals( garmentName, docName, StringComparison.OrdinalIgnoreCase ) )
+			garmentName = (string.IsNullOrEmpty( docName ) ? "outfit" : docName) + "_clothing";
+
+		_compileInclude = b => b.IsGarment;
+		_compileName = garmentName;
+
+		try
+		{
+			GuardExport( "Compile .vmdl", CompileVmdl );
+		}
+		finally
+		{
+			_compileInclude = null;
+			_compileName = null;
+		}
 
 		// Null unless the SKINNED compile got all the way through. A failed compile has already
 		// said why in the console; a .clothing pointing at it would load and silently show nothing.
@@ -914,7 +1051,7 @@ public sealed partial class EffigyWindow
 		catch ( Exception e )
 		{
 			Log.Warning( $"[Effigy] could not write the .clothing for {name}: {e.Message}" );
-			SetPrompt( "The model compiled, but the .clothing could not be written - see the console." );
+			ReportFailure( $"The model compiled, but the .clothing couldn't be written: {e.Message}" );
 		}
 	}
 
@@ -939,10 +1076,70 @@ public sealed partial class EffigyWindow
 			Label = "Shape garment",
 			Tip = "Edit the selected garment by hand - move its vertices, shrinkwrap it to the body, "
 				+ "solidify it, or pin part of it and let the rest drape. Saved as a Mesh edit in the history.",
-			Clicked = AddMeshEdit,
+			Clicked = ShapeGarment,
 		} );
 
 		return stage;
+	}
+
+	/// <summary>Shape opened the mesh editor. Finish returns here instead of the sculpt home.</summary>
+	private bool _meshEditReturnsToClothing;
+
+	/// <summary>
+	/// Open a mesh edit on a garment and come back here when it finishes.
+	///
+	/// AddMeshEdit is the Model tool: nothing selected means "no body under it", and Finish always
+	/// lands on the sculpt bar. Clothing already knows which body it means — the garment — and
+	/// leaving the workspace is how a one-button fitting step becomes a dead end. A later refit
+	/// rebuilds that garment, so the edit keeps itself instead of erroring on the fingerprint.
+	/// </summary>
+	private void ShapeGarment()
+	{
+		if ( _studio is null || _viewport is null )
+			return;
+
+		var garments = _studio.Bodies.Where( b => b.IsGarment && b.FeatureId is not null
+			&& _studio.Features.FirstOrDefault( f => f.Id == b.FeatureId ) is GarmentFeature ).ToList();
+
+		if ( garments.Count == 0 )
+		{
+			Refuse( "Nothing to shape yet - add a Garment first." );
+			return;
+		}
+
+		var picked = garments.Where( g => _viewport.IdleBodyIds.Contains( g.Id ) ).ToList();
+		Body target;
+
+		if ( picked.Count == 1 )
+			target = picked[0];
+		else if ( picked.Count == 0 && garments.Count == 1 )
+			target = garments[0];
+		else
+		{
+			Refuse( "Select one garment to shape." );
+			return;
+		}
+
+		// Close a test pose or another session first. The return flag is set after this, because
+		// Leave finishes an open mesh edit and that finish would consume the flag.
+		LeaveCurrentWorkspace();
+
+		var feature = new MeshEditFeature
+		{
+			Name = target.Name ?? "Garment",
+		};
+		feature.Bodies.BodyIds.Add( target.Id );
+		feature.KeepIfChanged.Value = true;
+
+		RecordUndo();
+		InsertAtRollback( feature );
+		RebuildStudio();
+
+		_meshEditReturnsToClothing = true;
+		EnterMeshEdit( feature );
+
+		if ( BarMode != EffigyBarMode.MeshEdit )
+			_meshEditReturnsToClothing = false;
 	}
 
 	/// <summary>
@@ -1017,21 +1214,36 @@ public sealed partial class EffigyWindow
 
 		if ( mesh is null || mesh.FaceCount == 0 )
 		{
-			SetPrompt( $"{name} has no render mesh to dress - a garment needs a surface to be cut from." );
+			Refuse( $"{name} has no render mesh to dress - a garment needs a surface to be cut from." );
 			return;
 		}
 
-		var feature = new WearerFeature { Name = name };
-		feature.Model.Value = path;
-		feature.LoadMesh( System.Text.Encoding.UTF8.GetBytes( ObjWriter.Write( mesh, name ) ) );
-
+		var hadRig = _studio.Rig.Count > 0;
 		var bones = InstallWearerRig( model, name );
+		var existing = _studio.Features.OfType<WearerFeature>().FirstOrDefault( w => !w.Suppressed );
 
-		AddFeature( feature );
+		if ( existing is not null )
+		{
+			RecordUndo();
+			existing.Name = name;
+			existing.Model.Value = path;
+			existing.LoadMesh( System.Text.Encoding.UTF8.GetBytes( ObjWriter.Write( mesh, name ) ) );
+			_studio.MarkDirty( existing );
+			RebuildStudio();
+		}
+		else
+		{
+			var feature = new WearerFeature { Name = name };
+			feature.Model.Value = path;
+			feature.LoadMesh( System.Text.Encoding.UTF8.GetBytes( ObjWriter.Write( mesh, name ) ) );
+			AddFeature( feature );
+		}
 
 		SetPrompt( bones > 0
 			? $"{name} is in, {bones} bones. Add a Garment to dress it."
-			: $"{name} is in, but it has no skeleton - a garment needs bones to find the torso and arms." );
+			: hadRig
+				? $"{name} is in. The rig already here was kept ({_studio.Rig.Count} bones) — delete those bones first if you want this model's skeleton."
+				: $"{name} is in, but it has no skeleton - a garment needs bones to find the torso and arms." );
 	}
 
 	/// <summary>
@@ -1186,10 +1398,17 @@ public sealed partial class EffigyWindow
 		if ( _studio is null )
 			return;
 
+		var liveFur = new HashSet<string>( StringComparer.OrdinalIgnoreCase );
+
 		foreach ( var fur in _studio.Features.OfType<FurFeature>() )
 		{
+			var furTag = new string( fur.Id.Select( c => char.IsLetterOrDigit( c ) ? c : '_' ).ToArray() );
+			var furVmat = $"models/effigy/fur/fur_{furTag}.vmat";
+
 			if ( fur.Suppressed || fur.ResolvedSlot < 0 || fur.Error is not null )
 				continue;
+
+			liveFur.Add( furVmat );
 
 			try
 			{
@@ -1235,8 +1454,73 @@ public sealed partial class EffigyWindow
 			catch ( Exception e )
 			{
 				Log.Warning( $"[Effigy] could not write the fur material for {fur.Name ?? fur.Id}: {e.Message}" );
+				ReportFailure( $"Can't show {fur.Name ?? "the fur"}'s fur material: its .vmat couldn't be written ({e.Message}). The slot keeps its old material." );
 			}
 		}
+
+		// A suppressed or deleted fur must not leave its shell material bound. Same rule as fabric.
+		foreach ( var kv in _studio.MaterialNames.ToList() )
+		{
+			var path = (kv.Value ?? "").Replace( '\\', '/' );
+
+			if ( path.StartsWith( "models/effigy/fur/", StringComparison.OrdinalIgnoreCase )
+				&& !liveFur.Contains( path ) )
+				_studio.MaterialNames.Remove( kv.Key );
+		}
+	}
+
+	/// <summary>The garment with fur-shell faces left out. The shells share the body's vertices, so
+	/// the cloth mesh is compacted to the vertices the remaining faces still use. A mesh with no
+	/// fur faces is returned as it is.</summary>
+	/// <summary>The slots fur shells are on, which every check and export of the cloth leaves out.</summary>
+	private HashSet<int> FurSlots() => _studio?.Features.OfType<FurFeature>()
+		.Where( f => !f.Suppressed && f.ResolvedSlot >= 0 )
+		.Select( f => f.ResolvedSlot )
+		.ToHashSet() ?? new HashSet<int>();
+
+	private static PolyMesh WithoutFur( PolyMesh source, HashSet<int> furSlots )
+	{
+		if ( source is null || furSlots.Count == 0 || !source.Faces.Any( f => furSlots.Contains( f.Material ) ) )
+			return source;
+
+		// IN THE ORDER THEY CAME. Shells are appended after the cloth, so keeping every surviving
+		// vertex where it was leaves the cloth's own layout alone - and that layout is what
+		// MeshSolidify.OuterSheet reads the openings off. Numbering them as the faces met them
+		// shuffled a solidified garment back to "0 openings".
+		var map = new int[source.VertexCount];
+		Array.Fill( map, -1 );
+
+		foreach ( var face in source.Faces )
+			if ( !furSlots.Contains( face.Material ) )
+				foreach ( var vi in face.Indices )
+					if ( (uint)vi < (uint)map.Length )
+						map[vi] = 0;
+
+		var cloth = new PolyMesh();
+
+		// The weights come along: Check reports a garment without them as unrigged.
+		var skin = source.IsRigged ? new SkinWeights() : null;
+
+		for ( var vi = 0; vi < map.Length; vi++ )
+		{
+			if ( map[vi] < 0 )
+				continue;
+
+			map[vi] = cloth.VertexCount;
+			cloth.AddVertex( source.Positions[vi] );
+			skin?.Vertices.Add( source.Skin[vi] );
+		}
+
+		foreach ( var face in source.Faces )
+		{
+			if ( furSlots.Contains( face.Material ) || face.Indices.Any( vi => (uint)vi >= (uint)map.Length ) )
+				continue;
+
+			cloth.AddFace( face.Indices.Select( vi => map[vi] ).ToArray(), face.UVs, face.Material );
+		}
+
+		cloth.Skin = skin;
+		return cloth;
 	}
 
 	static bool WriteIfChanged( string path, byte[] bytes )

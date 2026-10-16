@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -412,9 +412,19 @@ public static class SketchEdit
 
 		if ( lines.Count != 2 )
 		{
-			error = lines.Count < 2
-				? "A fillet needs two lines meeting at the corner."
-				: $"{lines.Count} lines meet at that corner, so which two to round is ambiguous.";
+			// Say WHY there are not two: what is visibly at the corner may be two lines, one of
+			// them construction, or a line and an arc — both of which this cannot round.
+			var construction = sketch.Curves.OfType<SketchLine>()
+				.Count( l => l.Construction && (l.Start == corner || l.End == corner) );
+			var other = sketch.Curves.Count( c => c is not SketchLine && (c.Endpoints.Item1 == corner || c.Endpoints.Item2 == corner) );
+
+			error = lines.Count > 2
+				? $"{lines.Count} lines meet at that corner, so which two to round is ambiguous."
+				: construction > 0
+					? "Fillet only rounds solid lines, and one of the lines at this corner is construction. Turn construction off on it first."
+					: other > 0
+						? "Fillet only rounds a corner between two straight lines; this corner has an arc or curve on it."
+						: "A fillet needs two lines meeting at the corner.";
 
 			return false;
 		}
@@ -579,15 +589,17 @@ public static class SketchEdit
 		if ( !MoveEnd( sketch, curve, atStart: false, PointAt( sketch, curve, lower ), out error ) )
 			return false;
 
+		// The tail is the same kind of geometry as what it was cut from: a construction line cut in
+		// two is two construction lines, never a reference line that turns into profile on one side.
 		switch ( curve )
 		{
 			case SketchLine:
-				sketch.Add( new SketchLine( sketch.AddPoint( tailStart ), sketch.AddPoint( tailEnd ) ) );
+				sketch.Add( new SketchLine( sketch.AddPoint( tailStart ), sketch.AddPoint( tailEnd ) ) ).Construction = curve.Construction;
 				break;
 
 			case SketchArc arc:
 				sketch.Add( new SketchArc( arc.Center,
-					sketch.AddPoint( tailStart ), sketch.AddPoint( tailEnd ), arc.Clockwise ) );
+					sketch.AddPoint( tailStart ), sketch.AddPoint( tailEnd ), arc.Clockwise ) ).Construction = curve.Construction;
 				break;
 		}
 
@@ -633,7 +645,7 @@ public static class SketchEdit
 		var keepEnd = sketch.AddPoint( On( before ) );
 
 		sketch.Curves.Remove( circle );
-		sketch.Add( new SketchArc( circle.Center, keepStart, keepEnd ) );
+		sketch.Add( new SketchArc( circle.Center, keepStart, keepEnd ) ).Construction = circle.Construction;
 
 		return true;
 	}
@@ -670,6 +682,7 @@ public static class SketchEdit
 				// only has to beat the size of the sketch. Built once, outside the loop — its two
 				// points then stay in the list for the same reason a fillet's corner does, since
 				// removing them would renumber every index above them.
+				var probeFirst = sketch.Points.Count;
 				var probe = new SketchLine(
 					sketch.AddPoint( from ),
 					sketch.AddPoint( from + unit * ProbeLength( sketch ) ) );
@@ -690,6 +703,12 @@ public static class SketchEdit
 						found = hit.Point;
 					}
 				}
+
+				// The probe's two points are the last two in the list and nothing refers to them,
+				// so they can go without renumbering anything. Left in, they sat in the sketch as a
+				// stray point far off past the line — on a miss as well as a hit.
+				if ( sketch.Points.Count == probeFirst + 2 )
+					sketch.Points.RemoveRange( probeFirst, 2 );
 
 				if ( best == float.MaxValue )
 				{
@@ -845,22 +864,33 @@ public static class SketchEdit
 
 		var openJoints = 0;
 
-		for ( var i = 0; i + 1 < created.Count; i++ )
+		// EVERY PAIR THAT SHARED A POINT, not just neighbours in selection order. Box-selected
+		// curves arrive in whatever order the sketch holds them, and a closed loop's last curve
+		// meets its first — stitching only i to i+1 left a closed rectangle's offset with open or
+		// crossed corners and nothing said. Only joints the originals actually shared are stitched:
+		// two curves selected together but not touching are two separate offsets.
+		for ( var i = 0; i < created.Count; i++ )
 		{
-			// Only stitch a joint the originals actually shared. Two curves selected together but
-			// not touching are two separate offsets, and dragging their ends together would be an
-			// invention rather than an offset.
-			if ( !Touching( chain[i], chain[i + 1] ) )
-				continue;
-
-			if ( !Meet( sketch, created[i], created[i + 1], out var join ) )
+			for ( var j = i + 1; j < created.Count; j++ )
 			{
-				openJoints++;
-				continue;
-			}
+				var (i0, i1) = chain[i].Endpoints;
+				var (j0, j1) = chain[j].Endpoints;
 
-			sketch.Points[ends[i].End] = join;
-			sketch.Points[ends[i + 1].Start] = join;
+				foreach ( var shared in new[] { i0, i1 } )
+				{
+					if ( shared != j0 && shared != j1 )
+						continue;
+
+					if ( !Meet( sketch, created[i], created[j], out var join ) )
+					{
+						openJoints++;
+						continue;
+					}
+
+					sketch.Points[shared == i0 ? ends[i].Start : ends[i].End] = join;
+					sketch.Points[shared == j0 ? ends[j].Start : ends[j].End] = join;
+				}
+			}
 		}
 
 		if ( openJoints > 0 )
@@ -1045,14 +1075,6 @@ public static class SketchEdit
 		return a + along * (2f * Vec2.Dot( v, along )) - v;
 	}
 
-	static bool Touching( SketchCurve a, SketchCurve b )
-	{
-		var (a0, a1) = a.Endpoints;
-		var (b0, b1) = b.Endpoints;
-
-		return a1 == b0 || a1 == b1 || a0 == b0 || a0 == b1;
-	}
-
 	/// <summary>Where two offset curves cross, taking the crossing nearest their shared corner when
 	/// there is more than one — a circle and a line cross twice and only one of them is the joint
 	/// being repaired.</summary>
@@ -1153,5 +1175,188 @@ public static class SketchEdit
 		sketch.Points[index] = to;
 
 		return true;
+	}
+
+	/// <summary>
+	/// Make two points one: everything that referred to <paramref name="drop"/> refers to
+	/// <paramref name="keep"/> instead, and <paramref name="drop"/> leaves the point list.
+	///
+	/// THIS IS WHAT DROPPING A DRAGGED END ONTO ANOTHER POINT HAS TO DO, and what it did not. The two
+	/// points ended up on top of each other and stayed two points, which is visually closed and
+	/// topologically open: ProfileFinder walks by INDEX, saw two loose ends, and refused the region
+	/// the user could plainly see was closed.
+	///
+	/// THE POINT IS REMOVED, NOT ORPHANED. An orphan left exactly under the kept point is an invisible
+	/// second handle - the next drag picks whichever is nearer by a rounding error, pulls the orphan
+	/// out, and leaves a stray dot behind. Removing it renumbers every index past it, which is why
+	/// every reference in the sketch is remapped here in one place.
+	///
+	/// REFUSED, before anything changes, when the merge would collapse a curve onto itself - a line
+	/// whose two ends become one, an arc or ellipse whose centre becomes its rim - or when a stored
+	/// distance holds the two points apart.
+	///
+	/// Rules that the merge makes meaningless (a coincidence between the two, a horizontal across
+	/// a pair that is now one point) are dropped rather than left to give the solver a zero-length
+	/// direction to differentiate.
+	/// </summary>
+	/// <param name="kept">Where <paramref name="keep"/> ended up after the renumbering.</param>
+	public static bool MergePoints( Sketch sketch, int keep, int drop, out int kept, out string error )
+	{
+		kept = keep;
+		error = null;
+
+		var n = sketch?.Points.Count ?? 0;
+
+		if ( sketch is null || keep < 0 || drop < 0 || keep >= n || drop >= n || keep == drop )
+		{
+			error = "Those aren't two different points of this sketch.";
+			return false;
+		}
+
+		bool Pair( int a, int b ) => (a == keep && b == drop) || (a == drop && b == keep);
+
+		foreach ( var curve in sketch.Curves )
+		{
+			switch ( curve )
+			{
+				case SketchLine line when Pair( line.Start, line.End ):
+					error = "Those are the two ends of one line - joining them would shrink it to nothing.";
+					return false;
+
+				case SketchArc arc when Pair( arc.Start, arc.End ) || Pair( arc.Center, arc.Start ) || Pair( arc.Center, arc.End ):
+					error = Pair( arc.Start, arc.End )
+						? "Those are the two ends of one arc - joining them would close it onto a single point."
+						: "That's an arc's centre and one of its ends - joining them would give it no radius.";
+					return false;
+
+				case SketchEllipse ellipse when Pair( ellipse.Center, ellipse.MajorPoint ):
+					error = "That's an ellipse's centre and its axis end - joining them would give it no size.";
+					return false;
+
+				case SketchSpline spline:
+					for ( var i = 0; i + 1 < spline.Points.Count; i++ )
+					{
+						if ( !Pair( spline.Points[i], spline.Points[i + 1] ) )
+							continue;
+
+						error = "Those are neighbouring points of one spline - joining them would fold it back on itself.";
+						return false;
+					}
+
+					break;
+			}
+		}
+
+		foreach ( var c in sketch.Constraints )
+		{
+			if ( c.Kind is SketchConstraintKind.Distance or SketchConstraintKind.Radius or SketchConstraintKind.Diameter
+				&& Pair( c.PointA, c.PointB ) && MathF.Abs( c.Value ) > 1e-6f )
+			{
+				error = $"Those two points are held {c.Value:0.###} apart by a dimension - remove it (click its mark) to join them.";
+				return false;
+			}
+		}
+
+		int Map( int i ) => i < 0 ? i : i == drop ? keep - (keep > drop ? 1 : 0) : i > drop ? i - 1 : i;
+
+		foreach ( var curve in sketch.Curves )
+		{
+			switch ( curve )
+			{
+				case SketchLine line:
+					line.Start = Map( line.Start );
+					line.End = Map( line.End );
+					break;
+
+				case SketchArc arc:
+					arc.Center = Map( arc.Center );
+					arc.Start = Map( arc.Start );
+					arc.End = Map( arc.End );
+					break;
+
+				case SketchCircle circle:
+					circle.Center = Map( circle.Center );
+					break;
+
+				case SketchEllipse ellipse:
+					ellipse.Center = Map( ellipse.Center );
+					ellipse.MajorPoint = Map( ellipse.MajorPoint );
+					break;
+
+				case SketchSpline spline:
+					for ( var i = 0; i < spline.Points.Count; i++ )
+						spline.Points[i] = Map( spline.Points[i] );
+
+					// An open spline whose two ENDS were just joined is a closed spline - the loop the
+					// user dragged it into - rather than one that runs through the same point twice.
+					if ( !spline.Closed && spline.Points.Count >= 4 && spline.Points[0] == spline.Points[^1] )
+					{
+						spline.Points.RemoveAt( spline.Points.Count - 1 );
+						spline.Closed = true;
+					}
+
+					break;
+			}
+		}
+
+		var mappedKeep = Map( keep );
+
+		sketch.Constraints.RemoveAll( c =>
+		{
+			c.PointA = Map( c.PointA );
+			c.PointB = Map( c.PointB );
+			c.PointC = Map( c.PointC );
+			c.PointD = Map( c.PointD );
+
+			return Meaningless( c );
+		} );
+
+		sketch.Points.RemoveAt( drop );
+		kept = mappedKeep;
+
+		return true;
+	}
+
+	/// <summary>Whether a rule asks nothing once two of its points are one: a coincidence of a point
+	/// with itself, or a direction or length measured between a point and itself.</summary>
+	static bool Meaningless( SketchConstraint c )
+	{
+		bool Same( int a, int b ) => a >= 0 && a == b;
+
+		switch ( c.Kind )
+		{
+			case SketchConstraintKind.Coincident:
+			case SketchConstraintKind.Concentric:
+			case SketchConstraintKind.Distance:
+			case SketchConstraintKind.Radius:
+			case SketchConstraintKind.Diameter:
+				return Same( c.PointA, c.PointB );
+
+			// The curve-id form has no points of its own; MergePoints refused anything that would
+			// collapse the line it names.
+			case SketchConstraintKind.Horizontal:
+			case SketchConstraintKind.Vertical:
+				return Same( c.PointA, c.PointB );
+
+			case SketchConstraintKind.EqualLength:
+			case SketchConstraintKind.Parallel:
+			case SketchConstraintKind.Perpendicular:
+			case SketchConstraintKind.Angle:
+			case SketchConstraintKind.Tangent:
+			case SketchConstraintKind.TangentArcs:
+				return Same( c.PointA, c.PointB ) || Same( c.PointC, c.PointD );
+
+			case SketchConstraintKind.PointOnLine:
+				return Same( c.PointB, c.PointC ) || Same( c.PointA, c.PointB ) || Same( c.PointA, c.PointC );
+
+			case SketchConstraintKind.Midpoint:
+				return Same( c.PointB, c.PointC );
+
+			case SketchConstraintKind.Symmetric:
+				return Same( c.PointC, c.PointD );
+
+			default:
+				return false;
+		}
 	}
 }

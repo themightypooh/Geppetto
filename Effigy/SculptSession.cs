@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace Effigy;
 
@@ -202,6 +203,20 @@ public sealed class SculptSession
 	/// </summary>
 	public bool HideMasked;
 
+	/// <summary>Auto-masking (as Blender's): computed from the surface when a stroke starts and
+	/// multiplied into the painted mask for that stroke only. Topology keeps the stroke to the piece it
+	/// started on; Boundary holds open edges (over <see cref="AutoBoundarySteps"/> rings); Cavity works
+	/// only the crevices, or only the ridges when <see cref="AutoCavityInverted"/>.</summary>
+	public bool AutoTopology, AutoBoundary, AutoCavity, AutoCavityInverted;
+	public int AutoBoundarySteps = 1;
+
+	/// <summary>An image laid over the brush that scales its strength across the footprint, or null.</summary>
+	public BrushAlpha Alpha;
+
+	// The stroke's mask: the painted one times whatever auto-masks are on, built when the stroke
+	// starts (a topology mask needs the vertex it started on) and dropped when it ends.
+	float[] _strokeMask;
+
 	/// <summary>
 	/// How far the cursor must travel before it earns another sample, as a fraction of the radius.
 	///
@@ -381,17 +396,18 @@ public sealed class SculptSession
 		// Frames and adjacency are built only when the brush actually reads them — frames by
 		// Inflate, adjacency by Smooth. On a dense import the other brushes (Draw, Grab, Flatten,
 		// Pinch) skip two full O(vertices) walks per stroke, which was most of the grab hitch.
-		_neighbors = Brush == BrushKind.Smooth ? _working.BuildVertexEdges() : null;
+		_neighbors = Effigy.Brush.UsesNeighbours( Brush ) ? _working.BuildVertexEdges() : null;
 		_undo = new BrushUndo();
 
 		// Frames are built once, from the surface as the stroke found it, and not rebuilt per sample.
 		// Rebuilding them on 128k vertices per dab is the obvious way to make the tool unusable, and
 		// a brush that re-reads its own output also feeds back — an Inflate would run away as it
 		// followed the normals it had just moved. A stroke works against the surface it started on.
-		_frames = Brush == BrushKind.Inflate ? SculptFrames.Build( _working ) : null;
+		_frames = Effigy.Brush.UsesSurfaceFrames( Brush ) ? SculptFrames.Build( _working ) : null;
 
 		_lastSample = hit.Value.Point;
 		_maskBefore = Masking ? (float[])MaskFor( Level ).Values.Clone() : null;
+		_strokeMask = Masking ? null : StrokeMask( hit.Value.Point, hit.Value.Normal );
 		Dab( hit.Value.Point, hit.Value.Normal, Vec3.Zero );
 
 		return true;
@@ -461,6 +477,7 @@ public sealed class SculptSession
 		_neighbors = null;
 		_undo = null;
 		_maskBefore = null;
+		_strokeMask = null;
 
 		var edit = maskBefore is not null
 			? CommitMask( level, maskBefore )
@@ -530,6 +547,7 @@ public sealed class SculptSession
 		_neighbors = null;
 		_undo = null;
 		_maskBefore = null;
+		_strokeMask = null;
 	}
 
 	/// <summary>
@@ -551,6 +569,47 @@ public sealed class SculptSession
 		_undone.Clear();
 
 		return true;
+	}
+
+	/// <summary>The painted mask times the auto-masks that are on, for a stroke starting at <paramref name="point"/>; null when neither applies.</summary>
+	float[] StrokeMask( Vec3 point, Vec3 normal )
+	{
+		if ( !AutoTopology && !AutoBoundary && !AutoCavity )
+			return null;
+		return AutoMask.Combine(
+			ActiveMask?.Values,
+			AutoTopology ? AutoMask.Topology( _working, AutoMask.SeedAt( _working, point, normal ) ) : null,
+			AutoBoundary ? AutoMask.BoundaryEdges( _working, AutoBoundarySteps ) : null,
+			AutoCavity ? AutoMask.Cavity( _working, inverted: AutoCavityInverted ) : null );
+	}
+
+	/// <summary>
+	/// Run a mesh filter over the whole of the current level (held back by the mask), as one edit
+	/// that undoes like a stroke. Returns the edit, or null if nothing moved or a stroke is running.
+	/// </summary>
+	public SculptEdit ApplyFilter( MeshFilterKind kind, float strength, int iterations = 1 )
+	{
+		if ( IsStroking )
+			return null;
+		var level = Level;
+		var mesh = _sculpt.Evaluate( level );
+		var start = mesh.Positions.ToArray();
+		MeshFilter.Apply( mesh, kind, strength, iterations, ActiveMask?.Values );
+		var before = new Dictionary<int, Vec3>();
+		var after = new Dictionary<int, Vec3>();
+		for ( var v = 0; v < start.Length; v++ )
+		{
+			if ( (mesh.Positions[v] - start[v]).LengthSquared < 1e-16f ) continue;
+			before[v] = start[v];
+			after[v] = mesh.Positions[v];
+		}
+		if ( before.Count == 0 )
+			return null;
+		_sculpt.Record( level, mesh );
+		var edit = new SculptEdit( level, before, after );
+		_done.Push( edit );
+		_undone.Clear();
+		return edit;
 	}
 
 	public bool Undo() => Step( _done, _undone, forward: false );
@@ -608,13 +667,13 @@ public sealed class SculptSession
 			return;
 		}
 
-		var stroke = new BrushStroke { Kind = Brush, Falloff = Falloff, Mirror = Mirror };
+		var stroke = new BrushStroke { Kind = Brush, Falloff = Falloff, Mirror = Mirror, Alpha = Alpha };
 		stroke.Samples.Add( new BrushSample( point, normal, Radius, Inverted ? -Strength : Strength, direction ) );
 
 		// The mask is passed EVERY stroke, not applied afterwards. Brush.Apply folds it into the
 		// per-vertex weight, so a half-masked vertex moves half as far; masking after the fact would
 		// mean snapping protected vertices back, which leaves a hard edge where the mask fades.
-		var undo = Effigy.Brush.Apply( _working, stroke, _frames, ActiveMask?.Values, _bvh, _neighbors );
+		var undo = Effigy.Brush.Apply( _working, stroke, _frames, _strokeMask ?? ActiveMask?.Values, _bvh, _neighbors, _undo );
 		_undo.Absorb( undo );
 	}
 }

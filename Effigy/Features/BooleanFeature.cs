@@ -45,10 +45,42 @@ public sealed class BooleanFeature : Feature
 
 	public readonly BoolParam KeepTools = new( "Keep tool bodies", false );
 
+	/// <summary>
+	/// How the boolean is done. Auto takes the engine's exact boolean where one is installed (the
+	/// editor) and the kernel's voxel boolean everywhere else (CLI, MCP, tests), and says which it
+	/// used. Exact refuses rather than fall back; Voxel always meshes a fresh skin - see
+	/// <see cref="VoxelBoolean"/> for what that keeps and loses.
+	/// </summary>
+	public readonly ChoiceParam Method = new( "Method", new[] { "Auto", "Exact", "Voxel" } );
+
+	/// <summary>The voxel boolean's cell size; 0 picks one from the parts' size.</summary>
+	public readonly FloatParam Voxel = new( "Voxel", 0f, 0f, 50f, "in" );
+
+	public const int MethodAuto = 0, MethodExact = 1, MethodVoxel = 2;
+
 	public override IReadOnlyList<IParam> Parameters =>
 		Operation.Index == 0
-			? new IParam[] { Operation, Targets, Tools }
-			: new IParam[] { Operation, Targets, Tools, KeepTools };
+			? new IParam[] { Operation, Targets, Tools, Method, Voxel }
+			: new IParam[] { Operation, Targets, Tools, KeepTools, Method, Voxel };
+
+	public override IReadOnlyList<IParam> AdvancedParameters => new IParam[] { Method, Voxel };
+
+	/// <summary>Whether the last rebuild went through the voxel boolean.</summary>
+	bool _usedVoxel;
+	float _voxelUsed;
+
+	PolyMesh Combine( BooleanOp op, PolyMesh target, PolyMesh tool )
+	{
+		var voxel = Method.Index == MethodVoxel || (Method.Index == MethodAuto && !MeshBoolean.Available);
+
+		if ( !voxel )
+			return MeshBoolean.Apply( op, target, tool );
+
+		var result = VoxelBoolean.Apply( op, target, tool, Voxel.Clamped, out var used );
+		_usedVoxel = true;
+		_voxelUsed = used;
+		return result;
+	}
 
 	BooleanOp Op => Operation.Index switch
 	{
@@ -122,10 +154,23 @@ public sealed class BooleanFeature : Feature
 				"Leave at least one body out of the tool selection" );
 		}
 
+		_usedVoxel = false;
+
 		if ( Op == BooleanOp.Union )
 			Unite( ctx, targets, tools );
 		else
 			CutOrKeep( ctx, targets, tools );
+
+		// Said, not hidden: a voxel result is a new skin, and a part that arrives without its UVs or
+		// with rounded edges should not be a surprise found at export. Only when nothing more
+		// important (a separated piece, an emptied body) was already said.
+		if ( _usedVoxel && Warning is null )
+		{
+			Warn( $"Done as a voxel boolean at {_voxelUsed:0.###} in",
+				(Method.Index == MethodAuto ? "No exact (engine) boolean is installed here, so the kernel's voxel boolean ran. " : "")
+					+ "The result is a fresh skin: edges are rounded by about a voxel, and UVs and skin weights do not come across.",
+				"Set Voxel smaller for crisper edges", "Run in the s&box editor with Method=Exact for a hard-surface cut" );
+		}
 	}
 
 	/// <summary>
@@ -152,7 +197,7 @@ public sealed class BooleanFeature : Feature
 
 		foreach ( var other in all.Skip( 1 ) )
 		{
-			kept.Mesh = MeshBoolean.Apply( BooleanOp.Union, kept.Mesh, other.Mesh );
+			kept.Mesh = Combine( BooleanOp.Union, kept.Mesh, other.Mesh );
 			ctx.Bodies.Remove( other );
 		}
 
@@ -180,7 +225,7 @@ public sealed class BooleanFeature : Feature
 		foreach ( var target in targets )
 		{
 			foreach ( var tool in tools )
-				target.Mesh = MeshBoolean.Apply( op, target.Mesh, tool.Mesh );
+				target.Mesh = Combine( op, target.Mesh, tool.Mesh );
 
 			// AN EMPTY RESULT IS A SUCCESSFUL BOOLEAN AND A USELESS PART. Subtracting a block from
 			// a peg inside it, or intersecting two solids that never touch, both come back as a

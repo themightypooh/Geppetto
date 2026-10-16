@@ -236,10 +236,28 @@ internal sealed partial class EffigyViewport
 		if ( !PlanePickMode )
 			return;
 
+		PickablePlane refused = null;
+		var refusedDistance = float.PositiveInfinity;
+
 		foreach ( var plane in _datumPlanes )
 		{
-			if ( !plane.Visible || !plane.Pickable )
+			if ( !plane.Visible )
 				continue;
+
+			// DRAWN BUT NOT AN ANSWER: the plane being edited, or one below it in the tree. It gets
+			// no hitbox - lighting up would promise a pick that cannot happen - but a click on it is
+			// still noticed, so it can be told why instead of vanishing. See PickablePlane.Pickable.
+			if ( !plane.Pickable )
+			{
+				if ( Gizmo.WasLeftMousePressed && DatumUnderCursor( plane, out var at ) && at < refusedDistance
+					&& FacePickDistance >= at )
+				{
+					refused = plane;
+					refusedDistance = at;
+				}
+
+				continue;
+			}
 
 			// THE NEARER TARGET WINS, exactly as it does for a reference plane: a solid in front of
 			// this plane takes the click and the plane does not so much as light up.
@@ -264,6 +282,32 @@ internal sealed partial class EffigyViewport
 			if ( Gizmo.WasLeftMousePressed )
 				DatumPlanePicked?.Invoke( plane.FeatureId );
 		}
+
+		// Only when nothing that CAN be picked took the click - a reference plane or a pickable
+		// datum plane under the same cursor is what the click was for.
+		if ( refused is not null && _hoveredDatumPlane is null && _hoveredPlane < 0 )
+		{
+			var name = string.IsNullOrEmpty( refused.Name ) ? "That plane" : refused.Name;
+
+			Refuse( refused.FeatureId == PlaneAxesShownOn
+				? $"{name} is the plane being edited, so it can't be picked for itself. Pick another plane, or a face."
+				: $"{name} comes after this feature in the history, so this feature can't use it. Pick a plane that comes before this feature in the tree." );
+		}
+	}
+
+	/// <summary>Whether the cursor ray meets this datum plane within its drawn square, and how far
+	/// along the ray. The hitbox-free twin of what DrawDatumPlaneHitboxes registers, for a plane
+	/// that is drawn but must not be pickable.</summary>
+	private bool DatumUnderCursor( PickablePlane plane, out float distance )
+	{
+		if ( !DatumRayDistance( plane, out distance ) )
+			return false;
+
+		var ray = Gizmo.CurrentRay;
+		var offset = ray.Position + ray.Forward * distance - DatumOrigin( plane );
+
+		return MathF.Abs( Vector3.Dot( offset, DatumRight( plane ) ) ) <= DatumPlaneHalfSize
+			&& MathF.Abs( Vector3.Dot( offset, DatumUp( plane ) ) ) <= DatumPlaneHalfSize;
 	}
 
 	/// <summary>How far along the cursor ray this datum plane sits, or false when the ray runs
@@ -375,8 +419,10 @@ internal sealed partial class EffigyViewport
 			if ( !plane.Visible )
 				return;
 
-			DrawPlaneOffsetHandle( DatumOrigin( plane ),
-				new Vector3( plane.OffsetAxis.x, plane.OffsetAxis.y, plane.OffsetAxis.z ) );
+			var axis = new Vector3( plane.OffsetAxis.x, plane.OffsetAxis.y, plane.OffsetAxis.z );
+
+			SayIfOffsetArrowHidden( axis );
+			DrawPlaneOffsetHandle( DatumOrigin( plane ), axis );
 			return;
 		}
 	}
@@ -420,6 +466,28 @@ internal sealed partial class EffigyViewport
 		}
 
 		EndPlaneOffsetDrag();
+	}
+
+	/// <summary>Whether the status line has already said the arrow is hidden head-on, so it is said
+	/// once when the view turns onto the axis rather than every frame it stays there.</summary>
+	private bool _planeArrowHiddenSaid;
+
+	/// <summary>
+	/// Say so when the engine hides the offset arrow because the view runs along it (see
+	/// DrawPlaneOffsetHandle). The arrow simply not being there reads as the handle being broken;
+	/// one line on the status bar costs a dot product.
+	/// </summary>
+	private void SayIfOffsetArrowHidden( Vector3 axis )
+	{
+		var headOn = MathF.Abs( Vector3.Dot( axis.Normal, Gizmo.CameraTransform.Rotation.Forward ) ) > MathF.Cos( 10f * MathF.PI / 180f );
+
+		if ( headOn == _planeArrowHiddenSaid )
+			return;
+
+		_planeArrowHiddenSaid = headOn;
+
+		if ( headOn )
+			SketchPromptChanged?.Invoke( "The plane's offset arrow is hidden while you look straight along it - orbit a little to get it back, or type the Offset." );
 	}
 
 	private void EndPlaneOffsetDrag()

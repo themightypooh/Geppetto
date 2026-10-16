@@ -199,6 +199,12 @@ internal static class EffigyAnimExport
 
 		var ik = prefix is null ? LiveIk( doc ) : null;
 
+		// The rig's Limit constraints, as the viewport and the game apply them: every bone clamped as
+		// it is read, keyed or at bind, and every IK solve kept inside them. Main model only - a
+		// limit names one of its bones.
+		var limits = prefix is null ? Limits( doc ) : null;
+		var morphs = new Dictionary<string, float>();
+
 		// A single-frame clip is a pose, and the writer accepts one: N frames span N-1 intervals,
 		// so one frame is a zero-length clip rather than an error.
 		for ( var f = 0; f <= span; f++ )
@@ -210,12 +216,12 @@ internal static class EffigyAnimExport
 			{
 				if ( !tracks.TryGetValue( skeleton.Bones[b].Name, out var track ) )
 				{
-					pose[b] = skeleton.Bones[b].Local;
+					pose[b] = RigLimit.Clamp( limits, skeleton.Bones[b].Name, skeleton.Bones[b].Local );
 					continue;
 				}
 
 				var local = track.Evaluate( f );
-				pose[b] = ToXform( local );
+				pose[b] = RigLimit.Clamp( limits, skeleton.Bones[b].Name, ToXform( local ) );
 
 				var uniform = (local.Scale.x + local.Scale.y + local.Scale.z) / 3f;
 
@@ -227,9 +233,17 @@ internal static class EffigyAnimExport
 			}
 
 			if ( ik is not null )
-				pose = SolveIk( doc, skeleton, pose, ik, f );
+				pose = SolveIk( doc, skeleton, pose, ik, f, limits );
 
 			clip.AddFrame( pose, scales );
+
+			// The main model's morphs - keyed curves and events, as the player plays them - become
+			// flex channels in the DMX (DmxAnimWriter.WriteMorphChannel).
+			if ( prefix is null )
+			{
+				doc.MorphWeightsAt( f, morphs );
+				clip.SetMorphs( morphs );
+			}
 		}
 
 		return clip;
@@ -252,28 +266,60 @@ internal static class EffigyAnimExport
 				Pole = new Vec3( c.PoleDirection.x, c.PoleDirection.y, c.PoleDirection.z ),
 				Weight = c.Weight,
 				Iterations = c.Iterations,
+				Fabrik = c.Solver == IkSolver.Fabrik,
+				Spline = c.Solver == IkSolver.Spline,
 				Enabled = true,
 				Live = true,
 				GoalRotation = c.GoalRotation,
+				MaxStretch = c.MaxStretch,
 			} )
 			.ToList();
 
 		return live.Count > 0 ? live : null;
 	}
 
+	/// <summary>The rig's Limit constraints as the kernel's RigLimit - null when it has none, which
+	/// limits nothing. Same fields RigLimit.ReadRig reads from the .ctrlrig.</summary>
+	public static List<RigLimit> Limits( RigAnimDocument doc )
+	{
+		if ( doc?.RigAsset?.LimitConstraints is not { Count: > 0 } constraints )
+			return null;
+
+		var list = constraints
+			.Where( c => c is not null && c.Enabled && !string.IsNullOrEmpty( c.TargetBone ) )
+			.Select( c => new RigLimit
+			{
+				Name = c.Name,
+				Bone = c.TargetBone,
+				Weight = c.Weight,
+				Enabled = true,
+				Min = new Vec3( c.MinAngles.pitch, c.MinAngles.yaw, c.MinAngles.roll ),
+				Max = new Vec3( c.MaxAngles.pitch, c.MaxAngles.yaw, c.MaxAngles.roll ),
+			} )
+			.ToList();
+
+		return list.Count > 0 ? list : null;
+	}
+
 	/// <summary>One frame's live IK: to model space, each constraint toward its goal, back to local.
-	/// The goal is in the model's space already (TrackTarget.IkGoal).</summary>
-	static Xform[] SolveIk( RigAnimDocument doc, Skeleton skeleton, Xform[] local, List<RigIk> constraints, int frame )
+	/// RigAnimDocument.IkGoalAt hands the goal over in the model's space, whatever it was keyed in.</summary>
+	static Xform[] SolveIk( RigAnimDocument doc, Skeleton skeleton, Xform[] local, List<RigIk> constraints, int frame, List<RigLimit> limits )
 	{
 		var world = RigAnimFile.ModelSpace( skeleton, local );
 
 		foreach ( var ik in constraints )
 		{
-			var goal = doc.FindIkGoalTrack( ik.EndBone ).Evaluate( frame );
+			// Out of whatever space it was keyed in - an object-space goal rides its object.
+			if ( doc.IkGoalAt( ik.EndBone, frame ) is not { } goal )
+				continue;
+
 			var r = goal.Rotation;
 			var pose = new RigPose( new Vec3( goal.Position.x, goal.Position.y, goal.Position.z ), new Quat( r.x, r.y, r.z, r.w ), Vec3.One );
 
-			if ( ChainIk.Apply( skeleton, world, ik, pose ) is { } solved )
+			// The clip's keyed IK weight (Marionette TrackTarget.IkWeight): 0 leaves the chain on its keys.
+			var keyedWeight = doc.IkWeightAt( ik.EndBone, frame );
+
+			if ( keyedWeight > 0f && ChainIk.Apply( skeleton, world, keyedWeight < 1f ? ik.Weighted( keyedWeight ) : ik, pose, limits ) is { } solved )
 				world = solved;
 		}
 
@@ -289,15 +335,28 @@ internal static class EffigyAnimExport
 	/// having, and the log says which one was dropped and why.
 	/// </summary>
 	public static List<VmdlAnimation.ClipEntry> WriteClips( IEnumerable<ClipSource> sources,
-		string folder, string assetPrefix, Skeleton skeleton )
+		string folder, string assetPrefix, Skeleton skeleton ) =>
+		WriteClips( sources, folder, assetPrefix, skeleton, out _ );
+
+	/// <inheritdoc cref="WriteClips(IEnumerable{ClipSource}, string, string, Skeleton)"/>
+	/// <param name="skipped">Each clip left out, as "name (why)" - so the window can say
+	/// "Compiled, but 2 clips were left out" instead of a plain "Compiled" over a model that is
+	/// missing its walk.</param>
+	public static List<VmdlAnimation.ClipEntry> WriteClips( IEnumerable<ClipSource> sources,
+		string folder, string assetPrefix, Skeleton skeleton, out List<string> skipped )
 	{
 		var entries = new List<VmdlAnimation.ClipEntry>();
+		skipped = new List<string>();
 		var used = new HashSet<string>( StringComparer.OrdinalIgnoreCase );
 
 		foreach ( var source in sources ?? Enumerable.Empty<ClipSource>() )
 		{
 			if ( source?.Asset is null )
+			{
+				if ( source is not null )
+					skipped.Add( $"{source.Name ?? "a clip"} (its animation asset is missing)" );
 				continue;
+			}
 
 			// Re-read at compile time: the asset is the source of truth, so a clip edited in
 			// Marionette since it was added exports as it is now.
@@ -306,6 +365,7 @@ internal static class EffigyAnimExport
 			{
 				Log.Warning( $"[Effigy] clip '{source.Name}' could not be loaded from "
 					+ $"{source.Asset.Path} - skipping it" );
+				skipped.Add( $"{source.Name ?? source.Asset.Path} (could not be loaded)" );
 				continue;
 			}
 
@@ -318,6 +378,7 @@ internal static class EffigyAnimExport
 			if ( !used.Add( name ) )
 			{
 				Log.Warning( $"[Effigy] two clips are both called '{name}' - skipping the second" );
+				skipped.Add( $"{name} (a second clip with the same name)" );
 				continue;
 			}
 
@@ -332,6 +393,7 @@ internal static class EffigyAnimExport
 			catch ( Exception e )
 			{
 				Log.Warning( $"[Effigy] clip '{name}' could not be sampled: {e.Message}" );
+				skipped.Add( $"{name} (could not be sampled: {e.Message})" );
 				continue;
 			}
 
@@ -343,6 +405,7 @@ internal static class EffigyAnimExport
 				Log.Warning( $"[Effigy] clip '{name}' names none of this rig's bones - skipping it. "
 					+ "It was probably authored against a different model; ModelDoc matches clips to "
 					+ "bones by name." );
+				skipped.Add( $"{name} (names none of this rig's bones)" );
 				continue;
 			}
 
@@ -363,6 +426,7 @@ internal static class EffigyAnimExport
 			catch ( Exception e )
 			{
 				Log.Warning( $"[Effigy] clip '{name}' could not be written: {e.Message}" );
+				skipped.Add( $"{name} (could not be written: {e.Message})" );
 				continue;
 			}
 

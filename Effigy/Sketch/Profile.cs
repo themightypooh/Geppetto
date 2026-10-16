@@ -18,13 +18,13 @@ public sealed class Profile
 	public bool HasHoles => Holes.Count > 0;
 
 	/// <summary>
-	/// True when this region is the intersection of two or more other profiles, not a loop of the
-	/// curve graph. Two overlapping rectangles are three pickable faces: each whole, and the lens
-	/// in the middle. The lens is this, and it is how a click in the overlap names the overlap
-	/// rather than whichever whole happened to be smaller.
+	/// True when this region is a face of the overlay rather than a loop of the curve graph. Two
+	/// overlapping rectangles give five: the two wholes, plus three pieces marked with this — the
+	/// lens in the middle and what is left of each rectangle around it. The pieces are what a
+	/// click lands on, so any closed face you can see is a face you can pick.
 	///
-	/// Features that build every region (no <c>RegionSeeds</c>) skip these, or the lens would be
-	/// extruded on top of the two wholes that already contain it.
+	/// Features that build every region (no <c>RegionSeeds</c>) skip these, or the pieces would be
+	/// extruded on top of the two wholes that already contain them.
 	/// </summary>
 	public bool FromOverlap;
 
@@ -196,9 +196,12 @@ public static class ProfileFinder
 	}
 
 	/// <summary>
-	/// The lens (and any n-way overlap) as its own profile, so a click in the middle names the
-	/// middle. Originals are left in place: clicking the part that belongs to only one loop still
-	/// picks that whole, which is the thing people already could pick.
+	/// Every face of the overlay as its own profile, so a click names the face under the cursor:
+	/// the lens (and any n-way overlap), AND what is left of each whole once the overlaps are
+	/// taken out of it. Originals stay in the list for features that build every region and for
+	/// seeds outside any split, but a click inside a split whole always has a smaller face to land
+	/// on, so the whole is never what a click picks there. Picking every piece of a whole gives the
+	/// whole back — <see cref="MergeTouching"/> stitches adjacent pieces into one profile.
 	///
 	/// Neighbours are other sketches on the same plane. Their outers count toward "sits in two
 	/// or more", but a face that misses this sketch entirely is not added — exclusive faces of
@@ -234,29 +237,35 @@ public static class ProfileFinder
 		if ( ReferenceEquals( working, sketch ) )
 			return;
 
+		// Nested, not raw loops: a remainder that encloses a loop it does not cross — a small circle
+		// sitting in the free part of a rectangle — has to carry it as a hole, or extruding the
+		// remainder would fill the circle in.
 		var discarded = new ProfileResult();
-		var faces = CollectLoops( working, discarded );
+		var faces = new ProfileResult();
+		NestInto( faces, CollectLoops( working, discarded ) );
 
-		foreach ( var face in faces )
+		foreach ( var face in faces.Profiles )
 		{
-			if ( face.Count < 3 )
+			if ( face.Outer.Count < 3 )
 				continue;
 
-			var loop = Orient( face, counterClockwise: true );
-			var seed = InteriorPoint( loop );
+			var seed = MaterialPoint( face );
+			Profile owner = null;
 			var hostHits = 0;
-			var allHits = 0;
 
 			foreach ( var outer in hostOuters )
 			{
-				if ( outer.Contains( seed ) )
-					hostHits++;
+				if ( !outer.Contains( seed ) )
+					continue;
+
+				hostHits++;
+				owner = outer;
 			}
 
 			if ( hostHits == 0 )
 				continue;
 
-			allHits = hostHits;
+			var allHits = hostHits;
 
 			for ( var i = hostOuters.Count; i < allOuters.Count; i++ )
 			{
@@ -264,10 +273,13 @@ public static class ProfileFinder
 					allHits++;
 			}
 
-			if ( allHits < 2 )
+			// In one whole only: a remainder, worth its own entry only when the whole was actually
+			// split. An untouched whole comes back from the overlay as itself, and listing it twice
+			// would make every build-all feature extrude it twice.
+			if ( allHits < 2 && face.Area >= owner.Area * (1f - 1e-4f) - 1e-6f )
 				continue;
 
-			result.Profiles.Add( new Profile { Outer = loop, FromOverlap = true } );
+			result.Profiles.Add( new Profile { Outer = face.Outer, Holes = face.Holes, FromOverlap = true } );
 		}
 	}
 
@@ -318,7 +330,7 @@ public static class ProfileFinder
 	}
 
 	/// <summary>
-	/// The same material <see cref="Find"/> reports, cut into pieces whose interiors DO NOT
+	/// The same material <see cref="ProfileFinder.Find(Sketch)"/> reports, cut into pieces whose interiors DO NOT
 	/// OVERLAP EACH OTHER — a tiling of the union rather than a pile of wholes.
 	///
 	/// WHY THIS IS NOT JUST Profiles. Find deliberately reports two overlapping rectangles as two
@@ -449,6 +461,210 @@ public static class ProfileFinder
 		}
 
 		return picked;
+	}
+
+	/// <summary>
+	/// Picked overlay pieces that share an edge, stitched back into one profile.
+	///
+	/// Every closed face is pickable on its own, so the whole of a rectangle that a circle cuts
+	/// is now three clicks rather than one. Extruding those as three prisms would leave the cut
+	/// lines standing inside the solid as doubled walls; merging first gives the one prism the
+	/// user can see they selected. Only pieces are merged — they come from one overlay and tile
+	/// without overlapping, which is what makes cancelling shared edges sound. A whole picked
+	/// alongside a piece can overlap it, and is passed through untouched.
+	///
+	/// Shared edges are found by their endpoints: both pieces were walked off the same imprinted
+	/// curves, so a boundary they share is the same points in opposite order.
+	/// </summary>
+	public static List<Profile> MergeTouching( List<Profile> profiles )
+	{
+		var pieces = profiles.Where( p => p.FromOverlap ).ToList();
+
+		if ( pieces.Count < 2 )
+			return profiles;
+
+		var merged = profiles.Where( p => !p.FromOverlap ).ToList();
+
+		// Which pieces share an edge. Touching at a single point is not sharing — two remainders
+		// that meet at the corner of a lens are two solids, and stitching through that corner
+		// would walk one figure-eight loop around both.
+		var owners = new Dictionary<(long, long), int>();
+		var group = Enumerable.Range( 0, pieces.Count ).ToArray();
+
+		int Root( int i ) => group[i] == i ? i : group[i] = Root( group[i] );
+
+		for ( var i = 0; i < pieces.Count; i++ )
+		{
+			foreach ( var (a, b) in DirectedEdges( pieces[i] ) )
+			{
+				if ( owners.TryGetValue( (b, a), out var other ) )
+					group[Root( i )] = Root( other );
+
+				owners[(a, b)] = i;
+			}
+		}
+
+		foreach ( var component in Enumerable.Range( 0, pieces.Count ).GroupBy( Root ) )
+		{
+			var members = component.Select( i => pieces[i] ).ToList();
+
+			if ( members.Count == 1 || Stitch( members ) is not { } stitched )
+				merged.AddRange( members );
+			else
+				merged.AddRange( stitched );
+		}
+
+		return merged;
+	}
+
+	/// <summary>Quantised vertex identity for edge matching — 1e-4 of a unit, far below anything a
+	/// sketch tolerance would produce as two distinct points.</summary>
+	static long VertexKey( Vec2 v ) =>
+		((long)(int)MathF.Round( v.x * 1e4f ) << 32) | (uint)(int)MathF.Round( v.y * 1e4f );
+
+	/// <summary>Every edge of a profile with material on its left: outer counter-clockwise, holes
+	/// clockwise. An edge two adjacent pieces share then appears once in each direction.</summary>
+	static IEnumerable<(long A, long B)> DirectedEdges( Profile profile )
+	{
+		foreach ( var (a, b) in DirectedSegments( profile ) )
+			yield return (VertexKey( a ), VertexKey( b ));
+	}
+
+	static IEnumerable<(Vec2 A, Vec2 B)> DirectedSegments( Profile profile )
+	{
+		var loops = new List<List<Vec2>> { Orient( profile.Outer, counterClockwise: true ) };
+		loops.AddRange( profile.Holes.Select( h => Orient( h, counterClockwise: false ) ) );
+
+		foreach ( var loop in loops )
+		{
+			for ( var i = 0; i < loop.Count; i++ )
+			{
+				var a = loop[i];
+				var b = loop[(i + 1) % loop.Count];
+
+				if ( VertexKey( a ) != VertexKey( b ) )
+					yield return (a, b);
+			}
+		}
+	}
+
+	/// <summary>
+	/// One edge-connected group of pieces as the profiles of their union, or null when the
+	/// boundary does not come out clean — the pieces are then used as they are, which is still
+	/// the right shape, only with the seams left in.
+	/// </summary>
+	static List<Profile> Stitch( List<Profile> members )
+	{
+		var edges = new Dictionary<(long, long), Vec2>();
+
+		foreach ( var member in members )
+		{
+			foreach ( var (a, b) in DirectedSegments( member ) )
+			{
+				var ka = VertexKey( a );
+				var kb = VertexKey( b );
+
+				if ( !edges.Remove( (kb, ka) ) )
+					edges[(ka, kb)] = b;
+			}
+		}
+
+		var next = new Dictionary<long, (long Key, Vec2 Point)>();
+
+		foreach ( var ((ka, kb), b) in edges )
+		{
+			// A vertex the boundary passes through twice. Which way to turn there is a question
+			// this does not answer, so it does not guess.
+			if ( !next.TryAdd( ka, (kb, b) ) )
+				return null;
+		}
+
+		var outers = new List<List<Vec2>>();
+		var holes = new List<List<Vec2>>();
+		var visited = new HashSet<long>();
+
+		foreach ( var start in next.Keys )
+		{
+			if ( visited.Contains( start ) )
+				continue;
+
+			var loop = new List<Vec2>();
+			var key = start;
+
+			do
+			{
+				if ( !visited.Add( key ) || !next.TryGetValue( key, out var step ) )
+					return null;
+
+				loop.Add( step.Point );
+				key = step.Key;
+			}
+			while ( key != start );
+
+			loop = DropStraightCorners( loop );
+
+			if ( loop.Count < 3 )
+				return null;
+
+			(SignedArea( loop ) > 0f ? outers : holes).Add( loop );
+		}
+
+		var result = new List<Profile>();
+
+		foreach ( var outer in outers )
+		{
+			var profile = new Profile { Outer = outer, FromOverlap = true };
+
+			foreach ( var hole in holes )
+			{
+				if ( Contains( outer, hole[0] ) )
+					profile.Holes.Add( hole );
+			}
+
+			result.Add( profile );
+		}
+
+		// The union of pieces that tile without overlapping has exactly their combined area.
+		// Anything else means the walk went somewhere it should not have.
+		var expected = members.Sum( m => m.Area );
+		var got = result.Sum( r => r.Area );
+
+		return MathF.Abs( got - expected ) <= 1e-3f * MathF.Max( 1f, expected ) ? result : null;
+	}
+
+	/// <summary>
+	/// A cut that has been stitched away leaves its end points behind on what is now one straight
+	/// side. Kept, they split that side into separate quads when the profile is extruded — a wall
+	/// with a seam where there is nothing to see.
+	/// </summary>
+	static List<Vec2> DropStraightCorners( List<Vec2> loop )
+	{
+		var kept = new List<Vec2>( loop );
+
+		for ( var changed = true; changed && kept.Count > 3; )
+		{
+			changed = false;
+
+			for ( var i = 0; i < kept.Count && kept.Count > 3; i++ )
+			{
+				var prev = kept[(i + kept.Count - 1) % kept.Count];
+				var here = kept[i];
+				var after = kept[(i + 1) % kept.Count];
+				var u = here - prev;
+				var v = after - here;
+				var cross = u.x * v.y - u.y * v.x;
+				var dot = u.x * v.x + u.y * v.y;
+
+				if ( dot > 0f && MathF.Abs( cross ) <= 1e-6f * u.Length * v.Length )
+				{
+					kept.RemoveAt( i );
+					changed = true;
+					i--;
+				}
+			}
+		}
+
+		return kept;
 	}
 
 	/// <summary>A profile expressed in another plane's coordinates. Identity when the two

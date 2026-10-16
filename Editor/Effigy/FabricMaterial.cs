@@ -108,7 +108,9 @@ public static class FabricMaterial
 				var i = y * size + x;
 				var dx = height[y * size + (x + 1) % size] - height[y * size + (x + size - 1) % size];
 				var dy = height[((y + 1) % size) * size + x] - height[((y + size - 1) % size) * size + x];
-				var n = new Vec3( -dx * strength, -dy * strength, 1f ).Normal;
+				// +green is UP the image for s&box (see BakeOptions.FlipGreen): row y+1 is further
+				// down, so a slope rising downwards (dy > 0) leans the normal up, +green.
+				var n = new Vec3( -dx * strength, dy * strength, 1f ).Normal;
 
 				normal[i * 4] = Byte( n.x * 0.5f + 0.5f );
 				normal[i * 4 + 1] = Byte( n.y * 0.5f + 0.5f );

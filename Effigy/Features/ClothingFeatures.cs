@@ -121,7 +121,7 @@ public sealed class GarmentFeature : Feature
 	/// </summary>
 	public readonly ChoiceParam FitTo = new( "Fit to", new[] { "Auto", "Skin", "Envelope" } );
 
-	public readonly FloatParam Clearance = new( "Clearance", 0.15f, 0f, 2f, "in" );
+	public readonly FloatParam Clearance = new( "Clearance", 0.15f, 0f, 8f, "in" );
 	public readonly IntParam DrapeSteps = new( "Drape steps", 40, 1, 300 );
 	public readonly FloatParam PinTop = new( "Pin top", -1f, -1f, 1f );
 
@@ -157,6 +157,25 @@ public sealed class GarmentFeature : Feature
 	/// <summary>How far off the body the garment sits, in inches.</summary>
 	public float Offset => Clearance.Clamped + 0.1f + LoosenessValue * 2.4f;
 
+	/// <summary>
+	/// For a top that hangs: how much bigger round the chest the garment is than the body, in
+	/// inches - ease, the way a pattern is specified. Close 1.5, Regular 3, Loose 6, Baggy 10:
+	/// pattern-making's fitted / semi-fitted / loose / very loose, and a Gildan 5000 size M is
+	/// a 40-inch chest for a 38-40 body. Custom reads Looseness as 0..12 inches.
+	///
+	/// NOT THE SKIN OFFSET. Measured against a real size M, a Regular T-shirt off the old offset
+	/// was 45.7 inches round the chest on a 37.5-inch man - eight inches of ease, a size and a
+	/// half too big - because the hang already bridges the hollows, and the offset went on top.
+	/// </summary>
+	public float EaseRound => Fit.Index switch
+	{
+		0 => 1.5f,
+		1 => 3f,
+		2 => 6f,
+		3 => 10f,
+		_ => Looseness.Clamped * 12f,
+	};
+
 	protected override void Execute( FeatureContext ctx )
 	{
 		ResolvedSlot = -1;
@@ -190,7 +209,9 @@ public sealed class GarmentFeature : Feature
 				"Clear Wear on to fit every body" );
 		}
 
-		var others = ctx.Bodies.Where( b => b.IsGarment && b.Visible ).Select( b => b.Mesh ).ToList();
+		// Hidden is a view. A jacket still has to clear a shirt that is hidden, or showing the
+		// shirt again reveals a garment that was fitted as if the shirt were not there.
+		var others = ctx.Bodies.Where( b => b.IsGarment ).Select( b => b.Mesh ).ToList();
 		var recipe = BuildRecipe();
 		var slot = MaterialSlot.Value >= 0
 			? MaterialSlot.Value
@@ -227,7 +248,9 @@ public sealed class GarmentFeature : Feature
 
 		var result = GarmentFit.Fit( cutFrom, map, recipe, new GarmentFit.Options
 		{
-			Offset = Offset,
+			// The ease is the finished garment against the body, so the cloth's own thickness is
+			// inside it, not added on top; the clearance is the least it can be.
+			Offset = recipe.Hangs ? MathF.Max( Clearance.Clamped, EaseRound / (2f * MathF.PI) - Thickness.Clamped ) : Offset,
 			Clearance = Clearance.Clamped,
 			Flare = Flare.Clamped,
 			Thickness = preview ? 0f : Thickness.Clamped,
@@ -300,6 +323,73 @@ public sealed class GarmentFeature : Feature
 	/// rather than throwing away a shirt that is otherwise finished. Check says plainly when a
 	/// garment came out unweighted, which is the right place for that to be noticed.
 	/// </summary>
+	/// <summary>
+	/// The body's weights onto the garment, each part of the garment from the same part of the
+	/// body: the torso from the torso, a sleeve from its own arm and hand, a trouser leg from its
+	/// own leg.
+	///
+	/// NEAREST SURFACE ALONE PICKED THE WRONG LIMB. Citizen stands with its hands beside its hips,
+	/// so the nearest skin to a shirt's hem was often the back of a hand - the hem took the hand's
+	/// weights, and raising the arms dragged it up through the body. A cuff did the same with the
+	/// thigh. The parts are read off the rig the way the cut reads them (BodyRegions), so a
+	/// garment vertex only ever looks at skin it was cut from.
+	/// </summary>
+	static int TransferByPart( PolyMesh garment, PolyMesh body, Skeleton rig )
+	{
+		var map = rig is { Count: > 0 } ? new BodyRegions.Map( rig ) : null;
+
+		if ( map is null || map.Count == 0 )
+			return SkinBinder.TransferFrom( garment, body );
+
+		static string Part( (BodyRegion Region, float T) at, Vec3 p ) => at.Region switch
+		{
+			BodyRegion.UpperArm or BodyRegion.LowerArm or BodyRegion.Hand => p.y > 0 ? "arm L" : "arm R",
+			BodyRegion.UpperLeg or BodyRegion.LowerLeg or BodyRegion.Foot => p.y > 0 ? "leg L" : "leg R",
+			_ => "body",
+		};
+
+		var faceParts = body.Faces.Select( f =>
+		{
+			var c = body.FaceCentroid( f );
+			return Part( map.Locate( c ), c );
+		} ).ToArray();
+
+		var vertexParts = garment.Positions.Select( p => Part( map.Locate( p ), p ) ).ToArray();
+		var weights = garment.IsRigged ? garment.Skin.Clone() : new SkinWeights( garment.VertexCount );
+		var reached = 0;
+
+		foreach ( var part in vertexParts.Distinct() )
+		{
+			// The body with only this part's faces. Same vertices and weights, so the transfer
+			// reads the right corners; the faces are what the nearest-surface search can land on.
+			var skin = new PolyMesh { Skin = body.Skin };
+			skin.Positions.AddRange( body.Positions );
+
+			for ( var fi = 0; fi < body.FaceCount; fi++ )
+				if ( faceParts[fi] == part )
+					skin.Faces.Add( body.Faces[fi] );
+
+			// A part of the garment the body has no skin for (a skirt below the hands, say)
+			// falls back to the whole body rather than to nothing.
+			if ( skin.FaceCount == 0 )
+				skin.Faces.AddRange( body.Faces );
+
+			var picked = Enumerable.Range( 0, garment.VertexCount ).Where( v => vertexParts[v] == part ).ToList();
+			var piece = new PolyMesh();
+
+			foreach ( var v in picked )
+				piece.AddVertex( garment.Positions[v] );
+
+			reached += SkinBinder.TransferFrom( piece, skin );
+
+			for ( var k = 0; k < picked.Count; k++ )
+				weights[picked[k]] = piece.Skin[k];
+		}
+
+		garment.Skin = weights;
+		return reached;
+	}
+
 	void ApplyWeights( FeatureContext ctx, PolyMesh garment, List<Body> wearers )
 	{
 		try
@@ -308,11 +398,30 @@ public sealed class GarmentFeature : Feature
 			// carrying real weights is the one the garment should learn from.
 			var source = wearers.FirstOrDefault( b => b.Mesh.IsRigged );
 
-			if ( source is not null && SkinBinder.TransferFrom( garment, source.Mesh ) > 0 )
+			if ( source is not null && TransferByPart( garment, source.Mesh, ctx.Rig ) > 0 )
 				return;
 
-			if ( ctx.Rig is { Count: > 0 } )
-				garment.Skin = SkinBinder.BindSmooth( garment, ctx.Rig );
+			if ( ctx.Rig is not { Count: > 0 } )
+				return;
+
+			// NO WEIGHTED BODY - a wearer read off a compiled model never has one. Bind the BODY,
+			// then hand its weights across, rather than binding the garment on its own. Bound
+			// separately, the two disagree wherever a joint bends: the shirt's armpit followed the
+			// arm while the body's stayed with the chest, and Test put a sixth of the shirt inside
+			// the wearer with the arms up. Test binds the wearer this same way, so what it shows is
+			// what the garment was given.
+			var body = wearers.FirstOrDefault( b => b.Mesh.FaceCount > 0 )?.Mesh;
+
+			if ( body is not null )
+			{
+				var bound = body.Clone();
+				bound.Skin = SkinBinder.BindSmooth( bound, ctx.Rig );
+
+				if ( TransferByPart( garment, bound, ctx.Rig ) > 0 )
+					return;
+			}
+
+			garment.Skin = SkinBinder.BindSmooth( garment, ctx.Rig );
 		}
 		catch ( Exception )
 		{
@@ -322,7 +431,7 @@ public sealed class GarmentFeature : Feature
 }
 
 /// <summary>
-/// Fur for s&box's fur.shader: shell layers over a garment's faces, on their own material slot. The
+/// Fur for s&amp;box's fur.shader: shell layers over a garment's faces, on their own material slot. The
 /// editor writes the fur material from this feature's settings and binds it to the slot.
 /// </summary>
 public sealed class FurFeature : Feature
@@ -408,6 +517,10 @@ public sealed class FurFeature : Feature
 				ShellFaces += FurShells.Grow( body.Mesh, list, options );
 
 			ResolvedSlot = slot;
+
+			if ( slot >= 0 )
+				ctx.ShellSlots.Add( slot );
+
 			return;
 		}
 
@@ -430,13 +543,22 @@ public sealed class FurFeature : Feature
 			var all = Enumerable.Range( 0, mesh.FaceCount ).Where( fi => mesh.Faces[fi].Material != slot );
 			var faces = Coverage.Index == 1 ? FurShells.TrimFaces( mesh, TrimWidth.Clamped ) : all.ToList();
 
-			if ( body.IsGarment )
+			// The outer wall only, on a garment with Thickness: the inner wall faces the body, and
+			// shells grown off it went straight into the wearer. Read off the layout where there is
+			// one (MeshSolidify.OuterSheet - the far wall is every even face of its pairs); the
+			// centre-of-mass guess is for a garment without it, and gets sleeves wrong.
+			if ( body.IsGarment && MeshSolidify.OuterSheet( mesh, out _ ) is { } sheet )
+				faces = faces.Where( fi => fi < 2 * sheet.FaceCount && fi % 2 == 0 ).ToList();
+			else if ( body.IsGarment )
 				faces = FurShells.OutwardFaces( mesh, faces );
 
 			ShellFaces += FurShells.Grow( mesh, faces, options );
 		}
 
 		ResolvedSlot = slot;
+
+		if ( slot >= 0 )
+			ctx.ShellSlots.Add( slot );
 
 		if ( ShellFaces > 60000 )
 		{
@@ -612,18 +734,34 @@ public sealed class TrimFeature : Feature
 		var made = 0;
 		string problem = null;
 
+		// What the trim must stay off: everything that is not clothing. A strip carries on the way
+		// the cloth was going at its edge, and at a collar that is up and in - into the neck.
+		var worn = ctx.Bodies.Where( b => !b.IsGarment ).Select( b => b.Mesh ).Where( m => m.FaceCount > 0 ).ToList();
+		var wornTrees = worn.Count > 0 ? worn.Select( MeshBVH.Build ).ToList() : null;
+
 		foreach ( var target in targets )
 		{
-			var loops = GarmentTrim.OrderedBoundaryLoops( target.Mesh );
+			// A garment with Thickness is closed at every opening; the trim hangs off the outer
+			// wall's edge, which is where the hem is. See MeshSolidify.OuterSheet.
+			var sheet = MeshSolidify.OuterSheet( target.Mesh, out _ ) ?? target.Mesh;
+			var loops = GarmentTrim.OrderedBoundaryLoops( sheet );
 			var which = Chosen( loops.Count );
 
-			var result = GarmentTrim.Build( target.Mesh, which, options );
+			var result = GarmentTrim.Build( sheet, which, options );
 
 			if ( result.Mesh.FaceCount == 0 )
 			{
 				problem ??= result.Problem;
 				continue;
 			}
+
+			// Off the wearer by the garment's own default clearance. Only what is inside or
+			// grazing moves; a frill already standing clear is left exactly where it hangs.
+			// A few times, not once: a frill on a hem that reaches past the crotch hangs between the
+			// thighs, and one push out of the left leg can put it into the right.
+			if ( wornTrees is not null )
+				for ( var pass = 0; pass < 4; pass++ )
+					GarmentFit.PushOut( result.Mesh, worn, wornTrees, 0.15f, Width.Clamped + 2f );
 
 			// The trim inherits the garment's weights at the seam, so it moves with it. Without this
 			// a frilled hem is the one part of the outfit that stays behind when the wearer walks -
@@ -754,7 +892,9 @@ public sealed class FabricFeature : Feature
 		}
 
 		// The garment already has a slot of its own (see GarmentFeature.MaterialSlot); the fabric
-		// goes on that rather than renumbering, so paint and fur on the same garment stay put.
-		ResolvedSlots = targets.SelectMany( b => b.Mesh.Faces ).Select( f => f.Material ).Distinct().OrderBy( s => s ).ToList();
+		// goes on that rather than renumbering. Shell slots claimed earlier this rebuild (fur)
+		// are not cloth, and binding the weave onto them fights the fur material.
+		ResolvedSlots = targets.SelectMany( b => b.Mesh.Faces ).Select( f => f.Material )
+			.Where( s => !ctx.ShellSlots.Contains( s ) ).Distinct().OrderBy( s => s ).ToList();
 	}
 }

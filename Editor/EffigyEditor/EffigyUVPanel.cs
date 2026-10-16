@@ -26,6 +26,15 @@ internal sealed class EffigyUVPanel : Widget
 	/// <summary>Something changed the selection or the mesh: the viewport should redraw.</summary>
 	public Action Changed { get; set; }
 
+	/// <summary>Something asked of the panel that it would not or could not do, as a sentence.
+	/// The window shows it as a refusal.</summary>
+	public Action<string> Refused { get; set; }
+
+	private readonly List<Button> _tools = new();
+
+	/// <summary>One refusal per drag, not one per mouse move.</summary>
+	private bool _dragRefused;
+
 	private readonly UVCanvas _canvas;
 	private MeshEditSession _session;
 
@@ -60,7 +69,21 @@ internal sealed class EffigyUVPanel : Widget
 
 	private Button Tool( string label, string tip, string op, Action<MeshEditSession> run )
 	{
-		return new Button( label ) { ToolTip = tip, Clicked = () => { if ( _session is not null ) RunOp?.Invoke( op, run ); } };
+		// Dimmed with no part in Edit mode, and refused in words if clicked anyway.
+		var button = new Button( label ) { ToolTip = tip, Enabled = false };
+		button.Clicked = () =>
+		{
+			if ( _session is null )
+			{
+				Refused?.Invoke( $"Can't {label.ToLowerInvariant()}: no part is in Edit mode. Edit a part first." );
+				return;
+			}
+
+			RunOp?.Invoke( op, run );
+		};
+
+		_tools.Add( button );
+		return button;
 	}
 
 	/// <summary>Show this session's UVs, or nothing.</summary>
@@ -68,6 +91,13 @@ internal sealed class EffigyUVPanel : Widget
 	{
 		_session = session;
 		_canvas.Session = session;
+
+		foreach ( var tool in _tools )
+		{
+			if ( tool.IsValid() )
+				tool.Enabled = session is not null;
+		}
+
 		_canvas.Update();
 	}
 
@@ -77,7 +107,10 @@ internal sealed class EffigyUVPanel : Widget
 	private void PickIsland( int face, bool add )
 	{
 		if ( _session is null )
+		{
+			Refused?.Invoke( "Can't pick UVs: no part is in Edit mode. Edit a part to see its UVs here." );
 			return;
+		}
 
 		RunOp?.Invoke( "Island", s =>
 		{
@@ -102,8 +135,17 @@ internal sealed class EffigyUVPanel : Widget
 	/// down, one step when it comes up.</summary>
 	private void DragIslands( Vec2 delta, bool done )
 	{
-		if ( _session is null || _session.SelectedFaces.Count == 0 )
+		if ( _session is null )
 			return;
+
+		if ( _session.SelectedFaces.Count == 0 )
+		{
+			// A drag that started on empty UV space. Said once, when the mouse comes up.
+			if ( done )
+				Refused?.Invoke( "Can't move UVs: nothing is selected. Click an island, or drag starting on one." );
+
+			return;
+		}
 
 		try
 		{
@@ -111,10 +153,17 @@ internal sealed class EffigyUVPanel : Widget
 			if ( done )
 				_session.Accept();
 		}
-		catch ( InvalidOperationException )
+		catch ( InvalidOperationException e )
 		{
-			// Nothing selected, or a preview refused: the drag just does nothing.
+			// The session refused the move. Said once per drag, with its own reason.
+			if ( !_dragRefused )
+				Refused?.Invoke( $"Can't move UVs: {e.Message}" );
+
+			_dragRefused = true;
 		}
+
+		if ( done )
+			_dragRefused = false;
 
 		Changed?.Invoke();
 	}

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace Effigy;
 
@@ -24,6 +25,17 @@ public static class MeshTransform
 	{
 		for ( var i = 0; i < mesh.Positions.Count; i++ )
 			mesh.Positions[i] = xform.TransformPoint( mesh.Positions[i] );
+
+		// A shape key's offsets turn and scale with the mesh; they do not translate.
+		foreach ( var morph in mesh.Morphs )
+		{
+			for ( var i = 0; i < (morph.Deltas?.Length ?? 0); i++ )
+				morph.Deltas[i] = xform.TransformDirection( morph.Deltas[i] );
+
+			// An open key's base moves with the mesh, or End Shape Key would read the move as the shape.
+			for ( var i = 0; i < (morph.Base?.Length ?? 0); i++ )
+				morph.Base[i] = xform.TransformPoint( morph.Base[i] );
+		}
 
 		if ( !xform.FlipsWinding )
 			return;
@@ -76,6 +88,34 @@ public static class MeshTransform
 					? (BoneWeight[])source.Skin[i].Clone()
 					: unrigged );
 			}
+		}
+
+		// Shape keys merge by name, each padded with no offset on the side that lacks it - a morph
+		// on one body leaves the bodies merged with it still. Keyed off the pre-merge offset like the
+		// colours below.
+		// Open (recording) keys belong to a feature mid-rebuild, not to a merged export, so only
+		// finished ones merge.
+		target.Morphs.RemoveAll( m => m is null || m.Recording );
+
+		if ( target.Morphs.Count > 0 || source.Morphs.Any( m => m is { Recording: false } ) )
+		{
+			var names = target.Morphs.Select( m => m.Name ).Concat( source.Morphs.Where( m => m is { Recording: false } ).Select( m => m.Name ) ).Distinct().ToList();
+			var merged = new List<MeshMorph>();
+
+			foreach ( var name in names )
+			{
+				var deltas = new Vec3[offset + source.Positions.Count];
+
+				if ( target.Morphs.FirstOrDefault( m => m.Name == name ) is { Deltas: not null } t )
+					Array.Copy( t.Deltas, deltas, Math.Min( t.Deltas.Length, offset ) );
+
+				if ( source.Morphs.FirstOrDefault( m => m is { Recording: false } && m.Name == name ) is { } s && s.Deltas?.Length == source.Positions.Count )
+					Array.Copy( s.Deltas, 0, deltas, offset, s.Deltas.Length );
+
+				merged.Add( new MeshMorph { Name = name, Deltas = deltas } );
+			}
+
+			target.Morphs = merged;
 		}
 
 		target.Positions.AddRange( source.Positions );

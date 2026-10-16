@@ -42,14 +42,53 @@ public sealed partial class EffigyWindow
 		return result.ToString();
 	}
 
+	/// <summary>File ▸ Run Build Script…: pick a script file and run it, so a player can use the
+	/// scripts Claude writes without the MCP bridge. Same path as effigy_run; the log goes to the
+	/// console and a stop goes to the prompt line.</summary>
+	private void RunBuildScriptFile()
+	{
+		var fd = new FileDialog( null )
+		{
+			Title = "Run build script...",
+			DefaultSuffix = ".txt",
+			Directory = _documentPath is not null
+				? Path.GetDirectoryName( Path.GetFullPath( _documentPath ) )
+				: Project.Current?.GetAssetsPath() ?? "",
+		};
+
+		fd.SetFindFile();
+		fd.SetNameFilter( "Build script (*.txt *.effigyscript);;All files (*.*)" );
+
+		if ( !fd.Execute() || string.IsNullOrWhiteSpace( fd.SelectedFile ) )
+			return;
+
+		string text;
+		try
+		{
+			text = File.ReadAllText( fd.SelectedFile );
+		}
+		catch ( Exception e )
+		{
+			ReportFailure( $"Can't read {Path.GetFileName( fd.SelectedFile )}: {e.Message}" );
+			return;
+		}
+
+		Log.Info( $"[Effigy] {Path.GetFileName( fd.SelectedFile )}:\n{RunBuildScript( text )}" );
+	}
+
 	/// <summary>Open a document by path, for the bridge. Unsaved work in the current one is kept
-	/// only through Ctrl+Z — the bridge has no dialog to ask with, so it does not ask.</summary>
+	/// only through Ctrl+Z — the bridge has no dialog to ask with, so it does not ask. A file that
+	/// will not read says so in the window (red callout) and leaves the open studio as it was;
+	/// <see cref="LastOpenFailed"/> tells the bridge.</summary>
 	public void OpenDocumentPath( string path )
 	{
 		LeaveCurrentWorkspace();
 		_dialog?.Close();
-		LoadDocument( path );
+		LastOpenFailed = !LoadDocument( path );
 	}
+
+	/// <summary>True when the last <see cref="OpenDocumentPath"/> could not read its file.</summary>
+	public bool LastOpenFailed { get; private set; }
 
 	/// <summary>Save to a path, or to the document's own. Returns where it went, or why not.</summary>
 	public string SaveDocumentTo( string path )
@@ -62,8 +101,18 @@ public sealed partial class EffigyWindow
 		if ( !path.EndsWith( StudioDocument.Extension, StringComparison.OrdinalIgnoreCase ) )
 			path += StudioDocument.Extension;
 
-		Directory.CreateDirectory( Path.GetDirectoryName( Path.GetFullPath( path ) ) ?? "." );
-		WriteDocument( path );
-		return $"Saved {path}.";
+		try
+		{
+			Directory.CreateDirectory( Path.GetDirectoryName( Path.GetFullPath( path ) ) ?? "." );
+		}
+		catch ( Exception e )
+		{
+			var failed = $"Can't save {Path.GetFileName( path )}: its folder could not be made ({e.Message}).";
+			ReportFailure( failed );
+			return failed;
+		}
+
+		// WriteDocument's own line: "Saved X.", or what failed and what did not get written.
+		return WriteDocument( path );
 	}
 }

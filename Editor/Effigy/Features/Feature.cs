@@ -305,6 +305,10 @@ public sealed class FeatureContext
 	/// finds the torso and the arms from it. Null when the studio has none.</summary>
 	public Skeleton Rig;
 
+	/// <summary>Material slots a shell feature (fur) claimed earlier in this rebuild. A later
+	/// fabric must not bind the cloth weave onto them.</summary>
+	public readonly HashSet<int> ShellSlots = new();
+
 	/// <summary>
 	/// This rebuild is a PREVIEW: somebody is dragging a slider and wants to see the shape move, not
 	/// to see the finished article.
@@ -461,7 +465,7 @@ public abstract class Feature
 	/// the current selection instead of making you pick again after the button.
 	///
 	/// Faces go to anything that stores FaceRefs — a sketch's plane, a datum plane, draft, hole,
-	/// face material, subdivide, move face, and EXTRUDE, which pulls the face itself. Body ids go onto every
+	/// face material, subdivide, move face, delete face, and EXTRUDE, which pulls the face itself. Body ids go onto every
 	/// BodySelectionParam. A face selection with no explicit
 	/// body list still names those faces' bodies, so clicking a face and then Fillet fillets that
 	/// part rather than every part.
@@ -510,6 +514,7 @@ public abstract class Feature
 			HoleFeature hole => hole.Faces,
 			SubdivideFeature subdivide => subdivide.Faces,
 			MoveFaceFeature move => move.Faces,
+			DeleteFaceFeature deleted => deleted.Faces,
 			ExtrudeFeature extrude => extrude.Faces,
 			FurFeature fur => fur.Faces,
 			_ => null,
@@ -627,9 +632,16 @@ public abstract class Feature
 	/// ALL PUBLIC FLOAT FIELDS, not only <see cref="Parameters"/>. PrimitiveFeature hides SizeX
 	/// when the shape is a cylinder, and Execute still reads it; skipping hidden ones would leave
 	/// a stale number the moment the dropdown flipped back.
+	///
+	/// NOTHING HERE IS SILENT. A variable that drives a parameter outside its range is clamped, and
+	/// an expression that no longer evaluates holds its last good number - both are the right thing
+	/// to build with, and both mean the part is not what the formula says. The first such parameter
+	/// comes back as a warning for <see cref="Run"/> to apply once Execute has had its say.
 	/// </summary>
-	internal void EvaluateExpressions( Func<string, float?> resolve )
+	internal FeatureDiagnostic EvaluateExpressions( Func<string, float?> resolve )
 	{
+		FeatureDiagnostic warning = null;
+
 		foreach ( var field in GetType().GetFields() )
 		{
 			if ( field.GetValue( this ) is not FloatParam param )
@@ -639,10 +651,97 @@ public abstract class Feature
 				continue;
 
 			if ( !Expression.TryEvaluate( param.Expr, param.Unit, resolve, out var value ) )
+			{
+				warning ??= new FeatureDiagnostic( DiagnosticSeverity.Warning,
+					$"'{param.Label}' is using its last good value, {Expression.Format( param.Value )}",
+					$"'{param.Expr}' doesn't evaluate: {WhyNot( param.Expr, resolve )}.",
+					param.Label, null,
+					"Fix the expression in the dimension, or the variable it names" );
+				continue;
+			}
+
+			var clamped = Math.Clamp( value, param.Min, param.Max );
+
+			if ( clamped != value )
+			{
+				warning ??= new FeatureDiagnostic( DiagnosticSeverity.Warning,
+					$"'{param.Label}' was limited to {Expression.Format( clamped )}",
+					$"'{param.Expr}' comes to {Expression.Format( value )}, but '{param.Label}' {Bounds( param )}.",
+					param.Label, null,
+					"Change the variable so the result is in range" );
+			}
+
+			param.Value = clamped;
+		}
+
+		return warning;
+	}
+
+	private static string Bounds( FloatParam param )
+	{
+		if ( param.Min == float.MinValue )
+			return $"can be at most {Expression.Format( param.Max )}";
+
+		if ( param.Max == float.MaxValue )
+			return $"has to be at least {Expression.Format( param.Min )}";
+
+		return $"has to be between {Expression.Format( param.Min )} and {Expression.Format( param.Max )}";
+	}
+
+	/// <summary>The first #name in <paramref name="expr"/> that does not resolve, or "it isn't a
+	/// number or an expression" when every name does and the syntax is what is wrong.</summary>
+	private static string WhyNot( string expr, Func<string, float?> resolve )
+	{
+		foreach ( var name in VariableResolver.ReferencedNames( expr ) )
+		{
+			if ( resolve?.Invoke( name ) is null )
+				return $"'#{name}' isn't a variable that has a value (missing, renamed, or broken itself)";
+		}
+
+		return "it isn't a number or an expression that can be read";
+	}
+
+	/// <summary>The labels of every parameter whose expression names <c>#name</c>.</summary>
+	public List<string> ParametersReferencing( string name )
+	{
+		var labels = new List<string>();
+
+		foreach ( var field in GetType().GetFields() )
+		{
+			if ( field.GetValue( this ) is not FloatParam param || string.IsNullOrWhiteSpace( param.Expr ) )
 				continue;
 
-			param.Value = Math.Clamp( value, param.Min, param.Max );
+			if ( VariableResolver.ReferencedNames( param.Expr ).Exists( n => string.Equals( n, name, StringComparison.OrdinalIgnoreCase ) ) )
+				labels.Add( param.Label );
 		}
+
+		return labels;
+	}
+
+	/// <summary>
+	/// A variable was renamed: follow it. Rewrites <c>#oldName</c> to <c>#newName</c> in every
+	/// parameter expression and returns how many changed, so renaming a variable never quietly
+	/// freezes the dimensions that used it.
+	/// </summary>
+	public int RenameVariableReferences( string oldName, string newName )
+	{
+		var changed = 0;
+
+		foreach ( var field in GetType().GetFields() )
+		{
+			if ( field.GetValue( this ) is not FloatParam param || string.IsNullOrWhiteSpace( param.Expr ) )
+				continue;
+
+			var rewritten = VariableResolver.RenameReferences( param.Expr, oldName, newName );
+
+			if ( rewritten == param.Expr )
+				continue;
+
+			param.Expr = rewritten;
+			changed++;
+		}
+
+		return changed;
 	}
 
 	protected abstract void Execute( FeatureContext ctx );
@@ -662,8 +761,14 @@ public abstract class Feature
 
 		try
 		{
-			EvaluateExpressions( ctx.Resolve );
+			var expressionWarning = EvaluateExpressions( ctx.Resolve );
 			Execute( ctx );
+
+			// After Execute, so an Error it raised (which throws past this) always wins. Over a
+			// warning of Execute's own the expression one wins: a dimension that is not what its
+			// formula says is the root cause of whatever else looks off.
+			if ( expressionWarning is not null && Error is null )
+				ApplyDiagnostic( expressionWarning );
 		}
 		catch ( FeatureException e )
 		{

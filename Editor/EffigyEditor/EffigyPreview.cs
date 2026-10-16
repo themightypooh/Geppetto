@@ -315,6 +315,7 @@ internal static class EffigyPreview
 					sbMesh.CreateVertexBuffer<SimpleVertex>( vertices.Count, vertices );
 				sbMesh.CreateIndexBuffer( indices.Count, indices );
 				sbMesh.Bounds = bounds;
+				AddMorphs( sbMesh, mesh, faces );
 
 				builder.AddMesh( sbMesh );
 				_meshes.Add( sbMesh );
@@ -322,6 +323,38 @@ internal static class EffigyPreview
 			}
 
 			Model = _meshes.Count > 0 ? builder.Create() : null;
+		}
+	}
+
+	/// <summary>
+	/// The mesh's shape keys (PolyMesh.Morphs) on one bucket, through s&amp;box's Mesh.AddMorph, so a
+	/// preview model has the same morphs the exported one compiles to and SkinnedModelRenderer.Morphs
+	/// can drive it. The vertex buffer is one vertex per face corner (BuildVertices), so each corner
+	/// takes its position's offset. Normal deltas are left at zero here; the DMX export writes real
+	/// ones (DmxMorphs). A material needs F_MORPH_SUPPORTED for the GPU to apply a morph.
+	/// </summary>
+	private static void AddMorphs( Mesh sbMesh, PolyMesh mesh, List<int> faces )
+	{
+		foreach ( var morph in mesh.ValidMorphs )
+		{
+			var deltas = new List<MorphDelta>();
+			var vertex = 0;
+
+			foreach ( var fi in faces )
+			{
+				var face = mesh.Faces[fi];
+
+				for ( var c = 0; c < face.Count; c++, vertex++ )
+				{
+					var d = morph.Deltas[face.Indices[c]];
+
+					if ( d.LengthSquared > 1e-10f )
+						deltas.Add( new MorphDelta( vertex, new Vector3( d.x, d.y, d.z ), Vector3.Zero ) );
+				}
+			}
+
+			if ( deltas.Count > 0 )
+				sbMesh.AddMorph( morph.Name, deltas.ToArray() );
 		}
 	}
 
@@ -392,7 +425,7 @@ internal static class EffigyPreview
 	/// The same corners as <see cref="BuildVertices"/>, carrying the mesh's vertex colour.
 	///
 	/// BACK FOR FUR. The vertex-colour path was retired when paint became a texture; it returns
-	/// because s&box's fur.shader reads the mesh COLOR stream - red is each shell's height - and
+	/// because s&amp;box's fur.shader reads the mesh COLOR stream - red is each shell's height - and
 	/// without it every shell reads as the root layer and the fur renders as a solid lump. Every other
 	/// shader ignores the stream, so the rest of a furred part looks exactly as it did.
 	/// </summary>

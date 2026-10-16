@@ -73,6 +73,14 @@ public static class ProfileBody
 		var n = 2f + Math.Clamp( squareness, 0f, 1f ) * 10f;
 		var rings = new List<List<Vec3>>();
 
+		// Each ring is laid out as (d, w) about the stacking axis, then placed by the axis switch
+		// below. For Up that placement is the identity, so the ring runs anticlockwise about +z and
+		// Skinner winds the skin outward. For Forward and Left the placement swaps two axes - a
+		// mirror - which turns the ring clockwise and turned every Forward/Left profile inside out:
+		// back faces outward, normals pointing in, so the engine culled the outside and lit the
+		// inside. Walking the ring the other way for those two axes undoes the mirror.
+		var winding = axis == 2 ? 1f : -1f;
+
 		foreach ( var z in heights )
 		{
 			var halfWidth = MathF.Max( Sample( f, z ), 1e-4f );
@@ -83,7 +91,7 @@ public static class ProfileBody
 
 			for ( var k = 0; k < sides; k++ )
 			{
-				var a = k * MathF.PI * 2f / sides;
+				var a = winding * k * MathF.PI * 2f / sides;
 				var c = MathF.Cos( a );
 				var si = MathF.Sin( a );
 				var d = MathF.Sign( c ) * MathF.Pow( MathF.Abs( c ), 2f / n ) * halfDepth;
@@ -228,12 +236,12 @@ public sealed class ProfileFeature : Feature
 			return;
 		}
 
-		// The mirror is a second body, flipped across y = 0 with its winding put back. "Leg" becomes
-		// "Leg L" and "Leg R"; a name already ending in L or R keeps its side and mirrors to the other.
+		// The mirror is a second body, flipped across y = 0. "Leg" becomes "Leg L" and "Leg R"; a name
+		// already ending in L or R keeps its side and mirrors to the other. MeshTransform.Apply puts
+		// the winding back itself when the transform flips handedness; reversing the faces again
+		// here turned every mirrored side inside out.
 		var mirrored = mesh.Clone();
 		MeshTransform.Apply( mirrored, Xform.Scale( new Vec3( 1, -1, 1 ) ) );
-		foreach ( var face in mirrored.Faces )
-			Array.Reverse( face.Indices );
 
 		var (left, right) = SideNames( Name );
 		var thisIsLeft = Position.Value.y >= 0f;

@@ -6,7 +6,7 @@ using System.Linq;
 namespace Effigy;
 
 /// <summary>
-/// Fur the way s&box draws it: stacked shells for <c>shaders/fur.shader</c>.
+/// Fur the way s&amp;box draws it: stacked shells for <c>shaders/fur.shader</c>.
 ///
 /// THE SHADER GROWS NOTHING. It is a shell shader (sbox/core/shaders/fur.shader): the mesh must
 /// already hold the copies of the surface, stepped outward, and each copy's mesh vertex colour RED
@@ -94,8 +94,7 @@ public static class FurShells
 	/// <summary>Faces within <paramref name="width"/> of an opening - a collar, a cuff, a hem.</summary>
 	public static List<int> TrimFaces( PolyMesh mesh, float width )
 	{
-		var boundary = GarmentFit.BoundaryVertices( mesh );
-		var weights = GarmentFit.FlareWeights( mesh, boundary, width );
+		var weights = OpeningWeights( mesh, width );
 		var faces = new List<int>();
 
 		for ( var fi = 0; fi < mesh.FaceCount; fi++ )
@@ -105,6 +104,27 @@ public static class FurShells
 		}
 
 		return faces;
+	}
+
+	/// <summary>
+	/// Per vertex, how near an opening it is. A solidified garment's openings are closed by its rim,
+	/// so they are measured on its outer wall and read back onto both walls - see
+	/// MeshSolidify.OuterSheet. Vertices past the walls (shells already grown) are never near one.
+	/// </summary>
+	static float[] OpeningWeights( PolyMesh mesh, float width )
+	{
+		var sheet = MeshSolidify.OuterSheet( mesh, out var offset );
+
+		if ( sheet is null )
+			return GarmentFit.FlareWeights( mesh, GarmentFit.BoundaryVertices( mesh ), width );
+
+		var onSheet = GarmentFit.FlareWeights( sheet, GarmentFit.BoundaryVertices( sheet ), width );
+		var weights = new float[mesh.VertexCount];
+
+		for ( var vi = 0; vi < weights.Length && vi < 2 * offset; vi++ )
+			weights[vi] = onSheet[vi % offset];
+
+		return weights;
 	}
 
 	/// <summary>

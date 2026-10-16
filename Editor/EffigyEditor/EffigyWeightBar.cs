@@ -1,4 +1,4 @@
-using Editor;
+﻿using Editor;
 using Effigy;
 using Sandbox;
 using System;
@@ -12,6 +12,8 @@ namespace Marionette.EditorTools;
 internal sealed class EffigyWeightBar : Widget
 {
 	public const float BarHeight = 28f;
+
+	public const float MinStrength = 0.01f;
 
 	private readonly EffigyNumericField _radius;
 	private readonly EffigyNumericField _strength;
@@ -38,6 +40,7 @@ internal sealed class EffigyWeightBar : Widget
 		Layout.Add( new Editor.Label( "Radius" ) { Color = Theme.TextControl.WithAlpha( 0.6f ) } );
 		_radius = new EffigyNumericField( this, 0.25f, "u" )
 		{
+			Label = "Brush radius",
 			Min = 1e-4f,
 			ValueEdited = v => { if ( _session is not null ) { _session.Radius = MathF.Max( v, 1e-4f ); Changed?.Invoke(); } },
 			FixedWidth = 90f,
@@ -45,11 +48,14 @@ internal sealed class EffigyWeightBar : Widget
 		Layout.Add( _radius );
 
 		Layout.Add( new Editor.Label( "Strength" ) { Color = Theme.TextControl.WithAlpha( 0.6f ) } );
+		// Floored a whisker above zero: a strength of 0 is a brush that changes nothing, and a
+		// stroke that visibly does nothing is the one thing a weight brush must never do.
 		_strength = new EffigyNumericField( this, 0.15f )
 		{
-			Min = 0f,
+			Label = "Weight strength",
+			Min = MinStrength,
 			Max = 1f,
-			ValueEdited = v => { if ( _session is not null ) { _session.Strength = Math.Clamp( v, 0f, 1f ); Changed?.Invoke(); } },
+			ValueEdited = v => { if ( _session is not null ) { _session.Strength = Math.Clamp( v, MinStrength, 1f ); Changed?.Invoke(); } },
 			FixedWidth = 90f,
 		};
 		Layout.Add( _strength );
@@ -84,10 +90,23 @@ internal sealed class EffigyWeightBar : Widget
 			Refresh( boneName );
 	}
 
+	/// <summary>
+	/// Pull the controls back into step with the session.
+	///
+	/// The bone label is read off the SESSION'S bone, not the name passed in. The two used to be
+	/// the same thing; once picking another bone in the Rig tree switches what the brush paints
+	/// mid-session, the Rig tree's selection and the brush's bone can briefly differ (a click on
+	/// empty space deselects in the tree and leaves the brush where it was), and the label has to
+	/// say what the NEXT STROKE will paint. <paramref name="boneName"/> is only the fallback for a
+	/// session with no bone.
+	/// </summary>
 	public void Refresh( string boneName = null )
 	{
 		if ( _session is null )
 			return;
+
+		if ( _session.Bone >= 0 && _session.Bone < _session.Skeleton.Count )
+			boneName = _session.Skeleton.Bones[_session.Bone].Name;
 
 		_radius.SetValue( _session.Radius );
 		_strength.SetValue( _session.Strength );

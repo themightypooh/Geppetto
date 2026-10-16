@@ -1,4 +1,4 @@
-using Editor;
+﻿using Editor;
 using Effigy;
 using Sandbox;
 using System;
@@ -17,6 +17,8 @@ namespace Marionette.EditorTools;
 internal sealed class EffigyPaintBar : Widget
 {
 	public const float BarHeight = 28f;
+
+	public const float MinStrength = 0.01f;
 
 	private readonly PaintSwatch _swatch;
 	private readonly EffigyNumericField _radius;
@@ -66,6 +68,7 @@ internal sealed class EffigyPaintBar : Widget
 
 		_radius = new EffigyNumericField( this, 0.25f, "u" )
 		{
+			Label = "Brush radius",
 			Min = 1e-4f,
 			ValueEdited = OnRadiusEdited,
 			FixedWidth = 90f,
@@ -75,8 +78,15 @@ internal sealed class EffigyPaintBar : Widget
 
 		Layout.Add( new Editor.Label( "Strength" ) { Color = Theme.TextControl.WithAlpha( 0.6f ) } );
 
+		// 0..1 ON THE BOX, matching what the session clamps to. Without the limits here the box
+		// showed 5 while the brush painted at 1, and nothing said so. The floor is a whisker above
+		// zero, not zero: a strength of 0 is a brush that paints nothing, and there is no reason to
+		// be able to set one.
 		_strength = new EffigyNumericField( this, 1f )
 		{
+			Label = "Paint strength",
+			Min = MinStrength,
+			Max = 1f,
 			ValueEdited = OnStrengthEdited,
 			FixedWidth = 90f,
 		};
@@ -218,7 +228,7 @@ internal sealed class EffigyPaintBar : Widget
 		if ( _session is null )
 			return;
 
-		_session.Strength = Math.Clamp( value, 0f, 1f );
+		_session.Strength = Math.Clamp( value, MinStrength, 1f );
 		Changed?.Invoke();
 	}
 }

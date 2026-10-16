@@ -158,6 +158,17 @@ public sealed class TransformFeature : Feature
 				"Set every scale axis to a non-zero value" );
 		}
 
+		// A zero axis with an angle used to rotate by nothing at all (Xform.Rotate falls back to the
+		// identity), so the angle field looked broken. No angle, no axis needed.
+		if ( RotationAngle.Value != 0f && RotationAxis.Value.LengthSquared < 1e-12f )
+		{
+			FailOn( "Rotation axis",
+				"Rotation axis can't be zero",
+				$"The angle is {RotationAngle.Value:0.###}°, but the axis (0, 0, 0) points nowhere, so there is nothing to turn about.",
+				"Set Rotation axis to the direction to turn about - (0, 0, 1) turns about up",
+				"Set Angle to 0 to not rotate" );
+		}
+
 		// Scale, then rotate, then translate — the order a user expects, and the one that keeps a
 		// rotation about the origin from being skewed by a non-uniform scale applied after it.
 		var xform =
@@ -444,7 +455,14 @@ public sealed class SubdivideFeature : Feature
 	protected override void Execute( FeatureContext ctx )
 	{
 		if ( Levels.Clamped == 0 )
+		{
+			// Allowed — it is how you switch the smoothing off without deleting the feature — but
+			// said, so a Subdivide that does nothing does not read as a broken one.
+			Warn( "Levels is 0, so nothing is subdivided",
+				"Each level splits every face into four and smooths; zero levels leaves the part as it is.",
+				"Set Levels to 1 or more to smooth the part" );
 			return;
+		}
 
 		if ( Faces.Count > 0 )
 		{

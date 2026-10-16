@@ -208,6 +208,65 @@ public static class MeshRaycast
 	}
 
 	/// <summary>
+	/// The face across the material from <paramref name="faceIndex"/>.
+	///
+	/// A wall is two faces. Picking the one you can see and then orbiting for the one you cannot
+	/// is the whole cost of moving that wall, so this casts from just inside the face along its
+	/// inward normal and takes the first hit that points back at the ray. On a shelled wall that
+	/// is the inner face, a thickness away. On a solid it is the far side. Fragments of the face
+	/// you started on are not an answer — they are the same surface.
+	/// </summary>
+	public static bool TryOpposite( PolyMesh mesh, int faceIndex, out int other, out Vec3 point )
+	{
+		other = -1;
+		point = default;
+
+		if ( mesh is null || faceIndex < 0 || faceIndex >= mesh.Faces.Count )
+			return false;
+
+		var face = mesh.Faces[faceIndex];
+		var normal = mesh.FaceNormal( face );
+
+		if ( normal.LengthSquared < 0.5f )
+			return false;
+
+		var centroid = mesh.FaceCentroid( face );
+		var reach = 0f;
+
+		foreach ( var index in face.Indices )
+		{
+			if ( index < 0 || index >= mesh.Positions.Count )
+				continue;
+
+			reach = MathF.Max( reach, (mesh.Positions[index] - centroid).Length );
+		}
+
+		// Far enough inside to clear this face's own triangles, not so far that a thin wall is
+		// stepped over. A ten-thousandth of the face, and never less than a hundred-thousandth
+		// of an inch.
+		var push = MathF.Max( reach * 1e-4f, 1e-5f );
+		var origin = centroid - normal * push;
+		var surface = FaceSurface.FromFace( mesh, faceIndex );
+
+		foreach ( var hit in AllHits( mesh, origin, -normal ) )
+		{
+			if ( hit.FaceIndex == faceIndex || surface.Contains( hit.FaceIndex ) )
+				continue;
+
+			// Pointing back: the ray, travelling inward, meets the face from its inside, so the
+			// face's outward normal agrees with the ray. A side wall the ray clips fails this.
+			if ( Vec3.Dot( hit.Normal, -normal ) < 0.5f )
+				continue;
+
+			other = hit.FaceIndex;
+			point = hit.Point;
+			return true;
+		}
+
+		return false;
+	}
+
+	/// <summary>
 	/// The edge of this face nearest <paramref name="point"/>, and how far the point sits from
 	/// that segment.
 	///

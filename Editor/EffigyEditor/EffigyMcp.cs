@@ -1,4 +1,4 @@
-using Editor;
+﻿using Editor;
 using Editor.Mcp;
 using Effigy;
 using Effigy.Render;
@@ -200,6 +200,12 @@ public static class EffigyMcpTools
 			return $"No file at {path}.";
 
 		window.OpenDocumentPath( path );
+
+		// The window has already said why on screen; the bridge has to say it too, or an agent
+		// carries on describing the document that was open before as if it were this one.
+		if ( window.LastOpenFailed )
+			return $"Couldn't open {path} — the file is damaged or from a newer Effigy. The previous document is still open.";
+
 		return $"Opened {path}.\n" + ModelMeasure.Describe( Studio );
 	}
 

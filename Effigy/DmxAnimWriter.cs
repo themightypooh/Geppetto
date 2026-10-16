@@ -151,6 +151,10 @@ public static class DmxAnimWriter
 					WriteScaleChannel( w, skeleton, clip, i, boneTransformIds[i] );
 			}
 
+			// Morphs after the bones, one flex channel each - see WriteMorphChannel.
+			foreach ( var name in clip.Morphs.Keys )
+				WriteMorphChannel( w, clip, name );
+
 			w.CloseArray();
 		}
 		w.CloseElement();
@@ -235,6 +239,51 @@ public static class DmxAnimWriter
 
 		w.Attribute( "usedefaultvalue", "bool", "0" );
 		w.Attribute( "defaultvalue", "float", "1" );
+		w.CloseElement();
+
+		w.CloseElement();
+	}
+
+	/// <summary>
+	/// A morph's values as a flex channel. COPIED FROM FACEPUNCH'S OWN FACE CLIPS
+	/// (addons/citizen/Assets/models/citizen/animations/face/Citizen@FacialFidget_01.dmx, binary DMX 9,
+	/// decoded): a DmeChannel named "&lt;morph&gt;_flex_channel" whose toElement is a plain DmElement
+	/// named for the morph holding one float, `flexWeight`, written through a DmeFloatLog - the same
+	/// log the scale channel uses. ModelDoc's loader names both ("flexWeight", "Ignoring duplicate
+	/// morph anim channel"). The reference's fromElement points at its animation set's control; this
+	/// writes it empty as every other channel here does. The morph name must match the model's flex
+	/// controller (its shape key) for it to drive anything.
+	/// </summary>
+	static void WriteMorphChannel( DmxText w, AnimClip clip, string name )
+	{
+		w.OpenArrayElement( "DmeChannel", w.NextId(), $"{name}_flex_channel" );
+		w.Attribute( "fromElement", "element", "" );
+		w.Attribute( "fromAttribute", "string", "" );
+		w.Attribute( "fromIndex", "int", "0" );
+		w.OpenAttributeElement( "toElement", "DmElement", w.NextId(), name );
+		w.Attribute( "flexWeight", "float", "0" );
+		w.CloseElement();
+		w.Attribute( "toAttribute", "string", "flexWeight" );
+		w.Attribute( "toIndex", "int", "0" );
+		w.Attribute( "mode", "int", "3" );
+
+		w.OpenAttributeElement( "log", "DmeFloatLog", w.NextId(), "float log" );
+		w.OpenArray( "layers", "element_array" );
+		w.OpenArrayElement( "DmeFloatLogLayer", w.NextId(), "float log" );
+
+		WriteTimes( w, clip );
+
+		w.OpenArray( "values", "float_array" );
+
+		for ( var f = 0; f < clip.FrameCount; f++ )
+			w.ArrayValue( DmxText.Number( clip.MorphAt( name, f ) ) );
+
+		w.CloseArray();
+		w.CloseElement();
+		w.CloseArray();
+
+		w.Attribute( "usedefaultvalue", "bool", "1" );
+		w.Attribute( "defaultvalue", "float", "0" );
 		w.CloseElement();
 
 		w.CloseElement();

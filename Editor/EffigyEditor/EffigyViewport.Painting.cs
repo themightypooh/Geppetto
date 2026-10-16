@@ -50,6 +50,9 @@ internal sealed partial class EffigyViewport
 	/// it for one mark without leaving the mode flipped afterwards.</summary>
 	private bool _paintEraseMode;
 
+	/// <summary>Pressed, and the stroke has not reached the surface yet. See PaintFrame.</summary>
+	private bool _paintStrokeArmed;
+
 	// The dynamic texture and its material, held for the life of a paint session and re-uploaded in
 	// place. Held rather than recreated per dab — a fresh texture + material copy per mouse-move is
 	// exactly the garbage a held drag would make thousands of.
@@ -78,6 +81,11 @@ internal sealed partial class EffigyViewport
 		if ( PaintSession is { IsStroking: true } )
 			PaintSession.CancelStroke();
 
+		if ( PaintSession is not null && _paintStrokeArmed )
+			PaintSession.Erasing = _paintEraseMode;
+
+		_paintStrokeArmed = false;
+		ClearCallout( "paint-material" );
 		PaintSession = null;
 		_paintCursor = null;
 
@@ -105,6 +113,13 @@ internal sealed partial class EffigyViewport
 		// preview already falls back to.
 		_paintMaterial = Material.Load( "materials/default.vmat" )?.CreateCopy( "effigy_paint" );
 		_paintMaterial?.Set( "g_tColor", _paintTexture );
+
+		// Without the material there is nothing to show the paint on: strokes still record, but the
+		// model never changes colour, which reads exactly like a brush that does not work.
+		if ( _paintMaterial is null )
+			ShowCallout( "paint-material", EffigyCalloutKind.Error,
+				"Can't show paint: materials/default.vmat would not load, so strokes are saved but not drawn. Check the engine's core content is installed.",
+				lifetime: null );
 
 		session.Canvas.ClearDirty();
 	}
@@ -164,18 +179,37 @@ internal sealed partial class EffigyViewport
 
 			_paintCursor = PaintSession.Hover( origin, direction );
 
-			if ( !stroking && Gizmo.WasLeftMousePressed )
+			if ( !stroking && !_paintStrokeArmed && Gizmo.WasLeftMousePressed )
 			{
-				// The bar's Erase toggle is the mode. Ctrl inverts it for this stroke only, the
-				// same "read once at the press" rule sculpt uses, so releasing mid-drag cannot
-				// split one mark into two kinds.
-				_paintEraseMode = PaintSession.Erasing;
-				var hold = Editor.Application.IsKeyDown( KeyCode.Control );
-				PaintSession.Erasing = hold ? !_paintEraseMode : _paintEraseMode;
+				// A brush that lays down nothing is refused at the press rather than run: the stroke
+				// would be recorded, do nothing, and look like the tool being broken. Strength has a
+				// floor on the bar; alpha is the picker's, so it is the one that gets here.
+				if ( PaintSession.A <= 0.001f || PaintSession.Strength <= 0f )
+				{
+					RefuseOncePerPress( "paint-nothing", PaintSession.A <= 0.001f
+						? "Can't paint: the colour's alpha is 0, so the brush lays down nothing (erasing too). Raise the alpha in the colour swatch."
+						: "Can't paint: Strength is 0. Raise it in the paint bar." );
+				}
+				else
+				{
+					// The bar's Erase toggle is the mode. Ctrl inverts it for this stroke only, the
+					// same "read once at the press" rule sculpt uses, so releasing mid-drag cannot
+					// split one mark into two kinds.
+					_paintEraseMode = PaintSession.Erasing;
+					var hold = Editor.Application.IsKeyDown( KeyCode.Control );
+					PaintSession.Erasing = hold ? !_paintEraseMode : _paintEraseMode;
+					_paintStrokeArmed = true;
+				}
+			}
 
+			// Armed at the press, begun on the first frame the held button is over the surface —
+			// so a stroke started just off the silhouette and dragged on paints, as sculpt's does.
+			if ( !stroking && _paintStrokeArmed && Gizmo.IsLeftMouseDown )
+			{
 				if ( PaintSession.BeginStroke( origin, direction ) )
 				{
 					stroking = true;
+					_paintStrokeArmed = false;
 					_paintPreviewStale = true;
 				}
 			}
@@ -196,6 +230,14 @@ internal sealed partial class EffigyViewport
 				PaintStrokeFinished?.Invoke( stroke );
 
 			PaintSession.Erasing = _paintEraseMode;
+		}
+
+		// Released without ever reaching the model.
+		if ( _paintStrokeArmed && !Gizmo.IsLeftMouseDown )
+		{
+			_paintStrokeArmed = false;
+			PaintSession.Erasing = _paintEraseMode;
+			Refuse( "Missed the model — start or drag the stroke onto the part." );
 		}
 
 		if ( _paintPreviewStale )
@@ -227,9 +269,12 @@ internal sealed partial class EffigyViewport
 		// next one would be, read live off the modifier. Reading only the session flag would make the
 		// ring tell the truth one stroke late — the "visible after the click rather than before it"
 		// complaint, which is the whole reason the ring is coloured at all.
-		var erasing = PaintSession.IsStroking
+		// Between strokes the session flag IS the bar's Erase toggle, and Ctrl flips it — so the
+		// ring is the toggle XOR Ctrl. Reading Ctrl alone drew the opposite colour whenever the
+		// toggle was on.
+		var erasing = PaintSession.IsStroking || _paintStrokeArmed
 			? PaintSession.Erasing
-			: Editor.Application.IsKeyDown( KeyCode.Control );
+			: PaintSession.Erasing ^ Editor.Application.IsKeyDown( KeyCode.Control );
 
 		Gizmo.Draw.IgnoreDepth = true;
 		Gizmo.Draw.LineThickness = 1.5f;

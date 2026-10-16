@@ -190,12 +190,12 @@ internal sealed class EffigyMaterialsPanel : Widget, AssetSystem.IEventListener
 
 		// Two fields rather than one linked number, matching the Vector2 the mesh editor shows.
 		// A tile is usually square and a plank never is, and a single field cannot say so.
-		_scaleU = new EffigyNumericField( _scaleStrip, 1f, "u" ) { Min = 0.0001f, FixedWidth = 74 };
+		_scaleU = new EffigyNumericField( _scaleStrip, 1f, "u" ) { Label = "Scale U", Min = 0.0001f, FixedWidth = 74 };
 		_scaleU.ValueEdited = _ => PushScale();
 		_scaleU.ToolTip = "Units across one repeat";
 		_scaleStrip.Layout.Add( _scaleU );
 
-		_scaleV = new EffigyNumericField( _scaleStrip, 1f, "u" ) { Min = 0.0001f, FixedWidth = 74 };
+		_scaleV = new EffigyNumericField( _scaleStrip, 1f, "u" ) { Label = "Scale V", Min = 0.0001f, FixedWidth = 74 };
 		_scaleV.ValueEdited = _ => PushScale();
 		_scaleV.ToolTip = "Units up one repeat";
 		_scaleStrip.Layout.Add( _scaleV );

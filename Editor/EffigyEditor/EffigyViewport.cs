@@ -140,12 +140,22 @@ internal sealed partial class EffigyViewport : Widget
 	/// Set the drag mode for the selected bone, or do nothing when none is selected — the W/E/R
 	/// shortcuts call this, and a mode with no bone to apply it to is a key that did nothing.
 	/// </summary>
-	public void SetBoneDragMode( BoneDragMode mode )
+	/// <returns>Whether a bone took the key, so the caller can say what W/E/R do when neither the
+	/// bone nor the body handle could (see <see cref="HandleKeysIdleReason"/>).</returns>
+	public bool SetBoneDragMode( BoneDragMode mode )
 	{
 		if ( _selectedBoneIndex < 0 )
-			return;
+			return false;
+
+		// Same rule as SetBodyDragMode: swapping the control under a held button strands the old one.
+		if ( _boneDragging && mode != _boneDragMode )
+		{
+			Refuse( "Finish the drag first — let go of the bone, then switch between move, rotate and scale." );
+			return true;
+		}
 
 		_boneDragMode = mode;
+		return true;
 	}
 
 	/// <summary>True while a drag is in progress (mouse down and control reporting).</summary>
@@ -1418,8 +1428,7 @@ internal sealed partial class EffigyViewport : Widget
 
 	// --- standard views ----------------------------------------------------------------------
 
-	/// <summary>Named camera poses, reachable from the View menu. A fly camera does not need a
-	/// corner cube to stay oriented, but snapping to a plane is still useful.</summary>
+	/// <summary>Named camera poses, reachable from the View menu and the view cube.</summary>
 	public enum StandardView
 	{
 		Top,
@@ -1434,8 +1443,10 @@ internal sealed partial class EffigyViewport : Widget
 	/// <summary>
 	/// Point the camera down a named axis, keeping whatever the current framing distance is.
 	///
-	/// s&amp;box is +x forward, +y left, +z up, so "Front" looks along -x at the XZ plane and "Right"
-	/// looks along +y at the YZ plane — matching how DrawReferencePlanes names the same three.
+	/// Named after the reference planes: Front looks square at the Front (XZ) plane from -y, Right
+	/// at the Right (YZ) plane from +x, Top down onto Top (XY). These were the other way round —
+	/// "Front" looked along -x, which is face-on to the RIGHT plane — so picking Front from the
+	/// menu and then sketching on the Front plane put you edge-on to your own sketch.
 	/// </summary>
 	public void SetStandardView( StandardView view )
 	{
@@ -1443,17 +1454,14 @@ internal sealed partial class EffigyViewport : Widget
 		{
 			StandardView.Top => new Vector3( 0f, 0f, 1f ),
 			StandardView.Bottom => new Vector3( 0f, 0f, -1f ),
-			StandardView.Front => new Vector3( 1f, 0f, 0f ),
-			StandardView.Back => new Vector3( -1f, 0f, 0f ),
-			StandardView.Left => new Vector3( 0f, 1f, 0f ),
-			StandardView.Right => new Vector3( 0f, -1f, 0f ),
+			StandardView.Front => new Vector3( 0f, -1f, 0f ),
+			StandardView.Back => new Vector3( 0f, 1f, 0f ),
+			StandardView.Left => new Vector3( -1f, 0f, 0f ),
+			StandardView.Right => new Vector3( 1f, 0f, 0f ),
 			_ => new Vector3( 1f, -1f, 0.65f ).Normal,
 		};
 
-		// Looking straight down needs an up vector that is not also straight down.
-		var up = MathF.Abs( dir.z ) > 0.99f ? Vector3.Forward : Vector3.Up;
-
-		PointCameraAt( CurrentFocus(), dir, up );
+		LookDown( dir );
 	}
 
 	/// <summary>
@@ -1467,7 +1475,10 @@ internal sealed partial class EffigyViewport : Widget
 	public void ViewNormalToSketchPlane()
 	{
 		if ( ActiveSketch?.Plane is not { } plane )
+		{
+			Refuse( "Open a sketch first — N looks square at its plane." );
 			return;
+		}
 
 		var normal = ToWorldDir( plane.Normal );
 		var up = ToWorldDir( plane.YAxis );
@@ -1490,18 +1501,8 @@ internal sealed partial class EffigyViewport : Widget
 		return Vector3.Zero;
 	}
 
-	private void PointCameraAt( Vector3 focus, Vector3 direction, Vector3 up )
-	{
-		var distance = (_camera.WorldPosition - focus).Length;
-
-		// A camera sitting exactly on the focus has no distance to preserve, which happens before
-		// anything has been framed. Fall back to the reference planes' own scale.
-		if ( distance < 1f )
-			distance = PlaneSize * 1.25f;
-
-		_camera.WorldPosition = focus + direction.Normal * distance;
-		_camera.WorldRotation = Rotation.LookAt( -direction.Normal, up );
-	}
+	private void PointCameraAt( Vector3 focus, Vector3 direction, Vector3 up ) =>
+		SwingCameraTo( focus, direction, up );
 
 	// --- per-frame tick ---------------------------------------------------------------------
 
@@ -1520,6 +1521,24 @@ internal sealed partial class EffigyViewport : Widget
 	/// it pointing into the dead assembly.
 	/// </summary>
 	public Action Ticked { get; set; }
+
+	/// <summary>What has already been said during the press now held, by key. Cleared once the
+	/// left button is up — see OnPreFrame.</summary>
+	private readonly HashSet<string> _saidThisPress = new();
+
+	/// <summary>
+	/// <see cref="Refuse"/>, but at most once per press of the left button.
+	///
+	/// For the refusals that are found inside per-frame code — a handle held at its limit, a snap
+	/// that finds nothing, a click a live operation will not take. Said every frame, the same
+	/// callout would be refreshed sixty times a second and the status bar would never show anything
+	/// else; said once, it reads as the answer to the thing you just did.
+	/// </summary>
+	private void RefuseOncePerPress( string key, string why )
+	{
+		if ( _saidThisPress.Add( key ) )
+			Refuse( why );
+	}
 
 	private void OnPreFrame()
 	{
@@ -1555,7 +1574,18 @@ internal sealed partial class EffigyViewport : Widget
 		if ( _sculptBarOverlay?.IsValid() == true && (_sculptBarOverlay.Position - FloatingBarOrigin).Length > 0.5f )
 			_sculptBarOverlay.Position = FloatingBarOrigin;
 
-		var overAnyOverlay = (_resultOverlay?.IsUnderMouse ?? false)
+		// The view cube first: it moves the camera, and says whether it has the mouse.
+		ViewCubeFrame( _flyingCamera );
+
+		PlaceCallouts();
+
+		// The radial menu too: while it is up, a click is a pick from it and nothing else.
+		RadialFrame();
+
+		var overAnyOverlay = CubeOwnsMouse
+			|| RadialOwnsMouse
+			|| CalloutsUnderMouse
+			|| (_resultOverlay?.IsUnderMouse ?? false)
 			|| (_modelHeader?.IsValid() == true && _modelHeader.Visible && _modelHeader.IsUnderMouse)
 			|| (_modelPalette?.IsValid() == true && _modelPalette.Visible && _modelPalette.IsUnderMouse)
 			|| (_modelCatalog?.IsValid() == true && _modelCatalog.Visible)
@@ -1585,6 +1615,10 @@ internal sealed partial class EffigyViewport : Widget
 
 		// Held for the right-click menu, which has no frame of its own to build a ray in.
 		CaptureCursorRay();
+
+		// A new press, a new chance to be told. See RefuseOncePerPress.
+		if ( !Gizmo.IsLeftMouseDown && !Gizmo.WasLeftMousePressed )
+			_saidThisPress.Clear();
 
 		// BEFORE the planes, not with the rest of the picking below. The planes decide whether to
 		// take this click by comparing against the face under the cursor, so the face has to be
@@ -1625,6 +1659,7 @@ internal sealed partial class EffigyViewport : Widget
 		NoteFrame();
 		DrawNotes();
 		DrawMarkers();
+		MeasureFrame();
 
 		// AFTER SketchFrame and outside it, because SketchFrame returns early when no sketch is
 		// open and "no sketch is open" is one of the answers the probe exists to give. Off unless
@@ -1666,6 +1701,9 @@ internal sealed partial class EffigyViewport : Widget
 		// and a stray arrow over the model is exactly the kind of thing that eats a bone click.
 		if ( !RigMode )
 		{
+			// Before the handles stand down for a live tool, so the reason is said the frame they go.
+			HandlesHiddenFrame();
+
 			FaceDragFrame();
 
 			// Beside it because it is the same kind of handle - the open feature's number, answered
@@ -1682,7 +1720,10 @@ internal sealed partial class EffigyViewport : Widget
 		// pick mode already gets from Gizmo.HasHovered/_hoveredSketchId/_hoveredFaceBodyId. Without
 		// it, placing a bone or assigning a body was the only click-to-act mode in the whole tool
 		// that left the cursor a plain arrow the entire time.
-		Cursor = Gizmo.HasHovered || IsSketching || IsMeshEditing || IsPainting || IsMaterialBrushing || _hoveredSketchId is not null || _hoveredFaceBodyId is not null
+		DrawViewCube();
+		DrawRadial();
+
+		Cursor = CubeOwnsMouse || Gizmo.HasHovered || IsSketching || IsMeshEditing || IsPainting || IsMaterialBrushing || _hoveredSketchId is not null || _hoveredFaceBodyId is not null
 			|| BoneToolActive || BodyPickMode || FacePickMode || EdgePickMode
 			|| ( RigMode && TryPickBoneUnderCursor( out _ ) )
 			? CursorShape.Finger : CursorShape.Arrow;
@@ -1888,16 +1929,20 @@ internal sealed partial class EffigyViewport : Widget
 
 		var isSelected = index == _selectedBoneIndex;
 
-		// SOFT BONES ARE BLUE. Which bones in a chain are simulated and which are welded is not
+		// MARIONETTE'S COLOURS: selected yellow, hovered green, a plain bone white. One meaning per
+		// colour across both tools, so moving between them never misreads a bone.
+		//
+		// SOFT BONES ARE PINK. Which bones in a chain are simulated and which are welded is not
 		// otherwise visible anywhere in the viewport - it is a tick in a panel on a bone you have to
 		// select one at a time - and it is the first thing you want to know when a rig wobbles
-		// wrongly. Selection still wins over it: yellow means "this is the one the gizmo will move",
-		// which is a fact about right now, where softness is a fact about the rig.
+		// wrongly. Not blue: blue is a twist bone in Marionette. Selection still wins over it:
+		// yellow means "this is the one the gizmo will move", which is a fact about right now,
+		// where softness is a fact about the rig.
 		Gizmo.Draw.Color = isSelected
-			? new Color( 1f, 0.85f, 0.2f, 1f )
+			? Theme.Yellow
 			: bone.Soft is not null
-				? new Color( 0.35f, 0.7f, 1f, 0.85f )
-				: new Color( 0.95f, 0.35f, 0.2f, 0.8f );
+				? Theme.Pink.WithAlpha( 0.85f )
+				: Color.White.WithAlpha( 0.8f );
 
 		DrawDogBone( head, tail, xAxis, zAxis );
 
@@ -1967,7 +2012,7 @@ internal sealed partial class EffigyViewport : Widget
 		// nothing.
 		if ( hovered && !isSelected )
 		{
-			Gizmo.Draw.Color = new Color( 1f, 0.85f, 0.2f, 0.9f );
+			Gizmo.Draw.Color = Theme.Green.WithAlpha( 0.9f );
 			DrawDogBone( head, tail, xAxis, zAxis );
 		}
 	}
@@ -2032,8 +2077,11 @@ internal sealed partial class EffigyViewport : Widget
 
 			case BoneDragMode.Scale:
 			{
-				// Scale adjusts bone length via a vertical drag.
-				if ( !Gizmo.Control.Position( $"bone{_selectedBoneIndex}-scl", Vector3.Zero, out var delta, Rotation.Identity ) )
+				// ONE ARROW, ALONG THE BONE. Length is one number, and this used to be a three-arrow
+				// Position control of which only the bone's own Y did anything — two inert arrows that
+				// read as broken (see EffigyViewport.FaceDrag.cs for the same lesson on faces). The
+				// scope carries the bone's rotation, so local Y is the bone's own axis.
+				if ( !Gizmo.Control.Arrow( $"bone{_selectedBoneIndex}-scl", new Vector3( 0f, 1f, 0f ), out var distance ) )
 				{
 					EndBoneDragIfReleased();
 					return;
@@ -2042,15 +2090,26 @@ internal sealed partial class EffigyViewport : Widget
 				BeginBoneDrag( head, headRot, bone.Length );
 				_boneDragging = true;
 
-				// Use the vertical (Y) component of the drag as the length change.
-				var localDelta = _dragStartRot.Inverse * delta;
-				var newLength = MathF.Max( _dragStartLength + localDelta.y, 0.5f );
+				// ACCUMULATED. The arrow reports the change since the last frame, and reading it as
+				// the total since the grab — which this did — left the bone within a frame's travel of
+				// where it started however far you dragged.
+				_moveDelta += new Vector3( 0f, distance, 0f );
+
+				var wanted = _dragStartLength + _moveDelta.y;
+				var newLength = MathF.Max( wanted, MinDraggedBoneLength );
+
+				if ( wanted < MinDraggedBoneLength )
+					RefuseOncePerPress( "bone-length-floor", $"Bone length stops at {MinDraggedBoneLength} when dragged. For a shorter bone, type its head and tail in the Rig panel." );
 
 				ApplyBoneTransform( _selectedBoneIndex, _dragStartPos, _dragStartRot, newLength );
 				break;
 			}
 		}
 	}
+
+	/// <summary>The shortest the scale handle will drag a bone. A bone dragged through zero would
+	/// flip end over end, and one at zero is refused by the skeleton outright.</summary>
+	private const float MinDraggedBoneLength = 0.5f;
 
 	private void BeginBoneDrag( Vector3 head, Rotation headRot, float length )
 	{
@@ -2230,6 +2289,14 @@ internal sealed partial class EffigyViewport : Widget
 	/// now, registered on the window, so they never reach this method.</summary>
 	protected override void OnKeyPress( KeyEvent e )
 	{
+		// An open radial menu is the shallowest thing on screen: Escape closes it and nothing else.
+		if ( _radialOpen && e.Key == KeyCode.Escape )
+		{
+			CloseRadial();
+			e.Accepted = true;
+			return;
+		}
+
 		// Edit mode's Enter (accept the operation) and Escape (cancel it, or drop the selection).
 		// First, because an open operation is the shallowest thing Escape can mean.
 		if ( IsMeshEditing && MeshEditKeyPressed is not null
@@ -2276,6 +2343,25 @@ internal sealed partial class EffigyViewport : Widget
 		if ( e.Key != KeyCode.Escape )
 		{
 			base.OnKeyPress( e );
+			return;
+		}
+
+		// A number on screen is the shallowest thing Escape can mean while measuring. The second
+		// press puts the tool down. Selecting a face again is what the click is for once it is off.
+		if ( Measuring )
+		{
+			if ( HasMeasure )
+			{
+				ClearMeasure();
+				MeasureStatus?.Invoke( "Measure: click a face, an edge or a vertex." );
+			}
+			else
+			{
+				Measuring = false;
+				MeasureStatus?.Invoke( "Measure off." );
+			}
+
+			e.Accepted = true;
 			return;
 		}
 

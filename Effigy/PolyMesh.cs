@@ -142,6 +142,42 @@ public sealed class PolyMesh
 
 	public bool HasPaint => Paint is not null;
 
+	/// <summary>
+	/// Shape keys (morph targets, flex controllers): each a name and a per-vertex offset parallel to
+	/// <see cref="Positions"/> - where each vertex moves when the morph is fully on. Empty for a
+	/// normal mesh. Rides the mesh for the reason <see cref="Skin"/> does: Clone, Append and
+	/// MeshTransform carry it, and the writers read the merged mesh. A morph whose length no longer
+	/// matches the vertex count (an operation that rebuilt the vertex list without carrying it) is
+	/// dropped by <see cref="ValidMorphs"/> rather than written wrong.
+	///
+	/// Written by DmxWriter as delta states plus a combination operator (Facepunch's citizen_head.dmx
+	/// layout), by the preview through s&amp;box's Mesh.AddMorph, and played by Marionette's morph
+	/// curves; a material on a morphing mesh needs F_MORPH_SUPPORTED.
+	/// </summary>
+	public List<MeshMorph> Morphs = new();
+
+	/// <summary>The morphs that still fit the mesh, in order.</summary>
+	public IEnumerable<MeshMorph> ValidMorphs => Morphs.Where( m => m is { Recording: false } && m.Deltas is not null && m.Deltas.Length == Positions.Count && !string.IsNullOrWhiteSpace( m.Name ) );
+
+	/// <summary>A shape key a Shape Key feature opened and no End Shape Key has closed yet.</summary>
+	public MeshMorph RecordingMorph => Morphs.FirstOrDefault( m => m is { Recording: true } );
+
+	public bool HasMorphs => ValidMorphs.Any();
+
+	/// <summary>Add (or replace) a shape key from where every vertex should be when it is fully on -
+	/// the same vertex order as this mesh, e.g. a copy of it pushed about by a brush or a deform.</summary>
+	public MeshMorph AddMorph( string name, IReadOnlyList<Vec3> target )
+	{
+		if ( string.IsNullOrWhiteSpace( name ) ) throw new ArgumentException( "a morph needs a name", nameof( name ) );
+		if ( target is null || target.Count != Positions.Count )
+			throw new ArgumentException( $"morph '{name}' has {target?.Count ?? 0} positions, the mesh has {Positions.Count}", nameof( target ) );
+
+		var morph = new MeshMorph { Name = name, Deltas = Positions.Select( ( p, i ) => target[i] - p ).ToArray() };
+		Morphs.RemoveAll( m => m?.Name == name );
+		Morphs.Add( morph );
+		return morph;
+	}
+
 	public PolyMesh() { }
 
 	public PolyMesh( IEnumerable<Vec3> positions, IEnumerable<Face> faces )
@@ -424,6 +460,8 @@ public sealed class PolyMesh
 		if ( Paint is not null )
 			m.Paint = Paint.Clone();
 
+		m.Morphs = Morphs.Where( x => x is not null ).Select( x => x.Clone() ).ToList();
+
 		foreach ( var f in Faces )
 			m.Faces.Add( new Face( (int[])f.Indices.Clone(), (Vec2[])f.UVs.Clone(), f.Material ) );
 
@@ -507,4 +545,23 @@ public static class MeshValidator
 	/// that a subdivision pass did not quietly corrupt the topology.</summary>
 	public static int EulerCharacteristic( PolyMesh mesh ) =>
 		mesh.VertexCount - mesh.BuildEdgeFaces().Count + mesh.FaceCount;
+}
+
+/// <summary>One shape key of a <see cref="PolyMesh"/>: a name and a per-vertex offset.</summary>
+public sealed class MeshMorph
+{
+	public string Name = "";
+	public Vec3[] Deltas = Array.Empty<Vec3>();
+
+	/// <summary>
+	/// While a Shape Key feature is recording: the positions the mesh had when it opened, which End
+	/// Shape Key turns the movement into deltas against and puts back. Null for a finished morph.
+	/// Lives on the mesh (and is cloned with it) so the rebuild cache, which snapshots meshes,
+	/// carries an open key across a partial rebuild.
+	/// </summary>
+	public Vec3[] Base;
+
+	public bool Recording => Base is not null;
+
+	public MeshMorph Clone() => new() { Name = Name, Deltas = (Vec3[])Deltas?.Clone(), Base = (Vec3[])Base?.Clone() };
 }

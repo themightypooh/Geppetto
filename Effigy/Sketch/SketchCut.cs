@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace Effigy;
@@ -114,9 +114,16 @@ public static class SketchCut
 	/// snapshot only once a stroke has actually found something, and a stroke swept over empty
 	/// space must not become a Ctrl+Z that restores an identical sketch.
 	/// </summary>
-	public static int Apply( Sketch sketch, IReadOnlyList<CutCrossing> crossings )
+	public static int Apply( Sketch sketch, IReadOnlyList<CutCrossing> crossings ) =>
+		Apply( sketch, crossings, out _ );
+
+	/// <summary>As <see cref="Apply(Sketch, IReadOnlyList{CutCrossing})"/>, also counting the
+	/// crossings that could not be cut, so the editor can say so rather than let a piece the stroke
+	/// plainly went through stay put without a word.</summary>
+	public static int Apply( Sketch sketch, IReadOnlyList<CutCrossing> crossings, out int missed )
 	{
 		var cut = 0;
+		missed = 0;
 
 		if ( sketch is null || crossings is null )
 			return cut;
@@ -137,6 +144,8 @@ public static class SketchCut
 				// reads to tell "nothing was under the stroke" from "something was".
 				if ( SketchEdit.Trim( sketch, crossing.Curve, crossing.At, out _ ) )
 					cut++;
+				else
+					missed++;
 
 				continue;
 			}

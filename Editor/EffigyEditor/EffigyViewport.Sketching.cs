@@ -270,7 +270,19 @@ internal sealed partial class EffigyViewport
 		DrawSelectedRegions();
 
 		if ( _hoveredSketchId is null )
+		{
+			// A click INSIDE a sketch's outline that nothing took is a click on a region that never
+			// closed - it is drawn unfilled, but on a busy part that is easy to miss, and the click
+			// simply vanished. Only said when nothing else armed is under the cursor, so a face or a
+			// plane behind the sketch still takes its click without a complaint about the sketch.
+			if ( Gizmo.WasLeftMousePressed && (!FacePickMode || _facePickHit is null)
+				&& _hoveredPlane < 0 && _hoveredDatumPlane is null && ClickInsideOpenSketch() )
+			{
+				Refuse( "That spot isn't inside a closed region of the sketch, so there's no face to pick there. Click inside a closed outline, or click one of its lines to take the whole sketch." );
+			}
+
 			return;
+		}
 
 		DrawSketchPickHighlight( _hoveredSketchId, _hoveredSketchSeed );
 
@@ -355,6 +367,45 @@ internal sealed partial class EffigyViewport
 		seed = regionSeed;
 		distance = regionDistance;
 		return true;
+	}
+
+	/// <summary>Whether the cursor is within the outline of a pickable, visible sketch - its curves'
+	/// bounds - without being on a curve or in a closed region (TryResolveSketchHover already said
+	/// no to both by the time this is asked).</summary>
+	private bool ClickInsideOpenSketch()
+	{
+		var ray = Gizmo.CurrentRay;
+
+		foreach ( var pickable in _pickableSketches )
+		{
+			if ( _hiddenSketches.Contains( pickable.Sketch ) )
+				continue;
+
+			if ( !RayToPlane( pickable.Sketch.Plane, ray.Position, ray.Forward, out var uv ) )
+				continue;
+
+			var min = new Vec2( float.MaxValue, float.MaxValue );
+			var max = new Vec2( float.MinValue, float.MinValue );
+			var any = false;
+
+			foreach ( var curve in pickable.Sketch.Curves )
+			{
+				if ( curve.Construction )
+					continue;
+
+				foreach ( var p in curve.Tessellate( pickable.Sketch, pickable.Sketch.Tolerance ) )
+				{
+					min = new Vec2( MathF.Min( min.x, p.x ), MathF.Min( min.y, p.y ) );
+					max = new Vec2( MathF.Max( max.x, p.x ), MathF.Max( max.y, p.y ) );
+					any = true;
+				}
+			}
+
+			if ( any && uv.x >= min.x && uv.x <= max.x && uv.y >= min.y && uv.y <= max.y )
+				return true;
+		}
+
+		return false;
 	}
 
 	/// <summary>Intersect a ray with any sketch plane. The active-sketch version above this is
@@ -607,6 +658,11 @@ internal sealed partial class EffigyViewport
 		_pending.Clear();
 		_chainStartIndex = -1;
 
+		// A SPLINE WITH ENOUGH POINTS IS KEPT, not thrown away with the rest. It has no last click
+		// that commits it - Enter does - so reaching for the next tool is the other natural way to
+		// say "done", and it used to delete the whole curve without a word.
+		FinishSplineInProgress();
+
 		// The six newer tools keep state of their own - a half-placed spline, a chosen fillet corner -
 		// and it has to go for the same reason _pending does: carrying it into the next tool is how
 		// stale clicks come back.
@@ -825,7 +881,7 @@ internal sealed partial class EffigyViewport
 
 		if ( ActiveSketch is null || SketchTool != SketchToolKind.Select )
 		{
-			EndPointDrag();
+			FinishPointDragEarly();
 			return;
 		}
 
@@ -891,6 +947,11 @@ internal sealed partial class EffigyViewport
 		_dragPoint = index;
 		_dragMoved = false;
 		_dragFrom = ActiveSketch.Points[index];
+		_dragHeldSaid = false;
+
+		// The whole sketch as it was picked up: the undo step is taken from this on release, and
+		// only if the drag changed anything - see RecordUndoFrom.
+		_dragBefore = ActiveSketch.Clone();
 
 		_dragGroup.Clear();
 
@@ -924,11 +985,17 @@ internal sealed partial class EffigyViewport
 			// read as the drag being cosmetic rather than as a rebuild that never happened.
 			// DragCurveHandle copies its flags out for exactly this reason.
 			var moved = _dragMoved;
+			var before = _dragBefore;
 
 			EndPointDrag();
 
-			if ( moved )
-				Edited();
+			if ( !moved )
+				return;
+
+			MergeDroppedPoint( index, before );
+
+			RecordUndoFrom( before );
+			Edited();
 
 			return;
 		}
@@ -942,42 +1009,7 @@ internal sealed partial class EffigyViewport
 			_snapper.IgnorePoint = -1;
 
 			if ( Dist( target, ActiveSketch.Points[index] ) > 1e-6f )
-			{
-				// Snapshot on the FIRST movement, before the point is written: grabbing a point
-				// and letting go without moving it should not be an undo step, and the whole drag
-				// should be one step rather than one per frame.
-				if ( !_dragMoved )
-					SketchEditing?.Invoke();
-
-				// THE GROUP MOVES BY THE SAME DELTA, measured from where this point was last frame
-				// rather than from where it was picked up. The frame-to-frame form is what survives
-				// the solve below: an offset from the grab position would be applied to points the
-				// constraints have since moved, and the group would jump on the next mouse move.
-				var delta = target - _dragFrom;
-
-				ActiveSketch.Points[index] = target;
-
-				foreach ( var other in _dragGroup )
-				{
-					if ( other < ActiveSketch.Points.Count )
-						ActiveSketch.Points[other] = ActiveSketch.Points[other] + delta;
-				}
-
-				_dragFrom = target;
-				_dragMoved = true;
-
-				// AND THE SKETCH IS RE-SOLVED AROUND THE HAND, every frame of the drag, pinned on
-				// the point being dragged - which is what SketchSolver's own header asks the editor
-				// to do and what nothing here was doing. Without it a drag walked points straight
-				// through their own rules: a line told to be horizontal tilted, a dimensioned one
-				// changed length, and the marks drawn beside them went on claiming otherwise until
-				// something unrelated happened to solve the sketch again.
-				//
-				// Guarded on there being any rule at all, because Solve() only becomes a no-op for
-				// an unconstrained sketch after it has walked every curve - and this runs per frame.
-				if ( ActiveSketch.Constraints.Count > 0 )
-					SketchSolver.Solve( ActiveSketch, index );
-			}
+				MoveDraggedPoint( index, target );
 		}
 
 		Gizmo.Draw.IgnoreDepth = true;
@@ -998,12 +1030,223 @@ internal sealed partial class EffigyViewport
 		Gizmo.Draw.IgnoreDepth = false;
 	}
 
+	/// <summary>
+	/// One frame of the drag: put the point (and its group) under the hand, then make the sketch's
+	/// rules hold again.
+	///
+	/// THE SOLVE'S ANSWER IS WHAT IS SHOWN, NOT IGNORED. The sketch used to be solved pinned on the
+	/// dragged point and the result thrown away - so a point that a Fix, or a dimension chain, held
+	/// in place followed the cursor anyway, with every rule around it visibly broken, and then
+	/// jumped back the moment it was let go and the rebuild solved it properly. A drag that looks
+	/// like it worked and then undoes itself is worse than one that refuses.
+	///
+	/// Two tries, in order:
+	///   1. Pinned on the dragged point, so the rest of the sketch resolves around the hand. This
+	///      is the ordinary case and what SketchSolver's header asks the editor to do.
+	///   2. Pinned on some OTHER point, with the dragged one free. When the hand asks for a place
+	///      the rules cannot reach, this lets the solver put the point as near as they allow - a
+	///      fixed point stays where it is fixed, a point on a dimensioned line slides along it.
+	/// If neither converges the frame is undone, so what is on screen is always a sketch that
+	/// solves. Whenever the point ends up visibly short of the cursor the user is told, once per
+	/// drag, what is holding it.
+	/// </summary>
+	private void MoveDraggedPoint( int index, Vec2 target )
+	{
+		var lastFrame = new List<Vec2>( ActiveSketch.Points );
+
+		// THE GROUP MOVES BY THE SAME DELTA, measured from where this point was last frame rather
+		// than from where it was picked up. The frame-to-frame form is what survives the solve
+		// below: an offset from the grab position would be applied to points the constraints have
+		// since moved, and the group would jump on the next mouse move.
+		var delta = target - _dragFrom;
+
+		void Place()
+		{
+			ActiveSketch.Points[index] = target;
+
+			foreach ( var other in _dragGroup )
+			{
+				if ( other < ActiveSketch.Points.Count )
+					ActiveSketch.Points[other] = lastFrame[other] + delta;
+			}
+		}
+
+		void Restore()
+		{
+			for ( var i = 0; i < lastFrame.Count && i < ActiveSketch.Points.Count; i++ )
+				ActiveSketch.Points[i] = lastFrame[i];
+		}
+
+		Place();
+
+		// Guarded on there being any rule at all, because Solve() only becomes a no-op for an
+		// unconstrained sketch after it has walked every curve - and this runs per frame.
+		if ( ActiveSketch.Constraints.Count > 0 && !SketchSolver.Solve( ActiveSketch, index ).Converged )
+		{
+			Restore();
+			Place();
+
+			var pin = DragFallbackPin( index );
+
+			if ( pin < 0 || !SketchSolver.Solve( ActiveSketch, pin ).Converged )
+				Restore();
+		}
+
+		var changed = false;
+
+		for ( var i = 0; i < lastFrame.Count && !changed; i++ )
+			changed = lastFrame[i].x != ActiveSketch.Points[i].x || lastFrame[i].y != ActiveSketch.Points[i].y;
+
+		if ( changed )
+			_dragMoved = true;
+
+		_dragFrom = ActiveSketch.Points[index];
+
+		// Short of the hand by more than a handle's width is "held", rather than the solver's
+		// ordinary fraction-of-a-pixel disagreement.
+		if ( !_dragHeldSaid && Dist( ActiveSketch.Points[index], target ) > UnitsPerPixel() * PointHandlePixels )
+		{
+			_dragHeldSaid = true;
+			Refuse( WhatHoldsPoint( index ) );
+		}
+	}
+
+	/// <summary>A point for the fallback solve to hold still: not the one in the hand and not one
+	/// travelling with it. A FIXED point when there is one, since it is not going anywhere anyway
+	/// and pinning it costs the solve nothing. -1 when every point is part of the drag.</summary>
+	private int DragFallbackPin( int index )
+	{
+		var free = -1;
+
+		for ( var i = 0; i < ActiveSketch.Points.Count; i++ )
+		{
+			if ( i == index || _dragGroup.Contains( i ) )
+				continue;
+
+			if ( ActiveSketch.Constraints.Any( c => c.Kind == SketchConstraintKind.Fixed && c.PointA == i ) )
+				return i;
+
+			if ( free < 0 )
+				free = i;
+		}
+
+		return free;
+	}
+
+	/// <summary>Which rule a held point should be blamed on, in words that say how to free it.</summary>
+	private string WhatHoldsPoint( int index )
+	{
+		if ( ActiveSketch.Constraints.Any( c => c.Kind == SketchConstraintKind.Fixed && c.PointA == index ) )
+			return "That point is fixed - remove the Fix (click its mark) to move it.";
+
+		foreach ( var other in _dragGroup )
+		{
+			if ( ActiveSketch.Constraints.Any( c => c.Kind == SketchConstraintKind.Fixed && c.PointA == other ) )
+				return "One of the selected points is fixed, so the selection can't go there - remove its Fix (click its mark) first.";
+		}
+
+		var rules = ConstraintTools.Touching( ActiveSketch, index ).Select( c => Name( c.Kind ) ).Distinct().ToList();
+
+		return rules.Count == 0
+			? "That point is held by the rules on the curves around it - click a mark on the sketch to remove one, then drag again."
+			: $"That point is held by its constraints ({string.Join( ", ", rules )}) - click one of their marks to remove it, then drag again.";
+	}
+
+	/// <summary>
+	/// A point let go on top of another one becomes that point - what the header of
+	/// SketchPointHandles promises and what used to not happen: the two sat on top of each other as
+	/// two indices, and ProfileFinder, which walks by index, still saw two loose ends where the user
+	/// could see a closed corner.
+	///
+	/// The STATIONARY point is kept and the dragged one dropped, so constraints and selection on
+	/// the thing being dropped onto keep their index. When the kernel refuses - the two are the
+	/// ends of one line, say - the whole drag is put back and the reason given, rather than leaving
+	/// a zero-length line behind. When the joined sketch cannot solve, the join is undone and the
+	/// points are left as two, with the reason.
+	/// </summary>
+	private void MergeDroppedPoint( int index, Sketch before )
+	{
+		if ( index < 0 || index >= ActiveSketch.Points.Count || !SnapToPoints )
+			return;
+
+		var at = ActiveSketch.Points[index];
+		var onto = -1;
+
+		for ( var i = 0; i < ActiveSketch.Points.Count; i++ )
+		{
+			if ( i != index && Dist( ActiveSketch.Points[i], at ) < 1e-5f )
+			{
+				onto = i;
+				break;
+			}
+		}
+
+		if ( onto < 0 )
+			return;
+
+		var unmerged = ActiveSketch.Clone();
+
+		if ( !SketchEdit.MergePoints( ActiveSketch, onto, index, out var kept, out var error ) )
+		{
+			RestoreSketch( before );
+			Refuse( $"Can't join those two points: {error}" );
+			return;
+		}
+
+		if ( ActiveSketch.Constraints.Count > 0 && !SketchSolver.Solve( ActiveSketch, kept ).Converged )
+		{
+			RestoreSketch( unmerged );
+			Refuse( "Those points were left as two: joining them breaks a rule already on the sketch. Remove the rule that keeps them apart (click its mark), then drop it again." );
+			return;
+		}
+
+		// Indices past the dropped point have all moved down one. The selection is the only other
+		// thing here holding point indices across frames, and a stale one would select the wrong
+		// point - see PruneSelection.
+		var selected = SketchSelection.Points
+			.Select( p => p == index ? kept : p > index ? p - 1 : p )
+			.Distinct()
+			.ToList();
+
+		SketchSelection.Points.Clear();
+		SketchSelection.Points.AddRange( selected );
+
+		_hoverPoint = -1;
+
+		SketchPromptChanged?.Invoke( "Points joined - the curves meeting there now share one point." );
+	}
+
 	private void EndPointDrag()
 	{
 		_dragPoint = -1;
 		_dragMoved = false;
 		_dragGroup.Clear();
+		_dragBefore = null;
 	}
+
+	/// <summary>A drag cut short with the button still down - the tool changed, Escape, the sketch
+	/// closing. What it already moved is on screen and real, so it is committed the way a release
+	/// would commit it, rather than left moved with no undo step and no rebuild.</summary>
+	private void FinishPointDragEarly()
+	{
+		var moved = _dragPoint >= 0 && _dragMoved && ActiveSketch is not null;
+		var before = _dragBefore;
+
+		EndPointDrag();
+
+		if ( !moved )
+			return;
+
+		RecordUndoFrom( before );
+		Edited();
+	}
+
+	/// <summary>The sketch as it was when the point was picked up. See BeginPointDrag.</summary>
+	private Sketch _dragBefore;
+
+	/// <summary>Whether this drag has already said what is holding the point, so it is said once
+	/// rather than every frame the hand keeps pulling.</summary>
+	private bool _dragHeldSaid;
 
 	// --- dimensions -------------------------------------------------------------------------
 
@@ -1126,6 +1369,14 @@ internal sealed partial class EffigyViewport
 	/// Digits and a decimal point go into the box, Enter applies, Escape dismisses it - and
 	/// dismissing is a SEPARATE stage from Escape's existing back-out-of-the-tool behaviour, so
 	/// leaving the number alone does not also throw away the tool you are drawing with.
+	///
+	/// WHAT GOES IN. The box is evaluated by Expression, the same as every numeric field in this
+	/// editor, so 25/2 and 3*8 are lengths - those keys used to be dropped, and worse, fell through
+	/// to the tool shortcuts. A comma is read as the decimal point it is on half the world's
+	/// keyboards. Once typing has started EVERY printable key goes in (so sqrt(2) can be typed) and
+	/// a bad entry is explained on Enter; before it starts, a letter is still the tool shortcut it
+	/// always was, because the box opens by itself after every line and must not swallow the key
+	/// that picks the next tool.
 	/// </summary>
 	public bool HandleDimensionKey( KeyEvent e )
 	{
@@ -1158,7 +1409,15 @@ internal sealed partial class EffigyViewport
 
 		var c = e.Text[0];
 
-		if ( !char.IsDigit( c ) && c != '.' )
+		if ( char.IsControl( c ) )
+			return false;
+
+		if ( c == ',' )
+			c = '.';
+
+		var startsNumber = char.IsDigit( c ) || c is '.' or '(' or '-' or '+';
+
+		if ( _dimensionInput.Length == 0 && !startsNumber )
 			return false;
 
 		_dimensionInput += c;
@@ -1167,37 +1426,66 @@ internal sealed partial class EffigyViewport
 	}
 
 	/// <summary>
-	/// Set the line to the typed length by sliding its END point along its own direction, leaving
-	/// the start where it is - which is what you mean when you draw a line and then type a number.
+	/// Set the line to the typed length, leaving its start where it is - which is what you mean when
+	/// you draw a line and then type a number. A midpoint line keeps its middle instead.
 	///
-	/// Points are shared by index (see SketchCurve), so moving the end point moves everything else
-	/// joined to it. That is correct for the chain you are drawing: the next segment starts from
-	/// the point that just moved, and _pending has to be dragged along with it or the chain would
-	/// carry on from where the corner used to be.
+	/// THROUGH THE SOLVER, NOT AROUND IT. This used to slide the end point and stop, and on a line
+	/// any rule touched - an Equal to its neighbour, a Length already on it - the very next rebuild
+	/// solved the sketch and put the old length straight back. Now: a Length the line already has is
+	/// the number that changes; otherwise the typed length is held as a rule for one solve, so the
+	/// rest of the sketch moves to agree with it, and then let go - leaving a sketch that already
+	/// satisfies every stored rule, which the rebuild's solve has no reason to move. If the rules
+	/// cannot agree with the number, everything goes back and the rules responsible are named.
+	///
+	/// Points are shared by index (see SketchCurve), so the end moving moves everything else joined
+	/// to it. That is correct for the chain you are drawing: the next segment starts from the point
+	/// that just moved, and _pending is carried along with it below.
 	/// </summary>
 	private void ApplyDimension()
 	{
 		if ( _dimensionLine is null || ActiveSketch is null )
 			return;
 
-		if ( !float.TryParse( _dimensionInput, System.Globalization.NumberStyles.Float,
-			System.Globalization.CultureInfo.InvariantCulture, out var length ) || length <= 0f )
+		// Enter on the measured length - nothing typed - is accepting the line as drawn.
+		if ( _dimensionInput.Length == 0 )
 		{
 			ClearDimension();
 			return;
 		}
 
-		var start = ActiveSketch.Points[_dimensionLine.Start];
-		var end = ActiveSketch.Points[_dimensionLine.End];
+		// Each way the typed number can be turned down says why. These used to drop the number on
+		// the floor: you typed, pressed Enter, and the line simply stayed the length it was.
+		if ( !Expression.TryEvaluate( _dimensionInput, null, out var length ) )
+		{
+			Refuse( $"'{_dimensionInput}' isn't a length. Type a number or a sum, like 2.5 or 25/2." );
+			ClearDimension();
+			return;
+		}
+
+		if ( length <= 0f )
+		{
+			Refuse( $"A line can't be {Expression.Format( length )} long — a length has to be more than 0." );
+			ClearDimension();
+			return;
+		}
+
+		var line = _dimensionLine;
+		var start = ActiveSketch.Points[line.Start];
+		var end = ActiveSketch.Points[line.End];
 		var delta = end - start;
 
 		if ( delta.Length < 1e-5f )
 		{
+			Refuse( "That line has no length yet, so there's no direction to size it along. Drag it out first, then type the length." );
 			ClearDimension();
 			return;
 		}
 
-		SketchEditing?.Invoke();
+		var before = ActiveSketch.Clone();
+
+		// Which sketch point each half-drawn click is sitting on, so the chain can be carried to
+		// wherever the solve leaves those points rather than only where the end was slid to.
+		var pendingAt = _pending.Select( p => PointAt( p ) ).ToList();
 
 		// A midpoint line was placed about its middle, so the typed number has to move BOTH ends and
 		// leave that middle alone. Sliding only the end - right for a line drawn end to end - would
@@ -1206,30 +1494,77 @@ internal sealed partial class EffigyViewport
 		{
 			var half = delta.Normal * (length * 0.5f);
 
-			MovePoint( _dimensionLine.Start, centre - half );
-			MovePoint( _dimensionLine.End, centre + half );
+			ActiveSketch.Points[line.Start] = centre - half;
+			ActiveSketch.Points[line.End] = centre + half;
 		}
 		else
 		{
-			MovePoint( _dimensionLine.End, start + delta.Normal * length );
+			ActiveSketch.Points[line.End] = start + delta.Normal * length;
+		}
+
+		var stored = ActiveSketch.Constraints.FirstOrDefault( c => c.Kind == SketchConstraintKind.Distance
+			&& ((c.PointA == line.Start && c.PointB == line.End) || (c.PointA == line.End && c.PointB == line.Start)) );
+
+		SketchConstraint held = null;
+
+		if ( stored is not null )
+		{
+			stored.Value = length;
+		}
+		else if ( ActiveSketch.Constraints.Count > 0 )
+		{
+			held = ActiveSketch.AddConstraint( SketchConstraintKind.Distance, line.Start, line.End, length );
+		}
+
+		if ( ActiveSketch.Constraints.Count > 0 )
+		{
+			var solve = SketchSolver.Solve( ActiveSketch, line.Start );
+			var reached = Dist( ActiveSketch.Points[line.Start], ActiveSketch.Points[line.End] );
+
+			if ( !solve.Converged || MathF.Abs( reached - length ) > MathF.Max( 1e-3f, length * 1e-3f ) )
+			{
+				RestoreSketch( before );
+
+				var rules = ConstraintTools.Touching( before, before.Curves.Find( c => c.Id == line.Id ) ?? line )
+					.Where( c => c.Kind != SketchConstraintKind.Distance
+						|| !((c.PointA == line.Start && c.PointB == line.End) || (c.PointA == line.End && c.PointB == line.Start)) )
+					.Select( c => Name( c.Kind ) )
+					.Distinct()
+					.ToList();
+
+				Refuse( rules.Count > 0
+					? $"Can't make that line {Expression.Format( length )} long: its {string.Join( ", ", rules )} rule{(rules.Count == 1 ? "" : "s")} won't allow it. Remove one (click its mark), then type the length again."
+					: $"Can't make that line {Expression.Format( length )} long: the rules on the rest of the sketch won't allow it. Remove one (click its mark), then type the length again." );
+
+				ClearDimension();
+				return;
+			}
+		}
+
+		if ( held is not null )
+			ActiveSketch.Constraints.Remove( held );
+
+		for ( var i = 0; i < _pending.Count; i++ )
+		{
+			if ( pendingAt[i] >= 0 && pendingAt[i] < ActiveSketch.Points.Count )
+				_pending[i] = ActiveSketch.Points[pendingAt[i]];
 		}
 
 		ClearDimension();
+		RecordUndoFrom( before );
 		Edited();
+	}
 
-		void MovePoint( int index, Vec2 to )
+	/// <summary>The sketch point sitting at this position, or -1.</summary>
+	private int PointAt( Vec2 p )
+	{
+		for ( var i = 0; i < ActiveSketch.Points.Count; i++ )
 		{
-			var was = ActiveSketch.Points[index];
-			ActiveSketch.Points[index] = to;
-
-			// Points are shared by index, so anything half-drawn that was sitting on the point which
-			// just moved has to come with it, or the chain carries on from where the corner used to be.
-			for ( var i = 0; i < _pending.Count; i++ )
-			{
-				if ( Dist( _pending[i], was ) < 1e-5f )
-					_pending[i] = to;
-			}
+			if ( Dist( ActiveSketch.Points[i], p ) < 1e-5f )
+				return i;
 		}
+
+		return -1;
 	}
 
 	public void SetSketchVisibility( Sketch sketch, bool visible )
@@ -1427,6 +1762,13 @@ internal sealed partial class EffigyViewport
 	/// face index.</summary>
 	public Action<FaceRef> FacePicked { get; set; }
 
+	/// <summary>Set by the face-set box while it is armed. Alt-click then reports the face and the
+	/// one across the material, instead of toggling a single face.</summary>
+	public bool PickFacingPair { get; set; }
+
+	/// <summary>Both faces of a wall, in one click. Only the face-set box listens.</summary>
+	public Action<FaceRef, FaceRef> FacingPairPicked { get; set; }
+
 	/// <summary>Bodies that can be clicked while FacePickMode is armed. Pushed by the window from
 	/// PartStudio.Bodies, the same way SetDisplaySketches is pushed from the sketch features.</summary>
 	public void SetPickableBodies( IEnumerable<Body> bodies )
@@ -1550,23 +1892,75 @@ internal sealed partial class EffigyViewport
 
 		// Capture rather than the raw constructor: it records WHERE ON THE FACE the click landed,
 		// which is what lets the sketch ride the face when it later moves or resizes.
-		FacePicked?.Invoke( FacePlane.Capture( hit.Body, hit.Hit.FaceIndex, hit.Hit.Point ) );
+		var front = FacePlane.Capture( hit.Body, hit.Hit.FaceIndex, hit.Hit.Point );
+
+		if ( PickFacingPair && Editor.Application.KeyboardModifiers.HasFlag( KeyboardModifiers.Alt ) )
+		{
+			if ( MeshRaycast.TryOpposite( hit.Body.Mesh, hit.Hit.FaceIndex, out var other, out var across ) )
+			{
+				FacingPairPicked?.Invoke( front, FacePlane.Capture( hit.Body, other, across ) );
+				return;
+			}
+
+			// The Alt-click asked for two faces and gets one. Still picked - it is the face that was
+			// clicked - but said, so the missing other half is not discovered at the next rebuild.
+			Refuse( "No face sits straight across the material from that one, so only it was picked. Alt-click a wall with a parallel face behind it to take both." );
+		}
+
+		FacePicked?.Invoke( front );
 	}
 
 	/// <summary>The faces a dialog is holding, drawn even after the picker stands down so the
 	/// box and the viewport still agree about what is chosen.</summary>
 	private void DrawChosenFaces()
 	{
-		if ( SelectedFaces is not { Count: > 0 } chosen )
-			return;
-
 		var bodies = _pickableBodies.Count > 0 ? _pickableBodies : _displayBodies;
+
+		// Nothing chosen, or no part to resolve against yet: nothing can be said to be lost.
+		if ( SelectedFaces is not { Count: > 0 } chosen || bodies.Count == 0 )
+		{
+			SayLostPicks( ref _lostFaces, 0, "picked-faces-lost", "face" );
+			return;
+		}
+
+		var lost = 0;
 
 		foreach ( var reference in chosen )
 		{
 			if ( FacePlane.TryResolveFace( bodies, reference, out var body, out var index ) )
 				DrawFace( body, index, FaceSelectedColor );
+			else
+				lost++;
 		}
+
+		SayLostPicks( ref _lostFaces, lost, "picked-faces-lost", "face" );
+	}
+
+	private int _lostFaces;
+	private int _lostEdges;
+
+	/// <summary>
+	/// A chosen face or edge that no longer resolves is drawn as nothing - which reads as never
+	/// having been picked, when what happened is that an edit upstream changed the part out from
+	/// under it. Said in a callout that stays until the count changes, so it is neither missed nor
+	/// repeated every frame, and goes away by itself once the picks are fixed.
+	/// </summary>
+	private void SayLostPicks( ref int shown, int lost, string key, string what )
+	{
+		if ( lost == shown )
+			return;
+
+		shown = lost;
+
+		if ( lost == 0 )
+		{
+			ClearCallout( key );
+			return;
+		}
+
+		ShowCallout( key, EffigyCalloutKind.Refusal, lost == 1
+			? $"1 picked {what} no longer exists on the part - something before this feature changed it. Re-pick it."
+			: $"{lost} picked {what}s no longer exist on the part - something before this feature changed them. Re-pick them." );
 	}
 
 	/// <summary>Shading and outline for the ONE face under the cursor while a sketch is choosing
@@ -1605,7 +1999,13 @@ internal sealed partial class EffigyViewport
 			return;
 
 		if ( !TryClosestEdge( hit.Body.Mesh, hit.Hit.FaceIndex, hit.Hit.Point, out var key, out _ ) )
+		{
+			// Nothing lights up here, so a click would otherwise do nothing with no hint as to why.
+			if ( Gizmo.WasLeftMousePressed )
+				Refuse( "That spot isn't near an edge of the part. Click closer to an edge - it lights up when the click will take it." );
+
 			return;
+		}
 
 		_hoveredFaceBodyId = hit.Body.Id;
 		DrawEdge( hit.Body, key, FaceHighlightColor );
@@ -1618,16 +2018,25 @@ internal sealed partial class EffigyViewport
 
 	private void DrawChosenEdges()
 	{
-		if ( SelectedEdges is not { Count: > 0 } chosen )
-			return;
-
 		var bodies = _pickableBodies.Count > 0 ? _pickableBodies : _displayBodies;
+
+		if ( SelectedEdges is not { Count: > 0 } chosen || bodies.Count == 0 )
+		{
+			SayLostPicks( ref _lostEdges, 0, "picked-edges-lost", "edge" );
+			return;
+		}
+
+		var lost = 0;
 
 		foreach ( var reference in chosen )
 		{
 			if ( FacePlane.TryResolveEdge( bodies, reference, out var body, out var key ) )
 				DrawEdge( body, key, FaceSelectedColor );
+			else
+				lost++;
 		}
+
+		SayLostPicks( ref _lostEdges, lost, "picked-edges-lost", "edge" );
 	}
 
 	/// <summary>
@@ -2282,8 +2691,12 @@ internal sealed partial class EffigyViewport
 
 	public void EndSketch()
 	{
+		// Before anything is torn down, while the sketch and its feature are still the window's
+		// active ones - see SetSketchTool for why a spline is finished rather than dropped.
+		FinishSplineInProgress();
+
 		ClearDimension();
-		EndPointDrag();
+		FinishPointDragEarly();
 		EndCurveHandleDrag();
 		SetSketchReference( null );
 		ActiveSketch = null;
@@ -2329,7 +2742,7 @@ internal sealed partial class EffigyViewport
 	public void CancelSketchTool()
 	{
 		ClearDimension();
-		EndPointDrag();
+		FinishPointDragEarly();
 
 		if ( CancelHalfDrawnSketchEntity() )
 			return;
@@ -2364,6 +2777,16 @@ internal sealed partial class EffigyViewport
 			return false;
 
 		return CursorToPlane( ActiveSketch.Plane, out uv );
+	}
+
+	/// <summary>Why CursorToPlane failed: true when the view runs along the plane, false when the
+	/// plane is behind the camera. Only meaningful after it has failed.</summary>
+	private bool CursorPlaneTilted()
+	{
+		if ( ActiveSketch is null )
+			return true;
+
+		return MathF.Abs( Vector3.Dot( Gizmo.CurrentRay.Forward, ToWorldDir( ActiveSketch.Plane.Normal ) ) ) < 1e-5f;
 	}
 
 	/// <summary>Intersect the cursor ray with any sketch plane. Split out from the active-sketch
@@ -2515,6 +2938,19 @@ internal sealed partial class EffigyViewport
 			return;
 		}
 
+		// A CLICK THAT CANNOT REACH THE PLANE. Looking along the sketch plane, every tool here has no
+		// point to work with, and the click used to vanish - which looks exactly like the tool being
+		// broken, since the sketch is right there on screen as a line. Said before the cut stroke and
+		// the click machine, both of which would otherwise swallow it.
+		if ( _canvasHasCursor && !_cursorOnPlaneValid && Gizmo.WasLeftMousePressed && _dragPoint < 0
+			&& !DraggingCurveHandle )
+		{
+			Refuse( CursorPlaneTilted()
+				? "You're looking along the sketch plane, so a click can't land on it. Orbit a little, or press N to look straight at it."
+				: "The sketch plane is behind the camera, so a click can't land on it. Press N to look straight at it." );
+			return;
+		}
+
 		// The cut tool is a DRAG, so it takes the mouse before the click machine below ever sees it
 		// - see CutStrokeFrame. Letting the press through as well would take an undo snapshot per
 		// press for a tool whose whole stroke is one undo step.
@@ -2620,13 +3056,23 @@ internal sealed partial class EffigyViewport
 	}
 
 	/// <summary>Feed one click to whichever tool is active. Each tool collects the points it needs
-	/// in _pending and commits when it has them all.</summary>
+	/// in _pending and commits when it has them all.
+	///
+	/// THE UNDO STEP IS TAKEN AFTERWARDS, and only if the click changed the sketch - see
+	/// RecordUndoFrom. It used to be taken up front on every click, so the first corner of a
+	/// rectangle, or a click a tool turned down, left a step on the stack that restored an identical
+	/// sketch and made the next Ctrl+Z look broken.</summary>
 	private void ClickTool( Vec2 p )
 	{
-		// The click is about to add points or a curve, so the state to go back to is the one that
-		// exists right now.
-		SketchEditing?.Invoke();
+		var before = ActiveSketch.Clone();
 
+		ClickToolOnce( p );
+
+		RecordUndoFrom( before );
+	}
+
+	private void ClickToolOnce( Vec2 p )
+	{
 		// Any click moves on from the last dimension - the box belongs to the thing you just drew,
 		// not to the thing you are drawing now. The line tool re-arms it below.
 		ClearDimension();
@@ -2635,19 +3081,42 @@ internal sealed partial class EffigyViewport
 
 		// The six newer tools handle their own clicks entirely - see EffigyViewport.SketchTools.cs.
 		// Intercepting here rather than adding cases below keeps twelve working tools untouched.
+		//
+		// A tool that has already said something this click - a refusal, a count of what it took - keeps
+		// the status line; pushing the ordinary prompt over it on the same frame is what made those
+		// messages unreadable.
+		_toolSpoke = false;
+
 		if ( HandleNewSketchToolClick( p ) )
 		{
-			PushPrompt();
+			if ( !_toolSpoke )
+				PushPrompt();
+
 			return;
 		}
+
+		// A CLICK THAT CANNOT MAKE ANYTHING IS NOT PROGRESS. Each case below that finds its clicks
+		// describe no shape - a rectangle with no width, three points in a row for a circle - takes
+		// back ONLY the click that made it impossible and says why, so the tool is still waiting for
+		// that same click and the one before it is not lost. These used to clear the tool and draw
+		// nothing, which is indistinguishable from the click having been dropped.
+		string refusal = null;
 
 		switch ( SketchTool )
 		{
 			case SketchToolKind.Point:
+			{
+				var count = ActiveSketch.Points.Count;
 				PointIndex( p );
 				_pending.Clear();
-				Edited();
+
+				if ( ActiveSketch.Points.Count == count )
+					refusal = "There's already a point there. Click somewhere empty to place one.";
+				else
+					Edited();
+
 				break;
+			}
 
 			case SketchToolKind.Line when _pending.Count == 1:
 				_chainStartIndex = PointIndex( _pending[0] );
@@ -2656,27 +3125,28 @@ internal sealed partial class EffigyViewport
 			case SketchToolKind.Line when _pending.Count == 2:
 			{
 				var from = PointIndex( _pending[0] );
-				var to = PointIndex( _pending[1] );
 
 				// A ZERO-LENGTH LINE IS NOT GEOMETRY. It is what a click that snapped back onto its
 				// own start point produces, and ProfileFinder links it into the adjacency map TWICE
 				// at that one point - so a perfectly good corner reports as joining three curves,
 				// the sketch is called branching, and the region never closes. AddPolygonReusing
-				// has always guarded this; the line tool never did.
-				if ( from != to )
+				// has always guarded this; the line tool never did. Tested on the positions before
+				// PointIndex can add anything, so a refused click leaves no point behind.
+				if ( Dist( _pending[0], _pending[1] ) < 1e-4f )
 				{
-					var line = Track( new SketchLine( from, to ) );
-
-					if ( (_inferenceAxis & 1) != 0 )
-						ActiveSketch.AddConstraint( line, SketchConstraintKind.Vertical );
-					else if ( (_inferenceAxis & 2) != 0 )
-						ActiveSketch.AddConstraint( line, SketchConstraintKind.Horizontal );
-
-					// The line is down; its length becomes an editable dimension until the next
-					// click replaces it.
-					_dimensionLine = line;
-					_dimensionInput = "";
+					RefuseLastClick( ref refusal, "That click landed on the line's start, so there's no line to draw. Click somewhere else, or press Escape to stop." );
+					break;
 				}
+
+				var to = PointIndex( _pending[1] );
+				var line = Track( new SketchLine( from, to ) );
+
+				AddInferredLevel( line );
+
+				// The line is down; its length becomes an editable dimension until the next
+				// click replaces it.
+				_dimensionLine = line;
+				_dimensionInput = "";
 
 				// Chain closes back to the start point — break the chain.
 				if ( to == _chainStartIndex && _chainStartIndex >= 0 )
@@ -2707,21 +3177,21 @@ internal sealed partial class EffigyViewport
 
 				// Same zero-length guard as the line tool above, for the click that lands back on the
 				// middle: that line has no direction and ProfileFinder counts it twice at one point.
-				if ( Dist( far, near ) > 1e-4f )
+				if ( Dist( far, near ) <= 1e-4f )
 				{
-					var midLine = Track( new SketchLine( PointIndex( far ), PointIndex( near ) ) );
-
-					if ( (_inferenceAxis & 1) != 0 )
-						ActiveSketch.AddConstraint( midLine, SketchConstraintKind.Vertical );
-					else if ( (_inferenceAxis & 2) != 0 )
-						ActiveSketch.AddConstraint( midLine, SketchConstraintKind.Horizontal );
-
-					// The typed length has to grow the line from the middle the user clicked, so the
-					// dimension remembers that centre - see ApplyDimension.
-					_dimensionLine = midLine;
-					_dimensionCentre = centre;
-					_dimensionInput = "";
+					RefuseLastClick( ref refusal, "That click landed on the middle you placed, so the line would have no length. Click away from it." );
+					break;
 				}
+
+				var midLine = Track( new SketchLine( PointIndex( far ), PointIndex( near ) ) );
+
+				AddInferredLevel( midLine );
+
+				// The typed length has to grow the line from the middle the user clicked, so the
+				// dimension remembers that centre - see ApplyDimension.
+				_dimensionLine = midLine;
+				_dimensionCentre = centre;
+				_dimensionInput = "";
 
 				// No chaining, unlike the line tool: each midpoint line is placed about its own centre,
 				// and there is no end for the next one to carry on from.
@@ -2735,39 +3205,77 @@ internal sealed partial class EffigyViewport
 				var cmin = new Vec2( _pending[0].x - MathF.Abs( span.x ), _pending[0].y - MathF.Abs( span.y ) );
 				var cmax = new Vec2( _pending[0].x + MathF.Abs( span.x ), _pending[0].y + MathF.Abs( span.y ) );
 
-				if ( cmax.x - cmin.x > 1e-4f && cmax.y - cmin.y > 1e-4f )
-					AddPolygonReusing( RectangleCorners( cmin, cmax ) );
+				if ( cmax.x - cmin.x <= 1e-4f || cmax.y - cmin.y <= 1e-4f )
+				{
+					RefuseLastClick( ref refusal, "That corner is level with the centre, so the rectangle would have no width or height. Click off to the side and up or down." );
+					break;
+				}
 
+				AddPolygonReusing( RectangleCorners( cmin, cmax ) );
 				_pending.Clear();
 				Edited();
+				break;
+
+			case SketchToolKind.CircleThreePoint when _pending.Count is 2 or 3 && Dist( _pending[^1], _pending[^2] ) < 1e-4f:
+				RefuseLastClick( ref refusal, "That's the same spot as the last click. A circle needs three different points on its rim." );
 				break;
 
 			case SketchToolKind.CircleThreePoint when _pending.Count == 3:
-				if ( Circumcentre( _pending[0], _pending[1], _pending[2] ) is { } cc )
-					Track( new SketchCircle( PointIndex( cc ), Dist( cc, _pending[0] ) ) );
+				if ( Circumcentre( _pending[0], _pending[1], _pending[2] ) is not { } cc )
+				{
+					RefuseLastClick( ref refusal, "Those three points are in a straight line, so no circle passes through them. Click the third one off that line." );
+					break;
+				}
 
+				Track( new SketchCircle( PointIndex( cc ), Dist( cc, _pending[0] ) ) );
 				_pending.Clear();
 				Edited();
 				break;
 
+			case SketchToolKind.ArcThreePoint when _pending.Count == 2 && Dist( _pending[0], _pending[1] ) < 1e-4f:
+				RefuseLastClick( ref refusal, "An arc's two ends can't be the same point. Click its other end somewhere else." );
+				break;
+
 			case SketchToolKind.ArcThreePoint when _pending.Count == 3:
+				if ( Circumcentre( _pending[0], _pending[2], _pending[1] ) is null )
+				{
+					RefuseLastClick( ref refusal, "That point is on the straight line between the ends, so the arc would be flat. Click off that line to give it a bulge." );
+					break;
+				}
+
 				CommitThreePointArc();
 				_pending.Clear();
 				Edited();
 				break;
 
+			case SketchToolKind.Slot when _pending.Count == 2 && Dist( _pending[0], _pending[1] ) < 1e-4f:
+				RefuseLastClick( ref refusal, "The slot's two ends can't be the same point. Click its other end somewhere else." );
+				break;
+
 			case SketchToolKind.Slot when _pending.Count == 3:
+			{
+				var axis = (_pending[1] - _pending[0]).Normal;
+
+				if ( MathF.Abs( Vec2.Dot( _pending[2] - _pending[0], new Vec2( -axis.y, axis.x ) ) ) < 1e-4f )
+				{
+					RefuseLastClick( ref refusal, "That click is on the slot's centre line, so it would have no width. Click off to one side." );
+					break;
+				}
+
 				CommitSlot();
 				_pending.Clear();
 				Edited();
 				break;
+			}
 
 			case SketchToolKind.PolygonCircumscribed when _pending.Count == 2:
-				var apothem = Dist( _pending[0], _pending[1] );
+				if ( Dist( _pending[0], _pending[1] ) <= 1e-4f )
+				{
+					RefuseLastClick( ref refusal, "That click is on the centre, so the polygon would have no size. Click away from it." );
+					break;
+				}
 
-				if ( apothem > 1e-4f )
-					AddPolygonReusing( RegularPolygon( _pending[0], _pending[1], PolygonSides, circumscribed: true ) );
-
+				AddPolygonReusing( RegularPolygon( _pending[0], _pending[1], PolygonSides, circumscribed: true ) );
 				_pending.Clear();
 				Edited();
 				break;
@@ -2776,9 +3284,13 @@ internal sealed partial class EffigyViewport
 				var min = new Vec2( MathF.Min( _pending[0].x, _pending[1].x ), MathF.Min( _pending[0].y, _pending[1].y ) );
 				var max = new Vec2( MathF.Max( _pending[0].x, _pending[1].x ), MathF.Max( _pending[0].y, _pending[1].y ) );
 
-				if ( max.x - min.x > 1e-4f && max.y - min.y > 1e-4f )
-					AddPolygonReusing( RectangleCorners( min, max ) );
+				if ( max.x - min.x <= 1e-4f || max.y - min.y <= 1e-4f )
+				{
+					RefuseLastClick( ref refusal, "That corner is level with the first, so the rectangle would have no width or height. Click the opposite corner diagonally." );
+					break;
+				}
 
+				AddPolygonReusing( RectangleCorners( min, max ) );
 				_pending.Clear();
 				Edited();
 				break;
@@ -2786,32 +3298,93 @@ internal sealed partial class EffigyViewport
 			case SketchToolKind.Circle when _pending.Count == 2:
 				var radius = Dist( _pending[0], _pending[1] );
 
-				if ( radius > 1e-4f )
-					Track( new SketchCircle( PointIndex( _pending[0] ), radius ) );
+				if ( radius <= 1e-4f )
+				{
+					RefuseLastClick( ref refusal, "That click is on the centre, so the circle would have no radius. Click away from it." );
+					break;
+				}
 
+				Track( new SketchCircle( PointIndex( _pending[0] ), radius ) );
 				_pending.Clear();
 				Edited();
 				break;
 
+			case SketchToolKind.Arc when _pending.Count == 2 && Dist( _pending[0], _pending[1] ) <= 1e-4f:
+				RefuseLastClick( ref refusal, "That click is on the centre, so the arc would have no radius. Click where it should start." );
+				break;
+
 			case SketchToolKind.Arc when _pending.Count == 3:
+				if ( Dist( _pending[0], _pending[2] ) <= 1e-4f )
+				{
+					RefuseLastClick( ref refusal, "That click is on the centre, so it gives the arc no direction to end in. Click out towards where it should end." );
+					break;
+				}
+
 				CommitArc();
 				_pending.Clear();
 				Edited();
 				break;
 
 			case SketchToolKind.Polygon when _pending.Count == 2:
-				var r = Dist( _pending[0], _pending[1] );
+				if ( Dist( _pending[0], _pending[1] ) <= 1e-4f )
+				{
+					RefuseLastClick( ref refusal, "That click is on the centre, so the polygon would have no size. Click away from it." );
+					break;
+				}
 
-				if ( r > 1e-4f )
-					AddPolygonReusing( RegularPolygon( _pending[0], _pending[1], PolygonSides ) );
-
+				AddPolygonReusing( RegularPolygon( _pending[0], _pending[1], PolygonSides ) );
 				_pending.Clear();
 				Edited();
 				break;
 		}
 
 		PushPrompt();
+
+		// After the prompt, so the reason is what the status line is left saying rather than being
+		// replaced on the same frame by the tool's ordinary "click the next point".
+		if ( refusal is not null )
+			Refuse( refusal );
 	}
+
+	/// <summary>Take back the click that made the shape impossible, keeping the ones before it, and
+	/// remember why for ClickToolOnce to say once the prompt has been pushed.</summary>
+	private void RefuseLastClick( ref string refusal, string why )
+	{
+		if ( _pending.Count > 0 )
+			_pending.RemoveAt( _pending.Count - 1 );
+
+		refusal = why;
+	}
+
+	/// <summary>
+	/// The horizontal or vertical a line picked up by being drawn level, from the alignment guide
+	/// it snapped to.
+	///
+	/// SAID OUT LOUD, because it is a rule the user never asked for by name. It was added silently,
+	/// and the first anybody knew of it was a later drag that would not tilt the line - a sketch
+	/// fighting back for no visible reason. The H or V mark is drawn beside the line, so the message
+	/// points at it.
+	/// </summary>
+	private void AddInferredLevel( SketchLine line )
+	{
+		SketchConstraintKind? kind = (_inferenceAxis & 1) != 0 ? SketchConstraintKind.Vertical
+			: (_inferenceAxis & 2) != 0 ? SketchConstraintKind.Horizontal
+			: (SketchConstraintKind?)null;
+
+		if ( kind is not { } k )
+			return;
+
+		ActiveSketch.AddConstraint( line, k );
+
+		_levelNote = k == SketchConstraintKind.Horizontal
+			? "Line snapped level, so it's locked horizontal - click the H mark beside it to remove that."
+			: "Line snapped upright, so it's locked vertical - click the V mark beside it to remove that.";
+	}
+
+	/// <summary>The one-off note AddInferredLevel leaves for the status line. A prompt rather than a
+	/// refusal - nothing was turned down, the user is being told about a rule they got for free - and
+	/// it is shown by PushPrompt in place of the tool's own prompt for that one push.</summary>
+	private string _levelNote;
 
 	/// <summary>
 	/// Centre/start/end arc, with the end click only supplying a direction.
@@ -2827,6 +3400,8 @@ internal sealed partial class EffigyViewport
 		var start = _pending[1];
 		var radius = Dist( centre, start );
 
+		// ClickToolOnce refuses both of these with a reason before it ever gets here; the guards stay
+		// only so that a NaN can never reach the sketch if that order is disturbed.
 		if ( radius <= 1e-4f )
 			return;
 
@@ -2911,8 +3486,8 @@ internal sealed partial class EffigyViewport
 	}
 
 	/// <summary>Centre of the circle through three points, or null when they are collinear — in
-	/// which case there is no circle and the tool should quietly do nothing rather than divide by
-	/// zero and scatter a NaN through the sketch.</summary>
+	/// which case there is no circle - and the tool has to say so (ClickToolOnce does) rather than
+	/// divide by zero and scatter a NaN through the sketch.</summary>
 	private static Vec2? Circumcentre( Vec2 a, Vec2 b, Vec2 c )
 	{
 		var d = 2f * (a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y));
@@ -2950,6 +3525,7 @@ internal sealed partial class EffigyViewport
 		var end = _pending[1];
 		var through = _pending[2];
 
+		// Refused with a reason in ClickToolOnce; kept only so a NaN can never reach the sketch.
 		if ( Circumcentre( start, through, end ) is not { } centre )
 			return;
 
@@ -2974,6 +3550,7 @@ internal sealed partial class EffigyViewport
 		var b = _pending[1];
 		var axis = b - a;
 
+		// Both refused with a reason in ClickToolOnce; kept only so a NaN can never reach the sketch.
 		if ( axis.Length < 1e-4f )
 			return;
 
@@ -3003,6 +3580,112 @@ internal sealed partial class EffigyViewport
 	private void Edited()
 	{
 		SketchEdited?.Invoke();
+	}
+
+	/// <summary>
+	/// Take the undo step for an edit that has ALREADY happened, from a copy kept before it.
+	///
+	/// WHY AFTER RATHER THAN BEFORE. SketchEditing snapshots whatever the sketch is right now, so
+	/// the only way to call it "before" was to call it before knowing whether the click would do
+	/// anything - and a click that turned out to do nothing (a rectangle with no width, a circle
+	/// through three points in a row, a Use on an edge already used) left an undo step that put
+	/// back an identical sketch. The next Ctrl+Z then appeared to do nothing, which reads as undo
+	/// being broken. Keeping a copy is cheap - a sketch is a few hundred numbers - and lets the
+	/// step be taken only once something actually changed.
+	///
+	/// The live lists are swapped for the copy's just long enough for the window to snapshot them,
+	/// then swapped straight back. The Sketch OBJECT stays the same one the feature holds, so the
+	/// window captures the right feature's sketch.
+	/// </summary>
+	/// <returns>Whether anything had changed, and so whether a step was taken.</returns>
+	private bool RecordUndoFrom( Sketch before )
+	{
+		if ( ActiveSketch is null || before is null || SameSketchGeometry( before, ActiveSketch ) )
+			return false;
+
+		var points = ActiveSketch.Points;
+		var curves = ActiveSketch.Curves;
+		var constraints = ActiveSketch.Constraints;
+
+		ActiveSketch.Points = before.Points;
+		ActiveSketch.Curves = before.Curves;
+		ActiveSketch.Constraints = before.Constraints;
+
+		try
+		{
+			SketchEditing?.Invoke();
+		}
+		finally
+		{
+			ActiveSketch.Points = points;
+			ActiveSketch.Curves = curves;
+			ActiveSketch.Constraints = constraints;
+		}
+
+		return true;
+	}
+
+	/// <summary>Put the sketch back to a copy taken earlier, in place - the object the feature holds
+	/// stays the same one, only its contents go back.</summary>
+	private void RestoreSketch( Sketch from )
+	{
+		if ( ActiveSketch is null || from is null )
+			return;
+
+		var copy = from.Clone();
+
+		ActiveSketch.Points = copy.Points;
+		ActiveSketch.Curves = copy.Curves;
+		ActiveSketch.Constraints = copy.Constraints;
+	}
+
+	/// <summary>Whether two sketches hold the same geometry and rules, exactly. Exact on purpose, the
+	/// same as the window's undo dedupe: a point moved by a millionth was still moved.</summary>
+	private static bool SameSketchGeometry( Sketch a, Sketch b )
+	{
+		if ( a.Points.Count != b.Points.Count || a.Curves.Count != b.Curves.Count
+			|| a.Constraints.Count != b.Constraints.Count )
+			return false;
+
+		for ( var i = 0; i < a.Points.Count; i++ )
+		{
+			if ( a.Points[i].x != b.Points[i].x || a.Points[i].y != b.Points[i].y )
+				return false;
+		}
+
+		for ( var i = 0; i < a.Curves.Count; i++ )
+		{
+			var x = a.Curves[i];
+			var y = b.Curves[i];
+
+			if ( x.Id != y.Id || x.Construction != y.Construction || x.GetType() != y.GetType()
+				|| !x.PointRefs.SequenceEqual( y.PointRefs ) )
+				return false;
+
+			var same = (x, y) switch
+			{
+				( SketchCircle cx, SketchCircle cy ) => cx.Radius == cy.Radius,
+				( SketchEllipse ex, SketchEllipse ey ) => ex.MinorRadius == ey.MinorRadius,
+				( SketchArc ax, SketchArc ay ) => ax.Clockwise == ay.Clockwise,
+				( SketchSpline sx, SketchSpline sy ) => sx.Closed == sy.Closed,
+				_ => true,
+			};
+
+			if ( !same )
+				return false;
+		}
+
+		for ( var i = 0; i < a.Constraints.Count; i++ )
+		{
+			var x = a.Constraints[i];
+			var y = b.Constraints[i];
+
+			if ( x.Kind != y.Kind || x.CurveId != y.CurveId || x.PointA != y.PointA || x.PointB != y.PointB
+				|| x.PointC != y.PointC || x.PointD != y.PointD || x.Value != y.Value || x.ValueY != y.ValueY )
+				return false;
+		}
+
+		return true;
 	}
 
 	// --- sketch rendering --------------------------------------------------------------------
@@ -3496,6 +4179,7 @@ internal sealed partial class EffigyViewport
 	{
 		var axis = b - a;
 
+		// Both refused with a reason in ClickToolOnce; kept only so a NaN can never reach the sketch.
 		if ( axis.Length < 1e-4f )
 			return;
 
@@ -3542,7 +4226,15 @@ internal sealed partial class EffigyViewport
 		// know; what its own prompt says is what it is about to do with them.
 		var selection = SketchTool == SketchToolKind.Mirror ? null : SelectionPrompt();
 
-		SketchPromptChanged?.Invoke( selection ?? CurrentPrompt() );
+		// A line that just picked up a horizontal or vertical says so, once, ahead of the tool's
+		// prompt - see AddInferredLevel. Leading with it and then carrying on with what the tool
+		// wants next keeps both on the one line the user is reading.
+		var note = _levelNote;
+		_levelNote = null;
+
+		var prompt = selection ?? CurrentPrompt();
+
+		SketchPromptChanged?.Invoke( note is null ? prompt : $"{note} {prompt}" );
 	}
 
 	private string CurrentPrompt() => NewSketchToolPrompt() ?? SketchTool switch

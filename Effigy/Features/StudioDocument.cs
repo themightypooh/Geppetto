@@ -687,7 +687,12 @@ public static class StudioDocument
 		// After the features, so it can be clamped against a tree that actually exists. A rollback
 		// index past the end is not corruption — deleting the last feature of a rolled-back tree
 		// leaves exactly that — and PartStudio treats it as "roll to end".
-		studio.RollbackIndex = Math.Min( rollback, studio.Features.Count );
+		//
+		// A bar at or past the end comes back as int.MaxValue, NOT clamped to the count. Clamping
+		// pinned the bar under the last loaded feature, so anything added afterwards - a build
+		// script run on a saved document, a feature added in the editor - landed past the bar and
+		// was silently never evaluated: no geometry and no error.
+		studio.RollbackIndex = rollback >= studio.Features.Count ? int.MaxValue : rollback;
 
 		return studio;
 	}
@@ -739,7 +744,7 @@ public static class StudioDocument
 
 			if ( line.StartsWith( "bone " ) )
 			{
-				ReadBone( studio.Rig, lines, ref i );
+				ReadBone( studio, lines, ref i );
 				continue;
 			}
 
@@ -798,8 +803,10 @@ public static class StudioDocument
 
 	/// <summary>One bone block. Everything is read before anything is added, because AddBone takes
 	/// the whole bone at once and can refuse it.</summary>
-	static void ReadBone( Skeleton rig, string[] lines, ref int i )
+	static void ReadBone( PartStudio studio, string[] lines, ref int i )
 	{
+		var rig = studio.Rig;
+		var lineNumber = i + 1;
 		var name = lines[i].Trim()[5..].Trim();
 
 		var parent = -1;
@@ -851,15 +858,17 @@ public static class StudioDocument
 			var index = rig.AddBone( name, parent, new Xform( x, y, z, origin ), length );
 			rig.Bones[index].Soft = soft;
 		}
-		catch ( ArgumentException )
+		catch ( ArgumentException e )
 		{
 			// A duplicate name, a blank one, or a parent that is not there yet - a hand-edited or
 			// truncated file. AddBone is the only thing that knows the rules, so it is left to
-			// enforce them rather than having them restated here and allowed to drift.
+			// enforce them rather than having them restated here and allowed to drift. The bone is
+			// left out, but said so: the next save would otherwise lose it without a word.
 			//
 			// ONE CATCH COVERS BOTH throws: AddBone raises ArgumentOutOfRangeException for a bad
 			// parent, and that derives from ArgumentException, so a second clause for it would be
 			// unreachable rather than thorough.
+			studio.ReadWarnings.Add( $"line {lineNumber}: bone '{name}' was left out ({e.Message.Split( '\n' )[0].Split( " (Parameter" )[0]})" );
 		}
 	}
 

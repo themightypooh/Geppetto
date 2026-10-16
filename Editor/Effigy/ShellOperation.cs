@@ -62,7 +62,7 @@ public static class ShellOperation
 	/// The message names the thickness and the face, because "too thick" without a number is not
 	/// something anyone can act on — the useful question is always "thicker than what".
 	/// </summary>
-	static void RefuseIfFolded( PolyMesh mesh, Vec3[] inner, HashSet<int> open, float thickness )
+	static void RefuseIfFolded( PolyMesh mesh, Vec3[] inner, HashSet<int> open, float thickness, float[] outerAreas, float sliver )
 	{
 		// THE CHECK THAT CATCHES THE COMMON CASE, and the reason the per-face one below is not
 		// enough on its own. Shell a 1-thick plate by 0.6 and its top and bottom walls pass straight
@@ -97,6 +97,11 @@ public static class ShellOperation
 			var face = mesh.Faces[fi];
 
 			if ( face.Count < 3 )
+				continue;
+
+			// A face that was a sliver outside is a sliver inside too, and that is not a collapse:
+			// there was never any surface there to lose. Its neighbours are checked like any other.
+			if ( outerAreas[fi] <= sliver )
 				continue;
 
 			var outerNormal = mesh.FaceNormal( face );
@@ -195,6 +200,7 @@ public static class ShellOperation
 			throw new InvalidOperationException( "Cannot shell an open mesh — it has no inside to hollow" );
 
 		var open = new HashSet<int>( openFaces ?? Enumerable.Empty<int>() );
+		Vec3[] positionsArray = null;
 
 		foreach ( var fi in open )
 		{
@@ -206,9 +212,29 @@ public static class ShellOperation
 			throw new InvalidOperationException( "Cannot open every face — there would be nothing left" );
 
 		var faceNormals = new Vec3[mesh.FaceCount];
+		var faceAreas = new float[mesh.FaceCount];
+		var totalArea = 0f;
 
 		for ( var fi = 0; fi < mesh.FaceCount; fi++ )
+		{
 			faceNormals[fi] = mesh.FaceNormal( mesh.Faces[fi] );
+			faceAreas[fi] = NewellNormal( mesh.Faces[fi], positionsArray ??= mesh.Positions.ToArray() ).Length * 0.5f;
+			totalArea += faceAreas[fi];
+		}
+
+		// A SLIVER HAS NO PLANE WORTH OBEYING. A voxel skin (Blob, Voxel remesh, the voxel boolean)
+		// is full of quads squeezed to almost nothing where the surface crosses a cell corner, and the
+		// normal of one of those is noise. Asking a vertex to stand `thickness` clear of a random plane
+		// is what threw vertices across the cavity and made a 0.2 wall "collapse" an 8 in ellipsoid.
+		var sliver = totalArea / Math.Max( mesh.FaceCount, 1 ) * 1e-3f;
+		bool Planar( int fi ) => faceAreas[fi] > sliver && faceNormals[fi].LengthSquared > 0.5f;
+
+		Vec3 AreaNormal( List<int> faces )
+		{
+			var sum = Vec3.Zero;
+			foreach ( var fi in faces ) sum += faceNormals[fi] * MathF.Max( faceAreas[fi], 1e-12f );
+			return sum.LengthSquared > 1e-24f ? sum.Normal : faceNormals[faces[0]];
+		}
 
 		var edgeFaces = mesh.BuildEdgeFaces();
 		var rimEdges = FindRimEdges( edgeFaces, open );
@@ -220,16 +246,17 @@ public static class ShellOperation
 		// --- inner surface positions -------------------------------------------------------
 		var inner = new Vec3[mesh.VertexCount];
 		approximatedVertices = 0;
+		var unplaced = new List<int>();
+		var unplacedSet = new HashSet<int>();
 
 		for ( var vi = 0; vi < mesh.VertexCount; vi++ )
 		{
 			// AN OPENED FACE MUST NOT CONSTRAIN THE SOLVE. It is being deleted, so requiring the
 			// inner surface to stand `thickness` clear of it pulls the wall back from the opening
 			// and turns the rim into a 45-degree chamfer instead of a flat band of wall.
-			var planes = PlaneOffset.Distinct(
-				vertexFaces[vi].Where( fi => !open.Contains( fi ) ).Select( fi => faceNormals[fi] ) );
+			var kept = vertexFaces[vi].Where( fi => !open.Contains( fi ) ).ToList();
 
-			if ( planes.Count == 0 )
+			if ( kept.Count == 0 )
 			{
 				// Every face here was opened, so this vertex survives in neither surface. Its
 				// position is never referenced; leaving it put is tidier than inventing one.
@@ -237,13 +264,71 @@ public static class ShellOperation
 				continue;
 			}
 
-			if ( !PlaneOffset.TrySolve( planes, thickness, out var displacement ) )
+			var solid = kept.Where( Planar ).ToList();
+			var planes = PlaneOffset.Distinct( (solid.Count > 0 ? solid : kept).Select( fi => faceNormals[fi] ) );
+			var exact = PlaneOffset.TrySolve( planes, thickness, out var displacement );
+
+			// AN ILL-CONDITIONED SOLVE IS NOT AN ANSWER. Several almost-coplanar planes - every vertex
+			// of a smooth organic surface - make the normal equations nearly singular, and their
+			// least-squares fit can be many walls deep in the one direction they barely constrain. A
+			// real corner never needs that: a box corner is t*sqrt(3), a 30-degree knife edge about
+			// 4t. Past that, or pointing outward, take the even-thickness offset along the vertex's
+			// area-weighted normal instead (Blender's Solidify "Even Thickness"), and count it.
+			if ( !exact && (displacement.Length > thickness * 4f || Vec3.Dot( displacement, AreaNormal( solid.Count > 0 ? solid : kept ) ) <= 0f) )
+			{
+				var n = AreaNormal( solid.Count > 0 ? solid : kept );
+				var worst = 1f;
+
+				foreach ( var fi in solid.Count > 0 ? solid : kept )
+					worst = MathF.Min( worst, Vec3.Dot( faceNormals[fi], n ) );
+
+				displacement = n * (thickness / MathF.Max( worst, 0.25f ));
+			}
+
+			if ( !exact )
 				approximatedVertices++;
 
 			inner[vi] = mesh.Positions[vi] - displacement;
+
+			if ( solid.Count == 0 )
+			{
+				unplaced.Add( vi );
+				unplacedSet.Add( vi );
+			}
 		}
 
-		RefuseIfFolded( mesh, inner, open, thickness );
+		// A vertex touching nothing but slivers has no plane of its own to stand clear of, so it
+		// takes its neighbours' step - otherwise it stays on the outer skin and the wall is zero there.
+		for ( var pass = 0; pass < 4 && unplaced.Count > 0; pass++ )
+		{
+			var still = new List<int>();
+
+			foreach ( var vi in unplaced )
+			{
+				var sum = Vec3.Zero;
+				var count = 0;
+
+				foreach ( var fi in vertexFaces[vi] )
+					foreach ( var other in mesh.Faces[fi].Indices )
+					{
+						if ( other == vi || unplacedSet.Contains( other ) )
+							continue;
+
+						sum += mesh.Positions[other] - inner[other];
+						count++;
+					}
+
+				if ( count == 0 ) { still.Add( vi ); continue; }
+				inner[vi] = mesh.Positions[vi] - sum / count;
+			}
+
+			foreach ( var vi in unplaced )
+				if ( !still.Contains( vi ) ) unplacedSet.Remove( vi );
+
+			unplaced = still;
+		}
+
+		RefuseIfFolded( mesh, inner, open, thickness, faceAreas, sliver );
 
 		// --- assemble ----------------------------------------------------------------------
 		// Layout: [0 .. V) the outer surface, [V .. 2V) the inner one.
@@ -427,7 +512,11 @@ public static class ShellOperation
 /// </summary>
 public static class MeshSolidify
 {
-	public static PolyMesh Solidify( PolyMesh mesh, float thickness )
+	/// <param name="smooth">Offset along the averaged vertex normal instead of solving the face
+	/// planes. For cloth: the plane solve keeps a hard corner exact, and on a draped crease - two
+	/// faces nearly facing each other - it sent the outer wall under the inner one, which showed
+	/// through as dark specks all over a shirt. A smooth surface wants a smooth offset.</param>
+	public static PolyMesh Solidify( PolyMesh mesh, float thickness, bool smooth = false )
 	{
 		if ( mesh is null )
 			throw new ArgumentNullException( nameof( mesh ) );
@@ -440,12 +529,21 @@ public static class MeshSolidify
 		if ( thickness == 0f )
 			return mesh.Clone();
 
+		// A boundary vertex where two openings only touch — the ankle, where the foot hull and the
+		// shin hull meet at a point — has four boundary edges. Every rim quad then contains the
+		// same outer-to-inner edge, and that edge is shared by four faces. Split the fans first so
+		// each opening gets its own copy of the vertex. The copies stay on the same point. The
+		// caller's mesh is left alone: the split is on a clone.
+		mesh = mesh.Clone();
+		SplitPinchedBoundary( mesh );
+
 		var faceNormals = new Vec3[mesh.FaceCount];
 
 		for ( var fi = 0; fi < mesh.FaceCount; fi++ )
 			faceNormals[fi] = mesh.FaceNormal( mesh.Faces[fi] );
 
 		var vertexFaces = mesh.BuildVertexFaces();
+		var smoothNormals = smooth ? mesh.ComputeVertexNormals() : null;
 
 		// Offset every vertex so each face plane it touches stands `thickness` away along its normal.
 		// A positive thickness offsets along the face normal (outward), a negative one against it.
@@ -453,6 +551,12 @@ public static class MeshSolidify
 
 		for ( var vi = 0; vi < mesh.VertexCount; vi++ )
 		{
+			if ( smoothNormals is not null )
+			{
+				offsetPositions[vi] = mesh.Positions[vi] + smoothNormals[vi] * thickness;
+				continue;
+			}
+
 			var planes = PlaneOffset.Distinct( vertexFaces[vi].Select( fi => faceNormals[fi] ) );
 
 			if ( planes.Count == 0 )
@@ -554,5 +658,221 @@ public static class MeshSolidify
 		}
 
 		return result;
+	}
+
+	/// <summary>
+	/// The outer wall of a <see cref="Solidify"/> result, as the open sheet it was made from: the
+	/// same faces, UVs, slots and weights, on the offset vertices. Null when the mesh is not laid
+	/// out the way Solidify lays it out.
+	///
+	/// A SOLIDIFIED GARMENT HAS NO OPENINGS. The rim closes every hem, cuff and collar, so anything
+	/// that walks a garment's boundary - a frill at the hem, fur along the cuffs, the opening count
+	/// in Check, live cloth that wants one sheet rather than two walls - found nothing on a garment
+	/// at its default Thickness. The openings are still there in the layout: Solidify writes the
+	/// near wall and then the far wall face by face, so the far wall alone is the sheet, offset.
+	///
+	/// READ OFF THE FACE ORDER, NOT THE VERTEX COUNT. Fur grows its shells onto the garment after
+	/// the fact and appends vertices and faces, so "half the vertices" stops being the offset the
+	/// moment a garment has fur. The first two faces give the offset (the far face is the near face
+	/// reversed, shifted by it), and every pair after them has to agree.
+	/// </summary>
+	public static PolyMesh OuterSheet( PolyMesh mesh, out int offset )
+	{
+		offset = 0;
+
+		if ( mesh is null || mesh.FaceCount < 2 )
+			return null;
+
+		bool Pair( Face far, Face near, int shift )
+		{
+			var n = far.Count;
+
+			if ( near.Count != n || n < 3 )
+				return false;
+
+			for ( var i = 0; i < n; i++ )
+				if ( far.Indices[i] != near.Indices[n - 1 - i] + shift )
+					return false;
+
+			return true;
+		}
+
+		var f0 = mesh.Faces[0];
+		var f1 = mesh.Faces[1];
+		var v = f0.Indices[0] - f1.Indices[f1.Count - 1];
+
+		if ( v <= 0 || 2 * v > mesh.VertexCount || !Pair( f0, f1, v ) )
+			return null;
+
+		var pairs = 0;
+
+		while ( 2 * pairs + 1 < mesh.FaceCount && Pair( mesh.Faces[2 * pairs], mesh.Faces[2 * pairs + 1], v ) )
+			pairs++;
+
+		// Every near-wall vertex has to be a corner of some pair, or this is a mesh that only
+		// happens to start the same way.
+		var used = new bool[v];
+
+		for ( var k = 0; k < pairs; k++ )
+			foreach ( var vi in mesh.Faces[2 * k + 1].Indices )
+			{
+				if ( vi < 0 || vi >= v )
+					return null;
+
+				used[vi] = true;
+			}
+
+		if ( used.Any( u => !u ) )
+			return null;
+
+		var sheet = new PolyMesh();
+
+		for ( var i = 0; i < v; i++ )
+			sheet.AddVertex( mesh.Positions[i + v] );
+
+		for ( var k = 0; k < pairs; k++ )
+		{
+			var far = mesh.Faces[2 * k];
+			sheet.AddFace( far.Indices.Select( i => i - v ).ToArray(), (Vec2[])far.UVs?.Clone(), far.Material );
+		}
+
+		if ( mesh.IsRigged && mesh.Skin.Count >= 2 * v )
+		{
+			var skin = new SkinWeights();
+
+			for ( var i = 0; i < v; i++ )
+				skin.Vertices.Add( (BoneWeight[])mesh.Skin[i + v].Clone() );
+
+			sheet.Skin = skin;
+		}
+
+		offset = v;
+		return sheet;
+	}
+
+	/// <summary>
+	/// Give each fan of faces around a pinched boundary vertex its own copy of that vertex.
+	///
+	/// One fan is the ordinary case: two boundary edges, one loop. Two fans meeting at one vertex
+	/// is two loops pinched together, and the rim pass cannot tell them apart. The first fan keeps
+	/// the vertex; every later fan is retargeted onto a new one at the same position.
+	/// </summary>
+	static void SplitPinchedBoundary( PolyMesh mesh )
+	{
+		var count = mesh.VertexCount;
+		var vertexFaces = mesh.BuildVertexFaces();
+		var edgeFaces = mesh.BuildEdgeFaces();
+		var rigged = mesh.IsRigged;
+
+		bool Boundary( int a, int b ) =>
+			edgeFaces.TryGetValue( new EdgeKey( a, b ), out var users ) && users.Count == 1;
+
+		// The maps above are of the mesh as it came in, and a split retargets faces onto copies as
+		// it goes. A neighbour split earlier shows up in a face as its copy, which the maps have
+		// never heard of - and a pinch next to a pinch (both armpits of a T-shirt cut from a
+		// triangulated Citizen) then split a fan that was whole, leaving an edge on four faces.
+		// So every index is read back to the vertex it was a copy of before it is looked up.
+		var original = new Dictionary<int, int>();
+		int Original( int v ) => original.TryGetValue( v, out var o ) ? o : v;
+
+		for ( var vi = 0; vi < count; vi++ )
+		{
+			var incident = vertexFaces[vi];
+
+			if ( incident is null || incident.Count < 2 )
+				continue;
+
+			var parent = new Dictionary<int, int>( incident.Count );
+
+			int Find( int x )
+			{
+				if ( !parent.TryGetValue( x, out var p ) )
+					return parent[x] = x;
+
+				if ( p != x )
+					parent[x] = Find( p );
+
+				return parent[x];
+			}
+
+			void Union( int a, int b )
+			{
+				a = Find( a );
+				b = Find( b );
+
+				if ( a != b )
+					parent[a] = b;
+			}
+
+			foreach ( var fi in incident )
+				Find( fi );
+
+			foreach ( var fi in incident )
+			{
+				var idx = mesh.Faces[fi].Indices;
+				var n = idx.Length;
+
+				for ( var c = 0; c < n; c++ )
+				{
+					if ( idx[c] != vi )
+						continue;
+
+					var next = idx[c + 1 == n ? 0 : c + 1];
+					var prev = idx[c == 0 ? n - 1 : c - 1];
+
+					void Join( int other )
+					{
+						other = Original( other );
+						var key = new EdgeKey( vi, other );
+
+						if ( Boundary( vi, other ) || !edgeFaces.TryGetValue( key, out var users ) )
+							return;
+
+						foreach ( var neighbour in users )
+						{
+							if ( neighbour != fi )
+								Union( fi, neighbour );
+						}
+					}
+
+					Join( next );
+					Join( prev );
+				}
+			}
+
+			var first = true;
+
+			foreach ( var fan in incident.GroupBy( Find ) )
+			{
+				if ( first )
+				{
+					first = false;
+					continue;
+				}
+
+				var copy = mesh.AddVertex( mesh.Positions[vi] );
+				original[copy] = vi;
+
+				if ( rigged )
+					mesh.Skin.Vertices.Add( (BoneWeight[])mesh.Skin.Vertices[vi].Clone() );
+
+				if ( mesh.VertexColors is { } colors && colors.Length == copy )
+				{
+					Array.Resize( ref mesh.VertexColors, copy + 1 );
+					mesh.VertexColors[copy] = colors[vi];
+				}
+
+				foreach ( var fi in fan )
+				{
+					var idx = mesh.Faces[fi].Indices;
+
+					for ( var c = 0; c < idx.Length; c++ )
+					{
+						if ( idx[c] == vi )
+							idx[c] = copy;
+					}
+				}
+			}
+		}
 	}
 }

@@ -115,7 +115,10 @@ internal sealed partial class EffigyViewport
 		var direction = new Vec3( ray.Forward.x, ray.Forward.y, ray.Forward.z );
 
 		if ( MeshRaycast.Raycast( _displayBodies, origin, direction, PickTreeFor ) is not { } hit )
+		{
+			BoneToolFrameOffModel( origin, direction );
 			return;
+		}
 
 		// MEASURED IN THE BODY THE HIT NAMES, not across all of them. Raycast above has already
 		// decided which solid the cursor is on — including discarding surfaces buried inside another
@@ -158,6 +161,58 @@ internal sealed partial class EffigyViewport
 		}
 
 		Gizmo.Draw.IgnoreDepth = false;
+
+		if ( Gizmo.WasLeftMousePressed )
+			BonePointPicked?.Invoke( point );
+	}
+
+	/// <summary>
+	/// The cursor is past the model.
+	///
+	/// MID-CHAIN THAT STILL MEANS SOMETHING. A tail sticking out of the body — an antenna, a tail, a
+	/// prop bone, the tip of a finger chain past a stubby hand — has nothing under it to click, and
+	/// a tool that only ever lands on the skin cannot make one. So the joint goes on the plane
+	/// through the last joint, square to the view: the bone you get lies flat to the screen and is
+	/// exactly as long as it looks, which is what aiming in empty space can honestly promise.
+	///
+	/// The FIRST joint of a chain has no such plane to stand on — there is nothing to measure depth
+	/// from — so that click is refused, and says so.
+	/// </summary>
+	private void BoneToolFrameOffModel( Vec3 origin, Vec3 direction )
+	{
+		if ( PendingBoneHead is not { } head )
+		{
+			if ( Gizmo.WasLeftMousePressed )
+				RefuseOncePerPress( "bone-miss", "Missed the model — a chain's first joint goes on the part. Click on it; later joints can go in empty space." );
+
+			return;
+		}
+
+		var forward = _camera.WorldRotation.Forward;
+		var normal = new Vec3( forward.x, forward.y, forward.z );
+		var dir = direction.Normal;
+		var denominator = Vec3.Dot( dir, normal );
+
+		if ( MathF.Abs( denominator ) < 1e-6f )
+			return;
+
+		var t = Vec3.Dot( head - origin, normal ) / denominator;
+
+		if ( t <= 0f )
+			return;
+
+		var landed = origin + dir * t;
+		var point = SnapBonesToCentre ? new Vec3( landed.x, 0f, landed.z ) : landed;
+
+		if ( (point - head).Length > 0.01f )
+		{
+			var (xAxis, zAxis) = PreviewBasis( head, point );
+
+			Gizmo.Draw.IgnoreDepth = true;
+			Gizmo.Draw.Color = BoneToolPreviewColor;
+			DrawDogBone( new Vector3( head.x, head.y, head.z ), new Vector3( point.x, point.y, point.z ), xAxis, zAxis );
+			Gizmo.Draw.IgnoreDepth = false;
+		}
 
 		if ( Gizmo.WasLeftMousePressed )
 			BonePointPicked?.Invoke( point );

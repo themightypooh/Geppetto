@@ -51,7 +51,7 @@ internal enum EffigyBarMode
 	Rig,
 
 	/// <summary>Edit mode in the Model workspace: direct vertex / edge / face editing of one body
-	/// through a <see cref="MeshEditSession"/>.</summary>
+	/// through a <see cref="global::Effigy.MeshEditSession"/>.</summary>
 	MeshEdit,
 
 	/// <summary>The Clothing workspace: bring a wearer in, cut a garment from it, grow fur on it.
@@ -381,6 +381,29 @@ internal sealed class EffigyStageBar : Widget
 	/// lives on the buttons — armed states, the tutorial's highlight.</summary>
 	public Action StageChanged { get; set; }
 
+	/// <summary>
+	/// A click the bar would not act on - a locked tab, a dimmed tool - as a sentence saying why.
+	/// The tooltip already carried the reason, but only to someone who hovered; a click that does
+	/// nothing has to answer the click.
+	/// </summary>
+	public Action<string> Refused { get; set; }
+
+	/// <summary>"Can't use Bend: select a bone first", from a tool or stage name and its reason.</summary>
+	internal void Refuse( string what, string reason )
+	{
+		if ( Refused is null )
+			return;
+
+		reason = string.IsNullOrWhiteSpace( reason ) ? "it isn't available right now" : reason.Trim().TrimEnd( '.' );
+
+		// Reasons are written as sentences for a tooltip; mid-sentence they want a small letter,
+		// unless the first word is an acronym or a name ("IK", "UV").
+		if ( reason.Length > 1 && char.IsUpper( reason[0] ) && !char.IsUpper( reason[1] ) )
+			reason = char.ToLowerInvariant( reason[0] ) + reason[1..];
+
+		Refused( $"Can't {what}: {reason}." );
+	}
+
 	/// <summary>The mode this bar is in - "SKETCH 1", "SCULPT" - or null in the ordinary part
 	/// studio. Painted at the right of the tab row next to the control that leaves it.</summary>
 	public string Mode
@@ -558,7 +581,10 @@ internal sealed class EffigyStageBar : Widget
 			return;
 
 		if ( _stages[index].Locked )
+		{
+			Refuse( $"open {_stages[index].Name}", _stages[index].LockedReason );
 			return;
+		}
 
 		_selected = index;
 
@@ -1459,7 +1485,10 @@ internal sealed class EffigyStageToolRow : Widget
 		// Which half was pressed decides what the release does. Recorded on PRESS so a drag that
 		// starts on the chevron and ends over the glyph cannot arm a tool you did not ask for.
 		if ( !tools[index].Enabled )
+		{
+			Bar?.Refuse( $"use {tools[index].Label}", tools[index].DisabledReason );
 			return;
+		}
 
 		_pressedChevron = tools[index].HasVariants && ChevronRect( _rects[index] ).IsInside( e.LocalPosition );
 		_pressed = index;
@@ -1494,7 +1523,10 @@ internal sealed class EffigyStageToolRow : Widget
 		// from live state (UpdateRigChecks runs off the rig panel's own callbacks), so it can go
 		// dead between the two halves of one click.
 		if ( !tool.Enabled )
+		{
+			Bar?.Refuse( $"use {tool.Label}", tool.DisabledReason );
 			return;
+		}
 
 		if ( chevron )
 		{

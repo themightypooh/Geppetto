@@ -25,7 +25,9 @@ public static class SkinBlockout
 		if ( skeleton is null || skeleton.Count == 0 )
 			throw new InvalidOperationException( "There are no bones to build a body on. Draw a rig first." );
 
-		radiusOf ??= i => MathF.Max( skeleton.Bones[i].Length * 0.2f, 0.01f );
+		// Length is an inch on a citizen bone, and the limb is a foot long. The default thickness
+		// follows the segment that is actually built — see TryBodySpan — unless the caller set one.
+		radiusOf ??= i => DefaultRadius( skeleton, i );
 
 		// Joints: heads and tails, merged where a child's head sits on its parent's tail.
 		var nodes = new List<Vec3>();
@@ -46,16 +48,60 @@ public static class SkinBlockout
 			return nodes.Count - 1;
 		}
 
+		// One node index per bone end, so a child that does not sit on its parent's tail can
+		// still be bridged to the parent's joint. Auxiliary bones are not nodes: a twist is a
+		// station on the arm, and building it makes a second arm.
+		var headNode = new int[skeleton.Count];
+		var tailNode = new int[skeleton.Count];
+		for ( var n = 0; n < skeleton.Count; n++ )
+		{
+			headNode[n] = -1;
+			tailNode[n] = -1;
+		}
+
 		var bones = new List<(int head, int tail)>();
 		for ( var b = 0; b < skeleton.Count; b++ )
 		{
-			var head = skeleton.HeadWorld( b );
-			var tail = skeleton.TailWorld( b );
-			if ( (tail - head).LengthSquared < 1e-6f )
+			if ( !skeleton.TryBodySpan( b, out var head, out var tail ) )
 				continue;
 
 			var r = MathF.Max( radiusOf( b ), 0.01f );
-			bones.Add( (NodeAt( head, r ), NodeAt( tail, r )) );
+			headNode[b] = NodeAt( head, r );
+
+			// A fan joint (pelvis, hand) keeps a short authored tail that points nowhere. The
+			// children are bridged below; a stub beside them is a wart on the joint.
+			var fan = false;
+			foreach ( var c in skeleton.Children( b ) )
+			{
+				if ( Skeleton.IsAuxiliaryBone( skeleton.Bones[c].Name ) || headNode[c] == headNode[b] )
+					continue;
+
+				if ( !skeleton.TryBodySpan( c, out var childHead, out _ ) )
+					continue;
+
+				if ( (childHead - head).LengthSquared > 1e-4f && (childHead - tail).LengthSquared > 1e-4f )
+					fan = true;
+			}
+
+			if ( fan && (tail - head).Length < 2f )
+				continue;
+
+			tailNode[b] = NodeAt( tail, r );
+			bones.Add( (headNode[b], tailNode[b]) );
+		}
+
+		for ( var b = 0; b < skeleton.Count; b++ )
+		{
+			if ( headNode[b] < 0 )
+				continue;
+
+			foreach ( var c in skeleton.Children( b ) )
+			{
+				if ( headNode[c] < 0 || headNode[c] == headNode[b] || headNode[c] == tailNode[b] )
+					continue;
+
+				bones.Add( (headNode[b], headNode[c]) );
+			}
 		}
 
 		if ( bones.Count == 0 )
@@ -171,5 +217,66 @@ public static class SkinBlockout
 		}
 
 		return smoothLevels > 0 ? CatmullClark.Subdivide( mesh, smoothLevels ) : mesh;
+	}
+
+	/// <summary>
+	/// A fifth of the segment that is actually built. On a citizen bone that is the distance to
+	/// the next joint, not the authored inch. A head's children are eyes and ears, which are not
+	/// part of the span, so the skull takes its size from them. A fan joint's own span is that
+	/// authored inch; it fills out toward the children that leave it.
+	/// </summary>
+	static float DefaultRadius( Skeleton skeleton, int bone )
+	{
+		if ( !skeleton.TryBodySpan( bone, out var head, out var tail ) )
+			return 0.01f;
+
+		var span = (tail - head).Length;
+		var reach = span;
+		var face = 0f;
+		var headBone = skeleton.Bones[bone].Name.Contains( "head", StringComparison.OrdinalIgnoreCase );
+
+		foreach ( var c in skeleton.Children( bone ) )
+		{
+			var d = (skeleton.HeadWorld( c ) - head).Length;
+
+			if ( d < 1e-3f )
+				continue;
+
+			var child = skeleton.Bones[c].Name;
+
+			// Eyes and ears say how big a skull is. An IK target on the hand is forty inches
+			// away and must not do the same job, or the palm becomes a crate.
+			if ( headBone && IsFaceBone( child ) )
+				face = MathF.Max( face, d );
+			else if ( !Skeleton.IsAuxiliaryBone( child ) )
+				reach = MathF.Max( reach, d );
+		}
+
+		var r = span * 0.2f;
+
+		if ( face > span )
+			r = MathF.Max( r, face * 0.42f );
+
+		// A fan joint's own span is the short authored tail. Fill it out toward the children
+		// that leave it, or a pelvis is an inch cube between two legs.
+		if ( reach > span + 0.5f && span < 2f )
+			r = MathF.Max( r, reach * 0.35f );
+
+		// Spine bones are short, so a fifth of one is a stick. The trunk wants the width of
+		// the ribs, which a spine segment does not carry.
+		var name = skeleton.Bones[bone].Name;
+		if ( name.Contains( "pelvis", StringComparison.OrdinalIgnoreCase )
+			|| name.Contains( "spine", StringComparison.OrdinalIgnoreCase )
+			|| name.Contains( "chest", StringComparison.OrdinalIgnoreCase ) )
+			r = MathF.Max( r, 3.2f );
+
+		return MathF.Max( r, 0.01f );
+	}
+
+	static bool IsFaceBone( string name )
+	{
+		var n = name.ToLowerInvariant();
+		return n.Contains( "eye" ) || n.Contains( "ear" ) || n.Contains( "lid" )
+			|| n.Contains( "face" ) || n.Contains( "jaw" );
 	}
 }

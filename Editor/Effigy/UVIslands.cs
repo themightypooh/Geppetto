@@ -299,4 +299,131 @@ public static class UVIslands
 
 		return result;
 	}
+
+	/// <summary>
+	/// How far a layout bends the surface: the area-weighted mean and the worst triangle, over
+	/// <paramref name="faces"/> (all faces when null). 1 is perfect; see <see cref="TriangleStretch"/>
+	/// for what one number means.
+	///
+	/// WHY NOT <see cref="Stretch"/>. That compares AREAS, so it cannot see the failure a planar
+	/// projection actually makes: a face tilted away from the projection plane is squashed in one
+	/// direction only, and a squashed face can keep almost exactly its share of area while every
+	/// texel on it is a thin sliver. This looks at the two directions separately, which is the
+	/// only way to see shear and squash at all.
+	///
+	/// Density is the layout's OWN average (total UV area over total surface area), so a layout
+	/// is not punished for the scale it was packed at - only for being uneven.
+	/// </summary>
+	public static (float Mean, float Max) Distortion( PolyMesh mesh, IEnumerable<int> faces = null )
+	{
+		var list = new List<int>();
+
+		if ( faces is null )
+		{
+			for ( var f = 0; f < mesh.FaceCount; f++ )
+				list.Add( f );
+		}
+		else
+		{
+			list.AddRange( faces );
+		}
+
+		var area3 = 0.0;
+		var areaUV = 0.0;
+
+		foreach ( var f in list )
+		{
+			var face = mesh.Faces[f];
+
+			if ( face.UVs is null || face.UVs.Length != face.Count )
+				continue;
+
+			for ( var i = 1; i + 1 < face.Count; i++ )
+			{
+				var p0 = mesh.Positions[face.Indices[0]];
+				area3 += 0.5 * Vec3.Cross( mesh.Positions[face.Indices[i]] - p0, mesh.Positions[face.Indices[i + 1]] - p0 ).Length;
+				areaUV += MathF.Abs( Vec2.Cross( face.UVs[i] - face.UVs[0], face.UVs[i + 1] - face.UVs[0] ) ) * 0.5;
+			}
+		}
+
+		if ( area3 <= 0 || areaUV <= 0 )
+			return (0f, 0f);
+
+		var density = Math.Sqrt( areaUV / area3 );
+		var sum = 0.0;
+		var weight = 0.0;
+		var worst = 0.0;
+
+		foreach ( var f in list )
+		{
+			var face = mesh.Faces[f];
+
+			if ( face.UVs is null || face.UVs.Length != face.Count )
+				continue;
+
+			for ( var i = 1; i + 1 < face.Count; i++ )
+			{
+				var p0 = mesh.Positions[face.Indices[0]];
+				var p1 = mesh.Positions[face.Indices[i]];
+				var p2 = mesh.Positions[face.Indices[i + 1]];
+				var s = TriangleStretch( p0, p1, p2, face.UVs[0], face.UVs[i], face.UVs[i + 1], density );
+
+				if ( s < 0 )
+					continue;
+
+				var a = 0.5 * Vec3.Cross( p1 - p0, p2 - p0 ).Length;
+				sum += s * a;
+				weight += a;
+				worst = Math.Max( worst, s );
+			}
+		}
+
+		return weight > 0 ? ((float)(sum / weight), (float)worst) : (0f, 0f);
+	}
+
+	/// <summary>
+	/// One triangle's stretch: the singular values of the map from the surface to UV space give
+	/// how many UV units one unit of surface becomes in the most- and least-stretched directions.
+	/// Divided by the layout's density, a perfect triangle has both at 1. The number is the worse of
+	/// the two ways it can go wrong - too many texels in some direction (largest over density) or
+	/// too few (density over smallest) - so 2 means some direction across the triangle gets half or
+	/// double what it should. Capped at 1000 for a triangle the layout collapsed to a line.
+	///
+	/// Returns -1 for a triangle with no surface area, which has no directions to stretch.
+	/// </summary>
+	internal static float TriangleStretch( Vec3 p0, Vec3 p1, Vec3 p2, Vec2 t0, Vec2 t1, Vec2 t2, double density )
+	{
+		var e1 = p1 - p0;
+		var e2 = p2 - p0;
+		var n = Vec3.Cross( e1, e2 );
+
+		if ( n.LengthSquared < 1e-24f || e1.LengthSquared < 1e-24f )
+			return -1f;
+
+		var x = e1.Normal;
+		var y = Vec3.Cross( n.Normal, x );
+
+		double q1x = e1.Length, q2x = Vec3.Dot( e2, x ), q2y = Vec3.Dot( e2, y );
+
+		if ( q2y <= 1e-12 )
+			return -1f;
+
+		double u1x = t1.x - t0.x, u1y = t1.y - t0.y, u2x = t2.x - t0.x, u2y = t2.y - t0.y;
+
+		// J = [t1 - t0, t2 - t0] * inverse([q1, q2]).
+		var j1x = u1x / q1x;
+		var j1y = u1y / q1x;
+		var j2x = -u1x * q2x / (q1x * q2y) + u2x / q2y;
+		var j2y = -u1y * q2x / (q1x * q2y) + u2y / q2y;
+
+		var e = j1x * j1x + j1y * j1y + j2x * j2x + j2y * j2y;
+		var det = Math.Abs( j1x * j2y - j2x * j1y );
+		var s1 = Math.Sqrt( (e + Math.Sqrt( Math.Max( 0, e * e - 4 * det * det ) )) * 0.5 );
+		var s2 = s1 > 0 ? det / s1 : 0;
+
+		if ( s2 <= 1e-12 * density )
+			return 1000f;
+
+		return (float)Math.Min( 1000.0, Math.Max( s1 / density, density / s2 ) );
+	}
 }

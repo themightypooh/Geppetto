@@ -215,7 +215,7 @@ public static class SculptBlob
 
 	static Vec3 ReadVec( BinaryReader r ) => new( r.ReadSingle(), r.ReadSingle(), r.ReadSingle() );
 
-	/// <summary>What <see cref="Write"/> will produce, without producing it — for a UI that wants to
+	/// <summary>What <see cref="Write(MultiresSculpt)"/> will produce, without producing it — for a UI that wants to
 	/// say what a level costs on disk before the user commits to it.</summary>
 	public static int PredictBytes( MultiresSculpt sculpt )
 	{

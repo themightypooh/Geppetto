@@ -1,4 +1,4 @@
-using Editor;
+﻿using Editor;
 using Effigy;
 using Sandbox;
 using System;
@@ -212,6 +212,10 @@ public sealed partial class EffigyWindow
 	{
 		if ( _viewport is null )
 			return;
+
+		// The clothing test pose bends the document rig. Leaving with it on would save or rebuild
+		// the pose as the bind. See TestRelax.
+		TestRelax( true );
 
 		if ( _viewport.IsSketching )
 			FinishSketch();
@@ -629,7 +633,7 @@ public sealed partial class EffigyWindow
 	{
 		if ( _studio.Rig.Count == 0 )
 		{
-			SetPrompt( "Check model: there is no rig yet. Make bones from the bodies first." );
+			Refuse( "Check model: there is no rig yet. Make bones from the bodies first." );
 			return;
 		}
 
@@ -755,13 +759,13 @@ public sealed partial class EffigyWindow
 	{
 		if ( _viewport is null || _studio is null || _rigPanel is not { HasBones: true } rig )
 		{
-			SetPrompt( "Paint Weights needs a skeleton — place a bone first." );
+			Refuse( "Paint Weights needs a skeleton — place a bone first." );
 			return;
 		}
 
 		if ( !rig.HasSelectedBone )
 		{
-			SetPrompt( "Pick a bone in the Rig tree, then press Paint Weights." );
+			Refuse( "Pick a bone in the Rig tree, then press Paint Weights." );
 			return;
 		}
 
@@ -775,8 +779,12 @@ public sealed partial class EffigyWindow
 		var weights = SkinBinder.BindBodies( mesh, ranges, rig.BodyBoneMap, rig.Skeleton );
 		weights = SkinBinder.SmoothWeights( mesh, weights );
 
-		if ( _studio.WeightPaint is { Count: > 0 } layer && layer.CanApply( mesh, out _ ) )
-			layer.Apply( mesh, weights, rig.Skeleton, out _ );
+		// Stale paint is not applied - its vertex numbers mean nothing on this mesh - and the session
+		// starts a fresh layer. Said, because otherwise the paint just looks gone.
+		var stalePaint = _studio.WeightPaint is { Count: > 0 } old && !old.CanApply( mesh, out _ );
+
+		if ( !stalePaint )
+			ApplyWeightPaint( mesh, weights, rig.Skeleton, "Paint Weights" );
 
 		var session = new WeightPaintSession( mesh, weights, rig.Skeleton, _studio.WeightPaint )
 		{
@@ -788,6 +796,12 @@ public sealed partial class EffigyWindow
 		_viewport.BeginWeightPaint( session );
 		_weightBar?.Bind( session, rig.SelectedBoneName );
 		SetPrompt( $"Painting {rig.SelectedBoneName}. The ramp is a texture, not vertex colour. Drag on the mesh." );
+
+		if ( stalePaint )
+			_viewport.ShowCallout( "weight-paint", EffigyCalloutKind.Refusal,
+				$"Your earlier weight paint ({_studio.WeightPaint.Count} vertices) isn't shown: the mesh changed shape since it was painted. "
+				+ "Painting now starts over and replaces it. Leave without painting to keep it, and undo the edit that changed the mesh to get it back.",
+				lifetime: FailureSeconds );
 	}
 
 	private void FinishWeightPaint()
@@ -795,8 +809,11 @@ public sealed partial class EffigyWindow
 		if ( _viewport is null || !_viewport.IsWeightPainting )
 			return;
 
-		if ( _viewport.WeightSession is not null )
-			_studio.WeightPaint = _viewport.WeightSession.Layer;
+		// A session that started fresh over stale paint and painted nothing must not replace that
+		// paint with its empty layer: entering and leaving would quietly delete it.
+		if ( _viewport.WeightSession is { } session
+			&& (session.Layer == _studio.WeightPaint || !session.Layer.IsEmpty || _studio.WeightPaint is null) )
+			_studio.WeightPaint = session.Layer;
 
 		_viewport.EndWeightPaint();
 		_weightBar?.Bind( null, null );
@@ -808,10 +825,29 @@ public sealed partial class EffigyWindow
 		if ( _viewport is null )
 			return;
 
-		SetPrompt( _viewport.ToggleSoftPreview()
-			? "Soft preview: gravity is pulling the soft bones. Drag a bone to make the ones below it swing. "
-				+ "Rest puts them back."
-			: "" );
+		var wasRunning = _viewport.SoftPreviewRunning;
+
+		if ( !wasRunning && _rigPanel is not { HasBones: true } )
+		{
+			Refuse( "Can't run the soft preview: there are no bones yet. Place a bone and mark it Soft first." );
+			return;
+		}
+
+		if ( _viewport.ToggleSoftPreview() )
+		{
+			// Running with nothing soft is gravity pulling on nothing: say so, or it looks broken.
+			var soft = _rigPanel?.Skeleton?.Bones.Any( b => b.Soft is not null ) ?? false;
+
+			SetPrompt( soft
+				? "Soft preview: gravity is pulling the soft bones. Drag a bone to make the ones below it swing. Rest puts them back."
+				: "Soft preview is on, but no bone is soft yet, so nothing swings. Mark a bone Soft in the Rig panel." );
+			return;
+		}
+
+		if ( wasRunning )
+			SetPrompt( "Soft preview off: the soft bones are back at rest." );
+		else
+			Refuse( "Can't run the soft preview: the viewport has no skeleton to simulate. Switch to Rig and try again." );
 	}
 
 	/// <summary>
@@ -1104,14 +1140,14 @@ public sealed partial class EffigyWindow
 	private readonly List<EffigyStageTool> _meshTypedTools = new();
 	private readonly List<EffigyStageTool> _meshPrimitiveTools = new();
 	private const char MeshKeyAddPrimitive = (char)1;
-	private EffigyStageTool _meshRotateEdgeTool, _meshRotateEdgeBackTool, _meshSubdivideEdgesTool, _meshFillHolesTool, _meshBeautifyTool;
+	private EffigyStageTool _meshRotateEdgeTool, _meshSubdivideEdgesTool, _meshFillHolesTool, _meshBeautifyTool;
 	private EffigyStageTool _meshSharpSelectTool, _meshMirrorSelectTool, _meshLooseSelectTool, _meshToPivotTool;
 	private EffigyStageTool _meshProjectUVsTool, _meshPlanarUVsTool, _meshTrimRowTool, _meshTrimRowsTool, _meshPipeTool, _meshScatterTool;
 
 	/// <summary>How many rows the trim sheet has, for Trim row. Eight is the usual sheet.</summary>
 	private int _meshTrimRows = 8;
 
-	/// <summary>Units per tile for world-scale mapping. 32 matches s&box's tiling materials at
+	/// <summary>Units per tile for world-scale mapping. 32 matches s&amp;box's tiling materials at
 	/// 512 px on 16 px per unit; change it with Project UVs and the trims follow.</summary>
 	private float _meshUnitsPerTile = 32f;
 
@@ -1170,11 +1206,14 @@ public sealed partial class EffigyWindow
 
 		if ( source is null || !source.IsRigged )
 		{
-			SetPrompt( "Copy weights: no other body here carries skin weights. Rig the character first (Rig workspace), or import a rigged one." );
+			Refuse( "Copy weights: no other body here carries skin weights. Rig the character first (Rig workspace), or import a rigged one." );
 			return;
 		}
 
-		RunMeshOp( "Copy weights", s => SetPrompt( $"Copy weights: {s.TransferWeights( source ):N0} vertices now follow the body under them." ) );
+		var reached = 0;
+
+		if ( TryRunMeshOp( "Copy weights", s => reached = s.TransferWeights( source ) ) )
+			SetPrompt( $"Copy weights: {reached:N0} vertices now follow the body under them." );
 	}
 
 	private void OnMeshPolyBuild( Vec3 at, bool closeTriangle, float weld ) =>
@@ -1375,7 +1414,7 @@ public sealed partial class EffigyWindow
 
 		if ( session.AffectedVertices().Count == 0 )
 		{
-			SetPrompt( "Select something to save first." );
+			Refuse( "Select something to save first." );
 			return;
 		}
 
@@ -1392,7 +1431,7 @@ public sealed partial class EffigyWindow
 
 		if ( session.NamedSelections.Count == 0 )
 		{
-			SetPrompt( "Nothing is saved yet. Select something and press Save selection." );
+			Refuse( "Nothing is saved yet. Select something and press Save selection." );
 			return;
 		}
 
@@ -1462,8 +1501,14 @@ public sealed partial class EffigyWindow
 			return;
 		}
 
-		if ( _viewport?.MeshEditSession is not { SoftRadius: > 0f } session )
+		if ( _viewport?.MeshEditSession is not { } session )
 			return;
+
+		if ( session.SoftRadius <= 0f )
+		{
+			Refuse( "[ and ] change the soft falloff's reach, and Soft is off. Turn Soft on (O) first." );
+			return;
+		}
 
 		session.SoftRadius *= factor;
 		SetPrompt( $"Soft falloff reaches {session.SoftRadius:0.##} units." );
@@ -1590,7 +1635,7 @@ public sealed partial class EffigyWindow
 
 	/// <summary>
 	/// Space: find any tool by name. A menu with a filter box on top, refilled on every keystroke —
-	/// the way s&box's own node graph finds a node — listing each match with the menu it lives in,
+	/// the way s&amp;box's own node graph finds a node — listing each match with the menu it lives in,
 	/// so searching also teaches where things are.
 	/// </summary>
 	private void OpenMeshToolSearch()
@@ -1771,10 +1816,10 @@ public sealed partial class EffigyWindow
 			Menu( "Edge", "Edge slide", "Rip", "Rotate edge", "Subdivide edges", "Pipe", "-", "Loop circle", "Loop space", "-", "Make hard", "Harden creases", "Crease", "Clear crease", "-", "Mark seam", "Clear seam", "-", "Delete edges" ),
 			Menu( "Face", "Triangulate", "Tris to quads", "Beautify", "Poke faces", "Fill holes", "Scatter", "-", "Split", "Separate", "Loose parts", "By material", "Extract", "-", "Flip", "Fix normals", "-", "Solidify", "-", "Delete faces only" ),
 			Menu( "Transform", "Move X", "Move Y", "Move Z", "-", "Rotate X", "Rotate Y", "Rotate Z", "-", "Scale by", "Flatten X", "Flatten Y", "Flatten Z", "-", "Pivot here", "To pivot", "Snap to grid" ),
-			Menu( "Mesh", "Move", "Rotate", "Scale", "Soft", "Connected", "Falloff shape", "-", "Shrink/Fatten", "Shear", "Bend", "-", "Symmetrize", "Mirror X", "Snap", "Shrinkwrap", "-", "Dissolve", "Limited dissolve", "Decimate", "Delete", "Delete loose" ),
+			Menu( "Mesh", "Move", "Rotate", "Scale", "Soft", "Connected", "Falloff shape", "-", "Shrink/Fatten", "Shear", "Bend", "-", "Symmetrize", "Mirror X", "Snap to surface", "Shrinkwrap", "-", "Dissolve", "Limited dissolve", "Decimate", "Delete", "Delete loose" ),
 			Menu( "UV", "Unwrap", "Mark seam", "Clear seam", "-", "Project UVs", "Project from above", "-", "Trim row", "Trim rows" ),
-			Menu( "Modifiers", "Modifiers/Live mirror", "Modifiers/Array", "Modifiers/Smooth", "Crease", "Clear crease", "Modifiers/Thickness" ),
-			Menu( "Retopo", "Retopo/Retopo", "Even quads", "Strip brush", "Relax", "Finish retopo" ),
+			Menu( "Modifiers", "Modifiers/Live mirror", "Modifiers/Live array", "Modifiers/Live smooth", "Crease", "Clear crease", "Modifiers/Thickness" ),
+			Menu( "Retopo", "Retopo/Retopo", "Even quads", "Strip brush", "Retopo/Relax", "Finish retopo" ),
 			Menu( "Skin", "Copy weights", "Smooth weights", "Mirror weights", "Fix weights" ),
 			Menu( "Cloth", "Drape", "Cotton" ),
 		};
@@ -1836,7 +1881,7 @@ public sealed partial class EffigyWindow
 		UpdateMeshEditChecks();
 
 		var labels = session.IsRetopologizing
-			? new[] { "Relax", "Even quads", "Strip brush", "-", "Grow", "Linked", "Invert", "-", "Delete", "Finish retopo" }
+			? new[] { "Retopo/Relax", "Even quads", "Strip brush", "-", "Grow", "Linked", "Invert", "-", "Delete", "Finish retopo" }
 			: session.Mode switch
 			{
 				EditElement.Vertex => new[] { "Connect", "Bevel vertices", "-", "Loop circle", "Loop space", "-", "Merge", "Merge first", "Merge last", "By distance", "Vertex slide", "Smooth", "Clean up/Relax", "Flatten", "To sphere", "Randomize", "-", "Fill", "Rip", "-", "Grow", "Shrink", "Linked", "Invert", "-", "Hide", "Hide others", "Unhide", "-", "Dissolve", "Delete" },
@@ -1882,9 +1927,9 @@ public sealed partial class EffigyWindow
 	{
 		var select = new EffigyStage { Name = "Select" };
 
-		_meshVertexTool = MeshTool( select, EffigyIcon.SelectVertex, "Vertex", "Pick vertices (1)", () => SetMeshElement( EditElement.Vertex ), checkable: true );
+		_meshVertexTool = MeshTool( select, EffigyIcon.SelectVertex, "Vertex", "Pick vertices: click, Shift-click to add, drag a box (1)", () => SetMeshElement( EditElement.Vertex ), checkable: true );
 		_meshEdgeTool = MeshTool( select, EffigyIcon.SelectEdge, "Edge", "Pick edges (2). Alt+click selects a whole loop, Ctrl+Alt+click the ring around it", () => SetMeshElement( EditElement.Edge ), checkable: true );
-		_meshFaceTool = MeshTool( select, EffigyIcon.SelectFace, "Face", "Pick faces (3)", () => SetMeshElement( EditElement.Face ), checkable: true );
+		_meshFaceTool = MeshTool( select, EffigyIcon.SelectFace, "Face", "Pick faces: click, Shift-click to add, drag a box (3)", () => SetMeshElement( EditElement.Face ), checkable: true );
 		MeshTool( select, EffigyIcon.SelectTool, "All", "Select everything (A). Drag on empty space for a box; click empty space for nothing", MeshSelectAll );
 		_meshLassoTool = MeshTool( select, EffigyIcon.SplineTool, "Lasso", "Drag on empty space draws a free lasso instead of a box", ToggleMeshLasso, checkable: true );
 		MeshTool( select, EffigyIcon.SelectEdge, "Non-manifold", "Select every open border and three-way junction — on something meant to be solid, each one is a hole or a bad join", () => RunMeshOp( "Non-manifold", s => s.SelectNonManifold() ) );
@@ -1913,9 +1958,9 @@ public sealed partial class EffigyWindow
 
 		var move = new EffigyStage { Name = "Transform" };
 
-		_meshMoveTool = MeshTool( move, EffigyIcon.Transform, "Move", "Move handle (G)", () => SetMeshHandle( EffigyViewport.BodyDragMode.Move ), checkable: true );
-		_meshRotateTool = MeshTool( move, EffigyIcon.CircularPattern, "Rotate", "Rotate handle (R)", () => SetMeshHandle( EffigyViewport.BodyDragMode.Rotate ), checkable: true );
-		_meshScaleTool = MeshTool( move, EffigyIcon.Primitive, "Scale", "Scale handle (S)", () => SetMeshHandle( EffigyViewport.BodyDragMode.Scale ), checkable: true );
+		_meshMoveTool = MeshTool( move, EffigyIcon.Transform, "Move", "Move the selection with a handle (G). The Transform menu moves it by a typed amount", () => SetMeshHandle( EffigyViewport.BodyDragMode.Move ), checkable: true );
+		_meshRotateTool = MeshTool( move, EffigyIcon.CircularPattern, "Rotate", "Turn the selection with a handle (R). The Transform menu turns it by typed degrees", () => SetMeshHandle( EffigyViewport.BodyDragMode.Rotate ), checkable: true );
+		_meshScaleTool = MeshTool( move, EffigyIcon.Primitive, "Scale", "Scale the selection with a handle (S). The Transform menu scales it by a typed factor", () => SetMeshHandle( EffigyViewport.BodyDragMode.Scale ), checkable: true );
 
 		// Typed transforms: the number on the bar is the whole gesture, for when "up by exactly
 		// two" matters more than a drag. Hold Ctrl while dragging a handle to snap it instead.
@@ -1926,7 +1971,7 @@ public sealed partial class EffigyWindow
 		_meshTypedTools.Add( MeshTool( move, EffigyIcon.CircularPattern, "Rotate X", "Turn the selection about X through its centre by this many degrees. Shift-click turns about the pivot", () => StartMeshOp( "Rotate X", 15f, ( s, v ) => s.Rotate( new Vec3( 1, 0, 0 ), v, Editor.Application.IsKeyDown( KeyCode.Shift ) ) ) ) );
 		_meshTypedTools.Add( MeshTool( move, EffigyIcon.CircularPattern, "Rotate Y", "Turn the selection about Y through its centre by this many degrees. Shift-click turns about the pivot", () => StartMeshOp( "Rotate Y", 15f, ( s, v ) => s.Rotate( new Vec3( 0, 1, 0 ), v, Editor.Application.IsKeyDown( KeyCode.Shift ) ) ) ) );
 		_meshTypedTools.Add( MeshTool( move, EffigyIcon.CircularPattern, "Rotate Z", "Turn the selection about Z through its centre by this many degrees. Shift-click turns about the pivot", () => StartMeshOp( "Rotate Z", 15f, ( s, v ) => s.Rotate( new Vec3( 0, 0, 1 ), v, Editor.Application.IsKeyDown( KeyCode.Shift ) ) ) ) );
-		_meshTypedTools.Add( MeshTool( move, EffigyIcon.Primitive, "Scale by", "Scale the selection about its centre by this factor: 2 doubles it, 0.5 halves it. Shift-click scales about the pivot", () => StartMeshOp( "Scale", 1.5f, ( s, v ) => s.Scale( new Vec3( v, v, v ), Editor.Application.IsKeyDown( KeyCode.Shift ) ) ) ) );
+		_meshTypedTools.Add( MeshTool( move, EffigyIcon.Primitive, "Scale by", "Scale the selection about its centre by this factor: 2 doubles it, 0.5 halves it. Shift-click scales about the pivot", () => StartMeshOp( "Scale", 1.5f, ( s, v ) => { var f = ScaleFactor( v ); s.Scale( new Vec3( f, f, f ), Editor.Application.IsKeyDown( KeyCode.Shift ) ); } ) ) );
 		_meshTypedTools.Add( MeshTool( move, EffigyIcon.Primitive, "Flatten X", "Squash the selection flat along X, onto the plane through its centre — 0 on that axis, the rest untouched", () => RunMeshOp( "Scale", s => s.Scale( new Vec3( 0, 1, 1 ) ) ) ) );
 		_meshTypedTools.Add( MeshTool( move, EffigyIcon.Primitive, "Flatten Y", "Squash the selection flat along Y", () => RunMeshOp( "Scale", s => s.Scale( new Vec3( 1, 0, 1 ) ) ) ) );
 		_meshTypedTools.Add( MeshTool( move, EffigyIcon.Primitive, "Flatten Z", "Squash the selection flat along Z", () => RunMeshOp( "Scale", s => s.Scale( new Vec3( 1, 1, 0 ) ) ) ) );
@@ -1941,9 +1986,9 @@ public sealed partial class EffigyWindow
 
 		var add = new EffigyStage { Name = "Add" };
 
-		_meshExtrudeTool = MeshTool( add, EffigyIcon.Extrude, "Extrude", "Pull the selected faces out and build walls to them (E)", () => StartMeshOp( "Extrude", MeshSize() * 0.1f, ( s, v ) => s.Extrude( v ) ) );
-		_meshExtrudeNormalsTool = MeshTool( add, EffigyIcon.Extrude, "Extrude along normals", "Pull the selected faces along their own normals. The faces stay together (Alt+E)", () => StartMeshOp( "Extrude Along Normals", MeshSize() * 0.1f, ( s, v ) => s.ExtrudeAlongNormals( v ) ) );
-		_meshExtrudeIndividualTool = MeshTool( add, EffigyIcon.Extrude, "Extrude individual", "Pull each selected face along its own normal. The faces pull apart", () => StartMeshOp( "Extrude Individual", MeshSize() * 0.1f, ( s, v ) => s.ExtrudeIndividual( v ) ) );
+		_meshExtrudeTool = MeshTool( add, EffigyIcon.Extrude, "Extrude", "Pull the selected faces out and build walls to them (E)", () => StartMeshOp( "Extrude", MeshSize() * 0.1f, ( s, v ) => s.Extrude( NonZero( "An extrude", v ) ) ) );
+		_meshExtrudeNormalsTool = MeshTool( add, EffigyIcon.Extrude, "Extrude along normals", "Pull the selected faces along their own normals. The faces stay together (Alt+E)", () => StartMeshOp( "Extrude Along Normals", MeshSize() * 0.1f, ( s, v ) => s.ExtrudeAlongNormals( NonZero( "An extrude", v ) ) ) );
+		_meshExtrudeIndividualTool = MeshTool( add, EffigyIcon.Extrude, "Extrude individual", "Pull each selected face along its own normal. The faces pull apart", () => StartMeshOp( "Extrude Individual", MeshSize() * 0.1f, ( s, v ) => s.ExtrudeIndividual( NonZero( "An extrude", v ) ) ) );
 		_meshInsetTool = MeshTool( add, EffigyIcon.Inset, "Inset", "Shrink the selected faces inward, leaving a ring of faces around them (I)", () => StartMeshOp( "Inset", MeshSize() * 0.03f, ( s, v ) => s.Inset( v ) ) );
 		_meshLoopCutTool = MeshTool( add, EffigyIcon.LoopCut, "Loop cut", "Cut a new loop across the ring of faces. Move over the model and click where you want it, or select one edge first (Ctrl+R)", StartLoopCut, checkable: true );
 		_meshKnifeTool = MeshTool( add, EffigyIcon.CutTool, "Knife", "Click points on the model; each click cuts from the last. X-ray cuts through the back too. Enter or Esc to stop (K)", ToggleMeshKnife, checkable: true );
@@ -1953,16 +1998,16 @@ public sealed partial class EffigyWindow
 		MeshTool( add, EffigyIcon.Transform, "Pivot here", "Put the pivot — what Spin and Screw turn round — at the middle of the selection. Shift-click puts it back at the origin", SetMeshPivot );
 		MeshTool( add, EffigyIcon.CircularPattern, "Spin", "Sweep the selected edges round the up axis through the pivot, for this many degrees — a lathe. Select a rim and spin it into a bowl or a button", () => StartMeshOp( "Spin", 360f, ( s, v ) => s.Spin( v, Math.Max( 4, (int)MathF.Round( MathF.Abs( v ) / 15f ) ) ) ) );
 		MeshTool( add, EffigyIcon.CircularPattern, "Screw", "One full turn of Spin that climbs as it goes — this far up Z. Horns, springs, threads", () => StartMeshOp( "Screw", MeshSize() * 0.25f, ( s, v ) => s.Spin( 360f, 24, v ) ) );
-		MeshTool( add, EffigyIcon.LinearPattern, "Array", "Repeat the selected faces in a row along X, this many in all — teeth, rivets, buttons", () => StartMeshOp( "Array", 3f, ( s, v ) => s.ArrayFaces( (int)MathF.Round( v ) ) ) );
+		MeshTool( add, EffigyIcon.LinearPattern, "Array", "Repeat the selected faces in a row along X, this many in all — teeth, rivets, buttons", () => StartMeshOp( "Array", 3f, ( s, v ) => s.ArrayFaces( (int)Within( "Array count", MathF.Round( v ), 2f, 256f ) ) ) );
 		MeshTool( add, EffigyIcon.Boolean, "Split", "Tear the selected faces loose from the rest where they stand, so moving them opens a gap (Y)", () => RunMeshOp( "Split", s => s.SplitFaces() ) );
 		MeshTool( add, EffigyIcon.Subdivide, "Grid fill", "Cap a hole with a grid of quads that flows with its rim, instead of one big face — for eye sockets, necks and cuffs. The rim needs an even number of edges; the number turns the grid round it", () => StartMeshOp( "Grid fill", 0f, ( s, v ) => s.GridFill( (int)MathF.Round( v ) ) ) );
 		MeshTool( add, EffigyIcon.CutTool, "Rip", "Tear the mesh open along the selected edges, so moving them opens a slit — a mouth, a pocket, the front of a jacket (V)", () => RunMeshOp( "Rip", s => s.Rip() ) );
 		_meshFillTool = MeshTool( add, EffigyIcon.SelectFace, "Fill", "Cap a hole with one face: select the vertices or edges round it. Three or four loose vertices make a face too (F)", () => RunMeshOp( "Fill", s => s.Fill() ) );
-		_meshFillHolesTool = MeshTool( add, EffigyIcon.SelectFace, "Fill holes", "Cap every open hole with up to this many sides, in one go. Bigger openings are left alone: they are more likely a missing side than a hole", () => StartMeshOp( "Fill holes", 4f, ( s, v ) => s.FillHoles( Math.Max( 3, (int)MathF.Round( v ) ) ) ) );
-		_meshSubdivideEdgesTool = MeshTool( add, EffigyIcon.Subdivide, "Subdivide edges", "Cut the selected edges into this many pieces. Two opposite edges of a quad make a strip across it; all four make a grid. Nothing is left with a crack", () => StartMeshOp( "Subdivide edges", 2f, ( s, v ) => s.SubdivideEdges( Math.Max( 1, (int)MathF.Round( v ) - 1 ) ) ) );
+		_meshFillHolesTool = MeshTool( add, EffigyIcon.SelectFace, "Fill holes", "Cap every open hole with up to this many sides, in one go. Bigger openings are left alone: they are more likely a missing side than a hole", () => StartMeshOp( "Fill holes", 4f, ( s, v ) => s.FillHoles( (int)Within( "Fill holes", MathF.Round( v ), 3f, float.MaxValue, " sides" ) ) ) );
+		_meshSubdivideEdgesTool = MeshTool( add, EffigyIcon.Subdivide, "Subdivide edges", "Cut the selected edges into this many pieces. Two opposite edges of a quad make a strip across it; all four make a grid. Nothing is left with a crack", () => StartMeshOp( "Subdivide edges", 2f, ( s, v ) => s.SubdivideEdges( (int)Within( "Subdivide edges", MathF.Round( v ), 2f, float.MaxValue, " pieces" ) - 1 ) ) );
 		_meshRotateEdgeTool = MeshTool( add, EffigyIcon.CircularPattern, "Rotate edge", "Turn the selected edge one corner round the two faces it separates — the fix for a diagonal running the wrong way. Shift-click turns it the other way", () => RunMeshOp( "Rotate edge", s => s.RotateEdge( Editor.Application.IsKeyDown( KeyCode.Shift ) ) ) );
 		_meshBeautifyTool = MeshTool( add, EffigyIcon.SelectFace, "Beautify", "Flip the diagonals between the selected triangles wherever that makes them better shaped — what to run after a triangulate leaves slivers", () => RunMeshOp( "Beautify", s => s.BeautifyFaces() ) );
-		_meshPipeTool = MeshTool( add, EffigyIcon.CircularPattern, "Pipe", "Build a tube of this radius along the selected edges — cables, pipes, rails, branches. Rings never twist, ends are capped, and the guide edges stay. Shift-click makes it six-sided", () => StartMeshOp( "Pipe", MeshSize() * 0.01f, ( s, v ) => s.Pipe( MathF.Max( v, 0.001f ), Editor.Application.IsKeyDown( KeyCode.Shift ) ? 6 : 8 ) ) );
+		_meshPipeTool = MeshTool( add, EffigyIcon.CircularPattern, "Pipe", "Build a tube of this radius along the selected edges — cables, pipes, rails, branches. Rings never twist, ends are capped, and the guide edges stay. Shift-click makes it six-sided", () => StartMeshOp( "Pipe", MeshSize() * 0.01f, ( s, v ) => s.Pipe( Positive( "The pipe radius", v ), Editor.Application.IsKeyDown( KeyCode.Shift ) ? 6 : 8 ) ) );
 		_meshScatterTool = MeshTool( add, EffigyIcon.Primitive, "Scatter", "Scatter this many copies of another body over the selected faces (or the whole surface) — rocks over ground, tufts over a field. Stood on the surface, turned at random, sized 80–120%, nothing steeper than 45°. The copies become a body of their own. Shift-click keeps them upright", StartMeshScatter );
 		foreach ( var (kind, tip) in new[]
 		{
@@ -1974,7 +2019,7 @@ public sealed partial class EffigyWindow
 			_meshPrimitiveTools.Add( MeshTool( add, EffigyIcon.Primitive, $"Add {kind}", $"Drop {tip} into this mesh at the pivot, this big across, as its own piece — bridge it, merge it or leave it loose. The new faces are selected, so Move works straight away (Shift+A)", () => StartMeshOp( $"Add {captured}", MeshSize() > 1e-3f && _viewport?.MeshEditSession is { Mesh.FaceCount: > 0 } ? MeshSize() * 0.25f : 16f, ( s, v ) => s.AddPrimitive( captured, v ) ) ) );
 		}
 
-		_meshTypedTools.Add( MeshTool( add, EffigyIcon.Transform, "Snap to grid", "Snap the selected vertices onto a grid of this many units — 16 makes a wall piece's edges land where the next piece meets them", () => StartMeshOp( "Snap to grid", 16f, ( s, v ) => s.SnapToGrid( MathF.Max( v, 0.001f ) ) ) ) );
+		_meshTypedTools.Add( MeshTool( add, EffigyIcon.Transform, "Snap to grid", "Snap the selected vertices onto a grid of this many units — 16 makes a wall piece's edges land where the next piece meets them", () => StartMeshOp( "Snap to grid", 16f, ( s, v ) => s.SnapToGrid( Positive( "The grid size", v ) ) ) ) );
 		_meshToPivotTool = MeshTool( add, EffigyIcon.Transform, "To pivot", "Move the selection so its centre lands on the pivot — the other half of Pivot here", () => RunMeshOp( "To pivot", s => s.SelectionToPivot() ) );
 		_meshSubdivideTool = MeshTool( add, EffigyIcon.Subdivide, "Subdivide", "Split the selected faces into four, for somewhere you want more detail. With nothing selected it subdivides and smooths the whole body. Skin weights come with it", SubdivideMesh );
 		_meshBevelTool = MeshTool( add, EffigyIcon.Fillet, "Bevel", "Round off the selected edges. The number is the width; Shift-click for a flat chamfer (Ctrl+B)", StartBevel );
@@ -1993,7 +2038,7 @@ public sealed partial class EffigyWindow
 		_meshDeleteFacesTool = MeshTool( clean, EffigyIcon.DeleteGeometry, "Delete faces only", "Delete exactly the selected faces, keeping the edges and vertices other faces still use", () => RunMeshOp( "Delete faces", s => s.DeleteOnlyFaces() ) );
 		_meshDeleteEdgesTool = MeshTool( clean, EffigyIcon.Dissolve, "Delete edges", "Remove the selected edges and join the faces on either side into one, instead of leaving a hole. Faces selected: every edge between them goes", () => RunMeshOp( "Delete edges", s => s.DeleteEdgesKeepFaces() ) );
 		_meshRandomizeTool = MeshTool( clean, EffigyIcon.SculptSmooth, "Randomize", "Jitter the selected vertices along their normals by up to this much — quick roughness for rock, bark or cloth", () => StartMeshOp( "Randomize", MeshSize() * 0.01f, ( s, v ) => s.Randomize( v ) ) );
-		_meshDecimateTool = MeshTool( clean, EffigyIcon.Dissolve, "Decimate", "Cut the selected faces (or the whole body) down to this share of their triangles, keeping the shape. The rest of the body is untouched", () => StartMeshOp( "Decimate", 0.5f, ( s, v ) => s.DecimateSelection( Math.Clamp( v, 0.01f, 0.99f ) ) ) );
+		_meshDecimateTool = MeshTool( clean, EffigyIcon.Dissolve, "Decimate", "Cut the selected faces (or the whole body) down to this share of their triangles, keeping the shape. The rest of the body is untouched", () => StartMeshOp( "Decimate", 0.5f, ( s, v ) => s.DecimateSelection( Within( "Decimate", v, 0.01f, 0.99f, " of the triangles" ) ) ) );
 		_meshSplitEdgeTool = MeshTool( clean, EffigyIcon.Boolean, "Make hard", "Make the selected edges shade hard, by unwelding the model along them. Merge by distance puts it back", SplitMeshEdges );
 		_meshSharpenTool = MeshTool( clean, EffigyIcon.Chamfer, "Harden creases", "Make every edge that creases more than this angle shade hard, in one go — for a model that should read as hard-surface", () => StartMeshOp( "Harden creases", 40f, ( s, v ) => s.SplitEdgesByAngle( v ) ) );
 		_meshSmoothTool = MeshTool( clean, EffigyIcon.SculptSmooth, "Smooth", "Relax the selected vertices towards their neighbours — what you want straight after a subdivide. Open rims stay put. Nothing selected smooths everything", () => StartMeshOp( "Smooth", 0.5f, ( s, v ) => s.Smooth( v ) ) );
@@ -2016,12 +2061,12 @@ public sealed partial class EffigyWindow
 		_meshMirrorTool = MeshTool( surface, EffigyIcon.Mirror, "Mirror X", "Edit both sides at once: moving a vertex moves its partner across X = 0", ToggleMeshMirror, checkable: true );
 		var modifiers = new EffigyStage { Name = "Modifiers" };
 
-		_meshCreaseTool = MeshTool( modifiers, EffigyIcon.Chamfer, "Crease", "Keep the selected edges sharp under the Smooth modifier (Shift+E). The number is how many levels the fold holds for: 1 for one level, 2 for two; a fraction softens it", () => StartMeshOp( "Crease", 1f, ( s, v ) => s.Crease( Math.Max( v, 0f ) ) ) );
+		_meshCreaseTool = MeshTool( modifiers, EffigyIcon.Chamfer, "Crease", "Keep the selected edges sharp under the Smooth modifier (Shift+E). The number is how many levels the fold holds for: 1 for one level, 2 for two; a fraction softens it", () => StartMeshOp( "Crease", 1f, ( s, v ) => s.Crease( Within( "Crease", v, 0f, float.MaxValue, " levels" ) ) ) );
 		_meshUncreaseTool = MeshTool( modifiers, EffigyIcon.Chamfer, "Clear crease", "Let the selected edges round off again under Smooth. Nothing selected clears every crease", () => RunMeshOp( "Clear crease", s => s.ClearCreases() ) );
 
 		_modMirrorTool = MeshTool( modifiers, EffigyIcon.Mirror, "Live mirror", "Show and output this mesh mirrored across X, joined down the middle — model half, get the whole. Unlike Symmetrize it stays live: keep editing the half", ToggleModMirror, checkable: true );
-		_modArrayTool = MeshTool( modifiers, EffigyIcon.LinearPattern, "Array", "Repeat the whole mesh along X, live. Each click adds a copy, up to five, then off", CycleModArray, checkable: true );
-		_modSubdivideTool = MeshTool( modifiers, EffigyIcon.Subdivide, "Smooth", "Show and output the mesh subdivided and smoothed, live — block out in a few quads, see the smooth result. Each click is one more level, up to three, then off", CycleModSubdivide, checkable: true );
+		_modArrayTool = MeshTool( modifiers, EffigyIcon.LinearPattern, "Live array", "Repeat the whole mesh along X, live. Each click adds a copy, up to five, then off", CycleModArray, checkable: true );
+		_modSubdivideTool = MeshTool( modifiers, EffigyIcon.Subdivide, "Live smooth", "Show and output the mesh subdivided and smoothed, live — block out in a few quads, see the smooth result. Each click is one more level, up to three, then off", CycleModSubdivide, checkable: true );
 		_modSolidifyTool = MeshTool( modifiers, EffigyIcon.Solidify, "Thickness", "Give the surface a thickness, live — draw a garment as a sheet and see it as cloth. Set the exact value in the feature's settings", ToggleModSolidify, checkable: true );
 
 		var retopo = new EffigyStage { Name = "Retopo" };
@@ -2032,13 +2077,13 @@ public sealed partial class EffigyWindow
 		_meshRelaxTool = MeshTool( retopo, EffigyIcon.SculptSmooth, "Relax", "Even out the new mesh and put it back on the surface. Works on the selection, or all of it", () => StartMeshOp( "Relax", 0.5f, ( s, v ) => s.RelaxRetopo( v ) ) );
 		_meshFinishRetopoTool = MeshTool( retopo, EffigyIcon.Boolean, "Finish retopo", "Lift the new mesh out as a body of its own. The sculpt under it stays exactly as it was", FinishMeshRetopo );
 
-		_meshSnapTool = MeshTool( surface, EffigyIcon.Shrinkwrap, "Snap", "Dragged vertices stick to the surface of the other bodies — for fitting clothing", ToggleMeshSnap, checkable: true );
+		_meshSnapTool = MeshTool( surface, EffigyIcon.Shrinkwrap, "Snap to surface", "Dragged vertices stick to the surface of the other bodies — for fitting clothing", ToggleMeshSnap, checkable: true );
 		_meshExtractTool = MeshTool( surface, EffigyIcon.Shell, "Extract", "Clothing start: copy the selected faces of the body, lift them off the skin by this gap and make them a body of their own", () => StartMeshOp( "Extract garment", MeshSize() * 0.005f, ( s, v ) => s.ExtractGarment( v ) ) );
 		_meshSeparateTool = MeshTool( surface, EffigyIcon.Boolean, "Separate", "Move the selected faces out into a body of their own (P)", () => RunMeshOp( "Separate", s => s.Separate() ) );
 		_meshLoosePartsTool = MeshTool( surface, EffigyIcon.Boolean, "Loose parts", "Split every disconnected piece off into a body of its own. The biggest piece stays", () => RunMeshOp( "Separate loose parts", s => s.SeparateLooseParts() ) );
 		_meshByMaterialTool = MeshTool( surface, EffigyIcon.Boolean, "By material", "Split the body into one body per material. The busiest material stays", () => RunMeshOp( "Separate by material", s => s.SeparateByMaterial() ) );
 		_meshWeightsTool = MeshTool( surface, EffigyIcon.BoneBind, "Copy weights", "Give this mesh the skin weights of the rigged body under it, so a garment moves with the body", CopyMeshWeights );
-		_meshWrapTool = MeshTool( surface, EffigyIcon.Shrinkwrap, "Shrinkwrap", "Pull the selection (or everything) onto the other bodies, keeping this gap", () => StartMeshOp( "Shrinkwrap", MeshSize() * 0.01f, ( s, v ) => s.Shrinkwrap( v, MeshSize() ) ) );
+		_meshWrapTool = MeshTool( surface, EffigyIcon.Shrinkwrap, "Shrinkwrap", "Pull the selection (or everything) onto the other bodies, keeping this gap", StartMeshShrinkwrap );
 		MeshTool( surface, EffigyIcon.Solidify, "Solidify", "Give the surface a thickness — the last step of a garment", () => StartMeshOp( "Solidify", MeshSize() * 0.01f, ( s, v ) => s.Solidify( v ) ) );
 
 		var weights = new EffigyStage { Name = "Weights" };
@@ -2056,9 +2101,9 @@ public sealed partial class EffigyWindow
 
 		_meshSeamTool = MeshTool( uv, EffigyIcon.Seam, "Mark seam", "Cut the texture along the selected edges (Ctrl+E). The unwrap is never allowed to cross a seam, so this is where you decide the texture may break — Alt+click takes a whole loop", () => RunMeshOp( "Mark seam", s => s.MarkSeam() ) );
 		_meshUnseamTool = MeshTool( uv, EffigyIcon.Seam, "Clear seam", "Unmark the selected edges. With nothing selected, clears every seam on the mesh", ClearMeshSeam );
-		_meshProjectUVsTool = MeshTool( uv, EffigyIcon.Unwrap, "Project UVs", "Map the selected faces (or all of them) at a world scale, so a tiling material repeats every this many units — the same on every map prop. Each face takes the axis it most faces", () => StartMeshOp( "Project UVs", _meshUnitsPerTile, ( s, v ) => { _meshUnitsPerTile = MathF.Max( v, 0.01f ); s.ProjectUVs( _meshUnitsPerTile ); } ) );
-		_meshPlanarUVsTool = MeshTool( uv, EffigyIcon.Unwrap, "Project from above", "Map the selected faces straight down at this many units per tile — one continuous texture for a floor, a road, a sign. Shift-click projects along X instead", () => StartMeshOp( "Project UVs", _meshUnitsPerTile, ( s, v ) => { _meshUnitsPerTile = MathF.Max( v, 0.01f ); s.ProjectUVs( _meshUnitsPerTile, Editor.Application.IsKeyDown( KeyCode.Shift ) ? new Vec3( 1, 0, 0 ) : new Vec3( 0, 0, 1 ) ); } ) );
-		_meshTrimRowTool = MeshTool( uv, EffigyIcon.Unwrap, "Trim row", "Map the selected faces onto one row of a trim sheet: the number is which row, counting from the top. Runs along the face at the Project UVs scale", () => StartMeshOp( "Trim row", 1f, ( s, v ) => { var row = Math.Clamp( (int)MathF.Round( v ), 1, _meshTrimRows ); s.MapToTrim( (row - 1) / (float)_meshTrimRows, row / (float)_meshTrimRows, _meshUnitsPerTile ); } ) );
+		_meshProjectUVsTool = MeshTool( uv, EffigyIcon.Unwrap, "Project UVs", "Map the selected faces (or all of them) at a world scale, so a tiling material repeats every this many units — the same on every map prop. Each face takes the axis it most faces", () => StartMeshOp( "Project UVs", _meshUnitsPerTile, ( s, v ) => { _meshUnitsPerTile = Positive( "Units per tile", v ); s.ProjectUVs( _meshUnitsPerTile ); } ) );
+		_meshPlanarUVsTool = MeshTool( uv, EffigyIcon.Unwrap, "Project from above", "Map the selected faces straight down at this many units per tile — one continuous texture for a floor, a road, a sign. Shift-click projects along X instead", () => StartMeshOp( "Project UVs", _meshUnitsPerTile, ( s, v ) => { _meshUnitsPerTile = Positive( "Units per tile", v ); s.ProjectUVs( _meshUnitsPerTile, Editor.Application.IsKeyDown( KeyCode.Shift ) ? new Vec3( 1, 0, 0 ) : new Vec3( 0, 0, 1 ) ); } ) );
+		_meshTrimRowTool = MeshTool( uv, EffigyIcon.Unwrap, "Trim row", "Map the selected faces onto one row of a trim sheet: the number is which row, counting from the top. Runs along the face at the Project UVs scale", () => StartMeshOp( "Trim row", 1f, ( s, v ) => { var row = (int)Within( "Trim row", MathF.Round( v ), 1f, _meshTrimRows, $" (the sheet has {_meshTrimRows} rows)" ); s.MapToTrim( (row - 1) / (float)_meshTrimRows, row / (float)_meshTrimRows, _meshUnitsPerTile ); } ) );
 		_meshTrimRowsTool = MeshTool( uv, EffigyIcon.Unwrap, "Trim rows", "How many rows the trim sheet has — set it once for the sheet you use", () => { _meshTrimRows = Math.Max( 1, _meshTrimRows == 8 ? 4 : _meshTrimRows == 4 ? 16 : 8 ); SetPrompt( $"Trim sheet: {_meshTrimRows} rows. Trim row picks one." ); } );
 		_meshUnwrapTool = MeshTool( uv, EffigyIcon.Unwrap, "Unwrap", "Lay the mesh out flat so it can be painted or baked (U), cutting at your seams and wherever the surface turns more than this angle", StartMeshUnwrap );
 
@@ -2129,7 +2174,7 @@ public sealed partial class EffigyWindow
 
 		if ( feature.LastInput is null || feature.Error is not null && feature.Edited is null )
 		{
-			SetPrompt( feature.Error ?? "This mesh edit has no body under it yet. Pick one body, then try again." );
+			Refuse( feature.Error ?? "This mesh edit has no body under it yet. Pick one body, then try again." );
 			return;
 		}
 
@@ -2154,6 +2199,17 @@ public sealed partial class EffigyWindow
 		UpdateMeshEditChecks();
 
 		SetPrompt( "Edit: click to select, drag the arrows to move. E extrudes, I insets, Ctrl+R loop cuts, X deletes." );
+
+		// AN EDIT THAT NO LONGER MATCHES THE BODY UNDER IT opens on the edit as it was saved, not on
+		// the body as it is now - so changes made above it are not here to edit. Said on the way in,
+		// because the only other clue is a feature-tree marker in a workspace that hides the tree.
+		if ( feature.Diagnostic is { } diagnostic && feature.Edited is not null )
+		{
+			_viewport.ShowCallout( "mesh-edit-stale", EffigyCalloutKind.Refusal,
+				$"{diagnostic.Problem}: you are editing the mesh as it was, without the changes made above it since. "
+				+ (diagnostic.Remedies.Count > 0 ? diagnostic.Remedies[^1] + "." : "Delete this edit and start again to pick them up."),
+				lifetime: FailureSeconds );
+		}
 	}
 
 	/// <summary>Commit and leave. The whole session is one step on the document's undo stack.</summary>
@@ -2182,7 +2238,14 @@ public sealed partial class EffigyWindow
 
 		CloseMeshEdit();
 
-		ShowSculptHome();
+		var backToClothing = _meshEditReturnsToClothing;
+		_meshEditReturnsToClothing = false;
+
+		if ( backToClothing )
+			EnterClothing();
+		else
+			ShowSculptHome();
+
 		RestoreRollbackAfterEdit();
 		RebuildStudio();
 	}
@@ -2204,6 +2267,84 @@ public sealed partial class EffigyWindow
 	{
 		var d = _viewport?.MeshEditSession?.Mesh.BoundsDiagonal ?? 1f;
 		return d > 1e-4f ? d : 1f;
+	}
+
+	/// <summary>
+	/// Shrinkwrap onto Snap's target when Snap is on, and onto the other bodies when it is not. The
+	/// tool is offered whenever there is another body, so it has to work then - it used to refuse
+	/// with "pick a body" until Snap was switched on, which nothing on screen pointed to.
+	/// </summary>
+	private void StartMeshShrinkwrap()
+	{
+		if ( _viewport?.MeshEditSession is not { } session )
+			return;
+
+		var onto = session.SnapTarget ?? OtherBodiesMesh();
+
+		if ( onto is null || onto.FaceCount == 0 )
+		{
+			Refuse( "Can't shrinkwrap: there is no other body to wrap onto. Add the body it should fit first." );
+			return;
+		}
+
+		StartMeshOp( "Shrinkwrap", MeshSize() * 0.01f, ( s, v ) => s.Shrinkwrap( v, MeshSize(), onto ) );
+	}
+
+	// --- typed values -----------------------------------------------------------------------------
+	//
+	// A number on the operation bar that the operation cannot use is REFUSED, with the range, rather
+	// than quietly held to the nearest one that works: "I typed 0 and it did 0.001" reads as the field
+	// ignoring you. Thrown as InvalidOperationException, so TryPreview puts it in the amber callout
+	// and keeps the bar live for the next number.
+
+	/// <summary><paramref name="value"/> when it is within min..max; otherwise a refusal naming the range.</summary>
+	private static float Within( string what, float value, float min, float max, string unit = "" )
+	{
+		if ( float.IsNaN( value ) )
+			throw new InvalidOperationException( $"{what} needs a number." );
+
+		if ( value < min )
+			throw new InvalidOperationException( max >= float.MaxValue
+				? $"{what} can't go below {min:0.###}{unit}, and {value:0.###} was typed."
+				: $"{what} goes from {min:0.###} to {max:0.###}{unit}, so {value:0.###} can't be used." );
+
+		if ( value > max )
+			throw new InvalidOperationException( $"{what} goes from {min:0.###} to {max:0.###}{unit}, so {value:0.###} can't be used." );
+
+		return value;
+	}
+
+	/// <summary>A size that has to be more than zero.</summary>
+	private static float Positive( string what, float value )
+	{
+		if ( !float.IsFinite( value ) || value <= 0f )
+			throw new InvalidOperationException( $"{what} has to be more than 0." );
+
+		return value;
+	}
+
+	/// <summary>A distance where 0 builds something degenerate (walls with no height).</summary>
+	private static float NonZero( string what, float value )
+	{
+		if ( !float.IsFinite( value ) || MathF.Abs( value ) < 1e-6f )
+			throw new InvalidOperationException( $"{what} of 0 builds walls with no height. Type how far to pull the faces out." );
+
+		return value;
+	}
+
+	/// <summary>Scale by: 0 squashes everything to a point (refused - Flatten X/Y/Z is the tool for
+	/// one axis), and a negative factor turns the selection inside out (allowed, but said).</summary>
+	private float ScaleFactor( float value )
+	{
+		if ( !float.IsFinite( value ) || MathF.Abs( value ) < 1e-6f )
+			throw new InvalidOperationException( "Scaling by 0 squashes the selection to a single point. To flatten one axis, use Flatten X, Y or Z." );
+
+		if ( value < 0f )
+			_viewport?.ShowCallout( "scale-negative", EffigyCalloutKind.Refusal,
+				$"Scaling by {value:0.###} mirrors the selection through its centre, which turns its faces inside out. Fix normals (Shift+N) afterwards, or use a positive factor.",
+				lifetime: RefusalSeconds );
+
+		return value;
 	}
 
 	/// <summary>Start a scrubbed operation: preview it now, put its number on the bar.</summary>
@@ -2234,18 +2375,68 @@ public sealed partial class EffigyWindow
 			session.Preview( name, run );
 			_viewport?.RefreshMeshEditPreview();
 			_meshEditBar?.Refresh();
+
+			// The preview ran but had something to say: nothing to do at this number, or a part it
+			// left out. The bar stays live so the number can be changed.
+			SayMeshNotice( session, name );
 			return true;
 		}
 		catch ( Exception e ) when ( e is InvalidOperationException or ArgumentException )
 		{
 			// A refusal is a sentence for the reader, not a stack trace — every kernel operation
-			// throws with one. The preview has already put the mesh back.
+			// throws with one. The preview has already put the mesh back. Refuse, not SetPrompt: the
+			// status bar alone is where a refusal goes unread.
 			if ( !session.IsPreviewing )
 				_meshEditBar?.ShowOperation( null, 0f, null );
 
-			SetPrompt( $"{name}: {e.Message}" );
+			Refuse( $"{name}: {ReadableRefusal( e )}" );
 			return false;
 		}
+	}
+
+	/// <summary>A kernel refusal as a sentence. ArgumentException appends "(Parameter 'x')" to its
+	/// message, which means nothing to the reader; ArgumentOutOfRange adds the value too.</summary>
+	private static string ReadableRefusal( Exception e )
+	{
+		var message = e.Message;
+
+		if ( e is ArgumentException { ParamName: { } param } )
+		{
+			var tail = $" (Parameter '{param}')";
+			var at = message.IndexOf( tail, StringComparison.Ordinal );
+			if ( at >= 0 )
+				message = message[..at];
+		}
+
+		return message.Trim();
+	}
+
+	/// <summary>
+	/// Put what the last mesh operation said on screen: amber when it changed nothing (and the
+	/// kernel has already taken its undo step back and kept the selection), the status bar and a
+	/// note when it did the job but left part of it out. True when there was something to say.
+	/// </summary>
+	private bool SayMeshNotice( MeshEditSession session, string name )
+	{
+		if ( session?.Notice is not { } notice )
+		{
+			// A count worth reading ("Welded 12 vertices") is a status, not a complaint.
+			if ( session?.Outcome is { } outcome )
+				SetPrompt( $"{name}: {outcome}" );
+
+			return false;
+		}
+
+		if ( session.LastChangedNothing )
+		{
+			Refuse( $"{name}: {notice}" );
+			return true;
+		}
+
+		var text = $"{name}: {notice}";
+		SetPrompt( text );
+		_viewport?.ShowCallout( "mesh-note", EffigyCalloutKind.Refusal, text, lifetime: RefusalSeconds );
+		return true;
 	}
 
 	private void AcceptMeshOp()
@@ -2272,13 +2463,22 @@ public sealed partial class EffigyWindow
 	}
 
 	/// <summary>An operation with no number: run it now, as one step.</summary>
-	private void RunMeshOp( string name, Action<MeshEditSession> run )
+	private void RunMeshOp( string name, Action<MeshEditSession> run ) => TryRunMeshOp( name, run );
+
+	/// <summary>
+	/// RunMeshOp that says whether the operation did its job, so a caller with a success prompt of
+	/// its own only shows it when there is a success to report - a refusal followed by "Done" is
+	/// the refusal erased.
+	/// </summary>
+	private bool TryRunMeshOp( string name, Action<MeshEditSession> run )
 	{
 		if ( _viewport?.MeshEditSession is not { } session )
-			return;
+			return false;
 
 		if ( session.IsPreviewing )
 			AcceptMeshOp();
+
+		session.ClearNotice();
 
 		try
 		{
@@ -2286,12 +2486,15 @@ public sealed partial class EffigyWindow
 		}
 		catch ( Exception e ) when ( e is InvalidOperationException or ArgumentException )
 		{
-			SetPrompt( $"{name}: {e.Message}" );
-			return;
+			Refuse( $"{name}: {ReadableRefusal( e )}" );
+			return false;
 		}
 
 		_viewport.RefreshMeshEditPreview();
 		OnMeshEditChanged();
+
+		SayMeshNotice( session, name );
+		return !session.LastChangedNothing;
 	}
 
 	/// <summary>
@@ -2330,7 +2533,7 @@ public sealed partial class EffigyWindow
 	/// the usual scrubbed operation, so the loop can still be slid before it is accepted.</summary>
 	private void PlaceLoopCut( EdgeKey edge )
 	{
-		StartMeshOp( "Loop cut", 0.5f, ( s, v ) => s.LoopCut( edge, Math.Clamp( v, 0.02f, 0.98f ) ) );
+		StartMeshOp( "Loop cut", 0.5f, ( s, v ) => s.LoopCut( edge, Within( "Loop cut position", v, 0.02f, 0.98f, " of the way along" ) ) );
 	}
 
 	private void SetMeshElement( EditElement element )
@@ -2455,8 +2658,10 @@ public sealed partial class EffigyWindow
 		}
 
 		_meshSubdivideWarned = -1;
-		RunMeshOp( "Subdivide", s => s.Subdivide() );
-		SetPrompt( $"Subdivided {where}: {session.Mesh.FaceCount:N0} faces, {session.Mesh.VertexCount:N0} vertices." );
+
+		// The success line only on success: after a refusal it would erase the reason.
+		if ( TryRunMeshOp( "Subdivide", s => s.Subdivide() ) )
+			SetPrompt( $"Subdivided {where}: {session.Mesh.FaceCount:N0} faces, {session.Mesh.VertexCount:N0} vertices." );
 	}
 
 	private int _meshSubdivideWarned = -1;
@@ -2469,9 +2674,7 @@ public sealed partial class EffigyWindow
 	{
 		var keepPositive = !Editor.Application.IsKeyDown( KeyCode.Shift );
 
-		RunMeshOp( "Symmetrize", s => s.Symmetrize( keepPositive ) );
-
-		if ( _viewport?.MeshEditSession is { } session )
+		if ( TryRunMeshOp( "Symmetrize", s => s.Symmetrize( keepPositive ) ) && _viewport?.MeshEditSession is { } session )
 			SetPrompt( $"Symmetrized about X = 0, keeping the {(keepPositive ? "+X" : "-X")} half: {session.Mesh.FaceCount:N0} faces. Shift-click to keep the other side instead." );
 	}
 
@@ -2503,19 +2706,25 @@ public sealed partial class EffigyWindow
 
 		var partner = BoneMirrorMap( out var pairs );
 
-		if ( pairs == 0 )
-			SetPrompt( "No left/right bone pairs in this rig, so weights will mirror onto the same bones. That is right for a spine and wrong for arms." );
-
 		var fromPositive = !Editor.Application.IsKeyDown( KeyCode.Shift );
+		var copied = 0;
 
-		RunMeshOp( "Mirror weights", s =>
+		// Nothing lined up is the kernel's refusal (no undo step); only a real copy gets the count,
+		// and the no-pairs caveat rides on it rather than being overwritten by it.
+		if ( !TryRunMeshOp( "Mirror weights", s => copied = s.MirrorWeights( partner, fromPositive ) ) )
+			return;
+
+		var done = $"Mirrored weights onto {copied:N0} vertex(es) across {pairs} left/right bone pair(s).";
+
+		if ( pairs == 0 )
 		{
-			var copied = s.MirrorWeights( partner, fromPositive );
+			var caveat = $"Mirrored weights onto {copied:N0} vertex(es), but this rig has no left/right bone pairs, so they kept the same bones. Right for a spine, wrong for arms: name bones _L/_R to pair them.";
+			SetPrompt( caveat );
+			_viewport?.ShowCallout( "mesh-note", EffigyCalloutKind.Refusal, caveat, lifetime: RefusalSeconds );
+			return;
+		}
 
-			SetPrompt( copied == 0
-				? "No vertex on the far side lined up with one on this side. Symmetrize the geometry first — mirrored weights need mirrored vertices."
-				: $"Mirrored weights onto {copied:N0} vertex(es) across {pairs} left/right bone pair(s)." );
-		} );
+		SetPrompt( done );
 	}
 
 	/// <summary>
@@ -2537,14 +2746,16 @@ public sealed partial class EffigyWindow
 
 		var asked = session.SelectedEdges.Count;
 
-		RunMeshOp( "Make hard", s =>
-		{
-			var split = s.SplitEdges();
+		var split = 0;
 
+		if ( !TryRunMeshOp( "Make hard", s => split = s.SplitEdges() ) )
+			return;
+
+		{
 			SetPrompt( split == asked
 				? $"{split} edge(s) now shade hard."
 				: $"{split} of {asked} edge(s) came apart. The rest are still joined at their ends — a cut only separates where it reaches a boundary or another cut." );
-		} );
+		}
 	}
 
 	/// <summary>Unmark the selected edges, or — with nothing selected — every seam on the mesh, which
@@ -2556,15 +2767,15 @@ public sealed partial class EffigyWindow
 
 		if ( session.Seams.Count == 0 )
 		{
-			SetPrompt( "There are no seams to clear." );
+			Refuse( "There are no seams to clear." );
 			return;
 		}
 
 		if ( session.SelectedEdges.Count == 0 )
 		{
 			var all = session.Seams.Count;
-			RunMeshOp( "Clear seams", s => s.ClearSeams() );
-			SetPrompt( $"Cleared all {all} seam edge(s)." );
+			if ( TryRunMeshOp( "Clear seams", s => s.ClearSeams() ) )
+				SetPrompt( $"Cleared all {all} seam edge(s)." );
 			return;
 		}
 
@@ -2581,13 +2792,16 @@ public sealed partial class EffigyWindow
 		if ( _viewport?.MeshEditSession is not { } session )
 			return;
 
-		if ( session.Seams.Count == 0 )
-			SetPrompt( "Unwrapping on the angle alone. Mark seams first to choose where the texture may break." );
+		// The hint rides on the report rather than coming before it, where the report overwrote it.
+		var hint = session.Seams.Count == 0
+			? " No seams marked, so it cut on the angle alone: mark seams to choose where the texture may break."
+			: "";
 
 		StartMeshOp( "Unwrap", 66f, ( s, v ) =>
 		{
-			var report = s.Unwrap( Math.Clamp( v, 1f, 179f ) );
-			SetPrompt( $"Unwrap: {report}" );
+			var angle = Within( "Unwrap angle", v, 1f, 179f, "°" );
+			var report = s.Unwrap( angle );
+			SetPrompt( $"Unwrap: {report}.{hint}" );
 		} );
 	}
 
@@ -2612,7 +2826,7 @@ public sealed partial class EffigyWindow
 
 		if ( others.Count == 0 )
 		{
-			SetPrompt( "Scatter needs another body to scatter — the rock, the tuft, the crate. There is only this one." );
+			Refuse( "Scatter needs another body to scatter — the rock, the tuft, the crate. There is only this one." );
 			return;
 		}
 
@@ -2651,7 +2865,7 @@ public sealed partial class EffigyWindow
 
 		if ( target is null )
 		{
-			SetPrompt( "Snap needs another body to stick to — a character to fit clothing onto, say. There is only this one." );
+			Refuse( "Snap needs another body to stick to — a character to fit clothing onto, say. There is only this one." );
 			UpdateMeshEditChecks();
 			return;
 		}

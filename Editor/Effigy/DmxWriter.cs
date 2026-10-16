@@ -52,7 +52,10 @@ namespace Effigy;
 /// wrong; a text file can be read, diffed and pasted into a bug report. Nothing here is on a hot
 /// path — export is a bake.
 ///
-/// WHAT IT CARRIES that SMD did not: n-gons, so the quad cage is not triangulated on the way out.
+/// WHAT IT CARRIES that SMD did not: n-gons (pass triangulate: false), per-corner tangents, and
+/// straight RGBA vertex colour. By default the faces go out TRIANGULATED the bake's way and with the
+/// bake's tangents, so a baked normal map is shaded on the frame it was baked on — see
+/// NormalBake.FaceTriangles and NormalBake.ExportTangents.
 /// </summary>
 public static class DmxWriter
 {
@@ -74,6 +77,7 @@ public static class DmxWriter
 	private const string Normal = "normal$0";
 	private const string TexCoord = "texcoord$0";
 	private const string Color = "color$0";
+	private const string Tangent = "tangent$0";
 	private const string BlendWeights = "blendweights$0";
 	private const string BlendIndices = "blendindices$0";
 
@@ -103,10 +107,12 @@ public static class DmxWriter
 		float smoothingAngleDegrees = MeshNormals.DefaultSmoothingAngleDegrees,
 		Func<int, string> materialName = null,
 		string modelName = null,
-		AuthoredNormals authoredNormals = null )
+		AuthoredNormals authoredNormals = null,
+		bool triangulate = true,
+		bool tangents = true )
 	{
 		File.WriteAllText( path,
-			Write( mesh, skeleton, smoothingAngleDegrees, materialName, modelName, authoredNormals ) );
+			Write( mesh, skeleton, smoothingAngleDegrees, materialName, modelName, authoredNormals, triangulate, tangents ) );
 	}
 
 	public static string Write(
@@ -115,7 +121,9 @@ public static class DmxWriter
 		float smoothingAngleDegrees = MeshNormals.DefaultSmoothingAngleDegrees,
 		Func<int, string> materialName = null,
 		string modelName = null,
-		AuthoredNormals authoredNormals = null )
+		AuthoredNormals authoredNormals = null,
+		bool triangulate = true,
+		bool tangents = true )
 	{
 		if ( mesh is null )
 			throw new ArgumentNullException( nameof( mesh ) );
@@ -132,6 +140,10 @@ public static class DmxWriter
 		var (cornerNormals, normals) = authoredNormals is null
 			? MeshNormals.ComputeCornerNormals( mesh, smoothingAngleDegrees )
 			: Validated( authoredNormals, mesh );
+
+		// The bake's own tangents, against these same corner normals: see NormalBake.ExportTangents.
+		// Only for a mesh with UVs — a tangent is the direction of +u, and without u there is none.
+		var cornerTangents = tangents && HasAnyUVs( mesh ) ? NormalBake.ExportTangents( mesh, cornerNormals, normals ) : null;
 
 		var w = new DmxText();
 
@@ -167,11 +179,14 @@ public static class DmxWriter
 			// children: the bone hierarchy's roots, then the mesh. A DmeDag is both a transform
 			// node and a place to hang geometry, which is why bones and meshes share one list.
 			() => WriteMeshDag( w, idMeshDag, idMeshTransform, idMesh, idVertexData,
-				mesh, skin, skeleton, cornerNormals, normals, materialName ) );
+				mesh, skin, skeleton, cornerNormals, normals, materialName, cornerTangents, triangulate ) );
 
 		// The model and the skeleton are the same element — one is the geometry's root, the other
 		// the pose's, and in a single-model file they are one DmeModel.
 		w.Attribute( "model", "element", idModel );
+
+		// The shape keys' flex controllers, on the root as Facepunch's citizen_head.dmx has them.
+		DmxMorphs.WriteCombinationOperator( w, mesh, idMesh );
 
 		w.CloseElement();
 
@@ -334,7 +349,7 @@ public static class DmxWriter
 
 	static void WriteMeshDag( DmxText w, string dagId, string transformId, string meshId, string vertexDataId,
 		PolyMesh mesh, SkinWeights skin, Skeleton skeleton, int[][] cornerNormals, List<Vec3> normals,
-		Func<int, string> materialName )
+		Func<int, string> materialName, Vec4[][] cornerTangents, bool triangulate )
 	{
 		w.OpenArrayElement( "DmeDag", dagId, "mesh" );
 		WriteTransform( w, "transform", transformId, "mesh", Xform.Identity );
@@ -351,13 +366,16 @@ public static class DmxWriter
 			// Nothing in the log says a word.
 			w.Attribute( "bindState", "element", "" );
 
-			WriteVertexData( w, "currentState", vertexDataId, mesh, skin, skeleton, cornerNormals, normals );
+			WriteVertexData( w, "currentState", vertexDataId, mesh, skin, skeleton, cornerNormals, normals, cornerTangents );
 
 			w.OpenArray( "baseStates", "element_array" );
 			w.ArrayReference( vertexDataId );
 			w.CloseArray();
 
-			WriteFaceSets( w, mesh, materialName );
+			WriteFaceSets( w, mesh, materialName, triangulate );
+
+			// Shape keys, when the mesh has any - see DmxMorphs.
+			DmxMorphs.WriteDeltaStates( w, mesh, cornerNormals, normals );
 		}
 		w.CloseElement();
 
@@ -394,7 +412,7 @@ public static class DmxWriter
 	/// shape — 260 positions, 260 blendweights at jointCount 1, against 944 face corners.
 	/// </summary>
 	static void WriteVertexData( DmxText w, string attribute, string id, PolyMesh mesh, SkinWeights skin,
-		Skeleton skeleton, int[][] cornerNormals, List<Vec3> normals )
+		Skeleton skeleton, int[][] cornerNormals, List<Vec3> normals, Vec4[][] cornerTangents )
 	{
 		w.OpenAttributeElement( attribute, "DmeVertexData", id, "bind" );
 
@@ -405,6 +423,9 @@ public static class DmxWriter
 		w.ArrayValue( Position );
 		w.ArrayValue( TexCoord );
 		w.ArrayValue( Normal );
+
+		if ( cornerTangents is not null )
+			w.ArrayValue( Tangent );
 
 		// Vertex colour is only declared when the mesh actually carries paint, so an unpainted
 		// model's file is byte-for-byte what it was before colour existed. When it is present it
@@ -462,17 +483,47 @@ public static class DmxWriter
 		w.IntArray( Normal + "Indices", normalIndices );
 		w.IntArray( TexCoord + "Indices", uvIndices );
 
-		// Vertex colour, per POSITION (one entry per vertex, tinted white-where-unpainted the same
-		// way ObjWriter does it) with a per-corner index array that mirrors the position indices —
-		// colour is a property of the vertex, so it rides the same corners the position does.
+		// Tangents, one per face corner: xyz the bake's tangent, w the bitangent sign the engine
+		// multiplies cross(N, T) by (NormalBake.ExportTangents). vector4_array is the KeyValues2
+		// type; the field name is the one libmodeldoc_utils carries (tangent$0 / tangent$0Indices).
+		// WHETHER MODELDOC KEEPS THESE OR REBUILDS ITS OWN has not been seen in the engine yet —
+		// docs/progress/effigy-sbox-output.md has the check.
+		if ( cornerTangents is not null )
+		{
+			var tangentIndices = new List<int>( positionIndices.Count );
+			w.OpenArray( Tangent, "vector4_array" );
+
+			for ( var fi = 0; fi < mesh.FaceCount; fi++ )
+			{
+				for ( var c = 0; c < mesh.Faces[fi].Count; c++ )
+				{
+					var t = cornerTangents[fi][c];
+					tangentIndices.Add( tangentIndices.Count );
+					w.ArrayValue( DmxText.Vector4( t.x, t.y, t.z, t.w ) );
+				}
+			}
+
+			w.CloseArray();
+			w.IntArray( Tangent + "Indices", tangentIndices );
+		}
+
+		// Vertex colour, per POSITION, with a per-corner index array that mirrors the position
+		// indices — colour is a property of the vertex, so it rides the same corners the position
+		// does.
+		//
+		// STRAIGHT RGBA, NOT Tint(). The mesh stores straight colour (PolyMesh.VertexColors), and
+		// what lives there now is data: FleshMaterial.PackMasks puts corruption, wetness, veins and
+		// AO in R, G, B and A for a game shader to read. Tint() folded A into RGB as paint coverage
+		// and wrote alpha 1, which destroyed all four. For an opaque colour (A = 1, everything the
+		// tool itself paints) the two are identical.
 		if ( mesh.VertexColors is not null )
 		{
 			w.OpenArray( Color, "color_array" );
 
 			for ( var v = 0; v < mesh.VertexCount; v++ )
 			{
-				var tint = mesh.VertexColors[v].Tint();
-				w.ArrayValue( DmxText.Color( tint.x, tint.y, tint.z, 1f ) );
+				var c = v < mesh.VertexColors.Length ? mesh.VertexColors[v] : new Vec4( 1, 1, 1, 1 );
+				w.ArrayValue( DmxText.Color( c.x, c.y, c.z, c.w ) );
 			}
 
 			w.CloseArray();
@@ -553,11 +604,12 @@ public static class DmxWriter
 	/// One face set per material slot in use, each holding its faces as runs of face-corner
 	/// indices terminated by -1.
 	///
-	/// N-GONS GO STRAIGHT THROUGH. DMX ends a face on -1 rather than assuming three, so the quad
-	/// cage does not have to be triangulated to leave the tool — which is half the reason this
+	/// N-GONS CAN GO STRAIGHT THROUGH (triangulate: false). DMX ends a face on -1 rather than
+	/// assuming three, so the quad cage does not have to be triangulated to leave the tool — which
+	/// was half the reason this
 	/// format is worth the write over SMD.
 	/// </summary>
-	static void WriteFaceSets( DmxText w, PolyMesh mesh, Func<int, string> materialName )
+	static void WriteFaceSets( DmxText w, PolyMesh mesh, Func<int, string> materialName, bool triangulate )
 	{
 		var byMaterial = new Dictionary<int, List<int>>();
 		var corner = 0;
@@ -569,10 +621,27 @@ public static class DmxWriter
 			if ( !byMaterial.TryGetValue( face.Material, out var faces ) )
 				byMaterial[face.Material] = faces = new List<int>();
 
-			for ( var c = 0; c < face.Count; c++ )
-				faces.Add( corner + c );
+			// TRIANGULATED BY DEFAULT, the bake's way (NormalBake.FaceTriangles). The corners and
+			// their data are unchanged — each triangle just names three of the face's corners — so
+			// normals, UVs and tangents are exactly the ones written above.
+			if ( triangulate && face.Count > 3 )
+			{
+				foreach ( var (a, b, c) in NormalBake.FaceTriangles( mesh, fi ) )
+				{
+					faces.Add( corner + a );
+					faces.Add( corner + b );
+					faces.Add( corner + c );
+					faces.Add( -1 );
+				}
+			}
+			else
+			{
+				for ( var c = 0; c < face.Count; c++ )
+					faces.Add( corner + c );
 
-			faces.Add( -1 );
+				faces.Add( -1 );
+			}
+
 			corner += face.Count;
 		}
 
@@ -594,6 +663,17 @@ public static class DmxWriter
 		}
 
 		w.CloseArray();
+	}
+
+	static bool HasAnyUVs( PolyMesh mesh )
+	{
+		foreach ( var face in mesh.Faces )
+		{
+			if ( face.UVs is not null && face.UVs.Length == face.Count )
+				return true;
+		}
+
+		return false;
 	}
 
 	static void WriteTransform( DmxText w, string attribute, string id, string name, Xform x )

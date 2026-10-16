@@ -162,11 +162,10 @@ internal sealed partial class EffigyViewport
 		DrawNoteCursor();
 	}
 
-	/// <summary>
-	/// E for the eraser, H to hide the notes. Both are [Shortcut]s on the window now, so they show
-	/// up in Settings &gt; Hotkeys and can be rebound. Undo is NOT here — it is Ctrl+Z like
-	/// everywhere else, routed to the session by EffigyWindow.Undo.
-	/// </summary>
+	// E for the eraser, H to hide the notes. Both are [Shortcut]s on the window now, so they show
+	// up in Settings > Hotkeys and can be rebound. Undo is NOT here — it is Ctrl+Z like
+	// everywhere else, routed to the session by EffigyWindow.Undo.
+
 	// --- drawing -------------------------------------------------------------------------------
 
 	/// <summary>

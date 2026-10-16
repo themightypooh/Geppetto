@@ -1,4 +1,4 @@
-using Editor;
+﻿using Editor;
 using Effigy;
 using Sandbox;
 using System;
@@ -158,46 +158,39 @@ internal sealed partial class EffigyViewport
 		return true;
 	}
 
+	/// <summary>
+	/// Qt's context-menu event, deliberately unused. The right button is also s&amp;box's fly camera,
+	/// and the camera takes the press before this event arrives — so on the canvas it never fired and
+	/// the radial never opened. The tap is detected in the frame loop instead; see RightTapFrame.
+	/// </summary>
 	protected override void OnContextMenu( ContextMenuEvent e )
 	{
-		// A quarter second is long enough to cover the frame the release lands on and short enough
-		// that letting go and right-clicking again works immediately.
-		if ( RealTime.Now - _cameraMovedAt < 0.25f )
-			return;
+	}
 
-		// Inside a sketch the right button means something else. The bodies are not what you are
-		// pointing at in there, and a material menu over a half-drawn profile would be answering a
-		// question nobody asked. What it means instead, most-live thing first:
-		//
-		// 1. BACK OUT of the entity being drawn. Right-click to stop the line you are dragging out is
-		//    the reflex every CAD sketcher trains, and until now the only way to break a chain was a
-		//    key press — with both hands already on the mouse.
-		// 2. CONSTRAIN the selection, when there is one and nothing is half-drawn.
-		// 3. STAND THE TOOL DOWN, so a second right-click gets back to Select the way a second Escape
-		//    does. Harmless in Select with nothing selected, which is the only other case reaching it.
-		//
-		// Note this is NOT Escape's order — Escape drops the selection before it touches the half-drawn
-		// entity. It cannot be, because the two buttons want opposite things from a selection: Escape
-		// is there to get rid of it, and the right button is how you act on it. So the half-drawn
-		// entity, which is the thing actually moving under the cursor, goes first here.
+	/// <summary>
+	/// What a TAP of the right button opens, wherever it lands. Called by RightTapFrame once it has
+	/// decided a right press was a tap rather than a look-around.
+	/// </summary>
+	private void OnRightTap()
+	{
+		// In a sketch, backing out of what is being drawn still comes first — right-click to stop
+		// the line you are dragging out is the reflex every CAD sketcher has. Otherwise the pie:
+		// the sketch tools, Constrain for a selection, and Finish.
 		if ( IsSketching )
 		{
 			if ( CancelHalfDrawnSketchEntity() )
 				return;
 
-			if ( HasSketchSelection )
-				SketchConstraintMenuRequested?.Invoke();
-			else
-				CancelSketchTool();
-
+			SketchRadialRequested?.Invoke();
 			return;
 		}
 
-		// Anything else with a click of its own owns the mouse while it is armed. Opening a material
-		// menu in the middle of choosing a sketch plane would act on a body the dialog may not even
-		// be allowed to touch.
+		// Picking for a feature: the way out of the pick, and the views that help find the thing.
 		if ( PlanePickMode || SketchPickMode || FacePickMode || EdgePickMode || BodyPickMode || BoneToolActive )
+		{
+			OpenPickRadial();
 			return;
+		}
 
 		// Editing a mesh, the right button is the menu for what is selected — Blender's context
 		// menu, and the quickest way to the tool you want without knowing which menu holds it.
@@ -207,12 +200,7 @@ internal sealed partial class EffigyViewport
 			return;
 		}
 
-		if ( FaceContextMenuRequested is null )
-			return;
-
-		if ( !TryPickFaceUnderCursor( out var hit ) )
-			return;
-
-		FaceContextMenuRequested.Invoke( hit );
+		// A face, or empty space — both open the pie now. Empty space used to say there was no menu.
+		ContextRadialRequested?.Invoke( TryPickFaceUnderCursor( out var hit ) ? hit : (EffigyFaceHit?)null );
 	}
 }

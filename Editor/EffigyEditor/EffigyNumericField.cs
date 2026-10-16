@@ -45,6 +45,31 @@ internal sealed class EffigyNumericField : Widget
 	/// value rather than pushing a NaN into the feature and blanking the viewport.</summary>
 	public Action<float> ValueEdited { get; set; }
 
+	/// <summary>Fires when a typed value was outside Min..Max and got held to the limit, with what
+	/// was asked for and what was used — so the host can say so rather than leave the field
+	/// looking like it ignored you.</summary>
+	public Action<float, float> LimitHit { get; set; }
+
+	/// <summary>What the box is for, in the words next to it — "Radius", "Strength" — so a held
+	/// value can be reported by name.</summary>
+	public string Label { get; init; }
+
+	/// <summary>
+	/// Where a held value goes when the host did not take it itself: label, asked, used, unit.
+	/// The window points this at its callout once, so every number box in the editor — brush bars,
+	/// panels, the feature dialog's own aside — says when it held you at a limit, without each one
+	/// being wired by hand. Static on purpose; re-pointed by the window whenever it rebuilds its
+	/// wiring, so a hot reload does not leave it aimed at the old assembly.
+	/// </summary>
+	public static Action<string, float, float, string> AnyLimitHit { get; set; }
+
+	/// <summary>
+	/// Where a box reports text it could not read once you have FINISHED with it — Enter, or
+	/// clicking away: label, the text. Not per keystroke: "1/" on the way to "1/8" is normal, and
+	/// shouting at it would be noise. Pointed by the window, like AnyLimitHit.
+	/// </summary>
+	public static Action<string, string> AnyUnreadable { get; set; }
+
 	/// <summary>The typed text that produced the last good value, so a host can store
 	/// <c>#thickness</c> rather than freezing 2. Null when the text is just the formatted number.
 	/// </summary>
@@ -78,6 +103,7 @@ internal sealed class EffigyNumericField : Widget
 
 		_edit = new LineEdit( Expression.Format( value ), this );
 		_edit.TextEdited += OnTextEdited;
+		_edit.EditingFinished += OnEditingFinished;
 		Layout.Add( _edit, 1 );
 
 		_readout = new Editor.Label( "" ) { Color = Theme.TextControl.WithAlpha( 0.55f ) };
@@ -124,6 +150,17 @@ internal sealed class EffigyNumericField : Widget
 
 		var clamped = Clamp( parsed );
 
+		// Rounding an integer is not hitting a limit; only the clamp to Min/Max is.
+		var rounded = Integer ? MathF.Round( parsed ) : parsed;
+
+		if ( clamped != rounded )
+		{
+			if ( LimitHit is not null )
+				LimitHit( parsed, clamped );
+			else
+				AnyLimitHit?.Invoke( Label, parsed, clamped, Unit );
+		}
+
 		// Show the evaluated number whenever it is not literally what was typed. That covers both
 		// `1/8` becoming 0.125 and a value being clamped against the parameter's own limits, which
 		// is the case that otherwise looks like the field ignoring you.
@@ -139,6 +176,17 @@ internal sealed class EffigyNumericField : Widget
 
 		_value = clamped;
 		ValueEdited?.Invoke( _value );
+	}
+
+	/// <summary>Left the box with text that still does not read as a number: say so, and put the
+	/// number it is actually using back, so the box stops claiming something it is not doing.</summary>
+	private void OnEditingFinished()
+	{
+		if ( !_edit.IsValid() || Expression.TryEvaluate( _edit.Text, Unit, Resolver, out _ ) )
+			return;
+
+		AnyUnreadable?.Invoke( Label, _edit.Text );
+		SetValue( _value );
 	}
 
 	private float Clamp( float v )
@@ -208,6 +256,10 @@ internal abstract class EffigyScrub : Widget
 	/// <summary>Called on every move with the new value.</summary>
 	public Action<float> Dragged { get; set; }
 
+	/// <summary>Fires while a drag is being held at Min or Max — the value it would have reached,
+	/// and the limit it stopped at.</summary>
+	public Action<float, float> LimitHit { get; set; }
+
 	/// <summary>
 	/// True while the button is down, false when it comes up. The signal a live preview needs.
 	///
@@ -273,7 +325,12 @@ internal abstract class EffigyScrub : Widget
 			? MathF.Round( (_startValue + travel * MathF.Max( Sensitivity, snap / PixelsPerStep )) / snap ) * snap
 			: _startValue + travel * Sensitivity;
 
-		Dragged?.Invoke( Math.Clamp( v, Min, Max ) );
+		var held = Math.Clamp( v, Min, Max );
+
+		if ( held != v )
+			LimitHit?.Invoke( v, held );
+
+		Dragged?.Invoke( held );
 
 		e.Accepted = true;
 	}

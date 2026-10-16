@@ -1,4 +1,4 @@
-using Editor;
+﻿using Editor;
 using Effigy;
 using Sandbox;
 using System;
@@ -70,6 +70,15 @@ internal sealed partial class EffigyViewport
 
 		switch ( SketchTool )
 		{
+			// A click that leaves the ellipse with no size takes back only that click and says why,
+			// the same rule ClickToolOnce follows for the twelve older tools - it used to clear the
+			// tool and draw nothing.
+			case SketchToolKind.Ellipse when _pending.Count == 2 && (_pending[1] - _pending[0]).Length <= 1e-4f:
+				_pending.RemoveAt( 1 );
+				PushPrompt();
+				RefuseTool( "That click is on the centre, so the ellipse would have no long axis. Click away from it." );
+				return true;
+
 			case SketchToolKind.Ellipse when _pending.Count == 3:
 			{
 				var centre = _pending[0];
@@ -79,8 +88,15 @@ internal sealed partial class EffigyViewport
 				// ellipse follows the cursor instead of needing a fourth number typed at it.
 				var minor = PerpendicularDistance( centre, majorEnd, _pending[2] );
 
-				if ( (majorEnd - centre).Length > 1e-4f && minor > 1e-4f )
-					Track( new SketchEllipse( PointIndex( centre ), PointIndex( majorEnd ), minor ) );
+				if ( minor <= 1e-4f )
+				{
+					_pending.RemoveAt( 2 );
+					PushPrompt();
+					RefuseTool( "That click is on the long axis, so the ellipse would be flat. Click off to one side of it." );
+					return true;
+				}
+
+				Track( new SketchEllipse( PointIndex( centre ), PointIndex( majorEnd ), minor ) );
 
 				_pending.Clear();
 				Edited();
@@ -92,10 +108,20 @@ internal sealed partial class EffigyViewport
 
 			case SketchToolKind.Spline:
 			{
+				_pending.Clear();
+
+				// Two clicks on one spot would hand the spline the same point twice in a row, which is
+				// a kink with no direction rather than a curve.
+				if ( _splinePoints.Count > 0 && (_splinePoints[^1] - p).Length < 1e-4f )
+				{
+					PushPrompt();
+					RefuseTool( "That's the same spot as the last spline point. Click somewhere new, or press Enter to finish." );
+					return true;
+				}
+
 				// A spline has no fixed number of points, so the click never commits - Enter does.
 				// See HandleSketchToolKey.
 				_splinePoints.Add( p );
-				_pending.Clear();
 				PushPrompt();
 				return true;
 			}
@@ -135,7 +161,7 @@ internal sealed partial class EffigyViewport
 				if ( NearestPoint( p ) is not { } corner )
 				{
 					_pending.Clear();
-					SetSketchPrompt( "Fillet - click nearer a corner point of the sketch." );
+					RefuseTool( "Fillet - that click isn't on a point. Click the corner point you want rounded." );
 					return true;
 				}
 
@@ -146,15 +172,21 @@ internal sealed partial class EffigyViewport
 
 			case SketchToolKind.Fillet:
 			{
-				var radius = (p - ActiveSketch.Points[_filletCorner]).Length;
+				var corner = _filletCorner;
+				var radius = (p - ActiveSketch.Points[corner]).Length;
 
-				if ( !SketchEdit.Fillet( ActiveSketch, _filletCorner, radius, out var error ) )
-					SetSketchPrompt( $"Fillet - {error}" );
-				else
-					Edited();
+				// A refused radius keeps the corner, so the next click is another try at the radius
+				// rather than having to name the corner all over again.
+				if ( !SketchEdit.Fillet( ActiveSketch, corner, radius, out var error ) )
+				{
+					_pending.RemoveAt( _pending.Count - 1 );
+					RefuseTool( $"Fillet - {error}" );
+					return true;
+				}
 
 				_filletCorner = -1;
 				_pending.Clear();
+				Edited();
 				return true;
 			}
 
@@ -165,7 +197,7 @@ internal sealed partial class EffigyViewport
 				if ( id is null )
 				{
 					_pending.Clear();
-					SetSketchPrompt( "Offset - click on a curve to offset." );
+					RefuseTool( "Offset - that click isn't on a curve. Click the curve you want offset." );
 					return true;
 				}
 
@@ -176,7 +208,14 @@ internal sealed partial class EffigyViewport
 
 			case SketchToolKind.Offset:
 			{
-				ApplyOffset( p );
+				// A refused offset keeps the chosen curve, the same as a refused fillet keeps its
+				// corner: the next click is another try at the distance.
+				if ( !ApplyOffset( p ) )
+				{
+					_pending.RemoveAt( _pending.Count - 1 );
+					return true;
+				}
+
 				_offsetCurveId = null;
 				_pending.Clear();
 				return true;
@@ -203,26 +242,40 @@ internal sealed partial class EffigyViewport
 	{
 		if ( ActiveSketchReference is not { } reference )
 		{
-			SetSketchPrompt( "Use - this sketch is on a global plane, so there is nothing underneath it to use." );
+			RefuseTool( "Use - this sketch is on a global plane, so there is nothing underneath it to use." );
 			return;
 		}
 
 		if ( _snapReferenceEdge < 0 )
 		{
-			SetSketchPrompt( "Use - hover one of the green edges of the face until it lights up, then click it." );
+			RefuseTool( "Use - that click isn't on an edge of the face. Hover one of the green edges until it lights up, then click it." );
 			return;
 		}
 
-		// NO SketchEditing HERE. ClickTool already took the undo snapshot before handing the click
-		// on - the same as Trim and Extend, which is why neither of them takes one either. A second
-		// snapshot for one action makes the first Ctrl+Z look like it did nothing.
-		if ( reference.UseEdge( ActiveSketch, _snapReferenceEdge ) is null )
+		// NO SketchEditing HERE. ClickTool takes the undo step itself, once it can see the click
+		// changed something - the same as Trim and Extend.
+		//
+		// CONSTRUCTION MODE APPLIES, as it does to everything else that puts a curve in the sketch.
+		// The kernel used to add the line through sketch.Add, past the Track that stamps the flag, so
+		// a Use with construction on came in as profile geometry and quietly changed the regions.
+		switch ( reference.UseEdge( ActiveSketch, _snapReferenceEdge, ConstructionMode, out _ ) )
 		{
-			SetSketchPrompt( "Use - that edge is already in the sketch." );
-			return;
-		}
+			case UseEdgeResult.Added:
+				Edited();
+				return;
 
-		Edited();
+			case UseEdgeResult.AlreadyInSketch:
+				RefuseTool( "Use - that edge is already in the sketch, so it wasn't added twice." );
+				return;
+
+			case UseEdgeResult.TooShort:
+				RefuseTool( "Use - that edge is too short to make a line from at this sketch's precision." );
+				return;
+
+			default:
+				RefuseTool( "Use - that edge isn't on the face any more (the part rebuilt under it). Hover the edge again and click." );
+				return;
+		}
 	}
 
 	/// <summary>
@@ -236,23 +289,28 @@ internal sealed partial class EffigyViewport
 	public void UseAllReferenceEdges()
 	{
 		if ( ActiveSketch is null )
-			return;
-
-		if ( ActiveSketchReference is not { } reference )
 		{
-			SetSketchPrompt( "Use all - this sketch is on a global plane, so there is nothing underneath it to use." );
+			Refuse( "Use all - open a sketch on a face first; it copies that face's outline into the sketch." );
 			return;
 		}
 
-		// This one DOES snapshot: it comes from a button rather than a viewport click, so ClickTool
-		// never ran and nothing else has recorded the state to go back to.
-		SketchEditing?.Invoke();
+		if ( ActiveSketchReference is not { } reference )
+		{
+			Refuse( "Use all - this sketch is on a global plane, so there is nothing underneath it to use." );
+			return;
+		}
 
-		var added = reference.UseAll( ActiveSketch );
+		// From a copy, after the fact - see RecordUndoFrom. A press that adds nothing (the outline is
+		// already in) must not leave an undo step that changes nothing.
+		var before = ActiveSketch.Clone();
+
+		var added = reference.UseAll( ActiveSketch, ConstructionMode, out var tooShort );
 
 		if ( added == 0 )
 		{
-			SetSketchPrompt( "Use all - the face's outline is already in the sketch." );
+			Refuse( tooShort > 0
+				? $"Use all - nothing new to add: the outline is already in the sketch, apart from {tooShort} edge{(tooShort == 1 ? "" : "s")} too short to make a line from."
+				: "Use all - the face's outline is already in the sketch, so nothing was added." );
 			return;
 		}
 
@@ -260,8 +318,24 @@ internal sealed partial class EffigyViewport
 			? "Use all - took 1 edge of the face into the sketch."
 			: $"Use all - took {added} edges of the face into the sketch." );
 
+		if ( tooShort > 0 )
+			Refuse( $"Use all - {tooShort} edge{(tooShort == 1 ? " was" : "s were")} too short to make a line from, and left out." );
+
+		RecordUndoFrom( before );
 		Edited();
 	}
+
+	/// <summary>A refusal from one of the click tools, flagged so ClickToolOnce does not push the
+	/// tool's ordinary prompt over it on the same frame - which is what made the old status-line
+	/// refusals here invisible.</summary>
+	private void RefuseTool( string why )
+	{
+		_toolSpoke = true;
+		Refuse( why );
+	}
+
+	/// <summary>Set when a click tool has already said something this click. See RefuseTool.</summary>
+	private bool _toolSpoke;
 
 	// --- the four edits -------------------------------------------------------------------------
 
@@ -269,13 +343,13 @@ internal sealed partial class EffigyViewport
 	{
 		if ( CurveUnderCursor() is not { } id || FindCurve( id ) is not { } curve )
 		{
-			SetSketchPrompt( "Trim - click on the piece of a curve you want gone." );
+			RefuseTool( "Trim - that click isn't on a curve. Click the piece of a curve you want gone." );
 			return;
 		}
 
 		if ( !SketchEdit.Trim( ActiveSketch, curve, p, out var error ) )
 		{
-			SetSketchPrompt( $"Trim - {error}" );
+			RefuseTool( $"Trim - {error}" );
 			return;
 		}
 
@@ -286,7 +360,7 @@ internal sealed partial class EffigyViewport
 	{
 		if ( CurveUnderCursor() is not { } id || FindCurve( id ) is not { } curve )
 		{
-			SetSketchPrompt( "Extend - click on the end of a curve you want stretched." );
+			RefuseTool( "Extend - that click isn't on a curve. Click near the end of the curve you want stretched." );
 			return;
 		}
 
@@ -297,7 +371,7 @@ internal sealed partial class EffigyViewport
 
 		if ( points.Count < 2 )
 		{
-			SetSketchPrompt( "Extend - that curve has no ends to stretch." );
+			RefuseTool( "Extend - that curve has no ends to stretch." );
 			return;
 		}
 
@@ -305,30 +379,48 @@ internal sealed partial class EffigyViewport
 
 		if ( !SketchEdit.Extend( ActiveSketch, curve, atStart, out var error ) )
 		{
-			SetSketchPrompt( $"Extend - {error}" );
+			RefuseTool( $"Extend - {error}" );
 			return;
 		}
 
 		Edited();
 	}
 
-	private void ApplyOffset( Vec2 p )
+	private bool ApplyOffset( Vec2 p )
 	{
 		if ( FindCurve( _offsetCurveId ) is not { } curve )
-			return;
+		{
+			// The curve picked on the first click has gone since - an undo, or a rebuild that
+			// renumbered it. Start the tool again rather than offsetting something else.
+			_offsetCurveId = null;
+			_pending.Clear();
+			RefuseTool( "Offset - the curve you picked isn't in the sketch any more. Click the curve to offset again." );
+			return true;
+		}
 
-		// The whole selection when there is one, so offsetting a closed profile is one gesture rather
-		// than one per side. The clicked curve alone otherwise.
-		var chain = HasSketchSelection && SketchSelection.Curves.Count > 0
+		// THE SELECTION ONLY WHEN THE CLICKED CURVE IS PART OF IT. Offsetting a whole selected
+		// profile in one gesture is the point of reading the selection at all - but a selection left
+		// over from something else, with the clicked curve nowhere in it, used to be offset INSTEAD
+		// of the curve that was clicked, which is a tool acting on something the user was not
+		// pointing at.
+		var useSelection = HasSketchSelection && SketchSelection.Curves.Contains( curve.Id );
+
+		var chain = useSelection
 			? SketchSelection.Curves.Select( FindCurve ).Where( c => c is not null ).ToList()
 			: new List<SketchCurve> { curve };
 
 		var distance = SignedOffset( curve, p );
 
+		if ( MathF.Abs( distance ) < 1e-5f )
+		{
+			RefuseTool( "Offset - that click is on the curve itself, so the offset would have no distance. Click off to the side you want it on." );
+			return false;
+		}
+
 		if ( !SketchEdit.Offset( ActiveSketch, chain, distance, out var created, out var error ) )
 		{
-			SetSketchPrompt( $"Offset - {error}" );
-			return;
+			RefuseTool( $"Offset - {error}" );
+			return false;
 		}
 
 		// The kernel returns what it made rather than adding it, so construction mode is applied here
@@ -336,7 +428,14 @@ internal sealed partial class EffigyViewport
 		foreach ( var made in created )
 			made.Construction = ConstructionMode;
 
+		// SUCCESS CAN STILL CARRY A WARNING: the curves were made, but some corners between them
+		// could not be joined up and were left open. The offset is real and stays, and the user is
+		// told where it fell short instead of finding the gap when the profile will not close.
+		if ( !string.IsNullOrEmpty( error ) )
+			RefuseTool( $"Offset - done, but {error}" );
+
 		Edited();
+		return true;
 	}
 
 	/// <summary>
@@ -448,21 +547,40 @@ internal sealed partial class EffigyViewport
 
 	private void CommitSpline()
 	{
-		if ( _splinePoints.Count >= 2 )
+		// One point is not a curve. This used to clear the point and leave the tool looking as if
+		// Enter had been ignored; now the point stays and the reason is given.
+		if ( _splinePoints.Count < 2 )
 		{
-			SketchEditing?.Invoke();
-
-			var indices = new List<int>( _splinePoints.Count );
-
-			foreach ( var p in _splinePoints )
-				indices.Add( PointIndex( p ) );
-
-			Track( new SketchSpline( indices ) );
-			Edited();
+			Refuse( "A spline needs at least two points. Click another, or press Escape to abandon it." );
+			return;
 		}
 
+		// Snapshot after, from a copy, so the step exists only once the spline does - see
+		// RecordUndoFrom. A key press never went through ClickTool, so nothing else has taken one.
+		var before = ActiveSketch.Clone();
+		var indices = new List<int>( _splinePoints.Count );
+
+		foreach ( var p in _splinePoints )
+			indices.Add( PointIndex( p ) );
+
+		Track( new SketchSpline( indices ) );
+
 		_splinePoints.Clear();
+
+		RecordUndoFrom( before );
+		Edited();
 		PushPrompt();
+	}
+
+	/// <summary>Keep a half-drawn spline that already has enough points to be one - called when the
+	/// tool changes or the sketch closes, which are the other two ways of saying "that's all of
+	/// them". One lone point is dropped, as it always was: there is no curve in it to keep.</summary>
+	private void FinishSplineInProgress()
+	{
+		if ( ActiveSketch is null || SketchTool != SketchToolKind.Spline || _splinePoints.Count < 2 )
+			return;
+
+		CommitSpline();
 	}
 
 	// --- preview ----------------------------------------------------------------------------------
@@ -622,7 +740,11 @@ internal sealed partial class EffigyViewport
 
 	/// <summary>Say something immediately, without waiting for the next PushPrompt. Used to carry a
 	/// refusal from the kernel straight to the status line.</summary>
-	private void SetSketchPrompt( string text ) => SketchPromptChanged?.Invoke( text );
+	private void SetSketchPrompt( string text )
+	{
+		_toolSpoke = true;
+		SketchPromptChanged?.Invoke( text );
+	}
 
 	/// <summary>Drop whatever the six tools were part-way through. Called when the tool changes, so
 	/// a half-placed spline does not reappear on a tool that has nothing to do with it.</summary>
@@ -788,31 +910,48 @@ internal sealed partial class EffigyViewport
 			_cutSnapshot = true;
 		}
 
-		_cutCount += SketchCut.Apply( ActiveSketch, crossings );
+		_cutCount += SketchCut.Apply( ActiveSketch, crossings, out var missed );
+		_cutMissed += missed;
 	}
+
+	/// <summary>Crossings in this stroke that could not be cut — a piece too small to split.</summary>
+	private int _cutMissed;
 
 	private void EndCutStroke()
 	{
 		var cut = _cutCount;
+		var missed = _cutMissed;
 
+		_cutMissed = 0;
 		_cutting = false;
 		_cutBroken = false;
 		_cutCount = 0;
 		_cutSnapshot = false;
 		_cutStroke.Clear();
 
+		if ( cut == 0 && missed > 0 )
+		{
+			Refuse( missed == 1
+				? "Cut - the stroke went through a curve, but that piece is too small to split. Zoom in and cut nearer the middle of it."
+				: $"Cut - the stroke went through {missed} curves, but those pieces are too small to split. Zoom in and cut nearer their middles." );
+			return;
+		}
+
 		if ( cut == 0 )
 		{
 			// Worth saying rather than leaving silent. A stroke drawn NEXT TO a line instead of
 			// through it looks identical while it is being drawn, and "nothing happened" is the one
 			// outcome the user cannot tell apart from the tool being broken.
-			SetSketchPrompt( "Cut - nothing was under that stroke; drag the line through a curve to cut it." );
+			Refuse( "Cut - nothing was under that stroke; drag the line through a curve to cut it." );
 			return;
 		}
 
 		SetSketchPrompt( cut == 1
 			? "Cut - took 1 piece out of the sketch."
 			: $"Cut - took {cut} pieces out of the sketch." );
+
+		if ( missed > 0 )
+			Refuse( $"Cut - {missed} of the {cut + missed} crossings couldn't be cut: those pieces are too small to split." );
 
 		Edited();
 	}

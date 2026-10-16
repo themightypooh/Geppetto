@@ -506,7 +506,8 @@ public abstract class SketchConsumingFeature : Feature
 				picked.Add( region );
 		}
 
-		return picked;
+		// Pieces of one overlay picked side by side are one solid, not slabs with walls between.
+		return ProfileFinder.MergeTouching( picked );
 	}
 
 	/// <summary>
@@ -523,11 +524,16 @@ public abstract class SketchConsumingFeature : Feature
 
 			var found = ProfileFinder.Find( guest, others.Append( sketch ) );
 
+			// Against what OTHER sketches own, not what this guest has just added: a guest's piece
+			// sits wholly inside the guest's own whole, and checked against that it would look
+			// like a duplicate and the piece you clicked would never be found.
+			var owned = into.ToList();
+
 			foreach ( var profile in found.Profiles )
 			{
 				var projected = ProfileFinder.Project( profile, guest.Plane, sketch.Plane );
 
-				if ( HostAlreadyHas( into, projected ) )
+				if ( HostAlreadyHas( owned, projected ) )
 					continue;
 
 				into.Add( projected );
@@ -769,13 +775,7 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 			: MeasuredDistance( ctx, sketch.Plane.Origin, sketch.Plane.Normal * sign,
 				SampleOrigins( sketch, profiles ) );
 
-		if ( MathF.Abs( reach ) < 1e-6f )
-		{
-			FailOn( "Distance",
-				"Distance cannot be zero",
-				"An extrude with no distance produces no solid.",
-				"Enter a distance greater than zero" );
-		}
+		RequireThickness( reach, profiles );
 
 		var distance = reach * sign;
 
@@ -937,17 +937,49 @@ public sealed class ExtrudeFeature : SketchConsumingFeature
 				? Distance.Value
 				: MeasuredDistance( ctx, plane.Origin, plane.Normal * sign, SampleOrigins( profile, plane ) );
 
-			if ( MathF.Abs( reach ) < 1e-6f )
-			{
-				FailOn( "Distance",
-					"Distance cannot be zero",
-					"An extrude with no distance produces no solid.",
-					"Enter a distance greater than zero" );
-			}
+			RequireThickness( reach, new[] { profile } );
 
 			var (near, far) = Ends( reach * sign );
 
 			Emit( ctx, BuildPrism( plane, profile, near, far, Taper.Clamped, Material.Clamped ), body );
+		}
+	}
+
+	/// <summary>
+	/// Refuse a distance that would make a flat solid. Zero always did; a distance a millionth of the
+	/// profile's size did not, and built a body with no volume and no error — found by the value
+	/// fuzz (Effigy.Tests --fuzz-values). The floor is relative because Effigy's units are: a ten
+	/// thousandth of the profile across is flat at any scale.
+	/// </summary>
+	void RequireThickness( float reach, IEnumerable<Profile> profiles )
+	{
+		if ( MathF.Abs( reach ) < 1e-6f )
+		{
+			FailOn( "Distance",
+				"Distance cannot be zero",
+				"An extrude with no distance produces no solid.",
+				"Enter a distance greater than zero" );
+		}
+
+		var span = 0f;
+
+		foreach ( var profile in profiles )
+		{
+			foreach ( var a in profile.Outer )
+			{
+				foreach ( var b in profile.Outer )
+					span = MathF.Max( span, (a - b).Length );
+			}
+		}
+
+		var floor = MathF.Max( 1e-5f, span * 1e-4f );
+
+		if ( MathF.Abs( reach ) < floor )
+		{
+			FailOn( "Distance",
+				"Distance is too small to make a solid",
+				$"{reach:0.######} against a profile {span:0.###} across comes out flat — a body with no volume.",
+				$"Enter at least {floor:0.#####}" );
 		}
 	}
 

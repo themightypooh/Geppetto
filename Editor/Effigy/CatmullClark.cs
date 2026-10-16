@@ -454,7 +454,7 @@ public static class CatmullClark
 	/// <summary>
 	/// Subdivide only the faces named, leaving the rest of the mesh alone.
 	///
-	/// LINEAR, NOT SMOOTH, and that is the whole difference from <see cref="Subdivide"/>. The
+	/// LINEAR, NOT SMOOTH, and that is the whole difference from <see cref="Subdivide(PolyMesh, int)"/>. The
 	/// Catmull-Clark limit rules move every original vertex, so applying them to part of a mesh
 	/// would drag the border of the selection — and with it the untouched faces sharing those
 	/// vertices — off the shape you were looking at. Splitting at midpoints and centroids adds
@@ -640,7 +640,7 @@ public static class CatmullClark
 	}
 
 	/// <summary>
-	/// What <see cref="SubdivideFaces"/> will cost. Exact rather than a rule of thumb: after the
+	/// What <see cref="SubdivideFaces(PolyMesh, IEnumerable{int}, int)"/> will cost. Exact rather than a rule of thumb: after the
 	/// first level the selected region is all quads, so its face and edge counts are known.
 	/// </summary>
 	public static (int Vertices, int Faces) PredictLocalCost( PolyMesh mesh, IEnumerable<int> faces, int levels )

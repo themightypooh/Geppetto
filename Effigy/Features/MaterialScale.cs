@@ -141,7 +141,7 @@ public static class MaterialScale
 	/// the mesh editor's Fit button, and the only answer that is right on a face whose UVs are not
 	/// in units.
 	///
-	/// MEASURED FROM THE BUILT MESH, WHICH IS ALREADY SCALED. <see cref="Apply"/> has run by the
+	/// MEASURED FROM THE BUILT MESH, WHICH IS ALREADY SCALED. <see cref="Apply(PartStudio)"/> has run by the
 	/// time anything can point at a face, so the extent read here is the extent AFTER the slot's
 	/// current scale was divided out. <paramref name="current"/> multiplies it back, so fitting the
 	/// same face twice lands on the same number instead of walking the scale down by a factor of

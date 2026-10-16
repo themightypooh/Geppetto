@@ -135,7 +135,10 @@ internal sealed partial class EffigyViewport
 	public void RestSoftPreview()
 	{
 		if ( !SoftPreviewRunning )
+		{
+			Refuse( "Nothing to rest: the soft preview isn't running. Turn on Soft Preview first." );
 			return;
+		}
 
 		_softPose.Rest();
 		_softPreviewPose = SoftSolver.BindPose( RigSkeleton );

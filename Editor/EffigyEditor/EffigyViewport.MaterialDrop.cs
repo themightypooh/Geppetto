@@ -11,7 +11,7 @@ namespace Marionette.EditorTools;
 /// <summary>
 /// Dropping a material onto a face.
 ///
-/// The other half of <see cref="EffigyMaterialBrowser"/>, and the reason the browser is worth
+/// The other half of <c>EffigyMaterialBrowser</c>, and the reason the browser is worth
 /// having: a material list you can only look at is a material list you may as well have opened in
 /// the asset browser. The gesture is the feature.
 ///
@@ -96,29 +96,45 @@ internal sealed partial class EffigyViewport
 			+ " (1 = the pixel is ignored and only one face is reachable)" );
 	}
 
+	/// <summary>Why the drag the cursor is carrying cannot land where it is, or null when it can.
+	/// Kept between hover events so the leave that follows a refused release knows what to say.
+	/// </summary>
+	private string _dropRefusal;
+
+	/// <summary>Where the last hover was, widget-local. A drag that leaves from deep inside the
+	/// canvas was released there; one that leaves from the edge walked out of it.</summary>
+	private Vector2 _dropLastPosition;
+
 	public override void OnDragHover( DragEvent ev )
 	{
 		base.OnDragHover( ev );
 
 		_dropHit = null;
 		_dropMaterial = MaterialFromDrag( ev.Data );
+		_dropLastPosition = ev.LocalPosition;
 
 		ProbeDrop( ev, _dropMaterial );
 
-		if ( _dropMaterial is null || !DropsAllowed )
+		var refusal = _dropMaterial is null ? NotAMaterialReason : DropBlocker;
+
+		if ( refusal is null )
 		{
-			ev.Action = DropAction.Ignore;
-			return;
+			if ( TryPickFaceAt( ev.LocalPosition, out var hit ) )
+				_dropHit = hit;
+			else
+				refusal = DropMissedReason;
 		}
 
-		// Copy whether or not a face is under the cursor. Refusing the drag over empty space would
-		// flick the cursor between "yes" and "no" as you cross the model's silhouette on the way to
-		// the face you are aiming at, which reads as the window rejecting the material rather than
-		// as you not being on a face yet. What actually stops a miss is the hit test in OnDragDrop.
-		ev.Action = DropAction.Copy;
+		// The no-drop cursor whenever letting go would do nothing, empty space included. It does
+		// flick as you cross the silhouette on the way in — but a Copy cursor over empty space was a
+		// promise the drop then quietly broke, and that is the worse of the two. The reason rides on
+		// the status bar while you hover, and comes up as a callout if you let go anyway.
+		ev.Action = refusal is null ? DropAction.Copy : DropAction.Ignore;
 
-		if ( TryPickFaceAt( ev.LocalPosition, out var hit ) )
-			_dropHit = hit;
+		if ( refusal != _dropRefusal )
+			SketchPromptChanged?.Invoke( refusal ?? "Release to put the material on this face." );
+
+		_dropRefusal = refusal;
 	}
 
 	public override void OnDragDrop( DragEvent ev )
@@ -129,17 +145,31 @@ internal sealed partial class EffigyViewport
 
 		_dropHit = null;
 		_dropMaterial = null;
+		_dropRefusal = null;
 
-		if ( material is null || !DropsAllowed )
+		if ( material is null )
+		{
+			Refuse( NotAMaterialReason );
 			return;
+		}
+
+		if ( DropBlocker is { } blocked )
+		{
+			Refuse( blocked );
+			return;
+		}
 
 		// Picked again from the drop position rather than trusting the last hover. The two are
 		// usually the same face, but a drop can arrive without a hover in front of it — dropping
 		// straight in from another window is one way — and acting on a face resolved from a stale
 		// position would paint whatever the cursor last passed over.
 		if ( !TryPickFaceAt( ev.LocalPosition, out var hit ) )
+		{
+			Refuse( DropMissedReason );
 			return;
+		}
 
+		SketchPromptChanged?.Invoke( "" );
 		MaterialDropped?.Invoke( hit, material );
 	}
 
@@ -149,18 +179,58 @@ internal sealed partial class EffigyViewport
 
 		_dropHit = null;
 		_dropMaterial = null;
+
+		// A release the hover refused never reaches OnDragDrop — Qt just ends the drag with a
+		// leave. So a leave from well inside the canvas, while refused, IS the refused drop, and it
+		// says why. A leave from the edge is the drag walking out, and needs nothing.
+		var refusal = _dropRefusal;
+		_dropRefusal = null;
+
+		if ( refusal is null || !_canvas.IsValid() )
+			return;
+
+		const float edge = 16f;
+		var at = _dropLastPosition;
+		var inside = at.x > edge && at.y > edge && at.x < Size.x - edge && at.y < Size.y - edge;
+
+		if ( inside )
+			Refuse( refusal );
+		else
+			SketchPromptChanged?.Invoke( "" );
 	}
 
+	private const string DropMissedReason = "Missed the model — drop the material on a face of the part.";
+
+	private const string NotAMaterialReason = "Can't drop that: only materials (.vmat) can go on a face. Drag one from the Materials panel or the asset browser.";
+
 	/// <summary>
-	/// Whether a drop can land right now.
+	/// Why a drop can't land right now, or null when it can.
 	///
 	/// The same list the right-click menu refuses on, and for the same reason: while a sketch is
 	/// open or a dialog has armed a pick, the bodies are not what you are pointing at, and painting
 	/// one mid-pick would edit a body the feature being configured may not even be allowed to
-	/// touch. Sculpting is in the list too — a drop there would land on the cage.
+	/// touch. The editing sessions are in it too — a drop while sculpting would land on the cage,
+	/// and one while painting or weight painting or brushing materials would change the faces out
+	/// from under the session that is holding them.
 	/// </summary>
-	private bool DropsAllowed =>
-		!IsSketching && !PlanePickMode && !SketchPickMode && !FacePickMode && !EdgePickMode && !BodyPickMode && !BoneToolActive;
+	private string DropBlocker
+	{
+		get
+		{
+			if ( IsSketching ) return "Can't drop a material while a sketch is open. Finish the sketch first.";
+			if ( PlanePickMode || SketchPickMode || FacePickMode || EdgePickMode || BodyPickMode )
+				return "Can't drop a material while a dialog is picking. Finish or cancel the pick first (Escape).";
+			if ( BoneToolActive ) return "Can't drop a material while the bone tool is on. Turn it off first.";
+			if ( IsSculpting ) return "Can't drop a material while sculpting. Leave sculpt mode first.";
+			if ( IsMeshEditing ) return "Can't drop a material while editing the mesh. Leave mesh edit first.";
+			if ( IsPainting ) return "Can't drop a material while painting. Leave paint mode first.";
+			if ( IsWeightPainting ) return "Can't drop a material while weight painting. Leave weight paint first.";
+			if ( IsMaterialBrushing ) return "Can't drop a material while the material brush is on — pick the material in the brush bar instead.";
+			return null;
+		}
+	}
+
+	private bool DropsAllowed => DropBlocker is null;
 
 	/// <summary>
 	/// The face under a point in THIS widget, for a drag that has no cursor ray to borrow.
@@ -209,7 +279,7 @@ internal sealed partial class EffigyViewport
 	/// Turn a dragged payload into a material path, or null.
 	///
 	/// Text first, because that is where both the editor's own asset list and
-	/// <see cref="EffigyMaterialBrowser"/> put the relative path, and because a multi-selection
+	/// <c>EffigyMaterialBrowser</c> put the relative path, and because a multi-selection
 	/// arrives as one line per asset — the first is the one under the cursor.
 	///
 	/// Then RESOLVED THROUGH THE ASSET SYSTEM rather than believed. Two things fall out of that.

@@ -117,7 +117,7 @@ public sealed partial class EffigyWindow
 
 			case "Sculpt":
 				_modelHeader.Toggles.AddRange( new[] { _symmetryTool, _maskTool }.Where( t => t is not null ) );
-				palette = new List<EffigyStage> { Group( "Brush", _brushTools.Select( b => b.Tool ).ToArray() ) };
+				palette = _sculptBrushGroups.Length > 0 ? _sculptBrushGroups.ToList() : new List<EffigyStage> { Group( "Brush", _brushTools.Select( b => b.Tool ).ToArray() ) };
 				catalog = _sculptStages;
 				break;
 

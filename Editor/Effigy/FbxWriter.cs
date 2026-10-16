@@ -21,7 +21,7 @@ namespace Effigy;
 /// of a DLL. DmxWriter still works and still ships — this is the path that does not depend on our
 /// own reading of a format.
 ///
-/// THE IMPORTER UNDERNEATH IT CHANGED, AND THIS PATH SURVIVED IT. Until s&box 26.09.08 that was
+/// THE IMPORTER UNDERNEATH IT CHANGED, AND THIS PATH SURVIVED IT. Until s&amp;box 26.09.08 that was
 /// Autodesk's own libfbxsdk.dll, and the argument above used to lean on the SDK's pedigree by name.
 /// That update removed the Autodesk SDK and rebuilt fbx2dmx on ufbx. The exe is still there, still
 /// takes the same flags, and still reads what this writes — checked, not assumed, by running the
@@ -58,9 +58,12 @@ public static class FbxWriter
 		Skeleton skeleton = null,
 		float smoothingAngleDegrees = MeshNormals.DefaultSmoothingAngleDegrees,
 		Func<int, string> materialName = null,
-		string modelName = null )
+		string modelName = null,
+		bool triangulate = false,
+		bool tangents = true )
 	{
-		File.WriteAllText( path, Write( mesh, skeleton, smoothingAngleDegrees, materialName, modelName ) );
+		File.WriteAllText( path, Write( mesh, skeleton, smoothingAngleDegrees, materialName, modelName,
+			triangulate: triangulate, tangents: tangents ) );
 	}
 
 	/// <summary>
@@ -76,10 +79,12 @@ public static class FbxWriter
 		Skeleton skeleton = null,
 		Func<int, string> materialName = null,
 		string modelName = null,
-		double unitScale = InchesToCentimetres )
+		double unitScale = InchesToCentimetres,
+		bool triangulate = false,
+		bool tangents = true )
 	{
 		var ascii = Write( mesh, skeleton, MeshNormals.DefaultSmoothingAngleDegrees, materialName, modelName, unitScale,
-			skeletonless: skeleton is null );
+			skeletonless: skeleton is null, triangulate: triangulate, tangents: tangents );
 		FbxBinary.WriteFile( ascii, path );
 	}
 
@@ -93,7 +98,9 @@ public static class FbxWriter
 		Func<int, string> materialName = null,
 		string modelName = null,
 		double unitScale = 1,
-		bool skeletonless = false )
+		bool skeletonless = false,
+		bool triangulate = false,
+		bool tangents = true )
 	{
 		if ( mesh is null )
 			throw new ArgumentNullException( nameof( mesh ) );
@@ -112,6 +119,8 @@ public static class FbxWriter
 		modelName ??= "effigy_model";
 
 		var (cornerNormals, normals) = MeshNormals.ComputeCornerNormals( mesh, smoothingAngleDegrees );
+		var cornerTangents = tangents && mesh.Faces.Exists( f => f.UVs is not null && f.UVs.Length == f.Count )
+			? NormalBake.ExportTangents( mesh, cornerNormals, normals ) : null;
 
 		var w = new FbxText();
 
@@ -151,7 +160,7 @@ public static class FbxWriter
 
 		w.Open( "Objects: " );
 		{
-			WriteGeometry( w, idGeometry, mesh, cornerNormals, normals, slots );
+			WriteGeometry( w, idGeometry, mesh, cornerNormals, normals, slots, cornerTangents, triangulate );
 			WriteMeshModel( w, idMeshModel, modelName );
 
 			for ( var i = 0; i < slots.Count; i++ )
@@ -321,7 +330,7 @@ public static class FbxWriter
 	/// material index per polygon.
 	/// </summary>
 	static void WriteGeometry( FbxText w, long id, PolyMesh mesh, int[][] cornerNormals,
-		List<Vec3> normals, List<int> slots )
+		List<Vec3> normals, List<int> slots, Vec4[][] cornerTangents, bool triangulate )
 	{
 		w.Open( $"Geometry: {id}, \"Geometry::mesh\", \"Mesh\" " );
 
@@ -344,7 +353,11 @@ public static class FbxWriter
 		var normalValues = new List<double>();
 		var uvValues = new List<double>();
 		var uvIndices = new List<long>();
+		var tangentValues = new List<double>();
+		var binormalValues = new List<double>();
+		var colorValues = new List<double>();
 		var materialIndices = new List<long>();
+		var colours = mesh.HasVertexColors ? mesh.VertexColors : null;
 
 		var slotToDense = new Dictionary<int, int>();
 
@@ -355,28 +368,64 @@ public static class FbxWriter
 		{
 			var face = mesh.Faces[fi];
 
-			for ( var c = 0; c < face.Count; c++ )
+			// Triangulated (for the engine: the bake's own split, NormalBake.FaceTriangles) or the
+			// face as it is (for Blender, which wants the quads back).
+			var polygons = triangulate && face.Count > 3
+				? NormalBake.FaceTriangles( mesh, fi ).ConvertAll( t => new[] { t.A, t.B, t.C } )
+				: new List<int[]> { Corners( face.Count ) };
+
+			foreach ( var polygon in polygons )
 			{
-				var index = face.Indices[c];
-				polygonIndices.Add( c == face.Count - 1 ? ~(long)index : index );
+				for ( var k = 0; k < polygon.Length; k++ )
+				{
+					var c = polygon[k];
+					var index = face.Indices[c];
+					polygonIndices.Add( k == polygon.Length - 1 ? ~(long)index : index );
 
-				var n = normals[cornerNormals[fi][c]];
-				normalValues.Add( n.x );
-				normalValues.Add( n.y );
-				normalValues.Add( n.z );
+					var n = normals[cornerNormals[fi][c]];
+					normalValues.Add( n.x );
+					normalValues.Add( n.y );
+					normalValues.Add( n.z );
 
-				var uv = face.UVs is not null && c < face.UVs.Length ? face.UVs[c] : default;
-				uvIndices.Add( uvValues.Count / 2 );
+					var uv = face.UVs is not null && c < face.UVs.Length ? face.UVs[c] : default;
+					uvIndices.Add( uvValues.Count / 2 );
 
-				// FBX puts the UV origin at the bottom-left where Effigy's is top-left, so V is
-				// flipped on the way out. This is the same flip DmxWriter expresses by leaving
-				// flipVCoordinates off and writing V as-is — the two formats simply disagree about
-				// which end of the texture is zero.
-				uvValues.Add( uv.x );
-				uvValues.Add( 1.0 - uv.y );
+					// FBX puts the UV origin at the bottom-left where Effigy's is top-left, so V is
+					// flipped on the way out. This is the same flip DmxWriter expresses by leaving
+					// flipVCoordinates off and writing V as-is — the two formats simply disagree about
+					// which end of the texture is zero.
+					uvValues.Add( uv.x );
+					uvValues.Add( 1.0 - uv.y );
+
+					if ( cornerTangents is not null )
+					{
+						// The bake's tangent, and its bitangent written the FBX way: along +v OF THIS
+						// FILE, whose v runs up, so −cross(N, T)·w. An importer that flips v back to
+						// s&box's top-down v flips this with it and lands on the engine's +dP/dv.
+						var t = cornerTangents[fi][c];
+						var tangent = new Vec3( t.x, t.y, t.z );
+						var binormal = Vec3.Cross( n.Normal, tangent ) * -t.w;
+						tangentValues.Add( tangent.x );
+						tangentValues.Add( tangent.y );
+						tangentValues.Add( tangent.z );
+						binormalValues.Add( binormal.x );
+						binormalValues.Add( binormal.y );
+						binormalValues.Add( binormal.z );
+					}
+
+					if ( colours is not null )
+					{
+						// Straight RGBA, as stored: packed masks (FleshMaterial.PackMasks) survive.
+						var col = colours[index];
+						colorValues.Add( col.x );
+						colorValues.Add( col.y );
+						colorValues.Add( col.z );
+						colorValues.Add( col.w );
+					}
+				}
+
+				materialIndices.Add( slotToDense.TryGetValue( face.Material, out var dense ) ? dense : 0 );
 			}
-
-			materialIndices.Add( slotToDense.TryGetValue( face.Material, out var dense ) ? dense : 0 );
 		}
 
 		w.IndexArray( "PolygonVertexIndex", polygonIndices );
@@ -390,6 +439,25 @@ public static class FbxWriter
 		w.NumberArray( "Normals", normalValues );
 		w.Close();
 
+		if ( cornerTangents is not null )
+		{
+			w.Open( "LayerElementBinormal: 0 " );
+			w.Line( "Version: 102" );
+			w.Line( "Name: \"UVMap\"" );
+			w.Line( "MappingInformationType: \"ByPolygonVertex\"" );
+			w.Line( "ReferenceInformationType: \"Direct\"" );
+			w.NumberArray( "Binormals", binormalValues );
+			w.Close();
+
+			w.Open( "LayerElementTangent: 0 " );
+			w.Line( "Version: 102" );
+			w.Line( "Name: \"UVMap\"" );
+			w.Line( "MappingInformationType: \"ByPolygonVertex\"" );
+			w.Line( "ReferenceInformationType: \"Direct\"" );
+			w.NumberArray( "Tangents", tangentValues );
+			w.Close();
+		}
+
 		w.Open( "LayerElementUV: 0 " );
 		w.Line( "Version: 101" );
 		w.Line( "Name: \"UVMap\"" );
@@ -398,6 +466,17 @@ public static class FbxWriter
 		w.NumberArray( "UV", uvValues );
 		w.IndexArray( "UVIndex", uvIndices );
 		w.Close();
+
+		if ( colours is not null )
+		{
+			w.Open( "LayerElementColor: 0 " );
+			w.Line( "Version: 101" );
+			w.Line( "Name: \"Col\"" );
+			w.Line( "MappingInformationType: \"ByPolygonVertex\"" );
+			w.Line( "ReferenceInformationType: \"Direct\"" );
+			w.NumberArray( "Colors", colorValues );
+			w.Close();
+		}
 
 		// ByPolygon, not ByPolygonVertex: a face belongs to exactly one slot in Effigy, which is
 		// also what makes clicking a face to assign a material meaningful.
@@ -409,16 +488,37 @@ public static class FbxWriter
 		w.IndexArray( "Materials", materialIndices );
 		w.Close();
 
-		// The Layer is what actually turns the three LayerElement blocks above into channels the
+		// The Layer is what actually turns the LayerElement blocks above into channels the
 		// importer reads. Without it they are present and ignored.
 		w.Open( "Layer: 0 " );
 		w.Line( "Version: 100" );
 		LayerElement( w, "LayerElementNormal" );
+
+		if ( cornerTangents is not null )
+		{
+			LayerElement( w, "LayerElementBinormal" );
+			LayerElement( w, "LayerElementTangent" );
+		}
+
 		LayerElement( w, "LayerElementUV" );
+
+		if ( colours is not null )
+			LayerElement( w, "LayerElementColor" );
+
 		LayerElement( w, "LayerElementMaterial" );
 		w.Close();
 
 		w.Close();
+	}
+
+	static int[] Corners( int count )
+	{
+		var corners = new int[count];
+
+		for ( var i = 0; i < count; i++ )
+			corners[i] = i;
+
+		return corners;
 	}
 
 	static void LayerElement( FbxText w, string type )

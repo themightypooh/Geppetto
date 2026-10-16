@@ -290,7 +290,7 @@ public static class MaterialDrop
 	/// <summary>
 	/// Put <paramref name="material"/> on every face a brush dab covered, in one pass.
 	///
-	/// WHY THIS EXISTS RATHER THAN THE CALLER LOOPING <see cref="Drop"/>. It can, and this does -
+	/// WHY THIS EXISTS RATHER THAN THE CALLER LOOPING <see cref="Drop(PartStudio, string, int, FaceRef, string, out int)"/>. It can, and this does -
 	/// the per-face rules are subtle enough (reuse the slot already carrying the material, do not
 	/// report a face already on it as a change, retire a slot the last face just left) that a second
 	/// implementation of them for the brush would drift from this one. What the brush needs on top
@@ -298,7 +298,7 @@ public static class MaterialDrop
 	/// stroke that sweeps a material off thirty faces can retire several at once.
 	///
 	/// FACE INDICES ARE INTO THE BODY'S CURRENT MESH, and stay valid for the whole call because
-	/// nothing here rebuilds - this edits the history exactly as <see cref="Drop"/> does. Call
+	/// nothing here rebuilds - this edits the history exactly as <see cref="Drop(PartStudio, string, int, FaceRef, string, out int)"/> does. Call
 	/// Rebuild once afterwards, which is the whole point of doing the dab in one call.
 	///
 	/// The reference for each face is captured at its CENTROID rather than at the point the brush

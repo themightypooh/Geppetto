@@ -23,12 +23,15 @@ namespace Marionette.EditorTools;
 internal sealed partial class EffigyViewport
 {
 	private readonly List<GameObject> _referenceImageObjects = new();
-	private int _referenceImagesRevision = -1;
 
 	/// <summary>Draw this list of pictures, replacing whatever was drawn before.</summary>
 	public void SetReferenceImages( IReadOnlyList<ReferenceImage> images )
 	{
 		ClearReferenceImages();
+
+		// Every picture's complaint is re-earned on every redraw: one that loads now, or was put back
+		// in range, must not leave its old callout standing.
+		ClearCallouts( k => k.StartsWith( "refimage:" ) );
 
 		if ( images is null )
 			return;
@@ -42,13 +45,29 @@ internal sealed partial class EffigyViewport
 
 			if ( texture is null || texture.IsError )
 			{
-				Log.Warning( $"[Effigy] reference image '{image.Path}' could not be loaded. Put it under the project's Assets folder and name it from there." );
+				// Keyed by path and kept until the list is redrawn: a picture that is in the
+				// document and not on screen is a fault that does not go away by being missed once.
+				ShowCallout( $"refimage:{image.Path}", EffigyCalloutKind.Error,
+					$"Can't show reference image '{image.Path}': it would not load (missing, or not an image s&box can read). Put it under the project's Assets folder and add it again from there.",
+					lifetime: null );
 				continue;
 			}
 
 			var aspect = texture.Height > 0 ? texture.Width / (float)texture.Height : 1f;
-			var height = MathF.Max( image.Height, 0.01f );
+			var height = MathF.Max( image.Height, MinReferenceHeight );
 			var width = height * aspect;
+
+			// The stored height has gone below what is drawn — Smaller, pressed enough times — so
+			// pressing it again changes the number and nothing on screen.
+			if ( image.Height < MinReferenceHeight )
+				ShowCallout( $"refimage:{image.Path}:size", EffigyCalloutKind.Refusal,
+					$"Reference image '{System.IO.Path.GetFileName( image.Path )}' is at its smallest ({MinReferenceHeight}) — Smaller can't shrink it further.",
+					lifetime: 6f );
+
+			if ( image.Opacity < MinReferenceOpacity || image.Opacity > 1f )
+				ShowCallout( $"refimage:{image.Path}:opacity", EffigyCalloutKind.Refusal,
+					$"Reference image '{System.IO.Path.GetFileName( image.Path )}' opacity {image.Opacity:0.##} is drawn as {Math.Clamp( image.Opacity, MinReferenceOpacity, 1f ):0.##} — it only goes from {MinReferenceOpacity} to 1.",
+					lifetime: 6f );
 
 			// The plane's own axes: right and up on the picture, and which way it faces.
 			var (right, up, facing) = image.View switch
@@ -85,18 +104,29 @@ internal sealed partial class EffigyViewport
 			var model = EffigyPreview.Build( mesh, material );
 
 			if ( model is null )
+			{
+				ShowCallout( $"refimage:{image.Path}", EffigyCalloutKind.Error,
+					$"Can't show reference image '{image.Path}': its picture loaded but the plane to show it on could not be built.",
+					lifetime: null );
 				continue;
+			}
 
 			var go = new GameObject( true, $"effigy_reference_image_{_referenceImageObjects.Count}" );
 			var renderer = go.GetOrAddComponent<ModelRenderer>( false );
 			renderer.Model = model;
-			renderer.Tint = Color.White.WithAlpha( Math.Clamp( image.Opacity, 0.05f, 1f ) );
+			renderer.Tint = Color.White.WithAlpha( Math.Clamp( image.Opacity, MinReferenceOpacity, 1f ) );
 			renderer.Enabled = true;
 			go.WorldPosition = OriginPosition;
 
 			_referenceImageObjects.Add( go );
 		}
 	}
+
+	/// <summary>The smallest a picture is drawn. Below this it is a speck nobody can model against.</summary>
+	public const float MinReferenceHeight = 0.01f;
+
+	/// <summary>The faintest a picture is drawn. Fully transparent is Hide, which has its own entry.</summary>
+	public const float MinReferenceOpacity = 0.05f;
 
 	/// <summary>Take every picture down.</summary>
 	public void ClearReferenceImages()

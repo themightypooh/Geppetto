@@ -353,6 +353,69 @@ public static class ConstraintTools
 	}
 
 	/// <summary>
+	/// What in this selection <see cref="Offers"/> could not use, said in a sentence - or null when
+	/// everything selected took part.
+	///
+	/// A MIXED SELECTION USED TO LOSE ITS PARTS QUIETLY. Offers reads lines, arcs, circles and points
+	/// and skips anything else, so a line and an ellipse right-clicked together offered the line's
+	/// rules as if the ellipse had never been picked - and applying one looked like it had included
+	/// it. Ellipses and splines take no rule at all yet, and a circle takes exactly one (Concentric,
+	/// with one other circle or arc), so those are the three things that can be dropped.
+	/// </summary>
+	public static string LeftOut( Sketch sketch, SketchSelection selection )
+	{
+		if ( sketch is null || selection is null || selection.IsEmpty )
+			return null;
+
+		var ellipses = 0;
+		var splines = 0;
+		var circles = 0;
+		var arcs = 0;
+		var lines = 0;
+
+		foreach ( var id in selection.Curves.Distinct() )
+		{
+			switch ( sketch.Curves.FirstOrDefault( c => c.Id == id ) )
+			{
+				case SketchEllipse: ellipses++; break;
+				case SketchSpline: splines++; break;
+				case SketchCircle: circles++; break;
+				case SketchArc: arcs++; break;
+				case SketchLine: lines++; break;
+			}
+		}
+
+		var points = selection.Points.Distinct().Count( p => p >= 0 && p < sketch.Points.Count );
+
+		// The one branch a circle takes part in: two centres and nothing else - see Offers.
+		var circlesUsed = circles > 0 && circles + arcs == 2 && points == 0 && lines == 0;
+
+		var parts = new List<string>();
+
+		if ( ellipses > 0 )
+			parts.Add( ellipses == 1 ? "the ellipse" : $"{ellipses} ellipses" );
+
+		if ( splines > 0 )
+			parts.Add( splines == 1 ? "the spline" : $"{splines} splines" );
+
+		if ( circles > 0 && !circlesUsed )
+			parts.Add( circles == 1 ? "the circle" : $"{circles} circles" );
+
+		if ( parts.Count == 0 )
+			return null;
+
+		var why = new List<string>();
+
+		if ( ellipses > 0 || splines > 0 )
+			why.Add( "ellipses and splines can't take constraints yet" );
+
+		if ( circles > 0 && !circlesUsed )
+			why.Add( "a circle only takes Concentric, picked with one other circle or arc and nothing else" );
+
+		return $"Left out {string.Join( " and ", parts )}: {string.Join( "; ", why )}.";
+	}
+
+	/// <summary>
 	/// Apply a constraint and re-solve, putting everything back if it cannot be met.
 	///
 	/// THE SOLVER KEEPS ITS CLOSEST FIT ON A FAILED SOLVE, which is right while a sketch is being

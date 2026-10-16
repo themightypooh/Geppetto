@@ -2,6 +2,7 @@ using Editor;
 using Effigy;
 using Sandbox;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace Marionette.EditorTools;
 
@@ -40,15 +41,19 @@ internal sealed partial class EffigyViewport
 	/// not push an undo step or a rebuild — the same rule the point drag follows.</summary>
 	private bool _handleMoved;
 
-	/// <summary>Where the CURSOR was when the grip was grabbed, and whether the undo snapshot for
-	/// this drag has been taken yet.
-	///
-	/// SketchEditing captures the document as it is when it is called, so it has to fire before the
-	/// first write - which means the decision to snapshot is made from the cursor having moved
-	/// rather than from the curve having changed, because by the time the curve has changed the
-	/// state worth going back to is gone.</summary>
+	/// <summary>Where the CURSOR was when the grip was grabbed, and whether the cursor has left the
+	/// dead zone yet - which is what separates a drag from a click on the curve.</summary>
 	private Vec2 _handleGrabbedAt;
 	private bool _handleSnapshotTaken;
+
+	/// <summary>The sketch as it was when the grip was grabbed. The undo step is taken from this on
+	/// release, and only if the curve really changed - see RecordUndoFrom. Taking it on the first
+	/// move instead left an empty step behind every drag the geometry refused all the way.</summary>
+	private Sketch _handleBefore;
+
+	/// <summary>Whether this drag has already said why the curve will not follow, so it is said
+	/// once rather than every frame the hand keeps pulling.</summary>
+	private bool _handleRefusalSaid;
 
 	/// <summary>
 	/// How far the cursor must travel before a press on a grip counts as a drag rather than a
@@ -97,6 +102,17 @@ internal sealed partial class EffigyViewport
 
 		if ( ActiveSketch is null || SketchTool != SketchToolKind.Select )
 		{
+			// A drag cut short with the button down - the tool changed under it - keeps what it
+			// already did, with its undo step and rebuild, rather than leaving the curve changed
+			// with neither.
+			if ( _handleMoved && ActiveSketch is not null )
+			{
+				var before = _handleBefore;
+				EndCurveHandleDrag();
+				RecordUndoFrom( before );
+				Edited();
+			}
+
 			EndCurveHandleDrag();
 			_promptedHandleId = null;
 			return;
@@ -160,6 +176,8 @@ internal sealed partial class EffigyViewport
 			_handleGrabbedAt = grabbed.At;
 			_handleMoved = false;
 			_handleSnapshotTaken = false;
+			_handleRefusalSaid = false;
+			_handleBefore = ActiveSketch.Clone();
 		}
 	}
 
@@ -171,6 +189,7 @@ internal sealed partial class EffigyViewport
 			var changed = _handleMoved;
 			var dragged = _handleSnapshotTaken;
 			var curveId = _handleCurveId;
+			var before = _handleBefore;
 
 			EndCurveHandleDrag();
 
@@ -178,7 +197,10 @@ internal sealed partial class EffigyViewport
 			// the whole way - an arc held flat on its own chord - is a drag that did nothing, and
 			// nothing is what should happen at the far end of it.
 			if ( changed )
+			{
+				RecordUndoFrom( before );
 				Edited();
+			}
 
 			// A PRESS THAT NEVER LEFT THE DEAD ZONE IS A CLICK ON THE CURVE, and selects it - the
 			// same rule the point handles follow. Without this the grip would be a dead spot in the
@@ -204,23 +226,35 @@ internal sealed partial class EffigyViewport
 			var target = SnapPoint( _cursorOnPlane );
 			_suppressPointSnap = false;
 
-			// BEFORE the write, and once for the whole drag, so undo goes back to the shape as it
-			// was picked up rather than to a frame into the gesture.
-			if ( !_handleSnapshotTaken )
-			{
-				SketchEditing?.Invoke();
-				_handleSnapshotTaken = true;
-			}
+			_handleSnapshotTaken = true;
 
-			if ( SketchHandles.Drag( ActiveSketch, _handleCurveId, _handleKind, target ) )
-			{
-				_handleMoved = true;
+			// The frame as it stands, so a move the rules cannot follow can be taken back whole -
+			// radius, bulge direction and all, not only the points.
+			var lastFrame = ActiveSketch.Constraints.Count > 0 ? ActiveSketch.Clone() : null;
 
+			if ( SketchHandles.Drag( ActiveSketch, _handleCurveId, _handleKind, target, out var refusal ) )
+			{
 				// Re-solved around a point the drag is deliberately NOT moving - see
 				// SketchHandles.Pin. Without this a grip walks the sketch straight through its own
 				// constraints, the same way the point drag used to.
-				if ( ActiveSketch.Constraints.Count > 0 )
-					SketchSolver.Solve( ActiveSketch, SketchHandles.Pin( ActiveSketch, _handleCurveId, _handleKind ) );
+				//
+				// AND THE ANSWER IS READ. A solve that cannot converge means the rules will not let
+				// the curve go where the hand is; the frame is put back so the curve stays where they
+				// hold it, rather than being drawn breaking them and then snapping back on release.
+				if ( lastFrame is not null
+					&& !SketchSolver.Solve( ActiveSketch, SketchHandles.Pin( ActiveSketch, _handleCurveId, _handleKind ) ).Converged )
+				{
+					RestoreSketch( lastFrame );
+					SayHandleRefusal( WhatHoldsCurve( _handleCurveId ) );
+				}
+				else
+				{
+					_handleMoved = true;
+				}
+			}
+			else if ( refusal is not null )
+			{
+				SayHandleRefusal( refusal );
 			}
 		}
 
@@ -279,5 +313,36 @@ internal sealed partial class EffigyViewport
 		_handleCurveId = null;
 		_handleMoved = false;
 		_handleSnapshotTaken = false;
+		_handleRefusalSaid = false;
+		_handleBefore = null;
+	}
+
+	/// <summary>Say why the grip will not follow - once per drag. The grip is already drawn where
+	/// the curve really is (see DragCurveHandle), so this is the words to go with what is seen.</summary>
+	private void SayHandleRefusal( string why )
+	{
+		if ( _handleRefusalSaid )
+			return;
+
+		_handleRefusalSaid = true;
+		Refuse( why );
+	}
+
+	/// <summary>Which rule a held curve should be blamed on, in words that say how to free it.</summary>
+	private string WhatHoldsCurve( string curveId )
+	{
+		if ( FindCurve( curveId ) is not { } curve )
+			return "That curve is held by the rules on the sketch - click a mark to remove one, then drag again.";
+
+		var points = curve.PointRefs.ToHashSet();
+
+		if ( ActiveSketch.Constraints.Any( c => c.Kind == SketchConstraintKind.Fixed && points.Contains( c.PointA ) ) )
+			return "A point on that curve is fixed - remove the Fix (click its mark) to change it.";
+
+		var rules = ConstraintTools.Touching( ActiveSketch, curve ).Select( c => Name( c.Kind ) ).Distinct().ToList();
+
+		return rules.Count == 0
+			? "That curve is held by the rules on the curves around it - click a mark on the sketch to remove one, then drag again."
+			: $"That curve is held by its constraints ({string.Join( ", ", rules )}) - click one of their marks to remove it, then drag again.";
 	}
 }

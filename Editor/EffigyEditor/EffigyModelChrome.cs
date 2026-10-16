@@ -565,7 +565,7 @@ internal sealed class EffigyToolCatalog : Widget
 		Update();
 	}
 
-	public void Close()
+	public new void Close()
 	{
 		Visible = false;
 	}
@@ -600,6 +600,12 @@ internal sealed class EffigyToolCatalog : Widget
 		var filter = (_search.Text ?? "").Trim().ToLowerInvariant();
 		var seen = new HashSet<EffigyStageTool>();
 
+		// Tips are searched too, so a word from the description ("thicken", "morph") finds the tool. Enter
+		// still prefers a tool whose NAME matches: "bevel" must run Bevel, not the first tool whose
+		// tip happens to mention bevelling.
+		var byName = filter.Length == 0 ? null : _groups.SelectMany( g => g.Tools )
+			.FirstOrDefault( t => t is not null && t.Enabled && t.Label.ToLowerInvariant().Contains( filter ) );
+
 		var x = Inset;
 		var y = Inset + 46f;
 		var rowBottom = y;
@@ -607,7 +613,8 @@ internal sealed class EffigyToolCatalog : Widget
 		foreach ( var group in _groups )
 		{
 			var tools = group.Tools.Where( t => t is not null && seen.Add( t )
-				&& (filter.Length == 0 || t.Label.ToLowerInvariant().Contains( filter )) ).ToList();
+				&& (filter.Length == 0 || t.Label.ToLowerInvariant().Contains( filter )
+					|| (t.Tip ?? "").ToLowerInvariant().Contains( filter )) ).ToList();
 
 			if ( tools.Count == 0 )
 				continue;
@@ -632,7 +639,7 @@ internal sealed class EffigyToolCatalog : Widget
 				var index = _items.Count;
 				_items.Add( (rect, tool) );
 
-				var hit = filter.Length > 0 && _first is null && tool.Enabled;
+				var hit = filter.Length > 0 && _first is null && tool.Enabled && (byName is null || tool == byName);
 				if ( hit )
 					_first = tool;
 

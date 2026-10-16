@@ -34,6 +34,14 @@ internal sealed class EffigyAnimClipsWindow : Window
 	private Widget _list;
 	private Editor.Label _empty;
 
+	/// <summary>The dialog's own line for a refusal - a bad name, a clip already listed. Here
+	/// rather than in the viewport because this window sits in front of it.</summary>
+	private Editor.Label _notice;
+
+	/// <summary>Every name box and the clip it names, so closing can check none is holding a name
+	/// that was never taken.</summary>
+	private readonly List<(EffigyAnimExport.ClipSource Clip, LineEdit Box)> _nameBoxes = new();
+
 	public EffigyAnimClipsWindow( Widget owner, List<EffigyAnimExport.ClipSource> clips, Action changed = null )
 	{
 		_clips = clips;
@@ -78,6 +86,15 @@ internal sealed class EffigyAnimClipsWindow : Window
 		_list.Layout.Spacing = 6;
 		scroll.Canvas = _list;
 
+		_notice = new Editor.Label( "" )
+		{
+			WordWrap = true,
+			Color = Theme.Yellow,
+			Visible = false,
+		};
+
+		canvas.Layout.Add( _notice );
+
 		var buttons = canvas.Layout.AddRow();
 		buttons.Spacing = 6;
 		buttons.Add( new Button( "Add Clip...", "add" ) { Clicked = OpenPicker } );
@@ -99,6 +116,7 @@ internal sealed class EffigyAnimClipsWindow : Window
 	private void Rebuild()
 	{
 		_list.Layout.Clear( true );
+		_nameBoxes.Clear();
 
 		if ( _clips.Count == 0 )
 		{
@@ -135,12 +153,22 @@ internal sealed class EffigyAnimClipsWindow : Window
 		};
 
 		// TextEdited rather than EditingFinished: the dialog can be closed with the caret still in
-		// the box, and a name typed but not committed would export under the old one.
+		// the box, and a name typed but not committed would export under the old one. A name that
+		// cannot be taken - blank, or another clip's - is not applied; the clip keeps its last good
+		// name, and finishing the edit (Enter, clicking away, closing) says why and puts it back.
 		name.TextEdited += text =>
 		{
-			clip.Name = text;
+			var trimmed = ( text ?? "" ).Trim();
+
+			if ( NameProblem( clip, trimmed ) is not null || trimmed == clip.Name )
+				return;
+
+			clip.Name = trimmed;
 			_changed?.Invoke();
 		};
+
+		name.EditingFinished += () => CommitName( clip, name );
+		_nameBoxes.Add( (clip, name) );
 
 		top.Add( name, 1 );
 
@@ -194,6 +222,7 @@ internal sealed class EffigyAnimClipsWindow : Window
 		picker.OnAssetPicked = assets =>
 		{
 			var added = false;
+			var already = new List<string>();
 
 			foreach ( var asset in assets ?? Enumerable.Empty<Asset>() )
 			{
@@ -201,9 +230,12 @@ internal sealed class EffigyAnimClipsWindow : Window
 					continue;
 
 				// Adding the same file twice would write one .dmx and list it twice, so the model
-				// would carry two identical animations under two names.
+				// would carry two identical animations under two names. Skipped, and said.
 				if ( _clips.Any( c => (c.Asset?.Path ?? c.MissingPath) == asset.Path ) )
+				{
+					already.Add( asset.Name );
 					continue;
+				}
 
 				_clips.Add( new EffigyAnimExport.ClipSource
 				{
@@ -218,9 +250,92 @@ internal sealed class EffigyAnimClipsWindow : Window
 				_changed?.Invoke();
 
 			Rebuild();
+
+			if ( already.Count > 0 )
+			{
+				Notice( already.Count == 1
+					? $"{already[0]} is already in the list, so it wasn't added again."
+					: $"{string.Join( ", ", already )} are already in the list, so they weren't added again." );
+			}
 		};
 
 		picker.Show();
+	}
+
+	/// <summary>Why <paramref name="text"/> cannot be this clip's name, or null when it can.</summary>
+	private string NameProblem( EffigyAnimExport.ClipSource clip, string text )
+	{
+		if ( string.IsNullOrWhiteSpace( text ) )
+			return "a clip needs a name - it's what AnimGraph asks for";
+
+		var other = _clips.FirstOrDefault( c => c != clip && string.Equals( c.Name, text, StringComparison.OrdinalIgnoreCase ) );
+
+		if ( other is not null )
+			return $"another clip is already called '{other.Name}', and only one of them would make it into the model";
+
+		return null;
+	}
+
+	/// <summary>The end of an edit: refuse a name that was not taken, and show the one that was.</summary>
+	private bool CommitName( EffigyAnimExport.ClipSource clip, LineEdit box )
+	{
+		if ( box is null || !box.IsValid() )
+			return true;
+
+		var text = ( box.Text ?? "" ).Trim();
+
+		if ( text == clip.Name )
+			return true;
+
+		var problem = NameProblem( clip, text );
+
+		if ( problem is null )
+		{
+			// Only whitespace differed, or TextEdited never saw the last change.
+			clip.Name = text;
+			box.Text = text;
+			_changed?.Invoke();
+			return true;
+		}
+
+		box.Text = clip.Name;
+		Notice( $"Can't rename to '{text}': {problem}. Kept '{clip.Name}'." );
+		_refusedAt = RealTime.Now;
+		return false;
+	}
+
+	private float _refusedAt = float.MinValue;
+
+	private void Notice( string text )
+	{
+		if ( _notice is null || !_notice.IsValid() )
+			return;
+
+		_notice.Text = text;
+		_notice.Visible = !string.IsNullOrEmpty( text );
+	}
+
+	/// <summary>
+	/// Closing with a name box still holding one that was refused: put the old name back and stay
+	/// open once, so the message is read rather than closed along with the window. The second close
+	/// goes through, because the box now agrees with the clip.
+	/// </summary>
+	protected override bool OnClose()
+	{
+		var ok = true;
+
+		foreach ( var (clip, box) in _nameBoxes.ToList() )
+			ok &= CommitName( clip, box );
+
+		// Pressing Close takes focus out of the box first, so the refusal has usually just happened
+		// on the way here and the box already agrees again. Still stay open that once.
+		if ( RealTime.Now - _refusedAt < 0.5f )
+		{
+			_refusedAt = float.MinValue;
+			return false;
+		}
+
+		return ok;
 	}
 
 	/// <summary>

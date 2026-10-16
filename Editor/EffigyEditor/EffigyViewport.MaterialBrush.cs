@@ -62,6 +62,9 @@ internal sealed partial class EffigyViewport
 	private MeshHit? _materialCursor;
 	private bool _materialStroking;
 
+	/// <summary>The stroke in flight has reached at least one face.</summary>
+	private bool _materialStrokeTouched;
+
 	public void BeginMaterialBrush( MaterialBrushSession session )
 	{
 		MaterialBrush = session ?? throw new ArgumentNullException( nameof( session ) );
@@ -96,6 +99,7 @@ internal sealed partial class EffigyViewport
 			if ( Gizmo.WasLeftMousePressed && !_materialStroking )
 			{
 				_materialStroking = true;
+				_materialStrokeTouched = false;
 				MaterialStrokeStarted?.Invoke();
 			}
 
@@ -104,12 +108,21 @@ internal sealed partial class EffigyViewport
 				var faces = MaterialBrush.FacesAt( hit );
 
 				if ( faces.Count > 0 )
+				{
+					_materialStrokeTouched = true;
 					MaterialDabbed?.Invoke( faces );
+				}
 			}
 		}
 
 		if ( _materialStroking && !Gizmo.IsLeftMouseDown )
+		{
 			_materialStroking = false;
+
+			// The whole drag was over empty space: nothing was dabbed, so nothing else would say so.
+			if ( !_materialStrokeTouched )
+				Refuse( "Missed the model — brush across a face of the part to lay the material on it." );
+		}
 
 		DrawMaterialCursor();
 	}

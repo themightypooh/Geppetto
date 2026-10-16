@@ -165,7 +165,7 @@ internal sealed class EffigyRigPanel : Widget
 		};
 		toolRow.Layout.Add( _poseButton );
 
-		_resetPoseButton = new Button( "Reset Pose", "restart_alt" )
+		_resetPoseButton = new Button( "Reset Pose", "settings_backup_restore" )
 		{
 			ToolTip = "Return every bone to the bind pose it was posed from.",
 			Clicked = () => PoseReset?.Invoke(),
@@ -461,7 +461,7 @@ internal sealed class EffigyRigPanel : Widget
 		// is a whole feature that closing behind the user's back could discard cleanly or not.
 		if ( active && _viewport.IsSketching )
 		{
-			_viewport.SetPickPrompt( "Finish or cancel the sketch first — Escape backs out of it." );
+			_viewport.Refuse( "Finish or cancel the sketch first — Escape backs out of it." );
 			return;
 		}
 
@@ -471,7 +471,7 @@ internal sealed class EffigyRigPanel : Widget
 		// refusal, same reason: closing that dialog isn't this tool's call to make.
 		if ( active && _viewport.SketchPickMode )
 		{
-			_viewport.SetPickPrompt( "Close the open feature's dialog first." );
+			_viewport.Refuse( "Close the open feature's dialog first." );
 			return;
 		}
 
@@ -542,10 +542,13 @@ internal sealed class EffigyRigPanel : Widget
 		}
 
 		// A double-click landing on the same spot would otherwise hit AddBoneFromPoints' zero-
-		// length guard and throw — worth swallowing quietly rather than teaching the tool to crash
-		// on a mis-click.
+		// length guard and throw. Refused rather than thrown — and said, because a click that
+		// places nothing reads as the tool having stopped.
 		if ( (point - head).Length < 0.01f )
+		{
+			_viewport.Refuse( "Bone too short — click further from the last joint." );
 			return;
+		}
 
 		RigChanging?.Invoke();
 		var index = Skeleton.AddBoneFromPoints( NextBoneName(), _chainParent, head, point );
@@ -704,7 +707,10 @@ internal sealed class EffigyRigPanel : Widget
 		}
 
 		if ( _selectedBone < 0 || _selectedBone >= Skeleton.Count )
+		{
+			_viewport.Refuse( "Can't assign bodies: no bone is picked. Pick the bone in the Rig tree first." );
 			return;
+		}
 
 		if ( TryAssignIdleBodies() )
 			return;
@@ -715,7 +721,10 @@ internal sealed class EffigyRigPanel : Widget
 		// rather than arm BodyPickMode on top of it, same reasoning as SetBoneToolActive refusing
 		// the reverse — one click cannot be both a body pick and a bone placement.
 		if ( _viewport.BoneToolActive )
+		{
+			_viewport.Refuse( "Can't assign bodies while Add Bone is placing. Press Escape twice to stop placing, then Assign Body." );
 			return;
+		}
 
 		// Same hand-back as the bone tool's: if a feature dialog's own picker is armed, tell it to
 		// disarm rather than silently steal BodyPickMode out from under it.
@@ -976,6 +985,7 @@ internal sealed class EffigyRigPanel : Widget
 
 		var field = new EffigyNumericField( row, 0f )
 		{
+			Label = label,
 			FixedWidth = 74,
 			ToolTip = tip,
 			ValueEdited = v => OnSoftFieldEdited( which, v ),
@@ -1342,11 +1352,53 @@ internal sealed class EffigyRigPanel : Widget
 		try
 		{
 			Skeleton.SetHeadTail( _selectedBone, head, tail );
+			_zeroLengthPending = false;
 		}
 		catch ( ArgumentException )
 		{
 			// Momentarily zero-length mid-edit — leave the model alone until the text means
-			// something again, same as EffigyNumericField's own "?" readout for unparsed text.
+			// something again. But only MOMENTARILY: if the box is left like that, the bone never
+			// took the value and the field is lying. SettleZeroLengthEdit says so and puts the
+			// real number back once nobody is typing.
+			_zeroLengthPending = true;
+			SettleZeroLengthEdit();
+		}
+	}
+
+	/// <summary>A head/tail field holds a value that would make the bone zero-length, and the bone
+	/// was left as it was. Settled when no field is being typed in any more.</summary>
+	private bool _zeroLengthPending;
+
+	private bool AnyHeadTailFieldEditing =>
+		_headX.IsEditing || _headY.IsEditing || _headZ.IsEditing
+		|| _tailX.IsEditing || _tailY.IsEditing || _tailZ.IsEditing;
+
+	/// <summary>
+	/// Once a frame: if a zero-length value is still sitting in a field after the typing stopped,
+	/// say why the bone did not take it and put the field back to what the bone really is.
+	///
+	/// A frame hook rather than a focus-out, because EffigyNumericField does not expose its own
+	/// editing-finished — and polling "is anyone still typing" reaches the same moment.
+	/// </summary>
+	[EditorEvent.Frame]
+	public void SettleZeroLengthEdit()
+	{
+		if ( !_zeroLengthPending || !IsValid )
+			return;
+
+		try
+		{
+			if ( AnyHeadTailFieldEditing )
+				return;
+
+			_zeroLengthPending = false;
+			_viewport.Refuse( "Can't put the head on the tail: a bone needs some length. Move one of them apart." );
+			RefreshInspector();
+		}
+		catch ( Exception )
+		{
+			// The event can reach a panel whose widgets are already gone — see RigTimeline.Frame.
+			_zeroLengthPending = false;
 		}
 	}
 
@@ -1373,6 +1425,12 @@ internal sealed class EffigyRigPanel : Widget
 		// bodies both still naming the OLD bone while a click would silently start assigning to
 		// the new one instead — the exact kind of thing this session keeps finding and fixing.
 		DisarmAssign();
+
+		// Weight painting follows the selection: picking another bone is how you move on to the
+		// next one. A deselect (a click on empty space) leaves the brush on the bone it had — there
+		// is no bone-less weight brush to switch to, and the bar keeps naming the one it paints.
+		if ( hasSelection && _viewport.IsWeightPainting )
+			_viewport.SetWeightBone( index );
 
 		// Teaches the branch gesture: pick a bone, and the button that would otherwise just say
 		// "Add Bone" tells you what clicking it will actually do. Only while the tool itself isn't
@@ -1405,16 +1463,47 @@ internal sealed class EffigyRigPanel : Widget
 		var menu = new Menu( this );
 		var edit = new LineEdit( Skeleton.Bones[index].Name, menu ) { FixedWidth = 190 };
 
-		edit.ReturnPressed += () =>
+		// EditingFinished rather than ReturnPressed: it fires on Enter AND when the box loses focus,
+		// so clicking away keeps the name you typed instead of throwing it out. Escape still backs
+		// out: it closes the menu, which is a focus loss too, so the key is checked and the text is
+		// not read while it is down. Once only: the Enter path closes the menu, and that close is
+		// itself a focus loss.
+		var committed = false;
+
+		edit.EditingFinished += () =>
 		{
+			if ( committed )
+				return;
+
+			committed = true;
+
+			if ( Editor.Application.IsKeyDown( KeyCode.Escape ) )
+				return;
+
 			var name = edit.Text?.Trim();
 			var renamed = false;
 
-			if ( !string.IsNullOrWhiteSpace( name ) )
+			if ( index >= Skeleton.Count )
 			{
-				var oldName = Skeleton.Bones[index].Name;
+				menu.Close();
+				return;
+			}
 
-				if ( name != oldName )
+			var oldName = Skeleton.Bones[index].Name;
+
+			if ( string.IsNullOrWhiteSpace( name ) )
+			{
+				_viewport.Refuse( $"Can't rename '{oldName}' to nothing: every bone needs a name. Kept '{oldName}'." );
+			}
+			else if ( name != oldName )
+			{
+				var existing = Skeleton.IndexOf( name );
+
+				if ( existing >= 0 && existing != index )
+				{
+					_viewport.Refuse( $"Can't rename to '{name}': another bone already has that name. Pick a different one." );
+				}
+				else
 				{
 					try
 					{
@@ -1426,9 +1515,9 @@ internal sealed class EffigyRigPanel : Widget
 
 						renamed = true;
 					}
-					catch ( ArgumentException )
+					catch ( ArgumentException e )
 					{
-						// Blank or a name already in use — leave the old one rather than crash.
+						_viewport.Refuse( $"Can't rename to '{name}': {e.Message}." );
 					}
 				}
 			}

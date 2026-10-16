@@ -106,7 +106,15 @@ internal sealed partial class EffigyViewport
 	/// </summary>
 	public void ResetPose()
 	{
-		if ( !PosePreviewActive || _poseBindSkeleton is null || RigSkeleton is null )
+		// Every caller inside the window checks PosePreviewActive first, so this is only ever the
+		// Reset button pressed with no pose to reset.
+		if ( !PosePreviewActive )
+		{
+			Refuse( "Nothing to reset: not posing. Press Pose, bend some bones, then Reset puts them back." );
+			return;
+		}
+
+		if ( _poseBindSkeleton is null || RigSkeleton is null )
 			return;
 
 		for ( var i = 0; i < RigSkeleton.Count; i++ )
