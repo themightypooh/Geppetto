@@ -389,6 +389,7 @@ public static class Program
 		CageToolsTests.Run();
 		SurfaceDetailTests.Run();
 		BakeSetTests.Run( outDir );
+		BakeMapsTests.Run( outDir );
 		SboxOutputTests.Run( outDir );
 		SculptToolsTests.Run();
 		DeformTests.Run();

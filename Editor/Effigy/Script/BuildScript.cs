@@ -385,92 +385,7 @@ public static partial class BuildScript
 				return Corrective( studio, args, r );
 
 			case "bake":
-			{
-				// bake Low High out/bake size=2048 maps=normal,ao,curvature,height,cavity cage=0.2 ss=2 vmat=1
-				if ( args.Count < 3 )
-					return Fail( r, "bake needs the low body, the high body and a folder: bake Low High out/bake [size=1024] "
-						+ "[maps=normal,ao,curvature,cavity,height,thickness|all] [cage=0] [ss=1] [vmat=0]" );
-
-				var low = ModelMeasure.FindBody( studio, args[0] );
-				var high = ModelMeasure.FindBody( studio, args[1] );
-
-				if ( low?.Mesh is null || high?.Mesh is null )
-					return Fail( r, $"No body called '{(low?.Mesh is null ? args[0] : args[1])}'. Bodies: {string.Join( ", ", studio.Bodies.Select( b => b.Name ?? b.Id ) )}." );
-
-				var opts = Pairs( args.Skip( 3 ) );
-				var size = (int)Number( opts.GetValueOrDefault( "size", "1024" ) );
-
-				if ( size < 1 || size > 8192 )
-					return Fail( r, $"size={size}: a map is 1 to 8192 texels a side." );
-
-				if ( !BakeMapList( opts.GetValueOrDefault( "maps", "normal,ao" ), out var maps, out var whyMaps ) )
-					return Fail( r, whyMaps );
-
-				// Refused up front, with the reason: an overlapping bake does not fail, it writes a
-				// map that is wrong wherever two faces share texels.
-				var coverage = NormalBake.Measure( low.Mesh );
-
-				if ( !coverage.CanBake )
-					return Fail( r, $"{args[0]} cannot carry a bake: {coverage.Problem} Unwrap it first: add UVProject bodies={args[0]} mode=Unwrap" );
-
-				var options = new BakeOptions
-				{
-					Cage = opts.TryGetValue( "cage", out var cageText ) ? Number( cageText ) : 0f,
-					MaxDistance = opts.TryGetValue( "distance", out var distance ) ? Number( distance ) : 0f,
-					Supersample = (int)Number( opts.GetValueOrDefault( "ss", "1" ) ),
-					FlipGreen = opts.GetValueOrDefault( "green", "gl" ).Equals( "dx", StringComparison.OrdinalIgnoreCase ),
-					AoRays = (int)Number( opts.GetValueOrDefault( "rays", "64" ) ),
-					AoDistance = opts.TryGetValue( "aodistance", out var aoDistance ) ? Number( aoDistance ) : 0f,
-					Padding = (int)Number( opts.GetValueOrDefault( "padding", "4" ) ),
-				};
-
-				var dir = Resolve( baseDir, args[2] );
-				Directory.CreateDirectory( dir );
-				var name = Safe( opts.GetValueOrDefault( "name", low.Name ?? low.Id ) );
-				var flipV = Truthy( opts.GetValueOrDefault( "flipv", "0" ) );
-				var set = NormalBake.BakeAll( low.Mesh, high.Mesh, size, size, maps, options );
-				var written = new Dictionary<string, string>();
-
-				foreach ( var (mapName, map) in set.Maps )
-				{
-					var path = Path.Combine( dir, $"{name}_{mapName}.png" );
-					PngWriter.WriteFile( path, map, flipV );
-					written[mapName] = path;
-					r.Written.Add( path );
-					r.Log.Add( $"baked {mapName} {map.Width}x{map.Height} to {path}" );
-				}
-
-				foreach ( var line in set.Report.Split( '\n' ) )
-					r.Log.Add( $"bake: {line}" );
-
-				r.Log.Add( $"bake: {(options.FlipGreen ? "DirectX" : "OpenGL")} green, v = 0 at the {(flipV ? "bottom" : "top")}, "
-					+ (options.Cage > 0f ? $"cage {N( options.Cage )}" : "no cage") + $", {options.Supersample}x{options.Supersample} samples per texel" );
-
-				if ( Truthy( opts.GetValueOrDefault( "vmat", "0" ) ) )
-				{
-					// Texture paths in a .vmat are relative to the assets root, which is the base
-					// folder unless assets= says otherwise — the same rule export uses.
-					var root = opts.TryGetValue( "assets", out var assets ) ? assets : baseDir;
-					string Asset( string path ) => Path.GetRelativePath( root, path ).Replace( '\\', '/' );
-
-					var vmatPath = Path.Combine( dir, name + ".vmat" );
-					File.WriteAllText( vmatPath, BakeMaterial.VmatSource(
-						color: opts.GetValueOrDefault( "color" ),
-						normal: written.TryGetValue( "normal", out var normalPath ) ? Asset( normalPath ) : null,
-						roughness: opts.GetValueOrDefault( "rough" ),
-						ambientOcclusion: written.TryGetValue( "ao", out var aoPath ) ? Asset( aoPath ) : null,
-						metalness: opts.TryGetValue( "metal", out var metal ) ? Number( metal ) : 0f ) );
-
-					r.Written.Add( vmatPath );
-					r.Log.Add( $"wrote {vmatPath} (complex: normal {(normalPath is null ? "default" : Asset( normalPath ))}, "
-						+ $"ao {(aoPath is null ? "default" : Asset( aoPath ))}, colour {opts.GetValueOrDefault( "color", "default" )}, rough {opts.GetValueOrDefault( "rough", "default" )})" );
-
-					if ( Asset( dir ).StartsWith( "..", StringComparison.Ordinal ) )
-						r.Log.Add( $"bake: note: {dir} is outside the assets root {root}, so the vmat's texture paths will not resolve; pass assets=<root>" );
-				}
-
-				return true;
-			}
+				return Bake( studio, args, baseDir, r );
 
 			default:
 				return Fail( r, $"Unknown command '{verb}'. Commands: add, edit, set, remove, rebuild, fix, render, describe, measure, distance, symmetry, topology, section, flex, match, material, pivot, export, corrective, bake, save, echo." );
@@ -919,12 +834,17 @@ public static partial class BuildScript
 				"cavity" => BakeMaps.Cavity,
 				"height" => BakeMaps.Height,
 				"thickness" => BakeMaps.Thickness,
+				"bentnormal" or "bent" => BakeMaps.BentNormal,
+				"objectnormal" or "worldnormal" or "object" => BakeMaps.ObjectNormal,
+				"position" or "pos" => BakeMaps.Position,
+				"id" or "materialid" or "matid" => BakeMaps.MaterialId,
+				"everything" => BakeMaps.Everything,
 				_ => BakeMaps.None,
 			};
 
 			if ( map == BakeMaps.None )
 			{
-				why = $"maps: '{part.Trim()}' is not a bake. Maps: normal, ao, curvature, cavity, height, thickness, all.";
+				why = $"maps: '{part.Trim()}' is not a bake. Maps: normal, ao, curvature, cavity, height, thickness, bentnormal, objectnormal, position, id, all (the first six), everything.";
 				return false;
 			}
 

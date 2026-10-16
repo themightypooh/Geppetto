@@ -6,7 +6,7 @@ using System.Text;
 namespace Effigy;
 
 /// <summary>
-/// An 8-bit RGB or RGBA PNG, written by hand.
+/// An 8-bit RGB or RGBA PNG, or a 16-bit RGB one, written by hand.
 ///
 /// WRITTEN BY HAND FOR THE REASON EVERY OTHER FORMAT HERE IS: the kernel has no dependencies, so it
 /// can be dropped into s&amp;box or Godot or a console runner as loose .cs files. ObjWriter, SmdWriter
@@ -67,13 +67,68 @@ public static class PngWriter
 	/// bottom instead, which is what most engines' UV convention wants. Which one s&amp;box wants is
 	/// not something this file can know — see BakeOptions.FlipGreen for the other half of the same
 	/// question, and the sample written by the test suite for something to look at.
+	///
+	/// A map with a 16-bit copy (<see cref="BakedMap.Rgb16"/>, from BakeOptions.SixteenBit) is
+	/// written from that copy as a 16-bit PNG; every other map stays 8-bit, byte for byte as before.
 	/// </summary>
 	public static void WriteFile( string path, BakedMap map, bool flipVertically = false )
 	{
 		if ( map is null )
 			throw new ArgumentNullException( nameof( map ) );
 
+		if ( map.Rgb16 is not null )
+		{
+			WriteFile16( path, flipVertically ? Flipped( map.Rgb16, map.Width * 3, map.Height ) : map.Rgb16, map.Width, map.Height );
+			return;
+		}
+
 		WriteFile( path, flipVertically ? Flipped( map ) : map.Rgb, map.Width, map.Height );
+	}
+
+	/// <summary>
+	/// Write 16-bit RGB — three ushorts per pixel, row-major, first row at the TOP — as a PNG of bit
+	/// depth 16 (colour type 2). The PNG spec stores each sample big-endian, which is done here.
+	/// </summary>
+	public static void WriteFile16( string path, ushort[] rgb, int width, int height )
+	{
+		using var stream = File.Create( path );
+		Write16( stream, rgb, width, height );
+	}
+
+	/// <summary>The stream form of <see cref="WriteFile16"/>.</summary>
+	public static void Write16( Stream stream, ushort[] rgb, int width, int height )
+	{
+		if ( stream is null )
+			throw new ArgumentNullException( nameof( stream ) );
+
+		if ( rgb is null )
+			throw new ArgumentNullException( nameof( rgb ) );
+
+		if ( width < 1 || height < 1 )
+			throw new ArgumentOutOfRangeException( nameof( width ), "A PNG needs at least one pixel." );
+
+		if ( rgb.Length < width * height * 3 )
+			throw new ArgumentException( $"{width}x{height} needs {width * height * 3} 16-bit samples of RGB; got {rgb.Length}." );
+
+		var bytes = new byte[width * height * 6];
+
+		for ( var i = 0; i < width * height * 3; i++ )
+		{
+			bytes[i * 2] = (byte)(rgb[i] >> 8);
+			bytes[i * 2 + 1] = (byte)rgb[i];
+		}
+
+		WritePixels( stream, bytes, width, height, 6, 2, 16 );
+	}
+
+	static ushort[] Flipped( ushort[] samples, int stride, int height )
+	{
+		var result = new ushort[samples.Length];
+
+		for ( var y = 0; y < height; y++ )
+			Array.Copy( samples, y * stride, result, (height - 1 - y) * stride, stride );
+
+		return result;
 	}
 
 	static byte[] Flipped( BakedMap map )
@@ -102,7 +157,7 @@ public static class PngWriter
 			throw new ArgumentException(
 				$"{width}x{height} needs {width * height * 3} bytes of RGB; got {rgb.Length}." );
 
-		WritePixels( stream, rgb, width, height, 3, 2 );
+		WritePixels( stream, rgb, width, height, 3, 2, 8 );
 	}
 
 	/// <summary>The RGBA counterpart of <see cref="Write"/> — four bytes per pixel, colour type 6.
@@ -123,13 +178,14 @@ public static class PngWriter
 			throw new ArgumentException(
 				$"{width}x{height} needs {width * height * 4} bytes of RGBA; got {rgba.Length}." );
 
-		WritePixels( stream, rgba, width, height, 4, 6 );
+		WritePixels( stream, rgba, width, height, 4, 6, 8 );
 	}
 
 	// The shared writer behind both colour types. Validation lives in the callers so each reports its
 	// own byte count and colour name; below that the two paths are identical except how many bytes a
 	// scanline carries and which colour type the header names.
-	static void WritePixels( Stream stream, byte[] pixels, int width, int height, int channels, int colourType )
+	// `channels` is BYTES per pixel (6 for 16-bit RGB).
+	static void WritePixels( Stream stream, byte[] pixels, int width, int height, int channels, int colourType, int depth )
 	{
 		// Every scanline is prefixed with its filter type. 0 means None.
 		var raw = new byte[height * (width * channels + 1)];
@@ -147,7 +203,7 @@ public static class PngWriter
 		var ihdr = new byte[13];
 		WriteBe( ihdr, 0, width );
 		WriteBe( ihdr, 4, height );
-		ihdr[8] = 8;  // bit depth
+		ihdr[8] = (byte)depth;  // bit depth
 		ihdr[9] = (byte)colourType;  // 2 = truecolour RGB, 6 = truecolour with alpha
 		Chunk( stream, "IHDR", ihdr );
 

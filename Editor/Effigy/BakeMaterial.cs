@@ -87,7 +87,8 @@ public static class BakeMaterial
 	/// <c>{name}_{map}.png</c> in <paramref name="folder"/>, a <c>{name}_transmission.png</c> when the
 	/// set has thickness (<see cref="SkinMaterial.TransmissionMask"/>), and optionally the .vmat that
 	/// binds them — complex (<see cref="VmatSource"/>) or s&amp;box's skin shader
-	/// (<see cref="SkinMaterial.VmatSource"/>), picked by one of <see cref="MaterialChoices"/>.
+	/// (<see cref="SkinMaterial.VmatSource"/>, with the bent normal bound when the set has one), picked
+	/// by one of <see cref="MaterialChoices"/>.
 	///
 	/// Texture paths in the vmat are relative to <paramref name="assetsRoot"/> (an asset path is what a
 	/// vmat names); null writes bare file names. Returns every file written, PNGs first.
@@ -139,7 +140,8 @@ public static class BakeMaterial
 			// Transmission only where the preset transmits: Facepunch's mouth has none, and a black
 			// transmission colour with a bright mask would be a mask that does nothing.
 			var trans = p.TransmissionColor.x + p.TransmissionColor.y + p.TransmissionColor.z > 0f ? Map( "transmission" ) : null;
-			File.WriteAllText( vmat, SkinMaterial.VmatSource( p, color, Map( "normal" ), roughness, Map( "ao" ), trans ) );
+			// A baked bent normal switches the skin shader's F_USE_BENT_NORMALS on; without one it stays off.
+			File.WriteAllText( vmat, SkinMaterial.VmatSource( p, color, Map( "normal" ), roughness, Map( "ao" ), trans, Map( "bentnormal" ) ) );
 		}
 
 		written.Add( vmat );

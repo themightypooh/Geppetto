@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace Effigy;
 
@@ -23,12 +24,39 @@ public sealed class BakedMap
 	/// <summary>Which texels a ray actually landed on. Everything else is padding or flat.</summary>
 	public readonly bool[] Filled;
 
+	/// <summary>
+	/// The same texels at 16 bits a channel, or null when the bake was 8-bit
+	/// (<see cref="BakeOptions.SixteenBit"/>). Kept beside <see cref="Rgb"/> rather than instead of it:
+	/// every 8-bit reader (tests, previews, the paint canvas) keeps working, and PngWriter writes a
+	/// 16-bit file only when this is here.
+	///
+	/// WHY IT EXISTS. A height map spread over 255 greys steps visibly once a parallax shader or a
+	/// displacement multiplies it up, and a normal map's 8 bits quantise a gentle slope into
+	/// terraces. Only the maps made from a continuous number carry it: height, the three normal
+	/// maps and position.
+	/// </summary>
+	public ushort[] Rgb16;
+
 	public BakedMap( int width, int height )
 	{
 		Width = width;
 		Height = height;
 		Rgb = new byte[width * height * 3];
 		Filled = new bool[width * height];
+	}
+
+	/// <summary>Give this map a 16-bit copy (<see cref="Rgb16"/>), zeroed, if it has none yet.</summary>
+	public void EnableSixteenBit() => Rgb16 ??= new ushort[Width * Height * 3];
+
+	/// <summary>The texel at 16 bits, or the 8-bit value widened (×257) when there is no 16-bit copy.</summary>
+	public (ushort R, ushort G, ushort B) At16( int x, int y )
+	{
+		var i = (y * Width + x) * 3;
+
+		if ( Rgb16 is null )
+			return ((ushort)(Rgb[i] * 257), (ushort)(Rgb[i + 1] * 257), (ushort)(Rgb[i + 2] * 257));
+
+		return (Rgb16[i], Rgb16[i + 1], Rgb16[i + 2]);
 	}
 
 	public int FilledCount
@@ -151,6 +179,67 @@ public sealed class BakeOptions
 	/// evaluates on, so its masks are measured on the detailed surface, not the game mesh.
 	/// </summary>
 	public bool KeepHits;
+
+	/// <summary>
+	/// An explicit cage MESH, the alternative to the scalar <see cref="Cage"/>: a copy of the low
+	/// body pushed out by hand (or inflated) where the detail stands proud. Must be the low body's
+	/// own topology - same vertex count and the same faces in the same order - because each texel's
+	/// ray starts at the matching point on the cage and travels through the matching point on the low
+	/// surface. Rays then carry on <see cref="MaxDistance"/> past it (the furthest cage offset when
+	/// zero). Null means none.
+	///
+	/// WHY A MESH AND NOT ONLY A DISTANCE. One distance is a compromise across the whole model: a
+	/// finger needs a tight cage or it catches its neighbour, a horn needs a wide one or its tip
+	/// bakes flat. A cage mesh sets that per vertex, and its rays aim along the cage-to-low line, so
+	/// a cage pushed out at an angle also steers rays around a concave corner.
+	/// </summary>
+	public PolyMesh CageMesh;
+
+	/// <summary>
+	/// Also keep a 16-bit copy (<see cref="BakedMap.Rgb16"/>) of the maps made from a continuous
+	/// number - height, normal, bent normal, object-space normal and position - so PngWriter writes
+	/// them as 16-bit PNGs. Off by default: an 8-bit PNG is what every existing material and test
+	/// expects, and how s&amp;box's texture compiler treats a 16-bit PNG has not been checked in the
+	/// engine yet.
+	/// </summary>
+	public bool SixteenBit;
+
+	/// <summary>
+	/// What the ID map (<see cref="BakeMaps.MaterialId"/>) colours by: one id per face of the high
+	/// mesh. Null means each face's material slot (<see cref="Face.Material"/>). A by-name or
+	/// multi-high bake (<see cref="NormalBake.BakeGroups"/>) can colour by which high body was hit
+	/// instead (<see cref="BakeGroup.HighIds"/>).
+	/// </summary>
+	public int[] FaceIds;
+}
+
+/// <summary>
+/// One low body and what it is baked from, for <see cref="NormalBake.BakeGroups"/>: its own high
+/// mesh, optionally its own cage mesh, and the per-face ids its ID map colours by.
+///
+/// GROUPS ARE BAKED APART, WHICH IS WHAT AN EXPLODED BAKE IS FOR. Each group's rays only ever see
+/// that group's high mesh, so a low body's AO is not darkened by the next part along and its normal
+/// map never catches a neighbour's surface - the result an artist gets by pulling every pair apart
+/// before baking, without moving anything. The groups still write into ONE set of maps, because
+/// low bodies baked by name usually share a texture atlas.
+/// </summary>
+public sealed class BakeGroup
+{
+	/// <summary>A name for reports and errors: the base name matched (Arm for Arm_low / Arm_high).</summary>
+	public string Name;
+
+	/// <summary>The body that carries the maps: its UVs are where they land.</summary>
+	public PolyMesh Low;
+
+	/// <summary>The detail, already combined if there were several high bodies.</summary>
+	public PolyMesh High;
+
+	/// <summary>An explicit cage for this low body (see <see cref="BakeOptions.CageMesh"/>), or null.</summary>
+	public PolyMesh Cage;
+
+	/// <summary>Per high face, the id the ID map colours it by; null uses <see cref="BakeOptions.FaceIds"/>
+	/// or the face's material slot.</summary>
+	public int[] HighIds;
 }
 
 /// <summary>
@@ -164,7 +253,8 @@ public sealed class BakeTexels
 	public bool[] Hit;
 	/// <summary>Where on the sculpt, and its smooth normal there.</summary>
 	public Vec3[] Point, Normal;
-	/// <summary>The sculpt face hit (the last supersample's), -1 where none.</summary>
+	/// <summary>The sculpt face hit (the last supersample's), -1 where none. In a grouped bake
+	/// (<see cref="NormalBake.BakeGroups"/>) an index into that texel's group's high mesh.</summary>
 	public int[] Face;
 	/// <summary>Occlusion, 0 open to 1 shut in, over the bake's AO distance. Zero unless AO was baked.</summary>
 	public float[] Occlusion;
@@ -186,7 +276,28 @@ public enum BakeMaps
 	Cavity = 8,
 	Height = 16,
 	Thickness = 32,
+
+	/// <summary>
+	/// Bent normal: the average direction light can still arrive from, tangent space like the normal
+	/// map. Made from the same hemisphere rays as AO. What s&amp;box's skin shader reads under
+	/// F_USE_BENT_NORMALS (TextureBentNormal).
+	/// </summary>
+	BentNormal = 64,
+
+	/// <summary>The sculpt's normal in object space: x, y, z straight into R, G, B (−1 black, +1 white).</summary>
+	ObjectNormal = 128,
+
+	/// <summary>Where on the sculpt each texel landed, x, y, z into R, G, B across the sculpt's bounds.</summary>
+	Position = 256,
+
+	/// <summary>A flat colour per material slot (or per high body), for masking in a texture painter.</summary>
+	MaterialId = 512,
+
+	/// <summary>The six classic maps. Kept to these so existing scripts' maps=all write what they always did.</summary>
 	All = Normal | AmbientOcclusion | Curvature | Cavity | Height | Thickness,
+
+	/// <summary>Every map there is.</summary>
+	Everything = All | BentNormal | ObjectNormal | Position | MaterialId,
 }
 
 /// <summary>
@@ -217,6 +328,24 @@ public sealed class BakeSet
 
 	/// <summary>Thickness: how far in the sculpt goes behind the surface, white at <see cref="ThicknessDistance"/>.</summary>
 	public BakedMap Thickness;
+
+	/// <summary>Bent normal, tangent space, encoded like <see cref="Normal"/> (same green convention).</summary>
+	public BakedMap BentNormal;
+
+	/// <summary>The sculpt's normal in object space, (n + 1) / 2 straight into RGB.</summary>
+	public BakedMap ObjectNormal;
+
+	/// <summary>The sculpt point per texel, black at <see cref="PositionMin"/>, white at <see cref="PositionMax"/>.</summary>
+	public BakedMap Position;
+
+	/// <summary>A flat colour per id (material slot or high body); the colours are in <see cref="IdColors"/>.</summary>
+	public BakedMap MaterialId;
+
+	/// <summary>The box the position map spans, per axis: what black and white mean in it.</summary>
+	public Vec3 PositionMin, PositionMax;
+
+	/// <summary>Which colour each id was given in the ID map, so a painter can pick a mask by number.</summary>
+	public Dictionary<int, (byte R, byte G, byte B)> IdColors;
 
 	/// <summary>The lowest and highest the sculpt sat off the cage, along the cage normal, in model units.</summary>
 	public float HeightMin, HeightMax;
@@ -270,6 +399,10 @@ public sealed class BakeSet
 			if ( Cavity is not null ) yield return ("cavity", Cavity);
 			if ( Height is not null ) yield return ("height", Height);
 			if ( Thickness is not null ) yield return ("thickness", Thickness);
+			if ( BentNormal is not null ) yield return ("bentnormal", BentNormal);
+			if ( ObjectNormal is not null ) yield return ("objectnormal", ObjectNormal);
+			if ( Position is not null ) yield return ("position", Position);
+			if ( MaterialId is not null ) yield return ("id", MaterialId);
 		}
 	}
 
@@ -285,6 +418,11 @@ public sealed class BakeSet
 			if ( Curvature is not null ) lines.Add( string.Format( c, "curvature: white is {0:0.####} (1/units), black its negative", CurvatureRange ) );
 			if ( Cavity is not null ) lines.Add( string.Format( c, "cavity: black is {0:0.####} below the neighbours", CavityRange ) );
 			if ( Thickness is not null ) lines.Add( string.Format( c, "thickness: white is {0:0.####} or more", ThicknessDistance ) );
+			if ( BentNormal is not null ) lines.Add( "bentnormal: tangent space, same green as the normal map" );
+			if ( ObjectNormal is not null ) lines.Add( "objectnormal: object space, x y z in R G B" );
+			if ( Position is not null ) lines.Add( string.Format( c, "position: black ({0:0.####}, {1:0.####}, {2:0.####}) to white ({3:0.####}, {4:0.####}, {5:0.####})",
+				PositionMin.x, PositionMin.y, PositionMin.z, PositionMax.x, PositionMax.y, PositionMax.z ) );
+			if ( MaterialId is not null && IdColors is not null ) lines.Add( "id: " + string.Join( ", ", IdColors.OrderBy( p => p.Key ).Select( p => $"{p.Key} #{p.Value.R:X2}{p.Value.G:X2}{p.Value.B:X2}" ) ) );
 			return string.Join( "\n", lines );
 		}
 	}
@@ -342,7 +480,88 @@ public static class NormalBake
 			throw new ArgumentOutOfRangeException( nameof( width ), "A map needs at least one texel." );
 
 		options ??= new BakeOptions();
-		return new Baker( cage, sculpted, width, height, maps, options ).Run();
+		return BakeGroups( new[] { new BakeGroup { Name = "low", Low = cage, High = sculpted, Cage = options.CageMesh, HighIds = options.FaceIds } },
+			width, height, maps, options );
+	}
+
+	/// <summary>
+	/// Several low bodies, each baked from its OWN high mesh, into one set of maps — the by-name
+	/// (exploded) bake. See <see cref="BakeGroup"/> for why the groups never see each other. The
+	/// lows' UVs share the one texture, so between them they must not overlap
+	/// (<see cref="Measure(IEnumerable{PolyMesh}, int)"/>); every range in the result (height,
+	/// position) is shared by all groups, so one material reads them all.
+	///
+	/// A group's cage mesh must match its low body's topology; anything else throws
+	/// <see cref="ArgumentException"/> naming the group and the mismatch.
+	/// </summary>
+	public static BakeSet BakeGroups( IReadOnlyList<BakeGroup> groups, int width, int height, BakeMaps maps, BakeOptions options = null )
+	{
+		if ( groups is null || groups.Count == 0 )
+			throw new ArgumentException( "A bake needs at least one low and high pair.", nameof( groups ) );
+
+		if ( width < 1 || height < 1 )
+			throw new ArgumentOutOfRangeException( nameof( width ), "A map needs at least one texel." );
+
+		foreach ( var g in groups )
+		{
+			if ( g?.Low is null || g.High is null )
+				throw new ArgumentException( $"Bake pair '{g?.Name}' is missing its {(g?.Low is null ? "low" : "high")} mesh." );
+
+			if ( g.Cage is not null && CageMismatch( g.Low, g.Cage ) is { } why )
+				throw new ArgumentException( $"The cage for '{g.Name}' {why} Make the cage from a copy of the low body (duplicate it, then push it out) so the two match." );
+
+			if ( g.HighIds is not null && g.HighIds.Length != g.High.FaceCount )
+				throw new ArgumentException( $"'{g.Name}' has {g.HighIds.Length} face ids for a high mesh of {g.High.FaceCount} faces." );
+		}
+
+		options ??= new BakeOptions();
+		return new Baker( groups, width, height, maps, options ).Run();
+	}
+
+	/// <summary>Why <paramref name="cage"/> cannot be a cage for <paramref name="low"/>, or null if it can.</summary>
+	public static string CageMismatch( PolyMesh low, PolyMesh cage )
+	{
+		if ( cage.VertexCount != low.VertexCount || cage.FaceCount != low.FaceCount )
+			return $"has {cage.VertexCount} vertices and {cage.FaceCount} faces, the low body {low.VertexCount} and {low.FaceCount}.";
+
+		for ( var f = 0; f < low.FaceCount; f++ )
+		{
+			var a = low.Faces[f].Indices;
+			var b = cage.Faces[f].Indices;
+
+			if ( a.Length != b.Length )
+				return $"has a {b.Length}-sided face {f} where the low body's is {a.Length}-sided.";
+
+			for ( var c = 0; c < a.Length; c++ )
+				if ( a[c] != b[c] )
+					return $"joins its vertices differently from the low body (face {f}).";
+		}
+
+		return null;
+	}
+
+	/// <summary>Several meshes' UVs measured as one atlas: what a grouped bake writes into.</summary>
+	public static UVCoverage Measure( IEnumerable<PolyMesh> meshes, int resolution = 256 )
+	{
+		var all = new PolyMesh();
+
+		foreach ( var m in meshes )
+		{
+			var offset = all.Positions.Count;
+			all.Positions.AddRange( m.Positions );
+
+			foreach ( var f in m.Faces )
+			{
+				var indices = new int[f.Count];
+
+				for ( var c = 0; c < f.Count; c++ )
+					indices[c] = f.Indices[c] + offset;
+
+				all.Faces.Add( new Face( indices, f.UVs is null ? null : (Vec2[])f.UVs.Clone(), f.Material ) );
+			}
+		}
+
+		return Measure( all, resolution );
 	}
 
 	/// <summary>
@@ -432,7 +651,17 @@ public static class NormalBake
 		map.Rgb[index * 3] = (byte)Math.Clamp( (int)MathF.Round( rgb.x * 255f ), 0, 255 );
 		map.Rgb[index * 3 + 1] = (byte)Math.Clamp( (int)MathF.Round( rgb.y * 255f ), 0, 255 );
 		map.Rgb[index * 3 + 2] = (byte)Math.Clamp( (int)MathF.Round( rgb.z * 255f ), 0, 255 );
+
+		if ( map.Rgb16 is { } wide )
+		{
+			wide[index * 3] = Word( rgb.x );
+			wide[index * 3 + 1] = Word( rgb.y );
+			wide[index * 3 + 2] = Word( rgb.z );
+		}
 	}
+
+	/// <summary>0..1 to the full 16-bit range.</summary>
+	static ushort Word( float v ) => (ushort)Math.Clamp( (int)MathF.Round( v * 65535f ), 0, 65535 );
 
 	readonly struct Triangle
 	{
@@ -642,6 +871,13 @@ public static class NormalBake
 		map.Rgb[i] = Byte( n.x );
 		map.Rgb[i + 1] = Byte( y );
 		map.Rgb[i + 2] = Byte( n.z );
+
+		if ( map.Rgb16 is { } wide )
+		{
+			wide[i] = Word( (n.x + 1f) * 0.5f );
+			wide[i + 1] = Word( (y + 1f) * 0.5f );
+			wide[i + 2] = Word( (n.z + 1f) * 0.5f );
+		}
 	}
 
 	static byte Byte( float v ) => (byte)Math.Clamp( MathF.Round( (v + 1f) * 127.5f ), 0f, 255f );
@@ -660,10 +896,12 @@ public static class NormalBake
 			return;
 
 		var filled = (bool[])map.Filled.Clone();
+		var wide = map.Rgb16;
 
 		for ( var pass = 0; pass < passes; pass++ )
 		{
 			var added = new List<(int Index, int R, int G, int B)>();
+			var added16 = wide is null ? null : new List<(int R, int G, int B)>();
 
 			for ( var y = 0; y < map.Height; y++ )
 			{
@@ -675,6 +913,7 @@ public static class NormalBake
 						continue;
 
 					int r = 0, g = 0, b = 0, n = 0;
+					long r16 = 0, g16 = 0, b16 = 0;
 
 					for ( var dy = -1; dy <= 1; dy++ )
 					{
@@ -695,26 +934,94 @@ public static class NormalBake
 							g += map.Rgb[other * 3 + 1];
 							b += map.Rgb[other * 3 + 2];
 							n++;
+
+							if ( wide is not null )
+							{
+								r16 += wide[other * 3];
+								g16 += wide[other * 3 + 1];
+								b16 += wide[other * 3 + 2];
+							}
 						}
 					}
 
 					if ( n > 0 )
+					{
 						added.Add( (index, r / n, g / n, b / n) );
+						added16?.Add( ((int)(r16 / n), (int)(g16 / n), (int)(b16 / n)) );
+					}
 				}
 			}
 
 			if ( added.Count == 0 )
 				return;
 
-			foreach ( var (index, r, g, b) in added )
+			for ( var k = 0; k < added.Count; k++ )
 			{
+				var (index, r, g, b) = added[k];
 				map.Rgb[index * 3] = (byte)r;
 				map.Rgb[index * 3 + 1] = (byte)g;
 				map.Rgb[index * 3 + 2] = (byte)b;
 				filled[index] = true;
+
+				if ( wide is not null )
+				{
+					wide[index * 3] = (ushort)added16[k].R;
+					wide[index * 3 + 1] = (ushort)added16[k].G;
+					wide[index * 3 + 2] = (ushort)added16[k].B;
+				}
 			}
 		}
 	}
+
+	/// <summary>
+	/// <see cref="Dilate"/> for a map whose colours are labels, not quantities (the ID map): each
+	/// padding texel copies ONE filled neighbour instead of averaging them, so the border between two
+	/// ids never grows a third colour that a mask picker would read as another material.
+	/// </summary>
+	internal static void DilateNearest( BakedMap map, int passes )
+	{
+		var filled = (bool[])map.Filled.Clone();
+
+		for ( var pass = 0; pass < passes; pass++ )
+		{
+			var added = new List<(int Index, int From)>();
+
+			for ( var y = 0; y < map.Height; y++ )
+			{
+				for ( var x = 0; x < map.Width; x++ )
+				{
+					var index = y * map.Width + x;
+
+					if ( filled[index] )
+						continue;
+
+					// Edge neighbours before corners, so the copy comes from the nearest texel.
+					foreach ( var (dx, dy) in Neighbours )
+					{
+						var nx = x + dx;
+						var ny = y + dy;
+
+						if ( nx < 0 || ny < 0 || nx >= map.Width || ny >= map.Height || !filled[ny * map.Width + nx] )
+							continue;
+
+						added.Add( (index, ny * map.Width + nx) );
+						break;
+					}
+				}
+			}
+
+			if ( added.Count == 0 )
+				return;
+
+			foreach ( var (index, from) in added )
+			{
+				Array.Copy( map.Rgb, from * 3, map.Rgb, index * 3, 3 );
+				filled[index] = true;
+			}
+		}
+	}
+
+	static readonly (int, int)[] Neighbours = { (-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, -1), (-1, 1), (1, 1) };
 
 	/// <summary>
 	/// How far to search, MEASURED off the two surfaces rather than guessed from the model's size.
@@ -990,10 +1297,25 @@ public static class NormalBake
 		return (tangents, signs);
 	}
 
+	/// <summary>
+	/// One bake group, ready to fire at: the high mesh with its normals and BVH, the low body (for
+	/// cavity's look back at the cage), and how far either side of the low surface the rays search.
+	/// </summary>
+	sealed class Target
+	{
+		public PolyMesh Low, High, Cage;
+		public Vec3[] Normals;
+		public MeshBVH Bvh, LowBvh;
+		public int[] Ids;
+		public float Front, Back;
+	}
+
 	/// <summary>One fan triangle of the cage with everything a sample needs from its corners.</summary>
 	sealed class BakeTriangle
 	{
+		public Target G;
 		public Vec3 P0, P1, P2;      // positions
+		public Vec3 C0, C1, C2;      // the cage mesh's matching corners, when there is one
 		public Vec3 R0, R1, R2;      // averaged normals, which the rays travel along
 		public Vec3 S0, S1, S2;      // shading normals, as exported (split at hard edges)
 		public Vec3 T0, T1, T2;      // Mikk tangents
@@ -1013,63 +1335,103 @@ public static class NormalBake
 	struct SampleResult
 	{
 		public bool Hit;
-		public Vec3 Normal;
+		public Vec3 Normal, Bent;
 		public Vec3 Point, Smooth;
-		public int Face;
+		public int Face, Id;
 		public float Ao, Height, Thickness, Through, Curvature, Cavity;
 		public bool HasCurvature, HasCavity;
 	}
 
-	/// <summary>The state of one <see cref="BakeAll"/> run.</summary>
+	/// <summary>The state of one <see cref="BakeGroups"/> run.</summary>
 	sealed class Baker
 	{
-		readonly PolyMesh _cage, _sculpt;
+		readonly List<Target> _targets = new();
 		readonly int _width, _height, _ss;
 		readonly BakeMaps _maps;
 		readonly BakeOptions _o;
-		readonly Vec3[] _sculptNormals;
-		readonly MeshBVH _bvh, _cageBvh;
-		readonly float _front, _back, _eps, _aoDistance, _thickDistance;
+		readonly float _eps, _aoDistance, _thickDistance;
 		readonly int _aoRays, _thickRays;
+		readonly Vec3 _boundsMin, _boundsMax;
 
 		// Per-texel sums over the supersamples that hit.
 		readonly int[] _hits;
-		readonly Vec3[] _normal;
+		readonly Vec3[] _normal, _bent, _object;
 		readonly float[] _ao, _heightSum, _thick, _through, _curv, _cav;
-		readonly int[] _curvN, _cavN;
+		readonly int[] _curvN, _cavN, _id;
 		readonly Vec3[] _hitPoint, _hitNormal;
 		readonly int[] _hitFace;
 		int _samples, _hitCount;
 
 		const int Chunk = 1 << 16;
+		const int NoId = int.MinValue;
 
-		public Baker( PolyMesh cage, PolyMesh sculpt, int width, int height, BakeMaps maps, BakeOptions options )
+		public Baker( IReadOnlyList<BakeGroup> groups, int width, int height, BakeMaps maps, BakeOptions options )
 		{
-			_cage = cage;
-			_sculpt = sculpt;
 			_width = width;
 			_height = height;
 			_maps = maps == BakeMaps.None ? BakeMaps.Normal : maps;
 			_o = options;
 			_ss = Math.Clamp( options.Supersample, 1, 8 );
-			_sculptNormals = sculpt.ComputeVertexNormals();
-			_bvh = MeshBVH.Build( sculpt );
-			_cageBvh = Has( BakeMaps.Cavity ) ? MeshBVH.Build( cage ) : null;
 
-			var reach = options.MaxDistance > 0f ? options.MaxDistance : MeasuredReach( cage, sculpt, _bvh );
+			// The extent of every high mesh together: what the AO, thickness and epsilon defaults
+			// scale with, and what the position map spans. One group gives exactly its own bounds.
+			var min = new Vec3( float.MaxValue, float.MaxValue, float.MaxValue );
+			var max = new Vec3( float.MinValue, float.MinValue, float.MinValue );
 
-			if ( options.Cage > 0f )
+			foreach ( var g in groups )
 			{
-				_front = options.Cage;
-				_back = options.MaxDistance > 0f ? options.MaxDistance : options.Cage;
-			}
-			else
-			{
-				_front = reach;
-				_back = reach;
+				foreach ( var p in g.High.Positions )
+				{
+					min = new Vec3( MathF.Min( min.x, p.x ), MathF.Min( min.y, p.y ), MathF.Min( min.z, p.z ) );
+					max = new Vec3( MathF.Max( max.x, p.x ), MathF.Max( max.y, p.y ), MathF.Max( max.z, p.z ) );
+				}
 			}
 
-			var diagonal = MathF.Max( sculpt.BoundsDiagonal, 1e-4f );
+			if ( min.x > max.x )
+				min = max = Vec3.Zero;
+
+			_boundsMin = min;
+			_boundsMax = max;
+
+			foreach ( var g in groups )
+			{
+				var t = new Target
+				{
+					Low = g.Low, High = g.High, Cage = g.Cage, Ids = g.HighIds ?? (groups.Count == 1 ? options.FaceIds : null),
+					Normals = g.High.ComputeVertexNormals(),
+					Bvh = MeshBVH.Build( g.High ),
+				};
+
+				t.LowBvh = Has( BakeMaps.Cavity ) ? MeshBVH.Build( g.Low ) : null;
+
+				if ( g.Cage is not null )
+				{
+					// The rays start ON the cage, so the window in front is the furthest the cage
+					// sits off the low surface; behind, the distance asked for or that same again.
+					var furthest = 0f;
+
+					for ( var i = 0; i < g.Low.VertexCount; i++ )
+						furthest = MathF.Max( furthest, (g.Cage.Positions[i] - g.Low.Positions[i]).Length );
+
+					t.Front = MathF.Max( furthest, g.Low.BoundsDiagonal * 1e-3f );
+					t.Back = options.MaxDistance > 0f ? options.MaxDistance : t.Front;
+				}
+				else if ( options.Cage > 0f )
+				{
+					t.Front = options.Cage;
+					t.Back = options.MaxDistance > 0f ? options.MaxDistance : options.Cage;
+				}
+				else
+				{
+					var reach = options.MaxDistance > 0f ? options.MaxDistance : MeasuredReach( g.Low, g.High, t.Bvh );
+					t.Front = reach;
+					t.Back = reach;
+				}
+
+				_targets.Add( t );
+			}
+
+			var diagonal = MathF.Max( (max - min).Length, 1e-4f );
 			_eps = diagonal * 1e-4f;
 			_aoDistance = options.AoDistance > 0f ? options.AoDistance : diagonal * 0.05f;
 			_thickDistance = options.ThicknessDistance > 0f ? options.ThicknessDistance : diagonal * 0.25f;
@@ -1083,6 +1445,8 @@ public static class NormalBake
 			var n = width * height;
 			_hits = new int[n];
 			_normal = Has( BakeMaps.Normal ) ? new Vec3[n] : null;
+			_bent = Has( BakeMaps.BentNormal ) ? new Vec3[n] : null;
+			_object = Has( BakeMaps.ObjectNormal ) ? new Vec3[n] : null;
 			_ao = Has( BakeMaps.AmbientOcclusion ) ? new float[n] : null;
 			_heightSum = new float[n];
 			_thick = Has( BakeMaps.Thickness ) ? new float[n] : null;
@@ -1092,9 +1456,18 @@ public static class NormalBake
 			_cav = Has( BakeMaps.Cavity ) ? new float[n] : null;
 			_cavN = Has( BakeMaps.Cavity ) ? new int[n] : null;
 
+			if ( Has( BakeMaps.MaterialId ) )
+			{
+				_id = new int[n];
+				Array.Fill( _id, NoId );
+			}
+
+			// Positions are kept for the position map as well as for KeepHits: one average per texel.
+			if ( options.KeepHits || Has( BakeMaps.Position ) )
+				_hitPoint = new Vec3[n];
+
 			if ( options.KeepHits )
 			{
-				_hitPoint = new Vec3[n];
 				_hitNormal = new Vec3[n];
 				_hitFace = new int[n];
 				Array.Fill( _hitFace, -1 );
@@ -1133,40 +1506,53 @@ public static class NormalBake
 
 		List<BakeTriangle> Triangles()
 		{
-			var rayNormals = _cage.ComputeVertexNormals();
-			var (cornerNormals, shadeNormals) = MeshNormals.ComputeCornerNormals( _cage, MeshNormals.DefaultSmoothingAngleDegrees );
-			var (tangents, signs) = CornerTangents( _cage, cornerNormals, shadeNormals );
 			var list = new List<BakeTriangle>();
 
-			for ( var fi = 0; fi < _cage.FaceCount; fi++ )
+			foreach ( var g in _targets )
 			{
-				var face = _cage.Faces[fi];
+				var low = g.Low;
+				var rayNormals = low.ComputeVertexNormals();
+				var (cornerNormals, shadeNormals) = MeshNormals.ComputeCornerNormals( low, MeshNormals.DefaultSmoothingAngleDegrees );
+				var (tangents, signs) = CornerTangents( low, cornerNormals, shadeNormals );
 
-				if ( face.Count < 3 || face.UVs is null || face.UVs.Length != face.Count )
-					continue;
-
-				// THE EXPORT'S TRIANGULATION (FaceTriangles), so the triangles the map was baked
-				// across are the triangles the engine shades.
-				foreach ( var (c0, c1, c2) in FaceTriangles( _cage, fi ) )
+				for ( var fi = 0; fi < low.FaceCount; fi++ )
 				{
-					var t = new BakeTriangle
-					{
-						P0 = _cage.Positions[face.Indices[c0]], P1 = _cage.Positions[face.Indices[c1]], P2 = _cage.Positions[face.Indices[c2]],
-						R0 = rayNormals[face.Indices[c0]], R1 = rayNormals[face.Indices[c1]], R2 = rayNormals[face.Indices[c2]],
-						S0 = shadeNormals[cornerNormals[fi][c0]], S1 = shadeNormals[cornerNormals[fi][c1]], S2 = shadeNormals[cornerNormals[fi][c2]],
-						T0 = tangents[fi][c0], T1 = tangents[fi][c1], T2 = tangents[fi][c2],
-						Sign = signs[fi],
-						U0 = face.UVs[c0], U1 = face.UVs[c1], U2 = face.UVs[c2],
-					};
+					var face = low.Faces[fi];
 
-					// How much surface one texel covers here, so "1.5 texels" means the same on a
-					// densely packed island as on a sparse one.
-					var worldArea = Vec3.Cross( t.P1 - t.P0, t.P2 - t.P0 ).Length;
-					var uvArea = MathF.Abs( Vec2.Cross( t.U1 - t.U0, t.U2 - t.U0 ) ) * _width * _height;
-					var texel = uvArea > 1e-12f ? MathF.Sqrt( worldArea / uvArea ) : 0f;
-					t.CurvatureRadius = _o.CurvatureRadius > 0f ? _o.CurvatureRadius : texel * 1.5f;
-					t.CavityRadius = _o.CavityRadius > 0f ? _o.CavityRadius : texel * 4f;
-					list.Add( t );
+					if ( face.Count < 3 || face.UVs is null || face.UVs.Length != face.Count )
+						continue;
+
+					// THE EXPORT'S TRIANGULATION (FaceTriangles), so the triangles the map was baked
+					// across are the triangles the engine shades.
+					foreach ( var (c0, c1, c2) in FaceTriangles( low, fi ) )
+					{
+						var t = new BakeTriangle
+						{
+							G = g,
+							P0 = low.Positions[face.Indices[c0]], P1 = low.Positions[face.Indices[c1]], P2 = low.Positions[face.Indices[c2]],
+							R0 = rayNormals[face.Indices[c0]], R1 = rayNormals[face.Indices[c1]], R2 = rayNormals[face.Indices[c2]],
+							S0 = shadeNormals[cornerNormals[fi][c0]], S1 = shadeNormals[cornerNormals[fi][c1]], S2 = shadeNormals[cornerNormals[fi][c2]],
+							T0 = tangents[fi][c0], T1 = tangents[fi][c1], T2 = tangents[fi][c2],
+							Sign = signs[fi],
+							U0 = face.UVs[c0], U1 = face.UVs[c1], U2 = face.UVs[c2],
+						};
+
+						if ( g.Cage is not null )
+						{
+							t.C0 = g.Cage.Positions[face.Indices[c0]];
+							t.C1 = g.Cage.Positions[face.Indices[c1]];
+							t.C2 = g.Cage.Positions[face.Indices[c2]];
+						}
+
+						// How much surface one texel covers here, so "1.5 texels" means the same on a
+						// densely packed island as on a sparse one.
+						var worldArea = Vec3.Cross( t.P1 - t.P0, t.P2 - t.P0 ).Length;
+						var uvArea = MathF.Abs( Vec2.Cross( t.U1 - t.U0, t.U2 - t.U0 ) ) * _width * _height;
+						var texel = uvArea > 1e-12f ? MathF.Sqrt( worldArea / uvArea ) : 0f;
+						t.CurvatureRadius = _o.CurvatureRadius > 0f ? _o.CurvatureRadius : texel * 1.5f;
+						t.CavityRadius = _o.CavityRadius > 0f ? _o.CavityRadius : texel * 4f;
+						list.Add( t );
+					}
 				}
 			}
 
@@ -1196,15 +1582,24 @@ public static class NormalBake
 				_hits[texel]++;
 				_heightSum[texel] += r.Height;
 				if ( _normal is not null ) _normal[texel] += r.Normal;
+				if ( _bent is not null ) _bent[texel] += r.Bent;
+				if ( _object is not null ) _object[texel] += r.Smooth;
 				if ( _ao is not null ) _ao[texel] += r.Ao;
 				if ( _thick is not null ) _thick[texel] += r.Thickness;
 				if ( _through is not null ) _through[texel] += r.Through;
 				if ( _curv is not null && r.HasCurvature ) { _curv[texel] += r.Curvature; _curvN[texel]++; }
 				if ( _cav is not null && r.HasCavity ) { _cav[texel] += r.Cavity; _cavN[texel]++; }
 
+				// The first sample to land decides a texel's id: ids are labels, and an average of two
+				// labels is a third label nobody asked for. Samples are flushed in raster order, so
+				// "first" does not depend on the thread scheduling.
+				if ( _id is not null && _id[texel] == NoId ) _id[texel] = r.Id;
+
 				if ( _hitPoint is not null )
-				{
 					_hitPoint[texel] += r.Point;
+
+				if ( _hitNormal is not null )
+				{
 					_hitNormal[texel] += r.Smooth;
 					_hitFace[texel] = r.Face;
 				}
@@ -1212,31 +1607,60 @@ public static class NormalBake
 		}
 
 		/// <summary>The sculpt along the cage normal from <paramref name="p"/>, inside the search window.</summary>
-		bool Cast( Vec3 p, Vec3 n, out MeshHit hit )
+		static bool Cast( Target g, Vec3 p, Vec3 n, out MeshHit hit )
 		{
 			// Fired from outside the surface inward, so the nearest hit is the topmost sculpted
 			// surface rather than whatever is behind it.
-			var found = _bvh.Raycast( _sculpt, p + n * _front, -n );
+			var found = g.Bvh.Raycast( g.High, p + n * g.Front, -n );
 			hit = found ?? default;
-			return found is not null && found.Value.Distance <= _front + _back;
+			return found is not null && found.Value.Distance <= g.Front + g.Back;
+		}
+
+		/// <summary>
+		/// The main ray of a sample. With a cage mesh it runs from the matching cage point through the
+		/// low point and <see cref="Target.Back"/> beyond; without one, along the averaged normal.
+		/// </summary>
+		static bool CastFromCage( BakeTriangle t, BakeSample s, Vec3 p, Vec3 n, out MeshHit hit )
+		{
+			var g = t.G;
+
+			if ( g.Cage is null )
+				return Cast( g, p, n, out hit );
+
+			var origin = t.C0 * s.A + t.C1 * s.B + t.C2 * s.C;
+			var along = p - origin;
+			var length = along.Length;
+
+			// A cage vertex left on the low surface has no direction to give; that corner falls back
+			// to the normal, with the cage's furthest offset as the window.
+			if ( length < 1e-6f || Vec3.Dot( along, n ) >= 0f )
+				return Cast( g, p, n, out hit );
+
+			var found = g.Bvh.Raycast( g.High, origin, along / length );
+			hit = found ?? default;
+			return found is not null && found.Value.Distance <= length + g.Back;
 		}
 
 		SampleResult Sample( BakeSample s )
 		{
 			var t = s.Triangle;
+			var g = t.G;
 			var result = new SampleResult();
 			var p = t.P0 * s.A + t.P1 * s.B + t.P2 * s.C;
 			var n = (t.R0 * s.A + t.R1 * s.B + t.R2 * s.C).Normal;
 
-			if ( n.LengthSquared < 0.5f || !Cast( p, n, out var hit ) )
+			if ( n.LengthSquared < 0.5f || !CastFromCage( t, s, p, n, out var hit ) )
 				return result;
 
-			var hn = SmoothNormal( _sculpt, _sculptNormals, hit );
+			var hn = SmoothNormal( g.High, g.Normals, hit );
 			result.Hit = true;
 			result.Point = hit.Point;
 			result.Smooth = hn;
 			result.Face = hit.FaceIndex;
 			result.Height = Vec3.Dot( hit.Point - p, n );
+
+			if ( _id is not null )
+				result.Id = g.Ids is not null && hit.FaceIndex < g.Ids.Length ? g.Ids[hit.FaceIndex] : g.High.Faces[hit.FaceIndex].Material;
 
 			// The texel's tangent frame exactly as the shader will rebuild it: the vertex normal and
 			// tangent interpolated and NOT renormalised, the bitangent sign · cross(n, t). Inverting
@@ -1248,42 +1672,58 @@ public static class NormalBake
 			if ( (tg - sn.Normal * Vec3.Dot( tg, sn.Normal )).LengthSquared < 1e-8f )
 				tg = AnyPerpendicular( sn.Normal );
 
+			var bt = Vec3.Cross( sn, tg ) * t.Sign;
+
 			if ( _normal is not null )
-				result.Normal = TangentSpace( hn, tg, Vec3.Cross( sn, tg ) * t.Sign, sn );
+				result.Normal = TangentSpace( hn, tg, bt, sn );
 
 			// An orthonormal frame on the cage for the probes that step sideways.
 			var u = (tg - n * Vec3.Dot( tg, n )).Normal;
 			var v = Vec3.Cross( n, u );
 
-			if ( _ao is not null )
-				result.Ao = 1f - Occlusion( hit, hn, s.Seed );
+			if ( _ao is not null || _bent is not null )
+			{
+				var occlusion = Occlusion( g, hit, hn, s.Seed, out var open );
+
+				if ( _ao is not null )
+					result.Ao = 1f - occlusion;
+
+				// THE BENT NORMAL IS THE SAME RAYS' OTHER ANSWER: not how many escaped but which way.
+				// Fully shut in, nothing escaped, and the honest direction is the surface's own.
+				if ( _bent is not null )
+					result.Bent = TangentSpace( open.LengthSquared > 1e-12f ? open.Normal : hn, tg, bt, sn );
+			}
 
 			if ( _thick is not null )
 			{
-				result.Thickness = Thickness( hit, hn, s.Seed ^ 0x9e3779b9u );
+				result.Thickness = Thickness( g, hit, hn, s.Seed ^ 0x9e3779b9u );
 
 				// And the straight path in along −N, which is what transmission travels.
-				var through = _bvh.Raycast( _sculpt, hit.Point - hit.Normal * (_eps * 2f) - hn * _eps, -hn );
+				var through = g.Bvh.Raycast( g.High, hit.Point - hit.Normal * (_eps * 2f) - hn * _eps, -hn );
 				result.Through = through is null ? _thickDistance : MathF.Min( through.Value.Distance, _thickDistance );
 			}
 
 			if ( _curv is not null )
-				result.HasCurvature = Curvature( p, n, u, v, t.CurvatureRadius, out result.Curvature );
+				result.HasCurvature = Curvature( g, p, n, u, v, t.CurvatureRadius, out result.Curvature );
 
 			if ( _cav is not null )
-				result.HasCavity = Cavity( p, n, u, v, t.CavityRadius, result.Height, out result.Cavity );
+				result.HasCavity = Cavity( g, p, n, u, v, t.CavityRadius, result.Height, out result.Cavity );
 
 			return result;
 		}
 
-		/// <summary>The fraction of a cosine-weighted hemisphere above the hit that meets the sculpt within the AO distance.</summary>
-		float Occlusion( MeshHit hit, Vec3 hn, uint seed )
+		/// <summary>
+		/// The fraction of a cosine-weighted hemisphere above the hit that meets the sculpt within the
+		/// AO distance, and (<paramref name="open"/>) the sum of the directions that did not.
+		/// </summary>
+		float Occlusion( Target g, MeshHit hit, Vec3 hn, uint seed, out Vec3 open )
 		{
 			var origin = hit.Point + hit.Normal * (_eps * 2f) + hn * _eps;
 			var (bx, by) = Basis( hn );
 			var (jx, jy) = (Unit( seed ), Unit( Hash( seed ) ));
 			var counted = 0;
 			var blocked = 0;
+			open = Vec3.Zero;
 
 			for ( var k = 0; k < _aoRays; k++ )
 			{
@@ -1295,17 +1735,19 @@ public static class NormalBake
 					continue;
 
 				counted++;
-				var h = _bvh.Raycast( _sculpt, origin, dir );
+				var h = g.Bvh.Raycast( g.High, origin, dir );
 
 				if ( h is not null && h.Value.Distance <= _aoDistance )
 					blocked++;
+				else
+					open += dir;
 			}
 
 			return counted == 0 ? 0f : (float)blocked / counted;
 		}
 
 		/// <summary>The mean distance through the sculpt behind the hit, as a fraction of the thickness distance.</summary>
-		float Thickness( MeshHit hit, Vec3 hn, uint seed )
+		float Thickness( Target g, MeshHit hit, Vec3 hn, uint seed )
 		{
 			var origin = hit.Point - hit.Normal * (_eps * 2f) - hn * _eps;
 			var (bx, by) = Basis( -hn );
@@ -1314,7 +1756,7 @@ public static class NormalBake
 
 			for ( var k = 0; k < _thickRays; k++ )
 			{
-				var h = _bvh.Raycast( _sculpt, origin, Cosine( k, _thickRays, jx, jy, -hn, bx, by ) );
+				var h = g.Bvh.Raycast( g.High, origin, Cosine( k, _thickRays, jx, jy, -hn, bx, by ) );
 				total += h is null ? _thickDistance : MathF.Min( h.Value.Distance, _thickDistance );
 			}
 
@@ -1326,7 +1768,7 @@ public static class NormalBake
 		/// turns over a step either side, along both tangent directions, averaged. A sphere of radius
 		/// R reads 1/R.
 		/// </summary>
-		bool Curvature( Vec3 p, Vec3 n, Vec3 u, Vec3 v, float radius, out float curvature )
+		static bool Curvature( Target g, Vec3 p, Vec3 n, Vec3 u, Vec3 v, float radius, out float curvature )
 		{
 			curvature = 0f;
 
@@ -1338,7 +1780,7 @@ public static class NormalBake
 
 			foreach ( var dir in new[] { u, v } )
 			{
-				if ( !Cast( p - dir * radius, n, out var a ) || !Cast( p + dir * radius, n, out var b ) )
+				if ( !Cast( g, p - dir * radius, n, out var a ) || !Cast( g, p + dir * radius, n, out var b ) )
 					continue;
 
 				var d = b.Point - a.Point;
@@ -1346,8 +1788,8 @@ public static class NormalBake
 				if ( d.LengthSquared < 1e-12f )
 					continue;
 
-				var na = SmoothNormal( _sculpt, _sculptNormals, a );
-				var nb = SmoothNormal( _sculpt, _sculptNormals, b );
+				var na = SmoothNormal( g.High, g.Normals, a );
+				var nb = SmoothNormal( g.High, g.Normals, b );
 				sum += Vec3.Dot( nb - na, d ) / d.LengthSquared;
 				count++;
 			}
@@ -1365,7 +1807,7 @@ public static class NormalBake
 		/// CAGE under it, not the tangent plane, so the cage's own curve is not mistaken for a pit
 		/// or a ridge — only the detail the sculpt added counts.
 		/// </summary>
-		bool Cavity( Vec3 p, Vec3 n, Vec3 u, Vec3 v, float radius, float height, out float cavity )
+		static bool Cavity( Target g, Vec3 p, Vec3 n, Vec3 u, Vec3 v, float radius, float height, out float cavity )
 		{
 			cavity = 0f;
 
@@ -1381,10 +1823,10 @@ public static class NormalBake
 				var angle = k * (MathF.PI * 2f / ring);
 				var q = p + (u * MathF.Cos( angle ) + v * MathF.Sin( angle )) * radius;
 
-				if ( !Cast( q, n, out var high ) )
+				if ( !Cast( g, q, n, out var high ) )
 					continue;
 
-				var low = _cageBvh.Raycast( _cage, q + n * _front, -n );
+				var low = g.LowBvh.Raycast( g.Low, q + n * g.Front, -n );
 
 				if ( low is null )
 					continue;
@@ -1422,24 +1864,36 @@ public static class NormalBake
 			set.HeightMax = hi == float.MinValue ? 0f : hi;
 
 			if ( Has( BakeMaps.Normal ) )
+				set.Normal = TangentMap( _normal );
+
+			if ( Has( BakeMaps.BentNormal ) )
+				set.BentNormal = TangentMap( _bent );
+
+			if ( Has( BakeMaps.ObjectNormal ) )
 			{
-				var map = new BakedMap( _width, _height );
-
-				for ( var i = 0; i < n; i++ )
-				{
-					// Flat where nothing was hit. An unhit texel reading as "no change from the cage"
-					// is the harmless answer; leaving it black would light as a crease.
-					var local = _hits[i] > 0 ? _normal[i].Normal : new Vec3( 0, 0, 1 );
-
-					if ( local.LengthSquared < 0.5f )
-						local = new Vec3( 0, 0, 1 );
-
-					Encode( map, i, local, _o.FlipGreen );
-					map.Filled[i] = _hits[i] > 0;
-				}
-
-				set.Normal = Finished( map );
+				// Object space has no "flat": an unhit texel is mid grey, (0, 0, 0), which no surface
+				// can face, so a reader can tell it from data.
+				set.ObjectNormal = Colour( i => _hits[i] > 0 && _object[i].LengthSquared > 1e-12f ? Half( _object[i].Normal ) : null, new Vec3( 0.5f, 0.5f, 0.5f ), _o.SixteenBit );
 			}
+
+			if ( Has( BakeMaps.Position ) )
+			{
+				var span = _boundsMax - _boundsMin;
+				float Axis( float value, float min, float extent ) => extent > 1e-9f ? Math.Clamp( (value - min) / extent, 0f, 1f ) : 0.5f;
+				set.PositionMin = _boundsMin;
+				set.PositionMax = _boundsMax;
+				set.Position = Colour( i =>
+				{
+					if ( _hits[i] == 0 )
+						return null;
+
+					var q = _hitPoint[i] / _hits[i];
+					return new Vec3( Axis( q.x, _boundsMin.x, span.x ), Axis( q.y, _boundsMin.y, span.y ), Axis( q.z, _boundsMin.z, span.z ) );
+				}, Vec3.Zero, _o.SixteenBit );
+			}
+
+			if ( Has( BakeMaps.MaterialId ) )
+				set.MaterialId = IdMap( set );
 
 			if ( Has( BakeMaps.AmbientOcclusion ) )
 				set.AmbientOcclusion = Grey( i => _hits[i] > 0 ? _ao[i] / _hits[i] : (float?)null, 1f );
@@ -1450,7 +1904,7 @@ public static class NormalBake
 				// is all a parallax shader needs.
 				var range = MathF.Max( MathF.Max( MathF.Abs( set.HeightMin ), MathF.Abs( set.HeightMax ) ), 1e-6f );
 				set.HeightRange = range;
-				set.Height = Grey( i => _hits[i] > 0 ? 0.5f + 0.5f * heights[i] / range : (float?)null, 0.5f );
+				set.Height = Grey( i => _hits[i] > 0 ? 0.5f + 0.5f * heights[i] / range : (float?)null, 0.5f, _o.SixteenBit );
 			}
 
 			if ( Has( BakeMaps.Curvature ) )
@@ -1476,7 +1930,7 @@ public static class NormalBake
 					set.ThicknessUnits[i] = _hits[i] > 0 ? _through[i] / _hits[i] : -1f;
 			}
 
-			if ( _hitPoint is not null )
+			if ( _hitNormal is not null )
 			{
 				var t = new BakeTexels
 				{
@@ -1503,16 +1957,80 @@ public static class NormalBake
 			return set;
 		}
 
-		BakedMap Grey( Func<int, float?> value, float background )
+		/// <summary>A tangent-space map (normal or bent normal) from per-texel sums, flat where nothing hit.</summary>
+		BakedMap TangentMap( Vec3[] sums )
 		{
 			var map = new BakedMap( _width, _height );
 
+			if ( _o.SixteenBit )
+				map.EnableSixteenBit();
+
 			for ( var i = 0; i < _width * _height; i++ )
 			{
-				var g = value( i );
-				var level = g ?? background;
-				Write( map, i, new Vec3( level, level, level ) );
-				map.Filled[i] = g is not null;
+				// Flat where nothing was hit. An unhit texel reading as "no change from the cage"
+				// is the harmless answer; leaving it black would light as a crease.
+				var local = _hits[i] > 0 ? sums[i].Normal : new Vec3( 0, 0, 1 );
+
+				if ( local.LengthSquared < 0.5f )
+					local = new Vec3( 0, 0, 1 );
+
+				Encode( map, i, local, _o.FlipGreen );
+				map.Filled[i] = _hits[i] > 0;
+			}
+
+			return Finished( map );
+		}
+
+		/// <summary>
+		/// The ID map: one flat colour per id, spread round the hue circle by the golden angle so ids
+		/// next to each other in number are far apart in colour. Padded by copying, never averaging.
+		/// </summary>
+		BakedMap IdMap( BakeSet set )
+		{
+			var map = new BakedMap( _width, _height );
+			var ids = new SortedSet<int>();
+
+			for ( var i = 0; i < _id.Length; i++ )
+				if ( _id[i] != NoId )
+					ids.Add( _id[i] );
+
+			set.IdColors = new Dictionary<int, (byte, byte, byte)>();
+			var k = 0;
+
+			foreach ( var id in ids )
+				set.IdColors[id] = IdColour( k++ );
+
+			for ( var i = 0; i < _id.Length; i++ )
+			{
+				if ( _id[i] == NoId )
+					continue;
+
+				var (r, g, b) = set.IdColors[_id[i]];
+				map.Rgb[i * 3] = r;
+				map.Rgb[i * 3 + 1] = g;
+				map.Rgb[i * 3 + 2] = b;
+				map.Filled[i] = true;
+			}
+
+			DilateNearest( map, _o.Padding );
+			return map;
+		}
+
+		BakedMap Grey( Func<int, float?> value, float background, bool sixteen = false ) =>
+			Colour( i => value( i ) is { } g ? new Vec3( g, g, g ) : null, new Vec3( background, background, background ), sixteen );
+
+		BakedMap Colour( Func<int, Vec3?> value, Vec3 background, bool sixteen )
+		{
+			var map = new BakedMap( _width, _height );
+
+			if ( sixteen )
+				map.EnableSixteenBit();
+
+			for ( var i = 0; i < _width * _height; i++ )
+			{
+				var c = value( i );
+				Write( map, i, c ?? background );
+				map.Filled[i] = c is not null;
 			}
 
 			return Finished( map );
@@ -1523,6 +2041,8 @@ public static class NormalBake
 			Dilate( map, _o.Padding );
 			return map;
 		}
+
+		static Vec3 Half( Vec3 n ) => new( n.x * 0.5f + 0.5f, n.y * 0.5f + 0.5f, n.z * 0.5f + 0.5f );
 
 		static List<float> Values( float[] sums, int[] counts, Func<float, float> f )
 		{
@@ -1549,6 +2069,28 @@ public static class NormalBake
 			var v = values[Math.Clamp( (int)(q * (values.Count - 1)), 0, values.Count - 1 )];
 			return v > 1e-9f ? v : MathF.Max( values[^1], 1e-6f );
 		}
+	}
+
+	/// <summary>
+	/// The k-th ID colour: hue stepped by the golden angle, full saturation, value alternating
+	/// between full and three quarters so the 7th id is not a near-twin of the 1st.
+	/// </summary>
+	public static (byte R, byte G, byte B) IdColour( int k )
+	{
+		var h = (k * 0.618033988749895f) % 1f * 6f;
+		var v = k % 2 == 0 ? 1f : 0.75f;
+		var x = 1f - MathF.Abs( h % 2f - 1f );
+		var (r, g, b) = (int)h switch
+		{
+			0 => (1f, x, 0f),
+			1 => (x, 1f, 0f),
+			2 => (0f, 1f, x),
+			3 => (0f, x, 1f),
+			4 => (x, 0f, 1f),
+			_ => (1f, 0f, x),
+		};
+
+		return ((byte)MathF.Round( r * v * 255f ), (byte)MathF.Round( g * v * 255f ), (byte)MathF.Round( b * v * 255f ));
 	}
 
 	/// <summary>
