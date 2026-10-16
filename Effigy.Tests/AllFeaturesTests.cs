@@ -105,6 +105,20 @@ public static class AllFeaturesTests
 			PaddingTests.AddGarment( studio );
 			return;
 		}
+		// THE RIG TOOLS - binding, Body from Bones, a corrective sculpted in a pose - work on bones, and
+		// a fresh document has none: the same three-bone spine the clothing tools get below.
+		if ( feature is BindFeature or BodyFromBonesFeature or CorrectiveShapeKeyFeature )
+		{
+			var rig = studio.Rig;
+			var root = rig.AddBoneFromPoints( "root", -1, new Vec3( 0, 0, -0.9f ), new Vec3( 0, 0, -0.5f ) );
+			var pelvis = rig.AddBoneFromPoints( "pelvis", root, new Vec3( 0, 0, -0.5f ), new Vec3( 0, 0, -0.1f ) );
+			rig.AddBoneFromPoints( "spine", pelvis, new Vec3( 0, 0, -0.1f ), new Vec3( 0, 0, 0.9f ) );
+			// A corrective is driven by a named bone, which a click in the rig picks.
+			if ( feature is CorrectiveShapeKeyFeature corrective ) corrective.Bone.Value = "spine";
+			studio.Rebuild();
+			return;
+		}
+
 		// GARMENT, FUR, TRIM AND FABRIC ARE THE CLOTHING TOOLS, and the fixture has no rig, which is
 		// exactly the input the garment's own guard is written to refuse. The model these need
 		// is a BODY WITH BONES: a spine inside the fixture box is enough for a T-shirt to cover
