@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -169,6 +169,9 @@ public sealed class BrushStroke
 
 	/// <summary>An image scaling the brush's strength across its footprint, or null.</summary>
 	public BrushAlpha Alpha;
+	/// <summary>Read each sample's Strength on the shared calibrated scale (<see cref="BrushCalibration"/>):
+	/// the same number does about the same amount in every brush. Off, Strength is the brush's raw kernel unit.</summary>
+	public bool Calibrated;
 	public readonly List<BrushSample> Samples = new();
 }
 
@@ -260,13 +263,16 @@ public static class Brush
 
 		var found = new List<int>();
 		var undo = new BrushUndo();
+		IReadOnlyList<BrushSample> samples = stroke.Calibrated
+			? stroke.Samples.ConvertAll( s => BrushCalibration.ToKernel( stroke.Kind, s ) )
+			: stroke.Samples;
 
 		if ( IsCloth( stroke.Kind ) )
 		{
 			neighbors ??= mesh.BuildVertexEdges();
 			frames ??= SculptFrames.Build( mesh );
 			Vec3? last = null;
-			foreach ( var sample in stroke.Samples )
+			foreach ( var sample in samples )
 			{
 				var dir = last is { } lp && (sample.Position - lp).LengthSquared > 1e-12f ? (sample.Position - lp).Normal : sample.Direction.LengthSquared > 1e-12f ? sample.Direction.Normal : Vec3.Zero;
 				last = sample.Position;
@@ -279,7 +285,7 @@ public static class Brush
 		var copies = stroke.SymmetryCopies();
 
 		Vec3? previous = null;
-		foreach ( var sample in stroke.Samples )
+		foreach ( var sample in samples )
 		{
 			// The stroke's direction here, for brushes laid along it (strips, creases): from the last
 			// sample, or the sample's own Direction when it is the first.

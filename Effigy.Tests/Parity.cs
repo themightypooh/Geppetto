@@ -24,7 +24,8 @@ public static class Parity
 {
 	/// <summary>A Blender brush and the Effigy brush meant to match it (null: Effigy has none yet).</summary>
 	public sealed record Case( string Blender, BrushKind? Effigy, float Strength = 0.5f, bool Invert = false, string Kind = "stroke", float EffigySign = 1f, BrushFalloff Falloff = BrushFalloff.Smooth,
-		string Label = null, string Mesh = "surface", Dictionary<string, object> Auto = null, Func<PolyMesh, List<Vec3>, float[]> EffigyMask = null, MeshFilterKind? Filter = null, string BlenderFilter = null, bool Alpha = false )
+		string Label = null, string Mesh = "surface", Dictionary<string, object> Auto = null, Func<PolyMesh, List<Vec3>, float[]> EffigyMask = null, MeshFilterKind? Filter = null, string BlenderFilter = null, bool Alpha = false,
+		float Radius = 1.5f )
 	{
 		public string Name => Label ?? Blender;
 		public string File => Name.Replace( '/', '_' ).Replace( ' ', '_' ).Replace( '+', 'p' );
@@ -93,7 +94,6 @@ public static class Parity
 		new( "Draw", null, Label: "Filter Enhance Details", Kind: "filter", Filter: MeshFilterKind.EnhanceDetails, BlenderFilter: "ENHANCE_DETAILS" ),
 	};
 
-	const float Radius = 1.5f;
 
 	/// <summary>The test surface: a 10 in sheet at 0.1 in spacing, gently bumpy so smoothing and flattening brushes have work to do.</summary>
 	/// <summary>The test meshes: "surface", or "layered" (the surface with a separate 4 in sheet
@@ -101,6 +101,16 @@ public static class Parity
 	public static PolyMesh Surface( string kind )
 	{
 		var m = Surface();
+		// "unit": the surface scaled so its mean distance from the origin is 1. Blender's Sphere filter
+		// morphs toward a sphere of radius 1 about the object origin; Effigy's toward the mesh's own
+		// mean radius about its centre (Effigy's units are the model's, so "1" means nothing). On this
+		// mesh the two targets are the same sphere, so the comparison scores the filter, not the units.
+		if ( kind == "unit" )
+		{
+			var mean = m.Positions.Average( p => p.Length );
+			for ( var i = 0; i < m.VertexCount; i++ ) m.Positions[i] = m.Positions[i] / mean;
+			return m;
+		}
 		if ( kind != "layered" ) return m;
 		var top = Primitives.Plane( 4, 4, 40, 40 );
 		var offset = m.VertexCount;
@@ -132,7 +142,7 @@ public static class Parity
 
 	static List<Vec3> BasePath( Case c ) => c.Kind switch
 	{
-		"drag" => new List<Vec3> { new( -1, 0, Height( -1, 0 ) ), new( 1.5f, 0, Height( 1.5f, 0 ) + 1.2f ) },
+		"drag" or "dragPath" => new List<Vec3> { new( -1, 0, Height( -1, 0 ) ), new( 1.5f, 0, Height( 1.5f, 0 ) + 1.2f ) },
 		// From the sheet's open edge inward.
 		// Along the sheet, half an inch in from its open edge at y = -5.
 		"dot" => new List<Vec3> { new( 0, 0, Height( 0, 0 ) ) },
@@ -142,6 +152,9 @@ public static class Parity
 		"arc" => new[] { new Vec3( -1, 0, 0 ) }.Concat( Enumerable.Range( 0, 10 ).Select( i => { var a = i / 9f * MathF.PI * 0.5f; var x = -1f + MathF.Cos( a ); var y = MathF.Sin( a ); return new Vec3( x, y, Height( x, y ) ); } ) ).Select( p => new Vec3( p.x, p.y, Height( p.x, p.y ) ) ).ToList(),
 		_ => Enumerable.Range( 0, 25 ).Select( i => { var x = -3f + 0.25f * i; return new Vec3( x, 0, Height( x, 0 ) ); } ).ToList(),
 	};
+
+	/// <summary>Pointer events in a "dragPath" drag: one dab each, as a hand dragging a cloth brush makes.</summary>
+	const int DragEvents = 20;
 
 	public static int Run( string outDir, string filter )
 	{
@@ -158,13 +171,35 @@ public static class Parity
 			return meshes[c.Mesh] = (m, path);
 		}
 		var rows = new List<string>();
-		Console.WriteLine( $"{"brush",-24} {"effigy",-16} {"shape",6} {"gain",8} {"best",6}  {"@str",-7} {"scale",7}  blender peak / moved" );
+		Console.WriteLine( $"{"brush",-24} {"effigy",-16} {"shape",6} {"gain",8} {"best",6}  {"@str",-7} {"scale",7} {"cal",6}  blender peak / moved" );
 		var picked = Cases.Where( c => string.IsNullOrEmpty( filter ) || c.Name.Contains( filter, StringComparison.OrdinalIgnoreCase ) ).ToArray();
 		string RefPath( Case c ) => Path.Combine( outDir, "refs", c.File + ".obj" );
+		// The repository's cached references first (ParityRefs): Blender is only needed for a case
+		// that has none yet, or whose cached one was measured for a different job.
+		var cached = new HashSet<Case>();
+		foreach ( var c in picked )
+		{
+			if ( ParityRefs.Load( c, MeshFor( c ).Mesh ) is not { } positions ) continue;
+			File.WriteAllLines( RefPath( c ), positions.Select( p => FormattableString.Invariant( $"v {p.x:0.######} {p.y:0.######} {p.z:0.######}" ) ) );
+			cached.Add( c );
+		}
 		// Every missing reference in ONE Blender launch.
-		var missing = picked.Where( c => !File.Exists( RefPath( c ) ) ).ToArray();
+		var missing = picked.Where( c => !cached.Contains( c ) ).ToArray();
+		if ( missing.Length > 0 && blender is null )
+			Console.WriteLine( $"{missing.Length} reference(s) missing or stale in {ParityRefs.Dir()} and no blender on PATH: those rows are skipped." );
 		if ( missing.Length > 0 && blender is not null )
+		{
+			foreach ( var c in missing ) File.Delete( RefPath( c ) );
 			MakeReferences( blender, oracle, missing.Select( c => (c, RefPath( c ), MeshFor( c ).Path) ).ToArray(), Path.Combine( outDir, "refs", "batch.json" ) );
+			foreach ( var c in missing )
+			{
+				var made = ReadPositions( RefPath( c ) );
+				if ( made is null || made.Length != MeshFor( c ).Mesh.VertexCount ) continue;
+				var log = File.Exists( RefPath( c ) + ".log" ) ? File.ReadAllLines( RefPath( c ) + ".log" ) : Array.Empty<string>();
+				var version = log.FirstOrDefault( l => l.StartsWith( "blender " ) ) ?? "blender ?";
+				ParityRefs.Save( c, MeshFor( c ).Mesh, made, version.Replace( ' ', '-' ) );
+			}
+		}
 		foreach ( var c in picked )
 		{
 			var refPath = RefPath( c );
@@ -179,20 +214,24 @@ public static class Parity
 			// number does the same amount (calibrated). BEST is the best shape over a strength ladder, in
 			// case the shape changes with strength; SCALE the strength multiplier that would bring GAIN to 1.
 			Func<float, Vec3[]> run;
+			// Effigy with the calibration table on (BrushStroke.Calibrated): its gain should be ~1.
+			Func<Vec3[]> calibrated = null;
 			string what;
 			if ( c.Filter is { } fk )
 			{
 				what = fk.ToString();
 				run = st => { var mesh = surface.Clone(); MeshFilter.Apply( mesh, fk, st ); return mesh.Positions.ToArray(); };
+				calibrated = () => run( c.Strength );
 			}
 			else if ( c.Effigy is { } kind )
 			{
 				what = kind.ToString();
 				run = st => { var mesh = surface.Clone(); Brush.Apply( mesh, EffigyStroke( c, kind, st * c.EffigySign ), mask: c.EffigyMask?.Invoke( mesh, StrokePath( c ) ) ); return mesh.Positions.ToArray(); };
+				calibrated = () => { var mesh = surface.Clone(); Brush.Apply( mesh, EffigyStroke( c, kind, c.Strength * c.EffigySign, calibrated: true ), mask: c.EffigyMask?.Invoke( mesh, StrokePath( c ) ) ); return mesh.Positions.ToArray(); };
 			}
 			else
 			{
-				line = $"{c.Name,-24} {"MISSING",-16} {"",6} {"",8} {"",6}  {"",-7} {"",7}  {peakB:0.000} / {movedB}";
+				line = $"{c.Name,-24} {"MISSING",-16} {"",6} {"",8} {"",6}  {"",-7} {"",7} {"",6}  {peakB:0.000} / {movedB}";
 				Console.WriteLine( line );
 				rows.Add( line );
 				continue;
@@ -221,7 +260,8 @@ public static class Parity
 				scale = (float)Math.Exp( 0.5 * (lo + hi) );
 				if ( scale > 999f || scale < 1.01e-3f ) scale = float.NaN;
 			}
-			line = $"{c.Name,-24} {what,-16} {same.Shape,6:0.00} {same.Gain,8:0.000} {best.Shape,6:0.00}  @{best.Strength,-6} {scale,7:0.000}  {peakB:0.000} / {movedB}";
+			var cal = calibrated is null ? float.NaN : Compare( dB, Delta( calibrated() ) ).Gain;
+			line = $"{c.Name,-24} {what,-16} {same.Shape,6:0.00} {same.Gain,8:0.000} {best.Shape,6:0.00}  @{best.Strength,-6} {scale,7:0.000} {cal,6:0.00}  {peakB:0.000} / {movedB}";
 			Console.WriteLine( line );
 			rows.Add( line );
 		}
@@ -230,27 +270,39 @@ public static class Parity
 	}
 
 	/// <summary>Effigy's version of the same stroke: dabs at Blender's default spacing (10% of the diameter).</summary>
-	public static BrushStroke EffigyStroke( Case c, BrushKind kind, float strength = 1f )
+	public static BrushStroke EffigyStroke( Case c, BrushKind kind, float strength = 1f, bool calibrated = false )
 	{
-		var stroke = new BrushStroke { Kind = kind, Falloff = c.Falloff, Alpha = c.Alpha ? TestAlpha : null };
+		var stroke = new BrushStroke { Kind = kind, Falloff = c.Falloff, Alpha = c.Alpha ? TestAlpha : null, Calibrated = calibrated };
 		var path = StrokePath( c );
+		if ( c.Kind == "dragPath" )
+		{
+			// A drag as the editor feeds it: a dab per pointer event, each at the cursor, carrying the
+			// step since the last one.
+			var drag = new Vec3( path[^1].x - path[0].x, path[^1].y - path[0].y, 0 );
+			for ( var i = 1; i <= DragEvents; i++ )
+			{
+				var at = path[0] + drag * (i / (float)DragEvents);
+				stroke.Samples.Add( new BrushSample( new Vec3( at.x, at.y, Height( at.x, at.y ) ), new Vec3( 0, 0, 1 ), c.Radius, strength, drag / DragEvents ) );
+			}
+			return stroke;
+		}
 		if ( c.Kind == "dot" )
 		{
-			stroke.Samples.Add( new BrushSample( path[0], new Vec3( 0, 0, 1 ), Radius, strength ) );
+			stroke.Samples.Add( new BrushSample( path[0], new Vec3( 0, 0, 1 ), c.Radius, strength ) );
 			return stroke;
 		}
 		if ( c.Kind == "arc" )
 		{
-			stroke.Samples.Add( new BrushSample( path[0], new Vec3( 0, 0, 1 ), Radius, strength ) );
+			stroke.Samples.Add( new BrushSample( path[0], new Vec3( 0, 0, 1 ), c.Radius, strength ) );
 			return stroke;
 		}
 		if ( c.Kind is "drag" or "edge" )
 		{
 			var drag = path[^1] - path[0];
-			stroke.Samples.Add( new BrushSample( path[0], new Vec3( 0, 0, 1 ), Radius, strength, new Vec3( drag.x, drag.y, 0 ) ) );
+			stroke.Samples.Add( new BrushSample( path[0], new Vec3( 0, 0, 1 ), c.Radius, strength, new Vec3( drag.x, drag.y, 0 ) ) );
 			return stroke;
 		}
-		var spacing = 0.1f * 2f * Radius;
+		var spacing = 0.1f * 2f * c.Radius;
 		var total = 0f;
 		for ( var i = 1; i < path.Count; i++ ) total += (path[i] - path[i - 1]).Length;
 		for ( var d = 0f; d <= total + 1e-4f; d += spacing )
@@ -258,7 +310,7 @@ public static class Parity
 			var at = d; var k = 1;
 			while ( k < path.Count - 1 && at > (path[k] - path[k - 1]).Length ) { at -= (path[k] - path[k - 1]).Length; k++; }
 			var p = Vec3.Lerp( path[k - 1], path[k], Math.Clamp( at / MathF.Max( (path[k] - path[k - 1]).Length, 1e-6f ), 0f, 1f ) );
-			stroke.Samples.Add( new BrushSample( p, new Vec3( 0, 0, 1 ), Radius, strength * (c.Invert ? -1f : 1f) ) );
+			stroke.Samples.Add( new BrushSample( p, new Vec3( 0, 0, 1 ), c.Radius, strength * (c.Invert ? -1f : 1f) ) );
 		}
 		return stroke;
 	}
@@ -313,11 +365,14 @@ public static class Parity
 		{
 			var c = j.Case;
 			var path = StrokePath( c );
-			var strokes = c.Kind == "filter" ? Array.Empty<Vec3[]>() : c.Kind is "drag" or "edge" ? new[] { new[] { path[0], path[0], path[^1] } } : new[] { path.ToArray() };
+			var strokes = c.Kind == "filter" ? Array.Empty<Vec3[]>()
+				: c.Kind is "drag" or "edge" ? new[] { new[] { path[0], path[0], path[^1] } }
+				: c.Kind == "dragPath" ? new[] { new[] { path[0] }.Concat( Enumerable.Range( 1, DragEvents ).Select( i => path[0] + (path[^1] - path[0]) * (i / (float)DragEvents) ) ).ToArray() }
+				: new[] { path.ToArray() };
 			if ( File.Exists( j.Out + ".log" ) ) File.Delete( j.Out + ".log" );
 			return new Dictionary<string, object>
 			{
-				["mesh"] = j.Mesh, ["out"] = j.Out, ["brush"] = c.Blender, ["radius"] = Radius, ["automask"] = c.Auto ?? new Dictionary<string, object>(),
+				["mesh"] = j.Mesh, ["out"] = j.Out, ["brush"] = c.Blender, ["radius"] = c.Radius, ["automask"] = c.Auto ?? new Dictionary<string, object>(),
 				["texture"] = c.Alpha ? new Dictionary<string, object> { ["image"] = AlphaPng( Path.GetDirectoryName( j.Out ) ), ["map_mode"] = "AREA_PLANE" } : null,
 				["filter"] = c.BlenderFilter is null ? null : new Dictionary<string, object> { ["type"] = c.BlenderFilter, ["strength"] = 0.5f, ["iterations"] = 1 },
 				["strength"] = c.Strength, ["invert"] = c.Invert,
@@ -332,7 +387,7 @@ public static class Parity
 		if ( !proc.WaitForExit( 60_000 + 15_000 * jobs.Length ) ) { try { proc.Kill( true ); } catch { } }
 	}
 
-	static Vec3[] ReadPositions( string path )
+	internal static Vec3[] ReadPositions( string path )
 	{
 		if ( !File.Exists( path ) ) return null;
 		return File.ReadLines( path ).Where( l => l.StartsWith( "v " ) ).Select( l =>

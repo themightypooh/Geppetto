@@ -50,6 +50,8 @@ def run():
 
 
 def run_one(JOB):
+    # First line of every log: which Blender measured it (cached with the reference).
+    log(f"blender {bpy.app.version_string}")
     try:
         win = bpy.context.window_manager.windows[0]
         area = next(a for a in win.screen.areas if a.type == 'VIEW_3D')
