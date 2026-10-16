@@ -70,7 +70,7 @@ public sealed partial class EffigyWindow
 		_objJoinTool = Tool( EffigyIcon.Boolean, "Join", "Make one body of the selected ones, as a new Import. Ctrl+Z brings them back", () => JoinParts( _viewport?.IdleBodyIds.ToList() ) );
 		_objDeleteTool = Tool( EffigyIcon.DeleteGeometry, "Delete", "Remove the selected bodies. Ctrl+Z brings them back", () => DeleteParts( _viewport?.IdleBodyIds.ToList() ) );
 		_objHideTool = Tool( EffigyIcon.SelectFace, "Hide", "Hide the selected bodies. They still export", () => ForEachSelectedBody( id => OnPartCommand( id, EffigyPartCommand.ToggleVisibility ) ) );
-		_objIsolateTool = Tool( EffigyIcon.SelectFace, "Show only this", "Hide everything except the selected body", () => ForEachSelectedBody( id => OnPartCommand( id, EffigyPartCommand.Isolate ), first: true ) );
+		_objIsolateTool = Tool( EffigyIcon.SelectFace, "Isolate", "Hide everything except the selected body", () => ForEachSelectedBody( id => OnPartCommand( id, EffigyPartCommand.Isolate ), first: true ) );
 		_objShowAllTool = Tool( EffigyIcon.SelectFace, "Show all", "Show every hidden body again", () => { if ( _studio.Bodies.Count > 0 ) OnPartCommand( _studio.Bodies[0].Id, EffigyPartCommand.ShowAll ); } );
 
 		_objEditTool = Tool( EffigyIcon.MeshEdit, "Edit", "Edit the selected body's vertices, edges and faces (Tab). Saved as a Mesh edit", AddMeshEdit );

@@ -242,13 +242,13 @@ internal sealed partial class EffigyViewport
 	{
 		if ( ActiveSketchReference is not { } reference )
 		{
-			RefuseTool( "Use - this sketch is on a global plane, so there is nothing underneath it to use." );
+			RefuseTool( "Project - this sketch is on a global plane, so there is nothing underneath it to use." );
 			return;
 		}
 
 		if ( _snapReferenceEdge < 0 )
 		{
-			RefuseTool( "Use - that click isn't on an edge of the face. Hover one of the green edges until it lights up, then click it." );
+			RefuseTool( "Project - that click isn't on an edge of the face. Hover one of the green edges until it lights up, then click it." );
 			return;
 		}
 
@@ -265,15 +265,15 @@ internal sealed partial class EffigyViewport
 				return;
 
 			case UseEdgeResult.AlreadyInSketch:
-				RefuseTool( "Use - that edge is already in the sketch, so it wasn't added twice." );
+				RefuseTool( "Project - that edge is already in the sketch, so it wasn't added twice." );
 				return;
 
 			case UseEdgeResult.TooShort:
-				RefuseTool( "Use - that edge is too short to make a line from at this sketch's precision." );
+				RefuseTool( "Project - that edge is too short to make a line from at this sketch's precision." );
 				return;
 
 			default:
-				RefuseTool( "Use - that edge isn't on the face any more (the part rebuilt under it). Hover the edge again and click." );
+				RefuseTool( "Project - that edge isn't on the face any more (the part rebuilt under it). Hover the edge again and click." );
 				return;
 		}
 	}
@@ -290,13 +290,13 @@ internal sealed partial class EffigyViewport
 	{
 		if ( ActiveSketch is null )
 		{
-			Refuse( "Use all - open a sketch on a face first; it copies that face's outline into the sketch." );
+			Refuse( "Project all - open a sketch on a face first; it copies that face's outline into the sketch." );
 			return;
 		}
 
 		if ( ActiveSketchReference is not { } reference )
 		{
-			Refuse( "Use all - this sketch is on a global plane, so there is nothing underneath it to use." );
+			Refuse( "Project all - this sketch is on a global plane, so there is nothing underneath it to use." );
 			return;
 		}
 
@@ -309,17 +309,17 @@ internal sealed partial class EffigyViewport
 		if ( added == 0 )
 		{
 			Refuse( tooShort > 0
-				? $"Use all - nothing new to add: the outline is already in the sketch, apart from {tooShort} edge{(tooShort == 1 ? "" : "s")} too short to make a line from."
-				: "Use all - the face's outline is already in the sketch, so nothing was added." );
+				? $"Project all - nothing new to add: the outline is already in the sketch, apart from {tooShort} edge{(tooShort == 1 ? "" : "s")} too short to make a line from."
+				: "Project all - the face's outline is already in the sketch, so nothing was added." );
 			return;
 		}
 
 		SetSketchPrompt( added == 1
-			? "Use all - took 1 edge of the face into the sketch."
-			: $"Use all - took {added} edges of the face into the sketch." );
+			? "Project all - took 1 edge of the face into the sketch."
+			: $"Project all - took {added} edges of the face into the sketch." );
 
 		if ( tooShort > 0 )
-			Refuse( $"Use all - {tooShort} edge{(tooShort == 1 ? " was" : "s were")} too short to make a line from, and left out." );
+			Refuse( $"Project all - {tooShort} edge{(tooShort == 1 ? " was" : "s were")} too short to make a line from, and left out." );
 
 		RecordUndoFrom( before );
 		Edited();
@@ -717,9 +717,9 @@ internal sealed partial class EffigyViewport
 			SketchToolKind.Spline => $"Spline - {_splinePoints.Count} points, Enter finishes, right-click or Escape abandons",
 
 			SketchToolKind.Use when ActiveSketchReference is null
-				=> "Use - this sketch is on a global plane; there is no face underneath it to use",
+				=> "Project - this sketch is on a global plane; there is no face underneath it to use",
 			SketchToolKind.Use
-				=> "Use - click a green edge of the face to copy it into the sketch",
+				=> "Project - click a green edge of the face to copy it into the sketch",
 
 			SketchToolKind.Trim => "Trim - click the piece of a curve you want gone",
 			SketchToolKind.Extend => "Extend - click the end of a curve you want stretched",

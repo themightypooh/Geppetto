@@ -1329,8 +1329,8 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 
 		reference.Add( select );
 
-		var use = SketchTool( EffigyIcon.UseTool, "Use",
-			"Use - click a green edge of the face this sketch is on to copy it into the sketch",
+		var use = SketchTool( EffigyIcon.UseTool, "Project",
+			"Project - click a green edge of the face this sketch is on to copy it into the sketch",
 			SketchToolKind.Use );
 
 		use.IconColor = EffigyToolChrome.ReferenceColor;
@@ -1341,8 +1341,8 @@ public sealed partial class EffigyWindow : DockWindow, IAssetEditor
 		reference.Add( new EffigyStageTool
 		{
 			Icon = EffigyIcon.UseAllTool,
-			Label = "Use all",
-			Tip = "Use all - copy the whole outline of the face this sketch is on into the sketch, so a "
+			Label = "Project all",
+			Tip = "Project all - copy the whole outline of the face this sketch is on into the sketch, so a "
 				+ "line drawn across it has something to close against",
 			IconColor = EffigyToolChrome.ReferenceColor,
 			Clicked = () => _viewport.UseAllReferenceEdges(),
@@ -10480,7 +10480,7 @@ internal sealed class EffigyPartsPanel : Widget
 			visible ? "visibility_off" : "visibility",
 			() => CommandRequested?.Invoke( bodyId, EffigyPartCommand.ToggleVisibility ) );
 
-		menu.AddOption( "Show only this", "center_focus_strong",
+		menu.AddOption( "Isolate", "center_focus_strong",
 			() => CommandRequested?.Invoke( bodyId, EffigyPartCommand.Isolate ) );
 
 		if ( othersHidden )

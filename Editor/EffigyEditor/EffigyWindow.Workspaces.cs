@@ -1420,7 +1420,7 @@ public sealed partial class EffigyWindow
 
 		var name = $"Selection {session.NamedSelections.Count + 1}";
 		session.SaveSelection( name );
-		SetPrompt( $"Saved as {name}. Recall selection brings it back." );
+		SetPrompt( $"Saved as {name}. Load selection set brings it back." );
 		OnMeshEditChanged();
 	}
 
@@ -1810,15 +1810,15 @@ public sealed partial class EffigyWindow
 
 		var menus = new List<EffigyStage>
 		{
-			Menu( "Select", "All", "Invert", "Grow", "Shrink", "-", "Linked", "Similar", "Path", "Checker", "Random", "Select/Mirror", "-", "Save selection", "Recall selection", "-", "Non-manifold", "Border", "Sharp edges", "Triangles", "N-gons", "Interior", "Loose", "-", "Lasso", "Circle", "X-ray", "-", "Hide", "Hide others", "Unhide" ),
-			Menu( "Add", "Add Cube", "Add Sphere", "Add Cylinder", "Add Plane", "Add Tube", "Add Wedge", "-", "Extrude", "Extrude along normals", "Extrude individual", "Inset", "Bevel", "Loop cut", "Knife", "Bisect", "-", "Fill", "Grid fill", "Bridge", "-", "Add/Duplicate", "Add/Array", "Spin", "Screw", "Pivot here", "-", "Add/Subdivide" ),
+			Menu( "Select", "All", "Invert", "Grow", "Shrink", "-", "Linked", "Similar", "Path", "Checker", "Random", "Select/Mirror", "-", "Save selection set", "Load selection set", "-", "Non-manifold", "Boundary loop", "Sharp edges", "Triangles", "N-gons", "Interior", "Loose", "-", "Lasso", "Circle", "X-ray", "-", "Hide", "Hide others", "Unhide" ),
+			Menu( "Add", "Add Cube", "Add Sphere", "Add Cylinder", "Add Plane", "Add Tube", "Add Wedge", "-", "Extrude", "Extrude along normals", "Extrude individual", "Inset", "Bevel", "Loop cut", "Knife", "Bisect", "-", "Fill", "Grid fill", "Bridge", "-", "Add/Duplicate", "Add/Array", "Spin", "Screw", "Pivot to selection", "-", "Add/Subdivide" ),
 			Menu( "Vertex", "Merge", "Merge first", "Merge last", "Merge at pivot", "By distance", "Connect", "Bevel vertices", "-", "Vertex slide", "Clean up/Smooth", "Clean up/Relax", "Clean up/Flatten", "Loop circle", "Loop space", "To sphere", "Randomize" ),
 			Menu( "Edge", "Edge slide", "Rip", "Rotate edge", "Subdivide edges", "Pipe", "-", "Loop circle", "Loop space", "-", "Make hard", "Harden creases", "Crease", "Clear crease", "-", "Mark seam", "Clear seam", "-", "Delete edges" ),
-			Menu( "Face", "Triangulate", "Tris to quads", "Beautify", "Poke faces", "Fill holes", "Scatter", "-", "Split", "Separate", "Loose parts", "By material", "Extract", "-", "Flip", "Fix normals", "-", "Solidify", "-", "Delete faces only" ),
-			Menu( "Transform", "Move X", "Move Y", "Move Z", "-", "Rotate X", "Rotate Y", "Rotate Z", "-", "Scale by", "Flatten X", "Flatten Y", "Flatten Z", "-", "Pivot here", "To pivot", "Snap to grid" ),
-			Menu( "Mesh", "Move", "Rotate", "Scale", "Soft", "Connected", "Falloff shape", "-", "Shrink/Fatten", "Shear", "Bend", "-", "Symmetrize", "Mirror X", "Snap to surface", "Shrinkwrap", "-", "Dissolve", "Limited dissolve", "Decimate", "Delete", "Delete loose" ),
+			Menu( "Face", "Triangulate", "Tris to quads", "Beautify", "Poke faces", "Fill holes", "Scatter", "-", "Split", "Separate", "Loose parts", "By material", "Extract", "-", "Flip", "Recalculate normals", "-", "Solidify", "-", "Delete faces only" ),
+			Menu( "Transform", "Move X", "Move Y", "Move Z", "-", "Rotate X", "Rotate Y", "Rotate Z", "-", "Scale by", "Flatten X", "Flatten Y", "Flatten Z", "-", "Pivot to selection", "To pivot", "Snap to grid" ),
+			Menu( "Mesh", "Move", "Rotate", "Scale", "Soft selection", "Connected only", "Falloff shape", "-", "Shrink/Fatten", "Shear", "Bend", "-", "Symmetrize", "Mirror X", "Snap to surface", "Shrinkwrap", "-", "Dissolve", "Limited dissolve", "Decimate", "Delete", "Delete loose" ),
 			Menu( "UV", "Unwrap", "Mark seam", "Clear seam", "-", "Project UVs", "Project from above", "-", "Trim row", "Trim rows" ),
-			Menu( "Modifiers", "Modifiers/Live mirror", "Modifiers/Live array", "Modifiers/Live smooth", "Crease", "Clear crease", "Modifiers/Thickness" ),
+			Menu( "Modifiers", "Modifiers/Live mirror", "Modifiers/Live array", "Modifiers/Live subdivision", "Crease", "Clear crease", "Modifiers/Thickness" ),
 			Menu( "Retopo", "Retopo/Retopo", "Even quads", "Strip brush", "Retopo/Relax", "Finish retopo" ),
 			Menu( "Skin", "Copy weights", "Smooth weights", "Mirror weights", "Fix weights" ),
 			Menu( "Cloth", "Drape", "Cotton" ),
@@ -1886,7 +1886,7 @@ public sealed partial class EffigyWindow
 			{
 				EditElement.Vertex => new[] { "Connect", "Bevel vertices", "-", "Loop circle", "Loop space", "-", "Merge", "Merge first", "Merge last", "By distance", "Vertex slide", "Smooth", "Clean up/Relax", "Flatten", "To sphere", "Randomize", "-", "Fill", "Rip", "-", "Grow", "Shrink", "Linked", "Invert", "-", "Hide", "Hide others", "Unhide", "-", "Dissolve", "Delete" },
 				EditElement.Edge => new[] { "Extrude", "-", "Loop cut", "Bevel", "Edge slide", "-", "Loop circle", "Loop space", "-", "Bridge", "Fill", "Grid fill", "Rip", "Rotate edge", "Subdivide edges", "Pipe", "-", "Make hard", "Crease", "Mark seam", "-", "Grow", "Linked", "Invert", "-", "Hide", "Hide others", "Unhide", "-", "Dissolve", "Delete edges", "Delete" },
-				_ => new[] { "Extrude", "Extrude along normals", "Extrude individual", "Inset", "Duplicate", "Subdivide", "-", "Triangulate", "Tris to quads", "Beautify", "Poke faces", "-", "Split", "Separate", "Flip", "Fix normals", "-", "Grow", "Shrink", "Linked", "Similar", "Invert", "-", "Hide", "Hide others", "Unhide", "-", "Delete faces only", "Delete" },
+				_ => new[] { "Extrude", "Extrude along normals", "Extrude individual", "Inset", "Duplicate", "Subdivide", "-", "Triangulate", "Tris to quads", "Beautify", "Poke faces", "-", "Split", "Separate", "Flip", "Recalculate normals", "-", "Grow", "Shrink", "Linked", "Similar", "Invert", "-", "Hide", "Hide others", "Unhide", "-", "Delete faces only", "Delete" },
 			};
 
 		var tools = new List<EffigyStageTool>();
@@ -1933,11 +1933,11 @@ public sealed partial class EffigyWindow
 		MeshTool( select, EffigyIcon.SelectTool, "All", "Select everything (A). Drag on empty space for a box; click empty space for nothing", MeshSelectAll );
 		_meshLassoTool = MeshTool( select, EffigyIcon.SplineTool, "Lasso", "Drag on empty space draws a free lasso instead of a box", ToggleMeshLasso, checkable: true );
 		MeshTool( select, EffigyIcon.SelectEdge, "Non-manifold", "Select every open border and three-way junction — on something meant to be solid, each one is a hole or a bad join", () => RunMeshOp( "Non-manifold", s => s.SelectNonManifold() ) );
-		MeshTool( select, EffigyIcon.SelectEdge, "Border", "Swap the selected faces for the loop of edges round their edge — ready to bridge, extrude or mark as a seam", () => RunMeshOp( "Border", s => s.SelectBoundaryLoop() ) );
+		MeshTool( select, EffigyIcon.SelectEdge, "Boundary loop", "Swap the selected faces for the loop of edges round their edge — ready to bridge, extrude or mark as a seam", () => RunMeshOp( "Boundary loop", s => s.SelectBoundaryLoop() ) );
 		_meshSharpSelectTool = MeshTool( select, EffigyIcon.SelectEdge, "Sharp edges", "Select every edge where the faces meet at more than 30° — the edges to crease, harden or bevel", () => RunMeshOp( "Sharp edges", s => s.SelectSharpEdges( 30f ) ) );
 		_meshMirrorSelectTool = MeshTool( select, EffigyIcon.Mirror, "Mirror", "Add the selection's twin across X, so both sides get the same edit", () => RunMeshOp( "Mirror", s => s.SelectMirror() ) );
-		MeshTool( select, EffigyIcon.SelectVertex, "Save selection", "Keep this selection under a name, to get back with Recall — the ear, the fingers, the hem", SaveMeshSelection );
-		MeshTool( select, EffigyIcon.SelectVertex, "Recall selection", "Select a saved selection again. Shift adds it, Ctrl takes it away", RecallMeshSelection );
+		MeshTool( select, EffigyIcon.SelectVertex, "Save selection set", "Keep this selection under a name, to get back with Load selection set — the ear, the fingers, the hem", SaveMeshSelection );
+		MeshTool( select, EffigyIcon.SelectVertex, "Load selection set", "Select a saved selection set again. Shift adds it, Ctrl takes it away", RecallMeshSelection );
 		_meshLooseSelectTool = MeshTool( select, EffigyIcon.SelectVertex, "Loose", "Select the vertices no face uses, to see what Delete loose would remove", () => RunMeshOp( "Loose", s => s.SelectLoose() ) );
 		MeshTool( select, EffigyIcon.SelectFace, "Checker", "Drop every other face (or vertex) of the selection in a checkerboard — for alternating panels and studs", () => RunMeshOp( "Checker", s => s.CheckerDeselect() ) );
 		_meshCircleTool = MeshTool( select, EffigyIcon.CircleTool, "Circle", "Paint the selection on with a circle brush: hold the mouse and sweep. Ctrl paints it off; [ and ] resize (C)", ToggleMeshCircle, checkable: true );
@@ -1975,8 +1975,8 @@ public sealed partial class EffigyWindow
 		_meshTypedTools.Add( MeshTool( move, EffigyIcon.Primitive, "Flatten X", "Squash the selection flat along X, onto the plane through its centre — 0 on that axis, the rest untouched", () => RunMeshOp( "Scale", s => s.Scale( new Vec3( 0, 1, 1 ) ) ) ) );
 		_meshTypedTools.Add( MeshTool( move, EffigyIcon.Primitive, "Flatten Y", "Squash the selection flat along Y", () => RunMeshOp( "Scale", s => s.Scale( new Vec3( 1, 0, 1 ) ) ) ) );
 		_meshTypedTools.Add( MeshTool( move, EffigyIcon.Primitive, "Flatten Z", "Squash the selection flat along Z", () => RunMeshOp( "Scale", s => s.Scale( new Vec3( 1, 1, 0 ) ) ) ) );
-		_meshSoftTool = MeshTool( move, EffigyIcon.SculptSmooth, "Soft", "Soft falloff: moving pulls nearby vertices along too. [ and ] change its reach (O)", ToggleMeshSoft, checkable: true );
-		_meshSoftConnectedTool = MeshTool( move, EffigyIcon.SculptSmooth, "Connected", "Soft falloff along the surface only, so a lip moves without the other lip and a finger without the one beside it (Alt+O)", ToggleMeshSoftConnected, checkable: true );
+		_meshSoftTool = MeshTool( move, EffigyIcon.SculptSmooth, "Soft selection", "Soft selection: moving pulls nearby vertices along too. [ and ] change its reach (O)", ToggleMeshSoft, checkable: true );
+		_meshSoftConnectedTool = MeshTool( move, EffigyIcon.SculptSmooth, "Connected only", "Soft selection along the surface only, so a lip moves without the other lip and a finger without the one beside it (Alt+O)", ToggleMeshSoftConnected, checkable: true );
 		_meshSoftShapeTool = MeshTool( move, EffigyIcon.SculptSmooth, "Falloff shape", "Cycle the soft falloff's curve: Smooth, Sphere, Root, Inverse Square, Sharp, Linear, Constant", CycleMeshSoftShape );
 		_meshSlideTool = MeshTool( move, EffigyIcon.LoopCut, "Edge slide", "Slide the selected edge loop towards one neighbour or the other", () => StartMeshOp( "Edge slide", 0.25f, ( s, v ) => s.EdgeSlide( v ) ) );
 		_meshShrinkFattenTool = MeshTool( move, EffigyIcon.Shell, "Shrink/Fatten", "Move the selection along its own normals — thicken a limb, or pull a surface in, without changing its shape (Alt+S)", () => StartMeshOp( "Shrink/Fatten", MeshSize() * 0.02f, ( s, v ) => s.ShrinkFatten( v ) ) );
@@ -1995,7 +1995,7 @@ public sealed partial class EffigyWindow
 		_meshBisectTool = MeshTool( add, EffigyIcon.MirrorTool, "Bisect", "Click two points: the model is sliced all the way through along that line", ArmMeshBisect );
 		_meshDuplicateTool = MeshTool( add, EffigyIcon.LinearPattern, "Duplicate", "Copy the selected faces in place; move the copy with the handle (Shift+D)", () => RunMeshOp( "Duplicate", s => s.Duplicate() ) );
 		_meshBridgeTool = MeshTool( add, EffigyIcon.Loft, "Bridge", "Join two open rims with a band of faces — even with different edge counts. Select an edge loop round each hole", () => RunMeshOp( "Bridge", s => s.BridgeSelectedLoops() ) );
-		MeshTool( add, EffigyIcon.Transform, "Pivot here", "Put the pivot — what Spin and Screw turn round — at the middle of the selection. Shift-click puts it back at the origin", SetMeshPivot );
+		MeshTool( add, EffigyIcon.Transform, "Pivot to selection", "Put the pivot — what Spin and Screw turn round — at the middle of the selection. Shift-click puts it back at the origin", SetMeshPivot );
 		MeshTool( add, EffigyIcon.CircularPattern, "Spin", "Sweep the selected edges round the up axis through the pivot, for this many degrees — a lathe. Select a rim and spin it into a bowl or a button", () => StartMeshOp( "Spin", 360f, ( s, v ) => s.Spin( v, Math.Max( 4, (int)MathF.Round( MathF.Abs( v ) / 15f ) ) ) ) );
 		MeshTool( add, EffigyIcon.CircularPattern, "Screw", "One full turn of Spin that climbs as it goes — this far up Z. Horns, springs, threads", () => StartMeshOp( "Screw", MeshSize() * 0.25f, ( s, v ) => s.Spin( 360f, 24, v ) ) );
 		MeshTool( add, EffigyIcon.LinearPattern, "Array", "Repeat the selected faces in a row along X, this many in all — teeth, rivets, buttons", () => StartMeshOp( "Array", 3f, ( s, v ) => s.ArrayFaces( (int)Within( "Array count", MathF.Round( v ), 2f, 256f ) ) ) );
@@ -2020,7 +2020,7 @@ public sealed partial class EffigyWindow
 		}
 
 		_meshTypedTools.Add( MeshTool( add, EffigyIcon.Transform, "Snap to grid", "Snap the selected vertices onto a grid of this many units — 16 makes a wall piece's edges land where the next piece meets them", () => StartMeshOp( "Snap to grid", 16f, ( s, v ) => s.SnapToGrid( Positive( "The grid size", v ) ) ) ) );
-		_meshToPivotTool = MeshTool( add, EffigyIcon.Transform, "To pivot", "Move the selection so its centre lands on the pivot — the other half of Pivot here", () => RunMeshOp( "To pivot", s => s.SelectionToPivot() ) );
+		_meshToPivotTool = MeshTool( add, EffigyIcon.Transform, "To pivot", "Move the selection so its centre lands on the pivot — the other half of Pivot to selection", () => RunMeshOp( "To pivot", s => s.SelectionToPivot() ) );
 		_meshSubdivideTool = MeshTool( add, EffigyIcon.Subdivide, "Subdivide", "Split the selected faces into four, for somewhere you want more detail. With nothing selected it subdivides and smooths the whole body. Skin weights come with it", SubdivideMesh );
 		_meshBevelTool = MeshTool( add, EffigyIcon.Fillet, "Bevel", "Round off the selected edges. The number is the width; Shift-click for a flat chamfer (Ctrl+B)", StartBevel );
 
@@ -2029,7 +2029,7 @@ public sealed partial class EffigyWindow
 		_meshMergeTool = MeshTool( clean, EffigyIcon.Merge, "Merge", "Merge the selected vertices at their centre (M)", () => RunMeshOp( "Merge", s => s.MergeAtCentre() ) );
 		_meshMergeFirstTool = MeshTool( clean, EffigyIcon.Merge, "Merge first", "Merge the selected vertices onto the first one you clicked", () => RunMeshOp( "Merge", s => s.Merge( MeshEditSession.MergeTarget.First ) ) );
 		_meshMergeLastTool = MeshTool( clean, EffigyIcon.Merge, "Merge last", "Merge the selected vertices onto the last one you clicked", () => RunMeshOp( "Merge", s => s.Merge( MeshEditSession.MergeTarget.Last ) ) );
-		_meshMergePivotTool = MeshTool( clean, EffigyIcon.Merge, "Merge at pivot", "Merge the selected vertices at the pivot — Pivot here puts it where you want", () => RunMeshOp( "Merge", s => s.Merge( MeshEditSession.MergeTarget.Pivot ) ) );
+		_meshMergePivotTool = MeshTool( clean, EffigyIcon.Merge, "Merge at pivot", "Merge the selected vertices at the pivot — Pivot to selection puts it where you want", () => RunMeshOp( "Merge", s => s.Merge( MeshEditSession.MergeTarget.Pivot ) ) );
 		MeshTool( clean, EffigyIcon.Merge, "By distance", "Weld vertices that sit on top of each other", () => StartMeshOp( "Merge by distance", MeshSize() * 0.001f, ( s, v ) => s.MergeByDistance( v ) ) );
 		_meshDissolveTool = MeshTool( clean, EffigyIcon.Dissolve, "Dissolve", "Remove the selected edges or vertices and join the faces around them", () => RunMeshOp( "Dissolve", s => s.Dissolve() ) );
 		_meshLimitedDissolveTool = MeshTool( clean, EffigyIcon.Dissolve, "Limited dissolve", "Merge coplanar faces across the entire mesh to simplify it", () => RunMeshOp( "Limited dissolve", s => s.LimitedDissolve() ) );
@@ -2048,7 +2048,7 @@ public sealed partial class EffigyWindow
 		_meshConnectTool = MeshTool( clean, EffigyIcon.CutTool, "Connect", "Connect two selected vertices by cutting an edge across their shared face (J)", () => RunMeshOp( "Connect", s => s.ConnectVertices() ) );
 		_meshFlattenTool = MeshTool( clean, EffigyIcon.SculptSmooth, "Flatten", "Flatten the selected vertices onto their best-fit plane", () => RunMeshOp( "Flatten", s => s.FlattenFaces() ) );
 		MeshTool( clean, EffigyIcon.SculptSmooth, "To sphere", "Round the selected vertices off towards a ball — for a head, an eye or a knuckle blocked out as a cube. 1 is a full sphere", () => StartMeshOp( "To sphere", 1f, ( s, v ) => s.ToSphere( v ) ) );
-		MeshTool( clean, EffigyIcon.Mirror, "Fix normals", "Make the selected faces (or all of them) agree with each other and face outward — the fix for faces that show black (Shift+N)", () => RunMeshOp( "Recalculate normals", s => s.RecalculateNormals() ) );
+		MeshTool( clean, EffigyIcon.Mirror, "Recalculate normals", "Make the selected faces (or all of them) agree with each other and face outward — the fix for faces that show black (Shift+N)", () => RunMeshOp( "Recalculate normals", s => s.RecalculateNormals() ) );
 		MeshTool( clean, EffigyIcon.Mirror, "Flip", "Turn the selected faces (or all of them) inside out", () => RunMeshOp( "Flip normals", s => s.FlipNormals() ) );
 		_meshTriangulateTool = MeshTool( clean, EffigyIcon.SelectFace, "Triangulate", "Split the selected faces into triangles (Ctrl+T)", () => RunMeshOp( "Triangulate", s => s.TriangulateFaces() ) );
 		_meshPokeFacesTool = MeshTool( clean, EffigyIcon.SelectVertex, "Poke faces", "Add a vertex in the center of the selected faces and triangulate them (Alt+P)", () => RunMeshOp( "Poke Faces", s => s.PokeFaces() ) );
@@ -2066,7 +2066,7 @@ public sealed partial class EffigyWindow
 
 		_modMirrorTool = MeshTool( modifiers, EffigyIcon.Mirror, "Live mirror", "Show and output this mesh mirrored across X, joined down the middle — model half, get the whole. Unlike Symmetrize it stays live: keep editing the half", ToggleModMirror, checkable: true );
 		_modArrayTool = MeshTool( modifiers, EffigyIcon.LinearPattern, "Live array", "Repeat the whole mesh along X, live. Each click adds a copy, up to five, then off", CycleModArray, checkable: true );
-		_modSubdivideTool = MeshTool( modifiers, EffigyIcon.Subdivide, "Live smooth", "Show and output the mesh subdivided and smoothed, live — block out in a few quads, see the smooth result. Each click is one more level, up to three, then off", CycleModSubdivide, checkable: true );
+		_modSubdivideTool = MeshTool( modifiers, EffigyIcon.Subdivide, "Live subdivision", "Show and output the mesh subdivided and smoothed, live — block out in a few quads, see the smooth result. Each click is one more level, up to three, then off", CycleModSubdivide, checkable: true );
 		_modSolidifyTool = MeshTool( modifiers, EffigyIcon.Solidify, "Thickness", "Give the surface a thickness, live — draw a garment as a sheet and see it as cloth. Set the exact value in the feature's settings", ToggleModSolidify, checkable: true );
 
 		var retopo = new EffigyStage { Name = "Retopo" };
