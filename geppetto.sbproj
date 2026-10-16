@@ -10,6 +10,9 @@
   "EditorReferences": null,
   "Mounts": null,
   "IsStandaloneOnly": false,
+  "AI": {
+    "EnableMcpCommunication": true
+  },
   "Metadata": {
     "Summary": "Two editor tools in one package: Marionette (control rig) and Effigy (parametric CAD).",
     "Description": "Geppetto adds two editor tools to your project. Marionette poses and keyframes skinned models in the editor, with IK constraints, a timeline, and event tracks. Effigy is a parametric CAD modeller that sketches, extrudes, booleans, subdivides, sculpts, rigs, and exports a real skinned .vmdl. Early - see the GitHub README for what works today.",
@@ -17,7 +20,7 @@
     "Compiler": {
       "RootNamespace": "Sandbox",
       "DefineConstants": "SANDBOX",
-      "NoWarn": "1701;1702;1591;",
+      "NoWarn": "1701;1702;1591;1573;",
       "WarningsAsErrors": "",
       "TreatWarningsAsErrors": false,
       "Nullables": false,

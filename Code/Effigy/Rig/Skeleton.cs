@@ -265,6 +265,126 @@ public sealed class Skeleton
 		return WorldBind( index ).Y.Normal;
 	}
 
+	/// <summary>
+	/// Twist stations, helpers, IK targets and face widgets. They sit on a limb or float off it;
+	/// they are not the limb. A skin built on them, and a garment measured along them, follows
+	/// the widget instead of the body.
+	/// </summary>
+	public static bool IsAuxiliaryBone( string name )
+	{
+		if ( string.IsNullOrEmpty( name ) )
+			return false;
+
+		var n = name.ToLowerInvariant();
+
+		return n.Contains( "twist" ) || n.Contains( "helper" ) || n.Contains( "ik" )
+			|| n.Contains( "aim" ) || n.Contains( "hold" ) || n.Contains( "clothing" )
+			|| n.Contains( "eye" ) || n.Contains( "ear" ) || n.Contains( "lid" )
+			|| n.Contains( "face" ) || n.Contains( "jaw" );
+	}
+
+	/// <summary>
+	/// The segment this bone occupies, head to tail, for measuring a limb and for building a skin.
+	///
+	/// An Effigy-placed bone has its child sitting on the +Y tail, and that segment comes back
+	/// unchanged. An imported bone — citizen is +X-down-the-bone, and its skeleton table leaves
+	/// Length at the default inch — has that tail on a cross axis an inch away, while the
+	/// next joint is a foot or more down +X. The segment is then head to the child that continues
+	/// the chain, which is the same end <see cref="BoneDirection"/> points at.
+	///
+	/// A joint whose children leave in different directions (a pelvis, a hand) keeps its own tail.
+	/// Extending it to the furthest child would send the pelvis down one leg. False for an
+	/// auxiliary bone, which has no segment of its own.
+	/// </summary>
+	public bool TryBodySpan( int index, out Vec3 head, out Vec3 tail )
+	{
+		head = tail = default;
+
+		if ( index < 0 || index >= Bones.Count || IsAuxiliaryBone( Bones[index].Name ) )
+			return false;
+
+		head = HeadWorld( index );
+		tail = TailWorld( index );
+
+		var bestLen = 0f;
+		var best = default( Vec3 );
+		var continued = 0;
+
+		foreach ( var c in Children( index ) )
+		{
+			if ( IsAuxiliaryBone( Bones[c].Name ) )
+				continue;
+
+			var v = HeadWorld( c ) - head;
+			var len = v.Length;
+
+			if ( len < 1e-3f )
+				continue;
+
+			continued++;
+
+			if ( len > bestLen )
+			{
+				bestLen = len;
+				best = v;
+			}
+		}
+
+		if ( continued == 0 || bestLen < 1e-3f )
+		{
+			// A head has no limb continuing it — the eyes and ears were excluded — so the
+			// authored tail is an inch on a cross axis and a beanie lands on that inch.
+			// Run the segment on up from the neck, through the skull.
+			if ( Bones[index].Name.Contains( "head", StringComparison.OrdinalIgnoreCase ) )
+			{
+				var parent = Bones[index].Parent;
+				var up = parent >= 0 ? head - HeadWorld( parent ) : WorldBind( index ).Z;
+				var skull = 0f;
+
+				foreach ( var c in Children( index ) )
+				{
+					var child = Bones[c].Name.ToLowerInvariant();
+
+					if ( !child.Contains( "eye" ) && !child.Contains( "ear" ) && !child.Contains( "lid" )
+						&& !child.Contains( "face" ) && !child.Contains( "jaw" ) )
+						continue;
+
+					skull = MathF.Max( skull, (HeadWorld( c ) - head).Length );
+				}
+
+				if ( up.LengthSquared > 1e-4f && skull > 1f )
+					tail = head + up.Normal * (skull * 0.55f);
+			}
+
+			return (tail - head).LengthSquared > 1e-8f;
+		}
+
+		var dir = best / bestLen;
+		var fan = false;
+
+		foreach ( var c in Children( index ) )
+		{
+			if ( IsAuxiliaryBone( Bones[c].Name ) )
+				continue;
+
+			var v = HeadWorld( c ) - head;
+			var len = v.Length;
+
+			if ( len < 1e-3f )
+				continue;
+
+			if ( Vec3.Dot( v / len, dir ) < 0.7f )
+				fan = true;
+		}
+
+		// One direction: the far child is the tail, which is where an Effigy chain already
+		// put it. A fan keeps the authored tail so the joint stays put.
+		if ( !fan )
+			tail = head + best;
+
+		return (tail - head).LengthSquared > 1e-8f;
+	}
+
 	public Skeleton Clone()
 	{
 		var s = new Skeleton();

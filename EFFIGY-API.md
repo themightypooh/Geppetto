@@ -126,6 +126,7 @@ sketch built that way follows the face when the part changes.
 | `PartFeature` | A kitbash part: `Part.Index` over Cog, Bolt, Hex bolt, Rivet, Knob, Hinge, Panel, Pipe elbow, Strap, Buckle. `Size`, `Length`, `Thickness`, `Count`, `Angle` mean different things per part (table below). `Position`, `RotationAxis`, `RotationAngle`. |
 | `ProfileFeature` | A body from outlines (see below). |
 | `SplineFeature` | A 3D path through `Points` (a `List<Vec3>` field). `Tube` makes it a solid pipe with `Radius`, `Taper`, `Sides`, `Twist`. `Closed`, `Smooth`, `Resolution`. |
+| `BlobFeature` | Shapes fused into one skin (smooth union, smooth-subtracted cutters, meshed by SurfaceNets). `Shapes` is text, one shape per `;`: `sphere C R`, `ellipsoid C RX,RY,RZ`, `capsule A B R`, `cone A RA B RB`, `tube P1\|P2\|P3 R1\|R2\|R3`; a leading `-` makes a cutter, `mat=N` sets its slot. `Blend`, `CutBlend`, `Voxel`, `Smooth`, `Noise`, `NoiseSize`, `Seed`. No UVs: unwrap before baking. Script: `add Blob shapes="capsule 0,0,0 0,0,12 3; -sphere 0,-3,6 1" voxel=0.3`. |
 
 What each part reads from its dials:
 
@@ -159,7 +160,7 @@ two outlines given as text.
 | `MirrorFeature` | `Bodies`, `PlanePoint`, `PlaneNormal`, `KeepOriginal`, `Merge`. |
 | `LinearPatternFeature` | `Bodies`, `Direction`, `Spacing`, `Count` (up to 4096), `Merge`. |
 | `CircularPatternFeature` | `Bodies`, `AxisPoint`, `AxisDirection`, `Count`, `TotalAngle`, `Merge`. |
-| `BooleanFeature` | `Operation.Index` (`0` Union, `1` Subtract, `2` Intersect), `Targets`, `Tools`, `KeepTools`. Tool bodies are consumed unless kept. |
+| `BooleanFeature` | `Operation.Index` (`0` Union, `1` Subtract, `2` Intersect), `Targets`, `Tools`, `KeepTools`, `Method` (Auto, Exact, Voxel), `Voxel` (in, 0 = auto). Tool bodies are consumed unless kept. **Where it works:** `Exact` is the engine's boolean, so it runs only in the s&box editor and refuses elsewhere. `Voxel` is the kernel's `VoxelBoolean` and runs everywhere (CLI, MCP, tests): a fresh surface-nets skin with edges rounded by about a voxel, no UVs or weights, and a face count set by the voxel. `Auto` (the default) takes Exact where the engine is installed and Voxel otherwise, and warns when it used Voxel. Both inputs must be closed. Extrude's Remove and `HoleFeature` still need the engine. |
 | `ShellFeature` | `Bodies`, `Thickness`. |
 | `FilletFeature` | `Radius`, `Segments`, `AngleThreshold`, `Edges`. Leave `Edges` empty for every sharp edge. |
 | `ChamferFeature` | `Width`, `AngleThreshold`, `Edges`. |
@@ -169,17 +170,21 @@ two outlines given as text.
 | `DraftFeature` | `Faces`, `Pull`, `Angle`, `Neutral`. |
 | `CurveDeformFeature` | Bends `Bodies` along a spline: `SplineId` (empty means the last one), `Axis`, `Stretch`. |
 | `SubdivideFeature` | `Bodies`, `Levels` (0–6), `AllFaces`. |
-| `RemeshFeature` | `Bodies`, `Target` (Percentage, Triangle count), `Percent`, `Triangles`, `HoldBorders`, `Weld`. Takes a dense import down to a triangle budget. |
+| `RemeshFeature` | `Bodies`, `Mode` (Decimate, Quad, Voxel). Decimate: `Target` (Percentage, Triangle count), `Percent`, `Triangles`, `HoldBorders`, `Weld`; takes a dense import down to a triangle budget. Quad: `Faces`, `SymmetryX`; an all-quad retopo. Voxel: `Voxel` (edge length, in), `Fuse` (melt overlapping parts into one body, default on), `Fillet` (in), `Smooth`; Dynamesh. Voxel keeps material slots, drops UVs and weights. |
+| `StrokeFeature` | One sculpt stroke as data, replayed every rebuild: `Bodies`, `Points` (the path, landmarks allowed; projected onto the skin), `Brush` (any `BrushKind`: Crease, Clay, ClayStrips, SnakeHook, Inflate…), `Radius`, `Strength`, `Invert`, `Falloff`, `Mirror`, `Spacing`, `Only` (Everywhere, Creases, Ridges), `Alpha PNG`, `AlphaScale`. Fails if it moves nothing (path off the body, or a radius under two edges: subdivide first). |
+| `DetailFeature` ("Surface detail") | SurfaceDetail skin passes: `Pass` Grain (fbm lumps + Worley crease cells), Pustules (clusters), Scatter (Poisson domes, or pits), Sag folds. `Size`, `Depth`, `Lumps`, `LumpSize`, `Clusters`, `PerCluster`, `Spread`, `Spacing`, `Pits`; masks `Busy` (share of skin, default 0.4), `Only` (creases/ridges), `Near` + `Reach`. Script: `add Detail bodies=B pass=Grain size=1.2 depth=0.06`. |
 | `SculptFeature` | `Bodies`, `Reproject`. Sculpt deltas live in a sidecar beside the `.effigy`. |
 | `MeshEditFeature` | A direct, by-hand edit of a body, with live mirror, array, subdivide and thickness modifiers. Written by the editor's Model workspace. |
+| `EditOpFeature` ("Edit op") | One edit-mode operation replayed through `MeshEditSession` on every rebuild: `Bodies`, `Op` (Extrude, Extrude individual, Extrude along normals, Inset, Bevel, Loop cut, Bridge, Symmetrize, Dissolve, Limited dissolve, Delete), `Select` (a rule, see [Edit ops](#edit-ops)), `Element` (Auto, Faces, Edges, Vertices), `Distance`, `Segments`, `At`, `Axis`, `Side`. Unlike `MeshEditFeature` it stores what was asked, not the result, so it follows upstream changes. Script: `edit Body op …`. |
 
 ### Surfaces and materials
 
 | Feature | Parameters |
 |---|---|
 | `FaceMaterialFeature` | `Faces`, `Material` (a slot number). |
-| `UVProjectFeature` | `Mode` (Box, Planar, Unwrap), `Direction`, `Scale` (units per tile), `ChartAngle`, `Margin`. |
+| `UVProjectFeature` | `Mode` (Box, Planar, Unwrap, Organic: LSCM-flattened, few seams, for sculpted blobs), `Direction`, `Scale` (units per tile), `ChartAngle`, `Margin`. |
 | `PaintFeature` | `Bodies`, `Resolution`, `Blend` (Tint, Replace), `Strokes`. Strokes are stored in the document and replayed onto the texture. |
+| `FleshMaterialFeature` | `Bodies`, `Preset` (Wet flesh, Raw meat, Lung, Gut mucosa, Bone, Tooth, Gum, Wet gore, Fat, Infected skin, Oil black, Black spike, Entity ribbon), `Resolution`, `Detail` (noise size ×), `Seed`, `Folder` (writes `flesh_<body>_color/_rough[/_glow].png` + `.vmat`), `Show`, `PerVertex` (colour the vertices; no UVs, no files; s&box's shaders ignore vertex colour, so it warns — for preview or a custom shader), `Seeds` (`"x,y,z;x,y,z"`: corruption grows from these over the surface), `Reach` and `Front` (in; front = reach bands skin → bruise → raw → oil). Without seeds, corruption is the vertex colours' red channel. Kernel: `FleshStack`/`FleshLayer`/`Mask` (Cavity, Ao, Curvature, Height, Worley, Fbm, Painted, VertexColour, Corruption, Triplanar), `TriplanarImage`, `FleshMaterial.Corruption`/`PackMasks`/`BakeVertices`/`Shade`. |
 
 ### Clothing
 
@@ -210,6 +215,15 @@ ObjWriter.WriteFile( mesh, "part.obj", "part" );
 FbxWriter.WriteBinaryFile( mesh, "part.fbx" );              // pass a Skeleton for bones and skin
 ```
 
+What the engine gets is what the bake used. `DmxWriter` (the rigged compile path) writes the faces
+**triangulated the bake's way** (`NormalBake.FaceTriangles`) and per-corner **`tangent$0`** from
+`NormalBake.ExportTangents` (xyz tangent, w = bitangent sign, s&box's convention); pass
+`triangulate: false` / `tangents: false` for n-gons or none. `ObjWriter` takes `triangulate: true`
+(the editor's static compile uses it; OBJ cannot carry tangents). `FbxWriter` writes tangent and
+binormal layers and keeps quads unless `triangulate: true`. Vertex colour goes out as **straight
+RGBA** in DMX and FBX, so packed masks (`FleshMaterial.PackMasks`: R corruption, G wet, B veins,
+A AO) survive; OBJ has no alpha. Every writer keeps the four strongest bone weights and renormalises.
+
 `.effigy` is plain text, one line per thing, so it diffs well in git. Imports, sculpts and mesh
 edits are written beside it by `ImportSidecar`, `SculptSidecar` and `MeshEditSidecar`.
 
@@ -238,6 +252,51 @@ axes (x red forward, y green left, z blue up), wire and body labels. Other views
 `side`, `top`, `iso`, `back`, `left`, `turn8` (a turntable) or `turn45` (one angle).
 `RenderOptions` turns off the wire, grid, labels and axes, or draws bones.
 
+### Lit renders: ShadedRender
+
+`ModelRender` is for measuring; `Effigy.Render.ShadedRender.Render( scene, camera, w, h, ss )` is
+for judging how a thing looks (CPU only, no Blender). Every option below is off by default, so old
+scenes render as they did; `scene.Portfolio()` turns the lot on (studio IBL, 24-sample denoised AO
+with bent normals, contact shadows, bloom 0.6, AgX punchy, vignette 0.3, floor reflection 0.15, tent
+filter). That costs 2-2.5x a plain render (900x1200 at ss=2 on 16 threads: ~4.4 s against ~1.9 s).
+
+```csharp
+var scene = new ShadeScene().Portfolio();          // or set the pieces below one by one
+scene.Add( helmet, looks, looks[Shell] );          // one mesh, a material per Face.Material id
+scene.Add( glove, new ShadeMaterial { Albedo = …, Roughness = 0.4f, Coat = 0.5f, CoatRoughness = 0.15f,
+	MapSize = 512, AlbedoMap = grain, RoughnessMap = grainRough, NormalMap = grainNormal,
+	MapScale = new Vec2( 12, 12 ) } );              // tiles 12x; or TriplanarScale = 0.5f with no UVs
+```
+
+| Scene field | What it does |
+|---|---|
+| `Environment` | A `ShadeEnvironment` (`ShadeEnvironment.Studio()`: warm key softbox, cool fill, top light, two rim strips, a horizon seam; add your own `ShadeSoftbox`es). Reflections and diffuse fill come from it through split-sum GGX (pre-filtered once and cached; multiple-scattering compensation keeps rough metals bright). `CameraRelative` (default) keeps the lighting the same in every view of a turnaround; `Diffuse` / `Specular` scale it. Not drawn as the backdrop. |
+| `Bloom`, `BloomThreshold`, `BloomRadius`, `EmissiveBloom` | Glow round bright pixels; emission always blooms. |
+| `Tonemap` | `Legacy` (default), `Aces`, `AgX`, `AgXPunchy`. |
+| `Vignette` | Darkens the corners, 0..1. |
+| `FloorReflection`, `FloorReflectionBlur` | Screen-space mirror on the floor. |
+| `AoSamples`, `AoDenoise` | More occlusion samples, and a depth/normal-aware blur. |
+| `ContactShadows` | Short screen-space shadow rays toward each light: model units, negative = half of `AoRadius`. |
+| `SoftFilter` | Tent instead of box downsampling: thin parts stop stair-stepping. |
+| `FaceMaterials` | Filled by `Add( mesh, byFaceMaterial, fallback )`. Prefer it to splitting a mesh by material: split parts get separate normals, so every material boundary shows as a lit seam. |
+
+| Material field | What it does |
+|---|---|
+| `AlbedoMap`, `RoughnessMap`, `MetallicMap`, `NormalMap`, `AoMap`, `EmissionMap`, `MapSize`, `MapTint` | RGBA maps on the face UVs, all `MapSize` square; colour maps sRGB. Normal maps are tangent space, OpenGL green. All are mip-mapped: a fine tiling fades to its average at distance, and a mip-shortened normal raises roughness (Toksvig) instead of sparkling. |
+| `MapScale` | Repeats across 0..1 UV. Anything but (1, 1) also wraps v. |
+| `Mapping`, `TriplanarScale` | `Auto` uses UVs where a triangle has them and the triplanar projection (`TriplanarScale` model units per tile) where it does not; `UV` / `Triplanar` force one. |
+| `NormalStrength` | Scales the normal map's tilt. |
+| `CoatFollowsNormalMap` | Off (default): the clear coat reflects off the smooth surface over the bumpy base, which is what makes lacquered carbon and polished leather read as glossy. |
+
+`tools/effigy.sh shade model.obj out style=studio` is the same look from the command line;
+`bloom=`, `tonemap=agx|punchy|aces`, `vignette=`, `floorrefl=`, `contact=` and `ibl=0|1` set one
+piece each.
+
+**Jagged colour edges are in the mesh, not the renderer.** A face carries one material, so an accent
+painted by face material runs along triangle edges; on an irregular (SDF or remeshed) surface that
+is a zigzag no supersampling removes. Cut the faces along the real boundary, make the accent
+geometry (a groove or a raised trim), or put it in a texture mask.
+
 ## Build scripts
 
 A build script is a model as a list of moves, one per line. `BuildScript.Run( studio, text )`
@@ -259,11 +318,13 @@ save out/robot.effigy
 | Verb | Form |
 |---|---|
 | `add` | `add TYPE key=value…` (the class name, with or without `Feature`) |
+| `edit` | `edit Body op [select=rule] [distance=] [segments=] [at=] [axis=] [side=] [element=]` (an `EditOpFeature`; see [Edit ops](#edit-ops)) |
 | `set` | `set Feature key=value…` |
 | `remove` | `remove Feature` |
 | `rebuild` | `rebuild` |
 | `fix` | `fix Body\|all loose doubles holes normals` |
 | `render` | `render path [view=sheet] [size=512] [wire=1] [bones=0] [labels=1] [grid=1] [focus=Body]` |
+| `render … shade=` | `render path shade=material\|clay [views=4] [size=512] [elevation=12] [preset=Wet gore] [focus=Body] [label=OURS]`: a lit, labelled turnaround (ShadedRender: wet coat, subsurface glow, oil film, baked maps). A body shows its Flesh Material; with none, `preset=` per vertex, else its vertex colours, else clay. |
 | `describe` | `describe` |
 | `measure` / `at` | `measure landmark` |
 | `distance` | `distance A B` |
@@ -271,7 +332,8 @@ save out/robot.effigy
 | `match` | `match view ref.png [diff.png]` |
 | `material` | `material slot path.vmat` |
 | `pivot` | `pivot Body @landmark` |
-| `export` | `export folder [split=1] [assets=root] [name=x]` (writes `.obj` and `.vmdl`) |
+| `export` | `export folder [split=1] [assets=root] [name=x] [lods=0\|1\|0.5,0.25] [loddistance=a,b] [collision=none\|auto\|hulls\|render] [surface=default] [skin=auto\|0\|1] [fbx=1]`. Static: `.obj` + `.vmdl` (+ `_lodN.obj` and a LOD list with `lods=`; `lods=1` is half and a quarter, switching at 6x and 15x the model's diagonal unless `loddistance=` says). Skinned (default when the studio has bones and `split` is off): `.dmx` + `.smd` + a skinned `.vmdl`, bound like the editor's export (body→bone map, smoothing, weight paint), skeleton moved with the pivot; no LODs. `collision=auto` is the editor's choice (exact shapes from the history, else a hull per body; on a skinned model a hull per body on its bone), `hulls` a hull per body, `render` physics from the render mesh; default none. `fbx=1` adds a binary `.fbx` (skinned when the model is) for Blender; the `.vmdl` still loads the `.obj`/`.dmx`. Reference bodies are left out. |
+| `bake` | `bake LOW HIGH folder [size=1024] [maps=normal,ao,curvature,cavity,height,thickness\|all] [cage=0] [ss=1] [vmat=0]` (see [Baking](#baking)) |
 | `save` | `save path` |
 | `echo` | `echo text` |
 
@@ -289,6 +351,97 @@ How values are read:
 name (its head; `.tail` and `.mid` too); `ground`; `origin`; a literal `x,y,z`; or
 `@landmark+dx,dy,dz`.
 
+### Edit ops
+
+`edit Body op …` adds an `EditOpFeature`: one edit-mode operation, picked by a rule rather than
+by clicking, and replayed every rebuild (so `set Torso sizez=40` above it moves the extrusion).
+
+```
+edit Torso extrude select=normal:up distance=4
+edit Torso inset select=normal:up&height:90%.. distance=1.5
+edit Torso bevel select=normal:up distance=0.5 segments=3       # the rim of the picked faces
+edit Torso bevel element=edges select=sharp:30 distance=0.25
+edit Torso loopcut at=@Torso.top-0,0,6 axis=z                   # the ring crossing that point
+edit Torso delete select=near:@Torso.front~3
+edit Torso bridge select=boundary                               # exactly two open rims
+edit Torso symmetrize axis=x side=positive                      # keep +x, mirror it onto -x
+edit Torso dissolve element=faces select=normal:front           # merge the picked faces into one
+edit Torso limiteddissolve
+```
+
+| Op | Uses |
+|---|---|
+| `extrude`, `extrudeindividual`, `extrudealongnormals` | faces (`element=edges` extrudes edges into walls), `distance` |
+| `inset` | faces, `distance` (refused past the middle, with the most that fits) |
+| `bevel` | the rim of the picked faces; `element=edges` the picked edges; `element=vertices` a vertex bevel; `distance`, `segments` (1 = chamfer) |
+| `loopcut` | `at` (point or landmark) and `axis` (the direction of the edges being cut); `select` narrows the candidate edges |
+| `bridge` | the picked open boundary edges; must be two rims |
+| `symmetrize` | `axis` x/y/z, `side` positive/negative |
+| `dissolve` | edges (default), `element=vertices`, or `element=faces` (the edges between them) |
+| `limiteddissolve` | merges coplanar faces over the whole body |
+| `delete` | faces (default), or the faces touching picked edges/vertices |
+
+**Selection rules** (`select=`; left out, the up-facing faces for the extrudes and everything for the rest): `all`; `index:3,5,10..20` (faces or vertices;
+edges as `index:3/4,4/9`); `normal:up~20` (within 20°, default 30, of
+up/down/front/back/left/right or `x,y,z`); `x:a..b`, `y:`, `z:`, `height:` (a band on the
+element's centre; either end optional; `80%` is of the body's bounds); `near:x,y,z~r` or
+`near:@Landmark~r`; `sharp:30` (edges whose faces meet at more than 30°; a face or vertex
+on one); `boundary` (open edges; a face or vertex on one). Join with `&` (and) and `|` (or);
+`!` negates a term. Faces are judged by centroid and normal, edges by midpoint and mean normal,
+vertices by position and mean normal. Landmarks resolve when the line runs, so the saved
+feature holds numbers.
+
+Every op fails rather than doing nothing: a rule that picks nothing says how many each term
+picked on its own (and for `normal:`, how far off the closest face is); an operation the
+session reports as changing nothing fails with the session's reason.
+
+### Baking
+
+`bake LOW HIGH folder` bakes the HIGH body onto the LOW body's UVs, one PNG per map, named
+`<name>_<map>.png`. It logs each file it writes, followed by the numbers needed to read the maps.
+LOW must have non-overlapping UVs (`add UVProject bodies=LOW mode=Unwrap`); otherwise the verb
+refuses and says why. In C#, the same bake is `NormalBake.BakeAll( low, high, w, h, BakeMaps.All,
+options )`, which returns a `BakeSet`.
+
+```
+add UVProject bodies=Cage mode=Unwrap
+bake Cage Sculpt materials/creature size=2048 maps=normal,ao,curvature,cavity,height cage=0.5 ss=2 vmat=1 assets=C:/proj/Assets
+```
+
+Every map is sampled per texel from the high mesh, not interpolated from its vertices.
+
+| Map | What it is |
+|---|---|
+| `normal` | Tangent space, on MikkTSpace tangents (checked against Blender's mikktspace.c) over the same triangles the exporters write, interpolated the way a shader rebuilds them |
+| `ao` | Cosine-weighted hemisphere rays (`rays=64`, out to `aodistance=`, default 1/20 of the sculpt's diagonal). White is open |
+| `curvature` | How fast the high normal turns across 1.5 texels. Mid grey is flat, brighter convex, darker concave. White's value is logged |
+| `cavity` | Depth below a ring of neighbours 4 texels out, measured against the cage so the cage's own curve doesn't count. White on flats and ridges, black in pits |
+| `height` | Signed distance from the cage along its normal. Mid grey is on the cage. The logged `+-range` is what black and white stand for |
+| `thickness` | Mean distance through the sculpt behind the surface. White is a quarter of the diagonal or more. The straight path along −N is kept unquantised in `BakeSet.ThicknessUnits`, and `SkinMaterial.TransmissionMask( set, k )` turns it into a transmission mask (skin's red transmittance; `k` 1 = skin, 3–10 gel-like flesh) |
+
+| Key | Meaning |
+|---|---|
+| `size=` | Texels a side (default 1024) |
+| `cage=` | Explicit cage: rays start this far out along the averaged normal and stop `distance=` past the low surface (the cage distance again if unset). Without it, the search distance is measured off the two meshes |
+| `ss=` | Supersampling, 2 for 2x2, 4 for 4x4. AO and thickness divide their rays between the samples |
+| `green=dx` | DirectX green. The default `gl` is OpenGL-style (+green up the image), which is what s&box reads: its shader negates y and its bitangent is +dP/dv (read from `normal.hlsl` and sbox-public's `PolygonMesh`). Keep `flipv=0` (v = 0 at the top) for s&box |
+| `padding=` | Edge bleed in texels (default 4) |
+| `name=` | File prefix (default: the low body's name) |
+| `vmat=1` | Also writes `<name>.vmat` for `complex.vfx`, binding the baked normal and AO (`BakeMaterial.VmatSource`). `color=` and `rough=` add those textures by asset path, `metal=` sets metalness, and texture paths are made relative to `assets=` (default: the script's folder). Height is written to disk but not bound, because complex reads it only under `F_PARALLAX_OCCLUSION` |
+
+**In the editor**, a Sculpt feature's **Bake** button writes the normal map plus whichever of AO,
+curvature, cavity, height and thickness (with its transmission mask) **Edit ▸ Settings ▸ Bake**
+switches on, and optionally a `.vmat`: Complex, or s&box's skin shader with a Facepunch preset. In C#
+that is `BakeMaterial.WriteSet( set, folder, name, flipV, assetsRoot, material )`.
+
+**Skin shader.** `SkinMaterial.VmatSource( SkinMaterial.Body() | Head() | Mouth() | WetFlesh(),
+color, normal, rough, ao, transmissiveMask, bentNormal )` writes `shaders/skin.shader` (subsurface
+scattering and transmission, the only s&box shader with either) with the keys and values of
+Facepunch's `citizen_human` vmats: body curvature 0.463 / blur 2 / lobe 0.008, head 0.279 / 1.834,
+mouth 0.569 / 0.435 with a flat 0.552 roughness and a 0.263 second lobe, red AO bleed
+`[0.40 0.149 0.129]`, transmission colour #BF6302. `WetFlesh()` is the body with the mouth's lobe.
+
+
 ## The CLI
 
 `tools/effigy.sh` runs these on the kernel. It needs the .NET 8 SDK and nothing else.
@@ -304,6 +457,7 @@ name (its head; `.tail` and `.mid` too); `ground`; `origin`; a literal `x,y,z`; 
 | `parts out.png` | A sheet of every kitbash part. |
 | `new out.effigy` | An empty document. |
 | `wardrobe outdir [recipe] [size] [nodrape]` | Every garment recipe on a Citizen-shaped body, rendered. |
+| `shade model.obj outdir [size=] [views=] [cam= look= lens=] [style=studio] [bloom=] [tonemap=]` | Lit judging renders of an OBJ on ShadedRender, its vmats' textures on its UVs. `style=studio` is `ShadeScene.Portfolio()`. |
 
 The same tools are in the editor as the `effigy` MCP toolset, for an agent driving the open
 document: `effigy_snapshot`, `effigy_describe`, `effigy_measure`, `effigy_symmetry`,

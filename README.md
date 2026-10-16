@@ -137,8 +137,9 @@ Citizen's first-person arms loaded and the animation tutorial open.
 
 ### Getting started
 
-1. Set **Source Model** in the **BonesObject** panel to any skinned model.
-2. Click a bone in the viewport and drag to rotate it. Hold **E** to move it instead.
+1. Set **Source Model** in the **Scene** panel to any skinned model.
+2. Click a bone in the viewport and drag to rotate it. Press **W** to move bones instead, **E** to
+   rotate again, or **R** to scale, the same keys as Effigy.
 3. Press **K** to key the bone at the playhead.
 4. Move the playhead, pose again, and press play.
 
@@ -146,9 +147,9 @@ The status bar explains whatever you hover over.
 
 ### What it does
 
-- **Posing:** drag rotates by default; the toolbar cycles Rotate, Move and Scale. The skeleton
-  draws over the mesh so buried bones stay clickable. Right-click a bone to hide it and its
-  children. The **Inspector** panel takes typed values.
+- **Posing:** drag rotates by default. W, E and R switch to Move, Rotate and Scale, and the
+  toolbar cycles them too. The skeleton draws over the mesh so buried bones stay clickable.
+  Right-click a bone to hide it and its children. The **Inspector** panel takes typed values.
 - **Timeline:** one lane per bone. The keyframe shapes show the easing (Smooth, Linear,
   Stepped, Ease In, Ease Out). Copy, cut and paste keys, even between clips. Turn on **Auto-Key**
   to key as you drag.
@@ -170,7 +171,6 @@ The status bar explains whatever you hover over.
 |---|---|---|
 | Rig Animation | `.riganim` | Keyframes, events, props, objects, lights, cameras, frame rate. |
 | Control Rig | `.ctrlrig` | A model and its IK and limit constraints. Several clips can share one. |
-| Marionette Grip | `.grip` | Hand poses for holding a prop, for `RigGripComponent`. |
 
 ### Getting animation into your game
 

@@ -26,7 +26,14 @@ namespace Marionette;
 ///
 /// LEASHED. Every particle is held within Leash of where the garment was fitted relative to its
 /// bone. Free cloth left behind by a teleport, a respawn or a frame hitch would otherwise be found
-/// on the floor; the leash is the long-range attachment every shipped cloth solver has for that.
+/// on the floor.
+///
+/// ATTACHED, TOO. A handful of iterations cannot hold twenty inches of shirt up by its edges: the
+/// stretch runs down the chain faster than the solver pulls it back, and the cloth slumped to the
+/// end of its leash with its edges at twice their length. So each free particle is also tied to the
+/// nearest pinned one, no further away than the cloth between them (plus a little give) - the
+/// long-range attachment game cloth solvers use for exactly this. Pinned, then tethered, then
+/// pushed off the body last, so what is drawn is never inside a capsule.
 /// </summary>
 [Title( "Garment Cloth" ), Category( "Marionette" ), Icon( "checkroom" )]
 public sealed class GarmentCloth : Component, Component.ExecuteInEditor
@@ -83,6 +90,10 @@ public sealed class GarmentCloth : Component, Component.ExecuteInEditor
 		public string Material { get; set; }
 		public FabricData Fabric { get; set; }
 		public float[] Pins { get; set; }
+
+		/// <summary>Triples (particle, capsule, distance from the capsule's core) for the cloth
+		/// that was fitted close to or inside a capsule. Absent in files from before it.</summary>
+		public float[] Fitted { get; set; }
 		public float[] Positions { get; set; }
 		public float[] UVs { get; set; }
 		public int[] Triangles { get; set; }
@@ -108,6 +119,11 @@ public sealed class GarmentCloth : Component, Component.ExecuteInEditor
 
 	// The loaded garment, in bone space.
 	string _loaded;
+
+	/// <summary>The material path stored in the cloth file. The <see cref="Material"/> property
+	/// is the user's override and is never written from the file, so republishing can change the
+	/// file's material without fighting a value this component copied in once.</summary>
+	string _fileMaterial;
 	string[] _bones;
 	int[] _vertexBone;
 	float[] _pins;
@@ -117,6 +133,11 @@ public sealed class GarmentCloth : Component, Component.ExecuteInEditor
 	int[] _triangles;
 	(int Bone, Vector3 A, Vector3 B, float Radius)[] _capsules;
 	(int A, int B, float Length, bool Bend)[] _links;
+	(int Anchor, float Reach)[] _anchors;
+
+	/// <summary>Per particle, the capsules it was fitted near and how far from each one's core.
+	/// Null for a particle that sat clear of them all.</summary>
+	(int Capsule, float Gap)[][] _fitted;
 
 	// The simulation, in world space.
 	Vector3[] _x;
@@ -142,7 +163,16 @@ public sealed class GarmentCloth : Component, Component.ExecuteInEditor
 		_drawn = null;
 		_mesh = null;
 		_loaded = null;
+		_fileMaterial = null;
 		_frame = null;
+	}
+
+	/// <summary>Read the cloth file again. Make live cloth writes the same path every time, and
+	/// a path that has not changed would otherwise keep the previous garment.</summary>
+	public void Reload()
+	{
+		_loaded = null;
+		_fileMaterial = null;
 	}
 
 	// Pre-render, not update: the animation has posed the bones by then, so the capsules are where
@@ -153,6 +183,11 @@ public sealed class GarmentCloth : Component, Component.ExecuteInEditor
 			return;
 
 		if ( _loaded != Cloth && !Load() )
+			return;
+
+		// A file that failed to load is not retried every frame (Reload or a new path does that),
+		// and there is no cloth to step until one loads.
+		if ( _x is null )
 			return;
 
 		ReadBones();
@@ -180,6 +215,8 @@ public sealed class GarmentCloth : Component, Component.ExecuteInEditor
 		_loaded = Cloth;
 		_boneWorld = null;
 		_capsWorld = null;
+		_x = null;
+		_prev = null;
 
 		ClothData data;
 
@@ -193,7 +230,7 @@ public sealed class GarmentCloth : Component, Component.ExecuteInEditor
 			return false;
 		}
 
-		if ( data?.Positions is null || data.Triangles is null || data.Capsules is null || data.Capsules.Length == 0 )
+		if ( data?.Positions is null || data.Positions.Length < 3 || data.Triangles is null || data.Capsules is null || data.Capsules.Length == 0 )
 		{
 			Log.Warning( $"[GarmentCloth] {Cloth} has no cloth in it - make it again with Make live cloth." );
 			return false;
@@ -257,9 +294,9 @@ public sealed class GarmentCloth : Component, Component.ExecuteInEditor
 		_fabric = data.Fabric;
 		_pins = data.Pins is { } p && p.Length == count ? p : null;
 		_links = BuildLinks( data.Positions, _triangles );
-
-		if ( Material is null && !string.IsNullOrEmpty( data.Material ) )
-			Material = Material.Load( data.Material );
+		_anchors = BuildAnchors( data.Positions, _links, _pins );
+		_fitted = ReadFitted( data.Fitted, count, _capsules.Length );
+		_fileMaterial = data.Material;
 
 		// Start the cloth where it was fitted, on the bones as they are now.
 		ReadBones();
@@ -406,11 +443,176 @@ public sealed class GarmentCloth : Component, Component.ExecuteInEditor
 			}
 		}
 
-		// Once per step, after the links: the position the step ends on is the one that has to
-		// be off the body, and doing it per iteration was most of the frame.
-		Collide();
-		Tether();
+		// Once per step, after the links. Collision LAST: the position the step ends on is the one
+		// that is drawn, and with the pins after it a raised arm's capsule swept through the
+		// shoulder band pinned to the chest and left it an inch and a half inside the arm.
 		Pin();
+		Tether();
+		Attach();
+		Collide();
+	}
+
+	/// <summary>The file's Fitted triples as a short list per particle. Bad entries are skipped,
+	/// so a file from a different garment degrades to plain capsules rather than failing.</summary>
+	static (int, float)[][] ReadFitted( float[] triples, int particles, int capsules )
+	{
+		if ( triples is null || triples.Length < 3 )
+			return null;
+
+		var lists = new List<(int, float)>[particles];
+
+		for ( var k = 0; k + 2 < triples.Length; k += 3 )
+		{
+			var i = (int)triples[k];
+			var c = (int)triples[k + 1];
+
+			if ( i < 0 || i >= particles || c < 0 || c >= capsules )
+				continue;
+
+			(lists[i] ??= new List<(int, float)>()).Add( (c, triples[k + 2]) );
+		}
+
+		return lists.Select( l => l?.ToArray() ).ToArray();
+	}
+
+	/// <summary>
+	/// Hold each free particle within reach of its anchor - the nearest pinned particle, measured
+	/// along the cloth. One-sided: closer is free, further is pulled straight back. See the class
+	/// summary for why the links alone cannot do this.
+	/// </summary>
+	void Attach()
+	{
+		if ( !Pins || _anchors is null )
+			return;
+
+		for ( var i = 0; i < _x.Length; i++ )
+		{
+			var (anchor, reach) = _anchors[i];
+
+			if ( anchor < 0 )
+				continue;
+
+			var d = _x[i] - _x[anchor];
+			var len = d.Length;
+
+			if ( len > reach )
+				_x[i] = _x[anchor] + d * (reach / len);
+		}
+	}
+
+	/// <summary>
+	/// Each particle's anchor and how far from it it may be: the nearest particle pinned at half or
+	/// more, by distance along the cloth's edges (Dijkstra from every pin at once), with 5% given
+	/// back so the cloth can still swing and fold. Pinned and unreachable particles get none.
+	/// </summary>
+	static (int, float)[] BuildAnchors( float[] positions, (int A, int B, float Length, bool Bend)[] links, float[] pins )
+	{
+		var count = positions.Length / 3;
+		var result = new (int, float)[count];
+		var dist = new float[count];
+		var from = new int[count];
+
+		for ( var i = 0; i < count; i++ )
+		{
+			result[i] = (-1, 0f);
+			dist[i] = float.MaxValue;
+			from[i] = -1;
+		}
+
+		if ( pins is null )
+			return result;
+
+		var adjacency = new List<(int To, float Length)>[count];
+
+		for ( var i = 0; i < count; i++ )
+			adjacency[i] = new List<(int, float)>();
+
+		foreach ( var (a, b, length, bend) in links )
+		{
+			if ( bend )
+				continue;
+
+			adjacency[a].Add( (b, length) );
+			adjacency[b].Add( (a, length) );
+		}
+
+		// A binary heap of (distance, particle), stale entries skipped on the way out.
+		var heap = new List<(float D, int V)>();
+
+		void Push( float d, int v )
+		{
+			heap.Add( (d, v) );
+
+			for ( var c = heap.Count - 1; c > 0; )
+			{
+				var p = (c - 1) / 2;
+
+				if ( heap[p].D <= heap[c].D )
+					break;
+
+				(heap[p], heap[c]) = (heap[c], heap[p]);
+				c = p;
+			}
+		}
+
+		(float D, int V) Pop()
+		{
+			var top = heap[0];
+			heap[0] = heap[^1];
+			heap.RemoveAt( heap.Count - 1 );
+
+			for ( var p = 0; ; )
+			{
+				var l = p * 2 + 1;
+				var r = l + 1;
+				var m = p;
+
+				if ( l < heap.Count && heap[l].D < heap[m].D ) m = l;
+				if ( r < heap.Count && heap[r].D < heap[m].D ) m = r;
+				if ( m == p ) break;
+
+				(heap[p], heap[m]) = (heap[m], heap[p]);
+				p = m;
+			}
+
+			return top;
+		}
+
+		for ( var i = 0; i < count; i++ )
+		{
+			if ( pins[i] < 0.5f )
+				continue;
+
+			dist[i] = 0f;
+			from[i] = i;
+			Push( 0f, i );
+		}
+
+		while ( heap.Count > 0 )
+		{
+			var (d, v) = Pop();
+
+			if ( d > dist[v] )
+				continue;
+
+			foreach ( var (to, length) in adjacency[v] )
+			{
+				var next = d + length;
+
+				if ( next >= dist[to] )
+					continue;
+
+				dist[to] = next;
+				from[to] = from[v];
+				Push( next, to );
+			}
+		}
+
+		for ( var i = 0; i < count; i++ )
+			if ( from[i] >= 0 && from[i] != i )
+				result[i] = (from[i], dist[i] * 1.05f);
+
+		return result;
 	}
 
 	/// <summary>
@@ -444,8 +646,9 @@ public sealed class GarmentCloth : Component, Component.ExecuteInEditor
 
 		for ( var i = 0; i < _x.Length; i++ )
 		{
-			foreach ( var (a, b, radius) in _capsWorld )
+			for ( var c = 0; c < _capsWorld.Length; c++ )
 			{
+				var (a, b, radius) = _capsWorld[c];
 				var ab = b - a;
 				var lenSq = ab.LengthSquared;
 				var t = lenSq < 1e-8f ? 0f : Math.Clamp( Vector3.Dot( _x[i] - a, ab ) / lenSq, 0f, 1f );
@@ -453,6 +656,13 @@ public sealed class GarmentCloth : Component, Component.ExecuteInEditor
 				var d = _x[i] - core;
 				var dist = d.Length;
 				var want = radius + Skin;
+
+				// No closer than it was fitted. A capsule is fatter than the body in places, and a
+				// close top lies inside it there; held to the capsule's surface it was thrown off.
+				if ( _fitted?[i] is { } fitted )
+					foreach ( var (capsule, gap) in fitted )
+						if ( capsule == c )
+							want = MathF.Min( want, gap * (_capsules[c].Radius > 1e-5f ? radius / _capsules[c].Radius : 1f) );
 
 				if ( dist >= want )
 					continue;
@@ -544,7 +754,8 @@ public sealed class GarmentCloth : Component, Component.ExecuteInEditor
 			indices.Add( _triangles[t + 1] + n );
 		}
 
-		_mesh = new Mesh( Material ?? Material.Load( "materials/default.vmat" ) );
+		var drawn = Material ?? (string.IsNullOrEmpty( _fileMaterial ) ? null : Material.Load( _fileMaterial ));
+		_mesh = new Mesh( drawn ?? Material.Load( "materials/default.vmat" ) );
 		_mesh.CreateVertexBuffer<SimpleVertex>( _vertices.Count, _vertices );
 		_mesh.CreateIndexBuffer( indices.Count, indices );
 
