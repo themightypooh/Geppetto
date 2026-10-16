@@ -1,0 +1,9 @@
+# A wet flesh sac on s&box's skin shader. The main sac is hollow with an off-centre cavity, so its
+# wall runs from about 0.15 in at the front to over 1 in at the back: light comes through the thin
+# front and nowhere else. Lobes are solid. Organic UVs, then Flesh Material (Wet flesh → skin.shader
+# with an occlusion map and a light-through map baked from the wall thickness).
+add Blob name=Sac shapes="capsule 0,0,5 0,0,11 5; sphere 4.5,1,4 3.6; sphere -3.5,-3,4.5 3.2; sphere -1,4,9 2.8; sphere 2,-2.5,13 2.4; -capsule 0.55,0,5.5 0.55,0,10.5 4.3" voxel=0.1
+add UVProject mode=Organic
+add FleshMaterial bodies=Sac preset=wet_flesh resolution=1024 folder=materials/flesh_sac
+render sac_material.png shade=material views=4 size=768 label=OURS
+export models/flesh_sac

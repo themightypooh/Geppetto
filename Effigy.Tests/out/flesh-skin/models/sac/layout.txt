@@ -1,0 +1,2 @@
+# part	model	pivot x	y	z	size x	y	z
+sac	models/sac/sac.vmdl	0	0	-3	6	6	6
