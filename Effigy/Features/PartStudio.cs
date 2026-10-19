@@ -304,6 +304,31 @@ public sealed class PartStudio
 
 	public int EffectiveCount => Math.Min( RollbackIndex, Features.Count );
 
+	/// <summary>
+	/// Take a body list and a plane set as this studio's built state, without evaluating anything.
+	///
+	/// FOR <see cref="StudioCache"/>, and for it alone. What arrives here is the state a rebuild
+	/// ended with — including the passes Rebuild runs after the feature loop, <see cref="MaterialScale.Apply"/>
+	/// and <see cref="ApplyBodyPresentation"/>. Calling either of those again on the way in would
+	/// divide the UVs a second time, which is the whole reason this is one method taking finished
+	/// state rather than the caller assigning two properties.
+	///
+	/// THE SNAPSHOT CACHE IS EMPTIED AND THE TREE MARKED CLEAN. Clean because it is: the bodies in
+	/// hand are what the whole tree produces. Empty because the per-feature snapshots that would let
+	/// an incremental rebuild resume are not in the file — so the first edit after a restore
+	/// re-evaluates from the top rather than from feature 5, at the cost of one full rebuild, and
+	/// the cache refills as it goes. Lying about it instead, by pointing _cache at a state it does
+	/// not have, is how a restore quietly becomes a model that is one edit out of date.
+	/// </summary>
+	internal void AdoptCachedState( List<Body> bodies, Dictionary<string, SketchPlane> planes )
+	{
+		Bodies = bodies ?? new List<Body>();
+		Planes = planes ?? new Dictionary<string, SketchPlane>();
+
+		_cache.Clear();
+		_dirtyFrom = Features.Count;
+	}
+
 	// --- editing ---------------------------------------------------------------------------
 
 	public T Add<T>( T feature ) where T : Feature
