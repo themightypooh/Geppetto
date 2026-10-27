@@ -36,6 +36,7 @@ forgotten.
 ## Unreleased
 
 ### Added
+- **Documents reopen without rebuilding their geometry.** Effigy keeps a machine-local cache of built geometry and reuses it when the document, its external files and the kernel build still match. Unsupported state is left uncached rather than silently lost. `StudioCache`
 - **Smooth edges in shaded renders, and faster.** Render Turnaround, `render shade=` and `tools/effigy.sh shade` now take 16 antialiasing samples per pixel (`aa=`, up to 64 for a final) while the lighting is worked out once per pixel. Edges, fingers and near-flat silhouettes come out smooth instead of stair-stepped, and a render takes well under half the work it did. `ss=` now only sets how many times a pixel is lit (raise it for hair-thin strands). `CoverageResolve`
 - **Highlights on small curved parts stop sparkling.** Where a surface curves a lot inside one pixel the gloss is widened to match, so a ring, a rivet or a fingertip keeps a soft highlight (`specaa=0` turns it off). `ShadeScene.SpecularAa`
 - **Smooth wires and grids in the measuring view.** Wireframe, grid, axes and bones are drawn antialiased. `Raster.LineSmooth`
